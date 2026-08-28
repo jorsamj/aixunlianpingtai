@@ -1,0 +1,12 @@
+{
+  "api_key": "change-me",
+  "name": "算法部署转换服务器",
+  "python_path": "python3",
+  "ultralytics_python": "",
+  "paddledet_dir": "",
+  "paddle2onnx_path": "",
+  "tool_root": "/workspace/tpu-mlir",
+  "trtexec_path": "",
+  "atc_path": "atc",
+  "env_script": "/usr/local/Ascend/ascend-toolkit/set_env.sh"
+}

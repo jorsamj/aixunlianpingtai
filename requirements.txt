@@ -1,0 +1,13 @@
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+python-multipart>=0.0.9
+pillow>=10.0.0
+pyyaml>=6.0.0
+requests>=2.31.0
+ultralytics==8.4.127
+opencv-python>=4.9.0,!=4.13.0.90
+onnx>=1.17.0,<2.0.0
+onnxslim>=0.1.65
+torch==2.12.1
+torchvision==0.27.1
+psutil>=5.9.0

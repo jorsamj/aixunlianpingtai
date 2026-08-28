@@ -1,0 +1,35 @@
+畅联云算法训练 v42.3.0
+
+本版重点：算法资产层级、版本部署产物追溯、训练任务主流程。
+
+1. 算法列表
+- 不再显示“未分类”“未配置标签”等平台自行补出的字样。
+- 点击算法行直接展开版本列表。
+- 详情弹窗只展示算法基本信息和版本列表。
+- 版本可查看真实部署转换任务和输出文件，支持追溯 ONNX、TensorRT、华为 Atlas/Ascend OM、算能 BModel、瑞芯微 RKNN 等实际产物。
+
+2. 新建算法
+页面只保留：算法名称、行业场景、算法类型、备注。
+算法类型：YOLO / Ultralytics、PaddleDetection、OpenCV 传统视觉、MMDetection / OpenMMLab、自定义 Python / 其他。
+
+3. 训练任务
+- 首页只显示训练任务列表。
+- 点击“开始训练”才打开创建任务配置。
+- 默认训练参数锁定，点击“编辑训练配置”后才允许修改。
+- 训练算法、基础模型、epochs、imgsz、batch、device、optimizer、学习率、Mosaic、AMP 等仍真实传入后端训练执行器。
+- 只有状态为 ready 的真实训练资源可以选择，环境不可用时不允许假启动。
+
+4. 真实训练支持范围
+- Ultralytics YOLO：平台真实训练执行器，训练前生成 YOLO 数据集并做运行环境检查；训练产物 best.pt / last.pt 会再次加载校验。
+- PaddleDetection：已有真实训练执行器；需要先配置并检测可用的 PaddleDetection 环境。
+- OpenCV / MMDetection / 自定义类型：当前作为算法资产类型管理，不伪装成已经内置的训练执行器。后续接入对应执行环境后再开放训练。
+
+5. 本版验证
+- Python 编译检查通过。
+- 前端 JavaScript 语法检查通过。
+- FastAPI 本地启动与首页/API返回通过。
+- 新建算法四字段接口通过。
+- 算法版本绑定通过。
+- 版本→华为 Atlas/Ascend OM 部署产物追溯接口通过。
+- 4张合成标注图成功生成可训练 YOLO dataset/data.yaml（train=3、val=1、boxes=4）。
+- 当前打包测试容器未安装 ultralytics，因此无法在容器内完成1轮真实 YOLO 数值训练；平台后端正确阻止假启动并返回“训练环境不可用”。Windows 启动器会安装并校验 requirements.txt 中锁定的 torch/torchvision/ultralytics 后才启动平台。

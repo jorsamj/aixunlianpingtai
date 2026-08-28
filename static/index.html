@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#f6f8fc" />
+  <title>畅联云算法训练</title>
+  <link rel="stylesheet" href="/static/styles.css?v=42.14.0" />
+</head>
+<body>
+  <div id="toast" class="toast hidden"></div>
+  <div id="sideBackdrop" class="side-backdrop" onclick="toggleMobileSidebarV37(false)"></div>
+  <aside class="side" id="sidebar">
+    <div class="brand">
+      <div class="brand-logo">CL</div>
+      <div class="brand-text">
+        <div class="brand-name">畅联云算法训练</div>
+        <div class="brand-sub">VISION TRAINING STUDIO</div>
+      </div>
+    </div>
+    <nav id="nav" class="nav"></nav>
+    <button class="side-collapse" type="button" onclick="toggleSidebarV37()" title="收起/展开菜单"><span>‹</span><b>收起菜单</b></button>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div class="top-left">
+        <button class="menu-toggle" type="button" onclick="toggleMobileSidebarV37()" aria-label="打开菜单">☰</button>
+        <div class="page-heading">
+          <div class="crumb" id="crumb">工作台</div>
+          <div class="title-row"><h1 id="title">工作台</h1><span id="pageDesc" class="page-desc"></span></div>
+        </div>
+      </div>
+      <div class="top-right">
+        <div id="projectBadge" class="project-badge"><span class="project-dot"></span><span>默认空间</span></div>
+        <span id="versionBadge" class="version-badge">v42.14.0</span>
+        <button class="btn ghost small" id="refreshBtn">刷新</button>
+      </div>
+    </header>
+    <section id="summary" class="summary"></section>
+    <section id="view" class="view"></section>
+  </main>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head"><div id="modalTitle" class="modal-title"></div><button class="icon" onclick="closeModal()" aria-label="关闭">×</button></div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
+  <script src="/static/app.js?v=42.14.0"></script>
+</body>
+</html>
