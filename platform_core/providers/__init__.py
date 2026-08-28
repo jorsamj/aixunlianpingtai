@@ -1,3 +1,3 @@
-from .base import VisionProvider, VisionProviderResult
+from .base import ProviderRequestError, VisionProvider, VisionProviderResult
 
-__all__ = ["VisionProvider", "VisionProviderResult"]
+__all__ = ["ProviderRequestError", "VisionProvider", "VisionProviderResult"]

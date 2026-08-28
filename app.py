@@ -12,6 +12,7 @@ import threading
 import uuid
 import zipfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +35,7 @@ from platform_core.algorithms import (
     save_algorithms as save_algorithm_assets,
     update_algorithm as update_algorithm_asset,
 )
+from platform_core import auto_label as auto_label_core
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
@@ -7029,6 +7031,7 @@ def v33_create_prelabel_task(project_id: str, payload: V33PrelabelTaskReq):
 class V35ModelConfigReq(BaseModel):
     name: str
     provider_type: str = "local"  # local / cloud
+    provider_adapter: Optional[str] = ""
     model_kind: str = "vision_detect"  # vision_detect / vlm / custom_http
     base_url: Optional[str] = ""
     detect_url: Optional[str] = ""
@@ -7260,6 +7263,54 @@ def v35_test_model_config(payload: V35ModelConfigReq):
         return {"ok": True, "status_code": r.status_code, "response": body}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"连接失败：{e}")
+
+
+@app.post("/api/v35/model-configs/{config_id}/test-annotation")
+def v35_test_saved_model_annotation(config_id: str):
+    cfg = next((item for item in _v35_model_items() if item.get("id") == config_id), None)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+    runtime_cfg = dict(cfg)
+    reference = str(cfg.get("secret_ref") or "")
+    runtime_cfg["_api_key"] = _v35_secret_store().get(reference) if reference else ""
+    try:
+        provider = auto_label_core.provider_factory(runtime_cfg)
+        buffer = BytesIO()
+        Image.new("RGB", (128, 128), "white").save(buffer, format="JPEG")
+        response = provider.annotate(
+            image_bytes=buffer.getvalue(),
+            prompt=(
+                "请仅返回 JSON，检测图片中的 fire。"
+                "输出格式必须为 boxes 数组，每个框包含 label、confidence、x1、y1、x2、y2。"
+            ),
+            output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
+        )
+        text = str(response.get("text") or "")
+        boxes = auto_label_core.parse_candidate_response(
+            text,
+            width=128,
+            height=128,
+            label_ids={"fire": 0},
+        )
+        return {
+            "reachable": True,
+            "latency_ms": int(response.get("latency_ms") or 0),
+            "provider": response.get("provider") or runtime_cfg.get("provider_type"),
+            "model": response.get("model") or runtime_cfg.get("model_name"),
+            "request_id": response.get("request_id") or "",
+            "raw_preview": text[:500],
+            "parsed_boxes": boxes,
+        }
+    except Exception as error:
+        code = str(getattr(error, "code", "MODEL_CONNECTION_TEST_FAILED"))
+        solution = str(getattr(error, "solution", "请检查服务地址、API Key、模型名称和模型输出协议。"))
+        raise PlatformError(
+            code=code,
+            message="模型标注连接测试失败",
+            detail=str(error),
+            solution=solution,
+            status_code=400,
+        ) from error
 
 
 @app.get("/api/v35/prompt-templates")
