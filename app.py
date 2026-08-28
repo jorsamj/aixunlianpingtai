@@ -39,6 +39,7 @@ from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
+from platform_core.snapshots import build_snapshot, persist_snapshot
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -4520,6 +4521,22 @@ def v12_start_train(project_id: str, payload: TrainReq):
     if not preflight.get("can_train"):
         raise HTTPException(status_code=400, detail="数据不可训练：" + "；".join(preflight.get("warnings", [])))
     build = build_yolo_dataset_v44(project_id, payload)
+    selected = build.get("selected_ids") or {}
+    selected_ids = set(selected.get("train") or []) | set(selected.get("val") or [])
+    snapshot_images = []
+    for image in load_images(project_id):
+        if str(image.get("id")) not in {str(value) for value in selected_ids}:
+            continue
+        annotation = read_annotation(project_id, str(image.get("id")))
+        snapshot_images.append({**image, "boxes": annotation.get("boxes") or []})
+    snapshot = build_snapshot(
+        snapshot_images,
+        selected.get("train") or [],
+        selected.get("val") or [],
+        active_label_options(project_label_items(get_project(project_id))),
+        seed=int(payload.seed or 0),
+    )
+    snapshot_path = persist_snapshot(p / "snapshots", snapshot)
     job_id = uuid.uuid4().hex[:12]
     run_name = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{job_id[:4]}"
     job_dir = p / "jobs" / job_id
@@ -4571,6 +4588,8 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "dataset_selected_ids": build.get("selected_ids", {}),
         "data_filters": build.get("filters", {}),
         "dataset_snapshot": build.get("dataset", ""),
+        "snapshot_id": snapshot["snapshot_id"],
+        "snapshot_path": str(snapshot_path),
         "data_yaml": build.get("data_yaml", ""),
         "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0)},
         "ai_intervention": {"enabled": False},
