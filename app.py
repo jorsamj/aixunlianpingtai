@@ -28,6 +28,7 @@ from PIL import Image, ImageDraw
 from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
+from platform_core.labels import active_label_options
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -3908,13 +3909,16 @@ def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
     items = []
     for i, code in enumerate(labels):
         m = meta[i] if i < len(meta) and isinstance(meta[i], dict) else {}
+        display_name = m.get("display_name") or code
         items.append({
             "class_id": i,
             "code": code,
-            "display_name": m.get("display_name") or code,
+            "display_name": display_name,
+            "display_name_zh": display_name,
             "color": m.get("color") or default_label_color(i),
             "type": m.get("type") or "bbox",
             "hotkey": m.get("hotkey") or (str(i+1) if i < 9 else ""),
+            "status": m.get("status") or "active",
         })
     return items
 
@@ -4023,7 +4027,7 @@ def v12_app_info():
 @app.get("/api/v12/projects/{project_id}/labels")
 def v12_list_labels(project_id: str):
     project = get_project(project_id)
-    return {"ok": True, "items": project_label_items(project)}
+    return {"ok": True, "items": active_label_options(project_label_items(project))}
 
 
 @app.put("/api/v12/projects/{project_id}/labels/{class_id}")
@@ -10158,7 +10162,7 @@ def v53_bootstrap_snapshot(preferred_project_id:Optional[str]=""):
 @app.get('/api/v54/projects/{project_id}/label-schema')
 def v54_label_schema(project_id: str):
     project = get_project(project_id)
-    items = project_label_items(project)
+    items = active_label_options(project_label_items(project))
     usage = {str(x.get('code')): {'images': 0, 'boxes': 0} for x in items}
     for img in load_images(project_id):
         seen = set()
