@@ -3252,7 +3252,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.toggleAlgorithm428=window.toggleAlgorithm412;
 
   // -------- data pool: raw vs ready are orthogonal to annotation --------
-  function actualLabels412(){const s=new Set();(state.images||[]).filter(isProcessed412).forEach(x=>(x.labels||[]).forEach(l=>l&&s.add(l)));return [...s].sort()}
+  function actualLabels412(){return(state.labels||[]).filter(l=>l?.code&&l.status!=='disabled'&&l.status!=='inactive').map(l=>l.code)}
   function dataRows412(){const tab=state.data412Tab,q=(document.getElementById('data412Q')?.value||'').trim().toLowerCase(),ann=document.getElementById('data412Ann')?.value||'all',labs=[...state.data412Labels];return(state.images||[]).filter(x=>{const proc=isProcessed412(x);if(tab==='unprocessed'&&x.annotation_index_pending)return false;if(tab==='unprocessed'?(proc||x.annotated):!proc)return false;if(q&&!String(x.filename||'').toLowerCase().includes(q))return false;if(tab==='processed'&&ann==='marked'&&!x.annotated)return false;if(tab==='processed'&&ann==='unmarked'&&x.annotated)return false;if(tab==='processed'&&labs.length&&!labs.some(l=>(x.labels||[]).includes(l)))return false;return true})}
   function ov412(x){if(!x.annotated)return'';const w=Number(x.width||0),h=Number(x.height||0);if(!w||!h)return'';return (x.annotation_preview||[]).slice(0,24).map(b=>{const l=100*Number(b.x1||0)/w,t=100*Number(b.y1||0)/h,r=100*Number(b.x2||0)/w,bt=100*Number(b.y2||0)/h;return `<i class="data412-box" style="left:${l}%;top:${t}%;width:${Math.max(.2,r-l)}%;height:${Math.max(.2,bt-t)}%"><em>${esc(b.label||'')}</em></i>`}).join('')}
   function card412(x){const sel=state.data412Selected.has(x.id),raw=state.data412Tab==='unprocessed';return `<article class="data426-card data412-card ${sel?'selected':''}" onclick="${state.data412DeleteMode?`toggleData412('${x.id}')`:`previewData429('${x.id}')`}"><div class="data426-pic data411-pic"><div class="data411-stage" style="aspect-ratio:${Math.max(.3,Math.min(3,(x.width||16)/(x.height||9)))}"><img src="${x.url}" loading="lazy" decoding="async">${raw?'':ov412(x)}</div><span class="data429-process ${raw?'':'ok'}">${raw?'未处理':'已处理'}</span>${state.data412DeleteMode?`<label class="data426-check" onclick="event.stopPropagation()"><input type="checkbox" ${sel?'checked':''} onchange="setData412('${x.id}',this.checked)"><i></i></label>`:''}</div><div class="data426-body"><div class="data426-title">${esc(x.filename)}</div><div class="data426-meta"><span>${typeof fmtSize424==='function'?fmtSize424(x.size_bytes):''}</span><span>${raw?'尚未完成清洗决策':(x.annotated?`已标注 · ${x.box_count||0}框`:'待标注')}</span></div>${raw?'':`<div class="data426-tags">${(x.labels||[]).map(l=>`<span>${esc(l)}</span>`).join('')||'<em>暂无标签</em>'}</div>`}<div class="data426-actions" onclick="event.stopPropagation()"><button class="btn mini" onclick="previewData429('${x.id}')">详情</button>${raw?`<button class="btn mini" onclick="markReady412(['${x.id}'])">无需清洗</button><button class="btn mini primary" onclick="createClean427({image_ids:['${x.id}']})">清洗</button>`:`<button class="btn mini primary" onclick="openAnnotation('${x.id}')">${x.annotated?'编辑标注':'标注'}</button>`}</div></div></article>`}
@@ -3436,8 +3436,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     try{
       const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes:state.ann.boxes||[]})});
       state.ann=r?.annotation||state.ann;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
+      const applyResult=window.PlatformCore?.annotation?.applyAnnotationResult;
+      if(applyResult&&r?.image?.id)state.images=applyResult(state.images||[],r,state.ann.boxes||[]);
       const idx=(state.images||[]).findIndex(x=>String(x.id)===String(state.activeImage.id));
-      if(idx>=0){const fresh=r?.image||{};Object.assign(state.images[idx],fresh);state.images[idx].box_count=state.ann.boxes.length;state.images[idx].annotated=state.ann.boxes.length>0;state.images[idx].labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.images[idx].annotation_preview=state.ann.boxes.slice(0,64).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2}));if(state.ann.boxes.length)state.images[idx].processing_status='processed';state.activeImage=state.images[idx]}
+      if(idx>=0){if(!applyResult){const fresh=r?.image||{};Object.assign(state.images[idx],fresh);state.images[idx].box_count=state.ann.boxes.length;state.images[idx].annotated=state.ann.boxes.length>0;state.images[idx].labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.images[idx].annotation_preview=state.ann.boxes.slice(0,64).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2}))}if(state.ann.boxes.length)state.images[idx].processing_status='processed';state.activeImage=state.images[idx]}
       state.annDirty=false;if(ss)ss.textContent=`已保存 · ${state.ann.boxes.length}框`;drawBoxes();renderAnnSide();
       try{if(typeof invalidateQuality411==='function')invalidateQuality411()}catch(_){}
       // Refresh the gallery behind the annotation modal so thumbnail overlays change immediately.
@@ -3450,7 +3452,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   };
 
   // ---------- dataset: labels strictly from label library ----------
-  function filterLabelItems414(){return (state.labels||[]).filter(l=>l&&l.code)}
+  function filterLabelItems414(){return (state.labels||[]).filter(l=>l&&l.code&&l.status!=='disabled'&&l.status!=='inactive')}
   const baseData414=window.renderDatasets424;
   window.renderDatasets424=function(){
     baseData414();

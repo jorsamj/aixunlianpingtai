@@ -1,6 +1,11 @@
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js';
 import {messageFromApiError} from './modules/api.js';
 import {createModalStack} from './modules/modal.js';
+import {applyAnnotationResult} from './modules/annotation.js';
+import {applyCleanConfirmation} from './modules/cleaning.js';
+import {activeLabelOptions} from './modules/labels.js';
+import {filterByAnyLabel, replaceMaterial} from './modules/materials.js';
+import {uploadBatchFromResponse} from './modules/upload.js';
 
 
 const modalStack = createModalStack();
@@ -28,6 +33,10 @@ document.addEventListener('click', async event => {
 window.PlatformCore = {
   actions: actionRegistry,
   modalStack,
-  messageFromApiError
+  messageFromApiError,
+  annotation: {applyAnnotationResult},
+  cleaning: {applyCleanConfirmation},
+  labels: {activeLabelOptions},
+  materials: {filterByAnyLabel, replaceMaterial},
+  upload: {uploadBatchFromResponse}
 };
-
