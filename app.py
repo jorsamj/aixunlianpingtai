@@ -41,6 +41,7 @@ from platform_core.labels import active_label_options
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
 from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
+from platform_core.secrets import KeyringSecretStore, secret_ref
 from platform_core.snapshots import build_snapshot, persist_snapshot
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -85,6 +86,7 @@ PADDLE_ENV_FILE = DATA_DIR / "paddle_env.json"
 PRELABEL_SERVICES_FILE = DATA_DIR / "prelabel_services.json"
 MODEL_CONFIGS_FILE = DATA_DIR / "model_configs.json"
 PROMPT_LIBRARY_FILE = DATA_DIR / "prompt_library.json"
+MODEL_SECRET_STORE: Any = None
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 if not PROJECTS_FILE.exists():
@@ -7085,17 +7087,61 @@ def _v35_save_items(file_path: Path, items: List[Dict[str, Any]]):
     write_json(file_path, items)
 
 
+def _v35_secret_store():
+    global MODEL_SECRET_STORE
+    if MODEL_SECRET_STORE is not None:
+        return MODEL_SECRET_STORE
+    try:
+        MODEL_SECRET_STORE = KeyringSecretStore()
+        return MODEL_SECRET_STORE
+    except Exception as error:
+        raise PlatformError(
+            code="SECRET_STORE_UNAVAILABLE",
+            message="系统无法安全保存模型密钥",
+            detail=str(error),
+            solution="请执行依赖安装后重启平台；Windows 将使用系统凭据管理器保存 API Key。",
+            status_code=503,
+        ) from error
+
+
+def _v35_clean_headers(headers: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    sensitive = {"authorization", "x-api-key", "api-key", "apikey"}
+    return {str(key): value for key, value in (headers or {}).items() if str(key).lower() not in sensitive}
+
+
+def _v35_model_items() -> List[Dict[str, Any]]:
+    items = _v35_items(MODEL_CONFIGS_FILE)
+    changed = False
+    for item in items:
+        legacy = str(item.pop("api_key", "") or "")
+        if legacy:
+            reference = str(item.get("secret_ref") or secret_ref("model-config", str(item.get("id") or uuid.uuid4().hex[:12])))
+            _v35_secret_store().set(reference, legacy)
+            item["secret_ref"] = reference
+            changed = True
+        cleaned = _v35_clean_headers(item.get("headers_json"))
+        if cleaned != (item.get("headers_json") or {}):
+            item["headers_json"] = cleaned
+            changed = True
+    if changed:
+        _v35_save_items(MODEL_CONFIGS_FILE, items)
+    return items
+
+
 def _v35_sanitize_secret(item: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(item)
-    if out.get("api_key"):
-        out["api_key_masked"] = "******"
-        out.pop("api_key", None)
+    out.pop("api_key", None)
+    reference = str(out.get("secret_ref") or "")
+    masked = _v35_secret_store().masked(reference) if reference else ""
+    out.pop("secret_ref", None)
+    out["has_api_key"] = bool(masked)
+    out["api_key_masked"] = masked
     return out
 
 
 @app.get("/api/v35/model-configs")
 def v35_list_model_configs():
-    return {"items": [_v35_sanitize_secret(x) for x in _v35_items(MODEL_CONFIGS_FILE)]}
+    return {"items": [_v35_sanitize_secret(x) for x in _v35_model_items()]}
 
 
 @app.post("/api/v35/model-configs")
@@ -7106,9 +7152,16 @@ def v35_save_model_config(payload: V35ModelConfigReq):
     detect_url = (payload.detect_url or payload.base_url or "").strip()
     if not detect_url:
         raise HTTPException(status_code=400, detail="检测接口地址不能为空")
-    item = payload.dict()
-    item.update({"id": uuid.uuid4().hex[:12], "name": name, "detect_url": detect_url, "created_at": now_iso(), "updated_at": now_iso()})
-    items = _v35_items(MODEL_CONFIGS_FILE)
+    config_id = uuid.uuid4().hex[:12]
+    item = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    api_key = str(item.pop("api_key", "") or "")
+    item["headers_json"] = _v35_clean_headers(item.get("headers_json"))
+    if api_key:
+        reference = secret_ref("model-config", config_id)
+        _v35_secret_store().set(reference, api_key)
+        item["secret_ref"] = reference
+    item.update({"id": config_id, "name": name, "detect_url": detect_url, "created_at": now_iso(), "updated_at": now_iso()})
+    items = _v35_model_items()
     items.insert(0, item)
     _v35_save_items(MODEL_CONFIGS_FILE, items[:100])
     return _v35_sanitize_secret(item)
@@ -7116,13 +7169,19 @@ def v35_save_model_config(payload: V35ModelConfigReq):
 
 @app.put("/api/v35/model-configs/{config_id}")
 def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
-    items = _v35_items(MODEL_CONFIGS_FILE)
+    items = _v35_model_items()
     found = False
     for i, item in enumerate(items):
         if item.get("id") == config_id:
-            data = payload.dict()
-            if not data.get("api_key") and item.get("api_key"):
-                data["api_key"] = item.get("api_key")
+            data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            api_key = str(data.pop("api_key", "") or "")
+            reference = str(item.get("secret_ref") or secret_ref("model-config", config_id))
+            if api_key:
+                _v35_secret_store().set(reference, api_key)
+                data["secret_ref"] = reference
+            elif item.get("secret_ref"):
+                data["secret_ref"] = item.get("secret_ref")
+            data["headers_json"] = _v35_clean_headers(data.get("headers_json"))
             data.update({"id": config_id, "created_at": item.get("created_at") or now_iso(), "updated_at": now_iso()})
             if not data.get("detect_url"):
                 data["detect_url"] = data.get("base_url") or item.get("detect_url") or ""
@@ -7137,8 +7196,12 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
 
 @app.delete("/api/v35/model-configs/{config_id}")
 def v35_delete_model_config(config_id: str):
-    items = [x for x in _v35_items(MODEL_CONFIGS_FILE) if x.get("id") != config_id]
+    current = _v35_model_items()
+    removed = next((x for x in current if x.get("id") == config_id), None)
+    items = [x for x in current if x.get("id") != config_id]
     _v35_save_items(MODEL_CONFIGS_FILE, items)
+    if removed and removed.get("secret_ref"):
+        _v35_secret_store().delete(str(removed.get("secret_ref")))
     return {"ok": True}
 
 
