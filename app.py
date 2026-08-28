@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
+from platform_core.annotations import annotation_summary, atomic_write_json
 from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
@@ -874,27 +875,21 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
 
 def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]):
     updated = now_iso()
-    write_json(project_dir(project_id) / "annotations" / f"{image_id}.json", {
+    atomic_write_json(project_dir(project_id) / "annotations" / f"{image_id}.json", {
         "image_id": image_id,
         "boxes": boxes,
         "updated_at": updated,
     })
     # v42.11：把标注摘要同步进 images.json。列表页/首次启动无需逐张再次读取 annotation json，
     # 同时保留前 32 个框用于数据卡片和预览叠加显示。
-    labels = sorted({str(b.get("label") or "").strip() for b in boxes if str(b.get("label") or "").strip()})
-    preview = []
-    for b in boxes[:32]:
-        preview.append({k: b.get(k) for k in ("class_id", "label", "x1", "y1", "x2", "y2")})
+    summary = annotation_summary(boxes)
     batch = _v50_active_image_batch(project_id)
     images = batch.get("images") if batch else load_images(project_id)
     changed = False
     for img in images:
         if str(img.get("id")) != str(image_id):
             continue
-        img["box_count"] = len(boxes)
-        img["annotated"] = bool(boxes)
-        img["labels"] = labels
-        img["annotation_preview"] = preview
+        img.update(summary)
         img["annotation_summary_at"] = updated
         if boxes:
             img["processing_status"] = "processed"
