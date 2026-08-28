@@ -30,6 +30,7 @@ from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
+from platform_core.materials import initial_processing_status, mark_ready
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -930,7 +931,7 @@ def add_image_record(project_id: str, src: Path, original_name: str, source_type
         "source_type": source_type,
         "dataset_id": dataset_id or "default",
         "split": "unassigned",
-        "processing_status": "unprocessed",
+        "processing_status": initial_processing_status(has_valid_boxes=False),
         "size_bytes": int(dst.stat().st_size) if dst.exists() else 0,
         "created_at": now_iso(),
     }
@@ -1212,6 +1213,7 @@ async def upload_images(project_id: str, files: List[UploadFile] = File(...), da
     get_project(project_id)
     p = project_dir(project_id)
     uploaded, failed = [], []
+    batch_id = uuid.uuid4().hex[:12]
     started = time.time()
     # v42.11：分块写盘，避免多张大图一次性占满内存；逐文件返回失败原因。
     for file in files:
@@ -1241,7 +1243,9 @@ async def upload_images(project_id: str, files: List[UploadFile] = File(...), da
         finally:
             tmp.unlink(missing_ok=True)
     return {
+        "batch_id": batch_id,
         "uploaded": uploaded, "failed": failed,
+        "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
         "elapsed_seconds": round(max(0.0, time.time()-started), 2),
         "total": len(load_images(project_id))
@@ -5953,6 +5957,7 @@ def v19_copy_selected_tree(extracted: Path, selected_root: Path, selected_paths:
 def v19_build_report_base(job: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ok": True,
+        "batch_id": job.get("batch_id") or job.get("id"),
         "file_name": job.get("file_name", ""),
         "file_size_mb": job.get("file_size_mb", 0),
         "detected_format": "未知",
@@ -6106,6 +6111,7 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         raise HTTPException(status_code=400, detail="ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
     job = {
         "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
+        "batch_id": job_id,
         "file_name": filename, "file_size_mb": round(uploaded_bytes / 1024 / 1024, 2),
         "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
         "status": "selecting", "stage": "上传与校验完成", "progress": 0,
@@ -9961,17 +9967,18 @@ def v52_mark_ready(project_id: str, payload: V52ReadyReq):
     ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
     images = load_images(project_id)
     changed = []
+    changed_images = []
     now = now_iso()
-    for img in images:
+    for index, img in enumerate(images):
         if str(img.get('id')) not in ids:
             continue
-        img['processing_status'] = 'processed'
-        img['clean_skipped'] = True
-        img['clean_decision_at'] = now
-        changed.append(str(img.get('id')))
+        updated = mark_ready(img, now)
+        images[index] = updated
+        changed.append(str(updated.get('id')))
+        changed_images.append(updated)
     if changed:
         save_images(project_id, images)
-    return {'ok': True, 'changed': len(changed), 'image_ids': changed}
+    return {'ok': True, 'changed': len(changed), 'image_ids': changed, 'images': changed_images}
 
 @app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
 def v52_import_review(project_id: str, job_id: str):
