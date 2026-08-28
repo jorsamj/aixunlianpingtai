@@ -34,3 +34,15 @@ def choose_project(
     best = ranked[0]
     return best if _score(counts.get(str(best.get("id")), {})) > 0 else (preferred or projects[0])
 
+
+def choose_requested_project(
+    projects: List[Dict[str, Any]],
+    preferred_id: str,
+    counts: Dict[str, Dict[str, int]],
+) -> Optional[Dict[str, Any]]:
+    """Honor an explicit UI project request, including a new empty project."""
+    preferred = next(
+        (item for item in projects if str(item.get("id")) == str(preferred_id)),
+        None,
+    )
+    return preferred or choose_project(projects, "", counts)

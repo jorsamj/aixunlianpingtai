@@ -6,6 +6,10 @@ import {applyCleanConfirmation} from './modules/cleaning.js';
 import {activeLabelOptions} from './modules/labels.js';
 import {filterByAnyLabel, replaceMaterial} from './modules/materials.js';
 import {uploadBatchFromResponse} from './modules/upload.js';
+import {unwrapAlgorithmResponse} from './modules/algorithms.js';
+import {iterationBasePresentation} from './modules/training.js';
+import {qualityChartModel} from './modules/quality.js';
+import {reportPresentation} from './modules/reports.js';
 
 
 const modalStack = createModalStack();
@@ -38,5 +42,9 @@ window.PlatformCore = {
   cleaning: {applyCleanConfirmation},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, replaceMaterial},
-  upload: {uploadBatchFromResponse}
+  upload: {uploadBatchFromResponse},
+  algorithms: {unwrapAlgorithmResponse},
+  training: {iterationBasePresentation},
+  quality: {qualityChartModel},
+  reports: {reportPresentation}
 };

@@ -34,7 +34,7 @@ from platform_core.algorithms import (
     save_algorithms as save_algorithm_assets,
     update_algorithm as update_algorithm_asset,
 )
-from platform_core.bootstrap import choose_project
+from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
@@ -10221,8 +10221,11 @@ def v53_bootstrap_status():return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 
 @app.get("/api/v53/bootstrap/snapshot")
 def v53_bootstrap_snapshot(preferred_project_id:Optional[str]=""):
-    projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; chosen=_v53_choose_project(projects,str(preferred_project_id or "")); chosen_id=str(chosen.get("id")) if chosen else ""
-    if _V53_BOOTSTRAP_STATUS.get("status")!="ready":raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
+    projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; requested=str(preferred_project_id or ""); counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else _v53_choose_project(projects,""); chosen_id=str(chosen.get("id")) if chosen else ""
+    if _V53_BOOTSTRAP_STATUS.get("status")!="ready":
+        if requested and chosen_id==requested:
+            snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return {"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap}
+        raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
     if chosen_id and chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""):
         snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return {"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap}
     return {"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT}
