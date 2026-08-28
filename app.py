@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
-from platform_core.annotations import annotation_summary, atomic_write_json
+from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
 from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
@@ -1698,7 +1698,7 @@ def get_annotation(project_id: str, image_id: str):
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
     ann = read_annotation(project_id, image_id)
-    return {"image": img, "annotation": ann}
+    return {"ok": True, **ann, "image": img, "annotation": ann}
 
 
 class AnnotationSave(BaseModel):
@@ -1712,11 +1712,34 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
     img = next((x for x in images if x["id"] == image_id), None)
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
-    clean_boxes = []
-    for box in payload.boxes:
-        nb = normalize_box_for_project(project_id, img, box, create_label=True)
-        if nb:
-            clean_boxes.append(nb)
+    label_ids = {
+        str(item["code"]): int(item["class_id"])
+        for item in active_label_options(project_label_items(project))
+    }
+    try:
+        clean_boxes = normalize_boxes(
+            payload.boxes,
+            int(img.get("width") or 0),
+            int(img.get("height") or 0),
+            label_ids,
+        )
+    except KeyError as error:
+        missing_label = str(error.args[0] or "")
+        raise PlatformError(
+            code="ANNOTATION_LABEL_NOT_FOUND",
+            message="标注保存失败",
+            detail=f"标签 {missing_label} 不在标签库中",
+            solution="请到配置中心的标签管理中创建或启用该标签。",
+            status_code=422,
+        ) from error
+    except ValueError as error:
+        raise PlatformError(
+            code="ANNOTATION_INVALID_BOX",
+            message="标注保存失败",
+            detail=str(error),
+            solution="请检查标注框是否位于图片内部且宽高大于零。",
+            status_code=422,
+        ) from error
     write_annotation(project_id, image_id, clean_boxes)
     fresh = next((x for x in load_images(project_id) if str(x.get("id")) == str(image_id)), img)
     return {"ok": True, "image": fresh, "annotation": read_annotation(project_id, image_id), "saved_boxes": len(clean_boxes)}
