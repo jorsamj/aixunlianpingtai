@@ -39,6 +39,7 @@ from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
+from platform_core.quality import compute_quality
 from platform_core.snapshots import build_snapshot, persist_snapshot
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -9356,6 +9357,7 @@ class V44QualityReq(BaseModel):
     labels: Optional[List[str]] = None
     image_ids: Optional[List[str]] = None
     max_samples: int = 0
+    snapshot_id: Optional[str] = None
 
 
 def _v44_image_quality(project_id: str, images: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -9375,37 +9377,40 @@ def _v44_image_quality(project_id: str, images: List[Dict[str, Any]]) -> Dict[st
 
 def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> Dict[str, Any]:
     project=get_project(project_id);images=load_images(project_id);req=req or V44QualityReq()
-    split=(req.split or "").lower();wanted={normalize_label(x) for x in (req.labels or []) if normalize_label(x)};wanted_ids=set(req.image_ids or [])
-    rows=[];label_boxes={l:0 for l in project.get("labels",[])};label_images={l:0 for l in project.get("labels",[])};invalid=0;raw_boxes=0;annotated=0
-    split_counts={"unassigned":0,"train":0,"val":0,"test":0}
-    for img in images:
-        sp=(img.get("split") or "unassigned").lower();sp=sp if sp in split_counts else "unassigned"
-        ann=read_annotation(project_id,img["id"]);clean=[];labs=set();local_raw=0;local_invalid=0
-        for b in ann.get("boxes",[]):
-            local_raw+=1;nb=normalize_box_for_project(project_id,img,b,create_label=False)
-            if nb: clean.append(nb);labs.add(nb["label"])
-            else: local_invalid+=1
-        if split and sp!=split: continue
-        if wanted_ids and img.get("id") not in wanted_ids: continue
-        if wanted and not labs.intersection(wanted): continue
-        raw_boxes+=local_raw;invalid+=local_invalid
-        split_counts[sp]+=1
-        if clean: annotated+=1
-        for lab in labs: label_images[lab]=label_images.get(lab,0)+1
-        for b in clean: label_boxes[b["label"]]=label_boxes.get(b["label"],0)+1
-        rows.append(img)
-    if req.max_samples and req.max_samples>0: rows=rows[:req.max_samples]
-    qimg=_v44_image_quality(project_id,rows)
-    used=[v for v in label_boxes.values() if v>0]
-    balance=(min(used)/max(used)*100) if len(used)>1 and max(used)>0 else (100 if used else 0)
-    ann_rate=annotated/max(1,len(rows))*100
-    bbox_valid=(raw_boxes-invalid)/max(1,raw_boxes)*100 if raw_boxes else 0
-    duplicate_score=max(0,100-qimg["duplicate_images"]/max(1,len(rows))*100)
-    resolution_score=max(0,100-qimg["low_resolution"]/max(1,len(rows))*100)
-    split_ready=(25 if split_counts["train"] else 0)+(25 if split_counts["val"] else 0)+(25 if split_counts["test"] else 0)+(25 if len(rows)>0 else 0)
-    scores={"标注完整度":round(ann_rate,1),"标注有效性":round(bbox_valid,1),"标签均衡度":round(balance,1),"重复控制":round(duplicate_score,1),"分辨率质量":round(resolution_score,1),"划分完整度":round(split_ready,1)}
-    overall=round(sum(scores.values())/len(scores),1)
-    return {"overall_score":overall,"scores":scores,"images":len(rows),"annotated_images":annotated,"box_count":sum(label_boxes.values()),"label_count":sum(1 for v in label_boxes.values() if v>0),"label_boxes":label_boxes,"label_images":label_images,"split_counts":split_counts,"invalid_boxes":invalid,**qimg}
+    split=(req.split or "").lower();wanted={normalize_label(x) for x in (req.labels or []) if normalize_label(x)};wanted_ids={str(x) for x in (req.image_ids or [])}
+    if req.snapshot_id:
+        snapshot_file=project_dir(project_id)/"snapshots"/f"{req.snapshot_id}.json"
+        if not snapshot_file.is_file():raise HTTPException(status_code=404,detail="训练 Snapshot 不存在")
+        snapshot=read_json(snapshot_file,{})
+        wanted_ids={str(x) for x in (snapshot.get("train_image_ids") or [])+(snapshot.get("val_image_ids") or [])}
+    candidates=[]
+    for img in sorted(images,key=lambda row:str(row.get("id") or "")):
+        sp=(img.get("split") or "unassigned").lower();sp=sp if sp in {"unassigned","train","val","test"} else "unassigned"
+        ann=read_annotation(project_id,img["id"]);clean=[];invalid=0
+        for box in ann.get("boxes",[]):
+            normalized=normalize_box_for_project(project_id,img,box,create_label=False)
+            if normalized:clean.append(normalized)
+            else:invalid+=1
+        labels={box["label"] for box in clean}
+        if split and sp!=split:continue
+        if wanted_ids and str(img.get("id")) not in wanted_ids:continue
+        if wanted and not labels.intersection(wanted):continue
+        candidates.append({**img,"split":sp,"boxes":clean,"valid_box_count":len(clean),"invalid_box_count":invalid})
+    if req.max_samples and req.max_samples>0:candidates=candidates[:int(req.max_samples)]
+    total_bytes=0;resolution_buckets={"small":0,"medium":0,"large":0};label_images={label:0 for label in project.get("labels",[])}
+    for row in candidates:
+        path=project_dir(project_id)/"uploads"/str(row.get("stored_name") or "")
+        try:row["content_hash"]=hashlib.sha1(path.read_bytes()).hexdigest();total_bytes+=path.stat().st_size
+        except Exception:pass
+        area=int(row.get("width") or 0)*int(row.get("height") or 0);resolution_buckets["small" if area<640*480 else "medium" if area<1920*1080 else "large"]+=1
+        for label in {box["label"] for box in row.get("boxes") or []}:label_images[label]=label_images.get(label,0)+1
+    quality=compute_quality(candidates,min_width=640,min_height=480)
+    quality["dimensions"]=dict(quality["scores"])
+    names={"annotation_completeness":"标注完整度","box_validity":"标注有效性","label_balance":"标签均衡度","duplicate_control":"重复控制","resolution_quality":"分辨率质量","split_coverage":"划分完整度"}
+    quality["scores"]={names[key]:value for key,value in quality["scores"].items()}
+    quality["label_images"]=label_images;quality["total_size_bytes"]=total_bytes;quality["resolution_buckets"]=resolution_buckets
+    quality["split_counts"]={key:int(quality.get("split_counts",{}).get(key,0)) for key in ("unassigned","train","val","test")}
+    return quality
 
 @app.get('/api/v44/projects/{project_id}/quality-center')
 def v44_quality_center(project_id: str):
