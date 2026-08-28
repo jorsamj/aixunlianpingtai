@@ -24,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
+from platform_core.config import choose_data_dir
+
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
     env_v = os.environ.get("MC_PLATFORM_VERSION", "").strip()
@@ -45,65 +47,18 @@ PROCESS_REGISTRY: Dict[str, subprocess.Popen] = {}
 # 如需强制使用当前程序目录下的 data，可在 start.bat 中设置 MC_TRAIN_DATA_DIR=%~dp0data。
 def _default_data_dir() -> Path:
     custom = os.environ.get("MC_TRAIN_DATA_DIR")
-    if custom:
-        return Path(custom).expanduser().resolve()
     if os.name == "nt":
         root = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return root / "XiaojiangAlgorithmTrain" / "data"
-    return BASE_DIR / "data"
+        candidates = [
+            root / "XJAlgo" / "data",
+            root / "XiaojiangAlgorithmTrain" / "data",
+            BASE_DIR / "data",
+        ]
+    else:
+        candidates = [BASE_DIR / "data"]
+    return choose_data_dir(Path(custom) if custom else None, candidates)
 
 DATA_DIR = _default_data_dir()
-
-def _project_count(data_dir: Path) -> int:
-    try:
-        f = data_dir / "projects.json"
-        if not f.exists():
-            return 0
-        v = json.loads(f.read_text(encoding="utf-8") or "[]")
-        return len(v) if isinstance(v, list) else 0
-    except Exception:
-        return 0
-
-def _legacy_data_candidates() -> List[Path]:
-    items: List[Path] = []
-    local = BASE_DIR / "data"
-    if local.exists() and local.resolve() != DATA_DIR.resolve():
-        items.append(local)
-    # 同级目录下历史版本的数据，如 mc_yolo_train_platform_v33/data。
-    for p in BASE_DIR.parent.glob("mc_yolo_train_platform_v*/data"):
-        try:
-            if p.resolve() != DATA_DIR.resolve() and p.exists():
-                items.append(p)
-        except Exception:
-            pass
-    # 优先取版本号较新的且项目数量更多的数据目录。
-    def score(p: Path):
-        m = re.search(r"_v(\d+)", str(p.parent))
-        ver = int(m.group(1)) if m else 0
-        return (_project_count(p), ver)
-    return sorted(set(items), key=score, reverse=True)
-
-def _migrate_legacy_data_if_needed() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if _project_count(DATA_DIR) > 0:
-        return
-    for src in _legacy_data_candidates():
-        if _project_count(src) <= 0:
-            continue
-        try:
-            for item in src.iterdir():
-                dst = DATA_DIR / item.name
-                if dst.exists():
-                    continue
-                if item.is_dir():
-                    shutil.copytree(item, dst)
-                else:
-                    shutil.copy2(item, dst)
-            break
-        except Exception:
-            continue
-
-_migrate_legacy_data_if_needed()
 
 PROJECTS_FILE = DATA_DIR / "projects.json"
 SERVERS_FILE = DATA_DIR / "train_servers.json"
