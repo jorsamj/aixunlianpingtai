@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
+from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -10002,15 +10003,9 @@ def _v53_project_counts(project:Dict[str,Any])->Dict[str,int]:
     if not isinstance(jobs,list):jobs=[]
     return {"images":len(images),"algorithms":len(algs),"versions":sum(len(a.get("versions") or []) for a in algs if isinstance(a,dict)),"jobs":len(jobs)}
 
-def _v53_project_score(project:Dict[str,Any]):
-    c=_v53_project_counts(project); return (c["images"]*100+c["algorithms"]*25+c["versions"]*10+c["jobs"],str(project.get("updated_at") or project.get("created_at") or ""))
-
 def _v53_choose_project(projects:List[Dict[str,Any]], preferred_project_id:str=""):
-    if not projects:return None
-    preferred=next((p for p in projects if str(p.get("id"))==str(preferred_project_id)),None)
-    if preferred and _v53_project_score(preferred)[0]>0:return preferred
-    ranked=sorted(projects,key=_v53_project_score,reverse=True); best=ranked[0]
-    return best if _v53_project_score(best)[0]>0 else (preferred or projects[0])
+    counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}
+    return choose_project(projects,preferred_project_id,counts)
 
 def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base_progress:int, span:int):
     pending=[x for x in images if not x.get("annotation_summary_at")]
