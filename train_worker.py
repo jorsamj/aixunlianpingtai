@@ -471,7 +471,9 @@ def main():
     print(json.dumps(train_args, ensure_ascii=False, indent=2, default=str), flush=True)
 
     try:
+        import ultralytics
         from ultralytics import YOLO
+        update_job(job_file, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         model = YOLO(actual_model)
         gate_events=[]
         gate_reason=""
