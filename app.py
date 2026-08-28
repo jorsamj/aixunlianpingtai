@@ -40,6 +40,7 @@ from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
 from platform_core.quality import compute_quality
+from platform_core.reports import build_algorithm_report, build_version_report
 from platform_core.snapshots import build_snapshot, persist_snapshot
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -9475,17 +9476,18 @@ def v44_training_report(project_id: str, job_id: str):
             },
             'note': '该任务未生成逐类别评测明细；报告仅汇总已记录的训练结果。',
         }
-    report['history'] = report.get('history') or _v45_training_history(job)
-    report['configuration'] = {
+    version_report=build_version_report({**job,'training_report':report})
+    version_report['history'] = report.get('history') or _v45_training_history(job)
+    version_report['configuration'] = {
         'framework': job.get('framework') or '', 'algorithm_name': job.get('algorithm_name') or '', 'model': job.get('model') or '',
         'epochs': job.get('epochs') or 0, 'imgsz': job.get('imgsz') or 0, 'batch': job.get('batch'), 'device': job.get('device') or '',
         **(job.get('advanced_params') or {})
     }
-    report['data_summary'] = {
+    version_report['data_summary'] = {
         'counts': job.get('dataset_counts') or {}, 'selected_ids': job.get('dataset_selected_ids') or {},
         'quality_gate': job.get('quality_gate') or {}
     }
-    return {"ok":True,"job":job,"report":report}
+    return {"ok":True,"report_type":"version","job":job,"report":version_report}
 
 
 
@@ -10102,7 +10104,8 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
         trend.append({'job_id':j.get('id'),'version':j.get('auto_version_name') or '', 'finished_at':j.get('finished_at') or j.get('updated_at') or j.get('created_at'), 'map50':m, 'status':j.get('status'), 'labels':lc, 'images':int((j.get('dataset_counts') or {}).get('train') or 0)})
     versions=algo.get('versions') or []
     latest=versions[0] if versions else None
-    return {'ok':True,'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions)}, 'summary':{'training_count':len(jobs),'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':latest.get('version_name') if latest else '', 'latest_accuracy': _v49_metric_from_report((latest or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if latest else None}, 'trend':trend, 'jobs':jobs[-20:]}
+    aggregate=build_algorithm_report(versions)
+    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions)}, 'summary':{'training_count':len(jobs),'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':latest.get('version_name') if latest else '', 'latest_accuracy': _v49_metric_from_report((latest or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if latest else None}, 'trend':trend, 'jobs':jobs[-20:]}
 
 @app.post('/api/v49/projects/{project_id}/images/mark-processed')
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):
