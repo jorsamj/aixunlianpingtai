@@ -5284,10 +5284,10 @@ def _module_available(python_path: str, module_name: str) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
-def inference_env_items() -> List[Dict[str, Any]]:
+def inference_env_items(probe_modules: bool = True) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     # 平台内置环境：只有装了对应包才可用。
-    u = _module_available(sys.executable, "ultralytics")
+    u = _module_available(sys.executable, "ultralytics") if probe_modules else {"ok": True, "version": ""}
     items.append({
         "id": "platform_ultralytics",
         "name": "平台内置 Ultralytics",
@@ -5317,8 +5317,8 @@ def inference_env_items() -> List[Dict[str, Any]]:
         ok = Path(py).exists()
         paddledet_dir = p_env.get("paddledet_dir") or ""
         infer_py = Path(paddledet_dir) / "tools" / "infer.py" if paddledet_dir else Path("")
-        ppdet = _module_available(py, "ppdet") if ok else {"ok": False, "error": "python.exe 不存在"}
-        paddlex = _module_available(py, "paddlex") if ok else {"ok": False, "error": "python.exe 不存在"}
+        ppdet = _module_available(py, "ppdet") if ok and probe_modules else {"ok": bool(ok and infer_py.exists()), "error": "启动阶段未执行模块探测"}
+        paddlex = _module_available(py, "paddlex") if ok and probe_modules else {"ok": False, "error": "启动阶段未执行模块探测"}
         pdet_ready = ok and (ppdet.get("ok") or infer_py.exists())
         px_ready = ok and paddlex.get("ok")
         if pdet_ready and px_ready:
@@ -5520,7 +5520,7 @@ def _labels_b64(labels: List[str]) -> str:
 
 
 @app.get("/api/v12/projects/{project_id}/test_models")
-def v12_test_models(project_id: str):
+def v12_test_models(project_id: str, probe_optional: bool = True):
     project = get_project(project_id)
     project_label_names = _project_label_names(project)
     project_labels_token = _labels_b64(project_label_names)
@@ -5548,7 +5548,7 @@ def v12_test_models(project_id: str):
             items.append({"label": f"Ultralytics环境：{m.get('name')}", "model_name": f"local::{m.get('path')}", "model_source": "local", "path": m.get("path")})
     # 飞桨内置/配置模型：只有检测到 paddlex 时才展示，避免误选后 Internal Server Error。
     p_env = get_active_paddle_env()
-    if p_env and p_env.get("python_path") and Path(str(p_env.get("python_path"))).exists():
+    if probe_optional and p_env and p_env.get("python_path") and Path(str(p_env.get("python_path"))).exists():
         try:
             px = _module_available(str(p_env.get("python_path")), "paddlex")
         except Exception:
@@ -10519,15 +10519,15 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
             if done==total or done%100==0:_v53_set_bootstrap(base_progress+int(span*done/max(1,total)),"整理历史标注索引",f"{done}/{total} 张")
     save_images(project_id,list(by_id.values())); return list(by_id.values())
 
-def _v53_build_snapshot(project_id:str):
+def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None):
     project=get_project(project_id); datasets=ensure_default_datasets(project_id); images=load_images(project_id); labels=project_label_items(project); algorithms=list_algorithms_internal(project_id)
     try:sync_jobs_index(project_id)
     except Exception:pass
     jobs=read_json(project_dir(project_id)/"jobs"/"index.json",[]); jobs=jobs if isinstance(jobs,list) else []
-    models=list_models_internal(project_id); targets=(training_options(project_id) or {}).get("targets",[]); inference=(v16_inference_envs() or {}).get("items",[]); rec=_system_recommendation_payload(); local=list_local_models()
+    models=list_models_internal(project_id); targets=prepared_targets if prepared_targets is not None else (training_options(project_id) or {}).get("targets",[]); inference=inference_env_items(probe_modules=False); rec=_system_recommendation_payload(); local=list_local_models()
     try:pending=(v12_pending_models(project_id) or {}).get("items",[])
     except Exception:pending=[]
-    try:test_models=(v12_test_models(project_id) or {}).get("items",[])
+    try:test_models=(v12_test_models(project_id,probe_optional=False) or {}).get("items",[])
     except Exception:test_models=[]
     return {"project":project,"datasets":datasets,"images":images,"labels":labels,"algorithms":algorithms,"jobs":jobs,"models":models,"targets":targets,"inference_envs":inference,"recommendation":rec,"local_models":(local or {}).get("items",[]) if isinstance(local,dict) else [],"pending":pending,"test_models":test_models,"generated_at":now_iso()}
 
@@ -10552,14 +10552,14 @@ def _v53_bootstrap_worker(preferred_project_id:str=""):
         try:sync_jobs_index(active_id)
         except Exception:pass
         list_models_internal(active_id); list_algorithms_internal(active_id)
-        _v53_set_bootstrap(74,"校验训练环境","正在确认 Ultralytics / 训练资源"); training_options(active_id)
+        _v53_set_bootstrap(74,"校验训练环境","正在确认 Ultralytics / 训练资源"); prepared_targets=(training_options(active_id) or {}).get("targets",[])
         # Reading the cached model index is cheap, but importing torch merely to
         # probe CUDA can take well over a minute on some Windows installations.
         # Hardware recommendation remains available through its explicit API;
         # it must not hold the whole platform in the bootstrap "running" state.
         _v53_set_bootstrap(84,"读取本机资源","正在读取本机模型缓存"); list_local_models()
         _v53_set_bootstrap(91,"生成首屏快照","正在整理算法、素材、版本和任务")
-        snap=_v53_build_snapshot(active_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; _V53_BOOTSTRAP_SNAPSHOT=snap
+        snap=_v53_build_snapshot(active_id,prepared_targets=prepared_targets); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; _V53_BOOTSTRAP_SNAPSHOT=snap
         _V53_BOOTSTRAP_STATUS.update({"status":"ready","progress":100,"stage":"平台数据已就绪","message":f"{len(snap.get('images') or [])} 张素材 · {len(snap.get('algorithms') or [])} 个算法","finished_at":now_iso(),"updated_at":now_iso(),"active_project_id":active_id,"error":""})
     except Exception as e:_V53_BOOTSTRAP_STATUS.update({"status":"failed","stage":"启动预加载失败","message":str(e),"error":repr(e),"finished_at":now_iso(),"updated_at":now_iso()})
 
