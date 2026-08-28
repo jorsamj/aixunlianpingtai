@@ -626,6 +626,13 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             job.setdefault("started_at", job.get("updated_at") or now_iso())
         elif code is not None:
             PROCESS_REGISTRY.pop(job_id, None)
+            # The worker writes its final artifact metadata immediately before exiting.
+            # Re-read after poll() observes exit so a stale in-flight request cannot
+            # overwrite that successful result with an inferred failure.
+            persisted = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {})
+            if persisted.get("status") in {"done", "finished", "completed", "failed", "stopped"}:
+                job = persisted
+                status = job.get("status") or status
             if status in {"queued", "running", "waiting", "pending"}:
                 # 正常情况下 worker 会写 done/failed；如果服务刚好轮询到进程已退但文件未回写，则兜底。
                 job["status"] = "done" if code == 0 else "failed"
@@ -3536,9 +3543,6 @@ def job_status(project_id: str, job_id: str):
     if not job_file.exists():
         raise HTTPException(status_code=404, detail="训练任务不存在")
     job = read_json(job_file, {})
-    proc = PROCESS_REGISTRY.get(job_id)
-    if proc and proc.poll() is not None:
-        PROCESS_REGISTRY.pop(job_id, None)
     if job.get("target") == "remote" and job.get("status") in {"queued", "running"}:
         job = sync_remote_job(project_id, job_id)
     job = enrich_job_runtime(project_id, job)

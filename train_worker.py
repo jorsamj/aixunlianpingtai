@@ -555,6 +555,8 @@ def main():
             raise RuntimeError("训练进程结束，但没有找到 best.pt 或 last.pt；请查看上方 Ultralytics 日志。")
         if not verified:
             raise RuntimeError("训练产生了权重文件，但权重无法重新加载，产物不可交付。")
+        best_path = next((path for path in verified if Path(path).stem.endswith("_best")), "")
+        last_path = next((path for path in verified if Path(path).stem.endswith("_last")), "")
 
         training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"ai_intervention_events":ai_events}
         try:
@@ -582,6 +584,8 @@ def main():
             run_dir=str(run_dir),
             models=copied,
             verified_models=verified,
+            best_path=best_path,
+            last_path=last_path,
             artifact_verified=True,
             training_report=training_report,
             training_outcome=outcome,
