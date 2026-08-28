@@ -10017,6 +10017,11 @@ class V47AutoLabelReq(BaseModel):
     threshold: float = 0.45
     overwrite: bool = False
     task_name: str = 'AI自动标注任务'
+    provider_id: Optional[str] = None
+    model_config_id: Optional[str] = None
+    prompt_template_id: Optional[str] = None
+    business_instruction: str = ''
+    preview_count: int = 0
 
 class V47AutoLabelConfirmReq(BaseModel):
     image_ids: Optional[List[str]] = None
@@ -10029,30 +10034,97 @@ def _v47_parse_label_text(text: str) -> List[str]:
 
 
 def _v47_default_annotation_model() -> Dict[str, Any]:
-    items = _v35_items(MODEL_CONFIGS_FILE)
+    items = _v35_model_items()
     if not items:
         raise HTTPException(status_code=400, detail='尚未配置可用AI模型，请先在高级功能里的模型配置完成一次配置')
     return next((x for x in items if x.get('default_for_annotation')), items[0])
 
 
-def _v47_build_annotation_prompt(cfg: Dict[str, Any], labels: List[str]) -> str:
-    template = (cfg.get('annotation_prompt_template') or '').strip()
+def _v47_label_catalog(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+    meta_by_code = {
+        str(item.get('code')): item
+        for item in project.get('label_meta', [])
+        if isinstance(item, dict) and str(item.get('status') or 'active') == 'active'
+    }
+    result = []
+    for index, item in enumerate(project.get('labels', [])):
+        code = normalize_label(item.get('code') if isinstance(item, dict) else item)
+        if not code:
+            continue
+        meta = item if isinstance(item, dict) else meta_by_code.get(code, {})
+        if str(meta.get('status') or 'active') != 'active':
+            continue
+        result.append({
+            'code': code,
+            'class_id': index,
+            'display_name_zh': str(meta.get('display_name_zh') or meta.get('display_name') or code),
+        })
+    return result
+
+
+def _v47_build_annotation_prompt(
+    cfg: Dict[str, Any],
+    labels: List[Dict[str, Any]],
+    *,
+    width: int,
+    height: int,
+    business_instruction: str,
+    template: str = '',
+) -> str:
+    template = (template or cfg.get('annotation_prompt_template') or '').strip()
     if not template:
-        template = ('你是视觉目标检测标注助手。只标注指定标签：{labels}。'
-                    '请识别图片中所有属于这些标签的目标，并返回JSON。'
-                    '格式必须为 {"detections":[{"label":"标签","confidence":0.95,"bbox":[x1,y1,x2,y2]}]}。'
-                    'bbox使用原图像素坐标；没有目标时 detections 返回空数组；不要输出JSON以外文字。')
-    return template.replace('{labels}', '、'.join(labels))
+        template = (
+            '你是视觉目标检测标注助手。只标注标签库中的目标：{{labels_json}}。'
+            '图片尺寸为 {{image_width}}x{{image_height}}。{{business_instruction}}'
+            '必须只返回符合此结构的 JSON，不要输出解释或 Markdown：{{output_schema}}'
+        )
+    if '{{' in template:
+        return render_prompt(
+            template,
+            labels=labels,
+            width=width,
+            height=height,
+            business_instruction=business_instruction,
+        )
+    return template.replace('{labels}', '、'.join(str(item.get('code')) for item in labels))
+
+
+def _v47_runtime_provider(payload: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+    config_id = str(payload.get('model_config_id') or '')
+    provider_id = str(payload.get('provider_id') or '')
+    cfg = next((x for x in _v35_model_items() if x.get('id') == config_id or x.get('id') == provider_id), None)
+    if cfg:
+        runtime_cfg = dict(cfg)
+        reference = str(cfg.get('secret_ref') or '')
+        runtime_cfg['_api_key'] = _v35_secret_store().get(reference) if reference else ''
+        return auto_label_core.provider_factory(runtime_cfg), cfg
+    if provider_id:
+        return auto_label_core.provider_factory(provider_id), {'id': provider_id, 'name': provider_id}
+    cfg = _v47_default_annotation_model()
+    runtime_cfg = dict(cfg)
+    reference = str(cfg.get('secret_ref') or '')
+    runtime_cfg['_api_key'] = _v35_secret_store().get(reference) if reference else ''
+    return auto_label_core.provider_factory(runtime_cfg), cfg
 
 
 def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any]):
     try:
         _v33_update_task(project_id, 'prelabel_tasks', task_id, status='running', status_text='AI标注中', started_at=now_iso())
-        cfg = next((x for x in _v35_items(MODEL_CONFIGS_FILE) if x.get('id') == payload.get('model_config_id')), None) or _v47_default_annotation_model()
+        provider, cfg = _v47_runtime_provider(payload)
         labels = list(payload.get('labels') or [])
-        prompt = _v47_build_annotation_prompt(cfg, labels)
+        project = get_project(project_id)
+        catalog = _v47_label_catalog(project)
+        selected_catalog = [item for item in catalog if item.get('code') in labels]
+        label_ids = {str(item['code']): int(item['class_id']) for item in selected_catalog}
+        if set(labels) != set(label_ids):
+            missing = sorted(set(labels) - set(label_ids))
+            raise RuntimeError('任务包含标签库之外或已停用的标签：' + '、'.join(missing))
+        prompt_template = dict(payload.get('prompt_template_snapshot') or {}).get('prompt') or ''
         ids = set(payload.get('image_ids') or [])
         images = [x for x in load_images(project_id) if x.get('id') in ids]
+        preview_count = max(0, int(payload.get('preview_count') or 0))
+        if preview_count:
+            images = images[:preview_count]
         if not images:
             raise RuntimeError('没有可自动标注的图片')
         total = len(images); started = time.time(); candidates: Dict[str, Any] = {}; box_count = 0; errors = []
@@ -10062,27 +10134,67 @@ def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any
                 _v33_update_task(project_id, 'prelabel_tasks', task_id, status='stopped', status_text='已停止', finished_at=now_iso()); return
             path = project_dir(project_id) / 'uploads' / str(img.get('stored_name') or '')
             try:
-                raw = _v35_call_model(cfg, path, {}, prompt, float(payload.get('threshold') or .45))
-                dets = parse_detection_objects(raw, labels[0] if labels else 'object', float(payload.get('threshold') or .45))
-                boxes = []
-                for d in dets:
-                    lbl = normalize_label(d.get('label') or (labels[0] if labels else 'object'))
-                    # Guard against hallucinated labels when the user explicitly constrained the task.
-                    if labels and lbl not in labels:
-                        continue
-                    cid = ensure_label(get_project(project_id), lbl)
-                    x1=max(0,min(float(d['x1']),img['width']));y1=max(0,min(float(d['y1']),img['height']));x2=max(0,min(float(d['x2']),img['width']));y2=max(0,min(float(d['y2']),img['height']))
-                    if x2-x1<3 or y2-y1<3: continue
-                    boxes.append({'id':uuid.uuid4().hex[:10],'class_id':cid,'label':lbl,'x1':round(x1,2),'y1':round(y1,2),'x2':round(x2,2),'y2':round(y2,2),'source':'ai_candidate','confidence':round(float(d.get('confidence') or 0),4),'model_config_id':cfg.get('id')})
-                candidates[str(img['id'])] = {'image_id': img['id'], 'filename': img.get('filename'), 'url': img.get('url'), 'boxes': boxes}
+                prompt = _v47_build_annotation_prompt(
+                    cfg,
+                    selected_catalog,
+                    width=int(img['width']),
+                    height=int(img['height']),
+                    business_instruction=str(payload.get('business_instruction') or ''),
+                    template=prompt_template,
+                )
+                response = provider.annotate(
+                    image_bytes=path.read_bytes(),
+                    prompt=prompt,
+                    output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
+                )
+                text = str(response.get('text') or '')
+                parsed = auto_label_core.parse_candidate_response(
+                    text,
+                    width=int(img['width']),
+                    height=int(img['height']),
+                    label_ids=label_ids,
+                )
+                threshold = float(payload.get('threshold') if payload.get('threshold') is not None else .45)
+                parsed = [box for box in parsed if float(box.get('confidence') or 0) >= threshold]
+                boxes = auto_label_core.nms_candidates(parsed, iou_threshold=0.5)
+                for box in boxes:
+                    box.update({
+                        'id': uuid.uuid4().hex[:10],
+                        'source': 'ai_candidate',
+                        'model_config_id': cfg.get('id'),
+                        'prompt_template_id': payload.get('prompt_template_id') or '',
+                        'prompt_template_version_id': payload.get('prompt_template_version_id') or '',
+                    })
+                candidates[str(img['id'])] = {
+                    'image_id': img['id'],
+                    'filename': img.get('filename'),
+                    'url': img.get('url'),
+                    'status': 'success' if boxes else 'empty',
+                    'boxes': boxes,
+                    'raw_response_hash': auto_label_core.raw_response_hash(text),
+                    'request_id': str(response.get('request_id') or ''),
+                    'latency_ms': int(response.get('latency_ms') or 0),
+                    'provider': str(response.get('provider') or ''),
+                    'model': str(response.get('model') or cfg.get('model_name') or ''),
+                }
                 box_count += len(boxes)
             except Exception as e:
-                errors.append({'image':img.get('filename'),'error':str(e)})
+                error_item = {'image_id': img.get('id'), 'image':img.get('filename'),'error':str(e)}
+                errors.append(error_item)
+                candidates[str(img['id'])] = {
+                    'image_id': img.get('id'), 'filename': img.get('filename'), 'url': img.get('url'),
+                    'status': 'failed', 'boxes': [], 'error': str(e),
+                }
             if idx % 2 == 0 or idx == total:
                 elapsed=max(.001,time.time()-started);eta=int(max(0,elapsed/idx*(total-idx)))
                 _v33_update_task(project_id,'prelabel_tasks',task_id,processed_images=idx,total_images=total,boxes_added=box_count,progress=int(idx/total*100),elapsed_seconds=int(elapsed),eta_seconds=eta,errors=errors[-20:])
         result_path = _v47_file_for(project_id, 'prelabel_candidates', task_id)
-        write_json(result_path, {'task_id':task_id,'labels':labels,'model_name':cfg.get('name'),'prompt':prompt,'items':list(candidates.values()),'generated_at':now_iso()})
+        write_json(result_path, {
+            'task_id': task_id, 'labels': labels, 'model_name': cfg.get('name'),
+            'prompt_template_id': payload.get('prompt_template_id') or '',
+            'prompt_template_version_id': payload.get('prompt_template_version_id') or '',
+            'items': list(candidates.values()), 'generated_at': now_iso(),
+        })
         if errors and len(errors) >= total and box_count == 0:
             raise RuntimeError(errors[0]['error'])
         _v33_update_task(project_id,'prelabel_tasks',task_id,status='awaiting_confirmation',status_text='待确认',progress=100,processed_images=total,total_images=total,boxes_added=box_count,candidate_file=str(result_path),model_name=cfg.get('name'),requested_labels=labels,finished_scan_at=now_iso(),errors=errors[-20:])
@@ -10092,7 +10204,7 @@ def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any
 
 @app.post('/api/v47/projects/{project_id}/ai-label-tasks')
 def v47_create_ai_label_task(project_id: str, payload: V47AutoLabelReq):
-    get_project(project_id)
+    project = get_project(project_id)
     labels = _v47_parse_label_text(payload.labels_text or '')
     ref_ids = set(payload.reference_image_ids or [])
     if ref_ids:
@@ -10102,10 +10214,30 @@ def v47_create_ai_label_task(project_id: str, payload: V47AutoLabelReq):
                 if lbl and lbl not in labels: labels.append(lbl)
     if not labels:
         raise HTTPException(status_code=400, detail='请输入标签，或选择至少一张已有标注的参考图片')
-    cfg = _v47_default_annotation_model()
+    available = {str(item.get('code')) for item in _v47_label_catalog(project)}
+    unknown = sorted(set(labels) - available)
+    if unknown:
+        raise HTTPException(status_code=400, detail='以下标签不在标签库或已停用：' + '、'.join(unknown))
+    cfg = next(
+        (x for x in _v35_model_items() if x.get('id') in {payload.model_config_id, payload.provider_id}),
+        None,
+    )
+    if not cfg and not payload.provider_id:
+        cfg = _v47_default_annotation_model()
     task_id=uuid.uuid4().hex[:12]
-    data=payload.dict();data['labels']=labels;data['model_config_id']=cfg.get('id')
-    task={'id':task_id,'name':payload.task_name or 'AI自动标注任务','model_name':cfg.get('name'),'requested_labels':labels,'status':'queued','status_text':'排队中','progress':0,'processed_images':0,'total_images':len(payload.image_ids),'boxes_added':0,'created_at':now_iso(),'request_payload':data,'stop_requested':False,'workflow':'v47_staged_ai'}
+    data=payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
+    data['labels']=labels
+    if cfg:
+        data['model_config_id']=cfg.get('id')
+    template = {}
+    if payload.prompt_template_id and payload.prompt_template_id != 'default':
+        template = next((x for x in _v35_prompt_items() if x.get('id') == payload.prompt_template_id), None) or {}
+        if not template:
+            raise HTTPException(status_code=400, detail='提示词模板不存在')
+        data['prompt_template_snapshot'] = template
+        data['prompt_template_version_id'] = template.get('version_id') or ''
+    total = min(len(payload.image_ids), payload.preview_count) if payload.preview_count > 0 else len(payload.image_ids)
+    task={'id':task_id,'name':payload.task_name or 'AI自动标注任务','model_name':(cfg or {}).get('name') or payload.provider_id,'requested_labels':labels,'status':'queued','status_text':'排队中','progress':0,'processed_images':0,'total_images':total,'boxes_added':0,'created_at':now_iso(),'request_payload':data,'stop_requested':False,'workflow':'v47_staged_ai','prompt_template_id':template.get('id') or 'default','prompt_template_version_id':template.get('version_id') or ''}
     tasks=_v33_load_tasks(project_id,'prelabel_tasks');tasks.insert(0,task);_v33_save_tasks(project_id,'prelabel_tasks',tasks[:100])
     threading.Thread(target=_v47_run_ai_label_task,args=(project_id,task_id,data),daemon=True).start()
     return task
@@ -10115,21 +10247,31 @@ def v47_create_ai_label_task(project_id: str, payload: V47AutoLabelReq):
 def v47_ai_label_result(project_id: str, task_id: str):
     task=_v33_get_task(project_id,'prelabel_tasks',task_id)
     if not task: raise HTTPException(status_code=404,detail='自动标注任务不存在')
-    return {'task':task,'result':read_json(_v47_file_for(project_id,'prelabel_candidates',task_id),{'items':[]})}
+    return {'status': task.get('status'), 'task':task,'result':read_json(_v47_file_for(project_id,'prelabel_candidates',task_id),{'items':[]})}
 
 
 @app.post('/api/v47/projects/{project_id}/ai-label-tasks/{task_id}/confirm')
 def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelConfirmReq):
     task=_v33_get_task(project_id,'prelabel_tasks',task_id)
     if not task: raise HTTPException(status_code=404,detail='自动标注任务不存在')
+    if task.get('status') != 'awaiting_confirmation':
+        raise HTTPException(status_code=409, detail='只有待确认的候选标注任务可以写入')
     data=read_json(_v47_file_for(project_id,'prelabel_candidates',task_id),{'items':[]})
-    chosen=set(payload.image_ids or [str(x.get('image_id')) for x in data.get('items',[])])
+    allowed = {str(x.get('image_id')) for x in data.get('items',[]) if x.get('status') in {'success', 'empty'}}
+    chosen=set(payload.image_ids or allowed)
+    if not chosen.issubset(allowed):
+        raise HTTPException(status_code=400, detail='确认范围包含不存在或处理失败的图片')
     overwrite=bool((task.get('request_payload') or {}).get('overwrite'))
     applied=0;boxes=0
     for item in data.get('items',[]):
         iid=str(item.get('image_id'))
         if iid not in chosen: continue
-        new=item.get('boxes') or [];old=read_annotation(project_id,iid).get('boxes',[])
+        new=[]
+        for candidate in item.get('boxes') or []:
+            confirmed = dict(candidate)
+            confirmed['source'] = 'ai_candidate_confirmed'
+            new.append(confirmed)
+        old=read_annotation(project_id,iid).get('boxes',[])
         if overwrite:
             cids={x.get('class_id') for x in new};merged=[x for x in old if x.get('class_id') not in cids]+new
         else: merged=old+new
