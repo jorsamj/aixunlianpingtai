@@ -1122,8 +1122,7 @@ def delete_dataset(project_id: str, dataset_id: str):
     return {"ok": True}
 
 
-@app.get("/api/system/recommendation")
-def system_recommendation():
+def _system_recommendation_payload(cuda: bool = False, gpu_name: str = "未探测"):
     cpu = os.cpu_count() or 1
     ram_gb = None
     try:
@@ -1131,22 +1130,42 @@ def system_recommendation():
         ram_gb = round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 1)
     except Exception:
         ram_gb = 0
+    cuda = bool(cuda)
+    gpu_name = str(gpu_name or "None")
+    if cuda:
+        rec = {"device":"0", "model":"yolo11s.pt", "epochs":50, "imgsz":640, "batch":8, "reason":"检测到当前 Python 的 CUDA 可用，推荐使用 YOLO11s 进行首轮效果验证。"}
+    elif ram_gb and ram_gb >= 24 and cpu >= 12:
+        rec = {"device":"cpu", "model":"yolo11n.pt", "epochs":20, "imgsz":640, "batch":4, "reason":"当前未确认 CUDA 可用，但 CPU/内存较充足，推荐 YOLO11n + CPU 小批量训练。"}
+    else:
+        rec = {"device":"cpu", "model":"yolo11n.pt", "epochs":10, "imgsz":416, "batch":2, "reason":"当前未确认 CUDA 可用，推荐降低图片尺寸和 batch，先跑通流程。"}
+    return {"ok": True, "cpu_count": cpu, "ram_gb": ram_gb, "cuda": cuda, "gpu": gpu_name, "recommendation": rec}
+
+
+@app.get("/api/system/recommendation")
+def system_recommendation():
+    # Probe torch in a child process so a broken/slow Windows CUDA runtime can
+    # never freeze the API worker.  The platform remains usable after timeout
+    # and reports CUDA as unconfirmed instead of guessing.
     cuda = False
-    gpu_name = "None"
+    gpu_name = "未检测到可用 CUDA"
     try:
-        import torch
-        cuda = bool(torch.cuda.is_available())
-        if cuda:
-            gpu_name = torch.cuda.get_device_name(0)
+        probe = subprocess.run(
+            [sys.executable, "-c", "import json,torch; c=bool(torch.cuda.is_available()); print(json.dumps({'cuda':c,'gpu':torch.cuda.get_device_name(0) if c else ''},ensure_ascii=False))"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+        )
+        if probe.returncode == 0 and probe.stdout.strip():
+            info = json.loads(probe.stdout.strip().splitlines()[-1])
+            cuda = bool(info.get("cuda"))
+            gpu_name = str(info.get("gpu") or gpu_name)
+    except subprocess.TimeoutExpired:
+        gpu_name = "CUDA 探测超时（平台仍可使用）"
     except Exception:
         pass
-    if cuda:
-        rec = {"device":"0", "model":"yolo11s.pt", "epochs":50, "imgsz":640, "batch":8, "reason":"检测到 CUDA，推荐使用 YOLO11s 进行首轮效果验证。"}
-    elif ram_gb and ram_gb >= 24 and cpu >= 12:
-        rec = {"device":"cpu", "model":"yolo11n.pt", "epochs":20, "imgsz":640, "batch":4, "reason":"未检测到 CUDA，但 CPU/内存较充足，推荐 YOLO11n + CPU 小批量训练。"}
-    else:
-        rec = {"device":"cpu", "model":"yolo11n.pt", "epochs":10, "imgsz":416, "batch":2, "reason":"未检测到 CUDA，推荐降低图片尺寸和 batch，先跑通流程。"}
-    return {"ok": True, "cpu_count": cpu, "ram_gb": ram_gb, "cuda": cuda, "gpu": gpu_name, "recommendation": rec}
+    return _system_recommendation_payload(cuda, gpu_name)
 
 
 @app.post("/api/projects")
@@ -10505,7 +10524,7 @@ def _v53_build_snapshot(project_id:str):
     try:sync_jobs_index(project_id)
     except Exception:pass
     jobs=read_json(project_dir(project_id)/"jobs"/"index.json",[]); jobs=jobs if isinstance(jobs,list) else []
-    models=list_models_internal(project_id); targets=(training_options(project_id) or {}).get("targets",[]); inference=(v16_inference_envs() or {}).get("items",[]); rec=system_recommendation(); local=list_local_models()
+    models=list_models_internal(project_id); targets=(training_options(project_id) or {}).get("targets",[]); inference=(v16_inference_envs() or {}).get("items",[]); rec=_system_recommendation_payload(); local=list_local_models()
     try:pending=(v12_pending_models(project_id) or {}).get("items",[])
     except Exception:pending=[]
     try:test_models=(v12_test_models(project_id) or {}).get("items",[])
@@ -10534,7 +10553,11 @@ def _v53_bootstrap_worker(preferred_project_id:str=""):
         except Exception:pass
         list_models_internal(active_id); list_algorithms_internal(active_id)
         _v53_set_bootstrap(74,"校验训练环境","正在确认 Ultralytics / 训练资源"); training_options(active_id)
-        _v53_set_bootstrap(84,"读取本机资源","正在读取本机模型缓存与系统能力"); list_local_models(); system_recommendation()
+        # Reading the cached model index is cheap, but importing torch merely to
+        # probe CUDA can take well over a minute on some Windows installations.
+        # Hardware recommendation remains available through its explicit API;
+        # it must not hold the whole platform in the bootstrap "running" state.
+        _v53_set_bootstrap(84,"读取本机资源","正在读取本机模型缓存"); list_local_models()
         _v53_set_bootstrap(91,"生成首屏快照","正在整理算法、素材、版本和任务")
         snap=_v53_build_snapshot(active_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; _V53_BOOTSTRAP_SNAPSHOT=snap
         _V53_BOOTSTRAP_STATUS.update({"status":"ready","progress":100,"stage":"平台数据已就绪","message":f"{len(snap.get('images') or [])} 张素材 · {len(snap.get('algorithms') or [])} 个算法","finished_at":now_iso(),"updated_at":now_iso(),"active_project_id":active_id,"error":""})
