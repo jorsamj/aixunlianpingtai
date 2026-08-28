@@ -26,6 +26,13 @@ from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
+from platform_core.algorithms import (
+    create_algorithm as create_algorithm_asset,
+    delete_algorithm as delete_algorithm_asset,
+    list_algorithms as list_algorithm_assets,
+    save_algorithms as save_algorithm_assets,
+    update_algorithm as update_algorithm_asset,
+)
 from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
@@ -3824,9 +3831,7 @@ def algorithms_file(project_id: str) -> Path:
 def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
     """Fast algorithm asset read. Existing report snapshots are reused."""
     get_project(project_id)
-    data = read_json(algorithms_file(project_id), [])
-    if not isinstance(data, list):
-        data = []
+    data = list_algorithm_assets(algorithms_file(project_id))
     changed = False
     for a in data:
         for k,v0 in {"versions":[],"industry":"","algorithm_type":"","created_at":now_iso()}.items():
@@ -3846,7 +3851,7 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
     return data
 
 def save_algorithms_internal(project_id: str, data: List[Dict[str, Any]]):
-    write_json(algorithms_file(project_id), data)
+    save_algorithm_assets(algorithms_file(project_id), data)
 
 
 def used_model_keys(project_id: str) -> set:
@@ -4906,40 +4911,19 @@ def v12_list_algorithms(project_id: str):
 @app.post("/api/v12/projects/{project_id}/algorithms")
 def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
     get_project(project_id)
-    if not payload.name.strip():
-        raise HTTPException(status_code=400, detail="算法名称不能为空")
-    algos = list_algorithms_internal(project_id)
-    item = {
-        "id": uuid.uuid4().hex[:12], "name": payload.name.strip(), "remark": payload.remark or "",
-        "industry": (payload.industry or "").strip(), "algorithm_type": (payload.algorithm_type or "").strip(),
-        "versions": [], "created_at": now_iso(), "updated_at": now_iso()
-    }
-    algos.insert(0, item)
-    save_algorithms_internal(project_id, algos)
-    return item
+    item = create_algorithm_asset(algorithms_file(project_id), payload.model_dump(), now_iso())
+    return {"ok": True, "algorithm": item}
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_update_algorithm(project_id: str, algorithm_id: str, payload: AlgorithmReq):
-    algos = list_algorithms_internal(project_id)
-    for a in algos:
-        if a.get("id") == algorithm_id:
-            a["name"] = payload.name.strip() or a.get("name", "算法")
-            a["remark"] = payload.remark or ""
-            a["industry"] = (payload.industry or "").strip()
-            a["algorithm_type"] = (payload.algorithm_type or "").strip()
-            a["updated_at"] = now_iso()
-            save_algorithms_internal(project_id, algos)
-            return a
-    raise HTTPException(status_code=404, detail="算法不存在")
+    item = update_algorithm_asset(algorithms_file(project_id), algorithm_id, payload.model_dump(), now_iso())
+    return {"ok": True, "algorithm": item}
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_delete_algorithm(project_id: str, algorithm_id: str):
-    algos = list_algorithms_internal(project_id)
-    if not any(a.get("id") == algorithm_id for a in algos):
-        raise HTTPException(status_code=404, detail="算法不存在")
-    save_algorithms_internal(project_id, [a for a in algos if a.get("id") != algorithm_id])
+    delete_algorithm_asset(algorithms_file(project_id), algorithm_id)
     return {"ok": True}
 
 
