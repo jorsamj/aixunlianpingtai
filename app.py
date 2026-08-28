@@ -30,7 +30,7 @@ from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
-from platform_core.materials import initial_processing_status, mark_ready
+from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -1371,27 +1371,35 @@ def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
     get_project(project_id)
     ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
     if not ids:
-        return {"ok": True, "deleted": 0}
+        return {"ok": True, "deleted": 0, "deleted_images": [], "failed_items": []}
     p = project_dir(project_id)
     images = load_images(project_id)
     kept = []
-    deleted = 0
+    deleted_images = []
+    failed_items = []
+    found_ids = set()
     for img in images:
-        if str(img.get("id")) not in ids:
+        image_id = str(img.get("id"))
+        if image_id not in ids:
             kept.append(img)
             continue
-        deleted += 1
-        try:
-            (p / "uploads" / str(img.get("stored_name") or "")).unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            (p / "annotations" / f"{img.get('id')}.json").unlink(missing_ok=True)
-        except Exception:
-            pass
-    if deleted:
+        found_ids.add(image_id)
+        errors = delete_material_files(p, img)
+        if errors:
+            kept.append(img)
+            failed_items.append({"id": image_id, "filename": img.get("filename"), "errors": errors})
+            continue
+        deleted_images.append({"id": image_id, "filename": img.get("filename")})
+    for missing_id in sorted(ids - found_ids):
+        failed_items.append({"id": missing_id, "filename": "", "errors": ["图片不存在"]})
+    if deleted_images:
         save_images(project_id, kept)
-    return {"ok": True, "deleted": deleted}
+    return {
+        "ok": not failed_items,
+        "deleted": len(deleted_images),
+        "deleted_images": deleted_images,
+        "failed_items": failed_items,
+    }
 
 
 @app.post("/api/projects/{project_id}/import/yolo_zip")
@@ -9761,9 +9769,13 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     allowed = {str(x.get('image_id')) for x in read_json(_v47_file_for(project_id, 'clean_results', task_id), {'items': []}).get('items', [])}
     ids = {str(x) for x in payload.delete_ids if str(x) in allowed}
     deleted = 0
+    deleted_images = []
+    failed_items = []
     if ids:
         res = v46_batch_delete_images(project_id, V46BatchDeleteImagesReq(image_ids=list(ids)))
         deleted = int(res.get('deleted') or 0)
+        deleted_images = list(res.get('deleted_images') or [])
+        failed_items = list(res.get('failed_items') or [])
     # 清洗确认后，本次扫描范围内未删除的图片全部进入“已处理”。
     req = task.get('request_payload') or {}
     wanted = {str(x) for x in (req.get('image_ids') or []) if str(x)}
@@ -9778,8 +9790,9 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
         img['clean_task_id'] = task_id
         processed_ids.append(iid)
     save_images(project_id, images)
-    _v33_update_task(project_id, 'clean_tasks', task_id, status='done', status_text='已确认', deleted_images=deleted, processed_confirmed=len(processed_ids), confirmed_at=now_iso(), finished_at=now_iso())
-    return {'ok': True, 'deleted': deleted, 'deleted_ids': sorted(ids), 'processed_ids': processed_ids}
+    deleted_ids = [str(item.get('id')) for item in deleted_images]
+    _v33_update_task(project_id, 'clean_tasks', task_id, status='done', status_text='已确认', deleted_images=deleted, delete_failures=len(failed_items), processed_confirmed=len(processed_ids), confirmed_at=now_iso(), finished_at=now_iso())
+    return {'ok': not failed_items, 'deleted': deleted, 'deleted_ids': deleted_ids, 'deleted_images': deleted_images, 'failed_items': failed_items, 'processed_ids': processed_ids}
 
 
 class V47AutoLabelReq(BaseModel):
