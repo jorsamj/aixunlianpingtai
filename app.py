@@ -39,6 +39,7 @@ from platform_core.config import choose_data_dir
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
+from platform_core.prompts import render_prompt, template_version_id, version_template
 from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
 from platform_core.secrets import KeyringSecretStore, secret_ref
@@ -7061,6 +7062,14 @@ class V35PromptTemplateReq(BaseModel):
     remark: Optional[str] = ""
 
 
+class V35PromptPreviewReq(BaseModel):
+    prompt: str
+    labels: Optional[List[Dict[str, Any]]] = None
+    image_width: int = 640
+    image_height: int = 480
+    business_instruction: str = ""
+
+
 class V35PrelabelTaskReq(BaseModel):
     model_config_id: Optional[str] = None
     prompt_template_id: Optional[str] = None
@@ -7085,6 +7094,32 @@ def _v35_items(file_path: Path) -> List[Dict[str, Any]]:
 
 def _v35_save_items(file_path: Path, items: List[Dict[str, Any]]):
     write_json(file_path, items)
+
+
+def _v35_prompt_items() -> List[Dict[str, Any]]:
+    items = _v35_items(PROMPT_LIBRARY_FILE)
+    changed = False
+    migrated: List[Dict[str, Any]] = []
+    for item in items:
+        if item.get("version_id") and item.get("version"):
+            migrated.append(item)
+            continue
+        migrated.append(version_template(
+            item,
+            template_id=str(item.get("id") or uuid.uuid4().hex[:12]),
+            now=str(item.get("updated_at") or item.get("created_at") or now_iso()),
+        ))
+        changed = True
+    if changed:
+        _v35_save_items(PROMPT_LIBRARY_FILE, migrated)
+    return migrated
+
+
+def _v35_validate_prompt(prompt: str):
+    try:
+        render_prompt(prompt, labels=[], width=1, height=1, business_instruction="")
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def _v35_secret_store():
@@ -7229,7 +7264,7 @@ def v35_test_model_config(payload: V35ModelConfigReq):
 
 @app.get("/api/v35/prompt-templates")
 def v35_list_prompt_templates():
-    return {"items": _v35_items(PROMPT_LIBRARY_FILE)}
+    return {"items": _v35_prompt_items()}
 
 
 @app.post("/api/v35/prompt-templates")
@@ -7239,9 +7274,11 @@ def v35_save_prompt_template(payload: V35PromptTemplateReq):
         raise HTTPException(status_code=400, detail="模板名称不能为空")
     if not (payload.prompt or "").strip():
         raise HTTPException(status_code=400, detail="提示词不能为空")
-    item = payload.dict()
-    item.update({"id": uuid.uuid4().hex[:12], "name": name, "created_at": now_iso(), "updated_at": now_iso()})
-    items = _v35_items(PROMPT_LIBRARY_FILE)
+    _v35_validate_prompt(payload.prompt)
+    data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+    data["name"] = name
+    item = version_template(data, template_id=uuid.uuid4().hex[:12], now=now_iso())
+    items = _v35_prompt_items()
     items.insert(0, item)
     _v35_save_items(PROMPT_LIBRARY_FILE, items[:200])
     return item
@@ -7249,11 +7286,16 @@ def v35_save_prompt_template(payload: V35PromptTemplateReq):
 
 @app.put("/api/v35/prompt-templates/{template_id}")
 def v35_update_prompt_template(template_id: str, payload: V35PromptTemplateReq):
-    items = _v35_items(PROMPT_LIBRARY_FILE)
+    if not (payload.name or "").strip():
+        raise HTTPException(status_code=400, detail="模板名称不能为空")
+    if not (payload.prompt or "").strip():
+        raise HTTPException(status_code=400, detail="提示词不能为空")
+    _v35_validate_prompt(payload.prompt)
+    items = _v35_prompt_items()
     for i, item in enumerate(items):
         if item.get("id") == template_id:
-            data = payload.dict()
-            data.update({"id": template_id, "created_at": item.get("created_at") or now_iso(), "updated_at": now_iso()})
+            payload_data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            data = version_template(payload_data, template_id=template_id, now=now_iso(), previous=item)
             items[i] = data
             _v35_save_items(PROMPT_LIBRARY_FILE, items)
             return data
@@ -7262,17 +7304,34 @@ def v35_update_prompt_template(template_id: str, payload: V35PromptTemplateReq):
 
 @app.delete("/api/v35/prompt-templates/{template_id}")
 def v35_delete_prompt_template(template_id: str):
-    items = [x for x in _v35_items(PROMPT_LIBRARY_FILE) if x.get("id") != template_id]
+    items = [x for x in _v35_prompt_items() if x.get("id") != template_id]
     _v35_save_items(PROMPT_LIBRARY_FILE, items)
     return {"ok": True}
 
 
+@app.post("/api/v35/prompt-templates/preview")
+def v35_preview_prompt_template(payload: V35PromptPreviewReq):
+    try:
+        rendered = render_prompt(
+            payload.prompt,
+            labels=payload.labels or [],
+            width=payload.image_width,
+            height=payload.image_height,
+            business_instruction=payload.business_instruction,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"rendered_prompt": rendered, "version_id": template_version_id(payload.prompt)}
+
+
 def _v35_resolve_model_and_prompt(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    configs = _v35_items(MODEL_CONFIGS_FILE)
-    templates = _v35_items(PROMPT_LIBRARY_FILE)
+    configs = _v35_model_items()
+    templates = _v35_prompt_items()
     cfg: Dict[str, Any] = {}
     tpl: Dict[str, Any] = {}
-    if payload.get("prompt_template_id"):
+    if payload.get("prompt_template_snapshot"):
+        tpl = dict(payload.get("prompt_template_snapshot") or {})
+    elif payload.get("prompt_template_id"):
         tpl = next((x for x in templates if x.get("id") == payload.get("prompt_template_id")), {})
         if not tpl:
             raise HTTPException(status_code=400, detail="模型标注模板不存在")
@@ -7426,6 +7485,8 @@ def v35_create_prelabel_task(project_id: str, payload: V35PrelabelTaskReq):
     get_project(project_id)
     data = payload.dict()
     cfg, tpl = _v35_resolve_model_and_prompt(data)
+    if tpl:
+        data["prompt_template_snapshot"] = tpl
     task_id = uuid.uuid4().hex[:12]
     name = data.get("task_name") or tpl.get("name") or "自动标注任务"
     task = {
@@ -7433,6 +7494,9 @@ def v35_create_prelabel_task(project_id: str, payload: V35PrelabelTaskReq):
         "name": name,
         "model_name": cfg.get("name"),
         "prompt_template_name": tpl.get("name", ""),
+        "prompt_template_id": tpl.get("id", ""),
+        "prompt_template_version": tpl.get("version"),
+        "prompt_template_version_id": tpl.get("version_id", ""),
         "target_label": normalize_label(data.get("target_label") or (tpl.get("labels") or ["person"])[0] or "person"),
         "threshold": float(data.get("threshold") or tpl.get("threshold", 0.5)),
         "training_framework": data.get("training_framework") or tpl.get("save_format") or "internal",
