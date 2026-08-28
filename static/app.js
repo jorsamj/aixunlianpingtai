@@ -2291,8 +2291,10 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
   function makeLayer424(title,body,wide){
     const layer=document.createElement('div');
     layer.className='modal v424-modal-layer';
+    const titleId=`v424ModalTitle${dynamicModalStack.length+1}`;
+    layer.setAttribute('role','dialog');layer.setAttribute('aria-modal','true');layer.setAttribute('aria-labelledby',titleId);
     layer.style.zIndex=String(1100+dynamicModalStack.length*10);
-    layer.innerHTML=`<div class="modal-card ${wide?'wide':''}"><div class="modal-head"><div class="modal-title">${esc(title||'')}</div><button class="icon" data-v424-close aria-label="关闭">×</button></div><div class="modal-body">${body||''}</div></div>`;
+    layer.innerHTML=`<div class="modal-card ${wide?'wide':''}"><div class="modal-head"><div id="${titleId}" class="modal-title">${esc(title||'')}</div><button class="icon" data-v424-close aria-label="关闭">×</button></div><div class="modal-body">${body||''}</div></div>`;
     layer.querySelector('[data-v424-close]').onclick=()=>closeModal();
     layer.addEventListener('mousedown',e=>{if(e.target===layer)closeModal()});
     document.body.appendChild(layer); dynamicModalStack.push(layer); return layer;
@@ -3291,7 +3293,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   // Plain image upload after success: ask for cleaning decision instead of leaving raw images indefinitely.
   const oldImageUpload412=window.doUploadImages426;
-  window.doUploadImages426=function(inp){const before=new Set((state.images||[]).map(x=>String(x.id)));oldImageUpload412(inp);let tries=0;const timer=setInterval(async()=>{tries++;const out=document.getElementById('up411Result');if(out?.querySelector('.alert.ok')){clearInterval(timer);await window.loadCore412();const ids=(state.images||[]).filter(x=>!before.has(String(x.id))).map(x=>String(x.id));if(ids.length&&!out.querySelector('.review412-image'))out.insertAdjacentHTML('beforeend',`<div class="import412-decision review412-image"><div><b>本次图片是否需要清洗？</b><span>无需清洗后会直接进入“已处理 · 待标注”。</span></div><div class="row"><button class="btn" onclick='markReady412(${JSON.stringify(ids)});closeModal();setPage("数据集")'>无需清洗</button><button class="btn primary" onclick='closeModal();createClean427({image_ids:${JSON.stringify(ids)}})'>需要清洗</button></div></div>`)}if(tries>80)clearInterval(timer)},250)};
+  window.doUploadImages426=function(inp){const before=new Set((state.images||[]).map(x=>String(x.id)));oldImageUpload412(inp);let tries=0;const timer=setInterval(async()=>{tries++;const out=document.getElementById('up411Result');if(out?.querySelector('.alert.ok')){clearInterval(timer);await window.loadCore412();const ids=(state.images||[]).filter(x=>!before.has(String(x.id))).map(x=>String(x.id));if(!window.__v414UploadDecision&&ids.length&&!out.querySelector('.review412-image'))out.insertAdjacentHTML('beforeend',`<div class="import412-decision review412-image"><div><b>本次图片是否需要清洗？</b><span>无需清洗后会直接进入“已处理 · 待标注”。</span></div><div class="row"><button class="btn" onclick='markReady412(${JSON.stringify(ids)});closeModal();setPage("数据集")'>无需清洗</button><button class="btn primary" onclick='closeModal();createClean427({image_ids:${JSON.stringify(ids)}})'>需要清洗</button></div></div>`)}if(tries>80)clearInterval(timer)},250)};
 
   // -------- selection controls for all material pickers --------
   window.trainSelectAll412=function(mode){const q=(document.getElementById('tr429Q')?.value||'').toLowerCase(),labs=[...(state.train429PickerLabels||new Set())],rows=(state.images||[]).filter(x=>isProcessed412(x)&&x.annotated&&(!q||String(x.filename).toLowerCase().includes(q))&&(!labs.length||labs.some(l=>(x.labels||[]).includes(l))));rows.forEach(x=>mode==='invert'?(state.train429Selected.has(x.id)?state.train429Selected.delete(x.id):state.train429Selected.add(x.id)):state.train429Selected.add(x.id));renderTrainPicker429()};
@@ -3339,6 +3341,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  * ============================================================ */
 (()=>{
   const V414='42.14.0';
+  window.__v414UploadDecision=true;
   state.label414Usage=state.label414Usage||[];
   state.batch414Selected=state.batch414Selected||new Set();
   state.iteration414=state.iteration414||{};
@@ -3347,6 +3350,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const labelText414=code=>{const l=labelByCode414(code);return l?(l.display_name&&l.display_name!==l.code?`${l.code} · ${l.display_name}`:l.code):code};
   const englishCode414=v=>/^[A-Za-z][A-Za-z0-9_-]*$/.test(String(v||'').trim());
   const safeNum414=v=>Math.max(0,Math.min(100,Number(v)||0));
+  const isProcessed414=x=>!!(x?.annotated||x?.processing_status==='processed'||x?.cleaned_at||x?.clean_skipped);
 
   async function refreshLabels414(withUsage=false){
     const r=await api(withUsage?`/api/v54/projects/${pid()}/label-schema`:`/api/v12/projects/${pid()}/labels`);
@@ -3468,7 +3472,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }
   };
   window.openBatch414=function(mode,ids=null){
-    const all=(state.images||[]).filter(x=>!x.annotation_index_pending&&!isProcessed412(x)&&!x.annotated),allowed=new Set((ids||all.map(x=>x.id)).map(String));const rows=all.filter(x=>allowed.has(String(x.id)));if(!rows.length)return toast('没有可操作的未处理素材');state.batch414Selected=new Set(rows.map(x=>String(x.id)));
+    const all=(state.images||[]).filter(x=>!x.annotation_index_pending&&!isProcessed414(x)&&!x.annotated),allowed=new Set((ids||all.map(x=>x.id)).map(String));const rows=all.filter(x=>allowed.has(String(x.id)));if(!rows.length)return toast('没有可操作的未处理素材');state.batch414Selected=new Set(rows.map(x=>String(x.id)));
     modal(mode==='clean'?'批量清洗':'批量无需清洗',`<div class="batch414"><div class="batch414-tools"><span>共 ${rows.length} 张未处理素材</span><div class="row"><button class="btn mini" onclick="selectBatch414('all')">全选</button><button class="btn mini" onclick="selectBatch414('invert')">反选</button></div></div><div id="batch414Grid" class="batch414-grid"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmBatch414('${mode}')">${mode==='clean'?'开始清洗':'确认无需清洗'}</button></div></div>`,true);renderBatch414(rows)
   };
   function renderBatch414(rows){const box=document.getElementById('batch414Grid');if(!box)return;box.innerHTML=rows.map(x=>`<label class="batch414-card ${state.batch414Selected.has(String(x.id))?'selected':''}"><input type="checkbox" ${state.batch414Selected.has(String(x.id))?'checked':''} onchange="toggleBatch414('${x.id}',this.checked)"><img src="${x.url}" loading="lazy"><span>${esc(x.filename)}</span></label>`).join('')}
@@ -3479,7 +3483,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // After plain image upload, replace old decision with batch-capable actions for this import.
   const upload414=window.doUploadImages426;
   window.doUploadImages426=function(inp){
-    const before=new Set((state.images||[]).map(x=>String(x.id)));upload414(inp);let n=0;const t=setInterval(()=>{n++;const result=document.getElementById('up411Result');if(result?.querySelector('.alert.ok')){clearInterval(t);const ids=(state.images||[]).filter(x=>!before.has(String(x.id))).map(x=>String(x.id));result.querySelectorAll('.review412-image').forEach(x=>x.remove());if(ids.length&&!result.querySelector('.upload414-decision'))result.insertAdjacentHTML('beforeend',`<div class="upload414-decision"><div><b>本次上传 ${ids.length} 张素材</b><span>请选择是否需要清洗；确认后会进入对应处理流程。</span></div><div class="row"><button class="btn" onclick='openBatch414("ready",${JSON.stringify(ids)})'>批量无需清洗</button><button class="btn primary" onclick='openBatch414("clean",${JSON.stringify(ids)})'>批量清洗</button></div></div>`)}if(n>120)clearInterval(t)},250)
+    const before=new Set((state.images||[]).map(x=>String(x.id)));upload414(inp);let n=0;const t=setInterval(()=>{n++;const result=document.getElementById('up411Result');if(result?.querySelector('.alert.ok')){clearInterval(t);const ids=(state.images||[]).filter(x=>!before.has(String(x.id))).map(x=>String(x.id));result.querySelectorAll('.review412-image').forEach(x=>x.remove());if(ids.length&&!result.querySelector('.upload414-decision'))result.insertAdjacentHTML('beforeend',`<div class="upload414-decision"><div><b>本次上传 ${ids.length} 张素材</b><span>请选择是否需要清洗；确认后会进入对应处理流程。</span></div><div class="row"><button class="btn" onclick='closeModal();openBatch414("ready",${JSON.stringify(ids)})'>批量无需清洗</button><button class="btn primary" onclick='closeModal();openBatch414("clean",${JSON.stringify(ids)})'>批量清洗</button></div></div>`)}if(n>120)clearInterval(t)},250)
   };
 
   // ---------- stable algorithm CRUD ----------
