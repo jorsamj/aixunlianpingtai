@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from platform_core.conversion import build_manifest, file_record, sha256_file, validate_target
+
 
 def now():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -433,18 +435,43 @@ def main():
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(rknn, artifacts)])
         else:
             raise RuntimeError(f'不支持的转换目标：{target}')
-        manifest = {
-            'job_id': job.get('id'), 'source_model': source.name, 'target': target,
-            'resource': {k:resource.get(k) for k in ['id','name','kind','mode','version']},
-            'params': params, 'outputs': [str(p.relative_to(job_dir)) for p in outputs],
-            'created_at': now(),
+        target_contract = validate_target(target, params)
+        onnx_output = next((p for p in outputs if p.is_file() and p.suffix.lower() == '.onnx'), None)
+        output_records = [file_record(p, relative_to=artifacts) for p in outputs if p.is_file()]
+        for directory in [p for p in outputs if p.is_dir()]:
+            output_records.extend(file_record(p, relative_to=artifacts) for p in directory.rglob('*') if p.is_file())
+        tool_names = {
+            'onnx': 'ultralytics-export',
+            'paddle_inference': 'paddledetection-export',
+            'tensorrt': 'trtexec',
+            'sophon': 'tpu-mlir',
+            'ascend': 'cann-atc',
+            'rockchip': 'rknn-toolkit2',
         }
-        write_json(artifacts/'deployment_manifest.json', manifest)
+        manifest = build_manifest(
+            source=job.get('source_trace') or {
+                'source_id': job.get('source_id'),
+                'version_id': (job.get('source_meta') or {}).get('version_id') or '',
+                'sha256': sha256_file(source),
+            },
+            onnx=file_record(onnx_output, relative_to=artifacts) if onnx_output else {},
+            target=target_contract,
+            parameters=params,
+            tool={
+                'name': tool_names.get(target, target),
+                'version': str(resource.get('version') or ''),
+                'resource_id': resource.get('id') or '',
+            },
+            outputs=output_records,
+            hardware_verified=False,
+        )
+        manifest['job_id'] = job.get('id')
+        write_json(artifacts/'manifest.json', manifest)
         output_rows=[]
         for p in artifacts.rglob('*'):
             if p.is_file():
                 output_rows.append({'name':p.name,'path':str(p),'rel':str(p.relative_to(job_dir)),'size_mb':round(p.stat().st_size/1024/1024,3)})
-        update(job_file, status='done', progress=100, stage='转换完成', message='部署模型已生成', finished_at=now(), outputs=output_rows, validation_status='not_run')
+        update(job_file, status='done', progress=100, stage='转换完成', message='部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, validation_status='converted_unverified', manifest_path=str(artifacts/'manifest.json'))
         append_log(log_file, '转换完成。')
     except Exception as e:
         append_log(log_file, '转换失败：' + str(e))

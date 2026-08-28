@@ -38,6 +38,7 @@ from platform_core.algorithms import (
 from platform_core import auto_label as auto_label_core
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.config import choose_data_dir
+from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
@@ -8405,12 +8406,27 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     if paddle_env.get("paddle2onnx_path") and not resource_for_job.get("paddle2onnx_path"):
         resource_for_job["paddle2onnx_path"]=paddle_env.get("paddle2onnx_path")
     cal_dir=None
-    if payload.target in {"sophon", "rockchip"} and str(params.get("precision") or "").lower()=="int8":
+    if payload.target in {"sophon", "rockchip", "tensorrt"} and str(params.get("precision") or "").lower()=="int8":
         cal_dir=jd/"calibration"
         count=_deploy_prepare_calibration(project_id,payload.dataset_id,payload.calibration_split,max(1,int(payload.calibration_count)),cal_dir)
         if count<=0: raise HTTPException(status_code=400,detail="INT8 转换需要校准图片，但当前选择的数据集/分组没有可用图片")
         params["calibration_count"]=count
-    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
+        calibration_hash = hashlib.sha256()
+        for image_path in sorted(path for path in cal_dir.rglob('*') if path.is_file()):
+            calibration_hash.update(image_path.name.encode('utf-8'))
+            calibration_hash.update(sha256_file(image_path).encode('ascii'))
+        params["calibration_snapshot"] = calibration_hash.hexdigest()
+    try:
+        params = validate_target(payload.target, params)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    source_trace = {
+        "source_id": payload.source_id,
+        "version_id": source.get("version_id") or "",
+        "algorithm_id": source.get("algorithm_id") or "",
+        "sha256": sha256_file(local_src),
+    }
+    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
     _write_deploy_job(project_id,job)
     if str(resource.get("mode"))=="remote":
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
