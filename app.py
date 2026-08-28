@@ -27,6 +27,7 @@ from PIL import Image, ImageDraw
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
 from platform_core.algorithms import (
+    choose_iteration_base,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
@@ -4475,24 +4476,23 @@ def _v54_iteration_base(project_id: str, algorithm_id: str, framework: str) -> O
     algo = next((a for a in list_algorithms_internal(project_id) if str(a.get("id")) == str(algorithm_id)), None)
     if not algo:
         return None
-    versions = list(algo.get("versions") or [])
-    versions.sort(key=lambda v: (str(v.get("version_name") or ""), str(v.get("created_at") or "")), reverse=True)
-    allowed = {".pt"} if framework == "ultralytics" else {".pdparams", ".pdmodel", ".pdiparams"}
-    latest = versions[0] if versions else None
-    for v in versions:
-        sp = str(v.get("stored_path") or "").strip()
-        if not sp:
-            continue
-        path = Path(sp)
-        if path.is_file() and path.suffix.lower() in allowed:
-            return {
-                "algorithm_id": algo.get("id"), "algorithm_name": algo.get("name"),
-                "version_id": v.get("id"), "version_name": v.get("version_name"),
-                "path": str(path), "model_name": path.name,
-                "is_latest_version": bool(latest and str(latest.get("id")) == str(v.get("id"))),
-                "latest_version_name": (latest or {}).get("version_name") or "",
-            }
-    return None
+    selection = choose_iteration_base(algo.get("versions") or [], "", framework)
+    if selection["base_selection_reason"] == "mother_model":
+        return None
+    path = Path(selection["base_model_path"])
+    latest = sorted(
+        algo.get("versions") or [],
+        key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""),
+        reverse=True,
+    )
+    return {
+        **selection,
+        "algorithm_id": algo.get("id"), "algorithm_name": algo.get("name"),
+        "version_id": selection["base_version_id"], "version_name": selection["base_version_name"],
+        "path": str(path), "model_name": path.name,
+        "is_latest_version": bool(latest and str(latest[0].get("id")) == str(selection["base_version_id"])),
+        "latest_version_name": (latest[0] if latest else {}).get("version_name") or "",
+    }
 
 @app.post("/api/v12/projects/{project_id}/train/start")
 def v12_start_train(project_id: str, payload: TrainReq):
@@ -4502,8 +4502,10 @@ def v12_start_train(project_id: str, payload: TrainReq):
     framework = (payload.framework or "ultralytics").strip().lower()
     alg = get_algorithm_config(payload.algorithm or "")
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
+    base_selection = choose_iteration_base((asset_algorithm or {}).get("versions") or [], mother_model, framework)
     iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework)
-    model_value = (iteration_base or {}).get("path") or (payload.model or "").strip() or (alg or {}).get("base_model", "")
+    model_value = base_selection["base_model_path"]
     if framework != "ultralytics":
         # 飞桨真实训练仍走旧执行器，但数据集改用 COCO split 导出
         return start_train(project_id, payload)
@@ -4512,6 +4514,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
     if model_value.lower().endswith((".pdparams", ".pdmodel", ".pdiparams", ".onnx", ".engine", ".rknn", ".bmodel")) or model_value.startswith("PP-"):
         raise HTTPException(status_code=400, detail="基础模型与训练框架冲突。Ultralytics 只能选择 .pt 权重。")
     model_value = resolve_ultralytics_model_path(model_value)
+    base_selection["base_model_path"] = model_value
     # v42.4: one logical data pool; train/val/test are sample roles rather than separate named datasets.
     preflight = dataset_quality_report(project_id, None, payload.include_empty)
     if not preflight.get("can_train"):
@@ -4538,6 +4541,11 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "algorithm": payload.algorithm or "",
         "algorithm_name": (alg or {}).get("name") or "YOLO 目标检测",
         "model": model_value,
+        "base_version_id": base_selection["base_version_id"],
+        "base_version_name": base_selection["base_version_name"],
+        "base_model_path": base_selection["base_model_path"],
+        "base_model_kind": base_selection["base_model_kind"],
+        "base_selection_reason": base_selection["base_selection_reason"],
         "training_base": ({"mode":"previous_version", **iteration_base} if iteration_base else {"mode":"mother_model", "model": model_value}),
         "parent_version_id": (iteration_base or {}).get("version_id", ""),
         "parent_version_name": (iteration_base or {}).get("version_name", ""),

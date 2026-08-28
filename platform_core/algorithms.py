@@ -7,6 +7,46 @@ from .annotations import atomic_write_json
 from .errors import PlatformError
 
 
+def choose_iteration_base(
+    versions: Sequence[Mapping[str, Any]],
+    mother_model: str,
+    framework: str = "ultralytics",
+) -> dict:
+    allowed_suffixes = {".pt"} if framework == "ultralytics" else {".pdparams", ".pdmodel", ".pdiparams"}
+    ordered = sorted(
+        versions or [],
+        key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""),
+        reverse=True,
+    )
+    for version in ordered:
+        candidate = next(
+            (
+                str(version.get(field) or "").strip()
+                for field in ("best_path", "last_path", "stored_path", "path")
+                if str(version.get(field) or "").strip()
+            ),
+            "",
+        )
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.is_file() and path.suffix.lower() in allowed_suffixes:
+            return {
+                "base_version_id": version.get("id"),
+                "base_version_name": version.get("version_name") or "",
+                "base_model_path": str(path.resolve()),
+                "base_model_kind": "train_checkpoint",
+                "base_selection_reason": "latest_usable_version",
+            }
+    return {
+        "base_version_id": None,
+        "base_version_name": "",
+        "base_model_path": str(mother_model or "").strip(),
+        "base_model_kind": "mother_model",
+        "base_selection_reason": "mother_model",
+    }
+
+
 def list_algorithms(path: Path) -> list[dict]:
     if not path.exists():
         return []
