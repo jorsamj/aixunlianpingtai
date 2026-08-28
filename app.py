@@ -17,15 +17,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
 
 from platform_core.bootstrap import choose_project
 from platform_core.config import choose_data_dir
+from platform_core.errors import PlatformError, error_body
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -98,6 +100,62 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
+
+
+_HTTP_ERROR_CODES = {
+    400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    409: "CONFLICT",
+    422: "VALIDATION_ERROR",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+_HTTP_ERROR_SOLUTIONS = {
+    400: "请检查输入内容后重试。",
+    401: "请重新登录或检查访问凭据。",
+    403: "请确认当前账号具备操作权限。",
+    404: "请刷新列表并确认目标仍然存在。",
+    409: "请刷新页面，确认当前状态后重试。",
+    422: "请检查必填项和字段格式。",
+    503: "请稍后重试；若持续失败，请检查对应服务状态。",
+}
+
+
+@app.exception_handler(PlatformError)
+async def platform_error_handler(_request: Request, exc: PlatformError):
+    return JSONResponse(status_code=exc.status_code, content=error_body(exc))
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(_request: Request, exc: HTTPException):
+    if isinstance(exc.detail, dict):
+        message = str(exc.detail.get("message") or "操作失败")
+        detail = json.dumps(exc.detail, ensure_ascii=False)
+    else:
+        message = str(exc.detail or "操作失败")
+        detail = message
+    error = PlatformError(
+        code=_HTTP_ERROR_CODES.get(exc.status_code, f"HTTP_{exc.status_code}"),
+        message=message,
+        detail=detail,
+        solution=_HTTP_ERROR_SOLUTIONS.get(exc.status_code, "请稍后重试或查看服务日志。"),
+        status_code=exc.status_code,
+    )
+    return JSONResponse(status_code=exc.status_code, content=error_body(error), headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request: Request, exc: RequestValidationError):
+    error = PlatformError(
+        code="VALIDATION_ERROR",
+        message="提交的数据不完整或格式不正确",
+        detail=json.dumps(exc.errors(), ensure_ascii=False),
+        solution="请检查必填项和字段格式。",
+        status_code=422,
+    )
+    return JSONResponse(status_code=422, content=error_body(error))
 
 @app.get("/api/system/version")
 def system_version():
