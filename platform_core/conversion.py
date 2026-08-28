@@ -4,6 +4,13 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+class ConversionError(RuntimeError):
+    def __init__(self, code: str, message: str, *, solution: str):
+        super().__init__(message)
+        self.code = code
+        self.solution = solution
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:

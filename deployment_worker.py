@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from platform_core.conversion import build_manifest, file_record, sha256_file, validate_target
+from platform_core.conversion import ConversionError, build_manifest, file_record, sha256_file, validate_target
 
 
 def now():
@@ -200,11 +200,87 @@ def prepare_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], params: 
     raise RuntimeError(f'当前源模型格式 {ext} 暂不能转换为 ONNX。')
 
 
+def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[str, Any]):
+    root_raw = str(resource.get('tool_root') or '').strip()
+    if target == 'tensorrt':
+        tool = which([str(resource.get('trtexec_path') or ''), str(Path(root_raw)/'bin'/'trtexec') if root_raw else '', 'trtexec'])
+        if not tool:
+            raise ConversionError('TENSORRT_NOT_FOUND', '未检测到 trtexec，无法生成 TensorRT Engine。', solution='请在 NVIDIA 部署服务器安装 TensorRT，并在部署资源中配置 trtexec 路径。')
+    elif target == 'ascend':
+        tool = which([str(resource.get('atc_path') or ''), str(Path(root_raw)/'bin'/'atc') if root_raw else '', 'atc'])
+        if not tool:
+            raise ConversionError('ATC_NOT_FOUND', '未检测到 CANN ATC，无法生成 Ascend OM。', solution='请在 Linux 转换服务器安装华为 CANN Toolkit，并配置 ATC 路径和环境脚本。')
+    elif target == 'rockchip':
+        py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
+        if not py or not Path(py).exists():
+            raise ConversionError('RKNN_TOOLKIT_NOT_FOUND', '瑞芯微转换需要一个安装了 RKNN-Toolkit2 的 Python 环境。', solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并配置该环境的 Python 路径。')
+        try:
+            checked = subprocess.run([py, '-c', 'from rknn.api import RKNN'], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=20)
+        except Exception as error:
+            raise ConversionError('RKNN_TOOLKIT_NOT_FOUND', '无法启动 RKNN-Toolkit2 Python 环境。', solution='请检查部署资源中的 RKNN Python 路径。') from error
+        if checked.returncode != 0:
+            raise ConversionError('RKNN_TOOLKIT_NOT_FOUND', '当前 Python 未安装可用的 RKNN-Toolkit2。', solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并在部署资源中选择该 Python。')
+
+
+def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Path) -> Dict[str, Any]:
+    try:
+        import numpy as np
+        import onnx
+        import onnxruntime as ort
+
+        model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(model)
+        session = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
+        feeds = {}
+        size = int(params.get('input_size') or 640)
+        dtype_map = {
+            'tensor(float)': np.float32,
+            'tensor(float16)': np.float16,
+            'tensor(double)': np.float64,
+            'tensor(int64)': np.int64,
+            'tensor(int32)': np.int32,
+        }
+        for input_meta in session.get_inputs():
+            dtype = dtype_map.get(input_meta.type)
+            if dtype is None:
+                raise ValueError(f'暂不支持 ONNX 输入类型：{input_meta.type}')
+            shape = []
+            for index, dimension in enumerate(input_meta.shape):
+                if isinstance(dimension, int) and dimension > 0:
+                    shape.append(dimension)
+                elif len(input_meta.shape) == 4:
+                    shape.append([1, 3, size, size][index])
+                else:
+                    shape.append(1)
+            feeds[input_meta.name] = np.zeros(shape, dtype=dtype)
+        outputs = session.run(None, feeds)
+        result = {
+            'checker': 'passed',
+            'runtime': 'onnxruntime',
+            'runtime_version': ort.__version__,
+            'input_names': [item.name for item in session.get_inputs()],
+            'output_names': [item.name for item in session.get_outputs()],
+            'output_count': len(outputs),
+        }
+        append_log(log_file, 'ONNX Checker 与 ONNX Runtime 空白输入推理验证通过。')
+        return result
+    except Exception as error:
+        raise ConversionError(
+            'ONNX_VALIDATION_FAILED',
+            f'ONNX 结构或 ONNX Runtime 推理验证失败：{error}',
+            solution='请检查导出 opset、动态输入和算子兼容性，并确认转换环境已安装 onnxruntime。',
+        ) from error
+
+
 def build_tensorrt(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], log_file: Path) -> Path:
     root_raw = str(resource.get('tool_root') or '').strip()
     trtexec = which([str(resource.get('trtexec_path') or ''), str(Path(root_raw)/'bin'/'trtexec') if root_raw else '', 'trtexec'])
     if not trtexec:
-        raise RuntimeError('未检测到 trtexec，无法生成 TensorRT Engine。请在 NVIDIA/TensorRT 服务器配置部署资源。')
+        raise ConversionError(
+            'TENSORRT_NOT_FOUND',
+            '未检测到 trtexec，无法生成 TensorRT Engine。',
+            solution='请在 NVIDIA 部署服务器安装 TensorRT，并在部署资源中配置 trtexec 路径。',
+        )
     precision = str(params.get('precision') or 'fp16').lower()
     if precision == 'int8':
         raise RuntimeError('v39 当前 TensorRT INT8 不做伪转换：需要真实 Q/DQ ONNX 或校准器。请先使用 FP16，或后续配置 INT8 校准缓存。')
@@ -291,7 +367,11 @@ def build_ascend(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
     root_raw = str(resource.get('tool_root') or '').strip()
     atc = which([str(resource.get('atc_path') or ''), str(Path(root_raw)/'bin'/'atc') if root_raw else '', 'atc'])
     if not atc:
-        raise RuntimeError('未检测到 CANN ATC，无法生成 Ascend OM。请在华为 Atlas/CANN 服务器配置部署资源。')
+        raise ConversionError(
+            'ATC_NOT_FOUND',
+            '未检测到 CANN ATC，无法生成 Ascend OM。',
+            solution='请在 Linux 转换服务器安装华为 CANN Toolkit，并配置 ATC 路径和环境脚本。',
+        )
     soc = str(params.get('soc_version') or params.get('chip') or '').strip()
     atlas_product = str(params.get('atlas_product') or '').strip()
     if not soc:
@@ -331,11 +411,19 @@ def build_ascend(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
 def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path) -> Path:
     py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
     if not py or not Path(py).exists():
-        raise RuntimeError('瑞芯微转换需要一个安装了 RKNN-Toolkit2 的 Python 环境。请到“部署资源/部署插件”配置 RKNN Python。')
+        raise ConversionError(
+            'RKNN_TOOLKIT_NOT_FOUND',
+            '瑞芯微转换需要一个安装了 RKNN-Toolkit2 的 Python 环境。',
+            solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并配置该环境的 Python 路径。',
+        )
     # Validate SDK in the selected environment, not the platform venv.
     cp = subprocess.run([py, '-c', "from rknn.api import RKNN; import importlib.metadata as m; print(m.version('rknn-toolkit2'))"], capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=20)
     if cp.returncode != 0:
-        raise RuntimeError('当前 Python 未安装可用的 RKNN-Toolkit2：\n' + (cp.stderr or cp.stdout or '')[-1800:])
+        raise ConversionError(
+            'RKNN_TOOLKIT_NOT_FOUND',
+            '当前 Python 未安装可用的 RKNN-Toolkit2。',
+            solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并在部署资源中选择该 Python。',
+        )
     chip = str(params.get('chip') or 'rk3588').lower()
     supported = {'rk3588','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118'}
     if chip not in supported:
@@ -400,10 +488,13 @@ def main():
         append_log(log_file, f"转换目标：{job.get('target')} / 资源：{resource.get('name','')}")
         if not source.exists(): raise RuntimeError(f'源模型不存在：{source}')
         target = str(job.get('target') or '').lower()
+        preflight_vendor_tool(target, resource, params)
         outputs = []
+        onnx_validation = {}
         if target == 'onnx':
             update(job_file, progress=18, stage='导出 ONNX', message='正在生成通用 ONNX')
             onnx = prepare_onnx(source, work, resource, params, log_file)
+            onnx_validation = validate_onnx_runtime(onnx, params, log_file)
             outputs.append(copy_artifact(onnx, artifacts))
         elif target == 'paddle_inference':
             update(job_file, progress=18, stage='导出 Paddle Inference', message='正在导出飞桨推理模型')
@@ -412,24 +503,28 @@ def main():
         elif target == 'tensorrt':
             update(job_file, progress=12, stage='准备 ONNX', message='正在生成 TensorRT 中间模型')
             onnx = prepare_onnx(source, work, resource, params, log_file)
+            onnx_validation = validate_onnx_runtime(onnx, params, log_file)
             update(job_file, progress=52, stage='编译 TensorRT Engine', message='正在调用 TensorRT')
             engine = build_tensorrt(onnx, work, resource, params, log_file)
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(engine, artifacts)])
         elif target == 'sophon':
             update(job_file, progress=10, stage='准备 ONNX', message='正在生成 TPU-MLIR 输入模型')
             onnx = prepare_onnx(source, work, resource, params, log_file)
+            onnx_validation = validate_onnx_runtime(onnx, params, log_file)
             update(job_file, progress=45 if str(params.get('precision')).lower()!='int8' else 30, stage='TPU-MLIR 编译', message='正在生成 BMODEL')
             bmodel = build_sophon(onnx, work, resource, params, calibration_dir, log_file)
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(bmodel, artifacts)])
         elif target == 'ascend':
             update(job_file, progress=12, stage='准备 ONNX', message='正在生成 ATC 输入模型')
             onnx = prepare_onnx(source, work, resource, params, log_file)
+            onnx_validation = validate_onnx_runtime(onnx, params, log_file)
             update(job_file, progress=55, stage='ATC 编译', message='正在生成 OM')
             om = build_ascend(onnx, work, resource, params, log_file)
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(om, artifacts)])
         elif target == 'rockchip':
             update(job_file, progress=12, stage='准备 ONNX', message='正在生成 RKNN 输入模型')
             onnx = prepare_onnx(source, work, resource, params, log_file)
+            onnx_validation = validate_onnx_runtime(onnx, params, log_file)
             update(job_file, progress=52, stage='RKNN 编译', message='正在调用 RKNN-Toolkit2 生成 RKNN')
             rknn = build_rockchip(onnx, work, resource, params, calibration_dir, log_file)
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(rknn, artifacts)])
@@ -454,7 +549,7 @@ def main():
                 'version_id': (job.get('source_meta') or {}).get('version_id') or '',
                 'sha256': sha256_file(source),
             },
-            onnx=file_record(onnx_output, relative_to=artifacts) if onnx_output else {},
+            onnx={**(file_record(onnx_output, relative_to=artifacts) if onnx_output else {}), **onnx_validation},
             target=target_contract,
             parameters=params,
             tool={
@@ -475,7 +570,16 @@ def main():
         append_log(log_file, '转换完成。')
     except Exception as e:
         append_log(log_file, '转换失败：' + str(e))
-        update(job_file, status='failed', stage='转换失败', message=str(e), error=str(e), finished_at=now())
+        update(
+            job_file,
+            status='failed',
+            stage='转换失败',
+            message=str(e),
+            error=str(e),
+            error_code=str(getattr(e, 'code', 'CONVERSION_FAILED')),
+            solution=str(getattr(e, 'solution', '请查看转换日志并检查源模型、目标参数和官方编译工具。')),
+            finished_at=now(),
+        )
         raise
 
 
