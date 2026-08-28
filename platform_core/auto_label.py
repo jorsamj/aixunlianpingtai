@@ -36,11 +36,17 @@ CANDIDATE_OUTPUT_SCHEMA = {
 
 def provider_factory(provider_config: Mapping[str, Any]):
     from .providers.openai_vision import OpenAICompatibleVisionProvider
+    from .providers.ollama_vision import OllamaVisionProvider
 
     config = dict(provider_config or {})
     provider = str(config.get("provider_adapter") or config.get("provider_type") or "local_openai")
     if provider in {"cloud", "local"}:
         provider = "local_openai"
+    if provider == "ollama":
+        return OllamaVisionProvider(
+            base_url=str(config.get("base_url") or config.get("detect_url") or "http://127.0.0.1:11434"),
+            model=str(config.get("model_name") or ""),
+        )
     if provider not in {"volcengine_ark", "aliyun_qwen", "local_openai"}:
         raise ValueError(f"不支持的视觉模型适配器：{provider}")
     return OpenAICompatibleVisionProvider(

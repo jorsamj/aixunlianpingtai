@@ -38,6 +38,17 @@ def fake_vision_server():
             },
         )
 
+    @api.post("/api/chat")
+    async def ollama_chat(request: Request):
+        body = await request.json()
+        state["requests"].append({"ollama": True, "body": body})
+        return {
+            "message": {
+                "content": '{"boxes":[{"label":"fire","confidence":0.91,"x1":2,"y1":3,"x2":40,"y2":50}]}'
+            },
+            "total_duration": 1000,
+        }
+
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -144,3 +155,37 @@ def test_saved_model_connection_test_parses_candidates(client, monkeypatch, fake
     assert result["latency_ms"] >= 0
     assert result["parsed_boxes"][0]["label"] == "fire"
     assert "boxes" in result["raw_preview"]
+
+
+def test_ollama_provider_sends_images_schema_and_non_streaming(fake_vision_server):
+    from platform_core.providers.ollama_vision import OllamaVisionProvider
+
+    base_url, state = fake_vision_server
+    ollama_base = base_url.removesuffix("/v1")
+    state["requests"].clear()
+    provider = OllamaVisionProvider(base_url=ollama_base, model="qwen2.5vl:7b")
+    result = provider.annotate(
+        image_bytes=b"local-image",
+        prompt="find fire",
+        output_schema=CANDIDATE_OUTPUT_SCHEMA,
+    )
+    body = state["requests"][-1]["body"]
+    assert body["model"] == "qwen2.5vl:7b"
+    assert body["stream"] is False
+    assert body["format"] == CANDIDATE_OUTPUT_SCHEMA
+    assert body["messages"][0]["content"] == "find fire"
+    assert body["messages"][0]["images"]
+    assert result["provider"] == "ollama"
+    assert '"boxes"' in result["text"]
+
+
+def test_ollama_unreachable_error_is_actionable():
+    from platform_core.providers.base import ProviderRequestError
+    from platform_core.providers.ollama_vision import OllamaVisionProvider
+
+    provider = OllamaVisionProvider(base_url="http://127.0.0.1:1", model="local-vlm", timeout=0.2)
+    with pytest.raises(ProviderRequestError) as captured:
+        provider.annotate(image_bytes=b"image", prompt="prompt", output_schema=CANDIDATE_OUTPUT_SCHEMA)
+    assert captured.value.code == "MODEL_SERVICE_UNREACHABLE"
+    assert "地址" in captured.value.solution
+    assert "模型" in captured.value.solution
