@@ -2,6 +2,7 @@ import io
 import json
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -120,6 +121,107 @@ def write_recovery_journal(app_module, project_id: str, dataset_id: str, row: di
         app_module._v50_dataset_delete_journal_path(project_id, token), journal
     )
     return journal
+
+
+def test_add_rechecks_dataset_after_waiting_for_its_lock(
+    client, tmp_path, monkeypatch
+):
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    source = tmp_path / "late.png"
+    Image.new("RGB", (64, 64), "orange").save(source, format="PNG")
+    reached = threading.Event()
+    resume = threading.Event()
+    outcome = {}
+    original_locks = app_module._v50_dataset_locks
+
+    @contextmanager
+    def pause_before_dataset_lock(current_project_id, dataset_ids):
+        if (
+            threading.current_thread().name == "late-add"
+            and not reached.is_set()
+        ):
+            reached.set()
+            assert resume.wait(5), "late add did not resume"
+        with original_locks(current_project_id, dataset_ids):
+            yield
+
+    monkeypatch.setattr(
+        app_module, "_v50_dataset_locks", pause_before_dataset_lock
+    )
+
+    def run_add():
+        try:
+            outcome["record"] = app_module.add_image_record(
+                project_id, source, "late.png", "raw", dataset_id
+            )
+        except BaseException as error:
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run_add, name="late-add")
+    thread.start()
+    try:
+        assert reached.wait(5), "add did not pause before dataset lock"
+        prepared = list((app_module.project_dir(project_id) / "uploads").glob("*"))
+        assert len(prepared) == 1
+        assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
+    finally:
+        resume.set()
+        thread.join(5)
+
+    assert not thread.is_alive()
+    assert "record" not in outcome
+    assert isinstance(outcome.get("error"), app_module.HTTPException)
+    assert outcome["error"].status_code == 409
+    assert all(not path.exists() for path in prepared)
+    assert all(
+        str(row.get("dataset_id") or "default") != dataset_id
+        for row in app_module.material_store(project_id).read().rows
+    )
+
+
+def test_upload_to_deleted_dataset_is_rejected_without_dangling_row(client):
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
+
+    response = upload_response(client, project_id, dataset_id, "deleted.png")
+    response.raise_for_status()
+    body = response.json()
+
+    assert body["uploaded"] == []
+    assert body["failed_count"] == 1
+    assert "不存在" in body["failed"][0]["reason"]
+    assert all(
+        str(row.get("dataset_id") or "default") != dataset_id
+        for row in app_module.material_store(project_id).read().rows
+    )
+    assert not list((app_module.project_dir(project_id) / "uploads").glob("*"))
+
+
+def test_first_default_upload_initializes_strict_dataset_metadata(client):
+    import app as app_module
+
+    project = client.post(
+        "/api/projects",
+        json={"name": f"fresh-{uuid.uuid4().hex[:8]}", "labels": []},
+    ).json()
+    project_id = project["id"]
+    metadata_path = app_module.datasets_file(project_id)
+    assert not metadata_path.exists()
+
+    uploaded = upload_png(client, project_id, "default", "first.png")
+
+    assert uploaded["dataset_id"] == "default"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert len(metadata) == 1
+    assert metadata[0]["id"] == "default"
+    assert metadata[0]["name"] == "默认数据集"
+    assert metadata[0]["description"] == ""
+    assert metadata[0]["created_at"]
+    assert metadata[0]["updated_at"]
 
 
 def test_other_dataset_add_does_not_wait_for_project_import_lock(

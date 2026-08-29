@@ -1806,12 +1806,47 @@ def _v50_recover_dataset_deletions(
     return recovered
 
 
+def _v50_initialize_default_dataset_locked(
+    project_id: str,
+) -> List[Dict[str, Any]]:
+    metadata_path = datasets_file(project_id)
+    if metadata_path.exists():
+        datasets = _v50_read_datasets_strict(project_id)
+    else:
+        datasets = []
+    if not datasets:
+        timestamp = now_iso()
+        atomic_write_json(
+            metadata_path,
+            [
+                {
+                    "id": "default",
+                    "name": "默认数据集",
+                    "description": "",
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+            ],
+        )
+        datasets = _v50_read_datasets_strict(project_id)
+    return datasets
+
+
 def _v50_assert_dataset_writable_locked(project_id: str, dataset_id: str):
-    _v50_recover_dataset_deletions(project_id, dataset_id)
-    if _v50_dataset_delete_target_active(project_id, dataset_id):
+    target_dataset_id = str(dataset_id or "default")
+    _v50_recover_dataset_deletions(project_id, target_dataset_id)
+    if _v50_dataset_delete_target_active(project_id, target_dataset_id):
         raise HTTPException(status_code=409, detail="数据集正在删除，不能写入素材")
-    if _v50_dataset_delete_journals(project_id, dataset_id):
+    if _v50_dataset_delete_journals(project_id, target_dataset_id):
         raise HTTPException(status_code=409, detail="数据集删除尚待恢复，不能写入素材")
+    if target_dataset_id == "default":
+        datasets = _v50_initialize_default_dataset_locked(project_id)
+    else:
+        datasets = _v50_read_datasets_strict(project_id)
+    if not any(
+        str(item.get("id")) == target_dataset_id for item in datasets
+    ):
+        raise HTTPException(status_code=409, detail="目标数据集已不存在，不能写入素材")
 
 
 def _v50_stage_material_file(source: Path, destination: Path):

@@ -121,6 +121,44 @@ def test_image_batch_save_false_discards_metadata_without_revision(client, tmp_p
     assert app_module._v50_active_image_batch(project_id) is None
 
 
+def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
+    import app as app_module
+
+    project_id = create_project(client)
+    dataset_id = client.post(
+        f"/api/projects/{project_id}/datasets",
+        json={"name": "short-lived", "description": ""},
+    ).json()["id"]
+    source = tmp_path / "buffered.png"
+    write_png(source, "purple")
+
+    app_module._v50_begin_image_batch(project_id)
+    record = app_module.add_image_record(
+        project_id, source, "buffered.png", "imported_yolo", dataset_id
+    )
+    project_path = app_module.project_dir(project_id)
+    upload_path = project_path / "uploads" / record["stored_name"]
+    annotation_path = project_path / "annotations" / f"{record['id']}.json"
+    assert upload_path.exists()
+    assert annotation_path.exists()
+    assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
+
+    try:
+        with pytest.raises(app_module.HTTPException) as raised:
+            app_module._v50_end_image_batch(save=True)
+    finally:
+        if app_module._v50_active_image_batch(project_id):
+            app_module._v50_end_image_batch(save=False)
+
+    assert raised.value.status_code == 409
+    assert all(
+        str(row.get("id")) != record["id"]
+        for row in app_module.material_store(project_id).read().rows
+    )
+    assert not upload_path.exists()
+    assert not annotation_path.exists()
+
+
 def test_rejected_multi_dataset_batch_cleans_all_buffered_files(
     client, tmp_path, monkeypatch
 ):
