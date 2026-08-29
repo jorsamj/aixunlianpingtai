@@ -4,7 +4,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 from .annotations import atomic_write_json
 
@@ -76,11 +76,11 @@ class MaterialStore:
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         incoming = dict(record)
-        image_id = incoming.get("id")
+        image_id = str(incoming.get("id"))
 
         def apply(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for row in rows:
-                if row.get("id") == image_id:
+                if str(row.get("id")) == image_id:
                     row.update(incoming)
                     return dict(row)
             rows.append(incoming)
@@ -89,10 +89,15 @@ class MaterialStore:
         return self.mutate(apply)
 
     def patch(self, patches: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+        normalized_patches = {
+            str(image_id): dict(patch)
+            for image_id, patch in patches.items()
+        }
+
         def apply(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             changed = []
             for row in rows:
-                patch = patches.get(str(row.get("id")))
+                patch = normalized_patches.get(str(row.get("id")))
                 if patch is not None:
                     row.update(patch)
                     changed.append(dict(row))
@@ -100,7 +105,7 @@ class MaterialStore:
 
         return self.mutate(apply)
 
-    def remove(self, image_ids: set[str]) -> list[dict[str, Any]]:
+    def remove(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
         ids = {str(image_id) for image_id in image_ids}
 
         def apply(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
