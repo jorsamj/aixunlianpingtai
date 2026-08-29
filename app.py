@@ -10979,13 +10979,62 @@ def _v47_remove_prepared_clean_task_record(project_id: str, task_id: str) -> boo
             (item for item in tasks if str(item.get('id')) == str(task_id)),
             None,
         )
-        if target is None or target.get('status') != 'prepared':
+        if target is None or target.get('status') not in {'prepared', 'queued'}:
             return False
         atomic_write_json(
             _v33_tasks_file(project_id, 'clean_tasks'),
             [item for item in tasks if str(item.get('id')) != str(task_id)],
         )
         return True
+
+
+def _v47_reset_failed_clean_task_record(project_id: str, task_id: str) -> bool:
+    """Put a failed upload-batch cleaning task back into a retryable state."""
+    with _v33_task_lock:
+        tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+        target = next(
+            (item for item in tasks if str(item.get('id')) == str(task_id)),
+            None,
+        )
+        if target is None or target.get('status') != 'failed':
+            return False
+        target.update({
+            'status': 'prepared',
+            'status_text': '已准备（重试）',
+            'progress': 0,
+            'processed_images': 0,
+            'flagged_images': 0,
+            'updated_at': now_iso(),
+            'stop_requested': False,
+        })
+        for field in (
+            'error', 'result_file', 'started_at', 'finished_at',
+            'finished_scan_at', 'elapsed_seconds', 'eta_seconds',
+        ):
+            target.pop(field, None)
+        atomic_write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks)
+        return True
+
+
+def _v47_restore_clean_task_record(
+    project_id: str,
+    task_id: str,
+    snapshot: Optional[Dict[str, Any]],
+) -> bool:
+    """Restore a task snapshot when publishing a retry cannot be completed."""
+    if not snapshot:
+        return False
+    key = (str(project_id), str(task_id))
+    with _v33_task_lock:
+        if key in _V47_ACTIVE_CLEAN_WORKERS:
+            return False
+        tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+        for index, item in enumerate(tasks):
+            if str(item.get('id')) == str(task_id):
+                tasks[index] = dict(snapshot)
+                atomic_write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks)
+                return True
+    return False
 
 
 def _v47_start_clean_task_record(project_id: str, task_id: str) -> Dict[str, Any]:
@@ -11000,7 +11049,7 @@ def _v47_start_clean_task_record(project_id: str, task_id: str) -> Dict[str, Any
             raise ValueError('清洗任务不存在')
         if key in _V47_ACTIVE_CLEAN_WORKERS:
             return dict(task)
-        if task.get('status') not in {'prepared', 'queued'}:
+        if task.get('status') not in {'prepared', 'queued', 'running'}:
             return dict(task)
         task['status'] = 'queued'
         task['status_text'] = '排队中'
@@ -11025,6 +11074,27 @@ def _v47_start_clean_task_record(project_id: str, task_id: str) -> Dict[str, Any
             _V47_ACTIVE_CLEAN_WORKERS.discard(key)
         raise
     return queued
+
+
+def _v47_recover_clean_tasks(project_id: str) -> list[str]:
+    """Restart persisted clean tasks whose process-local worker was lost."""
+    tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+    recovered = []
+    for task in tasks:
+        status = str(task.get('status') or '')
+        if status not in {'prepared', 'queued', 'running'}:
+            continue
+        task_id = str(task.get('id') or '')
+        if not task_id:
+            continue
+        try:
+            _v47_start_clean_task_record(project_id, task_id)
+            recovered.append(task_id)
+        except Exception:
+            # Keep the durable task record for a later explicit retry; startup
+            # recovery must not prevent the rest of the platform from loading.
+            continue
+    return recovered
 
 
 def _v47_create_clean_task_record(
@@ -11159,11 +11229,21 @@ def v55_apply_upload_batch_decisions(
 
         clean_request = None
         prepared_created = False
+        failed_task_snapshot: Optional[Dict[str, Any]] = None
+        terminal_clean_task = False
         if clean_task_id:
             clean_request = V47CleanReq(
                 image_ids=associated_clean_ids,
                 task_name=f'上传批次 {batch_id} 清洗',
             )
+            existing_task = _v33_get_task(project_id, 'clean_tasks', clean_task_id)
+            existing_status = str((existing_task or {}).get('status') or '')
+            terminal_clean_task = existing_status in {
+                'awaiting_confirmation', 'done', 'succeeded', 'success', 'completed',
+            }
+            if existing_status == 'failed':
+                failed_task_snapshot = dict(existing_task or {})
+                _v47_reset_failed_clean_task_record(project_id, clean_task_id)
             try:
                 _, prepared_created = _v47_prepare_clean_task_record(
                     project_id,
@@ -11175,7 +11255,12 @@ def v55_apply_upload_batch_decisions(
 
         decided_at = now_iso()
         updated['updated_at'] = decided_at
-        affected_ids = clean_ids | ready_ids
+        # A replay after a successful/awaiting task only records the same
+        # decision in the batch; it must not regress confirmed material back
+        # to ``cleaning``. Failed tasks are explicitly reset above and may be
+        # retried with the same deterministic task id.
+        material_clean_ids = set() if terminal_clean_task else set(clean_ids)
+        affected_ids = material_clean_ids | ready_ids
         decision_fields = (
             'processing_status',
             'clean_skipped',
@@ -11205,7 +11290,7 @@ def v55_apply_upload_batch_decisions(
                 }
                 if image_id in ready_ids:
                     rows[index] = mark_ready(row, decided_at)
-                else:
+                elif image_id in material_clean_ids:
                     changed = dict(row)
                     changed.update({
                         'processing_status': 'cleaning',
@@ -11224,6 +11309,8 @@ def v55_apply_upload_batch_decisions(
         try:
             store._write_unlocked(batch_id, updated)
             material_store(project_id).mutate(apply_material_decisions)
+            if clean_task_id:
+                _v47_start_clean_task_record(project_id, clean_task_id)
         except Exception as error:
             store._write_unlocked(batch_id, original)
             if backups:
@@ -11234,9 +11321,12 @@ def v55_apply_upload_batch_decisions(
                         expected = applied_values.get(image_id)
                         if before is None or expected is None:
                             continue
-                        if any(row.get(field) != value for field, value in expected.items()):
-                            continue
                         for field, (existed, value) in before.items():
+                            # Restore only fields still owned by this
+                            # transaction. A concurrent filename/updated_at
+                            # edit must survive the rollback.
+                            if row.get(field) != expected.get(field):
+                                continue
                             if existed:
                                 row[field] = value
                             else:
@@ -11244,15 +11334,11 @@ def v55_apply_upload_batch_decisions(
                 material_store(project_id).mutate(restore_material_decisions)
             if prepared_created and clean_task_id:
                 _v47_remove_prepared_clean_task_record(project_id, clean_task_id)
+            elif failed_task_snapshot and clean_task_id:
+                _v47_restore_clean_task_record(project_id, clean_task_id, failed_task_snapshot)
             if isinstance(error, ValueError):
                 raise HTTPException(status_code=400, detail=str(error))
             raise HTTPException(status_code=500, detail=f'保存上传决策失败：{error}')
-
-        if clean_task_id:
-            try:
-                _v47_start_clean_task_record(project_id, clean_task_id)
-            except Exception as error:
-                raise HTTPException(status_code=500, detail=f'启动清洗任务失败：{error}')
 
         persisted = store._read_unlocked(batch_id)
     return _v55_enrich_upload_batch(project_id, persisted)
@@ -11814,6 +11900,13 @@ def _v53_bootstrap_worker(preferred_project_id:str=""):
             if not pid0:continue
             ensure_project_dirs(pid0); _v50_recover_dataset_deletions(pid0); imgs=load_images(pid0); start_p=16+int(44*idx/total); span=max(1,int(44/total)); _v53_set_bootstrap(start_p,"加载素材与标注",f"{p.get('name') or pid0} · {len(imgs)} 张")
             _v53_index_annotations_sync(pid0,imgs,start_p,span); list_algorithms_internal(pid0)
+            # Worker threads are process-local. Requeue persisted upload
+            # cleaning tasks after a restart so they cannot remain stuck in a
+            # non-terminal state merely because the previous process exited.
+            try:
+                _v47_recover_clean_tasks(pid0)
+            except Exception:
+                pass
         _v53_set_bootstrap(64,"加载训练记录","正在读取训练任务、模型与算法版本")
         try:sync_jobs_index(active_id)
         except Exception:pass
