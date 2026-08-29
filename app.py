@@ -49,6 +49,7 @@ from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
 from platform_core.secrets import KeyringSecretStore, secret_ref
 from platform_core.snapshots import build_snapshot, persist_snapshot
+from platform_core.upload_batches import UploadBatchStore, apply_decisions
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -754,12 +755,16 @@ def image_info(path: Path) -> Dict[str, Any]:
 
 def ensure_project_dirs(pid: str):
     p = project_dir(pid)
-    for d in ["uploads", "annotations", "dataset", "paddle_dataset", "runs", "models", "jobs", "predictions", "imports", "exports", "prelabels", "videos", "frame_tasks", "prelabel_tasks"]:
+    for d in ["uploads", "annotations", "dataset", "paddle_dataset", "runs", "models", "jobs", "predictions", "imports", "exports", "prelabels", "videos", "frame_tasks", "prelabel_tasks", "upload_batches"]:
         (p / d).mkdir(parents=True, exist_ok=True)
 
 
 def material_store(project_id: str) -> MaterialStore:
     return MaterialStore(project_dir(project_id) / "images.json")
+
+
+def upload_batch_store(project_id: str) -> UploadBatchStore:
+    return UploadBatchStore(project_dir(project_id) / "upload_batches")
 
 
 def load_images(project_id: str) -> list[dict]:
@@ -2165,6 +2170,11 @@ async def upload_images(project_id: str, files: List[UploadFile] = File(...), da
             failed.append({"name": filename, "reason": str(e)})
         finally:
             tmp.unlink(missing_ok=True)
+    upload_batch_store(project_id).create(
+        batch_id,
+        [str(item.get("id")) for item in uploaded],
+        now_iso(),
+    )
     return {
         "batch_id": batch_id,
         "uploaded": uploaded, "failed": failed,
@@ -10929,18 +10939,218 @@ def v47_list_clean_tasks(project_id: str):
     return {'items': _v33_load_tasks(project_id, 'clean_tasks')}
 
 
-@app.post('/api/v47/projects/{project_id}/clean-tasks')
-def v47_create_clean_task(project_id: str, payload: V47CleanReq):
+def _v47_create_clean_task_record(
+    project_id: str,
+    payload: V47CleanReq,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
     get_project(project_id)
-    task_id = uuid.uuid4().hex[:12]
+    task_id = task_id or uuid.uuid4().hex[:12]
     data = payload.dict()
     images = load_images(project_id)
     wanted = set(data.get('image_ids') or [])
     total = len([x for x in images if not wanted or x.get('id') in wanted])
     task = {'id': task_id, 'name': data.get('task_name') or '自动清洗任务', 'status': 'queued', 'status_text': '排队中', 'progress': 0, 'processed_images': 0, 'total_images': total, 'flagged_images': 0, 'created_at': now_iso(), 'request_payload': data, 'stop_requested': False}
-    tasks = _v33_load_tasks(project_id, 'clean_tasks'); tasks.insert(0, task); _v33_save_tasks(project_id, 'clean_tasks', tasks[:100])
-    threading.Thread(target=_v47_run_clean_task, args=(project_id, task_id, data), daemon=True).start()
+    with _v33_task_lock:
+        tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+        if any(str(item.get('id')) == task_id for item in tasks):
+            return next(item for item in tasks if str(item.get('id')) == task_id)
+        tasks.insert(0, task)
+        write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks[:100])
+    worker = threading.Thread(
+        target=_v47_run_clean_task,
+        args=(project_id, task_id, data),
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except Exception:
+        with _v33_task_lock:
+            tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+            tasks = [item for item in tasks if str(item.get('id')) != task_id]
+            write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks)
+        raise
     return task
+
+
+@app.post('/api/v47/projects/{project_id}/clean-tasks')
+def v47_create_clean_task(project_id: str, payload: V47CleanReq):
+    return _v47_create_clean_task_record(project_id, payload)
+
+
+class V55UploadDecisionsReq(BaseModel):
+    clean_image_ids: Optional[List[Any]] = None
+    ready_image_ids: Optional[List[Any]] = None
+
+
+def _v55_read_upload_batch(
+    store: UploadBatchStore,
+    batch_id: str,
+    *,
+    locked: bool = False,
+) -> Dict[str, Any]:
+    try:
+        return store._read_unlocked(batch_id) if locked else store.read(batch_id)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(status_code=404, detail='上传批次不存在')
+
+
+def _v55_enrich_upload_batch(project_id: str, batch: Dict[str, Any]) -> Dict[str, Any]:
+    images = {
+        str(image.get('id')): dict(image)
+        for image in load_images(project_id)
+    }
+    enriched = dict(batch)
+    enriched['items'] = []
+    for stored_item in batch.get('items', []):
+        item = dict(stored_item)
+        image = images.get(str(item.get('image_id')))
+        item['image'] = image
+        item['missing'] = image is None
+        enriched['items'].append(item)
+    enriched['clean_task_id'] = batch.get('clean_task_id')
+    return enriched
+
+
+@app.get('/api/v55/projects/{project_id}/upload-batches/{batch_id}')
+def v55_get_upload_batch(project_id: str, batch_id: str):
+    get_project(project_id)
+    batch = _v55_read_upload_batch(upload_batch_store(project_id), batch_id)
+    return _v55_enrich_upload_batch(project_id, batch)
+
+
+@app.post('/api/v55/projects/{project_id}/upload-batches/{batch_id}/decisions')
+def v55_apply_upload_batch_decisions(
+    project_id: str,
+    batch_id: str,
+    payload: V55UploadDecisionsReq,
+):
+    get_project(project_id)
+    clean_ids = {
+        str(image_id).strip()
+        for image_id in (payload.clean_image_ids or [])
+        if str(image_id).strip()
+    }
+    ready_ids = {
+        str(image_id).strip()
+        for image_id in (payload.ready_image_ids or [])
+        if str(image_id).strip()
+    }
+    store = upload_batch_store(project_id)
+    try:
+        store._path(batch_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail='上传批次不存在')
+    with store.locked(batch_id):
+        original = _v55_read_upload_batch(store, batch_id, locked=True)
+        try:
+            updated = apply_decisions(original, clean_ids, ready_ids)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+        previously_tasked = {
+            str(image_id)
+            for image_id in original.get('clean_task_image_ids', [])
+        }
+        new_clean_ids = clean_ids - previously_tasked
+        ordered_new_clean_ids = [
+            str(item.get('image_id'))
+            for item in updated.get('items', [])
+            if str(item.get('image_id')) in new_clean_ids
+        ]
+        clean_task_id = original.get('clean_task_id')
+        if ordered_new_clean_ids:
+            clean_task_id = uuid.uuid4().hex[:12]
+            updated['clean_task_id'] = clean_task_id
+            updated['clean_task_image_ids'] = [
+                str(item.get('image_id'))
+                for item in updated.get('items', [])
+                if str(item.get('image_id')) in (previously_tasked | new_clean_ids)
+            ]
+        decided_at = now_iso()
+        updated['updated_at'] = decided_at
+        affected_ids = clean_ids | ready_ids
+        decision_fields = (
+            'processing_status',
+            'clean_skipped',
+            'clean_decision',
+            'clean_decision_at',
+            'updated_at',
+        )
+        backups: Dict[str, Dict[str, Tuple[bool, Any]]] = {}
+        applied_values: Dict[str, Dict[str, Any]] = {}
+
+        def apply_material_decisions(rows):
+            found = {
+                str(row.get('id'))
+                for row in rows
+                if str(row.get('id')) in affected_ids
+            }
+            missing = affected_ids - found
+            if missing:
+                raise ValueError(f"图片不存在：{', '.join(sorted(missing))}")
+            for index, row in enumerate(rows):
+                image_id = str(row.get('id'))
+                if image_id not in affected_ids:
+                    continue
+                backups[image_id] = {
+                    field: (field in row, row.get(field))
+                    for field in decision_fields
+                }
+                if image_id in ready_ids:
+                    rows[index] = mark_ready(row, decided_at)
+                else:
+                    changed = dict(row)
+                    changed.update({
+                        'processing_status': 'cleaning',
+                        'clean_skipped': False,
+                        'clean_decision': 'clean',
+                        'clean_decision_at': decided_at,
+                        'updated_at': decided_at,
+                    })
+                    rows[index] = changed
+                applied_values[image_id] = {
+                    field: rows[index].get(field)
+                    for field in decision_fields
+                }
+            return None
+
+        try:
+            store._write_unlocked(batch_id, updated)
+            material_store(project_id).mutate(apply_material_decisions)
+            if ordered_new_clean_ids:
+                _v47_create_clean_task_record(
+                    project_id,
+                    V47CleanReq(
+                        image_ids=ordered_new_clean_ids,
+                        task_name=f'上传批次 {batch_id} 清洗',
+                    ),
+                    task_id=clean_task_id,
+                )
+        except Exception as error:
+            store._write_unlocked(batch_id, original)
+            if backups:
+                def restore_material_decisions(rows):
+                    for row in rows:
+                        image_id = str(row.get('id'))
+                        before = backups.get(image_id)
+                        expected = applied_values.get(image_id)
+                        if before is None or expected is None:
+                            continue
+                        if any(row.get(field) != value for field, value in expected.items()):
+                            continue
+                        for field, (existed, value) in before.items():
+                            if existed:
+                                row[field] = value
+                            else:
+                                row.pop(field, None)
+                material_store(project_id).mutate(restore_material_decisions)
+            if isinstance(error, ValueError):
+                raise HTTPException(status_code=400, detail=str(error))
+            raise HTTPException(status_code=500, detail=f'创建清洗任务失败：{error}')
+
+        persisted = store._read_unlocked(batch_id)
+    return _v55_enrich_upload_batch(project_id, persisted)
 
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/stop')
