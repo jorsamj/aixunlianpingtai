@@ -62,3 +62,46 @@
 - 扫描前端 `onclick/onchange/oninput` 首调用函数，发布前缺失引用为 0。
 - 修复历史模型配置旧入口 `editModelConfigV35`。
 - 修复删除未使用中间标签后，后续类别 class_id 必须前移的问题，避免训练类别错位。
+
+## Windows 闭环使用说明
+
+### 启动
+
+在 Windows 10/11、64 位 Python 3.10–3.12 环境中双击 `start.bat`。启动器会创建/复用独立运行环境、检查依赖并打开 `http://127.0.0.1:8010/`。如果本机已经准备好全部依赖，也可以使用 `start_no_venv.bat` 跳过环境安装。端口可通过 `MC_PORT` 修改，数据目录可通过 `MC_TRAIN_DATA_DIR` 指向独立磁盘目录。
+
+### 训练与数据闭环
+
+- 上传后素材会持久化到数据目录，并立即进入缩略图审核；“批量清洗”和“批量无需清洗”分别写入真实状态，刷新页面不会丢失。
+- 清洗使用 OpenCV/Pillow 扫描重复、近似重复、尺寸、模糊、亮度和损坏问题；任务完成后由用户确认删除项，图片和对应标注会一起处理。
+- 标注框和标签通过正式 API 保存，标签编码来自“配置中心 → 标签管理”。英文 `code` 是训练/导出主标识，中文 `display_name` 仅用于界面展示。
+- 训练弹窗默认折叠高级参数，并默认从候选素材中随机留出 20% 试验集；每次启动都会生成新的 `split_seed`，比例可在 1–99% 间调整。已有算法版本时，所有训练入口只允许使用最新上一版本的已验证权重，不会静默回退到更早版本或母模型。
+- 训练任务会保存不可变数据快照、训练参数、试验比例和版本基线；算法综合报告与单版本报告分开保存。
+
+### 大模型自动标注
+
+在“配置中心 → 模型配置”中配置本地模型或在线视觉模型（火山方舟、阿里云千问、OpenAI 兼容接口、Ollama 等）的接口地址、API Key、图片字段、提示词字段和自动标注提示词模板。平台先保存候选框，用户确认后才写入正式标注文件；接口失败会保留错误原因，不会伪造标注结果。
+
+### 转换能力边界
+
+平台只在真实工具链检测通过后创建转换任务，转换产物会经过非空、哈希、ONNX Checker 和 ONNX Runtime 校验；缺少 SDK 时不会把文件改名成假产物。
+
+| 目标 | Windows 本机 | NVIDIA/Linux/厂商节点 |
+| --- | --- | --- |
+| ONNX | 支持真实 `.pt → .onnx` 导出和加载校验 | 支持 |
+| TensorRT Engine | 需安装并检测 `trtexec` | NVIDIA CUDA + TensorRT |
+| 华为 Atlas `.om` | 需 CANN ATC（建议 WSL2/远程） | Linux CANN Toolkit/ATC |
+| 瑞芯微 RK3588/RK3568 `.rknn` | 官方 RKNN-Toolkit2 通常不提供 Windows wheel | Linux/WSL2 或远程 RKNN-Toolkit2 |
+| 算能 `.bmodel` | 需 TPU-MLIR 工具链 | Linux/远程 TPU-MLIR |
+
+部署资源页面会显示每个资源的“可用/不可用/未检测”状态和处理建议；只有检测通过且目标芯片匹配时，转换按钮才会真正可提交。
+
+### Windows 验收命令
+
+```powershell
+python -m pytest -q
+npm test
+npm exec -- playwright test
+python -m pytest tests/e2e/test_real_yolo_training.py tests/e2e/test_real_onnx_conversion.py -v -s
+```
+
+厂商硬件测试仅在对应 SDK/设备已配置时运行；未配置时显示可操作的缺失原因，不将 Windows CPU 结果冒充 Atlas、RKNN 或 TensorRT 实机验证。

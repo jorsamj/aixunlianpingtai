@@ -57,6 +57,16 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(trainingDialog).toBeVisible();
   await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
+  await expect(trainingDialog.getByText('每次随机抽取试验集比例')).toBeVisible();
+  await expect(trainingDialog.locator('#tr429ExperimentPercent')).toHaveValue('20');
+  await trainingDialog.getByRole('button', {name: '配置设置'}).click();
+  const settingsDialog = page.getByRole('dialog', {name: '训练配置设置'});
+  await expect(settingsDialog).toBeVisible();
+  const advanced = settingsDialog.locator('details.advanced427-box');
+  await expect(advanced).not.toHaveAttribute('open', '');
+  await advanced.locator('summary').click();
+  await expect(settingsDialog.getByText('最终学习率 lrf')).toBeVisible();
+  await settingsDialog.getByRole('button', {name: '取消'}).click();
   await trainingDialog.getByRole('button', {name: '查看数据质量'}).click();
 
   const qualityDialog = page.getByRole('dialog', {name: '训练素材 · 数据质量'});
@@ -70,4 +80,36 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 
   await algorithmCard.getByRole('button', {name: '综合报告'}).click();
   await expect(page.getByRole('dialog', {name: '算法综合训练报告'})).toBeVisible();
+});
+
+test('training submit sends the selected candidate pool and configured experiment percentage', async ({page, request}) => {
+  const {project} = await seedTrainingProject(request);
+  let submitted;
+  await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
+    submitted = route.request().postDataJSON();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, job: {id: 'browser-job', status: 'queued'}})});
+  });
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
+  }, project.id);
+  await page.goto('/');
+  await page.getByRole('button', {name: /算法列表/}).click();
+  const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
+  await card.getByRole('button', {name: '训练'}).click();
+  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  await expect(dialog).toBeVisible();
+  await dialog.locator('#tr429ExperimentPercent').fill('35');
+  await dialog.getByRole('button', {name: '配置设置'}).click();
+  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  await settings.locator('details.advanced427-box summary').click();
+  await settings.locator('#ts428SingleCls').check();
+  await settings.getByRole('button', {name: '应用配置'}).click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await expect.poll(() => submitted).toBeTruthy();
+  expect(submitted.experiment_percent).toBe(35);
+  expect(submitted.random_experiment_split).toBe(true);
+  expect(submitted.single_cls).toBe(true);
+  expect(submitted.selected_image_ids).toHaveLength(2);
+  expect(submitted.train_image_ids).toBeUndefined();
 });

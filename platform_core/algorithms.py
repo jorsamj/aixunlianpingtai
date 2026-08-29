@@ -11,13 +11,66 @@ def choose_iteration_base(
     versions: Sequence[Mapping[str, Any]],
     mother_model: str,
     framework: str = "ultralytics",
+    *,
+    strict_latest: bool = False,
+    artifact_validator: Callable[[Path], bool] | None = None,
 ) -> dict:
+    """Choose the checkpoint used for an iterative training run.
+
+    The historical/default mode intentionally keeps the backwards-compatible
+    "newest usable" fallback behavior.  The product training entry point uses
+    ``strict_latest=True`` so a newer broken/missing version can never silently
+    train from an older checkpoint or the mother model.
+    """
     allowed_suffixes = {".pt"} if framework == "ultralytics" else {".pdparams", ".pdmodel", ".pdiparams"}
     ordered = sorted(
         versions or [],
         key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""),
         reverse=True,
     )
+    if strict_latest and ordered:
+        latest = ordered[0]
+        candidate = next(
+            (
+                str(latest.get(field) or "").strip()
+                for field in ("best_path", "last_path", "stored_path", "path")
+                if str(latest.get(field) or "").strip()
+            ),
+            "",
+        )
+        path = Path(candidate).expanduser() if candidate else None
+        reason = ""
+        if not candidate:
+            reason = "没有记录模型产物路径"
+        elif path is None or not path.is_file():
+            reason = "模型产物文件不存在"
+        elif path.suffix.lower() not in allowed_suffixes:
+            reason = f"模型产物格式 {path.suffix or '<无扩展名>'} 与 {framework} 框架不匹配"
+        elif latest.get("artifact_verified") is False:
+            reason = "模型产物未通过完整性校验"
+        elif artifact_validator is not None:
+            try:
+                valid = bool(artifact_validator(path.resolve()))
+            except Exception as error:  # validators are intentionally fail-closed
+                valid = False
+                reason = f"模型产物校验异常：{error}"
+            if not valid and not reason:
+                reason = "模型产物无法被当前训练环境加载"
+        if reason:
+            raise PlatformError(
+                code="ITERATION_BASE_UNAVAILABLE",
+                message="上一版本模型不可用，无法开始迭代训练",
+                detail=f"上一版本 {latest.get('version_name') or latest.get('id') or '未知版本'}：{reason}。",
+                solution="请修复或重新归档上一版本的有效训练权重后再开始迭代。平台不会自动回退到更早版本或母算法。",
+                status_code=409,
+            )
+        return {
+            "base_version_id": latest.get("id"),
+            "base_version_name": latest.get("version_name") or "",
+            "base_model_path": str(path.resolve()),
+            "base_model_kind": "train_checkpoint",
+            "base_selection_reason": "latest_verified_version",
+        }
     for version in ordered:
         candidate = next(
             (

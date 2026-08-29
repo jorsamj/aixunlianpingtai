@@ -1708,7 +1708,9 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
   function renderDeployFormOnly(){
     const box=document.getElementById('deployCreateBox');if(!box)return;
     const resources=compatibleResources(state.deployTarget);const sourceSel=sourceOptions();
-    box.innerHTML=`<div class="deploy-create-grid"><div><div class="field"><label>源模型</label><select id="dpSource" class="select">${sourceSel||'<option value="">暂无已训练模型</option>'}</select></div><div class="field"><label>部署目标</label><div class="deploy-targets">${targetCards()}</div></div></div><div class="deploy-config-panel"><div class="field"><label>执行资源</label><select id="dpResource" class="select" onchange="syncAtlasSocFromResource()">${resources.map(r=>`<option value="${r.id}">${esc(r.name)} · ${r.mode==='remote'?'远程':'本机'}</option>`).join('')||'<option value="">当前目标没有可用资源</option>'}</select></div>${configFields(state.deployTarget)}<button class="btn primary deploy-submit" ${resources.length&&state.deploySources.length?'':'disabled'} onclick="createDeployJob()">创建转换任务</button></div></div>`;
+    const configured=(state.deployResources||[]).filter(r=>String(r.kind||'').toLowerCase()===String(state.deployTarget||'').toLowerCase()||(r.targets||[]).includes(state.deployTarget));
+    const resourceStatus=configured.length?configured.map(r=>{const ready=resources.some(x=>x.id===r.id),detail=r.message||(!ready?'请执行检测并确认该目标能力':'可以创建真实转换任务');return `<div class="deploy-resource-readiness-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='remote'?'远程服务器':'本机')}</span>${statusPill(r.status)}</div><p>${esc(detail)}</p></div>`}).join(''):`<div class="deploy-resource-readiness-empty"><b>尚未配置 ${esc(targetName(state.deployTarget))} 转换资源</b><span>请新增本机工具链或远程转换服务器，再执行检测。</span></div>`;
+    box.innerHTML=`<div class="deploy-create-grid"><div><div class="field"><label>源模型</label><select id="dpSource" class="select">${sourceSel||'<option value="">暂无已训练模型</option>'}</select></div><div class="field"><label>部署目标</label><div class="deploy-targets">${targetCards()}</div></div></div><div class="deploy-config-panel"><div class="field"><label>执行资源</label><select id="dpResource" class="select" onchange="syncAtlasSocFromResource()">${resources.map(r=>`<option value="${r.id}">${esc(r.name)} · ${r.mode==='remote'?'远程':'本机'}</option>`).join('')||'<option value="">当前目标没有已检测可用资源</option>'}</select></div><section class="deploy-resource-readiness"><header><b>当前目标的转换资源</b><span>只有状态为“可用”的资源才允许创建真实转换任务。</span></header>${resourceStatus}<button class="btn mini" type="button" onclick="setPage('部署资源')">配置 / 检测资源</button></section>${configFields(state.deployTarget)}<button class="btn primary deploy-submit" ${resources.length&&state.deploySources.length?'':'disabled'} onclick="createDeployJob()">创建转换任务</button></div></div>`;
     if(state.deployTarget==='sophon')toggleSophonCalibration();if(state.deployTarget==='rockchip')toggleRockchipCalibration();if(state.deployTarget==='ascend')setTimeout(syncAtlasSocFromResource,0);
   }
   function jobRow(j){const params=j.params||{};const chip=params.chip||params.soc_version||'';const isRun=['queued','running'].includes(j.status);return `<div class="deploy-job"><div class="deploy-job-main"><div class="deploy-job-icon">${TARGETS[j.target]?.icon||'→'}</div><div class="grow"><div class="item-title">${esc(j.source_name||'模型')} → ${esc(targetName(j.target))}${chip?' / '+esc(chip):''}</div><div class="item-sub">${esc(j.resource?.name||'-')} · ${esc(j.stage||'')}</div></div>${statusPill(j.status)}</div><div class="deploy-progress"><div class="progress-bar"><i style="width:${Math.max(0,Math.min(100,j.progress||0))}%"></i></div><span>${Math.round(j.progress||0)}%</span></div>${j.error?`<div class="alert err">${esc(j.error)}</div>`:''}<div class="row end"><button class="btn mini" onclick="openDeployLog('${j.id}')">日志</button>${isRun?`<button class="btn mini danger" onclick="stopDeployJob('${j.id}')">停止</button>`:''}${j.status==='done'?`<a class="btn mini primary" href="/api/v39/projects/${pid()}/deploy/jobs/${j.id}/package">下载部署包</a>`:''}${!isRun?`<button class="btn mini danger" onclick="deleteDeployJob('${j.id}')">删除</button>`:''}</div></div>`}
@@ -3577,4 +3579,119 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   if(window.__m4CreateDeployJob)window.createDeployJob=window.__m4CreateDeployJob;
   const baseSelect=window.selectDeployTarget;
   window.selectDeployTarget=function(kind){baseSelect(kind);setTimeout(()=>{if(kind==='rockchip'){const select=document.getElementById('dpChip');if(select)select.innerHTML='<option value="rk3588">RK3588</option><option value="rk3568">RK3568</option>'}if(kind==='tensorrt'&&!document.getElementById('dpTargetEnvironment')){const grid=document.querySelector('.deploy-config-panel .deploy-config-grid');if(grid)grid.insertAdjacentHTML('beforeend','<div class="field full"><label>目标环境</label><input id="dpTargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU/CUDA/TensorRT 环境绑定，必须明确记录。</small></div>')}},0)};
+})();
+
+/* v42.15 training contract: one candidate pool, configurable per-run random
+ * experiment holdout, and a complete collapsed advanced-parameter panel. */
+(()=>{
+  const baseStartTraining415=window.startAlgorithmTraining429;
+  const baseRefreshTraining415=window.refreshTrain429;
+  const baseOpenSettings415=window.openTrainSettings429||window.openTrainSettings428;
+  const baseSaveSettings415=window.saveTrainSettings428;
+  const num415=(id,fallback)=>{const el=document.getElementById(id);const value=Number(el?.value);return Number.isFinite(value)?value:fallback};
+  const ready415=x=>!!(x?.annotated||x?.processing_status==='processed'||x?.cleaned_at||x?.clean_skipped);
+  const pool415=()=> (state.images||[]).filter(x=>ready415(x)&&x.annotated&&['train','val','unassigned'].includes(String(x.split||'unassigned').toLowerCase()));
+  const cfg415=()=>Object.assign({model:'',epochs:100,imgsz:640,batch:8,device:'cpu',eval_interval:10,val_max_samples:0,eval_metric:'map50',continue_threshold:0,stop_threshold:.9,optimizer:'auto',patience:100,workers:0,lr0:.01,lrf:.01,momentum:.937,weight_decay:.0005,warmup_epochs:3,close_mosaic:10,mosaic:1,mixup:0,hsv_h:.015,hsv_s:.7,hsv_v:.4,degrees:0,translate:.1,scale:.5,shear:0,perspective:0,flipud:0,fliplr:.5,cache:'False',pretrained:true,amp:true,single_cls:false,rect:false,cos_lr:false,freeze:0,multi_scale:0,save_period:-1,seed:0,deterministic:true,auto_convert_targets:[]},state.train428Config||{});
+  function currentTrainingDialog415(){return document.querySelector('.train429-create')}
+  function installExperimentControl415(){
+    const root=currentTrainingDialog415(),summary=root?.querySelector('.train429-data-summary');
+    if(!root||!summary||root.querySelector('#tr429ExperimentPercent'))return;
+    const value=Number(state.train429ExperimentPercent||20);
+    const rows=pool415(),train=rows.filter(x=>String(x.split||'unassigned').toLowerCase()==='train').length,exp=rows.filter(x=>String(x.split||'unassigned').toLowerCase()==='val').length,unassigned=rows.length-train-exp;
+    summary.insertAdjacentHTML('beforeend',`<div class="train429-split-summary"><span>训练/试验候选</span><b>${train} / ${exp}${unassigned?` · 未分配 ${unassigned}`:''}</b></div><div class="train429-experiment-field field"><label>每次随机抽取试验集比例</label><div class="input-suffix428"><input id="tr429ExperimentPercent" class="input" type="number" min="1" max="99" step="1" value="${value}"><span>%</span></div><small>本次运行会从已选训练/试验候选中重新随机抽取；默认 20%，每次运行重新抽取。</small></div>`);
+    const input=root.querySelector('#tr429ExperimentPercent');
+    input?.addEventListener('input',()=>{const v=Math.max(1,Math.min(99,Number(input.value)||20));state.train429ExperimentPercent=v;const note=root.querySelector('.train429-split-summary b');if(note)note.textContent=`${train} / ${exp}${unassigned?` · 未分配 ${unassigned}`:''}`});
+  }
+  window.startAlgorithmTraining429=async function(aid){
+    state.train429ExperimentPercent=Number(state.train429ExperimentPercent||20);
+    const result=baseStartTraining415?.(aid);
+    [30,160,500].forEach(delay=>setTimeout(installExperimentControl415,delay));
+    return result;
+  };
+  window.refreshTrain429=function(){baseRefreshTraining415?.();installExperimentControl415()};
+
+  function installAdvanced415(){
+    const root=document.querySelector('.train428-settings'),details=root?.querySelector('details.advanced427-box');
+    if(!root||!details||root.querySelector('#ts415Advanced'))return;
+    const c=cfg415();
+    details.querySelector('.form')?.insertAdjacentHTML('beforeend',`<div id="ts415Advanced" class="form four"><div class="field"><label>最终学习率 lrf</label><input id="ts428Lrf" class="input" type="number" min="0" max="1" step="0.0001" value="${c.lrf}"></div><div class="field"><label>Warmup epochs</label><input id="ts428Warmup" class="input" type="number" min="0" step="0.1" value="${c.warmup_epochs}"></div><div class="field"><label>关闭 Mosaic 轮次</label><input id="ts428CloseMosaic" class="input" type="number" min="0" value="${c.close_mosaic}"></div><div class="field"><label>Multi-scale</label><input id="ts428MultiScale" class="input" type="number" min="0" max="1" step="0.1" value="${c.multi_scale||0}"></div><div class="field"><label>HSV-H</label><input id="ts428HsvH" class="input" type="number" min="0" max="1" step="0.001" value="${c.hsv_h}"></div><div class="field"><label>HSV-S</label><input id="ts428HsvS" class="input" type="number" min="0" max="1" step="0.01" value="${c.hsv_s}"></div><div class="field"><label>HSV-V</label><input id="ts428HsvV" class="input" type="number" min="0" max="1" step="0.01" value="${c.hsv_v}"></div><div class="field"><label>旋转 degrees</label><input id="ts428Degrees" class="input" type="number" min="0" step="0.1" value="${c.degrees}"></div><div class="field"><label>平移 translate</label><input id="ts428Translate" class="input" type="number" min="0" max="1" step="0.01" value="${c.translate}"></div><div class="field"><label>缩放 scale</label><input id="ts428Scale" class="input" type="number" min="0" max="1" step="0.01" value="${c.scale}"></div><div class="field"><label>剪切 shear</label><input id="ts428Shear" class="input" type="number" min="0" step="0.1" value="${c.shear}"></div><div class="field"><label>透视 perspective</label><input id="ts428Perspective" class="input" type="number" min="0" max="1" step="0.01" value="${c.perspective}"></div><div class="field"><label>上下翻转 flipud</label><input id="ts428Flipud" class="input" type="number" min="0" max="1" step="0.01" value="${c.flipud}"></div><div class="field"><label>左右翻转 fliplr</label><input id="ts428Fliplr" class="input" type="number" min="0" max="1" step="0.01" value="${c.fliplr}"></div><div class="field"><label>单类别 single_cls</label><label class="check"><input id="ts428SingleCls" type="checkbox" ${c.single_cls?'checked':''}> 单类别训练</label></div><div class="field"><label>矩形训练 rect</label><label class="check"><input id="ts415Rect" type="checkbox" ${c.rect?'checked':''}> 启用 rect</label></div></div>`);
+  }
+  window.openTrainSettings429=function(){const result=baseOpenSettings415?.();setTimeout(installAdvanced415,20);return result};
+  window.openTrainSettings428=window.openTrainSettings429;
+  window.saveTrainSettings428=function(){
+    const c=cfg415();Object.assign(c,{lrf:num415('ts428Lrf',c.lrf),warmup_epochs:num415('ts428Warmup',c.warmup_epochs),close_mosaic:num415('ts428CloseMosaic',c.close_mosaic),multi_scale:num415('ts428MultiScale',c.multi_scale),hsv_h:num415('ts428HsvH',c.hsv_h),hsv_s:num415('ts428HsvS',c.hsv_s),hsv_v:num415('ts428HsvV',c.hsv_v),degrees:num415('ts428Degrees',c.degrees),translate:num415('ts428Translate',c.translate),scale:num415('ts428Scale',c.scale),shear:num415('ts428Shear',c.shear),perspective:num415('ts428Perspective',c.perspective),flipud:num415('ts428Flipud',c.flipud),fliplr:num415('ts428Fliplr',c.fliplr),single_cls:!!document.getElementById('ts428SingleCls')?.checked,rect:!!(document.getElementById('ts415Rect')||document.getElementById('ts428Rect'))?.checked});state.train428Config=c;return baseSaveSettings415?.()};
+
+  window.renderTrainPicker429=function(){
+    const q=(document.getElementById('tr429Q')?.value||'').toLowerCase(),labs=[...(state.train429PickerLabels||new Set())],rows=pool415().filter(x=>(!q||String(x.filename||'').toLowerCase().includes(q))&&(!labs.length||labs.some(l=>(x.labels||[]).includes(l))));
+    const g=document.getElementById('tr429Grid');if(!g)return;
+    const label=x=>String(x.split||'unassigned').toLowerCase()==='val'?'试验候选':String(x.split||'unassigned').toLowerCase()==='train'?'训练候选':'未分配候选';
+    g.innerHTML=rows.slice(0,300).map(x=>`<button class="${state.train429Selected.has(x.id)?'on':''}" onclick="toggleTrainImage429('${x.id}')"><img src="${x.url}" loading="lazy"><b>${esc(x.filename)}</b><span>${label(x)} · ${esc((x.labels||[]).join('、'))}</span></button>`).join('')||'<div class="empty">没有符合筛选条件的已处理标注图片</div>';
+  };
+
+  window.submitTrain429=async function(){
+    const a=(state.algorithms||[]).find(x=>x.id===state.train428AlgorithmId),target=(state.targets||[]).find(x=>x.id===document.getElementById('tr429Target')?.value),alg=(target?.algorithms||[]).find(x=>x.key===document.getElementById('tr429Alg')?.value),c=cfg415(),ids=[...(state.train429Selected||new Set())],percent=Math.max(1,Math.min(99,num415('tr429ExperimentPercent',Number(state.train429ExperimentPercent||20))));
+    if(!a||!target||!alg)return toast('训练资源或训练算法不可用');if(ids.length<2)return toast('至少选择2张素材');state.train429ExperimentPercent=percent;
+    const payload={framework:target.framework==='paddle'?'paddle':'ultralytics',target:target.type==='server'?'remote':'local',server_id:target.server_id,algorithm:alg.key||'',algorithm_asset_id:a.id,model:c.model||alg.base_model||'',epochs:c.epochs,imgsz:c.imgsz,batch:c.batch,device:c.device||'cpu',dataset_id:'__all__',include_empty:false,patience:c.patience,workers:c.workers,optimizer:c.optimizer,lr0:c.lr0,lrf:c.lrf,momentum:c.momentum,weight_decay:c.weight_decay,warmup_epochs:c.warmup_epochs,close_mosaic:c.close_mosaic,mosaic:c.mosaic,mixup:c.mixup,hsv_h:c.hsv_h,hsv_s:c.hsv_s,hsv_v:c.hsv_v,degrees:c.degrees,translate:c.translate,scale:c.scale,shear:c.shear,perspective:c.perspective,flipud:c.flipud,fliplr:c.fliplr,cache:c.cache,pretrained:c.pretrained,amp:c.amp,single_cls:c.single_cls,rect:c.rect,cos_lr:c.cos_lr,freeze:c.freeze,multi_scale:c.multi_scale,save_period:c.save_period,seed:c.seed,deterministic:c.deterministic,selected_image_ids:ids,random_experiment_split:true,experiment_percent:percent,val_max_samples:c.val_max_samples,eval_interval:c.eval_interval,eval_metric:c.eval_metric,continue_threshold:c.continue_threshold,stop_threshold:c.stop_threshold,queue_priority:Number(document.getElementById('tr429Priority')?.value||50),auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};
+    try{const r=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(r.job?.status==='running'?'训练已开始':'训练已进入队列')}catch(e){toast(e.message||e)}
+  };
+})();
+
+/* v42.16 conversion resource readiness and non-blocking version conversion. */
+(()=>{
+  const resourceCacheKey416=()=>`cl_train_v428_deployresources_${pid()}_`;
+  const historyCacheKey416=(aid,vid)=>`cl_train_v428_verdeploy_${pid()}_${aid}_${vid}`;
+  const read416=k=>{try{return JSON.parse(localStorage.getItem(k)||'null')}catch(e){return null}};
+  const write416=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+  const targetKind416=t=>t==='rockchip'?'rockchip':t==='sophon'?'sophon':t==='ascend'?'ascend':'';
+  const targetLabel416=t=>({ascend:'华为 Atlas / Ascend',rockchip:'瑞芯微 RKNN',sophon:'算能 Sophon'})[t]||t;
+  const statusLabel416=s=>({ready:'可用',missing:'不可用',unchecked:'未检测',configured:'待检测'}[s]||s||'未知');
+  const matching416=(rows,t)=> (rows||[]).filter(x=>String(x.kind||'').toLowerCase()===targetKind416(t)||(x.targets||[]).includes(t));
+  async function resources416(){
+    // Resource detection can change while the user is moving between the
+    // deployment center and a version dialog. Always ask the local API for
+    // the current readiness state; use the previous response only if the API
+    // is temporarily unavailable so a transient error never hides resources.
+    try{
+      const r=await api('/api/v39/deploy/resources');write416(resourceCacheKey416(),r);return r;
+    }catch(error){
+      const cached=read416(resourceCacheKey416());
+      if(cached?.items)return cached;
+      throw error;
+    }
+  }
+  async function history416(aid,vid){
+    const k=historyCacheKey416(aid,vid),cached=read416(k);
+    if(cached)return cached;
+    const r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);write416(k,r);return r;
+  }
+  function resourceStatusHtml416(rows,target){
+    if(!rows.length)return `<div class="convert428-resource-status-empty"><b>尚未配置 ${esc(targetLabel416(target))} 转换资源</b><span>请到“高级功能 → 部署资源”新增本机工具链或远程转换服务器，再执行检测。</span></div>`;
+    return rows.map(r=>{
+      const ready=r.status==='ready'&&(r.targets||[]).includes(target);
+      const detail=r.message||(!ready?'请执行资源检测并确认目标能力':'可以创建真实转换任务');
+      return `<div class="convert428-resource-status-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='remote'?'远程服务器':'本机')} · ${esc(statusLabel416(r.status))}</span></div><p>${esc(detail)}</p></div>`;
+    }).join('');
+  }
+  window.refreshConvertResource428=function(){
+    const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'ascend';
+    const all=state.conv428Resources||[],configured=matching416(all,target),ready=configured.filter(x=>x.status==='ready'&&(x.targets||[]).includes(target));
+    const sel=document.getElementById('conv428Resource'),chip=document.getElementById('conv428Chip'),warn=document.getElementById('conv428Warn'),status=document.getElementById('conv428ResourceStatus');
+    if(sel){sel.innerHTML=ready.map(x=>`<option value="${esc(x.id)}">${esc(x.name||x.id)} · ${esc(x.mode==='remote'?'远程':'本机')}</option>`).join('')||'<option value="">暂无已检测可用资源</option>';sel.onchange=()=>{const r=all.find(x=>x.id===sel.value);if(target==='ascend'&&chip){const socs=r?.detected_soc_versions||r?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}}
+    const first=ready[0];
+    if(chip){if(target==='rockchip')chip.value='rk3588';else if(target==='sophon')chip.value='bm1684x';else{const socs=first?.detected_soc_versions||first?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}
+    if(status)status.innerHTML=resourceStatusHtml416(configured,target);
+    if(warn){
+      if(ready.length)warn.textContent=target==='rockchip'?'已检测到可用 RKNN-Toolkit2；请选择 RK3588 或 RK3568 后创建真实转换任务。':target==='sophon'?'已检测到可用 TPU-MLIR；可生成真实 BMODEL。':'已检测到可用 Atlas/CANN 资源；请确认目标 soc_version。';
+      else warn.textContent=target==='rockchip'?'Windows 本机通常无法安装官方 RKNN-Toolkit2；请配置 WSL2/Linux 或远程转换节点，检测通过后才能创建 .rknn。':`当前没有已检测通过的${targetLabel416(target)}资源；已配置资源的状态和处理建议见下方。`;
+    }
+  };
+  window.openNewConvert428=async function(aid,vid){
+    try{
+      // Resource discovery and version history are independent; load both at once so the dialog never feels blocked.
+      const [rr,hist]=await Promise.all([resources416(),history416(aid,vid)]),v=hist.version||{};
+      if(!String(v.stored_path||'').trim())return toast('当前版本没有可用模型产物');
+      modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div></section><section><b>转换目标</b><div class="convert428-targets">${['ascend','rockchip','sophon'].map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t}" ${i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(targetLabel416(t))}</b><span>${t==='ascend'?'输出 .om':t==='rockchip'?'输出 .rknn':'输出 .bmodel'}</span></label>`).join('')}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select></div><div class="field"><label>精度</label><select id="conv428Precision" class="select"><option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8（需要校准数据）</option></select></div><div class="field"><label>输入尺寸</label><input id="conv428Input" class="input" value="640"></div><div class="field"><label>芯片型号</label><input id="conv428Chip" class="input" value=""></div></div></section><div id="conv428Warn" class="alert soft"></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
+      state.conv428Resources=rr.items||[];setTimeout(refreshConvertResource428,20);
+    }catch(e){toast(e.message||e)}
+  };
 })();

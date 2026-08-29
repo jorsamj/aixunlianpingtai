@@ -11,6 +11,7 @@ import time
 import threading
 import uuid
 import zipfile
+import random
 from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
@@ -47,6 +48,7 @@ from platform_core.materials import delete_material_files, initial_processing_st
 from platform_core.prompts import render_prompt, template_version_id, version_template
 from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
+from platform_core.resource_cache import ResourceCache
 from platform_core.secrets import KeyringSecretStore, secret_ref
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
@@ -4097,6 +4099,11 @@ class TrainReq(BaseModel):
     val_labels: Optional[List[str]] = None
     train_image_ids: Optional[List[str]] = None
     val_image_ids: Optional[List[str]] = None
+    # v42.15：训练页可从训练/试验候选素材中按比例随机留出本次试验集。
+    # selected_image_ids 是本次候选池；为空时保持旧版显式 train/val 选择兼容。
+    selected_image_ids: Optional[List[str]] = None
+    random_experiment_split: bool = True
+    experiment_percent: float = 20.0
     train_max_samples: int = 0
     val_max_samples: int = 0
     eval_interval: int = 0
@@ -4157,6 +4164,11 @@ def validate_train_request(payload: TrainReq):
             raise HTTPException(status_code=400, detail=f"{name} 必须在 0~1 之间")
     if int(payload.eval_interval) < 0 or int(payload.val_max_samples) < 0:
         raise HTTPException(status_code=400, detail="阶段检查轮次和试验集抽查数量不能小于 0")
+    if not (0 <= float(payload.experiment_percent) <= 100):
+        raise HTTPException(status_code=400, detail="试验集比例必须在 0~100 之间")
+    if payload.random_experiment_split and payload.selected_image_ids and len(set(payload.selected_image_ids)) >= 2:
+        if not (0 < float(payload.experiment_percent) < 100):
+            raise HTTPException(status_code=400, detail="启用随机试验集时，比例必须大于 0 且小于 100")
     if payload.continue_threshold and payload.stop_threshold and float(payload.continue_threshold) >= float(payload.stop_threshold):
         raise HTTPException(status_code=400, detail="继续训练下限必须小于提前完成阈值")
     # v42.8 起训练阶段不再支持 AI 中途介入；质量门禁完全由试验集 Ground Truth 指标决定。
@@ -4212,7 +4224,14 @@ def start_train(project_id: str, payload: TrainReq):
     validate_train_request(payload)
     p = project_dir(project_id)
     framework = (payload.framework or "ultralytics").strip().lower()
-    iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework)
+    # 所有训练入口都遵守同一迭代合同：已有版本时只能使用最新上一版本，
+    # 且必须先通过实际训练运行时的权重加载校验，不能静默回退。
+    iteration_base = _v54_iteration_base(
+        project_id,
+        payload.algorithm_asset_id or "",
+        framework,
+        strict_latest=True,
+    )
     model_value = (iteration_base or {}).get("path") or (payload.model or "").strip()
     alg = get_algorithm_config(payload.algorithm or "")
     if not alg and framework == "paddle":
@@ -5412,26 +5431,64 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
     train_ids = set(payload.train_image_ids or [])
     val_ids = set(payload.val_image_ids or [])
     groups = {"train": [], "val": [], "test": []}
-    for img in sorted(load_images(project_id), key=lambda x: x.get("id", "")):
-        split = (img.get("split") or "unassigned").lower()
-        if split not in groups:
-            continue
-        if split == "train" and train_ids and img.get("id") not in train_ids:
-            continue
-        if split == "val" and val_ids and img.get("id") not in val_ids:
-            continue
-        ann = read_annotation(project_id, img["id"])
-        clean=[]
-        for b in ann.get("boxes", []):
-            nb=normalize_box_for_project(project_id,img,b,create_label=False)
-            if nb: clean.append(nb)
-        if not clean and not payload.include_empty:
-            continue
-        labs={str(b.get("label") or "") for b in clean}
-        filt=train_filter if split=="train" else val_filter if split=="val" else set()
-        if filt and not labs.intersection(filt):
-            continue
-        groups[split].append((img,{"boxes":clean}))
+    requested_ids = {str(value) for value in (payload.selected_image_ids or []) if str(value).strip()}
+    split_seed = int(payload.seed or 0)
+    # The product training flow sends one candidate pool and asks the backend
+    # to draw a fresh experiment set for this run.  A non-zero seed keeps the
+    # run reproducible; the default seed deliberately uses secure entropy so
+    # repeated runs do not reuse the same holdout by accident.
+    random_pool = bool(payload.random_experiment_split and requested_ids)
+    if random_pool:
+        if not split_seed:
+            split_seed = random.SystemRandom().randrange(1, 2**31 - 1)
+        candidates = []
+        combined_filter = train_filter | val_filter
+        for img in sorted(load_images(project_id), key=lambda x: x.get("id", "")):
+            if str(img.get("id")) not in requested_ids:
+                continue
+            source_split = (img.get("split") or "unassigned").lower()
+            # Only persisted training/experiment roles can enter a run; test
+            # and unassigned materials stay available for later assignment.
+            if source_split not in {"train", "val", "unassigned"}:
+                continue
+            ann = read_annotation(project_id, img["id"])
+            clean = []
+            for b in ann.get("boxes", []):
+                nb = normalize_box_for_project(project_id, img, b, create_label=False)
+                if nb:
+                    clean.append(nb)
+            if not clean and not payload.include_empty:
+                continue
+            labs = {str(b.get("label") or "") for b in clean}
+            if combined_filter and not labs.intersection(combined_filter):
+                continue
+            candidates.append((img, {"boxes": clean}))
+        random.Random(split_seed).shuffle(candidates)
+        if len(candidates) >= 2:
+            val_count = max(1, min(len(candidates) - 1, round(len(candidates) * float(payload.experiment_percent) / 100.0)))
+            groups["val"] = candidates[:val_count]
+            groups["train"] = candidates[val_count:]
+    else:
+        for img in sorted(load_images(project_id), key=lambda x: x.get("id", "")):
+            split = (img.get("split") or "unassigned").lower()
+            if split not in groups:
+                continue
+            if split == "train" and train_ids and img.get("id") not in train_ids:
+                continue
+            if split == "val" and val_ids and img.get("id") not in val_ids:
+                continue
+            ann = read_annotation(project_id, img["id"])
+            clean=[]
+            for b in ann.get("boxes", []):
+                nb=normalize_box_for_project(project_id,img,b,create_label=False)
+                if nb: clean.append(nb)
+            if not clean and not payload.include_empty:
+                continue
+            labs={str(b.get("label") or "") for b in clean}
+            filt=train_filter if split=="train" else val_filter if split=="val" else set()
+            if filt and not labs.intersection(filt):
+                continue
+            groups[split].append((img,{"boxes":clean}))
     if payload.train_max_samples and payload.train_max_samples>0:
         groups["train"]=groups["train"][:int(payload.train_max_samples)]
     # v42.8：试验集快照保留全部所选数据。val_max_samples 只控制“每隔 N 轮门禁检查”时的随机抽样数量；
@@ -5455,18 +5512,59 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
             counts[part]+=1;counts["boxes"]+=len(lines);counts[f"{part}_boxes"]+=len(lines);selected_ids[part].append(img["id"])
     data_yaml={"path":str(dataset).replace("\\\\","/"),"train":"images/train","val":"images/val","test":"images/test","names":{i:l for i,l in enumerate(project.get("labels",[]))}}
     yaml_path=dataset/"data.yaml";yaml_path.write_text(yaml.safe_dump(data_yaml,allow_unicode=True,sort_keys=False),encoding="utf-8")
-    return {"ok":True,"dataset":str(dataset),"data_yaml":str(yaml_path),"counts":counts,"labels":project.get("labels",[]),"selected_ids":selected_ids,"filters":{"train_labels":sorted(train_filter),"val_labels":sorted(val_filter),"train_image_ids":sorted(train_ids),"val_image_ids":sorted(val_ids)}}
+    return {"ok":True,"dataset":str(dataset),"data_yaml":str(yaml_path),"counts":counts,"labels":project.get("labels",[]),"selected_ids":selected_ids,"split_seed":split_seed,"experiment_percent":float(payload.experiment_percent),"filters":{"train_labels":sorted(train_filter),"val_labels":sorted(val_filter),"train_image_ids":sorted(train_ids),"val_image_ids":sorted(val_ids),"selected_image_ids":sorted(requested_ids)}}
 
 
 
-def _v54_iteration_base(project_id: str, algorithm_id: str, framework: str) -> Optional[Dict[str, Any]]:
-    """Use the newest usable algorithm version as the next iteration base model."""
+def _v54_validate_iteration_artifact(path: Path, framework: str) -> bool:
+    """Validate that a stored checkpoint can actually be loaded by its trainer."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        return False
+    if framework != "ultralytics":
+        return True
+    py = ultralytics_runtime_python()
+    script = "from ultralytics import YOLO; YOLO(r'''%s'''); print('checkpoint-ok')" % str(path.resolve()).replace("'", "''")
+    try:
+        result = subprocess.run(
+            [py, "-c", script],
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=90,
+            env={**os.environ.copy(), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and "checkpoint-ok" in (result.stdout or "")
+
+
+def _v54_iteration_base(
+    project_id: str,
+    algorithm_id: str,
+    framework: str,
+    *,
+    strict_latest: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Use an algorithm version as the next iteration base model.
+
+    Strict mode is used by product training entry points: the mother model is
+    allowed only for a first run (no versions), and the immediate latest
+    version must be present and loadable once a version exists.
+    """
     if not algorithm_id:
         return None
     algo = next((a for a in list_algorithms_internal(project_id) if str(a.get("id")) == str(algorithm_id)), None)
     if not algo:
         return None
-    selection = choose_iteration_base(algo.get("versions") or [], "", framework)
+    selection = choose_iteration_base(
+        algo.get("versions") or [],
+        "",
+        framework,
+        strict_latest=strict_latest,
+        artifact_validator=(lambda path: _v54_validate_iteration_artifact(path, framework)) if strict_latest else None,
+    )
     if selection["base_selection_reason"] == "mother_model":
         return None
     path = Path(selection["base_model_path"])
@@ -5493,8 +5591,17 @@ def v12_start_train(project_id: str, payload: TrainReq):
     alg = get_algorithm_config(payload.algorithm or "")
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
     mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
-    base_selection = choose_iteration_base((asset_algorithm or {}).get("versions") or [], mother_model, framework)
-    iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework)
+    iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework, strict_latest=True)
+    if iteration_base:
+        base_selection = {
+            "base_version_id": iteration_base.get("version_id"),
+            "base_version_name": iteration_base.get("version_name") or "",
+            "base_model_path": iteration_base.get("path") or "",
+            "base_model_kind": "train_checkpoint",
+            "base_selection_reason": "latest_verified_version",
+        }
+    else:
+        base_selection = choose_iteration_base((asset_algorithm or {}).get("versions") or [], mother_model, framework)
     model_value = base_selection["base_model_path"]
     if framework != "ultralytics":
         # 飞桨真实训练仍走旧执行器，但数据集改用 COCO split 导出
@@ -5507,7 +5614,9 @@ def v12_start_train(project_id: str, payload: TrainReq):
     base_selection["base_model_path"] = model_value
     # v42.4: one logical data pool; train/val/test are sample roles rather than separate named datasets.
     preflight = dataset_quality_report(project_id, None, payload.include_empty)
-    if not preflight.get("can_train"):
+    # A random candidate pool can start from freshly uploaded/unassigned
+    # materials; build_yolo_dataset_v44 assigns train/experiment roles below.
+    if not preflight.get("can_train") and not (payload.random_experiment_split and payload.selected_image_ids):
         raise HTTPException(status_code=400, detail="数据不可训练：" + "；".join(preflight.get("warnings", [])))
     build = build_yolo_dataset_v44(project_id, payload)
     selected = build.get("selected_ids") or {}
@@ -5523,7 +5632,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
         selected.get("train") or [],
         selected.get("val") or [],
         active_label_options(project_label_items(get_project(project_id))),
-        seed=int(payload.seed or 0),
+        seed=int(build.get("split_seed") or payload.seed or 0),
     )
     snapshot_path = persist_snapshot(p / "snapshots", snapshot)
     job_id = uuid.uuid4().hex[:12]
@@ -5590,12 +5699,15 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "dataset_name": "全部数据",
         "dataset_counts": build.get("counts", {}),
         "dataset_selected_ids": build.get("selected_ids", {}),
+        "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent),
+        "random_experiment_split": bool(payload.random_experiment_split and payload.selected_image_ids),
+        "split_seed": int(build.get("split_seed") or payload.seed or 0),
         "data_filters": build.get("filters", {}),
         "dataset_snapshot": build.get("dataset", ""),
         "snapshot_id": snapshot["snapshot_id"],
         "snapshot_path": str(snapshot_path),
         "data_yaml": build.get("data_yaml", ""),
-        "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0)},
+        "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0), "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent), "split_seed": int(build.get("split_seed") or payload.seed or 0)},
         "ai_intervention": {"enabled": False},
         "queue_priority": int(payload.queue_priority or 50),
         "auto_convert_targets": list(payload.auto_convert_targets or []),
@@ -6209,6 +6321,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "model_name":model_name,"model_key":f"job::{job.get('id')}::{version_name}","stored_path":stored_path,"type":model_type,"size_mb":size_mb,
         "job_id":job.get("id"),"remark":"训练结束自动生成版本","report":rep,"report_updated_at":now_iso(),
         "accuracy":accuracy,"accuracy_metric":"mAP50","quality_reached":_v48_quality_reached(job),"training_status":job.get("status"),
+        "artifact_verified": bool(job.get("artifact_verified")) and bool(stored_path),
         "status":"可用" if stored_path else "无可用模型产物","created_at":job.get("finished_at") or now_iso(),"updated_at":now_iso(),
     }
     algo.setdefault("versions",[]).insert(0,version);algo["updated_at"]=now_iso();save_algorithms_internal(project_id,algos)
@@ -8963,7 +9076,10 @@ def _deploy_paddle_info(py: str) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
-def _builtin_deploy_resources() -> List[Dict[str, Any]]:
+_DEPLOY_BUILTIN_RESOURCE_CACHE = ResourceCache(ttl_seconds=300)
+
+
+def _scan_builtin_deploy_resources() -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     ultra = get_active_ultralytics_env() or {}
     upy = str(ultra.get("python_path") or "")
@@ -8987,6 +9103,69 @@ def _builtin_deploy_resources() -> List[Dict[str, Any]]:
         "message": "可将 .pdparams 导出为 Paddle Inference" + ("，并可转 ONNX" if p2o else "") if pd_ok else "请先在训练资源配置 PaddleDetection",
     })
     return rows
+
+
+def _builtin_deploy_resource_summary() -> List[Dict[str, Any]]:
+    """Return a cheap status snapshot while optional SDK imports run in background."""
+    ultra = read_json(ULTRALYTICS_ENV_FILE, {})
+    ultra = ultra if isinstance(ultra, dict) else {}
+    upy = str(ultra.get("python_path") or sys.executable)
+    ultra_path_ok = bool(upy and Path(upy).exists())
+    ultra_verified = bool(ultra.get("version") and (ultra.get("package_path") or ultra.get("updated_at")))
+    rows: List[Dict[str, Any]] = [{
+        "id": "builtin_ultralytics",
+        "name": "Ultralytics 导出环境",
+        "kind": "ultralytics",
+        "mode": "local",
+        "builtin": True,
+        "python_path": upy,
+        "status": "ready" if ultra_verified else ("unchecked" if ultra_path_ok else "missing"),
+        "version": str(ultra.get("version") or ""),
+        "targets": ["onnx"] if ultra_verified else [],
+        "message": "可将 .pt 真实导出为 ONNX" if ultra_verified else ("正在后台检测 Ultralytics 导出环境" if ultra_path_ok else "请先配置可用的 Ultralytics Python"),
+    }]
+    paddle = read_json(PADDLE_ENV_FILE, {})
+    paddle = paddle if isinstance(paddle, dict) else {}
+    ppy = str(paddle.get("python_path") or "")
+    pd_dir = str(paddle.get("paddledet_dir") or "")
+    paddle_configured = bool(ppy and Path(ppy).exists() and pd_dir and Path(pd_dir).exists())
+    rows.append({
+        "id": "builtin_paddle",
+        "name": "PaddleDetection 导出环境",
+        "kind": "paddle",
+        "mode": "local",
+        "builtin": True,
+        "python_path": ppy,
+        "paddledet_dir": pd_dir,
+        "paddle2onnx_path": str(paddle.get("paddle2onnx_path") or ""),
+        "status": "unchecked" if paddle_configured else "missing",
+        "version": "",
+        "targets": [],
+        "message": "正在后台检测 PaddleDetection 导出环境" if paddle_configured else "请先在训练资源配置 PaddleDetection",
+    })
+    return rows
+
+
+def _builtin_deploy_resources(force: bool = False) -> List[Dict[str, Any]]:
+    """Return resource status without blocking the request on SDK imports."""
+    if force:
+        return _DEPLOY_BUILTIN_RESOURCE_CACHE.get_or_refresh(_scan_builtin_deploy_resources)["items"]
+    snapshot = _DEPLOY_BUILTIN_RESOURCE_CACHE.snapshot()
+    if snapshot["items"] and not snapshot["stale"]:
+        return snapshot["items"]
+    _DEPLOY_BUILTIN_RESOURCE_CACHE.refresh_in_background(_scan_builtin_deploy_resources)
+    return snapshot["items"] or _builtin_deploy_resource_summary()
+
+
+def _builtin_deploy_resource_cache_meta() -> Dict[str, Any]:
+    snapshot = _DEPLOY_BUILTIN_RESOURCE_CACHE.snapshot()
+    return {
+        "stale": bool(snapshot.get("stale")),
+        "refreshing": bool(snapshot.get("refreshing")),
+        "updated_at": snapshot.get("updated_at") or "",
+        "age_seconds": snapshot.get("age_seconds"),
+        "error": snapshot.get("error") or "",
+    }
 
 
 def _load_saved_deploy_resources() -> List[Dict[str, Any]]:
@@ -9125,7 +9304,7 @@ class DeployResourceReq(BaseModel):
 
 @app.get("/api/v39/deploy/resources")
 def v39_list_deploy_resources():
-    return {"ok": True, "items": _builtin_deploy_resources() + _load_saved_deploy_resources()}
+    return {"ok": True, "items": _builtin_deploy_resources() + _load_saved_deploy_resources(), **_builtin_deploy_resource_cache_meta()}
 
 
 @app.post("/api/v39/deploy/resources")
@@ -9160,7 +9339,7 @@ def v39_delete_deploy_resource(resource_id: str):
 @app.post("/api/v39/deploy/resources/{resource_id}/detect")
 def v39_detect_deploy_resource(resource_id: str):
     if resource_id.startswith("builtin_"):
-        item = next((x for x in _builtin_deploy_resources() if x.get("id") == resource_id), None)
+        item = next((x for x in _builtin_deploy_resources(force=True) if x.get("id") == resource_id), None)
         if not item: raise HTTPException(status_code=404, detail="内置部署资源不存在")
         return item
     items = _load_saved_deploy_resources()
@@ -11986,7 +12165,12 @@ def _v53_start_bootstrap(preferred_project_id:str="", force:bool=False):
         _V53_BOOTSTRAP_THREAD=threading.Thread(target=_v53_bootstrap_worker,args=(preferred_project_id,),daemon=True,name="v53-bootstrap"); _V53_BOOTSTRAP_THREAD.start()
 
 @app.on_event("startup")
-def _v53_startup_bootstrap():_v53_start_bootstrap()
+def _v53_startup_bootstrap():
+    # Vendor imports are optional and can be slow on Windows. Warm their
+    # readiness cache in the background so the first deployment page remains
+    # responsive while the normal platform bootstrap continues independently.
+    _builtin_deploy_resources()
+    _v53_start_bootstrap()
 
 class V53BootstrapReq(BaseModel):
     preferred_project_id: Optional[str]=""; force: bool=False
@@ -12035,4 +12219,4 @@ def v54_label_schema(project_id: str):
 @app.get('/api/v54/projects/{project_id}/algorithms/{algorithm_id}/iteration-base')
 def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str = 'ultralytics'):
     get_project(project_id)
-    return {'ok': True, 'base': _v54_iteration_base(project_id, algorithm_id, framework)}
+    return {'ok': True, 'base': _v54_iteration_base(project_id, algorithm_id, framework, strict_latest=True)}

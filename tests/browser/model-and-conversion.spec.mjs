@@ -73,3 +73,50 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await page.locator('.deploy-target-card', {hasText: 'NVIDIA TensorRT'}).click();
   await expect(page.locator('#dpTargetEnvironment')).toBeVisible();
 });
+
+test('version conversion shows configured compiler resources and their readiness', async ({page, request}) => {
+  const project = await (await request.post('/api/projects', {data: {
+    name: `转换资源浏览器-${Date.now()}`,
+    labels: [{code: 'fire', display_name: '明火'}]
+  }})).json();
+  const algorithmId = 'algorithm-resource-test';
+  const versionId = 'version-resource-test';
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      algorithm: {id: algorithmId, name: '转换资源算法'},
+      version: {id: versionId, version_name: '20260829120000', model_name: 'best.pt', stored_path: 'C:\\models\\best.pt'},
+      items: []
+    })
+  }));
+  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({items: [
+      {id: 'rknn-windows', name: 'Windows RKNN-Toolkit2', kind: 'rockchip', mode: 'local', status: 'missing', targets: [], message: '未检测到 RKNN-Toolkit2；建议配置 Linux/WSL2 或远程转换节点'},
+      {id: 'atlas-remote', name: 'Atlas 远程转换节点', kind: 'ascend', mode: 'remote', status: 'unchecked', targets: [], message: '尚未检测远程服务'}
+    ]})
+  }));
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '工作台'}));
+  }, project.id);
+  await page.goto('/');
+  await page.evaluate(async () => { if (window.__clInit) await window.__clInit(); });
+  await expect(page.getByRole('button', {name: /算法列表/})).toBeVisible();
+  await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [algorithmId, versionId]);
+  const historyDialog = page.getByRole('dialog', {name: '版本转换'});
+  await expect(historyDialog).toBeVisible();
+  await historyDialog.getByRole('button', {name: '选择转换目标'}).click();
+  const createDialog = page.getByRole('dialog', {name: '新建版本转换'});
+  await expect(createDialog).toBeVisible();
+  await createDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
+  await expect(createDialog.locator('.convert428-resource-status')).toContainText('Windows RKNN-Toolkit2');
+  await expect(createDialog.locator('.convert428-resource-status')).toContainText('未检测到 RKNN-Toolkit2');
+  await createDialog.getByRole('button', {name: '取消'}).click();
+  await historyDialog.locator('button[aria-label="关闭"]').click();
+  await page.evaluate(() => window.setPage('部署转换'));
+  await expect(page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'})).toBeVisible();
+  await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
+  await expect(page.locator('.deploy-resource-readiness')).toContainText('Windows RKNN-Toolkit2');
+});
