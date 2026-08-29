@@ -1,6 +1,7 @@
 import threading
 import uuid
 
+import pytest
 from PIL import Image
 
 
@@ -118,3 +119,79 @@ def test_image_batch_save_false_discards_metadata_without_revision(client, tmp_p
     assert snapshot.revision == baseline_revision
     assert all(row.get("id") != record["id"] for row in snapshot.rows)
     assert app_module._v50_active_image_batch(project_id) is None
+
+
+def test_rejected_multi_dataset_batch_cleans_all_buffered_files(
+    client, tmp_path, monkeypatch
+):
+    import app as app_module
+
+    project_id = create_project(client)
+    deleting_dataset = client.post(
+        f"/api/projects/{project_id}/datasets",
+        json={"name": "deleting", "description": ""},
+    ).json()["id"]
+    other_dataset = client.post(
+        f"/api/projects/{project_id}/datasets",
+        json={"name": "other", "description": ""},
+    ).json()["id"]
+    seed_source = tmp_path / "seed.png"
+    first_source = tmp_path / "first.png"
+    second_source = tmp_path / "second.png"
+    write_png(seed_source, "red")
+    write_png(first_source, "green")
+    write_png(second_source, "blue")
+    seed = app_module.add_image_record(
+        project_id, seed_source, "seed.png", "raw", deleting_dataset
+    )
+
+    app_module._v50_begin_image_batch(project_id)
+    first = app_module.add_image_record(
+        project_id, first_source, "first.png", "imported_yolo", deleting_dataset
+    )
+    second = app_module.add_image_record(
+        project_id, second_source, "second.png", "imported_yolo", other_dataset
+    )
+    reached = threading.Event()
+    resume = threading.Event()
+    original_stage = app_module._v50_stage_material_file
+
+    def paused_stage(source, destination):
+        if threading.current_thread().name == "batch-delete" and not reached.is_set():
+            reached.set()
+            assert resume.wait(5), "dataset deletion did not resume"
+        return original_stage(source, destination)
+
+    monkeypatch.setattr(app_module, "_v50_stage_material_file", paused_stage)
+    outcome = {}
+
+    def run_delete():
+        try:
+            outcome["value"] = app_module.delete_dataset(
+                project_id, deleting_dataset
+            )
+        except BaseException as error:
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run_delete, name="batch-delete")
+    thread.start()
+    try:
+        assert reached.wait(5)
+        with pytest.raises(app_module.HTTPException) as raised:
+            app_module._v50_end_image_batch(save=True)
+    finally:
+        resume.set()
+        thread.join(5)
+        if app_module._v50_active_image_batch(project_id):
+            app_module._v50_end_image_batch(save=False)
+
+    assert raised.value.status_code == 409
+    assert outcome == {"value": {"ok": True}}
+    rows = app_module.material_store(project_id).read().rows
+    assert {str(row.get("id")) for row in rows}.isdisjoint(
+        {seed["id"], first["id"], second["id"]}
+    )
+    project_path = app_module.project_dir(project_id)
+    for record in (first, second):
+        assert not (project_path / "uploads" / record["stored_name"]).exists()
+        assert not (project_path / "annotations" / f"{record['id']}.json").exists()

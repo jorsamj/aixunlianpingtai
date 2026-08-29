@@ -11,6 +11,7 @@ import time
 import threading
 import uuid
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -845,6 +846,12 @@ def box_to_yolo_line(b: Dict[str, Any], w: int, h: int) -> str:
 _IMAGE_BATCH_CTX = threading.local()
 _V50_IMPORT_LOCK_GUARD = threading.Lock()
 _V50_IMPORT_LOCKS: Dict[str, threading.RLock] = {}
+_V50_DATASET_LOCK_GUARD = threading.Lock()
+_V50_DATASET_LOCKS: Dict[Tuple[str, str], threading.RLock] = {}
+
+
+class _V50DatasetSourceChanged(RuntimeError):
+    pass
 
 def _v50_project_import_lock(project_id: str) -> threading.RLock:
     with _V50_IMPORT_LOCK_GUARD:
@@ -853,6 +860,36 @@ def _v50_project_import_lock(project_id: str) -> threading.RLock:
             lock = threading.RLock()
             _V50_IMPORT_LOCKS[project_id] = lock
         return lock
+
+
+def _v50_dataset_lock_key(project_id: str, dataset_id: str) -> Tuple[str, str]:
+    return (str(project_id), str(dataset_id or "default"))
+
+
+def _v50_dataset_lock(project_id: str, dataset_id: str) -> threading.RLock:
+    key = _v50_dataset_lock_key(project_id, dataset_id)
+    with _V50_DATASET_LOCK_GUARD:
+        lock = _V50_DATASET_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _V50_DATASET_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def _v50_dataset_locks(project_id: str, dataset_ids):
+    keys = sorted({
+        _v50_dataset_lock_key(project_id, dataset_id)
+        for dataset_id in dataset_ids
+    })
+    locks = [_v50_dataset_lock(*key) for key in keys]
+    for lock in locks:
+        lock.acquire()
+    try:
+        yield
+    finally:
+        for lock in reversed(locks):
+            lock.release()
 
 def _v50_active_image_batch(project_id: str):
     batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
@@ -878,6 +915,28 @@ def _v50_queue_image_patch(project_id: str, image_id: str, patch: Dict[str, Any]
     else:
         batch["patches"].setdefault(normalized_id, {}).update(dict(patch))
     return True
+
+
+def _v50_cleanup_buffered_image_batch_files(
+    project_id: str, records: List[Dict[str, Any]]
+) -> List[str]:
+    errors = []
+    p = project_dir(project_id)
+    for record in records:
+        image_id = str(record.get("id") or "")
+        stored_name = str(record.get("stored_name") or "")
+        paths = []
+        if stored_name and Path(stored_name).name == stored_name:
+            paths.append(p / "uploads" / stored_name)
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", image_id):
+            paths.append(p / "annotations" / f"{image_id}.json")
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as error:
+                errors.append(f"{path.name}: {error}")
+    return errors
+
 
 def _v50_end_image_batch(save: bool = True):
     batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
@@ -926,10 +985,26 @@ def _v50_end_image_batch(save: bool = True):
         for patch in patches.values()
         if "dataset_id" in patch
     )
-    with _v50_project_import_lock(project_id):
-        for dataset_id in target_dataset_ids:
-            _v50_assert_dataset_writable_locked(project_id, dataset_id)
-        return material_store(project_id).mutate(commit)
+    try:
+        with _v50_dataset_locks(project_id, target_dataset_ids):
+            for dataset_id in sorted(target_dataset_ids):
+                _v50_assert_dataset_writable_locked(project_id, dataset_id)
+            return material_store(project_id).mutate(commit)
+    except HTTPException as error:
+        if error.status_code != 409:
+            raise
+        cleanup_errors = _v50_cleanup_buffered_image_batch_files(
+            project_id, records
+        )
+        if cleanup_errors:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "批量导入被拒绝，部分缓冲文件未能清理",
+                    "errors": cleanup_errors,
+                },
+            ) from error
+        raise
 
 def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = False):
     if not annotated:
@@ -996,7 +1071,7 @@ def add_image_record(project_id: str, src: Path, original_name: str, source_type
     }
     annotation_path = p / "annotations" / f"{img_id}.json"
     try:
-        with _v50_project_import_lock(project_id):
+        with _v50_dataset_locks(project_id, [target_dataset_id]):
             _v50_assert_dataset_writable_locked(project_id, target_dataset_id)
             batch = _v50_active_image_batch(project_id)
             if batch:
@@ -1150,6 +1225,20 @@ _V50_DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
 _V50_ACTIVE_DATASET_DELETIONS_GUARD = threading.Lock()
 _V50_ACTIVE_DATASET_DELETION_TOKENS: set = set()
 _V50_ACTIVE_DATASET_DELETION_TARGETS: Dict[str, Tuple[str, str]] = {}
+_V50_DATASET_DELETE_STATUSES = {
+    "created",
+    "claimed",
+    "staging",
+    "staged",
+    "finalized",
+    "metadata_removed",
+    "recovering",
+    "recovered",
+    "deletion_finished",
+    "recovery_failed",
+    "rolled_back",
+    "rollback_failed",
+}
 
 
 def _v50_dataset_deletion_root(project_id: str) -> Path:
@@ -1162,6 +1251,218 @@ def _v50_dataset_delete_journal_path(project_id: str, token: str) -> Path:
 
 def _v50_dataset_delete_staging_dir(project_id: str, token: str) -> Path:
     return _v50_dataset_deletion_root(project_id) / "staging" / token
+
+
+def _v50_recovery_conflict(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=f"数据集删除恢复记录无效：{message}",
+    )
+
+
+def _v50_safe_journal_identifier(value: Any, field: str) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise _v50_recovery_conflict(f"{field} 类型无效")
+    normalized = str(value)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", normalized):
+        raise _v50_recovery_conflict(f"{field} 格式无效")
+    return normalized
+
+
+def _v50_safe_stored_name(value: Any) -> str:
+    if not isinstance(value, str) or not value or len(value) > 255:
+        raise _v50_recovery_conflict("stored_name 类型或长度无效")
+    if value in {".", ".."} or "/" in value or "\\" in value:
+        raise _v50_recovery_conflict("stored_name 不是文件名")
+    if Path(value).is_absolute() or Path(value).drive or Path(value).name != value:
+        raise _v50_recovery_conflict("stored_name 不是安全的 basename")
+    if any(ord(character) < 32 for character in value):
+        raise _v50_recovery_conflict("stored_name 包含控制字符")
+    return value
+
+
+def _v50_resolve_expected_path(path: Path, root: Path, field: str) -> Path:
+    resolved = path.resolve()
+    resolved_root = root.resolve()
+    try:
+        relative = resolved.relative_to(resolved_root)
+    except ValueError as error:
+        raise _v50_recovery_conflict(f"{field} 越出预期目录") from error
+    if not relative.parts:
+        raise _v50_recovery_conflict(f"{field} 不能指向目录根")
+    return resolved
+
+
+def _v50_read_datasets_strict(project_id: str) -> List[Dict[str, Any]]:
+    path = datasets_file(project_id)
+    try:
+        raw = path.read_text(encoding="utf-8")
+        datasets = json.loads(raw)
+    except Exception as error:
+        raise HTTPException(
+            status_code=409,
+            detail=f"数据集元数据无法确认，已保留删除恢复记录：{error}",
+        ) from error
+    if not isinstance(datasets, list):
+        raise HTTPException(
+            status_code=409,
+            detail="数据集元数据格式错误，已保留删除恢复记录",
+        )
+    normalized = []
+    seen = set()
+    for index, item in enumerate(datasets):
+        if not isinstance(item, dict):
+            raise HTTPException(
+                status_code=409,
+                detail=f"数据集元数据第 {index + 1} 项格式错误",
+            )
+        try:
+            dataset_id = _v50_safe_journal_identifier(
+                item.get("id"), f"datasets[{index}].id"
+            )
+        except HTTPException as error:
+            raise HTTPException(
+                status_code=409,
+                detail=f"数据集元数据无法确认：{error.detail}",
+            ) from error
+        if dataset_id in seen:
+            raise HTTPException(status_code=409, detail="数据集元数据包含重复 ID")
+        seen.add(dataset_id)
+        normalized.append(item)
+    return normalized
+
+
+def _v50_validate_dataset_delete_journal(
+    expected_project_id: str, path: Path, journal: Any
+) -> Dict[str, Any]:
+    if not isinstance(journal, dict):
+        raise _v50_recovery_conflict("顶层必须是对象")
+    project_id = _v50_safe_journal_identifier(
+        journal.get("project_id"), "project_id"
+    )
+    if project_id != str(expected_project_id):
+        raise _v50_recovery_conflict("project_id 与项目不匹配")
+    dataset_id = _v50_safe_journal_identifier(
+        journal.get("dataset_id"), "dataset_id"
+    )
+    token = str(journal.get("token") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise _v50_recovery_conflict("token 格式无效")
+    expected_journal = _v50_dataset_delete_journal_path(project_id, token)
+    if path.resolve() != expected_journal.resolve() or path.stem != token:
+        raise _v50_recovery_conflict("日志路径与 token 不匹配")
+    _v50_resolve_expected_path(
+        expected_journal,
+        _v50_dataset_deletion_root(project_id),
+        "journal_path",
+    )
+    status = journal.get("status")
+    if not isinstance(status, str) or status not in _V50_DATASET_DELETE_STATUSES:
+        raise _v50_recovery_conflict("status 无效")
+    if not isinstance(journal.get("created_at"), str):
+        raise _v50_recovery_conflict("created_at 无效")
+    claimed_rows = journal.get("claimed_rows")
+    positions = journal.get("claimed_positions")
+    files = journal.get("files")
+    if not isinstance(claimed_rows, list):
+        raise _v50_recovery_conflict("claimed_rows 必须是数组")
+    if not isinstance(positions, dict):
+        raise _v50_recovery_conflict("claimed_positions 必须是对象")
+    if not isinstance(files, list):
+        raise _v50_recovery_conflict("files 必须是数组")
+
+    expected_staging = _v50_dataset_delete_staging_dir(project_id, token)
+    staging_value = journal.get("staging_dir")
+    if not isinstance(staging_value, str) or not Path(staging_value).is_absolute():
+        raise _v50_recovery_conflict("staging_dir 无效")
+    if Path(staging_value).resolve() != expected_staging.resolve():
+        raise _v50_recovery_conflict("staging_dir 与 token 不匹配")
+    _v50_resolve_expected_path(
+        expected_staging,
+        _v50_dataset_deletion_root(project_id) / "staging",
+        "staging_dir",
+    )
+
+    expected_files = {}
+    seen_ids = set()
+    for index, row in enumerate(claimed_rows):
+        if not isinstance(row, dict):
+            raise _v50_recovery_conflict(f"claimed_rows[{index}] 必须是对象")
+        image_id = _v50_safe_journal_identifier(
+            row.get("id"), f"claimed_rows[{index}].id"
+        )
+        if image_id in seen_ids:
+            raise _v50_recovery_conflict("claimed_rows 包含重复 image_id")
+        seen_ids.add(image_id)
+        if str(row.get("dataset_id") or "default") != dataset_id:
+            raise _v50_recovery_conflict("claimed row dataset_id 与日志不匹配")
+        if _V50_DATASET_DELETE_CLAIM_FIELD in row:
+            raise _v50_recovery_conflict("claimed row 不应包含内部 claim")
+        stored_name = _v50_safe_stored_name(row.get("stored_name"))
+        position = positions.get(image_id)
+        if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+            raise _v50_recovery_conflict("claimed_positions 与 image_id 不匹配")
+        row_staging = expected_staging / image_id
+        upload_source = project_dir(project_id) / "uploads" / stored_name
+        annotation_source = project_dir(project_id) / "annotations" / f"{image_id}.json"
+        expected_files[(image_id, "image")] = (
+            _v50_resolve_expected_path(
+                upload_source, project_dir(project_id) / "uploads", "upload source"
+            ),
+            _v50_resolve_expected_path(
+                row_staging / f"image{Path(stored_name).suffix}",
+                expected_staging,
+                "staged image",
+            ),
+        )
+        expected_files[(image_id, "annotation")] = (
+            _v50_resolve_expected_path(
+                annotation_source,
+                project_dir(project_id) / "annotations",
+                "annotation source",
+            ),
+            _v50_resolve_expected_path(
+                row_staging / "annotation.json",
+                expected_staging,
+                "staged annotation",
+            ),
+        )
+    if set(positions) != seen_ids:
+        raise _v50_recovery_conflict("claimed_positions 包含未知 image_id")
+
+    recorded_keys = set()
+    for index, item in enumerate(files):
+        if not isinstance(item, dict):
+            raise _v50_recovery_conflict(f"files[{index}] 必须是对象")
+        image_id = _v50_safe_journal_identifier(
+            item.get("image_id"), f"files[{index}].image_id"
+        )
+        kind = item.get("kind")
+        key = (image_id, kind)
+        if kind not in {"image", "annotation"} or key not in expected_files:
+            raise _v50_recovery_conflict(f"files[{index}] 类型或 image_id 无效")
+        if key in recorded_keys:
+            raise _v50_recovery_conflict("files 包含重复路径记录")
+        recorded_keys.add(key)
+        if not isinstance(item.get("existed"), bool):
+            raise _v50_recovery_conflict(f"files[{index}].existed 无效")
+        source_value = item.get("source")
+        staged_value = item.get("staged")
+        if (
+            not isinstance(source_value, str)
+            or not Path(source_value).is_absolute()
+            or not isinstance(staged_value, str)
+            or not Path(staged_value).is_absolute()
+        ):
+            raise _v50_recovery_conflict(f"files[{index}] 路径无效")
+        expected_source, expected_staged = expected_files[key]
+        if Path(source_value).resolve() != expected_source:
+            raise _v50_recovery_conflict(f"files[{index}].source 不匹配")
+        if Path(staged_value).resolve() != expected_staged:
+            raise _v50_recovery_conflict(f"files[{index}].staged 不匹配")
+    if recorded_keys != set(expected_files):
+        raise _v50_recovery_conflict("files 未覆盖所有素材路径")
+    return journal
 
 
 def _v50_dataset_delete_token_active(token: str) -> bool:
@@ -1194,16 +1495,17 @@ def _v50_dataset_delete_target_active(project_id: str, dataset_id: str) -> bool:
 
 def _v50_write_dataset_delete_journal(journal: Dict[str, Any]):
     journal["updated_at"] = now_iso()
-    atomic_write_json(
-        _v50_dataset_delete_journal_path(
-            str(journal.get("project_id") or ""),
-            str(journal.get("token") or ""),
-        ),
-        journal,
+    project_id = str(journal.get("project_id") or "")
+    path = _v50_dataset_delete_journal_path(
+        project_id, str(journal.get("token") or "")
     )
+    _v50_validate_dataset_delete_journal(project_id, path, journal)
+    atomic_write_json(path, journal)
 
 
-def _v50_read_dataset_delete_journal(path: Path) -> Dict[str, Any]:
+def _v50_read_dataset_delete_journal(
+    project_id: str, path: Path
+) -> Dict[str, Any]:
     try:
         journal = json.loads(path.read_text(encoding="utf-8"))
     except Exception as error:
@@ -1211,14 +1513,7 @@ def _v50_read_dataset_delete_journal(path: Path) -> Dict[str, Any]:
             status_code=409,
             detail=f"数据集删除恢复记录无法读取：{error}",
         ) from error
-    token = str(journal.get("token") or "")
-    project_id = str(journal.get("project_id") or "")
-    if not re.fullmatch(r"[0-9a-f]{32}", token):
-        raise HTTPException(status_code=409, detail="数据集删除恢复记录 token 无效")
-    expected = _v50_dataset_delete_journal_path(project_id, token).resolve()
-    if path.resolve() != expected:
-        raise HTTPException(status_code=409, detail="数据集删除恢复记录路径无效")
-    return journal
+    return _v50_validate_dataset_delete_journal(project_id, path, journal)
 
 
 def _v50_dataset_delete_journals(
@@ -1229,9 +1524,7 @@ def _v50_dataset_delete_journals(
         return []
     journals = []
     for path in sorted(root.glob("*.json")):
-        journal = _v50_read_dataset_delete_journal(path)
-        if str(journal.get("project_id") or "") != str(project_id):
-            raise HTTPException(status_code=409, detail="数据集删除恢复记录项目不匹配")
+        journal = _v50_read_dataset_delete_journal(project_id, path)
         if dataset_id is not None and str(journal.get("dataset_id") or "") != str(dataset_id):
             continue
         journals.append(journal)
@@ -1242,6 +1535,8 @@ def _v50_dataset_delete_file_entries(
     project_id: str, journal: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
     token = str(journal.get("token") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise _v50_recovery_conflict("token 格式无效")
     staging_dir = _v50_dataset_delete_staging_dir(project_id, token)
     recorded = {
         (str(item.get("image_id") or ""), str(item.get("kind") or "")): item
@@ -1252,22 +1547,34 @@ def _v50_dataset_delete_file_entries(
     for row in journal.get("claimed_rows", []):
         if not isinstance(row, dict):
             continue
-        image_id = str(row.get("id") or "")
-        if not image_id:
-            continue
-        row_dir = staging_dir / safe_filename(image_id)
-        stored_name = Path(str(row.get("stored_name") or "")).name
-        pairs = []
-        if stored_name:
-            pairs.append((
-                "image",
+        image_id = _v50_safe_journal_identifier(row.get("id"), "image_id")
+        row_dir = staging_dir / image_id
+        stored_name = _v50_safe_stored_name(row.get("stored_name"))
+        pairs = [(
+            "image",
+            _v50_resolve_expected_path(
                 project_dir(project_id) / "uploads" / stored_name,
+                project_dir(project_id) / "uploads",
+                "upload source",
+            ),
+            _v50_resolve_expected_path(
                 row_dir / f"image{Path(stored_name).suffix}",
-            ))
+                staging_dir,
+                "staged image",
+            ),
+        )]
         pairs.append((
             "annotation",
-            project_dir(project_id) / "annotations" / f"{image_id}.json",
-            row_dir / "annotation.json",
+            _v50_resolve_expected_path(
+                project_dir(project_id) / "annotations" / f"{image_id}.json",
+                project_dir(project_id) / "annotations",
+                "annotation source",
+            ),
+            _v50_resolve_expected_path(
+                row_dir / "annotation.json",
+                staging_dir,
+                "staged annotation",
+            ),
         ))
         for kind, source, staged in pairs:
             previous = recorded.get((image_id, kind), {})
@@ -1377,14 +1684,21 @@ def _v50_cleanup_dataset_delete_artifacts(journal: Dict[str, Any]):
 def _v50_recover_one_dataset_deletion(
     project_id: str, journal: Dict[str, Any]
 ):
-    token = str(journal.get("token") or "")
+    token = str(journal.get("token") or "") if isinstance(journal, dict) else ""
+    if not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise _v50_recovery_conflict("token 格式无效")
+    journal = _v50_validate_dataset_delete_journal(
+        project_id,
+        _v50_dataset_delete_journal_path(project_id, token),
+        journal,
+    )
     dataset_id = str(journal.get("dataset_id") or "")
     if _v50_dataset_delete_token_active(token):
         return False
     try:
         journal["status"] = "recovering"
         _v50_write_dataset_delete_journal(journal)
-        datasets = read_json(datasets_file(project_id), [])
+        datasets = _v50_read_datasets_strict(project_id)
         dataset_present = any(
             str(item.get("id") or "") == dataset_id for item in datasets
         )
@@ -1415,13 +1729,21 @@ def _v50_recover_one_dataset_deletion(
         ) from error
 
 
-def _v50_clear_orphan_dataset_delete_claims(project_id: str):
-    journals = _v50_dataset_delete_journals(project_id)
-    valid_tokens = {str(journal.get("token") or "") for journal in journals}
+def _v50_clear_orphan_dataset_delete_claims(
+    project_id: str, dataset_id: str
+):
+    journal_root = _v50_dataset_deletion_root(project_id)
+    valid_tokens = {
+        path.stem
+        for path in journal_root.glob("*.json")
+        if re.fullmatch(r"[0-9a-f]{32}", path.stem)
+    } if journal_root.exists() else set()
     with _V50_ACTIVE_DATASET_DELETIONS_GUARD:
         valid_tokens.update(_V50_ACTIVE_DATASET_DELETION_TOKENS)
     snapshot = material_store(project_id).read().rows
     if not any(
+        str(row.get("dataset_id") or "default") == str(dataset_id)
+        and
         row.get(_V50_DATASET_DELETE_CLAIM_FIELD)
         and row.get(_V50_DATASET_DELETE_CLAIM_FIELD) not in valid_tokens
         for row in snapshot
@@ -1431,6 +1753,8 @@ def _v50_clear_orphan_dataset_delete_claims(project_id: str):
     def clear(rows):
         changed = []
         for row in rows:
+            if str(row.get("dataset_id") or "default") != str(dataset_id):
+                continue
             token = row.get(_V50_DATASET_DELETE_CLAIM_FIELD)
             if token and token not in valid_tokens:
                 row.pop(_V50_DATASET_DELETE_CLAIM_FIELD, None)
@@ -1440,18 +1764,45 @@ def _v50_clear_orphan_dataset_delete_claims(project_id: str):
     return material_store(project_id).mutate(clear)
 
 
+def _v50_recover_dataset_deletions_locked(
+    project_id: str, dataset_id: str
+) -> List[str]:
+    recovered = []
+    for journal in _v50_dataset_delete_journals(project_id, dataset_id):
+        token = str(journal.get("token") or "")
+        if _v50_dataset_delete_token_active(token):
+            continue
+        if _v50_recover_one_dataset_deletion(project_id, journal):
+            recovered.append(token)
+    _v50_clear_orphan_dataset_delete_claims(project_id, dataset_id)
+    return recovered
+
+
 def _v50_recover_dataset_deletions(
     project_id: str, dataset_id: Optional[str] = None
 ):
+    if dataset_id is not None:
+        normalized_dataset_id = str(dataset_id or "default")
+        with _v50_dataset_locks(project_id, [normalized_dataset_id]):
+            return _v50_recover_dataset_deletions_locked(
+                project_id, normalized_dataset_id
+            )
+
+    journals = _v50_dataset_delete_journals(project_id)
+    dataset_ids = {
+        str(journal.get("dataset_id") or "default") for journal in journals
+    }
+    for row in material_store(project_id).read().rows:
+        if row.get(_V50_DATASET_DELETE_CLAIM_FIELD):
+            dataset_ids.add(str(row.get("dataset_id") or "default"))
     recovered = []
-    with _v50_project_import_lock(project_id):
-        for journal in _v50_dataset_delete_journals(project_id, dataset_id):
-            token = str(journal.get("token") or "")
-            if _v50_dataset_delete_token_active(token):
-                continue
-            if _v50_recover_one_dataset_deletion(project_id, journal):
-                recovered.append(token)
-        _v50_clear_orphan_dataset_delete_claims(project_id)
+    for current_dataset_id in sorted(dataset_ids):
+        with _v50_dataset_locks(project_id, [current_dataset_id]):
+            recovered.extend(
+                _v50_recover_dataset_deletions_locked(
+                    project_id, current_dataset_id
+                )
+            )
     return recovered
 
 
@@ -1473,7 +1824,7 @@ def delete_dataset(project_id: str, dataset_id: str):
     if dataset_id == "default":
         raise HTTPException(status_code=400, detail="默认数据集不能删除")
     get_project(project_id)
-    coordination_lock = _v50_project_import_lock(project_id)
+    coordination_lock = _v50_dataset_lock(project_id, dataset_id)
     claim_token = uuid.uuid4().hex
     journal = {
         "token": claim_token,
@@ -1493,7 +1844,7 @@ def delete_dataset(project_id: str, dataset_id: str):
     try:
         with coordination_lock:
             _v50_assert_dataset_writable_locked(project_id, dataset_id)
-            datasets = ensure_default_datasets(project_id)
+            datasets = _v50_read_datasets_strict(project_id)
             if not any(str(item.get("id")) == dataset_id for item in datasets):
                 raise HTTPException(status_code=404, detail="数据集不存在")
             _v50_write_dataset_delete_journal(journal)
@@ -1600,7 +1951,7 @@ def delete_dataset(project_id: str, dataset_id: str):
                 raise RuntimeError("数据集删除锁定的素材数量已变化")
             journal["status"] = "finalized"
             _v50_write_dataset_delete_journal(journal)
-            datasets = read_json(datasets_file(project_id), [])
+            datasets = _v50_read_datasets_strict(project_id)
             atomic_write_json(
                 datasets_file(project_id),
                 [item for item in datasets if str(item.get("id")) != dataset_id],
@@ -4673,9 +5024,54 @@ def v12_patch_image(project_id: str, image_id: str, payload: ImagePatchReq):
     if payload.dataset_id is not None:
         target_dataset_id = payload.dataset_id or "default"
         patch["dataset_id"] = target_dataset_id
-        with _v50_project_import_lock(project_id):
-            _v50_assert_dataset_writable_locked(project_id, target_dataset_id)
-            changed = material_store(project_id).patch({image_id: patch})
+        for _attempt in range(16):
+            current = next(
+                (
+                    row
+                    for row in material_store(project_id).read().rows
+                    if str(row.get("id")) == str(image_id)
+                ),
+                None,
+            )
+            if current is None:
+                raise HTTPException(status_code=404, detail="图片不存在")
+            source_dataset_id = str(current.get("dataset_id") or "default")
+            try:
+                with _v50_dataset_locks(
+                    project_id, [source_dataset_id, target_dataset_id]
+                ):
+                    _v50_assert_dataset_writable_locked(
+                        project_id, source_dataset_id
+                    )
+                    if target_dataset_id != source_dataset_id:
+                        _v50_assert_dataset_writable_locked(
+                            project_id, target_dataset_id
+                        )
+
+                    def apply_dataset_patch(rows):
+                        for row in rows:
+                            if str(row.get("id")) != str(image_id):
+                                continue
+                            latest_source = str(
+                                row.get("dataset_id") or "default"
+                            )
+                            if latest_source != source_dataset_id:
+                                raise _V50DatasetSourceChanged()
+                            row.update(patch)
+                            return dict(row)
+                        raise HTTPException(status_code=404, detail="图片不存在")
+
+                    changed = material_store(project_id).mutate(
+                        apply_dataset_patch
+                    )
+                break
+            except _V50DatasetSourceChanged:
+                continue
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="图片所属数据集频繁变化，请重试",
+            )
     else:
         changed = material_store(project_id).patch({image_id: patch})
     if not changed:
