@@ -11175,13 +11175,7 @@ def v55_apply_upload_batch_decisions(
 
         decided_at = now_iso()
         updated['updated_at'] = decided_at
-        published_clean_ids = {
-            str(item.get('image_id'))
-            for item in updated.get('items', [])
-            if item.get('decision') == 'clean'
-            and str(item.get('image_id')) in associated_clean_set
-        }
-        affected_ids = published_clean_ids | ready_ids
+        affected_ids = clean_ids | ready_ids
         decision_fields = (
             'processing_status',
             'clean_skipped',

@@ -417,6 +417,100 @@ def test_partial_ready_decision_keeps_unannotated_remainder_pending(client):
     assert rows[later_id]["processing_status"] == "pending_decision"
 
 
+def test_ready_only_decisions_preserve_unspecified_clean_material_state(client):
+    import app as app_module
+
+    pid = client.post(
+        "/api/projects",
+        json={"name": "preserve-unspecified-clean", "labels": []},
+    ).json()["id"]
+    uploaded = upload_many_png(
+        client,
+        pid,
+        ["clean.png", "ready.png", "later.png"],
+    )
+    clean_id, ready_id, later_id = [item["id"] for item in uploaded["uploaded"]]
+    decision_url = (
+        f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions"
+    )
+    clean_response = client.post(
+        decision_url,
+        json={"clean_image_ids": [clean_id], "ready_image_ids": []},
+    )
+    clean_response.raise_for_status()
+    task_id = clean_response.json()["clean_task_id"]
+    wait_for_clean_result(client, pid, task_id)
+
+    app_module.material_store(pid).patch(
+        {
+            clean_id: {
+                "processing_status": "cleaning",
+                "clean_decision": "clean",
+                "clean_decision_at": "awaiting-decision-stable",
+                "updated_at": "awaiting-updated-stable",
+                "clean_task_id": task_id,
+            }
+        }
+    )
+    before_awaiting = {
+        row["id"]: row
+        for row in client.get(f"/api/projects/{pid}/images").json()
+    }[clean_id]
+    ready_response = client.post(
+        decision_url,
+        json={"clean_image_ids": [], "ready_image_ids": [ready_id]},
+    )
+    ready_response.raise_for_status()
+    after_awaiting = {
+        row["id"]: row
+        for row in client.get(f"/api/projects/{pid}/images").json()
+    }[clean_id]
+    for field in (
+        "processing_status",
+        "clean_decision",
+        "clean_decision_at",
+        "updated_at",
+        "clean_task_id",
+    ):
+        assert after_awaiting.get(field) == before_awaiting.get(field)
+
+    confirmed = client.post(
+        f"/api/v47/projects/{pid}/clean-tasks/{task_id}/confirm",
+        json={"delete_ids": []},
+    )
+    confirmed.raise_for_status()
+    app_module.material_store(pid).patch(
+        {
+            clean_id: {
+                "clean_decision_at": "confirmed-decision-stable",
+                "updated_at": "confirmed-updated-stable",
+            }
+        }
+    )
+    before_confirmed = {
+        row["id"]: row
+        for row in client.get(f"/api/projects/{pid}/images").json()
+    }[clean_id]
+    later_response = client.post(
+        decision_url,
+        json={"clean_image_ids": [], "ready_image_ids": [later_id]},
+    )
+    later_response.raise_for_status()
+    after_confirmed = {
+        row["id"]: row
+        for row in client.get(f"/api/projects/{pid}/images").json()
+    }[clean_id]
+    for field in (
+        "processing_status",
+        "clean_decision",
+        "clean_decision_at",
+        "updated_at",
+        "clean_task_id",
+        "cleaned_at",
+    ):
+        assert after_confirmed.get(field) == before_confirmed.get(field)
+
+
 def test_upload_batch_rejects_additional_clean_ids_after_task_start(client):
     pid = client.post(
         "/api/projects",
