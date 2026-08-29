@@ -174,6 +174,13 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
     assert not list(
         (app_module.project_dir(project_id) / "imports").glob("dataset_delete_*")
     )
+    assert not list(
+        (
+            app_module.project_dir(project_id)
+            / "imports"
+            / "dataset_deletions"
+        ).glob("*.json")
+    )
 
 
 @pytest.mark.parametrize(
