@@ -10939,38 +10939,101 @@ def v47_list_clean_tasks(project_id: str):
     return {'items': _v33_load_tasks(project_id, 'clean_tasks')}
 
 
+_V47_ACTIVE_CLEAN_WORKERS: set[Tuple[str, str]] = set()
+
+
+def _v47_prepare_clean_task_record(
+    project_id: str,
+    payload: V47CleanReq,
+    task_id: Optional[str] = None,
+) -> Tuple[Dict[str, Any], bool]:
+    get_project(project_id)
+    task_id = task_id or uuid.uuid4().hex[:12]
+    data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
+    images = load_images(project_id)
+    wanted = set(data.get('image_ids') or [])
+    total = len([x for x in images if not wanted or x.get('id') in wanted])
+    task = {'id': task_id, 'name': data.get('task_name') or '自动清洗任务', 'status': 'prepared', 'status_text': '已准备', 'progress': 0, 'processed_images': 0, 'total_images': total, 'flagged_images': 0, 'created_at': now_iso(), 'request_payload': data, 'stop_requested': False}
+    with _v33_task_lock:
+        tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+        existing = next(
+            (item for item in tasks if str(item.get('id')) == task_id),
+            None,
+        )
+        if existing is not None:
+            if (existing.get('request_payload') or {}) != data:
+                raise ValueError('清洗任务 ID 已关联不同请求')
+            return dict(existing), False
+        tasks.insert(0, task)
+        atomic_write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks[:100])
+    return dict(task), True
+
+
+def _v47_remove_prepared_clean_task_record(project_id: str, task_id: str) -> bool:
+    key = (str(project_id), str(task_id))
+    with _v33_task_lock:
+        if key in _V47_ACTIVE_CLEAN_WORKERS:
+            return False
+        tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+        target = next(
+            (item for item in tasks if str(item.get('id')) == str(task_id)),
+            None,
+        )
+        if target is None or target.get('status') != 'prepared':
+            return False
+        atomic_write_json(
+            _v33_tasks_file(project_id, 'clean_tasks'),
+            [item for item in tasks if str(item.get('id')) != str(task_id)],
+        )
+        return True
+
+
+def _v47_start_clean_task_record(project_id: str, task_id: str) -> Dict[str, Any]:
+    key = (str(project_id), str(task_id))
+    with _v33_task_lock:
+        tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
+        task = next(
+            (item for item in tasks if str(item.get('id')) == str(task_id)),
+            None,
+        )
+        if task is None:
+            raise ValueError('清洗任务不存在')
+        if key in _V47_ACTIVE_CLEAN_WORKERS:
+            return dict(task)
+        if task.get('status') not in {'prepared', 'queued'}:
+            return dict(task)
+        task['status'] = 'queued'
+        task['status_text'] = '排队中'
+        task['updated_at'] = now_iso()
+        atomic_write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks)
+        _V47_ACTIVE_CLEAN_WORKERS.add(key)
+        queued = dict(task)
+        data = dict(task.get('request_payload') or {})
+
+    def run_and_release():
+        try:
+            _v47_run_clean_task(project_id, task_id, data)
+        finally:
+            with _v33_task_lock:
+                _V47_ACTIVE_CLEAN_WORKERS.discard(key)
+
+    worker = threading.Thread(target=run_and_release, daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        with _v33_task_lock:
+            _V47_ACTIVE_CLEAN_WORKERS.discard(key)
+        raise
+    return queued
+
+
 def _v47_create_clean_task_record(
     project_id: str,
     payload: V47CleanReq,
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    get_project(project_id)
-    task_id = task_id or uuid.uuid4().hex[:12]
-    data = payload.dict()
-    images = load_images(project_id)
-    wanted = set(data.get('image_ids') or [])
-    total = len([x for x in images if not wanted or x.get('id') in wanted])
-    task = {'id': task_id, 'name': data.get('task_name') or '自动清洗任务', 'status': 'queued', 'status_text': '排队中', 'progress': 0, 'processed_images': 0, 'total_images': total, 'flagged_images': 0, 'created_at': now_iso(), 'request_payload': data, 'stop_requested': False}
-    with _v33_task_lock:
-        tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
-        if any(str(item.get('id')) == task_id for item in tasks):
-            return next(item for item in tasks if str(item.get('id')) == task_id)
-        tasks.insert(0, task)
-        write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks[:100])
-    worker = threading.Thread(
-        target=_v47_run_clean_task,
-        args=(project_id, task_id, data),
-        daemon=True,
-    )
-    try:
-        worker.start()
-    except Exception:
-        with _v33_task_lock:
-            tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
-            tasks = [item for item in tasks if str(item.get('id')) != task_id]
-            write_json(_v33_tasks_file(project_id, 'clean_tasks'), tasks)
-        raise
-    return task
+    task, _ = _v47_prepare_clean_task_record(project_id, payload, task_id)
+    return _v47_start_clean_task_record(project_id, str(task.get('id')))
 
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks')
@@ -11012,6 +11075,19 @@ def _v55_enrich_upload_batch(project_id: str, batch: Dict[str, Any]) -> Dict[str
     return enriched
 
 
+def _v55_upload_clean_task_id(
+    project_id: str,
+    batch_id: str,
+    image_ids: List[str],
+) -> str:
+    identity = json.dumps(
+        [str(project_id), str(batch_id), [str(image_id) for image_id in image_ids]],
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    return hashlib.sha256(identity.encode('utf-8')).hexdigest()[:12]
+
+
 @app.get('/api/v55/projects/{project_id}/upload-batches/{batch_id}')
 def v55_get_upload_batch(project_id: str, batch_id: str):
     get_project(project_id)
@@ -11043,33 +11119,69 @@ def v55_apply_upload_batch_decisions(
         raise HTTPException(status_code=404, detail='上传批次不存在')
     with store.locked(batch_id):
         original = _v55_read_upload_batch(store, batch_id, locked=True)
+        clean_task_id = str(original.get('clean_task_id') or '')
+        associated_clean_ids = [
+            str(image_id)
+            for image_id in original.get('clean_task_image_ids', [])
+        ]
+        if bool(clean_task_id) != bool(associated_clean_ids):
+            raise HTTPException(status_code=400, detail='上传批次清洗任务关联不完整')
+        associated_clean_set = set(associated_clean_ids)
+        if clean_task_id and clean_ids - associated_clean_set:
+            raise HTTPException(
+                status_code=400,
+                detail='每个上传批次只支持一个清洗任务，不能追加新的清洗图片',
+            )
+        if clean_task_id and ready_ids & associated_clean_set:
+            raise HTTPException(
+                status_code=400,
+                detail='已提交清洗的图片不能改为无需清洗',
+            )
         try:
             updated = apply_decisions(original, clean_ids, ready_ids)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
 
-        previously_tasked = {
-            str(image_id)
-            for image_id in original.get('clean_task_image_ids', [])
-        }
-        new_clean_ids = clean_ids - previously_tasked
-        ordered_new_clean_ids = [
-            str(item.get('image_id'))
-            for item in updated.get('items', [])
-            if str(item.get('image_id')) in new_clean_ids
-        ]
-        clean_task_id = original.get('clean_task_id')
-        if ordered_new_clean_ids:
-            clean_task_id = uuid.uuid4().hex[:12]
-            updated['clean_task_id'] = clean_task_id
-            updated['clean_task_image_ids'] = [
+        if not clean_task_id and clean_ids:
+            associated_clean_ids = [
                 str(item.get('image_id'))
                 for item in updated.get('items', [])
-                if str(item.get('image_id')) in (previously_tasked | new_clean_ids)
+                if str(item.get('image_id')) in clean_ids
             ]
+            associated_clean_set = set(associated_clean_ids)
+            clean_task_id = _v55_upload_clean_task_id(
+                project_id,
+                batch_id,
+                associated_clean_ids,
+            )
+            updated['clean_task_id'] = clean_task_id
+            updated['clean_task_image_ids'] = associated_clean_ids
+
+        clean_request = None
+        prepared_created = False
+        if clean_task_id:
+            clean_request = V47CleanReq(
+                image_ids=associated_clean_ids,
+                task_name=f'上传批次 {batch_id} 清洗',
+            )
+            try:
+                _, prepared_created = _v47_prepare_clean_task_record(
+                    project_id,
+                    clean_request,
+                    task_id=clean_task_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error))
+
         decided_at = now_iso()
         updated['updated_at'] = decided_at
-        affected_ids = clean_ids | ready_ids
+        published_clean_ids = {
+            str(item.get('image_id'))
+            for item in updated.get('items', [])
+            if item.get('decision') == 'clean'
+            and str(item.get('image_id')) in associated_clean_set
+        }
+        affected_ids = published_clean_ids | ready_ids
         decision_fields = (
             'processing_status',
             'clean_skipped',
@@ -11118,15 +11230,6 @@ def v55_apply_upload_batch_decisions(
         try:
             store._write_unlocked(batch_id, updated)
             material_store(project_id).mutate(apply_material_decisions)
-            if ordered_new_clean_ids:
-                _v47_create_clean_task_record(
-                    project_id,
-                    V47CleanReq(
-                        image_ids=ordered_new_clean_ids,
-                        task_name=f'上传批次 {batch_id} 清洗',
-                    ),
-                    task_id=clean_task_id,
-                )
         except Exception as error:
             store._write_unlocked(batch_id, original)
             if backups:
@@ -11145,9 +11248,17 @@ def v55_apply_upload_batch_decisions(
                             else:
                                 row.pop(field, None)
                 material_store(project_id).mutate(restore_material_decisions)
+            if prepared_created and clean_task_id:
+                _v47_remove_prepared_clean_task_record(project_id, clean_task_id)
             if isinstance(error, ValueError):
                 raise HTTPException(status_code=400, detail=str(error))
-            raise HTTPException(status_code=500, detail=f'创建清洗任务失败：{error}')
+            raise HTTPException(status_code=500, detail=f'保存上传决策失败：{error}')
+
+        if clean_task_id:
+            try:
+                _v47_start_clean_task_record(project_id, clean_task_id)
+            except Exception as error:
+                raise HTTPException(status_code=500, detail=f'启动清洗任务失败：{error}')
 
         persisted = store._read_unlocked(batch_id)
     return _v55_enrich_upload_batch(project_id, persisted)
