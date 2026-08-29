@@ -10857,7 +10857,16 @@ class V47CleanConfirmReq(BaseModel):
 
 def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
     try:
-        _v33_update_task(project_id, 'clean_tasks', task_id, status='running', status_text='清洗检查中', started_at=now_iso())
+        _v33_update_task(
+            project_id,
+            'clean_tasks',
+            task_id,
+            status='running',
+            status_text='清洗检查中',
+            stage='scanning',
+            progress=0,
+            started_at=now_iso(),
+        )
         wanted = set(str(x) for x in (payload.get('image_ids') or []))
         images = load_images(project_id)
         if wanted:
@@ -10870,11 +10879,21 @@ def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
         # 4x16bit LSH bands keep near-duplicate candidate checks sub-quadratic for large pools.
         bands: Dict[Tuple[int, int], List[Tuple[int, str]]] = defaultdict(list)
         started = time.time()
+        last_saved_count = 0
+        last_saved_at = time.monotonic()
         pdir = project_dir(project_id)
         for idx, img in enumerate(images, 1):
             cur = _v33_get_task(project_id, 'clean_tasks', task_id) or {}
             if cur.get('stop_requested'):
-                _v33_update_task(project_id, 'clean_tasks', task_id, status='stopped', status_text='已停止', finished_at=now_iso())
+                _v33_update_task(
+                    project_id,
+                    'clean_tasks',
+                    task_id,
+                    status='stopped',
+                    status_text='已停止',
+                    stage='stopped',
+                    finished_at=now_iso(),
+                )
                 return
             issues: List[Dict[str, Any]] = []
             path = pdir / 'uploads' / str(img.get('stored_name') or '')
@@ -10922,15 +10941,52 @@ def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
                     issues.append({'code': 'corrupt', 'name': '图片损坏', 'detail': str(e)[:180]})
             if issues:
                 rows.append({'image_id': img.get('id'), 'filename': img.get('filename'), 'url': img.get('url'), 'issues': issues, 'metrics': metrics, 'suggest_delete': True})
-            if idx % 5 == 0 or idx == total:
+            now_mono = time.monotonic()
+            if idx == total or idx - last_saved_count >= 50 or now_mono - last_saved_at >= 0.5:
                 elapsed = max(0.001, time.time() - started)
                 eta = int(max(0, elapsed / idx * (total - idx)))
-                _v33_update_task(project_id, 'clean_tasks', task_id, processed_images=idx, total_images=total, flagged_images=len(rows), progress=int(idx / total * 100), elapsed_seconds=int(elapsed), eta_seconds=eta)
+                _v33_update_task(
+                    project_id,
+                    'clean_tasks',
+                    task_id,
+                    stage='scanning',
+                    processed_images=idx,
+                    total_images=total,
+                    flagged_images=len(rows),
+                    progress=int(idx / total * 100),
+                    elapsed_seconds=int(elapsed),
+                    eta_seconds=eta,
+                    heartbeat_at=now_iso(),
+                )
+                last_saved_count = idx
+                last_saved_at = now_mono
         result_path = _v47_file_for(project_id, 'clean_results', task_id)
         write_json(result_path, {'task_id': task_id, 'items': rows, 'generated_at': now_iso(), 'rules': payload})
-        _v33_update_task(project_id, 'clean_tasks', task_id, status='awaiting_confirmation', status_text='待确认', progress=100, processed_images=total, total_images=total, flagged_images=len(rows), result_file=str(result_path), finished_scan_at=now_iso())
+        _v33_update_task(
+            project_id,
+            'clean_tasks',
+            task_id,
+            status='awaiting_confirmation',
+            status_text='待确认',
+            stage='review',
+            progress=100,
+            processed_images=total,
+            total_images=total,
+            flagged_images=len(rows),
+            result_file=str(result_path),
+            finished_scan_at=now_iso(),
+        )
     except Exception as e:
-        _v33_update_task(project_id, 'clean_tasks', task_id, status='failed', status_text='失败', error=str(e), finished_at=now_iso())
+        _v33_update_task(
+            project_id,
+            'clean_tasks',
+            task_id,
+            status='failed',
+            status_text='失败',
+            stage='failed',
+            error=str(e),
+            finished_at=now_iso(),
+        )
 
 
 @app.get('/api/v47/projects/{project_id}/clean-tasks')

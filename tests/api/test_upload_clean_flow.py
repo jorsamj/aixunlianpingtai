@@ -508,6 +508,39 @@ def test_clean_decision_rollback_preserves_concurrent_updated_at(client, monkeyp
     assert row["updated_at"] == "concurrent-updated"
 
 
+def test_corrupt_clean_input_reaches_review_with_explicit_issue(client):
+    import app as app_module
+
+    pid = client.post(
+        "/api/projects", json={"name": "clean-terminal", "labels": []}
+    ).json()["id"]
+    uploaded = upload_many_png(client, pid, ["normal.png", "corrupt.png"])
+    corrupt = uploaded["uploaded"][1]
+    (app_module.project_dir(pid) / "uploads" / corrupt["stored_name"]).write_bytes(
+        b"broken-image"
+    )
+    task = client.post(
+        f"/api/v47/projects/{pid}/clean-tasks",
+        json={
+            "image_ids": uploaded["uploaded_image_ids"],
+            "corrupt_check": True,
+            "min_width": 1,
+            "min_height": 1,
+            "blur_check": False,
+            "near_duplicate": False,
+            "task_name": "terminal-state",
+        },
+    ).json()
+    result = wait_for_clean_result(client, pid, task["id"])
+    assert result["task"]["status"] == "awaiting_confirmation"
+    assert result["task"]["stage"] == "review"
+    assert result["task"]["progress"] == 100
+    corrupt_result = next(
+        item for item in result["result"]["items"] if item["image_id"] == corrupt["id"]
+    )
+    assert any(issue["code"] == "corrupt" for issue in corrupt_result["issues"])
+
+
 def test_upload_batch_normalizes_non_string_ids_before_validation(client):
     pid = client.post(
         "/api/projects",
