@@ -861,22 +861,73 @@ def _v50_active_image_batch(project_id: str):
     return None
 
 def _v50_begin_image_batch(project_id: str):
-    # Material writes stay atomic even during large imports.  Keep only the
-    # thread-local lifecycle marker; never retain a mutable table snapshot.
-    _IMAGE_BATCH_CTX.batch = {"project_id": project_id}
+    _IMAGE_BATCH_CTX.batch = {
+        "project_id": project_id,
+        "records": {},
+        "patches": {},
+    }
+
+def _v50_queue_image_patch(project_id: str, image_id: str, patch: Dict[str, Any]) -> bool:
+    batch = _v50_active_image_batch(project_id)
+    if not batch:
+        return False
+    normalized_id = str(image_id)
+    record = batch["records"].get(normalized_id)
+    if record is not None:
+        record.update(dict(patch))
+    else:
+        batch["patches"].setdefault(normalized_id, {}).update(dict(patch))
+    return True
 
 def _v50_end_image_batch(save: bool = True):
+    batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
     _IMAGE_BATCH_CTX.batch = None
+    if not save or not batch:
+        return []
+    project_id = str(batch.get("project_id") or "")
+    records = [dict(record) for record in batch.get("records", {}).values()]
+    patches = {
+        str(image_id): dict(patch)
+        for image_id, patch in batch.get("patches", {}).items()
+    }
+    if not records and not patches:
+        return []
+
+    def commit(rows):
+        by_id = {}
+        for row in rows:
+            by_id.setdefault(str(row.get("id")), row)
+        changed_ids = []
+        for incoming in records:
+            image_id = str(incoming.get("id"))
+            row = by_id.get(image_id)
+            if row is None:
+                row = dict(incoming)
+                rows.append(row)
+                by_id[image_id] = row
+            else:
+                row.update(incoming)
+            changed_ids.append(image_id)
+        for image_id, patch in patches.items():
+            row = by_id.get(image_id)
+            if row is None:
+                continue
+            row.update(patch)
+            if image_id not in changed_ids:
+                changed_ids.append(image_id)
+        return [dict(by_id[image_id]) for image_id in changed_ids]
+
+    return material_store(project_id).mutate(commit)
 
 def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = False):
     if not annotated:
         return
-    material_store(project_id).patch({
-        str(image_id): {
-            "processing_status": "processed",
-            "annotated_at": now_iso(),
-        }
-    })
+    patch = {
+        "processing_status": "processed",
+        "annotated_at": now_iso(),
+    }
+    if not _v50_queue_image_patch(project_id, image_id, patch):
+        material_store(project_id).patch({str(image_id): patch})
 
 def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]):
     updated = now_iso()
@@ -894,7 +945,8 @@ def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]
     if boxes:
         patch["processing_status"] = "processed"
         patch["annotated_at"] = updated
-    material_store(project_id).patch({str(image_id): patch})
+    if not _v50_queue_image_patch(project_id, image_id, patch):
+        material_store(project_id).patch({str(image_id): patch})
 
 
 def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
@@ -929,9 +981,20 @@ def add_image_record(project_id: str, src: Path, original_name: str, source_type
         "size_bytes": int(dst.stat().st_size) if dst.exists() else 0,
         "created_at": now_iso(),
     }
-    record = material_store(project_id).upsert(record)
+    batch = _v50_active_image_batch(project_id)
+    if batch:
+        image_id = str(img_id)
+        buffered = dict(record)
+        pending_patch = batch["patches"].pop(image_id, None)
+        if pending_patch:
+            buffered.update(pending_patch)
+        batch["records"][image_id] = buffered
+    else:
+        record = material_store(project_id).upsert(record)
     if not (p / "annotations" / f"{img_id}.json").exists():
         write_annotation(project_id, img_id, [])
+    if batch:
+        return dict(batch["records"][str(img_id)])
     return record
 
 
@@ -1061,6 +1124,14 @@ def update_dataset(project_id: str, dataset_id: str, payload: DatasetReq):
     raise HTTPException(status_code=404, detail="数据集不存在")
 
 
+_V50_DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
+
+
+def _v50_stage_material_file(source: Path, destination: Path):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source.replace(destination)
+
+
 @app.delete("/api/projects/{project_id}/datasets/{dataset_id}")
 def delete_dataset(project_id: str, dataset_id: str):
     if dataset_id == "default":
@@ -1069,25 +1140,117 @@ def delete_dataset(project_id: str, dataset_id: str):
     ds = ensure_default_datasets(project_id)
     if not any(x.get("id") == dataset_id for x in ds):
         raise HTTPException(status_code=404, detail="数据集不存在")
-    def remove_dataset_rows(rows):
-        removed = [
-            dict(img)
-            for img in rows
-            if img.get("dataset_id", "default") == dataset_id
-        ]
-        rows[:] = [
-            img
-            for img in rows
-            if img.get("dataset_id", "default") != dataset_id
-        ]
-        return removed
-
-    removed = material_store(project_id).mutate(remove_dataset_rows)
     p = project_dir(project_id)
-    for img in removed:
-        (p / "uploads" / img.get("stored_name", "")).unlink(missing_ok=True)
-        (p / "annotations" / f"{img.get('id')}.json").unlink(missing_ok=True)
-    write_json(datasets_file(project_id), [x for x in ds if x.get("id") != dataset_id])
+    claim_token = uuid.uuid4().hex
+    staging_dir = p / "imports" / f"dataset_delete_{claim_token}"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    def claim_dataset_rows(rows):
+        if any(
+            img.get("dataset_id", "default") == dataset_id
+            and img.get(_V50_DATASET_DELETE_CLAIM_FIELD)
+            for img in rows
+        ):
+            raise HTTPException(status_code=409, detail="数据集正在删除，请稍后重试")
+        claimed = []
+        for img in rows:
+            if img.get("dataset_id", "default") != dataset_id:
+                continue
+            img[_V50_DATASET_DELETE_CLAIM_FIELD] = claim_token
+            claimed.append(dict(img))
+        return claimed
+
+    try:
+        claimed = material_store(project_id).mutate(claim_dataset_rows)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    successful_ids = set()
+    staged_files = {}
+    failed_items = []
+    preserve_staging = False
+    for img in claimed:
+        image_id = str(img.get("id"))
+        row_dir = staging_dir / safe_filename(image_id)
+        stored_name = Path(str(img.get("stored_name") or "")).name
+        sources = [
+            (
+                p / "uploads" / stored_name,
+                row_dir / f"image{Path(stored_name).suffix}",
+            ),
+            (
+                p / "annotations" / f"{image_id}.json",
+                row_dir / "annotation.json",
+            ),
+        ]
+        moved = []
+        errors = []
+        try:
+            for source, destination in sources:
+                if not source.exists():
+                    continue
+                _v50_stage_material_file(source, destination)
+                moved.append((source, destination))
+        except OSError as error:
+            errors.append(str(error))
+            for source, destination in reversed(moved):
+                try:
+                    if destination.exists():
+                        _v50_stage_material_file(destination, source)
+                except OSError as restore_error:
+                    preserve_staging = True
+                    errors.append(f"恢复文件失败：{restore_error}")
+        if errors:
+            failed_items.append({
+                "id": image_id,
+                "filename": img.get("filename"),
+                "errors": errors,
+            })
+        else:
+            successful_ids.add(image_id)
+            staged_files[image_id] = moved
+
+    def finalize_dataset_rows(rows):
+        finalized = []
+        kept = []
+        for img in rows:
+            if img.get(_V50_DATASET_DELETE_CLAIM_FIELD) != claim_token:
+                kept.append(img)
+                continue
+            image_id = str(img.get("id"))
+            if image_id in successful_ids:
+                finalized.append(dict(img))
+                continue
+            img.pop(_V50_DATASET_DELETE_CLAIM_FIELD, None)
+            kept.append(img)
+        rows[:] = kept
+        return finalized
+
+    finalized = material_store(project_id).mutate(finalize_dataset_rows)
+    finalized_ids = {str(img.get("id")) for img in finalized}
+    for image_id in finalized_ids:
+        for _, destination in staged_files.get(image_id, []):
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                preserve_staging = True
+    if not preserve_staging:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+    if failed_items:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "部分素材文件被占用，数据集未删除",
+                "failed_items": failed_items,
+            },
+        )
+
+    write_json(
+        datasets_file(project_id),
+        [x for x in ds if x.get("id") != dataset_id],
+    )
     return {"ok": True}
 
 
@@ -5582,12 +5745,12 @@ def _v18_split_from_path(path: Path) -> str:
 
 
 def _v18_set_image_split(project_id: str, image_id: str, split: str):
-    material_store(project_id).patch({
-        str(image_id): {
-            'split': split if split in {'train','val','test'} else 'train',
-            'updated_at': now_iso(),
-        }
-    })
+    patch = {
+        'split': split if split in {'train','val','test'} else 'train',
+        'updated_at': now_iso(),
+    }
+    if not _v50_queue_image_patch(project_id, image_id, patch):
+        material_store(project_id).patch({str(image_id): patch})
 
 
 def _v18_read_names_from_text_file(path: Path) -> List[str]:
@@ -6084,7 +6247,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
                 report["labels"] = get_project(project_id).get("labels", [])
             finally:
-                # 逐条素材变更已由 MaterialStore 原子提交；这里只清理批次上下文。
+                # 图片与摘要先按 ID 缓冲，在这里基于最新索引一次性提交。
                 _v50_end_image_batch(save=True)
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
         v19_update_job(

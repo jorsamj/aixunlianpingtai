@@ -1,4 +1,5 @@
 import io
+import json
 import threading
 import uuid
 
@@ -120,6 +121,59 @@ def test_delete_dataset_selects_latest_rows_inside_atomic_mutation(client, monke
     uploads = app_module.project_dir(project_id) / "uploads"
     assert not (uploads / first["stored_name"]).exists()
     assert not (uploads / reassigned["stored_name"]).exists()
+
+
+def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
+    client, monkeypatch
+):
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    locked = upload_png(client, project_id, dataset_id, "locked.png")
+    unrelated = upload_png(client, project_id, "default", "unrelated.png")
+    store = app_module.material_store(project_id)
+    unrelated_before = next(
+        dict(row) for row in store.read().rows if row["id"] == unrelated["id"]
+    )
+    original_stage = getattr(
+        app_module,
+        "_v50_stage_material_file",
+        lambda source, destination: source.replace(destination),
+    )
+
+    def fail_locked_file(source, destination):
+        if source.name == f"{locked['id']}.json":
+            raise PermissionError("simulated Windows file lock")
+        return original_stage(source, destination)
+
+    monkeypatch.setattr(
+        app_module, "_v50_stage_material_file", fail_locked_file, raising=False
+    )
+    response = client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
+
+    assert response.status_code == 409
+    detail = json.loads(response.json()["detail"])
+    assert detail["failed_items"][0]["id"] == locked["id"]
+    assert any(
+        dataset["id"] == dataset_id
+        for dataset in app_module.read_json(app_module.datasets_file(project_id), [])
+    )
+    rows = {row["id"]: row for row in store.read().rows}
+    assert rows[locked["id"]]["filename"] == locked["filename"]
+    assert rows[unrelated["id"]] == unrelated_before
+    claim_field = getattr(
+        app_module, "_V50_DATASET_DELETE_CLAIM_FIELD", "_dataset_delete_claim"
+    )
+    assert all(claim_field not in row for row in rows.values())
+    assert (
+        app_module.project_dir(project_id) / "uploads" / locked["stored_name"]
+    ).exists()
+    assert (
+        app_module.project_dir(project_id) / "annotations" / f"{locked['id']}.json"
+    ).exists()
+    assert not list(
+        (app_module.project_dir(project_id) / "imports").glob("dataset_delete_*")
+    )
 
 
 @pytest.mark.parametrize(
