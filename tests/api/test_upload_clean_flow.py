@@ -33,6 +33,67 @@ def wait_for_clean_result(client, pid: str, task_id: str, timeout: float = 15):
     raise AssertionError(f"clean task {task_id} timed out")
 
 
+def upload_png(client, project_id: str, filename: str) -> dict:
+    response = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", (filename, image_bytes("checker"), "image/png"))],
+        data={"dataset_id": "default"},
+    )
+    response.raise_for_status()
+    return response.json()["uploaded"][0]
+
+
+def test_background_annotation_index_cannot_remove_a_new_upload(client, monkeypatch):
+    import threading
+
+    import app as app_module
+    from platform_core.material_store import MaterialStore
+
+    project = client.post(
+        "/api/projects",
+        json={"name": "index-race", "labels": []},
+    ).json()
+    project_id = project["id"]
+    first = upload_png(client, project_id, "before.png")
+
+    # New uploads already have an empty summary; remove it to model a legacy
+    # row that the background annotation index must backfill.
+    store = MaterialStore(app_module.project_dir(project_id) / "images.json")
+    store.mutate(
+        lambda rows: next(
+            row for row in rows if str(row.get("id")) == first["id"]
+        ).pop("annotation_summary_at", None)
+    )
+    indexed = threading.Event()
+    resume = threading.Event()
+    original = app_module.read_annotation
+
+    def paused_read(pid, image_id):
+        value = original(pid, image_id)
+        if image_id == first["id"]:
+            indexed.set()
+            assert resume.wait(5), "annotation index worker did not resume"
+        return value
+
+    monkeypatch.setattr(app_module, "read_annotation", paused_read)
+    thread = threading.Thread(
+        target=app_module._v52_annotation_index_worker,
+        args=(project_id,),
+    )
+    thread.start()
+    try:
+        assert indexed.wait(5), "annotation index worker did not reach the pause"
+        second = upload_png(client, project_id, "during.png")
+    finally:
+        resume.set()
+        thread.join(5)
+
+    assert not thread.is_alive(), "annotation index worker did not terminate"
+    assert "error" not in app_module._ANNOTATION_INDEX_STATUS[project_id]
+    rows = client.get(f"/api/projects/{project_id}/images").json()
+    assert {row["id"] for row in rows} >= {first["id"], second["id"]}
+
+
 def test_upload_batch_and_confirmed_cleaning_only_delete_selected_items(client):
     project = client.post(
         "/api/projects",
@@ -105,4 +166,3 @@ def test_upload_batch_and_confirmed_cleaning_only_delete_selected_items(client):
     )
     ready.raise_for_status()
     assert ready.json()["images"][0]["clean_skipped"] is True
-

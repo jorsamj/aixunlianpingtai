@@ -41,6 +41,7 @@ from platform_core.config import choose_data_dir
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
+from platform_core.material_store import MaterialStore
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
 from platform_core.quality import compute_quality
@@ -756,12 +757,12 @@ def ensure_project_dirs(pid: str):
         (p / d).mkdir(parents=True, exist_ok=True)
 
 
-def load_images(project_id: str) -> List[Dict[str, Any]]:
-    return read_json(project_dir(project_id) / "images.json", [])
+def material_store(project_id: str) -> MaterialStore:
+    return MaterialStore(project_dir(project_id) / "images.json")
 
 
-def save_images(project_id: str, images: List[Dict[str, Any]]):
-    write_json(project_dir(project_id) / "images.json", images)
+def load_images(project_id: str) -> list[dict]:
+    return material_store(project_id).read().rows
 
 
 def normalize_label(name: str) -> str:
@@ -860,43 +861,22 @@ def _v50_active_image_batch(project_id: str):
     return None
 
 def _v50_begin_image_batch(project_id: str):
-    images = load_images(project_id)
-    _IMAGE_BATCH_CTX.batch = {
-        "project_id": project_id,
-        "images": images,
-        "by_id": {str(x.get("id")): x for x in images},
-        "dirty": False,
-    }
+    # Material writes stay atomic even during large imports.  Keep only the
+    # thread-local lifecycle marker; never retain a mutable table snapshot.
+    _IMAGE_BATCH_CTX.batch = {"project_id": project_id}
 
 def _v50_end_image_batch(save: bool = True):
-    batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
-    try:
-        if save and batch and batch.get("dirty"):
-            save_images(batch["project_id"], batch["images"])
-    finally:
-        _IMAGE_BATCH_CTX.batch = None
+    _IMAGE_BATCH_CTX.batch = None
 
 def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = False):
-    batch = _v50_active_image_batch(project_id)
-    if batch:
-        img = batch["by_id"].get(str(image_id))
-        if img is not None and annotated:
-            img["processing_status"] = "processed"
-            img["annotated_at"] = now_iso()
-            batch["dirty"] = True
-        return
     if not annotated:
         return
-    images = load_images(project_id)
-    changed = False
-    for img in images:
-        if str(img.get("id")) == str(image_id):
-            img["processing_status"] = "processed"
-            img["annotated_at"] = now_iso()
-            changed = True
-            break
-    if changed:
-        save_images(project_id, images)
+    material_store(project_id).patch({
+        str(image_id): {
+            "processing_status": "processed",
+            "annotated_at": now_iso(),
+        }
+    })
 
 def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]):
     updated = now_iso()
@@ -907,24 +887,14 @@ def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]
     })
     # v42.11：把标注摘要同步进 images.json。列表页/首次启动无需逐张再次读取 annotation json，
     # 同时保留前 32 个框用于数据卡片和预览叠加显示。
-    summary = annotation_summary(boxes)
-    batch = _v50_active_image_batch(project_id)
-    images = batch.get("images") if batch else load_images(project_id)
-    changed = False
-    for img in images:
-        if str(img.get("id")) != str(image_id):
-            continue
-        img.update(summary)
-        img["annotation_summary_at"] = updated
-        if boxes:
-            img["processing_status"] = "processed"
-            img["annotated_at"] = updated
-        changed = True
-        if batch:
-            batch["dirty"] = True
-        break
-    if changed and not batch:
-        save_images(project_id, images)
+    patch = {
+        **annotation_summary(boxes),
+        "annotation_summary_at": updated,
+    }
+    if boxes:
+        patch["processing_status"] = "processed"
+        patch["annotated_at"] = updated
+    material_store(project_id).patch({str(image_id): patch})
 
 
 def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
@@ -959,15 +929,7 @@ def add_image_record(project_id: str, src: Path, original_name: str, source_type
         "size_bytes": int(dst.stat().st_size) if dst.exists() else 0,
         "created_at": now_iso(),
     }
-    batch = _v50_active_image_batch(project_id)
-    if batch:
-        batch["images"].append(record)
-        batch["by_id"][str(img_id)] = record
-        batch["dirty"] = True
-    else:
-        images = load_images(project_id)
-        images.append(record)
-        save_images(project_id, images)
+    record = material_store(project_id).upsert(record)
     if not (p / "annotations" / f"{img_id}.json").exists():
         write_annotation(project_id, img_id, [])
     return record
@@ -1109,15 +1071,14 @@ def delete_dataset(project_id: str, dataset_id: str):
         raise HTTPException(status_code=404, detail="数据集不存在")
     # 删除该数据集下的图片和标注
     images = load_images(project_id)
-    kept = []
+    removed_ids = []
     p = project_dir(project_id)
     for img in images:
         if img.get("dataset_id", "default") == dataset_id:
             (p / "uploads" / img.get("stored_name", "")).unlink(missing_ok=True)
             (p / "annotations" / f"{img.get('id')}.json").unlink(missing_ok=True)
-        else:
-            kept.append(img)
-    save_images(project_id, kept)
+            removed_ids.append(str(img.get("id")))
+    material_store(project_id).remove(removed_ids)
     write_json(datasets_file(project_id), [x for x in ds if x.get("id") != dataset_id])
     return {"ok": True}
 
@@ -1205,7 +1166,7 @@ def create_project(payload: ProjectCreate):
         "updated_at": now_iso(),
     }
     save_project(project)
-    write_json(project_dir(pid) / "images.json", [])
+    material_store(pid).mutate(lambda rows: rows.clear())
     return project
 
 
@@ -1307,20 +1268,21 @@ def _v52_annotation_index_worker(project_id: str):
         _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": 0, "started_at": now_iso()}
         if not total:
             return
-        by_id = {str(x.get("id")): x for x in images}
+        patches = {}
         for i, img in enumerate(pending, 1):
-            anns = read_annotation(project_id, str(img.get("id")))
+            image_id = str(img.get("id"))
+            anns = read_annotation(project_id, image_id)
             boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
-            img["box_count"] = len(boxes)
-            img["annotated"] = bool(boxes)
-            img["labels"] = sorted({str(b.get("label") or "").strip() for b in boxes if str(b.get("label") or "").strip()})
-            img["annotation_preview"] = [{k: b.get(k) for k in ("class_id","label","x1","y1","x2","y2")} for b in boxes[:32]]
-            img["annotation_summary_at"] = anns.get("updated_at") or now_iso()
+            patch = {
+                **annotation_summary(boxes),
+                "annotation_summary_at": anns.get("updated_at") or now_iso(),
+            }
             if boxes:
-                img["processing_status"] = "processed"
+                patch["processing_status"] = "processed"
+            patches[image_id] = patch
             if i % 100 == 0 or i == total:
                 _ANNOTATION_INDEX_STATUS[project_id] = {"running": True, "total": total, "processed": i, "started_at": _ANNOTATION_INDEX_STATUS.get(project_id,{}).get("started_at"), "updated_at": now_iso()}
-        save_images(project_id, list(by_id.values()))
+        material_store(project_id).patch(patches)
         _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "total": total, "processed": total, "finished_at": now_iso()}
     except Exception as e:
         _ANNOTATION_INDEX_STATUS[project_id] = {"running": False, "error": str(e), "finished_at": now_iso()}
@@ -1345,7 +1307,7 @@ def _v52_schedule_annotation_index(project_id: str, images: Optional[List[Dict[s
 def list_images(project_id: str, dataset_id: Optional[str] = None):
     get_project(project_id)
     all_images = load_images(project_id)
-    changed = False
+    size_patches = {}
     # v42.12：旧数据的标注摘要迁移改为后台索引，首屏不再逐张读取 annotation JSON。
     # 已有摘要直接返回；缺摘要的图片先以轻量元数据返回，后台完成后前端自动刷新一次。
     if any(not x.get("annotation_summary_at") for x in all_images):
@@ -1360,12 +1322,13 @@ def list_images(project_id: str, dataset_id: Optional[str] = None):
                 img["size_bytes"] = int((project_dir(project_id) / "uploads" / img.get("stored_name", "")).stat().st_size)
             except Exception:
                 img["size_bytes"] = 0
-            changed = True
+            if img.get("id") is not None:
+                size_patches[str(img.get("id"))] = {"size_bytes": img["size_bytes"]}
         img["split"] = (img.get("split") or "unassigned").lower()
         img["processing_status"] = "processed" if int(img.get("box_count") or 0)>0 else (img.get("processing_status") or ("processed" if img.get("cleaned_at") else "unprocessed"))
         img["annotation_index_pending"] = not bool(img.get("annotation_summary_at"))
-    if changed:
-        save_images(project_id, all_images)
+    if size_patches:
+        material_store(project_id).patch(size_patches)
     images = all_images
     if dataset_id:
         images = [img for img in images if img.get("dataset_id", "default") == dataset_id]
@@ -1389,17 +1352,14 @@ def delete_image(project_id: str, image_id: str):
     p = project_dir(project_id)
     images = load_images(project_id)
     target = None
-    kept = []
     for img in images:
         if img["id"] == image_id:
             target = img
-        else:
-            kept.append(img)
     if not target:
         raise HTTPException(status_code=404, detail="图片不存在")
     (p / "uploads" / target["stored_name"]).unlink(missing_ok=True)
     (p / "annotations" / f"{image_id}.json").unlink(missing_ok=True)
-    save_images(project_id, kept)
+    material_store(project_id).remove([image_id])
     return {"ok": True}
 
 
@@ -1417,26 +1377,23 @@ def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
         return {"ok": True, "deleted": 0, "deleted_images": [], "failed_items": []}
     p = project_dir(project_id)
     images = load_images(project_id)
-    kept = []
     deleted_images = []
     failed_items = []
     found_ids = set()
     for img in images:
         image_id = str(img.get("id"))
         if image_id not in ids:
-            kept.append(img)
             continue
         found_ids.add(image_id)
         errors = delete_material_files(p, img)
         if errors:
-            kept.append(img)
             failed_items.append({"id": image_id, "filename": img.get("filename"), "errors": errors})
             continue
         deleted_images.append({"id": image_id, "filename": img.get("filename")})
     for missing_id in sorted(ids - found_ids):
         failed_items.append({"id": missing_id, "filename": "", "errors": ["图片不存在"]})
     if deleted_images:
-        save_images(project_id, kept)
+        material_store(project_id).remove(item["id"] for item in deleted_images)
     return {
         "ok": not failed_items,
         "deleted": len(deleted_images),
@@ -4174,23 +4131,16 @@ def v12_delete_label(project_id: str, class_id: int):
 @app.patch("/api/v12/projects/{project_id}/images/{image_id}")
 def v12_patch_image(project_id: str, image_id: str, payload: ImagePatchReq):
     get_project(project_id)
-    images = load_images(project_id)
-    ok = False
-    for img in images:
-        if img.get("id") == image_id:
-            if payload.split is not None:
-                split = (payload.split or "unassigned").lower()
-                if split not in {"train", "val", "test", "unassigned"}:
-                    raise HTTPException(status_code=400, detail="数据用途只能是未处理、训练集、试验集或评测集")
-                img["split"] = split
-            if payload.dataset_id is not None:
-                img["dataset_id"] = payload.dataset_id or "default"
-            img["updated_at"] = now_iso()
-            ok = True
-            break
-    if not ok:
+    patch = {"updated_at": now_iso()}
+    if payload.split is not None:
+        split = (payload.split or "unassigned").lower()
+        if split not in {"train", "val", "test", "unassigned"}:
+            raise HTTPException(status_code=400, detail="数据用途只能是未处理、训练集、试验集或评测集")
+        patch["split"] = split
+    if payload.dataset_id is not None:
+        patch["dataset_id"] = payload.dataset_id or "default"
+    if not material_store(project_id).patch({image_id: patch}):
         raise HTTPException(status_code=404, detail="图片不存在")
-    save_images(project_id, images)
     return {"ok": True}
 
 
@@ -4231,16 +4181,17 @@ def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
             return True
         return img.get("id") in target_ids
 
-    changed = 0
-    for img in images:
-        if match_filter(img):
-            img["split"] = split
-            img["updated_at"] = now_iso()
-            changed += 1
-    if changed == 0:
+    matched_ids = [str(img.get("id")) for img in images if match_filter(img)]
+    if not matched_ids:
         raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
-    save_images(project_id, images)
-    return {"ok": True, "changed": changed, "split": split}
+    updated = now_iso()
+    changed = material_store(project_id).patch({
+        image_id: {"split": split, "updated_at": updated}
+        for image_id in matched_ids
+    })
+    if not changed:
+        raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
+    return {"ok": True, "changed": len(changed), "split": split}
 
 
 @app.post("/api/v12/projects/{project_id}/datasets/{dataset_id}/auto_split")
@@ -4259,19 +4210,19 @@ def v12_auto_split(project_id: str, dataset_id: str, payload: BatchSplitReq):
         val_n = max(0, total - train_n)
     ids_train = {x["id"] for x in images[:train_n]}
     ids_val = {x["id"] for x in images[train_n:train_n+val_n]}
-    all_images = load_images(project_id)
-    counts = {"train": 0, "val": 0, "test": 0}
-    for img in all_images:
-        if img.get("dataset_id", "default") != dataset_id:
-            continue
+    patches = {}
+    for img in images:
         if img["id"] in ids_train:
-            img["split"] = "train"
+            split = "train"
         elif img["id"] in ids_val:
-            img["split"] = "val"
+            split = "val"
         else:
-            img["split"] = "test"
-        counts[img["split"]] += 1
-    save_images(project_id, all_images)
+            split = "test"
+        patches[str(img["id"])] = {"split": split}
+    changed = material_store(project_id).patch(patches)
+    counts = {"train": 0, "val": 0, "test": 0}
+    for img in changed:
+        counts[str(img.get("split"))] += 1
     return {"ok": True, "counts": counts}
 
 
@@ -5596,21 +5547,12 @@ def _v18_split_from_path(path: Path) -> str:
 
 
 def _v18_set_image_split(project_id: str, image_id: str, split: str):
-    batch = _v50_active_image_batch(project_id)
-    if batch:
-        img = batch["by_id"].get(str(image_id))
-        if img is not None:
-            img['split'] = split if split in {'train','val','test'} else 'train'
-            img['updated_at'] = now_iso()
-            batch['dirty'] = True
-        return
-    images = load_images(project_id)
-    for img in images:
-        if img.get('id') == image_id:
-            img['split'] = split if split in {'train','val','test'} else 'train'
-            img['updated_at'] = now_iso()
-            break
-    save_images(project_id, images)
+    material_store(project_id).patch({
+        str(image_id): {
+            'split': split if split in {'train','val','test'} else 'train',
+            'updated_at': now_iso(),
+        }
+    })
 
 
 def _v18_read_names_from_text_file(path: Path) -> List[str]:
@@ -6053,7 +5995,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
     report = v19_build_report_base(job)
     lock = _v50_project_import_lock(project_id)
     try:
-        # 同一项目的压缩包导入串行执行，避免两个大包同时覆盖 images.json。
+        # 同一项目的压缩包导入串行执行，避免大型导入争用磁盘与任务状态。
         with lock:
             _v50_begin_image_batch(project_id)
             try:
@@ -6107,7 +6049,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
                 report["labels"] = get_project(project_id).get("labels", [])
             finally:
-                # 批量导入期间只在这里写一次 images.json，避免每张图片都整表读写造成大 ZIP 极慢。
+                # 逐条素材变更已由 MaterialStore 原子提交；这里只清理批次上下文。
                 _v50_end_image_batch(save=True)
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
         v19_update_job(
@@ -6738,13 +6680,12 @@ def _v33_get_task(project_id: str, kind: str, task_id: str) -> Optional[Dict[str
 
 
 def _v33_set_image_split(project_id: str, image_id: str, split: str):
-    images = load_images(project_id)
-    for img in images:
-        if img.get("id") == image_id:
-            img["split"] = split or "unassigned"
-            img["updated_at"] = now_iso()
-            break
-    save_images(project_id, images)
+    material_store(project_id).patch({
+        str(image_id): {
+            "split": split or "unassigned",
+            "updated_at": now_iso(),
+        }
+    })
 
 
 def _v33_run_video_frame_task(project_id: str, task_id: str):
@@ -7793,6 +7734,7 @@ def _v36_apply_split_policy(project_id: str, imported_ids: List[str], policy: st
         else:
             unannotated_ids.append(iid)
     counts = {"train": 0, "val": 0, "test": 0}
+    patches = {}
     policy = (policy or "annotated_train_unannotated_test").lower()
     if policy == "source":
         for iid in imported_ids:
@@ -7810,7 +7752,7 @@ def _v36_apply_split_policy(project_id: str, imported_ids: List[str], policy: st
         for idx, iid in enumerate(ordered):
             split = "train" if idx < n_train else "val" if idx < n_train + n_val else "test"
             if iid in img_map:
-                img_map[iid]["split"] = split
+                patches[str(iid)] = {"split": split}
                 counts[split] += 1
     else:
         # 默认：有标注的进入训练/评测；无标注的进入试验集，避免误把无标注图用于训练。
@@ -7819,13 +7761,13 @@ def _v36_apply_split_policy(project_id: str, imported_ids: List[str], policy: st
         for idx, iid in enumerate(ordered):
             split = "train" if idx < n_train else "val"
             if iid in img_map:
-                img_map[iid]["split"] = split
+                patches[str(iid)] = {"split": split}
                 counts[split] += 1
         for iid in unannotated_ids:
             if iid in img_map:
-                img_map[iid]["split"] = "test"
+                patches[str(iid)] = {"split": "test"}
                 counts["test"] += 1
-    save_images(project_id, images)
+    material_store(project_id).patch(patches)
     return counts
 
 
@@ -9780,13 +9722,21 @@ def v44_supplement_training_data(project_id: str, job_id: str):
     if not job: raise HTTPException(status_code=404,detail='训练任务不存在')
     weak=set((job.get('training_report') or {}).get('weak_labels') or [])
     if not weak: raise HTTPException(status_code=400,detail='当前报告没有识别出弱标签')
-    limit=int((job.get('quality_gate') or {}).get('supplement_count') or 50);images=load_images(project_id);changed=[]
+    limit=int((job.get('quality_gate') or {}).get('supplement_count') or 50);images=load_images(project_id);eligible=[]
     for img in images:
-        if len(changed)>=limit: break
         if (img.get('split') or 'unassigned')!='unassigned': continue
         labs=_v44_labels_in_ann(read_annotation(project_id,img['id']))
-        if labs.intersection(weak): img['split']='train';img['updated_at']=now_iso();changed.append(img['id'])
-    save_images(project_id,images)
+        if labs.intersection(weak): eligible.append(str(img['id']))
+    eligible_set=set(eligible); updated=now_iso()
+    def apply_supplement(rows):
+        changed=[]
+        for img in rows:
+            if len(changed)>=limit: break
+            if str(img.get('id')) not in eligible_set: continue
+            if (img.get('split') or 'unassigned')!='unassigned': continue
+            img['split']='train';img['updated_at']=updated;changed.append(str(img.get('id')))
+        return changed
+    changed=material_store(project_id).mutate(apply_supplement)
     job['supplemented_image_ids']=changed;job['supplemented_at']=now_iso();write_json(jf,job);sync_jobs_index(project_id)
     return {"ok":True,"changed":len(changed),"weak_labels":sorted(weak)}
 
@@ -9813,9 +9763,10 @@ def v47_edit_image(project_id: str, image_id: str, payload: V47ImageEditReq):
     if not name:
         raise HTTPException(status_code=400, detail='名称不能为空')
     # Only the business/display name is changed. The stored file name stays stable so annotations and snapshots remain traceable.
-    target['filename'] = name
-    target['updated_at'] = now_iso()
-    save_images(project_id, images)
+    changed = material_store(project_id).patch({image_id: {'filename': name, 'updated_at': now_iso()}})
+    if not changed:
+        raise HTTPException(status_code=404, detail='图片不存在')
+    target = changed[0]
     ann = read_annotation(project_id, image_id)
     return {'ok': True, 'image': target, 'annotation': ann}
 
@@ -10029,17 +9980,19 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     # 清洗确认后，本次扫描范围内未删除的图片全部进入“已处理”。
     req = task.get('request_payload') or {}
     wanted = {str(x) for x in (req.get('image_ids') or []) if str(x)}
-    images = load_images(project_id)
-    processed_ids = []
-    for img in images:
-        iid = str(img.get('id'))
-        if wanted and iid not in wanted:
-            continue
-        img['processing_status'] = 'processed'
-        img['cleaned_at'] = now_iso()
-        img['clean_task_id'] = task_id
-        processed_ids.append(iid)
-    save_images(project_id, images)
+    cleaned_at = now_iso()
+    def mark_confirmed(rows):
+        processed_ids = []
+        for img in rows:
+            iid = str(img.get('id'))
+            if wanted and iid not in wanted:
+                continue
+            img['processing_status'] = 'processed'
+            img['cleaned_at'] = cleaned_at
+            img['clean_task_id'] = task_id
+            processed_ids.append(iid)
+        return processed_ids
+    processed_ids = material_store(project_id).mutate(mark_confirmed)
     deleted_ids = [str(item.get('id')) for item in deleted_images]
     _v33_update_task(project_id, 'clean_tasks', task_id, status='done', status_text='已确认', deleted_images=deleted, delete_failures=len(failed_items), processed_confirmed=len(processed_ids), confirmed_at=now_iso(), finished_at=now_iso())
     return {'ok': not failed_items, 'deleted': deleted, 'deleted_ids': deleted_ids, 'deleted_images': deleted_images, 'failed_items': failed_items, 'processed_ids': processed_ids}
@@ -10370,19 +10323,18 @@ def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
 def v52_mark_ready(project_id: str, payload: V52ReadyReq):
     get_project(project_id)
     ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
-    images = load_images(project_id)
-    changed = []
-    changed_images = []
     now = now_iso()
-    for index, img in enumerate(images):
-        if str(img.get('id')) not in ids:
-            continue
-        updated = mark_ready(img, now)
-        images[index] = updated
-        changed.append(str(updated.get('id')))
-        changed_images.append(updated)
-    if changed:
-        save_images(project_id, images)
+    def apply_ready(rows):
+        changed_images = []
+        for index, img in enumerate(rows):
+            if str(img.get('id')) not in ids:
+                continue
+            updated = mark_ready(img, now)
+            rows[index] = updated
+            changed_images.append(dict(updated))
+        return changed_images
+    changed_images = material_store(project_id).mutate(apply_ready)
+    changed = [str(img.get('id')) for img in changed_images]
     return {'ok': True, 'changed': len(changed), 'image_ids': changed, 'images': changed_images}
 
 @app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
@@ -10468,11 +10420,14 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
 
 @app.post('/api/v49/projects/{project_id}/images/mark-processed')
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):
-    ids={str(x) for x in payload.image_ids or []}; images=load_images(project_id); changed=0
-    for img in images:
-        if str(img.get('id')) in ids:
-            img['processing_status']='processed';img['cleaned_at']=now_iso();changed+=1
-    save_images(project_id,images)
+    ids={str(x) for x in payload.image_ids or []}; cleaned_at=now_iso()
+    def apply_processed(rows):
+        changed=0
+        for img in rows:
+            if str(img.get('id')) in ids:
+                img['processing_status']='processed';img['cleaned_at']=cleaned_at;changed+=1
+        return changed
+    changed=material_store(project_id).mutate(apply_processed)
     return {'ok':True,'changed':changed}
 
 
@@ -10490,7 +10445,7 @@ def _v53_set_bootstrap(progress:int, stage:str, message:str="", **extra):
 def _v53_project_counts(project:Dict[str,Any])->Dict[str,int]:
     pid=str(project.get("id") or "")
     if not pid:return {"images":0,"algorithms":0,"versions":0,"jobs":0}
-    images=read_json(project_dir(pid)/"images.json",[]); algs=read_json(project_dir(pid)/"algorithms.json",[]); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
+    images=load_images(pid); algs=read_json(project_dir(pid)/"algorithms.json",[]); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
     if not isinstance(images,list):images=[]
     if not isinstance(algs,list):algs=[]
     if not isinstance(jobs,list):jobs=[]
@@ -10504,20 +10459,19 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
     pending=[x for x in images if not x.get("annotation_summary_at")]
     if not pending:return images
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    by_id={str(x.get("id")):x for x in images}; total=len(pending); workers=min(8,max(2,os.cpu_count() or 2))
+    patches={}; total=len(pending); workers=min(8,max(2,os.cpu_count() or 2))
     def one(img):
         iid=str(img.get("id") or ""); ann=read_annotation(project_id,iid); boxes=ann.get("boxes",[]) if isinstance(ann,dict) else []
         return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso()
     done=0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(one,img) for img in pending]):
-            iid,boxes,updated=fut.result(); img=by_id.get(iid)
-            if not img:continue
-            img["box_count"]=len(boxes); img["annotated"]=bool(boxes); img["labels"]=sorted({str(b.get("label") or "").strip() for b in boxes if str(b.get("label") or "").strip()}); img["annotation_preview"]=[{k:b.get(k) for k in ("class_id","label","x1","y1","x2","y2")} for b in boxes[:32]]; img["annotation_summary_at"]=updated
-            if boxes:img["processing_status"]="processed"
+            iid,boxes,updated=fut.result(); patch={**annotation_summary(boxes),"annotation_summary_at":updated}
+            if boxes:patch["processing_status"]="processed"
+            patches[iid]=patch
             done+=1
             if done==total or done%100==0:_v53_set_bootstrap(base_progress+int(span*done/max(1,total)),"整理历史标注索引",f"{done}/{total} 张")
-    save_images(project_id,list(by_id.values())); return list(by_id.values())
+    material_store(project_id).patch(patches); return load_images(project_id)
 
 def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None):
     project=get_project(project_id); datasets=ensure_default_datasets(project_id); images=load_images(project_id); labels=project_label_items(project); algorithms=list_algorithms_internal(project_id)
