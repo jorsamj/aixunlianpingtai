@@ -1069,16 +1069,24 @@ def delete_dataset(project_id: str, dataset_id: str):
     ds = ensure_default_datasets(project_id)
     if not any(x.get("id") == dataset_id for x in ds):
         raise HTTPException(status_code=404, detail="数据集不存在")
-    # 删除该数据集下的图片和标注
-    images = load_images(project_id)
-    removed_ids = []
+    def remove_dataset_rows(rows):
+        removed = [
+            dict(img)
+            for img in rows
+            if img.get("dataset_id", "default") == dataset_id
+        ]
+        rows[:] = [
+            img
+            for img in rows
+            if img.get("dataset_id", "default") != dataset_id
+        ]
+        return removed
+
+    removed = material_store(project_id).mutate(remove_dataset_rows)
     p = project_dir(project_id)
-    for img in images:
-        if img.get("dataset_id", "default") == dataset_id:
-            (p / "uploads" / img.get("stored_name", "")).unlink(missing_ok=True)
-            (p / "annotations" / f"{img.get('id')}.json").unlink(missing_ok=True)
-            removed_ids.append(str(img.get("id")))
-    material_store(project_id).remove(removed_ids)
+    for img in removed:
+        (p / "uploads" / img.get("stored_name", "")).unlink(missing_ok=True)
+        (p / "annotations" / f"{img.get('id')}.json").unlink(missing_ok=True)
     write_json(datasets_file(project_id), [x for x in ds if x.get("id") != dataset_id])
     return {"ok": True}
 
@@ -4158,71 +4166,98 @@ def v20_batch_image_split(project_id: str, payload: BatchImageSplitReq):
     split = (payload.split or "unassigned").lower()
     if split not in {"train", "val", "test", "unassigned"}:
         raise HTTPException(status_code=400, detail="数据用途只能是未处理、训练集、试验集或评测集")
-    images = load_images(project_id)
-    target_ids = set(payload.image_ids or [])
+    target_ids = {str(image_id) for image_id in (payload.image_ids or [])}
     scope = (payload.scope or "selected").lower()
     dataset_id = payload.dataset_id or None
     filt = (payload.filter or "all").lower()
+    annotation_box_counts = {}
+    if scope == "filtered" and filt in {"marked", "unmarked"}:
+        for img in load_images(project_id):
+            image_id = str(img.get("id"))
+            annotation_box_counts[image_id] = len(
+                read_annotation(project_id, image_id).get("boxes", [])
+            )
+    updated = now_iso()
 
-    def match_filter(img: Dict[str, Any]) -> bool:
+    def match_latest(img: Dict[str, Any]) -> bool:
         if dataset_id and img.get("dataset_id", "default") != dataset_id:
             return False
         if scope == "dataset":
             return True
         if scope == "filtered":
-            box_count = len(read_annotation(project_id, img["id"]).get("boxes", []))
+            image_id = str(img.get("id"))
             cur_split = (img.get("split") or "unassigned").lower()
             if filt == "marked":
-                return box_count > 0
+                box_count = annotation_box_counts.get(image_id)
+                return box_count is not None and box_count > 0
             if filt == "unmarked":
-                return box_count == 0
+                # A row appearing after annotation facts were read is unknown,
+                # not proven empty, so both annotation filters exclude it.
+                box_count = annotation_box_counts.get(image_id)
+                return box_count is not None and box_count == 0
             if filt in {"train", "val", "test", "unassigned"}:
                 return cur_split == filt
             return True
-        return img.get("id") in target_ids
+        return str(img.get("id")) in target_ids
 
-    matched_ids = [str(img.get("id")) for img in images if match_filter(img)]
-    if not matched_ids:
-        raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
-    updated = now_iso()
-    changed = material_store(project_id).patch({
-        image_id: {"split": split, "updated_at": updated}
-        for image_id in matched_ids
-    })
-    if not changed:
-        raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
-    return {"ok": True, "changed": len(changed), "split": split}
+    def apply_split(rows):
+        changed = 0
+        for img in rows:
+            if not match_latest(img):
+                continue
+            img["split"] = split
+            img["updated_at"] = updated
+            changed += 1
+        if not changed:
+            raise HTTPException(status_code=400, detail="没有匹配到可移动的素材")
+        return changed
+
+    changed = material_store(project_id).mutate(apply_split)
+    return {"ok": True, "changed": changed, "split": split}
 
 
 @app.post("/api/v12/projects/{project_id}/datasets/{dataset_id}/auto_split")
 def v12_auto_split(project_id: str, dataset_id: str, payload: BatchSplitReq):
     get_project(project_id)
-    images = [x for x in load_images(project_id) if x.get("dataset_id", "default") == dataset_id]
+    annotation_presence = {}
     if not payload.include_unannotated:
-        images = [img for img in images if read_annotation(project_id, img["id"]).get("boxes")]
-    if not images:
-        raise HTTPException(status_code=400, detail="该数据集暂无图片")
-    images = sorted(images, key=lambda x: x.get("id", ""))
-    total = len(images)
-    train_n = max(1, int(total * payload.train))
-    val_n = max(0, int(total * payload.val))
-    if train_n + val_n > total:
-        val_n = max(0, total - train_n)
-    ids_train = {x["id"] for x in images[:train_n]}
-    ids_val = {x["id"] for x in images[train_n:train_n+val_n]}
-    patches = {}
-    for img in images:
-        if img["id"] in ids_train:
-            split = "train"
-        elif img["id"] in ids_val:
-            split = "val"
-        else:
-            split = "test"
-        patches[str(img["id"])] = {"split": split}
-    changed = material_store(project_id).patch(patches)
-    counts = {"train": 0, "val": 0, "test": 0}
-    for img in changed:
-        counts[str(img.get("split"))] += 1
+        for img in load_images(project_id):
+            image_id = str(img.get("id"))
+            annotation_presence[image_id] = bool(
+                read_annotation(project_id, image_id).get("boxes")
+            )
+
+    def apply_auto_split(rows):
+        images = [
+            img
+            for img in rows
+            if img.get("dataset_id", "default") == dataset_id
+            and (
+                payload.include_unannotated
+                or annotation_presence.get(str(img.get("id")), False)
+            )
+        ]
+        if not images:
+            raise HTTPException(status_code=400, detail="该数据集暂无图片")
+        images.sort(key=lambda img: str(img.get("id", "")))
+        total = len(images)
+        train_n = max(1, int(total * payload.train))
+        val_n = max(0, int(total * payload.val))
+        if train_n + val_n > total:
+            val_n = max(0, total - train_n)
+        counts = {"train": 0, "val": 0, "test": 0}
+        for index, img in enumerate(images):
+            if index < train_n:
+                split = "train"
+            elif index < train_n + val_n:
+                split = "val"
+            else:
+                split = "test"
+            img["split"] = split
+            counts[split] += 1
+        return counts
+
+    counts = material_store(project_id).mutate(apply_auto_split)
     return {"ok": True, "counts": counts}
 
 
