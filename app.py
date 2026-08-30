@@ -23,7 +23,7 @@ import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageDraw
@@ -125,6 +125,17 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
+
+
+def fast_json_response(content: Any) -> Response:
+    """Serialize large JSON payloads without FastAPI's extra recursive copy."""
+    try:
+        import orjson
+
+        body = orjson.dumps(content)
+    except ImportError:
+        body = json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return Response(content=body, media_type="application/json")
 
 
 _HTTP_ERROR_CODES = {
@@ -2263,7 +2274,7 @@ def list_images(project_id: str, dataset_id: Optional[str] = None):
     images = all_images
     if dataset_id:
         images = [img for img in images if img.get("dataset_id", "default") == dataset_id]
-    return images
+    return fast_json_response(images)
 
 @app.get('/api/v52/projects/{project_id}/annotation-index/status')
 def v52_annotation_index_status(project_id: str):
@@ -12078,11 +12089,10 @@ def _v53_set_bootstrap(progress:int, stage:str, message:str="", **extra):
 def _v53_project_counts(project:Dict[str,Any])->Dict[str,int]:
     pid=str(project.get("id") or "")
     if not pid:return {"images":0,"algorithms":0,"versions":0,"jobs":0}
-    images=load_images(pid); algs=read_json(project_dir(pid)/"algorithms.json",[]); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
-    if not isinstance(images,list):images=[]
+    image_count=material_store(pid).count(); algs=read_json(project_dir(pid)/"algorithms.json",[]); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
     if not isinstance(algs,list):algs=[]
     if not isinstance(jobs,list):jobs=[]
-    return {"images":len(images),"algorithms":len(algs),"versions":sum(len(a.get("versions") or []) for a in algs if isinstance(a,dict)),"jobs":len(jobs)}
+    return {"images":image_count,"algorithms":len(algs),"versions":sum(len(a.get("versions") or []) for a in algs if isinstance(a,dict)),"jobs":len(jobs)}
 
 def _v53_choose_project(projects:List[Dict[str,Any]], preferred_project_id:str=""):
     counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}
@@ -12186,11 +12196,11 @@ def v53_bootstrap_snapshot(preferred_project_id:Optional[str]=""):
     projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; requested=str(preferred_project_id or ""); counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else _v53_choose_project(projects,""); chosen_id=str(chosen.get("id")) if chosen else ""
     if _V53_BOOTSTRAP_STATUS.get("status")!="ready":
         if requested and chosen_id==requested:
-            snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return {"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap}
+            snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
         raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
     if chosen_id and chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""):
-        snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return {"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap}
-    return {"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT}
+        snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
+    return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
 
 
 # ============================================================

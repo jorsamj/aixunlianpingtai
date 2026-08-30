@@ -1,4 +1,7 @@
 import threading
+import json
+
+import platform_core.material_store as material_store_module
 
 from platform_core.material_store import MaterialStore
 
@@ -71,3 +74,39 @@ def test_remove_accepts_a_non_set_iterable(tmp_path):
 
     assert removed == [{"id": "1", "filename": "one.jpg"}]
     assert store.read().rows == [{"id": "2", "filename": "two.jpg"}]
+
+
+def test_read_reuses_index_until_images_file_changes(tmp_path, monkeypatch):
+    path = tmp_path / "images.json"
+    path.write_text(json.dumps([{"id": "one", "filename": "one.jpg"}]), encoding="utf-8")
+    store = MaterialStore(path)
+    original = material_store_module.read_rows
+    calls = 0
+
+    def counted_read_rows(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(material_store_module, "read_rows", counted_read_rows)
+
+    assert store.read().rows == [{"id": "one", "filename": "one.jpg"}]
+    assert store.read().rows == [{"id": "one", "filename": "one.jpg"}]
+    assert calls == 1
+
+    path.write_text(json.dumps([{"id": "two", "filename": "two.jpg"}]), encoding="utf-8")
+
+    assert store.read().rows == [{"id": "two", "filename": "two.jpg"}]
+    assert calls == 2
+
+
+def test_count_tracks_cached_and_external_rows(tmp_path):
+    path = tmp_path / "images.json"
+    path.write_text(json.dumps([{"id": "one"}]), encoding="utf-8")
+    store = MaterialStore(path)
+
+    assert store.count() == 1
+
+    path.write_text(json.dumps([{"id": "one"}, {"id": "two"}]), encoding="utf-8")
+
+    assert store.count() == 2

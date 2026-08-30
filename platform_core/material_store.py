@@ -2,6 +2,7 @@
 
 import json
 import threading
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, TypeVar
@@ -11,6 +12,8 @@ from .annotations import atomic_write_json
 
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[Path, threading.RLock] = {}
+_CACHE_GUARD = threading.RLock()
+_ROW_CACHE: dict[Path, tuple[tuple[int, int] | None, list[dict[str, Any]]]] = {}
 _Result = TypeVar("_Result")
 
 
@@ -31,6 +34,39 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         raise ValueError("images.json 必须是数组")
     return [dict(row) for row in rows]
+
+
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _cached_rows_shared(path: Path) -> list[dict[str, Any]]:
+    resolved_path = path.resolve()
+    signature = _file_signature(path)
+    with _CACHE_GUARD:
+        cached = _ROW_CACHE.get(resolved_path)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+
+    rows = read_rows(path)
+    signature = _file_signature(path)
+    with _CACHE_GUARD:
+        cached_rows = deepcopy(rows)
+        _ROW_CACHE[resolved_path] = (signature, cached_rows)
+    return cached_rows
+
+
+def _cached_rows(path: Path) -> list[dict[str, Any]]:
+    return deepcopy(_cached_rows_shared(path))
+
+
+def _store_cached_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    with _CACHE_GUARD:
+        _ROW_CACHE[path.resolve()] = (_file_signature(path), deepcopy(rows))
 
 
 def read_revision(path: Path) -> int:
@@ -63,15 +99,20 @@ class MaterialStore:
         with self._lock:
             return MaterialSnapshot(
                 revision=read_revision(self.revision_path),
-                rows=read_rows(self.path),
+                rows=_cached_rows(self.path),
             )
+
+    def count(self) -> int:
+        with self._lock:
+            return len(_cached_rows_shared(self.path))
 
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
         with self._lock:
-            rows = read_rows(self.path)
+            rows = _cached_rows(self.path)
             result = fn(rows)
             atomic_write_json(self.path, rows)
             write_revision(self.revision_path, read_revision(self.revision_path) + 1)
+            _store_cached_rows(self.path, rows)
             return result
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
