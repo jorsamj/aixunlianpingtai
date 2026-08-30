@@ -1133,7 +1133,7 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": APP_VERSION, "time": now_iso(), "base_dir": str(BASE_DIR), "engines": ["ultralytics", "paddle_command"], "ui":"v42.14"}
+    return {"ok": True, "version": APP_VERSION, "time": now_iso(), "base_dir": str(BASE_DIR), "engines": ["ultralytics", "paddle_command"], "ui": f"v{APP_VERSION}"}
 
 
 class ProjectCreate(BaseModel):

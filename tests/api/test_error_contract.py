@@ -18,3 +18,9 @@ def test_validation_error_uses_same_contract(client):
     assert body["message"] == "提交的数据不完整或格式不正确"
     assert body["detail"]
     assert body["solution"]
+
+
+def test_health_reports_one_consistent_runtime_and_ui_version(client):
+    body = client.get("/api/health").json()
+
+    assert body["ui"] == f"v{body['version']}"
