@@ -12178,7 +12178,8 @@ def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,
     except Exception:pending=[]
     try:test_models=(v12_test_models(project_id,probe_optional=False) or {}).get("items",[])
     except Exception:test_models=[]
-    return {"project":project,"datasets":datasets,"images":images,"labels":labels,"algorithms":algorithms,"jobs":jobs,"models":models,"targets":targets,"inference_envs":inference,"recommendation":rec,"local_models":(local or {}).get("items",[]) if isinstance(local,dict) else [],"pending":pending,"test_models":test_models,"generated_at":now_iso()}
+    model_configs = [_v35_sanitize_secret(item) for item in _v35_model_items()]
+    return {"project":project,"datasets":datasets,"images":images,"labels":labels,"algorithms":algorithms,"jobs":jobs,"models":models,"targets":targets,"inference_envs":inference,"recommendation":rec,"local_models":(local or {}).get("items",[]) if isinstance(local,dict) else [],"model_configs":model_configs,"pending":pending,"test_models":test_models,"generated_at":now_iso()}
 
 def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT

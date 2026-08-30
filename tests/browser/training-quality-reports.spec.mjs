@@ -1,4 +1,7 @@
 import {test, expect} from '@playwright/test';
+import {promises as fs} from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 
 function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
@@ -19,7 +22,7 @@ function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
   return buffer;
 }
 
-async function seedTrainingProject(request) {
+async function seedTrainingProject(request, {withVersion = false} = {}) {
   const project = await (await request.post('/api/projects', {data: {
     name: `训练浏览器-${Date.now()}`,
     labels: [{code: 'fire', display_name: '明火'}, {code: 'smoke', display_name: '烟雾'}]
@@ -40,7 +43,23 @@ async function seedTrainingProject(request) {
   const algorithm = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
     name: '烟火迭代算法', industry: '工业安全', algorithm_type: 'yolo_ultralytics', remark: ''
   }})).json();
-  return {project, algorithm: algorithm.algorithm};
+  if (withVersion) {
+    const modelPath = path.join(os.tmpdir(), `browser-version-${Date.now()}.pt`);
+    await fs.writeFile(modelPath, Buffer.from('browser model fixture'));
+    const assigned = await request.post(`/api/v12/projects/${project.id}/algorithms/${algorithm.algorithm.id}/versions`, {data: {
+      model_name: path.basename(modelPath), model_source: 'local', local_path: modelPath
+    }});
+    expect(assigned.ok()).toBeTruthy();
+  }
+  const listed = await (await request.get(`/api/v12/projects/${project.id}/algorithms`)).json();
+  return {project, algorithm: listed.items.find(item => item.id === algorithm.algorithm.id)};
+}
+
+async function selectAllTrainingMaterials(page, trainingDialog) {
+  await trainingDialog.getByRole('button', {name: '选择素材'}).click();
+  const picker = page.getByRole('dialog', {name: '选择训练素材'});
+  await picker.getByRole('button', {name: '全选当前'}).click();
+  await picker.getByRole('button', {name: '确定'}).click();
 }
 
 test('training dialog exposes iteration base, stacked quality charts, and report levels', async ({page, request}) => {
@@ -56,6 +75,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 
   const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(trainingDialog).toBeVisible();
+  await expect(trainingDialog.locator('#tr429Count')).toHaveText('0 张');
   await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
   await expect(trainingDialog.getByText('每次随机抽取试验集比例')).toBeVisible();
   await expect(trainingDialog.locator('#tr429ExperimentPercent')).toHaveValue('20');
@@ -67,6 +87,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await advanced.locator('summary').click();
   await expect(settingsDialog.getByText('最终学习率 lrf')).toBeVisible();
   await settingsDialog.getByRole('button', {name: '取消'}).click();
+  await selectAllTrainingMaterials(page, trainingDialog);
   await trainingDialog.getByRole('button', {name: '查看数据质量'}).click();
 
   const qualityDialog = page.getByRole('dialog', {name: '训练素材 · 数据质量'});
@@ -98,6 +119,8 @@ test('training submit sends the selected candidate pool and configured experimen
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator('#tr429Count')).toHaveText('0 张');
+  await selectAllTrainingMaterials(page, dialog);
   await dialog.locator('#tr429ExperimentPercent').fill('35');
   await dialog.getByRole('button', {name: '配置设置'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
@@ -115,8 +138,9 @@ test('training submit sends the selected candidate pool and configured experimen
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
-  const {project, algorithm} = await seedTrainingProject(request);
+  const {project, algorithm} = await seedTrainingProject(request, {withVersion: true});
   await page.route(`**/api/v54/projects/${project.id}/algorithms/${algorithm.id}/iteration-base?framework=ultralytics`, async route => {
+    await new Promise(resolve => setTimeout(resolve, 1200));
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, base: {
       version_id: 'latest-version', version_name: 'v3', model_name: 'latest-best.pt', path: 'C:/models/latest-best.pt'
     }})});
@@ -130,10 +154,12 @@ test('versioned training locks the latest version and projects the current rando
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
 
+  await expect(dialog).not.toContainText('YOLO11n 目标检测', {timeout: 500});
+  await expect(dialog.locator('#tr429Count')).toHaveText('0 张');
   await expect(dialog.getByText('训练引擎（迭代任务锁定）')).toBeVisible();
   await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
   await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
-  await expect(dialog.locator('.train429-split-summary')).toContainText('预计训练 1 张 / 试验 1 张');
+  await expect(dialog.locator('.train429-split-summary')).toContainText('预计训练 0 张 / 试验 0 张');
   await expect(dialog.getByText('YOLO11n 目标检测', {exact: true})).toBeHidden();
   await dialog.getByRole('button', {name: '配置设置'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});

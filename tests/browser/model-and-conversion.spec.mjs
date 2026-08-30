@@ -27,6 +27,15 @@ test('vision providers, candidate review, and vendor target parameters are expli
     dataset_id: 'default', files: {name: 'candidate.bmp', mimeType: 'image/bmp', buffer: bmp()}
   }});
   const image = (await upload.json()).uploaded[0];
+  await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {data: {boxes: [{
+    class_id: 0, label: 'fire', x1: 10, y1: 8, x2: 90, y2: 70
+  }]}});
+  const configured = await request.post('/api/v35/model-configs', {data: {
+    name: '浏览器默认视觉模型', provider_type: 'ollama', provider_adapter: 'ollama',
+    model_kind: 'vlm', detect_url: 'http://127.0.0.1:11434', model_name: 'qwen2.5vl:3b',
+    default_for_annotation: true
+  }});
+  expect(configured.ok()).toBeTruthy();
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '模型配置'}));
   }, project.id);
@@ -42,6 +51,20 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect(modelDialog.locator('#mcApiKey')).toHaveValue('');
   await expect(modelDialog.locator('#mcAnnPrompt')).toBeVisible();
   await modelDialog.getByRole('button', {name: '取消'}).click();
+
+  await page.evaluate(() => window.setPage('自动标注及清洗'));
+  await page.getByRole('button', {name: /创建AI标注任务/}).click();
+  const createAiDialog = page.getByRole('dialog', {name: '创建AI自动标注任务'});
+  await expect(createAiDialog.getByText('浏览器默认视觉模型', {exact: true})).toBeVisible();
+  const keptReferenceNode = await page.evaluate(() => {
+    const button = document.querySelector('#ai429RefGrid button');
+    button.click();
+    return document.querySelector('#ai429RefGrid button') === button;
+  });
+  expect(keptReferenceNode).toBe(true);
+  await expect(createAiDialog.locator('#ai429Labels')).toHaveValue('fire');
+  await expect(createAiDialog.locator('#ai417ReferenceLabels')).toContainText('fire · 明火');
+  await createAiDialog.getByRole('button', {name: '取消'}).click();
 
   await page.route(`**/api/v47/projects/${project.id}/ai-label-tasks/fake-task/result`, route => route.fulfill({
     status: 200,
@@ -113,10 +136,19 @@ test('version conversion shows configured compiler resources and their readiness
   await createDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('Windows RKNN-Toolkit2');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('未检测到 RKNN-Toolkit2');
+  await expect(createDialog.getByRole('button', {name: '配置部署资源'})).toBeVisible();
   await createDialog.getByRole('button', {name: '取消'}).click();
   await historyDialog.locator('button[aria-label="关闭"]').click();
   await page.evaluate(() => window.setPage('部署转换'));
   await expect(page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'})).toBeVisible();
   await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
   await expect(page.locator('.deploy-resource-readiness')).toContainText('Windows RKNN-Toolkit2');
+});
+
+test('module graph is cache-busted and exposes platform helpers', async ({page, request}) => {
+  const main = await request.get('/static/main.mjs');
+  expect(await main.text()).toMatch(/\.\/modules\/materials\.js\?v=\d+/);
+
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => typeof window.PlatformCore?.materials?.labelDisplay)).toBe('function');
 });
