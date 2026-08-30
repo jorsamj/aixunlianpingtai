@@ -5724,7 +5724,8 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "data_yaml": build.get("data_yaml", ""),
         "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0), "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent), "split_seed": int(build.get("split_seed") or payload.seed or 0)},
         "ai_intervention": {"enabled": False},
-        "queue_priority": int(payload.queue_priority or 50),
+        "queue_priority": int(payload.queue_priority),
+        "priority_scheme": V56_PRIORITY_SCHEME,
         "auto_convert_targets": list(payload.auto_convert_targets or []),
         "train_request": payload.dict(),
         "run_name": run_name,
@@ -5946,15 +5947,58 @@ def _v48_launch_saved_job(project_id: str, job: Dict[str, Any]) -> Dict[str, Any
     return job
 
 
+V56_PRIORITY_SCHEME = "lower_number_first"
+V56_LEGACY_PRIORITY_MAP = {100: 1, 80: 20, 50: 50}
+
+
+def _v56_normalize_priority(job: Dict[str, Any]) -> int:
+    try:
+        raw = int(job.get("queue_priority", 50))
+    except (TypeError, ValueError):
+        raw = 50
+    if job.get("priority_scheme") == V56_PRIORITY_SCHEME:
+        return max(1, min(999, raw))
+    return V56_LEGACY_PRIORITY_MAP.get(raw, max(1, min(999, 101 - raw)))
+
+
+def _v56_training_queue_sort_key(job: Dict[str, Any]):
+    return (
+        _v56_normalize_priority(job),
+        int(job.get("priority_tiebreaker") or 0),
+        str(job.get("queued_at") or job.get("created_at") or ""),
+        str(job.get("id") or ""),
+    )
+
+
+def _v56_migrate_queued_priority(job_file: Path, job: Dict[str, Any]) -> Dict[str, Any]:
+    if job.get("status") != "queued" or job.get("priority_scheme") == V56_PRIORITY_SCHEME:
+        return job
+    migrated = dict(job)
+    migrated["legacy_queue_priority"] = job.get("queue_priority", 50)
+    migrated["queue_priority"] = _v56_normalize_priority(job)
+    migrated["priority_scheme"] = V56_PRIORITY_SCHEME
+    migrated["priority_migrated_at"] = now_iso()
+    try:
+        write_json(job_file, migrated)
+    except Exception as exc:
+        print(f"[priority-migration] {job_file}: {exc}")
+    return migrated
+
+
 def _v48_dispatch_training_queues(project_id: str) -> None:
-    """One running/paused training per selected resource. Higher queue_priority runs first."""
+    """Run one task per resource, using lower-number-first priority and FIFO ties."""
     with V48_TRAIN_QUEUE_LOCK:
         rows=[]
         for jf in _v48_all_job_files(project_id):
             j=read_json(jf,{})
+            if j.get("status") == "queued":
+                j = _v56_migrate_queued_priority(jf, j)
             if j: rows.append((jf,j))
         busy={_v48_resource_key(j) for _,j in rows if j.get("status") in {"running","paused"}}
-        queued=sorted([(jf,j) for jf,j in rows if j.get("status")=="queued"], key=lambda z:(-int(z[1].get("queue_priority") or 0), str(z[1].get("queued_at") or z[1].get("created_at") or "")))
+        queued=sorted(
+            [(jf,j) for jf,j in rows if j.get("status")=="queued"],
+            key=lambda pair: _v56_training_queue_sort_key(pair[1]),
+        )
         for jf,j in queued:
             key=_v48_resource_key(j)
             if key in busy: continue
@@ -5971,8 +6015,13 @@ def v48_promote_job(project_id: str, job_id: str):
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
     if job.get("status")!="queued": raise HTTPException(status_code=400,detail="只有排队中的任务可以插队")
     peers=[read_json(x,{}) for x in _v48_all_job_files(project_id)]
-    mx=max([int(x.get("queue_priority") or 0) for x in peers if _v48_resource_key(x)==_v48_resource_key(job)] or [50])
-    job["queue_priority"]=mx+1; job["promoted_at"]=now_iso(); job["message"]="已插队到当前资源队列最前"; write_json(jf,job)
+    queued_peers=[x for x in peers if x.get("status")=="queued" and _v48_resource_key(x)==_v48_resource_key(job)]
+    minimum=min([_v56_normalize_priority(x) for x in queued_peers] or [50])
+    job["queue_priority"]=max(1,minimum-1)
+    job["priority_scheme"]=V56_PRIORITY_SCHEME
+    if minimum==1:
+        job["priority_tiebreaker"]=min([int(x.get("priority_tiebreaker") or 0) for x in queued_peers] or [0])-1
+    job["promoted_at"]=now_iso(); job["message"]="已插队到当前资源队列最前"; write_json(jf,job)
     _v48_dispatch_training_queues(project_id); sync_jobs_index(project_id)
     return read_json(jf,job)
 

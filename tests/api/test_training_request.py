@@ -64,6 +64,8 @@ def test_training_job_locks_snapshot_base_and_requested_parameters(client, seede
     assert job["model"] == job["base_model_path"]
     assert job["base_version_id"] is None
     assert job["base_selection_reason"] == "mother_model"
+    assert job["queue_priority"] == 50
+    assert job["priority_scheme"] == "lower_number_first"
     assert len(job["snapshot_id"]) == 64
     expected = {
         "epochs": 3,
