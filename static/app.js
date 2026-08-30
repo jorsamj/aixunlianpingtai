@@ -555,8 +555,8 @@ window.installUsability417=function(){
   const baseSetPage417=window.setPage;
   window.setPage=function(page){window.toggleMobileSidebarV37?.(false);return baseSetPage417?.(page)};try{setPage=window.setPage}catch(_){}
   const baseRender417=render;
-  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.18.0';if(footer)footer.textContent='v42.18.0';return result};
-  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.18.0';if(footer)footer.textContent='v42.18.0'},delay));
+  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.19.0';if(footer)footer.textContent='v42.19.0';return result};
+  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.19.0';if(footer)footer.textContent='v42.19.0'},delay));
   if(state.page==='数据集')renderDatasets424();
 };
 
