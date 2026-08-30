@@ -9185,11 +9185,39 @@ def _builtin_deploy_resource_cache_meta() -> Dict[str, Any]:
 
 def _load_saved_deploy_resources() -> List[Dict[str, Any]]:
     data = read_json(DEPLOY_RESOURCES_FILE, [])
-    return data if isinstance(data, list) else []
+    items = data if isinstance(data, list) else []
+    changed = False
+    for item in items:
+        legacy = str(item.pop("api_key", "") or "")
+        if legacy:
+            reference = str(item.get("secret_ref") or secret_ref("deploy-resource", str(item.get("id") or uuid.uuid4().hex[:12])))
+            _v35_secret_store().set(reference, legacy)
+            item["secret_ref"] = reference
+            changed = True
+    if changed:
+        _save_deploy_resources(items)
+    return items
 
 
 def _save_deploy_resources(items: List[Dict[str, Any]]):
     write_json(DEPLOY_RESOURCES_FILE, items)
+
+
+def _deploy_resource_runtime(item: Dict[str, Any]) -> Dict[str, Any]:
+    runtime = dict(item)
+    reference = str(item.get("secret_ref") or "")
+    runtime["api_key"] = _v35_secret_store().get(reference) if reference else ""
+    return runtime
+
+
+def _deploy_resource_public(item: Dict[str, Any]) -> Dict[str, Any]:
+    public = dict(item)
+    public.pop("api_key", None)
+    reference = str(public.pop("secret_ref", "") or "")
+    masked = _v35_secret_store().masked(reference) if reference else ""
+    public["has_api_key"] = bool(masked)
+    public["api_key_masked"] = masked
+    return public
 
 
 def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -9319,17 +9347,22 @@ class DeployResourceReq(BaseModel):
 
 @app.get("/api/v39/deploy/resources")
 def v39_list_deploy_resources():
-    return {"ok": True, "items": _builtin_deploy_resources() + _load_saved_deploy_resources(), **_builtin_deploy_resource_cache_meta()}
+    return {"ok": True, "items": _builtin_deploy_resources() + [_deploy_resource_public(x) for x in _load_saved_deploy_resources()], **_builtin_deploy_resource_cache_meta()}
 
 
 @app.post("/api/v39/deploy/resources")
 def v39_create_deploy_resource(payload: DeployResourceReq):
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="请输入部署资源名称")
-    item = payload.model_dump()
-    item.update({"id": uuid.uuid4().hex[:12], "created_at": now_iso(), "updated_at": now_iso(), "status": "unchecked", "targets": []})
+    item = payload.model_dump(); resource_id = uuid.uuid4().hex[:12]
+    api_key = str(item.pop("api_key", "") or "")
+    if api_key:
+        reference = secret_ref("deploy-resource", resource_id)
+        _v35_secret_store().set(reference, api_key)
+        item["secret_ref"] = reference
+    item.update({"id": resource_id, "created_at": now_iso(), "updated_at": now_iso(), "status": "unchecked", "targets": []})
     items = _load_saved_deploy_resources(); items.insert(0, item); _save_deploy_resources(items)
-    return item
+    return _deploy_resource_public(item)
 
 
 @app.put("/api/v39/deploy/resources/{resource_id}")
@@ -9337,17 +9370,24 @@ def v39_update_deploy_resource(resource_id: str, payload: DeployResourceReq):
     items = _load_saved_deploy_resources()
     for i, x in enumerate(items):
         if x.get("id") == resource_id:
-            new = {**x, **payload.model_dump(), "updated_at": now_iso()}
-            items[i] = new; _save_deploy_resources(items); return new
+            data = payload.model_dump(); api_key = str(data.pop("api_key", "") or "")
+            new = {**x, **data, "updated_at": now_iso()}
+            reference = str(x.get("secret_ref") or secret_ref("deploy-resource", resource_id))
+            if api_key:
+                _v35_secret_store().set(reference, api_key); new["secret_ref"] = reference
+            items[i] = new; _save_deploy_resources(items); return _deploy_resource_public(new)
     raise HTTPException(status_code=404, detail="部署资源不存在")
 
 
 @app.delete("/api/v39/deploy/resources/{resource_id}")
 def v39_delete_deploy_resource(resource_id: str):
     items = _load_saved_deploy_resources()
-    if not any(x.get("id") == resource_id for x in items):
+    removed = next((x for x in items if x.get("id") == resource_id), None)
+    if not removed:
         raise HTTPException(status_code=404, detail="部署资源不存在")
     _save_deploy_resources([x for x in items if x.get("id") != resource_id])
+    if removed.get("secret_ref"):
+        _v35_secret_store().delete(str(removed.get("secret_ref")))
     return {"ok": True}
 
 
@@ -9360,10 +9400,12 @@ def v39_detect_deploy_resource(resource_id: str):
     items = _load_saved_deploy_resources()
     idx = next((i for i,x in enumerate(items) if x.get("id") == resource_id), None)
     if idx is None: raise HTTPException(status_code=404, detail="部署资源不存在")
-    item = items[idx]
-    checked = _detect_remote_deploy_resource(item) if str(item.get("mode")) == "remote" else _detect_local_deploy_resource(item)
+    item = items[idx]; runtime = _deploy_resource_runtime(item)
+    checked = _detect_remote_deploy_resource(runtime) if str(item.get("mode")) == "remote" else _detect_local_deploy_resource(runtime)
+    checked.pop("api_key", None)
+    if item.get("secret_ref"): checked["secret_ref"] = item.get("secret_ref")
     items[idx] = checked; _save_deploy_resources(items)
-    return checked
+    return _deploy_resource_public(checked)
 
 
 @app.post("/api/v39/deploy/local/auto-detect")
@@ -9427,8 +9469,10 @@ def _resolve_deploy_source(project_id: str, source_id: str) -> Dict[str, Any]:
 
 
 def _deploy_resource_by_id(resource_id: str) -> Dict[str, Any]:
-    for r in _builtin_deploy_resources() + _load_saved_deploy_resources():
+    for r in _builtin_deploy_resources():
         if r.get("id") == resource_id: return r
+    for r in _load_saved_deploy_resources():
+        if r.get("id") == resource_id: return _deploy_resource_runtime(r)
     raise HTTPException(status_code=404, detail="部署资源不存在")
 
 
@@ -9485,7 +9529,7 @@ def _safe_extract_zip(zf: zipfile.ZipFile, dst: Path) -> None:
 
 def _sync_remote_deploy_job(project_id: str, job_id: str):
     jd=_deploy_job_dir(project_id,job_id); jf=jd/"job.json"; job=read_json(jf,{})
-    resource=job.get("resource") or {}; base=str(resource.get("base_url") or "").rstrip("/"); key=str(resource.get("api_key") or "")
+    resource=_deploy_resource_by_id(str(job.get("resource_id") or "")); base=str(resource.get("base_url") or "").rstrip("/"); key=str(resource.get("api_key") or "")
     try:
         source=Path(job["source_path"]); params=job.get("params") or {}
         files={"source_model":(source.name,source.open("rb"),"application/octet-stream")}
@@ -9556,7 +9600,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
 
     # 芯片 SDK 的 Python 往往和训练/导出 Python 不是同一个环境。
     # 在任务快照里同时保存 Ultralytics/Paddle 导出环境，确保 .pt/.pdparams 能先真实转 ONNX，再进入厂商编译器。
-    resource_for_job=dict(resource)
+    resource_for_job=_deploy_resource_public(resource)
     ultra_env=get_active_ultralytics_env() or {}
     if ultra_env.get("python_path") and not resource_for_job.get("ultralytics_python"):
         resource_for_job["ultralytics_python"]=ultra_env.get("python_path")
