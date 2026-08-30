@@ -5601,6 +5601,10 @@ def v12_start_train(project_id: str, payload: TrainReq):
     framework = (payload.framework or "ultralytics").strip().lower()
     alg = get_algorithm_config(payload.algorithm or "")
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    if not str(payload.algorithm_asset_id or "").strip():
+        raise HTTPException(status_code=400, detail="请选择要迭代训练的算法")
+    if asset_algorithm is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
     mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
     iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework, strict_latest=True)
     if iteration_base:
@@ -11785,6 +11789,10 @@ def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any
                     width=int(img['width']),
                     height=int(img['height']),
                     label_ids=label_ids,
+                    label_aliases={
+                        str(item['code']): [str(item.get('display_name_zh') or '')]
+                        for item in selected_catalog
+                    },
                 )
                 threshold = float(payload.get('threshold') if payload.get('threshold') is not None else .45)
                 parsed = [box for box in parsed if float(box.get('confidence') or 0) >= threshold]
@@ -12211,16 +12219,34 @@ def v54_label_schema(project_id: str):
     project = get_project(project_id)
     items = active_label_options(project_label_items(project))
     usage = {str(x.get('code')): {'images': 0, 'boxes': 0} for x in items}
+    summary_patches = {}
     for img in load_images(project_id):
+        counts = img.get('label_counts')
+        if not isinstance(counts, dict):
+            preview = img.get('annotation_preview') if isinstance(img.get('annotation_preview'), list) else []
+            box_count = int(img.get('box_count') or 0)
+            if 'box_count' in img and box_count <= len(preview):
+                counts = {}
+                for box in preview:
+                    label = str(box.get('label') or '').strip()
+                    if label:
+                        counts[label] = int(counts.get(label, 0)) + 1
+            else:
+                boxes = read_annotation(project_id, str(img.get('id'))).get('boxes', [])
+                counts = annotation_summary(boxes).get('label_counts', {})
+            summary_patches[str(img.get('id'))] = {'label_counts': counts}
         seen = set()
-        for b in read_annotation(project_id, str(img.get('id'))).get('boxes', []):
-            label = str(b.get('label') or '').strip()
-            if not label:
+        for raw_label, raw_count in counts.items():
+            label = str(raw_label or '').strip()
+            count = max(0, int(raw_count or 0))
+            if not label or count <= 0:
                 continue
-            usage.setdefault(label, {'images': 0, 'boxes': 0})['boxes'] += 1
+            usage.setdefault(label, {'images': 0, 'boxes': 0})['boxes'] += count
             seen.add(label)
         for label in seen:
             usage.setdefault(label, {'images': 0, 'boxes': 0})['images'] += 1
+    if summary_patches:
+        material_store(project_id).patch(summary_patches)
     for x in items:
         x['usage_images'] = usage.get(str(x.get('code')), {}).get('images', 0)
         x['usage_boxes'] = usage.get(str(x.get('code')), {}).get('boxes', 0)

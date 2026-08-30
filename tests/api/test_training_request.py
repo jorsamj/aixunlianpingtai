@@ -124,6 +124,64 @@ def test_legacy_training_route_also_requires_strict_latest_iteration_base(client
     assert seen["strict_latest"] is True
 
 
+def test_product_training_ignores_requested_mother_model_when_latest_version_exists(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, train_image = seeded_project
+    monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
+    monkeypatch.setattr(app_module, "_v54_validate_iteration_artifact", lambda _path, _framework: True)
+    val_image = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("iteration-val.jpg", _image_bytes("gray"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    for image, label, class_id, split in [
+        (train_image, "fire", 0, "train"),
+        (val_image, "smoke", 1, "val"),
+    ]:
+        assert client.post(
+            f"/api/projects/{project_id}/annotations/{image['id']}",
+            json={"boxes": [{"class_id": class_id, "label": label, "x1": 10, "y1": 10, "x2": 90, "y2": 90}]},
+        ).status_code == 200
+        assert client.patch(
+            f"/api/v12/projects/{project_id}/images/{image['id']}", json={"split": split}
+        ).status_code == 200
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "严格最新版本训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    latest_model = app_module.project_dir(project_id) / "latest-iteration.pt"
+    latest_model.write_bytes(b"latest")
+    rows = app_module.list_algorithms_internal(project_id)
+    target = next(row for row in rows if row["id"] == algorithm["id"])
+    target["versions"] = [{
+        "id": "latest-version",
+        "version_name": "20260830120000",
+        "finished_at": "2026-08-30T12:00:00",
+        "stored_path": str(latest_model),
+        "artifact_verified": True,
+    }]
+    app_module.save_algorithms_internal(project_id, rows)
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm": "yolo11n_det",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "train_image_ids": [train_image["id"]],
+            "val_image_ids": [val_image["id"]],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    job = response.json()["job"]
+    assert job["base_version_id"] == "latest-version"
+    assert job["base_selection_reason"] == "latest_verified_version"
+    assert job["model"] == str(latest_model.resolve())
+
+
 def test_iteration_base_endpoint_does_not_fall_back_from_broken_latest(client, seeded_project, monkeypatch):
     import app as app_module
 
@@ -208,11 +266,16 @@ def test_training_rejects_random_pool_without_two_valid_annotated_materials(clie
     monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
     monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value: value)
 
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "素材不足回归", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
     response = client.post(
         f"/api/v12/projects/{project_id}/train/start",
         json={
             "framework": "ultralytics",
             "algorithm": "yolo11n_det",
+            "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
             "selected_image_ids": [image["id"], "not-a-real-image"],
             "random_experiment_split": True,
@@ -222,3 +285,19 @@ def test_training_rejects_random_pool_without_two_valid_annotated_materials(clie
 
     assert response.status_code == 400
     assert "训练集" in response.json()["detail"]
+
+
+def test_product_training_route_rejects_unknown_algorithm_asset(client, seeded_project):
+    project_id, _ = seeded_project
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm": "yolo11n_det",
+            "algorithm_asset_id": "not-a-real-algorithm",
+            "model": "yolo11n.pt",
+        },
+    )
+
+    assert response.status_code == 404
+    assert "算法" in response.json()["detail"]

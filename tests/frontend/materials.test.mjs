@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {applyAnnotationResult} from '../../static/modules/annotation.js';
 import {applyCleanConfirmation} from '../../static/modules/cleaning.js';
 import {activeLabelOptions} from '../../static/modules/labels.js';
-import {filterByAnyLabel, replaceMaterial} from '../../static/modules/materials.js';
+import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from '../../static/modules/materials.js';
 import {uploadBatchFromResponse} from '../../static/modules/upload.js';
 
 test('saved annotation replaces only the matching material', () => {
@@ -30,6 +30,21 @@ test('multi-label filtering uses OR semantics', () => {
   ];
   assert.deepEqual(filterByAnyLabel(rows, ['person', 'vehicle']).map(row => row.id), ['one', 'two']);
   assert.deepEqual(filterByAnyLabel(rows, []).map(row => row.id), ['one', 'two', 'three']);
+});
+
+test('dataset labels use the Chinese library display name and preserve the code as context', () => {
+  const labels = [{code: 'fire', display_name: '明火'}];
+  assert.equal(labelDisplay('fire', labels), 'fire · 明火');
+  assert.equal(labelDisplay('unknown', labels), 'unknown');
+});
+
+test('reference images contribute unique labels to AI auto annotation', () => {
+  const rows = [
+    {id: 'one', labels: ['fire', 'smoke']},
+    {id: 'two', labels: ['smoke', 'person']},
+    {id: 'three', labels: ['ignored']}
+  ];
+  assert.deepEqual(labelsFromReferences(rows, ['one', 'two']), ['fire', 'person', 'smoke']);
 });
 
 test('label options come only from active label-library records', () => {

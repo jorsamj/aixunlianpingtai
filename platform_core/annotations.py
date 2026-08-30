@@ -65,12 +65,13 @@ def normalize_boxes(
 
 
 def annotation_summary(boxes: Sequence[Mapping[str, Any]]) -> dict:
+    label_counts: dict[str, int] = {}
+    for box in boxes:
+        label = str(box.get("label") or "").strip()
+        if label:
+            label_counts[label] = label_counts.get(label, 0) + 1
     labels = sorted(
-        {
-            str(box.get("label") or "").strip()
-            for box in boxes
-            if str(box.get("label") or "").strip()
-        }
+        label_counts
     )
     preview = [
         {field: box.get(field) for field in PREVIEW_FIELDS}
@@ -78,9 +79,9 @@ def annotation_summary(boxes: Sequence[Mapping[str, Any]]) -> dict:
     ]
     return {
         "labels": labels,
+        "label_counts": label_counts,
         "box_count": len(boxes),
         "annotated": bool(boxes),
         "annotation_status": "annotated" if boxes else "unannotated",
         "annotation_preview": preview,
     }
-

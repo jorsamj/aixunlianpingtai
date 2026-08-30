@@ -18,3 +18,11 @@ export function iterationBasePresentation(base) {
     status: 'mother'
   };
 }
+
+export function projectedRandomSplit(total, experimentPercent) {
+  const count = Math.max(0, Math.floor(Number(total) || 0));
+  if (count < 2) return {train: count, experiment: 0};
+  const percent = Math.max(1, Math.min(99, Number(experimentPercent) || 20));
+  const experiment = Math.max(1, Math.min(count - 1, Math.round(count * percent / 100)));
+  return {train: count - experiment, experiment};
+}

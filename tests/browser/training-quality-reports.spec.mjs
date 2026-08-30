@@ -113,3 +113,30 @@ test('training submit sends the selected candidate pool and configured experimen
   expect(submitted.selected_image_ids).toHaveLength(2);
   expect(submitted.train_image_ids).toBeUndefined();
 });
+
+test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
+  const {project, algorithm} = await seedTrainingProject(request);
+  await page.route(`**/api/v54/projects/${project.id}/algorithms/${algorithm.id}/iteration-base?framework=ultralytics`, async route => {
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, base: {
+      version_id: 'latest-version', version_name: 'v3', model_name: 'latest-best.pt', path: 'C:/models/latest-best.pt'
+    }})});
+  });
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
+  }, project.id);
+  await page.goto('/');
+  await page.getByRole('button', {name: /算法列表/}).click();
+  const card = page.locator('.alg428-card', {hasText: '烟火迭代算法'});
+  await card.getByRole('button', {name: '训练'}).click();
+  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+
+  await expect(dialog.getByText('训练引擎（迭代任务锁定）')).toBeVisible();
+  await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
+  await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
+  await expect(dialog.locator('.train429-split-summary')).toContainText('预计训练 1 张 / 试验 1 张');
+  await expect(dialog.getByText('YOLO11n 目标检测', {exact: true})).toBeHidden();
+  await dialog.getByRole('button', {name: '配置设置'}).click();
+  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  await expect(settings.locator('#ts428Model')).toBeDisabled();
+  await expect(settings.locator('#ts428Model option:checked')).toHaveText('v3 · latest-best.pt');
+});

@@ -91,6 +91,7 @@ def parse_candidate_response(
     width: int,
     height: int,
     label_ids: Mapping[str, int],
+    label_aliases: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
     if width <= 0 or height <= 0:
         raise ValueError("图片尺寸无效")
@@ -111,20 +112,38 @@ def parse_candidate_response(
         values = (box.confidence, box.x1, box.y1, box.x2, box.y2)
         if not all(math.isfinite(value) for value in values):
             raise ValueError(f"第 {index + 1} 个框包含非有限数字")
+        if label not in label_ids and label:
+            matches = []
+            for code, aliases in (label_aliases or {}).items():
+                if code not in label_ids:
+                    continue
+                values = [str(alias or "").strip() for alias in aliases]
+                if any(alias and (label == alias or label in alias or alias in label) for alias in values):
+                    matches.append(code)
+            if len(matches) == 1:
+                label = matches[0]
         if label not in label_ids:
             raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签：{label}")
         if not 0 <= box.confidence <= 1:
             raise ValueError(f"第 {index + 1} 个框置信度必须在 0 到 1 之间")
-        if not (0 <= box.x1 < box.x2 <= width and 0 <= box.y1 < box.y2 <= height):
+        x1, y1, x2, y2 = float(box.x1), float(box.y1), float(box.x2), float(box.y2)
+        coordinates = (x1, y1, x2, y2)
+        if all(0 <= value <= 1 for value in coordinates):
+            x1, x2 = x1 * width, x2 * width
+            y1, y2 = y1 * height, y2 * height
+        elif (x2 > width or y2 > height) and all(0 <= value <= 1000 for value in coordinates):
+            x1, x2 = x1 * width / 1000, x2 * width / 1000
+            y1, y2 = y1 * height / 1000, y2 * height / 1000
+        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
             raise ValueError(f"第 {index + 1} 个框坐标越界或宽高无效")
         result.append({
             "class_id": int(label_ids[label]),
             "label": label,
             "confidence": float(box.confidence),
-            "x1": float(box.x1),
-            "y1": float(box.y1),
-            "x2": float(box.x2),
-            "y2": float(box.y2),
+            "x1": x1,
+            "y1": y1,
+            "x2": x2,
+            "y2": y2,
         })
     return result
 

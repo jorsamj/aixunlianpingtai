@@ -36,6 +36,36 @@ def test_unknown_invalid_or_non_object_output_is_rejected(text):
         parse_candidate_response(text, width=640, height=480, label_ids={"fire": 0})
 
 
+def test_candidate_parser_maps_unique_chinese_display_alias_to_label_code():
+    text = '{"boxes":[{"label":"火","confidence":0.9,"x1":1,"y1":2,"x2":20,"y2":30}]}'
+    result = parse_candidate_response(
+        text,
+        width=100,
+        height=100,
+        label_ids={"fire": 0, "smoke": 1},
+        label_aliases={"fire": ["明火"], "smoke": ["烟雾"]},
+    )
+    assert result[0]["label"] == "fire"
+    assert result[0]["class_id"] == 0
+
+
+def test_candidate_parser_accepts_common_normalized_coordinate_conventions():
+    unit = parse_candidate_response(
+        '{"boxes":[{"label":"fire","confidence":0.8,"x1":0.1,"y1":0.2,"x2":0.5,"y2":0.6}]}',
+        width=200,
+        height=100,
+        label_ids={"fire": 0},
+    )[0]
+    qwen = parse_candidate_response(
+        '{"boxes":[{"label":"fire","confidence":0.8,"x1":100,"y1":200,"x2":900,"y2":800}]}',
+        width=200,
+        height=100,
+        label_ids={"fire": 0},
+    )[0]
+    assert (unit["x1"], unit["y1"], unit["x2"], unit["y2"]) == (20.0, 20.0, 100.0, 60.0)
+    assert (qwen["x1"], qwen["y1"], qwen["x2"], qwen["y2"]) == (20.0, 20.0, 180.0, 80.0)
+
+
 def test_nms_is_deterministic_and_only_suppresses_same_label():
     boxes = [
         {"class_id": 0, "label": "fire", "confidence": 0.8, "x1": 11, "y1": 11, "x2": 101, "y2": 101},

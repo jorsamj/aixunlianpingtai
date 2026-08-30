@@ -14,6 +14,8 @@ def test_prompt_injects_labels_and_image_size():
     assert '"code": "fire"' in result
     assert "640x480" in result
     assert '"boxes"' in result
+    assert '"required"' in result
+    assert "标签库中的英文 code" not in result
 
 
 def test_unknown_template_variable_is_rejected():

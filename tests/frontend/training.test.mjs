@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {unwrapAlgorithmResponse} from '../../static/modules/algorithms.js';
-import {iterationBasePresentation} from '../../static/modules/training.js';
+import {iterationBasePresentation, projectedRandomSplit} from '../../static/modules/training.js';
 import {qualityChartModel} from '../../static/modules/quality.js';
 import {reportPresentation} from '../../static/modules/reports.js';
 
@@ -20,6 +20,12 @@ test('training iteration presentation distinguishes loading, first train, and la
     detail: 'best.pt',
     status: 'version'
   });
+});
+
+test('training candidate summary projects this run instead of persisted split fields', () => {
+  assert.deepEqual(projectedRandomSplit(10, 20), {train: 8, experiment: 2});
+  assert.deepEqual(projectedRandomSplit(2, 20), {train: 1, experiment: 1});
+  assert.deepEqual(projectedRandomSplit(0, 20), {train: 0, experiment: 0});
 });
 
 test('quality chart model clamps scores and sorts label counts', () => {

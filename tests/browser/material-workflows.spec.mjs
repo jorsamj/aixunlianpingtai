@@ -77,7 +77,10 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   const dialog = page.getByRole('dialog', {name: '图片标注'});
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole('button', {name: '管理标签'})).toHaveCount(0);
-  await expect(dialog.getByText('person')).toBeVisible();
+  await expect(dialog.getByText('当前标签', {exact: true})).toHaveCount(0);
+  await expect(dialog.getByLabel('绘制标签')).toBeVisible();
+  await expect(dialog.getByLabel('绘制标签').locator('option')).toContainText(['person · 人员']);
+  await expect(dialog.getByText('连续标注', {exact: true})).toBeVisible();
   const imageBox = await dialog.locator('#annImg').boundingBox();
   expect(imageBox).not.toBeNull();
   await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
@@ -85,7 +88,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await page.mouse.move(imageBox.x + imageBox.width * 0.75, imageBox.y + imageBox.height * 0.75, {steps: 5});
   await page.mouse.up();
   await expect(dialog.locator('.box424')).toHaveCount(1);
-  await dialog.getByRole('button', {name: '保存标注'}).click();
+  await dialog.getByRole('button', {name: '保存并继续'}).click();
   await expect(dialog.getByText('已保存 · 1框')).toBeVisible();
 
   const savedResponse = await request.get(`/api/projects/${project.id}/annotations/${image.id}`);
@@ -99,6 +102,33 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   const reloadedCard = page.locator('.data412-card', {hasText: 'annotation-flow.bmp'});
   await expect(reloadedCard.locator('.data412-box')).toHaveCount(1);
   await expect(reloadedCard.getByText(/已标注 · 1框/)).toBeVisible();
+});
+
+test('batch annotation opens a thumbnail queue and manual save advances to the next image', async ({page, request}) => {
+  const project = await createMaterialProject(request, `连续标注-${Date.now()}`);
+  const first = await uploadImage(request, project.id, 'queue-one.bmp', [90, 120, 180]);
+  const second = await uploadImage(request, project.id, 'queue-two.bmp', [180, 120, 90]);
+  await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {
+    data: {image_ids: [first.id, second.id]}
+  });
+  await selectProject(page, project.id);
+
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  await page.getByRole('button', {name: /已处理/}).click();
+  await page.getByRole('button', {name: '批量操作'}).click();
+  const cards = page.locator('.data412-card');
+  await cards.filter({hasText: 'queue-one.bmp'}).getByRole('checkbox').check();
+  await cards.filter({hasText: 'queue-two.bmp'}).getByRole('checkbox').check();
+  await page.getByRole('button', {name: '批量标注'}).click();
+
+  const dialog = page.getByRole('dialog', {name: '图片标注'});
+  await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
+  await expect(dialog.getByText('queue-one.bmp', {exact: true})).toBeVisible();
+  await expect(dialog.getByText('queue-two.bmp', {exact: true})).toBeVisible();
+  await dialog.getByRole('button', {name: '保存并继续'}).click();
+  await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
+  await expect(dialog.locator('.ann414-state')).toContainText('queue-two.bmp');
 });
 
 test('material filters come from the label library and unprocessed data exposes batch decisions', async ({page, request}) => {

@@ -4,10 +4,10 @@ import {createModalStack} from './modules/modal.js';
 import {applyAnnotationResult} from './modules/annotation.js';
 import {applyCleanConfirmation} from './modules/cleaning.js';
 import {activeLabelOptions} from './modules/labels.js';
-import {filterByAnyLabel, replaceMaterial} from './modules/materials.js';
+import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js';
 import {uploadBatchFromResponse} from './modules/upload.js';
 import {unwrapAlgorithmResponse} from './modules/algorithms.js';
-import {iterationBasePresentation} from './modules/training.js';
+import {iterationBasePresentation, projectedRandomSplit} from './modules/training.js';
 import {qualityChartModel} from './modules/quality.js';
 import {reportPresentation} from './modules/reports.js';
 
@@ -41,10 +41,10 @@ window.PlatformCore = {
   annotation: {applyAnnotationResult},
   cleaning: {applyCleanConfirmation},
   labels: {activeLabelOptions},
-  materials: {filterByAnyLabel, replaceMaterial},
+  materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
-  training: {iterationBasePresentation},
+  training: {iterationBasePresentation, projectedRandomSplit},
   quality: {qualityChartModel},
   reports: {reportPresentation}
 };

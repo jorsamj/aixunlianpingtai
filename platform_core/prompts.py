@@ -14,16 +14,27 @@ ALLOWED_VARIABLES = {
 VARIABLE_PATTERN = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 
 BOX_OUTPUT_SCHEMA = {
-    "boxes": [
-        {
-            "label": "标签库中的英文 code",
-            "confidence": 0.0,
-            "x1": 0,
-            "y1": 0,
-            "x2": 0,
-            "y2": 0,
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "boxes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "label": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "x1": {"type": "number", "minimum": 0},
+                    "y1": {"type": "number", "minimum": 0},
+                    "x2": {"type": "number", "minimum": 0},
+                    "y2": {"type": "number", "minimum": 0},
+                },
+                "required": ["label", "confidence", "x1", "y1", "x2", "y2"],
+            },
         }
-    ]
+    },
+    "required": ["boxes"],
 }
 
 
