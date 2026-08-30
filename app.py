@@ -25,7 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictInt
 from PIL import Image, ImageDraw
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
@@ -4132,7 +4132,7 @@ class TrainReq(BaseModel):
     ai_extra_epochs: int = 20
     ai_max_rounds: int = 1
     # v42.8：训练任务队列与训练完成后的自动转换。
-    queue_priority: int = 50
+    queue_priority: StrictInt = 50
     auto_convert_targets: Optional[List[str]] = None
 
 
@@ -4186,8 +4186,8 @@ def validate_train_request(payload: TrainReq):
     payload.ai_intervention_enabled = False
     payload.ai_intervention_epochs = []
     payload.ai_model_config_id = ""
-    if int(payload.queue_priority or 0) < 0 or int(payload.queue_priority or 0) > 999:
-        raise HTTPException(status_code=400, detail="任务优先级必须在 0~999 之间")
+    if int(payload.queue_priority) < 1 or int(payload.queue_priority) > 999:
+        raise HTTPException(status_code=400, detail="任务优先级必须是 1~999 的整数，1 为最高优先级")
     allowed_auto = {"ascend", "rockchip", "sophon"}
     bad_auto = [x for x in (payload.auto_convert_targets or []) if x not in allowed_auto]
     if bad_auto:
