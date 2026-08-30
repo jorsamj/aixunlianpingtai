@@ -127,6 +127,10 @@ test('training submit sends the selected candidate pool and configured experimen
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('#tr429Count')).toHaveText('0 张');
   await selectAllTrainingMaterials(page, dialog);
+  await dialog.locator('#tr429Priority').fill('0');
+  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
+  expect(submitted).toBeUndefined();
   await dialog.locator('#tr429ExperimentPercent').fill('35');
   await dialog.locator('#tr429Priority').fill('7');
   await dialog.getByRole('button', {name: '配置设置'}).click();
