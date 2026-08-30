@@ -79,6 +79,12 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
   await expect(trainingDialog.getByText('每次随机抽取试验集比例')).toBeVisible();
   await expect(trainingDialog.locator('#tr429ExperimentPercent')).toHaveValue('20');
+  const priority = trainingDialog.locator('#tr429Priority');
+  await expect(priority).toHaveAttribute('type', 'number');
+  await expect(priority).toHaveAttribute('min', '1');
+  await expect(priority).toHaveAttribute('max', '999');
+  await expect(priority).toHaveValue('50');
+  await expect(trainingDialog.getByText('1 最高，数字越大优先级越低')).toBeVisible();
   await trainingDialog.getByRole('button', {name: '配置设置'}).click();
   const settingsDialog = page.getByRole('dialog', {name: '训练配置设置'});
   await expect(settingsDialog).toBeVisible();
@@ -122,6 +128,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await expect(dialog.locator('#tr429Count')).toHaveText('0 张');
   await selectAllTrainingMaterials(page, dialog);
   await dialog.locator('#tr429ExperimentPercent').fill('35');
+  await dialog.locator('#tr429Priority').fill('7');
   await dialog.getByRole('button', {name: '配置设置'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('details.advanced427-box summary').click();
@@ -133,6 +140,7 @@ test('training submit sends the selected candidate pool and configured experimen
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.random_experiment_split).toBe(true);
   expect(submitted.single_cls).toBe(true);
+  expect(submitted.queue_priority).toBe(7);
   expect(submitted.selected_image_ids).toHaveLength(2);
   expect(submitted.train_image_ids).toBeUndefined();
 });
@@ -165,4 +173,37 @@ test('versioned training locks the latest version and projects the current rando
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await expect(settings.locator('#ts428Model')).toBeDisabled();
   await expect(settings.locator('#ts428Model option:checked')).toHaveText('v3 · latest-best.pt');
+});
+
+test('training queue displays numeric priorities and orders each resource by priority then FIFO', async ({page, request}) => {
+  const project = await (await request.post('/api/projects', {data: {
+    name: `优先级队列-${Date.now()}`, labels: [{code: 'target', display_name: '目标'}]
+  }})).json();
+  const queuedJobs = [
+    {id: 'fifo-new', asset_algorithm_name: '同级后到', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:02:00Z'},
+    {id: 'highest', asset_algorithm_name: '最高优先', status: 'queued', resource_key: 'local:cpu', queue_priority: 1, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:03:00Z'},
+    {id: 'fifo-old', asset_algorithm_name: '同级先到', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:01:00Z'}
+  ];
+  await page.route(`**/api/projects/${project.id}`, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({response, json: {...body, jobs: queuedJobs}});
+  });
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '训练任务'}));
+  }, project.id);
+  await page.goto('/');
+  await page.evaluate(jobs => {
+    state.jobs = jobs;
+    state.page = '训练任务';
+    render();
+  }, queuedJobs);
+
+  const rows = page.locator('.train428-table tbody tr');
+  await expect(rows).toHaveCount(3);
+  expect(await rows.locator('.train428-taskname b').allTextContents()).toEqual(['最高优先', '同级先到', '同级后到']);
+  await expect(rows.nth(0).locator('.queuepriority428')).toHaveText('优先级 1');
+  await expect(rows.nth(1).locator('.queuepriority428')).toHaveText('优先级 7');
+  await expect(rows.nth(0).locator('.queuepos428')).toHaveText('队列第 1 位');
+  await expect(rows.nth(2).locator('.queuepos428')).toHaveText('队列第 3 位');
 });
