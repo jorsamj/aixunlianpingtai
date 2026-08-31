@@ -9893,7 +9893,27 @@ def _write_deploy_job(project_id: str, job: Dict[str, Any]):
 def _read_deploy_job(project_id: str, job_id: str) -> Dict[str, Any]:
     jf=_deploy_job_dir(project_id,job_id)/"job.json"
     if not jf.exists(): raise HTTPException(status_code=404,detail="转换任务不存在")
-    return read_json(jf,{})
+    return _overlay_durable_deploy_job(read_json(jf,{}))
+
+
+def _overlay_durable_deploy_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(job or {})
+    task_id = str(result.get("task_id") or "")
+    durable = shared_task_repository().get(task_id) if task_id else None
+    if not durable or durable.kind is not TaskKind.MODEL_CONVERSION:
+        return result
+    result["durable_status"] = durable.status.value
+    if durable.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+        result.update(status="queued" if durable.status is TaskStatus.QUEUED else "running", progress=durable.progress, stage=durable.stage)
+    elif durable.status is TaskStatus.BLOCKED_BY_HARDWARE:
+        result["status"] = "blocked_by_hardware"
+    elif durable.status is TaskStatus.BLOCKED_BY_ENVIRONMENT:
+        result["status"] = "blocked_by_environment"
+    elif durable.status is TaskStatus.CANCELLED:
+        result["status"] = "stopped"
+    elif durable.status is TaskStatus.FAILED:
+        result["status"] = "failed"
+    return result
 
 
 def _safe_extract_zip(zf: zipfile.ZipFile, dst: Path) -> None:
@@ -10036,7 +10056,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
 def v39_list_deploy_jobs(project_id: str):
     root=deploy_root(project_id)/"jobs";rows=[]
     for jf in root.glob("*/job.json"):
-        j=read_json(jf,{})
+        j=_overlay_durable_deploy_job(read_json(jf,{}))
         if j:rows.append(j)
     rows.sort(key=lambda x:x.get("created_at",""),reverse=True)
     return {"ok":True,"items":rows[:100]}

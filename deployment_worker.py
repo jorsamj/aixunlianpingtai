@@ -561,12 +561,16 @@ def main():
             hardware_verified=False,
         )
         manifest['job_id'] = job.get('id')
+        if target == 'onnx':
+            manifest['status'] = 'runtime_verified'
+            manifest['runtime_verified'] = True
         write_json(artifacts/'manifest.json', manifest)
         output_rows=[]
         for p in artifacts.rglob('*'):
             if p.is_file():
                 output_rows.append({'name':p.name,'path':str(p),'rel':str(p.relative_to(job_dir)),'size_mb':round(p.stat().st_size/1024/1024,3)})
-        update(job_file, status='done', progress=100, stage='转换完成', message='部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, validation_status='converted_unverified', manifest_path=str(artifacts/'manifest.json'))
+        runtime_verified = target == 'onnx'
+        update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))
         append_log(log_file, '转换完成。')
     except Exception as e:
         append_log(log_file, '转换失败：' + str(e))
