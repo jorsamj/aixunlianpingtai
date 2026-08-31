@@ -39,6 +39,8 @@ from platform_core.algorithms import (
     update_algorithm as update_algorithm_asset,
 )
 from platform_core import auto_label as auto_label_core
+from platform_core.annotation_candidates import CandidateDecision, CandidateStore
+from platform_core.annotation_task_service import commit_candidate_decisions
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.conversion import sha256_file, validate_target
@@ -12069,6 +12071,26 @@ class V47AutoLabelConfirmReq(BaseModel):
     image_ids: Optional[List[str]] = None
 
 
+class AnnotationTaskCreateReq(BaseModel):
+    image_ids: List[str]
+    labels_text: str = ""
+    reference_image_ids: List[str] = []
+    threshold: float = 0.45
+    overwrite: bool = False
+    task_name: str = "AI自动标注任务"
+    provider_id: Optional[str] = None
+    model_config_id: Optional[str] = None
+    prompt_template_id: Optional[str] = None
+    business_instruction: str = ""
+    preview_count: int = 0
+
+
+class AnnotationDecisionReq(BaseModel):
+    decisions: List[CandidateDecision]
+    reject_unmentioned: bool = True
+    commit: bool = True
+
+
 def _v47_parse_label_text(text: str) -> List[str]:
     import re
     vals = [normalize_label(x) for x in re.split(r'[、,，;；\n\t]+', text or '') if x.strip()]
@@ -12324,6 +12346,201 @@ def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelCon
         write_annotation(project_id,iid,merged);applied+=1;boxes+=len(new)
     _v33_update_task(project_id,'prelabel_tasks',task_id,status='done',status_text='已确认',confirmed_images=applied,confirmed_boxes=boxes,confirmed_at=now_iso(),finished_at=now_iso())
     return {'ok':True,'applied_images':applied,'applied_image_ids':sorted(chosen),'boxes_added':boxes,'labels':get_project(project_id).get('labels',[])}
+
+
+def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) -> Dict[str, Any]:
+    return {
+        "id": task.task_id,
+        "project_id": task.project_id,
+        "kind": task.kind.value,
+        "status": task.status.value,
+        "priority": task.priority,
+        "progress": task.progress,
+        "stage": task.stage,
+        "current_item": task.current_item,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "finished_at": task.finished_at,
+        "retry_of": task.retry_of,
+        "accepted": task.accepted,
+        "error": task.error,
+        "summary": summary or {},
+    }
+
+
+def _annotation_summary(task: TaskRecord) -> dict:
+    if not task.result_ref:
+        return {}
+    try:
+        return CandidateStore(shared_task_artifacts(), task_id=task.task_id).summary()
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq) -> tuple[dict, str]:
+    project = get_project(project_id)
+    labels = _v47_parse_label_text(payload.labels_text)
+    for image_id in payload.reference_image_ids:
+        for box in read_annotation(project_id, image_id).get("boxes", []):
+            label = normalize_label(str(box.get("label") or ""))
+            if label and label not in labels:
+                labels.append(label)
+    if not labels:
+        raise HTTPException(status_code=400, detail="请输入标签，或选择至少一张已有标注的参考图片")
+    available = {str(item.get("code")) for item in _v47_label_catalog(project)}
+    unknown = sorted(set(labels) - available)
+    if unknown:
+        raise HTTPException(status_code=400, detail="以下标签不在标签库或已停用：" + "、".join(unknown))
+    image_ids = list(dict.fromkeys(str(value) for value in payload.image_ids if str(value)))
+    existing = {str(image.get("id")) for image in load_images(project_id)}
+    missing = sorted(set(image_ids) - existing)
+    if missing:
+        raise HTTPException(status_code=400, detail="以下素材不存在：" + "、".join(missing[:20]))
+    if not image_ids:
+        raise HTTPException(status_code=400, detail="请选择要自动标注的素材")
+    config = next(
+        (item for item in _v35_model_items() if item.get("id") in {payload.model_config_id, payload.provider_id}),
+        None,
+    )
+    if not config and not payload.provider_id:
+        config = _v47_default_annotation_model()
+    template = {}
+    if payload.prompt_template_id and payload.prompt_template_id != "default":
+        template = next((item for item in _v35_prompt_items() if item.get("id") == payload.prompt_template_id), None) or {}
+        if not template:
+            raise HTTPException(status_code=400, detail="提示词模板不存在")
+    request = payload.model_dump(mode="json")
+    request.update({
+        "image_ids": image_ids,
+        "labels": labels,
+        "model_config_id": (config or {}).get("id") or payload.model_config_id,
+        "prompt_template_snapshot": template,
+        "prompt_template_version_id": template.get("version_id") or "",
+        "schema_version": 1,
+    })
+    provider_key = str((config or {}).get("id") or payload.provider_id or "default")
+    return request, provider_key
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks")
+def create_annotation_task(project_id: str, payload: AnnotationTaskCreateReq):
+    request, provider_key = _annotation_create_payload(project_id, payload)
+    task_id = uuid.uuid4().hex[:12]
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+    record = shared_task_repository().create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.AI_ANNOTATION,
+        "request.json",
+        f"vision:{provider_key}",
+        priority=50,
+        required_capabilities=("vision_provider",),
+    ))
+    return JSONResponse(status_code=202, content=public_annotation_task(record))
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks")
+def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
+    get_project(project_id)
+    page = shared_task_repository().list(
+        project_id=project_id,
+        kinds={TaskKind.AI_ANNOTATION},
+        limit=max(1, min(100, int(limit))),
+        cursor=cursor,
+    )
+    return {"items": [public_annotation_task(task) for task in page.items], "next_cursor": page.next_cursor}
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}")
+def get_annotation_task(project_id: str, task_id: str):
+    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    return public_annotation_task(task, summary=_annotation_summary(task))
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates")
+def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None):
+    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    if not task.result_ref:
+        raise HTTPException(status_code=409, detail="任务尚未生成候选结果")
+    try:
+        page = CandidateStore(shared_task_artifacts(), task_id=task.task_id).read_page(
+            cursor=cursor,
+            limit=max(1, min(100, int(limit))),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions")
+def decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):
+    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    if task.status is not TaskStatus.AWAITING_CONFIRMATION:
+        raise HTTPException(status_code=409, detail="任务尚未生成可审核候选结果")
+    store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
+    all_items = store.all_items()
+    reviewable = {str(item["image_id"]) for item in all_items if item.get("status") in {"success", "empty"}}
+    decisions = [CandidateDecision(str(item.image_id), bool(item.accepted)) for item in payload.decisions]
+    decided_ids = {item.image_id for item in decisions}
+    if decided_ids - reviewable:
+        raise HTTPException(status_code=400, detail="审核范围包含不存在或生成失败的素材")
+    store.apply_decisions(decisions)
+    if payload.reject_unmentioned:
+        store.apply_decisions(
+            CandidateDecision(image_id, False)
+            for image_id in sorted(reviewable - decided_ids)
+        )
+    summary = store.summary()
+    if summary["unreviewed"]:
+        return {"ok": True, "task": public_annotation_task(task, summary=summary), "review": summary}
+    if payload.commit:
+        request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+        result = commit_candidate_decisions(
+            project_id,
+            task.task_id,
+            store,
+            overwrite=bool((request or {}).get("overwrite")),
+        )
+    else:
+        result = {"review": summary}
+    shared_task_artifacts().atomic_write_json(task.task_id, "review/result.json", result)
+    final_status = TaskStatus.PARTIAL_SUCCESS if summary.get("failed") else TaskStatus.SUCCEEDED
+    updated = shared_task_repository().complete_review(
+        task.task_id,
+        final_status,
+        "review/result.json",
+        accepted=bool(summary.get("accepted")),
+    )
+    return {"ok": True, "task": public_annotation_task(updated, summary=summary), **result}
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/cancel")
+def cancel_annotation_task(project_id: str, task_id: str):
+    _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    return public_annotation_task(shared_task_repository().request_cancel(task_id))
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry")
+def retry_annotation_task(project_id: str, task_id: str):
+    from dataclasses import replace
+
+    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    if task.status not in {
+        TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT,
+        TaskStatus.BLOCKED_BY_HARDWARE, TaskStatus.PARTIAL_SUCCESS, TaskStatus.SUCCEEDED,
+    }:
+        raise HTTPException(status_code=409, detail="只有已结束的任务可以重试")
+    request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default=None)
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=409, detail="任务创建参数已损坏，无法重试")
+    new_id = uuid.uuid4().hex[:12]
+    shared_task_artifacts().atomic_write_json(new_id, "request.json", request)
+    cloned = replace(TaskRecord.new(
+        new_id, project_id, TaskKind.AI_ANNOTATION, "request.json",
+        task.resource_key, priority=task.priority,
+        required_capabilities=task.required_capabilities,
+    ), retry_of=task.task_id)
+    return public_annotation_task(shared_task_repository().create(cloned))
 
 
 
