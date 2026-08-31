@@ -91,6 +91,9 @@ def test_strict_iteration_base_uses_latest_only_and_validator(tmp_path: Path):
             "finished_at": "2026-08-28T12:00:00",
             "stored_path": str(latest),
             "artifact_verified": True,
+            "training_status": "SUCCEEDED",
+            "trainable": True,
+            "framework": "ultralytics",
         },
         {
             "id": "v2",
@@ -98,6 +101,9 @@ def test_strict_iteration_base_uses_latest_only_and_validator(tmp_path: Path):
             "finished_at": "2026-08-27T12:00:00",
             "stored_path": str(previous),
             "artifact_verified": True,
+            "training_status": "SUCCEEDED",
+            "trainable": True,
+            "framework": "ultralytics",
         },
     ]
 
@@ -110,3 +116,40 @@ def test_strict_iteration_base_uses_latest_only_and_validator(tmp_path: Path):
 
     assert result["base_version_id"] == "v3"
     assert result["base_selection_reason"] == "latest_verified_version"
+
+
+def test_latest_trainable_ignores_failed_and_cancelled_attempts(tmp_path: Path):
+    good = tmp_path / "good.pt"
+    good.write_bytes(b"weights")
+    versions = [
+        {
+            "id": "failed-newer",
+            "training_status": "FAILED",
+            "created_at": "2026-08-31T12:00:00Z",
+            "stored_path": "",
+        },
+        {
+            "id": "cancelled",
+            "training_status": "CANCELLED",
+            "created_at": "2026-08-31T11:00:00Z",
+            "stored_path": "",
+        },
+        {
+            "id": "good",
+            "training_status": "SUCCEEDED",
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "created_at": "2026-08-31T10:00:00Z",
+            "stored_path": str(good),
+        },
+    ]
+
+    selected = choose_iteration_base(
+        versions,
+        "mother.pt",
+        strict_latest=True,
+        artifact_validator=lambda path: True,
+    )
+
+    assert selected["base_version_id"] == "good"

@@ -162,6 +162,9 @@ def test_product_training_ignores_requested_mother_model_when_latest_version_exi
         "finished_at": "2026-08-30T12:00:00",
         "stored_path": str(latest_model),
         "artifact_verified": True,
+        "training_status": "SUCCEEDED",
+        "trainable": True,
+        "framework": "ultralytics",
     }]
     app_module.save_algorithms_internal(project_id, rows)
 
@@ -184,10 +187,11 @@ def test_product_training_ignores_requested_mother_model_when_latest_version_exi
     assert job["model"] == str(latest_model.resolve())
 
 
-def test_iteration_base_endpoint_does_not_fall_back_from_broken_latest(client, seeded_project, monkeypatch):
+def test_iteration_base_endpoint_ignores_failed_attempt_and_uses_latest_success(client, seeded_project, monkeypatch):
     import app as app_module
 
     project_id, _ = seeded_project
+    monkeypatch.setattr(app_module, "_v54_validate_iteration_artifact", lambda _path, _framework: True)
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
         json={"name": "严格迭代基线", "industry": "测试", "algorithm_type": "yolo_ultralytics"},
@@ -206,6 +210,9 @@ def test_iteration_base_endpoint_does_not_fall_back_from_broken_latest(client, s
             "finished_at": "2026-08-28T12:00:00",
             "stored_path": str(latest),
             "artifact_verified": False,
+            "training_status": "FAILED",
+            "trainable": False,
+            "framework": "ultralytics",
         },
         {
             "id": "previous",
@@ -213,6 +220,9 @@ def test_iteration_base_endpoint_does_not_fall_back_from_broken_latest(client, s
             "finished_at": "2026-08-27T12:00:00",
             "stored_path": str(previous),
             "artifact_verified": True,
+            "training_status": "SUCCEEDED",
+            "trainable": True,
+            "framework": "ultralytics",
         },
     ]
     app_module.save_algorithms_internal(project_id, algorithms)
@@ -220,9 +230,9 @@ def test_iteration_base_endpoint_does_not_fall_back_from_broken_latest(client, s
         f"/api/v54/projects/{project_id}/algorithms/{algorithm['id']}/iteration-base?framework=ultralytics"
     )
 
-    assert response.status_code == 409
+    assert response.status_code == 200
     body = response.json()
-    assert body["code"] == "ITERATION_BASE_UNAVAILABLE"
+    assert body["base"]["version_id"] == "previous"
 
 
 def test_training_snapshot_randomly_assigns_selected_materials_to_experiment_split(client, seeded_project):
@@ -303,3 +313,26 @@ def test_product_training_route_rejects_unknown_algorithm_asset(client, seeded_p
 
     assert response.status_code == 404
     assert "算法" in response.json()["detail"]
+
+
+def test_success_without_verified_model_is_not_archived_as_algorithm_version(client, seeded_project):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "无产物不归档", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    job = {
+        "id": "missing-artifact",
+        "status": "completed",
+        "asset_algorithm_id": algorithm["id"],
+        "framework": "ultralytics",
+        "artifact_verified": False,
+    }
+
+    assert app_module._v48_archive_training_version(project_id, job) is None
+    stored = next(
+        row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
+    )
+    assert stored["versions"] == []

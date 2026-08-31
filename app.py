@@ -31,6 +31,7 @@ from PIL import Image, ImageDraw
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
 from platform_core.algorithms import (
     choose_iteration_base,
+    is_trainable_version,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
@@ -5589,7 +5590,7 @@ def _v54_iteration_base(
         return None
     path = Path(selection["base_model_path"])
     latest = sorted(
-        algo.get("versions") or [],
+        [row for row in (algo.get("versions") or []) if is_trainable_version(row, framework)],
         key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""),
         reverse=True,
     )
@@ -6369,7 +6370,9 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
 def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not job or job.get("auto_version_id") or job.get("never_started"):
         return None
-    if job.get("status") not in {"done","finished","completed","failed","stopped"}:
+    normalized_status = str(job.get("status") or "").strip().upper()
+    successful_statuses = {"DONE", "FINISHED", "COMPLETED", "SUCCEEDED", "PARTIAL_SUCCESS"}
+    if normalized_status not in successful_statuses:
         return None
     algorithm_id=str(job.get("asset_algorithm_id") or "")
     if not algorithm_id:return None
@@ -6383,18 +6386,30 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         try:write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
         except Exception:pass
         return existing
-    version_id=uuid.uuid4().hex[:12]; model_path=_v48_find_job_model(project_id,job); stored_path=""; model_name=""; size_mb=0.0; model_type=""
-    if model_path:
-        vd=project_dir(project_id)/"algorithm_versions"/algorithm_id/version_id;vd.mkdir(parents=True,exist_ok=True)
-        dst=vd/model_path.name;shutil.copy2(model_path,dst);stored_path=str(dst);model_name=dst.name;size_mb=round(dst.stat().st_size/1024/1024,2);model_type=dst.suffix.lower().lstrip('.')
+    model_path=_v48_find_job_model(project_id,job)
+    if not (
+        bool(job.get("artifact_verified"))
+        and model_path
+        and model_path.is_file()
+        and model_path.stat().st_size > 0
+    ):
+        return None
+    version_id=uuid.uuid4().hex[:12]; stored_path=""; model_name=""; size_mb=0.0; model_type=""
+    vd=project_dir(project_id)/"algorithm_versions"/algorithm_id/version_id;vd.mkdir(parents=True,exist_ok=True)
+    dst=vd/model_path.name;shutil.copy2(model_path,dst);stored_path=str(dst);model_name=dst.name;size_mb=round(dst.stat().st_size/1024/1024,2);model_type=dst.suffix.lower().lstrip('.')
     rep=job_report(project_id,str(job.get("id") or ""),Path(stored_path) if stored_path else None)
     accuracy=_v48_metric_from_job(job,"map50")
     version={
         "id":version_id,"version_no":len(algo.get("versions") or [])+1,"version_name":version_name,
         "model_name":model_name,"model_key":f"job::{job.get('id')}::{version_name}","stored_path":stored_path,"type":model_type,"size_mb":size_mb,
         "job_id":job.get("id"),"remark":"训练结束自动生成版本","report":rep,"report_updated_at":now_iso(),
-        "accuracy":accuracy,"accuracy_metric":"mAP50","quality_reached":_v48_quality_reached(job),"training_status":job.get("status"),
+        "accuracy":accuracy,"accuracy_metric":"mAP50","quality_reached":_v48_quality_reached(job),"training_status":("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
+        "framework": str(job.get("framework") or "ultralytics").strip().lower(),
+        "trainable": bool(stored_path),
         "artifact_verified": bool(job.get("artifact_verified")) and bool(stored_path),
+        "snapshot_id": str(job.get("snapshot_id") or ""),
+        "result_ref": str(job.get("result_ref") or ""),
+        "task_id": str(job.get("task_id") or job.get("id") or ""),
         "status":"可用" if stored_path else "无可用模型产物","created_at":job.get("finished_at") or now_iso(),"updated_at":now_iso(),
     }
     algo.setdefault("versions",[]).insert(0,version);algo["updated_at"]=now_iso();save_algorithms_internal(project_id,algos)

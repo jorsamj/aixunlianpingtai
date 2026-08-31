@@ -7,6 +7,24 @@ from .annotations import atomic_write_json
 from .errors import PlatformError
 
 
+def is_trainable_version(version: Mapping[str, Any], framework: str) -> bool:
+    status = str(version.get("training_status") or "").strip().upper()
+    successful = status in {
+        "SUCCEEDED",
+        "PARTIAL_SUCCESS",
+        # Compatibility with versions archived before the durable task runtime.
+        "DONE",
+        "FINISHED",
+        "COMPLETED",
+    }
+    if not successful or version.get("artifact_verified") is not True:
+        return False
+    if version.get("trainable") is False:
+        return False
+    recorded_framework = str(version.get("framework") or framework).strip().lower()
+    return recorded_framework == str(framework).strip().lower()
+
+
 def choose_iteration_base(
     versions: Sequence[Mapping[str, Any]],
     mother_model: str,
@@ -17,10 +35,10 @@ def choose_iteration_base(
 ) -> dict:
     """Choose the checkpoint used for an iterative training run.
 
-    The historical/default mode intentionally keeps the backwards-compatible
-    "newest usable" fallback behavior.  The product training entry point uses
-    ``strict_latest=True`` so a newer broken/missing version can never silently
-    train from an older checkpoint or the mother model.
+    The historical/default mode keeps the backwards-compatible "newest usable"
+    fallback. Product training uses ``strict_latest=True`` to select the newest
+    successful, verified, trainable version. Failed/cancelled attempts are task
+    history, not algorithm versions and never poison a later iteration.
     """
     allowed_suffixes = {".pt"} if framework == "ultralytics" else {".pdparams", ".pdmodel", ".pdiparams"}
     ordered = sorted(
@@ -29,7 +47,18 @@ def choose_iteration_base(
         reverse=True,
     )
     if strict_latest and ordered:
-        latest = ordered[0]
+        eligible = [row for row in ordered if is_trainable_version(row, framework)]
+        if not eligible:
+            newest_attempt = ordered[0]
+            attempt_name = newest_attempt.get("version_name") or newest_attempt.get("id") or "未知版本"
+            raise PlatformError(
+                code="ITERATION_BASE_UNAVAILABLE",
+                message="没有可用于迭代训练的成功版本",
+                detail=f"算法已有训练记录（最新记录 {attempt_name}），但没有成功、完整性已校验且可继续训练的模型产物。",
+                solution="请先完成一次成功训练，或恢复最近成功版本的有效训练权重。平台不会回退到母算法。",
+                status_code=409,
+            )
+        latest = eligible[0]
         candidate = next(
             (
                 str(latest.get(field) or "").strip()
