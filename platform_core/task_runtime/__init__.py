@@ -8,13 +8,16 @@ from .process_control import (
     launch_process,
 )
 from .repository import TaskRepository
+from .scheduler import HardwareUnavailableError, Scheduler
 from .worker import TaskHandler, WorkerContext
 
 __all__ = [
     "ArtifactStore",
     "LaunchedProcess",
+    "HardwareUnavailableError",
     "ProcessController",
     "ProcessIdentity",
+    "Scheduler",
     "TaskHandler",
     "TaskKind",
     "TaskLease",
