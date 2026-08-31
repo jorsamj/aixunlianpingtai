@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,6 +201,13 @@ def _prepare_runtime_request(project_id: str, request: dict[str, Any]) -> dict[s
 
 def _public_error(error: Exception) -> str:
     text = str(error).replace("\r", " ").replace("\n", " ").strip()
+    patterns = (
+        r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+",
+        r"(?i)((?:api[_-]?key|access[_-]?token|secret)\s*[=:]\s*)[^\s,;]+",
+        r"\bsk-[A-Za-z0-9_-]{12,}\b",
+    )
+    for pattern in patterns:
+        text = re.sub(pattern, lambda match: match.group(1) + "[REDACTED]" if match.lastindex else "[REDACTED]", text)
     return text[:1000] or type(error).__name__
 
 
@@ -233,6 +241,11 @@ def commit_candidate_decisions(
     journal_ref = "commit/result.json"
     journal = store.artifacts.read_json(task_id, journal_ref, default={})
     completed = {str(value) for value in (journal or {}).get("completed_image_ids") or []}
+    image_summaries = {
+        str(item.get("image_id")): dict(item)
+        for item in (journal or {}).get("image_summaries") or []
+        if item.get("image_id")
+    }
     applied_images = []
     boxes_added = 0
     for item in store.all_items():
@@ -263,12 +276,21 @@ def commit_candidate_decisions(
             replaced_classes = {box.get("class_id") for box in incoming}
             previous = [box for box in previous if box.get("class_id") not in replaced_classes]
         if incoming:
-            write_formal_annotation(project_id, image_id, previous + incoming)
+            final_boxes = previous + incoming
+            write_formal_annotation(project_id, image_id, final_boxes)
             boxes_added += len(incoming)
+        else:
+            final_boxes = previous
+        image_summaries[image_id] = {
+            "image_id": image_id,
+            "box_count": len(final_boxes),
+            "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
+        }
         completed.add(image_id)
         store.artifacts.atomic_write_json(task_id, journal_ref, {
             "completed_image_ids": sorted(completed),
             "last_image_id": image_id,
+            "image_summaries": list(image_summaries.values()),
         })
     result = {
         "applied_images": len(applied_images),
@@ -276,6 +298,7 @@ def commit_candidate_decisions(
         "boxes_added": boxes_added,
         "review": store.summary(),
         "completed_image_ids": sorted(completed),
+        "image_summaries": list(image_summaries.values()),
     }
     store.artifacts.atomic_write_json(task_id, journal_ref, result)
     return result

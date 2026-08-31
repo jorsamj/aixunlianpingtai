@@ -49,9 +49,25 @@ def test_annotation_task_create_is_private_and_worker_queued(client, seeded_proj
     assert response.status_code == 202, response.text
     body = response.json()
     assert body["status"] == "QUEUED"
+    assert body["total_count"] == 1
+    assert body["completed_count"] == 0
+    assert body["failed_count"] == 0
     assert "payload_ref" not in body and "business_instruction" not in body
     request = isolated_task_runtime[1].read_json(body["id"], "request.json")
     assert request["image_ids"] == [image["id"]]
+
+
+def test_annotation_task_detail_reads_real_worker_checkpoint_counts(client, seeded_project, isolated_task_runtime):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    artifacts.atomic_write_json(task_id, "request.json", {"image_ids": ["a", "b", "c"], "labels": ["fire"]})
+    artifacts.atomic_write_json(task_id, "checkpoints/worker.json", {"next_index": 2, "succeeded": 1, "failed": 1})
+    response = client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}")
+    assert response.status_code == 200
+    assert response.json()["total_count"] == 3
+    assert response.json()["completed_count"] == 2
+    assert response.json()["failed_count"] == 1
 
 
 def test_annotation_task_list_is_bounded_and_private_fields_are_absent(client, seeded_project, isolated_task_runtime):
@@ -91,6 +107,20 @@ def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded
         f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=50"
     ).json()
     assert all(item["accepted"] is False for item in reloaded["items"])
+
+
+def test_candidate_result_can_accept_every_page_without_sending_all_ids(client, seeded_project, isolated_task_runtime):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 55, repository, artifacts)
+    accepted = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions",
+        json={"decisions": [], "accept_unmentioned": True, "reject_unmentioned": False, "commit": True},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["review"]["accepted"] == 55
+    assert accepted.json()["review"]["unreviewed"] == 0
+    assert accepted.json()["task"]["accepted"] is True
 
 
 def test_cancel_and_retry_use_shared_runtime_states(client, seeded_project, isolated_task_runtime):

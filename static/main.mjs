@@ -3,6 +3,8 @@ import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=421800';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
+import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
+import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
 import {applyCleanConfirmation} from './modules/cleaning.js?v=421800';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
@@ -42,6 +44,8 @@ window.PlatformCore = {
   messageFromApiError,
   annotation: {applyAnnotationResult},
   annotationWorkbench: {createAnnotationWorkbench, queueWindow},
+  taskPoller: {createTaskPoller, isTaskActive, taskProgress},
+  annotationTasks: {annotationTaskView, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},

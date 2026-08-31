@@ -62,3 +62,17 @@ def test_all_rejected_is_not_interpreted_as_all_selected(tmp_path):
     assert [item["accepted"] for item in store.all_items()] == [False, False]
     assert store.summary()["accepted"] == 0
     assert store.summary()["unreviewed"] == 0
+
+
+def test_review_can_replace_candidate_boxes_before_acceptance(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="edit-candidate", page_size=50)
+    store.initialize(labels=["fire", "smoke"], total_images=1)
+    store.append_items([{"image_id": "one", "status": "success", "boxes": [{"label": "fire"}]}])
+    store.apply_decisions([CandidateDecision(
+        image_id="one", accepted=True,
+        boxes=[{"label": "smoke", "class_id": 1, "x1": 1, "y1": 2, "x2": 30, "y2": 40}],
+    )])
+    item = store.all_items()[0]
+    assert item["accepted"] is True
+    assert item["boxes"] == [{"label": "smoke", "class_id": 1, "x1": 1, "y1": 2, "x2": 30, "y2": 40}]
+    assert store.summary()["boxes"] == 1

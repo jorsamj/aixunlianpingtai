@@ -3892,3 +3892,115 @@ window.installUsability417?.();
     return previousClose?.();
   };
 })();
+
+/* Persistent v60 AI annotation UI: real worker progress, durable review, no HTTP-thread inference. */
+(()=>{
+  const previousShowTask=window.showTaskProgress427;
+  const previousRenderOps=window.renderOps427;
+  const taskApi=id=>`/api/v60/projects/${pid()}/annotation-tasks${id?`/${id}`:''}`;
+  const taskView=task=>window.PlatformCore?.annotationTasks?.annotationTaskView(task)||{};
+  const imageById=id=>(state.images||[]).find(image=>String(image.id)===String(id));
+  const time=value=>{if(!value)return '-';const date=new Date(value);return Number.isNaN(date.getTime())?'-':date.toLocaleString()};
+  const elapsed=task=>{const start=Date.parse(task.created_at||''),end=Date.parse(task.finished_at||task.updated_at||'');return Number.isFinite(start)&&Number.isFinite(end)?fmtTime424(Math.max(0,(end-start)/1000)):'-'};
+
+  function applyTaskResult(result){
+    for(const summary of result.image_summaries||[]){
+      const image=imageById(summary.image_id);if(!image)continue;
+      image.box_count=Number(summary.box_count)||0;image.annotated=image.box_count>0;image.labels=summary.labels||[];
+      if(image.annotated)image.processing_status='processed';
+      try{patchMaterialCard412(image)}catch(_){}
+    }
+  }
+
+  function progressShell(task){
+    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已完成 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><div id="ai60Error"></div><div id="ai60Actions" class="row end"></div></div>`,true);
+  }
+
+  function renderProgress(task){
+    const root=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(String(task.id))}"]`);if(!root)return;
+    const view=taskView(task),set=(id,value)=>{const node=root.querySelector(`#${id}`);if(node)node.textContent=value};
+    set('ai60Status',view.statusText);set('ai60Percent',`${Number(view.percent||0).toFixed(1)}%`);set('ai60Counts',view.progressText);set('ai60Failed',view.failed);set('ai60Elapsed',elapsed(task));
+    const bar=root.querySelector('#ai60Bar');if(bar)bar.style.width=`${view.percent||0}%`;
+    const current=imageById(task.current_item);set('ai60Current',current?.filename||task.current_item||'等待 Worker 处理');
+    const error=root.querySelector('#ai60Error');if(error)error.innerHTML=view.error?`<div class="error-box422"><b>失败原因</b><span>${esc(view.error)}</span></div>`:'';
+    const actions=root.querySelector('#ai60Actions');if(actions)actions.innerHTML=`${view.canCancel?`<button class="btn danger" onclick="cancelAiTask60('${task.id}')">取消任务</button>`:''}${view.canReview?`<button class="btn primary" onclick="reviewAiLabel427('${task.id}')">审核候选结果</button>`:''}${view.canRetry?`<button class="btn" onclick="retryAiTask60('${task.id}')">重试</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
+    if(state.page==='自动标注及清洗')renderAiTaskRows60(state.annotationTasks60||[]);
+  }
+
+  window.showAiTask60=async function(id){
+    try{
+      const first=await api(taskApi(id));progressShell(first);renderProgress(first);
+      state.ai60Pollers=state.ai60Pollers||{};state.ai60Pollers[id]?.stop?.();
+      const poller=window.PlatformCore?.taskPoller?.createTaskPoller({load:()=>api(taskApi(id)),onUpdate:renderProgress,onError:error=>{const node=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(String(id))}"] #ai60Error`);if(node)node.innerHTML=`<div class="error-box422">${esc(error.message||error)}</div>`}});
+      state.ai60Pollers[id]=poller;await poller?.start();
+    }catch(error){toast(error.message||error)}
+  };
+  window.showTaskProgress427=function(type,id){return type==='label'?showAiTask60(id):previousShowTask?.(type,id)};
+  window.cancelAiTask60=async id=>{try{const task=await api(`${taskApi(id)}/cancel`,{method:'POST'});renderProgress(task)}catch(error){toast(error.message||error)}};
+  window.retryAiTask60=async id=>{try{const task=await api(`${taskApi(id)}/retry`,{method:'POST'});closeModal();showAiTask60(task.id)}catch(error){toast(error.message||error)}};
+
+  function normalizedLabelText(value){
+    const parts=String(value||'').split(/[、,，;；\n\t]+/).map(item=>item.trim()).filter(Boolean);
+    return [...new Set(parts.map(value=>{const match=(state.labels||[]).find(label=>[label.code,label.display_name,label.display_name_zh].some(item=>String(item||'').trim()===value));return match?.code||value}))].join('、');
+  }
+  window.submitAiLabel429=async function(ids=[]){
+    if(!ids.length)return toast('没有需要标注的图片');
+    const model=(state.modelConfigs||[]).find(item=>item.default_for_annotation)||(state.modelConfigs||[])[0];
+    const body={image_ids:ids.map(String),labels_text:normalizedLabelText(document.getElementById('ai429Labels')?.value||''),reference_image_ids:[...(state.ai429RefSelected||new Set())].map(String),threshold:+document.getElementById('ai429Threshold')?.value||.45,overwrite:!!document.getElementById('ai429Overwrite')?.checked,task_name:`AI自动标注-${new Date().toLocaleString()}`,model_config_id:model?.id||null};
+    try{const task=await api(taskApi(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});closeModal();showAiTask60(task.id)}catch(error){toast(error.message||error)}
+  };
+
+  function taskRow(task){
+    const view=taskView(task),labels=(task.requested_labels||[]).map(code=>typeof displayLabel412==='function'?displayLabel412(code):code).join('、')||'-';
+    return `<tr data-task-id="${esc(task.id)}"><td><b>${esc(task.name||task.id)}</b><div class="muted-line">${esc(labels)}</div></td><td><span class="pill ${view.active?'run':view.status==='AWAITING_CONFIRMATION'?'warn':view.status==='SUCCEEDED'?'ok':view.status==='FAILED'?'err':''}">${esc(view.statusText)}</span></td><td><div class="op427-progress"><i><em style="width:${view.percent}%"></em></i><span>${esc(view.progressText)} · ${Number(view.percent||0).toFixed(1)}%</span></div></td><td>${view.boxes}</td><td>${time(task.created_at)}<div class="muted-line">${elapsed(task)}</div></td><td><div class="row"><button class="btn mini" onclick="showAiTask60('${task.id}')">详情</button>${view.canReview?`<button class="btn mini primary" onclick="reviewAiLabel427('${task.id}')">审核</button>`:''}${view.canRetry?`<button class="btn mini" onclick="retryAiTask60('${task.id}')">重试</button>`:''}</div></td></tr>`;
+  }
+  function renderAiTaskRows60(tasks){const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML=tasks.map(taskRow).join('')||'<tr><td colspan="6">暂无AI标注任务</td></tr>'}
+  window.renderOps427=async function(){
+    if((state.v427OpsTab||'label')==='clean')return previousRenderOps?.();
+    clearTimeout(state.ai60ListTimer);
+    try{
+      const response=await api(`${taskApi()}?limit=50`);state.annotationTasks60=response.items||[];
+      document.getElementById('view').innerHTML=`<section class="ops427"><div class="ops427-head"><div class="seg"><button class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div></section></section>`;
+      renderAiTaskRows60(state.annotationTasks60);
+      if(state.annotationTasks60.some(task=>taskView(task).active))state.ai60ListTimer=setTimeout(()=>{if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='label')renderOps427()},1800);
+    }catch(error){document.getElementById('view').innerHTML=`<div class="error-box422">${esc(error.message||error)}</div>`}
+  };
+
+  function candidateOverlay(box,image){
+    const width=Number(image?.width||1),height=Number(image?.height||1),x=100*Number(box.x1||0)/width,y=100*Number(box.y1||0)/height,w=100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width,h=100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height;
+    return `<i class="data412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`;
+  }
+  function ensureReviewShell(){
+    if(document.querySelector('.ai60-review'))return;
+    modal('AI待确认标注',`<div class="review427 ai60-review"><div class="review427-top"><div><b>候选结果不会自动写入正式标注</b><span id="ai60ReviewSummary"></span></div><div class="row"><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div></div><div id="ai60ReviewGrid" class="review427-grid"></div><div class="row between"><div id="ai60ReviewPager"></div><div class="row"><button class="btn" onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" onclick="completeAiReview60('partial')">采用已勾选</button><button class="btn primary" onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeModal()">暂不处理</button></div></div></div>`,true);
+  }
+  function renderReviewPage(){
+    const review=state.ai60Review;if(!review)return;ensureReviewShell();
+    const summary=document.getElementById('ai60ReviewSummary');if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张；失败素材不可采用`;
+    const grid=document.getElementById('ai60ReviewGrid');if(grid)grid.innerHTML=review.items.map(item=>{const image=imageById(item.image_id)||item,reviewable=item.status!=='failed',checked=review.decisions.get(String(item.image_id))===true;return `<label class="review427-card ${reviewable?'':'failed'}"><input type="checkbox" ${checked?'checked':''} ${reviewable?'':'disabled'} onchange="toggleAiDecision60('${item.image_id}',this.checked)"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':`${(item.boxes||[]).length} 个候选框`}</strong></div><b>${esc(item.filename||image.filename||item.image_id)}</b><div>${item.error?`<span class="err">${esc(item.error)}</span>`:[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<span>未检测到目标</span>'}</div>${reviewable?`<button type="button" class="btn mini" onclick="event.preventDefault();event.stopPropagation();editAiCandidate60('${item.image_id}')">编辑候选框</button>`:''}</label>`}).join('');
+    const pager=document.getElementById('ai60ReviewPager');if(pager)pager.innerHTML=`<button class="btn mini" ${review.offset<=0?'disabled':''} onclick="aiReviewPage60(-1)">上一页</button><span>${Math.floor(review.offset/review.limit)+1} / ${Math.max(1,Math.ceil(review.total/review.limit))}</span><button class="btn mini" ${review.offset+review.items.length>=review.total?'disabled':''} onclick="aiReviewPage60(1)">下一页</button>`;
+  }
+  async function loadReviewPage(offset){const review=state.ai60Review,response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${Math.max(0,offset)}`);review.offset=Math.max(0,offset);review.total=response.total||0;review.items=response.items||[];for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}renderReviewPage()}
+  window.reviewAiLabel427=async function(id){try{state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map()};await loadReviewPage(0)}catch(error){toast(error.message||error)}};
+  window.aiReviewPage60=async direction=>{const review=state.ai60Review;if(!review)return;try{await loadReviewPage(review.offset+direction*review.limit)}catch(error){toast(error.message||error)}};
+  window.toggleAiDecision60=(id,accepted)=>state.ai60Review?.decisions.set(String(id),!!accepted);
+  window.reviewPageSelect60=accepted=>{const review=state.ai60Review;if(!review)return;for(const item of review.items)if(item.status!=='failed')review.decisions.set(String(item.image_id),!!accepted);renderReviewPage()};
+  function renderCandidateEditor60(){
+    const edit=state.ai60Edit,review=state.ai60Review,item=review?.seen.get(edit?.id),image=imageById(edit?.id)||item;if(!edit||!item)return;
+    if(!document.querySelector('.ai60-edit'))modal('编辑AI候选框','<div class="ai60-edit"><div id="ai60EditStage" class="data412-previewstage"></div><div id="ai60EditRows" class="form"></div><div class="row between"><button class="btn" onclick="addAiCandidateBox60()">＋ 添加框</button><div class="row"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveAiCandidateEdit60()">保存候选修改</button></div></div></div>',true);
+    const stage=document.getElementById('ai60EditStage');if(stage)stage.innerHTML=`<img src="${esc(item.url||image?.url||'')}">${edit.boxes.map(box=>candidateOverlay(box,image)).join('')}`;
+    const rows=document.getElementById('ai60EditRows');if(rows)rows.innerHTML=edit.boxes.map((box,index)=>`<div class="form six ai60-edit-row"><div class="field"><label>标签</label><select class="select" onchange="updateAiCandidateBox60(${index},'label',this.value)">${(state.labels||[]).map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(box.label)?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}</select></div>${['x1','y1','x2','y2'].map(key=>`<div class="field"><label>${key}</label><input class="input" type="number" value="${Number(box[key]||0)}" onchange="updateAiCandidateBox60(${index},'${key}',this.value)"></div>`).join('')}<div class="field"><label>操作</label><button class="btn danger" onclick="deleteAiCandidateBox60(${index})">删除</button></div></div>`).join('')||'<div class="empty">当前没有候选框，可点击“添加框”。</div>';
+  }
+  window.editAiCandidate60=id=>{const item=state.ai60Review?.seen.get(String(id));if(!item)return;state.ai60Edit={id:String(id),boxes:(item.boxes||[]).map(box=>({...box}))};renderCandidateEditor60()};
+  window.updateAiCandidateBox60=(index,key,value)=>{const box=state.ai60Edit?.boxes?.[index];if(!box)return;if(key==='label'){const label=(state.labels||[]).find(item=>String(item.code)===String(value));box.label=String(value);box.class_id=label?.class_id??box.class_id}else box[key]=Number(value);renderCandidateEditor60()};
+  window.deleteAiCandidateBox60=index=>{state.ai60Edit?.boxes?.splice(index,1);renderCandidateEditor60()};
+  window.addAiCandidateBox60=()=>{const edit=state.ai60Edit,image=imageById(edit?.id)||state.ai60Review?.seen.get(edit?.id),label=(state.labels||[])[0],width=Number(image?.width||100),height=Number(image?.height||100);if(!edit)return;edit.boxes.push({id:`manual-${Date.now()}`,label:label?.code||'',class_id:label?.class_id??0,x1:width*.1,y1:height*.1,x2:width*.3,y2:height*.3,confidence:1,source:'ai_candidate_reviewed'});renderCandidateEditor60()};
+  window.saveAiCandidateEdit60=()=>{const edit=state.ai60Edit;if(!edit)return;const invalid=edit.boxes.some(box=>!['x1','y1','x2','y2'].every(key=>Number.isFinite(Number(box[key])))||Number(box.x2)<=Number(box.x1)||Number(box.y2)<=Number(box.y1)||!String(box.label||''));if(invalid)return toast('候选框坐标或标签无效，请检查');const item=state.ai60Review.seen.get(edit.id);item.boxes=edit.boxes.map(box=>({...box}));state.ai60Review.edits.set(edit.id,item.boxes);state.ai60Review.decisions.set(edit.id,true);closeModal();renderReviewPage()};
+  window.completeAiReview60=async mode=>{
+    const review=state.ai60Review;if(!review)return;
+    const decisions=mode==='partial'?[...review.decisions].map(([image_id,accepted])=>({image_id,accepted,...(review.edits.has(image_id)?{boxes:review.edits.get(image_id)}:{})})):[];
+    const body={decisions,reject_unmentioned:mode!=='accept',accept_unmentioned:mode==='accept',commit:true};
+    try{const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});applyTaskResult(result);closeModal();toast(mode==='reject'?'本次AI结果已拒绝，正式标注未被修改':`已采用 ${result.applied_images||0} 张，写入 ${result.boxes_added||0} 个框`);if(state.page==='自动标注及清洗')renderOps427()}catch(error){toast(error.message||error)}
+  };
+  window.confirmAiLabel427=id=>completeAiReview60('partial');
+})();

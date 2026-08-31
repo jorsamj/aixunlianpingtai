@@ -2,7 +2,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
-from platform_core.annotation_task_service import commit_candidate_decisions, run_ai_annotation
+from platform_core.annotation_task_service import _public_error, commit_candidate_decisions, run_ai_annotation
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskStatus
 
 
@@ -105,6 +105,16 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     first = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
     second = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
     assert first["boxes_added"] == 1
+    assert first["image_summaries"] == [{"image_id": "image-1", "box_count": 1, "labels": ["fire"]}]
     assert second["boxes_added"] == 0
     assert [box["candidate_id"] for box in written] == ["candidate-1"]
     assert written[0]["source_task_id"] == "commit-1"
+
+
+def test_public_worker_error_redacts_common_secret_shapes():
+    error = RuntimeError("Authorization: Bearer secret-token api_key=very-secret sk-12345678901234567890")
+    public = _public_error(error)
+    assert "secret-token" not in public
+    assert "very-secret" not in public
+    assert "sk-12345678901234567890" not in public
+    assert "[REDACTED]" in public

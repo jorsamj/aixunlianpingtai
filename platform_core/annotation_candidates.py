@@ -10,6 +10,7 @@ from .task_runtime import ArtifactStore
 class CandidateDecision:
     image_id: str
     accepted: bool
+    boxes: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,7 @@ class CandidateStore:
         return CandidatePage(items, str(next_offset) if next_offset < total else None, total)
 
     def apply_decisions(self, decisions: Iterable[CandidateDecision]) -> None:
-        selected = {str(item.image_id): bool(item.accepted) for item in decisions}
+        selected = {str(item.image_id): item for item in decisions}
         if not selected:
             return
         manifest = self._manifest()
@@ -86,9 +87,14 @@ class CandidateStore:
             changed = False
             for item in page:
                 image_id = str(item.get("image_id") or "")
-                if image_id in selected and item.get("accepted") is not selected[image_id]:
-                    item["accepted"] = selected[image_id]
-                    changed = True
+                if image_id in selected:
+                    decision = selected[image_id]
+                    if item.get("accepted") is not bool(decision.accepted):
+                        item["accepted"] = bool(decision.accepted)
+                        changed = True
+                    if decision.boxes is not None and item.get("boxes") != decision.boxes:
+                        item["boxes"] = [dict(box) for box in decision.boxes]
+                        changed = True
             if changed:
                 self.artifacts.atomic_write_json(self.task_id, reference, page)
 

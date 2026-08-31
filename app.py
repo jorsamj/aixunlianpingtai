@@ -8223,6 +8223,8 @@ def _public_task(task: TaskRecord) -> Dict[str, Any]:
         "attempt": task.attempt,
         "accepted": task.accepted,
         "error": task.error,
+        "name": str((request or {}).get("task_name") or "AI自动标注任务") if isinstance(request, dict) else "AI自动标注任务",
+        "requested_labels": list((request or {}).get("labels") or []) if isinstance(request, dict) else [],
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "finished_at": task.finished_at,
@@ -12074,7 +12076,7 @@ class V47AutoLabelConfirmReq(BaseModel):
 class AnnotationTaskCreateReq(BaseModel):
     image_ids: List[str]
     labels_text: str = ""
-    reference_image_ids: List[str] = []
+    reference_image_ids: Optional[List[str]] = None
     threshold: float = 0.45
     overwrite: bool = False
     task_name: str = "AI自动标注任务"
@@ -12088,6 +12090,7 @@ class AnnotationTaskCreateReq(BaseModel):
 class AnnotationDecisionReq(BaseModel):
     decisions: List[CandidateDecision]
     reject_unmentioned: bool = True
+    accept_unmentioned: bool = False
     commit: bool = True
 
 
@@ -12349,6 +12352,22 @@ def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelCon
 
 
 def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) -> Dict[str, Any]:
+    progress_summary = summary or {}
+    request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+    checkpoint = shared_task_artifacts().read_json(task.task_id, "checkpoints/worker.json", default={})
+    requested_total = len((request or {}).get("image_ids") or []) if isinstance(request, dict) else 0
+    preview_count = int((request or {}).get("preview_count") or 0) if isinstance(request, dict) else 0
+    if preview_count:
+        requested_total = min(requested_total, max(0, preview_count))
+    total_count = max(requested_total, int(progress_summary.get("total") or 0))
+    completed_count = max(
+        int((checkpoint or {}).get("next_index") or 0) if isinstance(checkpoint, dict) else 0,
+        int(progress_summary.get("total") or 0),
+    )
+    failed_count = max(
+        int((checkpoint or {}).get("failed") or 0) if isinstance(checkpoint, dict) else 0,
+        int(progress_summary.get("failed") or 0),
+    )
     return {
         "id": task.task_id,
         "project_id": task.project_id,
@@ -12364,7 +12383,10 @@ def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) 
         "retry_of": task.retry_of,
         "accepted": task.accepted,
         "error": task.error,
-        "summary": summary or {},
+        "total_count": total_count,
+        "completed_count": min(total_count, completed_count) if total_count else completed_count,
+        "failed_count": failed_count,
+        "summary": progress_summary,
     }
 
 
@@ -12380,7 +12402,7 @@ def _annotation_summary(task: TaskRecord) -> dict:
 def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq) -> tuple[dict, str]:
     project = get_project(project_id)
     labels = _v47_parse_label_text(payload.labels_text)
-    for image_id in payload.reference_image_ids:
+    for image_id in payload.reference_image_ids or []:
         for box in read_annotation(project_id, image_id).get("boxes", []):
             label = normalize_label(str(box.get("label") or ""))
             if label and label not in labels:
@@ -12480,12 +12502,22 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
     store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
     all_items = store.all_items()
     reviewable = {str(item["image_id"]) for item in all_items if item.get("status") in {"success", "empty"}}
-    decisions = [CandidateDecision(str(item.image_id), bool(item.accepted)) for item in payload.decisions]
+    decisions = [
+        CandidateDecision(str(item.image_id), bool(item.accepted), item.boxes)
+        for item in payload.decisions
+    ]
     decided_ids = {item.image_id for item in decisions}
     if decided_ids - reviewable:
         raise HTTPException(status_code=400, detail="审核范围包含不存在或生成失败的素材")
+    if payload.reject_unmentioned and payload.accept_unmentioned:
+        raise HTTPException(status_code=400, detail="未明确选择的素材不能同时接受和拒绝")
     store.apply_decisions(decisions)
-    if payload.reject_unmentioned:
+    if payload.accept_unmentioned:
+        store.apply_decisions(
+            CandidateDecision(image_id, True)
+            for image_id in sorted(reviewable - decided_ids)
+        )
+    elif payload.reject_unmentioned:
         store.apply_decisions(
             CandidateDecision(image_id, False)
             for image_id in sorted(reviewable - decided_ids)
