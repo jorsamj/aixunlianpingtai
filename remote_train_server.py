@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 BASE_DIR = Path(__file__).resolve().parent
-REMOTE_DIR = BASE_DIR / "remote_data"
+REMOTE_DIR = Path(os.environ.get("MC_REMOTE_DATA_DIR") or (BASE_DIR / "remote_data")).expanduser().resolve()
 JOBS_DIR = REMOTE_DIR / "jobs"
 CONFIG_FILE = REMOTE_DIR / "server_config.json"
 PROCESS_REGISTRY: Dict[str, subprocess.Popen] = {}
