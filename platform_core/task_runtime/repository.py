@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
     priority INTEGER NOT NULL CHECK(priority BETWEEN 1 AND 999),
+    queue_rank INTEGER NOT NULL DEFAULT 0,
     resource_key TEXT NOT NULL,
     required_capabilities TEXT NOT NULL,
     payload_ref TEXT NOT NULL,
@@ -134,6 +135,9 @@ class TaskRepository:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as database:
             database.executescript(SCHEMA)
+            columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
+            if "queue_rank" not in columns:
+                database.execute("ALTER TABLE tasks ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0")
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
@@ -260,7 +264,7 @@ class TaskRepository:
                           AND active.status IN ('RUNNING','CANCEL_REQUESTED')
                           AND active.lease_expires_at>?
                    )
-                 ORDER BY candidate.priority ASC, candidate.created_at ASC,
+                 ORDER BY candidate.priority ASC, candidate.queue_rank DESC, candidate.created_at ASC,
                           candidate.task_id ASC
                 """,
                 (*kind_values, now_text),
@@ -356,6 +360,55 @@ class TaskRepository:
             ).rowcount
         if changed != 1:
             raise PermissionError("task lease does not own process identity")
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result
+
+    def set_stage(self, task_id: str, stage: str) -> TaskRecord:
+        value = str(stage or "").strip()
+        if not value:
+            raise ValueError("task stage cannot be empty")
+        now = utc_now()
+        with self._connect() as database:
+            changed = database.execute(
+                "UPDATE tasks SET stage=?, updated_at=? WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                (value, now, str(task_id)),
+            ).rowcount
+        if changed != 1:
+            raise ValueError("only active tasks can change stage")
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result
+
+    def promote(self, task_id: str) -> TaskRecord:
+        now = utc_now()
+        with self._connect() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT status, resource_key FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            if str(row["status"]) != TaskStatus.QUEUED.value:
+                database.rollback()
+                raise ValueError("only queued tasks can be promoted")
+            peers = database.execute(
+                "SELECT MIN(priority), MAX(queue_rank) FROM tasks WHERE resource_key=? AND status='QUEUED'",
+                (str(row["resource_key"]),),
+            ).fetchone()
+            minimum = int(peers[0] if peers and peers[0] is not None else 50)
+            maximum_rank = int(peers[1] if peers and peers[1] is not None else 0)
+            priority = max(1, minimum - 1)
+            rank = maximum_rank + 1 if priority == minimum else 0
+            database.execute(
+                "UPDATE tasks SET priority=?, queue_rank=?, updated_at=? WHERE task_id=?",
+                (priority, rank, now, str(task_id)),
+            )
+            database.commit()
         result = self.get(task_id)
         if result is None:
             raise KeyError(task_id)

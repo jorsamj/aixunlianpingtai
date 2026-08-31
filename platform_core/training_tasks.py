@@ -345,6 +345,15 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                 if context.cancel_requested():
                     controller.terminate_tree(launched.identity)
                     raise InterruptedError("training cancelled")
+                current_task = context.repository.get(context.task.task_id)
+                if current_task is not None and current_task.stage == "paused":
+                    context.repository.heartbeat(
+                        context.task.task_id,
+                        context.lease.lease_token,
+                        stage="paused",
+                    )
+                    time.sleep(0.25)
+                    continue
                 job = _json(job_file, {})
                 progress = float(job.get("progress_percent") or 20)
                 current = str(job.get("current_epoch") or "") or None
@@ -450,6 +459,10 @@ class TrainingHandler:
             "base_selection_reason": base.get("base_selection_reason"),
             "snapshot_id": snapshot["snapshot_id"],
             "dataset_counts": manifest.counts,
+            "epochs": int(payload.get("epochs") or 50),
+            "imgsz": int(payload.get("imgsz") or 640),
+            "batch": int(payload.get("batch") or 8),
+            "device": str(payload.get("device") or "cpu"),
             "created_at": context.task.created_at,
             "artifact_verified": False,
         }

@@ -172,3 +172,15 @@ def test_complete_review_is_guarded_idempotent_and_keeps_explicit_rejection(tmp_
             "review/other.json",
             accepted=True,
         )
+
+
+def test_promote_can_move_a_task_ahead_even_when_current_priority_is_one(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    add(repository, "first", "project-1", 1, resource="gpu:0")
+    add(repository, "promoted", "project-1", 50, resource="gpu:0")
+
+    updated = repository.promote("promoted")
+    assert updated.priority == 1
+    lease = repository.claim_next("worker", [TaskKind.TRAINING], {"cuda"})
+    assert lease is not None
+    assert lease.task.task_id == "promoted"

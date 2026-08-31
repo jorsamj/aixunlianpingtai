@@ -53,7 +53,15 @@ from platform_core.resource_cache import ResourceCache
 from platform_core.secrets import KeyringSecretStore, secret_ref
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
-from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+from platform_core.task_runtime import (
+    ArtifactStore,
+    ProcessController,
+    ProcessIdentity,
+    TaskKind,
+    TaskRecord,
+    TaskRepository,
+    TaskStatus,
+)
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
@@ -648,6 +656,32 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
     if not job:
         return job
     job_id = job.get("id") or ""
+    durable = shared_task_repository().get(str(job_id)) if job_id else None
+    if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
+        mapped = {
+            TaskStatus.QUEUED: "queued",
+            TaskStatus.RUNNING: "paused" if durable.stage == "paused" else "running",
+            TaskStatus.CANCEL_REQUESTED: "running",
+            TaskStatus.SUCCEEDED: "done",
+            TaskStatus.PARTIAL_SUCCESS: "done",
+            TaskStatus.CANCELLED: "stopped",
+            TaskStatus.FAILED: "failed",
+            TaskStatus.BLOCKED_BY_ENVIRONMENT: "failed",
+            TaskStatus.BLOCKED_BY_HARDWARE: "failed",
+        }.get(durable.status, str(job.get("status") or "queued"))
+        job.update(
+            status=mapped,
+            progress_percent=float(durable.progress),
+            task_stage=durable.stage,
+            task_status=durable.status.value,
+            current_item=durable.current_item,
+            result_ref=durable.result_ref or job.get("result_ref"),
+        )
+        if durable.error:
+            job["error"] = durable.error
+            job["message"] = durable.error
+        if durable.finished_at:
+            job["finished_at"] = durable.finished_at
     proc = PROCESS_REGISTRY.get(job_id) if job_id else None
     status = job.get("status") or "queued"
     if proc:
@@ -6096,6 +6130,8 @@ def _v48_dispatch_training_queues(project_id: str) -> None:
         rows=[]
         for jf in _v48_all_job_files(project_id):
             j=read_json(jf,{})
+            if j and _durable_training_task(project_id, str(j.get("id") or "")) is not None:
+                continue
             if j.get("status") == "queued":
                 j = _v56_migrate_queued_priority(jf, j)
             if j: rows.append((jf,j))
@@ -6118,6 +6154,13 @@ def _v48_dispatch_training_queues(project_id: str) -> None:
 def v48_promote_job(project_id: str, job_id: str):
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
+    durable = _durable_training_task(project_id, job_id)
+    if durable is not None:
+        if durable.status is not TaskStatus.QUEUED:
+            raise HTTPException(status_code=400, detail="只有排队中的任务可以插队")
+        promoted = shared_task_repository().promote(job_id)
+        job.update(queue_priority=promoted.priority,priority_scheme=V56_PRIORITY_SCHEME,promoted_at=now_iso(),message="已插队到当前资源队列最前",updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+        return job
     if job.get("status")!="queued": raise HTTPException(status_code=400,detail="只有排队中的任务可以插队")
     peers=[read_json(x,{}) for x in _v48_all_job_files(project_id)]
     queued_peers=[x for x in peers if x.get("status")=="queued" and _v48_resource_key(x)==_v48_resource_key(job)]
@@ -6139,10 +6182,42 @@ def _v48_suspend_tree(pid: Any, resume: bool=False):
         except Exception: pass
 
 
+def _durable_training_task(project_id: str, task_id: str) -> Optional[TaskRecord]:
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.TRAINING:
+        return None
+    return task
+
+
+def _durable_process_identity(task: TaskRecord) -> ProcessIdentity:
+    if (
+        task.process_pid is None
+        or task.process_create_time is None
+        or not task.process_command_hash
+    ):
+        raise HTTPException(status_code=400, detail="训练进程身份尚未登记")
+    return ProcessIdentity(
+        pid=task.process_pid,
+        create_time=task.process_create_time,
+        command_hash=task.process_command_hash,
+    )
+
+
 @app.post("/api/v48/projects/{project_id}/jobs/{job_id}/pause")
 def v48_pause_job(project_id: str, job_id: str):
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
+    durable = _durable_training_task(project_id, job_id)
+    if durable is not None:
+        if durable.status is not TaskStatus.RUNNING or durable.stage == "paused":
+            raise HTTPException(status_code=400, detail="只有训练中的任务可以暂停")
+        try:
+            ProcessController().suspend_tree(_durable_process_identity(durable))
+            shared_task_repository().set_stage(job_id, "paused")
+        except (ProcessLookupError, PermissionError) as error:
+            raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
+        job.update(status="paused",message="训练已暂停",paused_at=now_iso(),updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+        return job
     if job.get("status")!="running": raise HTTPException(status_code=400,detail="只有训练中的任务可以暂停")
     if job.get("target")=="remote":
         remote=job.get("remote") or {}; base=str(remote.get("base_url") or "").rstrip("/")
@@ -6160,6 +6235,20 @@ def v48_pause_job(project_id: str, job_id: str):
 def v48_resume_job(project_id: str, job_id: str):
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
+    durable = _durable_training_task(project_id, job_id)
+    if durable is not None:
+        if durable.status is not TaskStatus.RUNNING or durable.stage != "paused":
+            raise HTTPException(status_code=400, detail="只有已暂停任务可以继续")
+        try:
+            ProcessController().resume_tree(_durable_process_identity(durable))
+            shared_task_repository().set_stage(job_id, "training")
+        except (ProcessLookupError, PermissionError) as error:
+            raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
+        if job.get("paused_at"):
+            pdt = _parse_dt_value(job.get("paused_at"))
+            if pdt: job["paused_seconds"] = int(job.get("paused_seconds") or 0) + max(0, int((datetime.now() - pdt).total_seconds()))
+        job.update(status="running",message="训练已继续",resumed_at=now_iso(),paused_at="",updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+        return job
     if job.get("status")!="paused": raise HTTPException(status_code=400,detail="只有已暂停任务可以继续")
     if job.get("target")=="remote":
         remote=job.get("remote") or {}; base=str(remote.get("base_url") or "").rstrip("/")
@@ -6180,6 +6269,19 @@ def v48_resume_job(project_id: str, job_id: str):
 def v48_stop_job(project_id: str, job_id: str):
     jf=project_dir(project_id)/"jobs"/job_id/"job.json"; job=read_json(jf,{})
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
+    durable = _durable_training_task(project_id, job_id)
+    if durable is not None:
+        was_queued = durable.status is TaskStatus.QUEUED
+        updated = shared_task_repository().request_cancel(job_id)
+        if not was_queued and updated.process_pid is not None:
+            try:
+                ProcessController().terminate_tree(_durable_process_identity(updated))
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
+        job.update(status="stopped",message="用户取消排队" if was_queued else "用户手动停止",finished_at=now_iso(),updated_at=now_iso(),never_started=was_queued); write_json(jf,job); sync_jobs_index(project_id)
+        return job
     was_queued = job.get("status") == "queued"
     if was_queued:
         job.update(status="stopped",message="用户取消排队",finished_at=now_iso(),updated_at=now_iso(),never_started=True); write_json(jf,job)
