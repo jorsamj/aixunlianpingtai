@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {unwrapAlgorithmResponse} from '../../static/modules/algorithms.js';
 import {buildTrainingPayload, iterationBasePresentation, projectedRandomSplit} from '../../static/modules/training.js';
@@ -55,6 +56,11 @@ test('random test mode accepts an arbitrary bounded percentage', () => {
   assert.deepEqual(payload.test_dataset_ids, []);
   assert.equal(payload.experiment_percent, 12.5);
   assert.equal(payload.validation_percent, 15);
+});
+
+test('training dialog is not blocked by the legacy current-image pool guard', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.equal(source.includes("if(p.length<2)return toast('至少需要2张“已处理且已标注”的图片才能开始训练')"), false);
 });
 
 test('quality chart model clamps scores and sorts label counts', () => {
