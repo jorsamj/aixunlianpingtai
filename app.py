@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import requests
 import yaml
@@ -54,6 +54,7 @@ from platform_core.secrets import KeyringSecretStore, secret_ref
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -4123,8 +4124,14 @@ class TrainReq(BaseModel):
     # v42.15：训练页可从训练/试验候选素材中按比例随机留出本次试验集。
     # selected_image_ids 是本次候选池；为空时保持旧版显式 train/val 选择兼容。
     selected_image_ids: Optional[List[str]] = None
+    # Durable v2 split contract. When split_mode is present, the API only
+    # persists the request; a standalone training worker prepares the snapshot.
+    split_mode: Optional[Literal["independent_test_set", "random_test_from_training_pool"]] = None
+    train_dataset_ids: Optional[List[str]] = None
+    test_dataset_ids: Optional[List[str]] = None
+    validation_percent: float = 20.0
     random_experiment_split: bool = True
-    experiment_percent: float = 20.0
+    experiment_percent: Optional[float] = 20.0
     train_max_samples: int = 0
     val_max_samples: int = 0
     eval_interval: int = 0
@@ -4185,7 +4192,7 @@ def validate_train_request(payload: TrainReq):
             raise HTTPException(status_code=400, detail=f"{name} 必须在 0~1 之间")
     if int(payload.eval_interval) < 0 or int(payload.val_max_samples) < 0:
         raise HTTPException(status_code=400, detail="阶段检查轮次和试验集抽查数量不能小于 0")
-    if not (0 <= float(payload.experiment_percent) <= 100):
+    if payload.experiment_percent is not None and not (0 <= float(payload.experiment_percent) <= 100):
         raise HTTPException(status_code=400, detail="试验集比例必须在 0~100 之间")
     if payload.random_experiment_split and payload.selected_image_ids and len(set(payload.selected_image_ids)) >= 2:
         if not (0 < float(payload.experiment_percent) < 100):
@@ -4205,6 +4212,92 @@ def validate_train_request(payload: TrainReq):
     cache = str(payload.cache).strip().lower()
     if cache not in {"false", "true", "0", "1", "ram", "disk", "none", ""}:
         raise HTTPException(status_code=400, detail="cache 只支持：关闭 / 内存缓存 / 磁盘缓存")
+
+
+def _explicit_training_split(payload: TrainReq) -> SplitRequest:
+    if not payload.split_mode:
+        raise ValueError("split_mode 不能为空")
+    if payload.selected_image_ids or payload.train_image_ids or payload.val_image_ids:
+        raise ValueError("新版训练任务不能混用旧版图片选择字段")
+    return SplitRequest(
+        mode=SplitMode(payload.split_mode),
+        train_dataset_ids=tuple(payload.train_dataset_ids or ()),
+        test_dataset_ids=tuple(payload.test_dataset_ids or ()),
+        experiment_percent=payload.experiment_percent,
+        validation_percent=payload.validation_percent,
+    )
+
+
+def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+    try:
+        split = _explicit_training_split(payload)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    framework = str(payload.framework or "ultralytics").strip().lower()
+    if framework not in {"ultralytics", "paddle"}:
+        raise HTTPException(status_code=400, detail="训练框架仅支持 ultralytics 或 paddle")
+    target = str(payload.target or "local").strip().lower()
+    if target == "remote":
+        remote_id = str(payload.server_id or "").strip()
+        if not remote_id:
+            raise HTTPException(status_code=400, detail="远程训练必须选择训练服务器")
+        resource_key = f"training:remote:{remote_id}"
+    else:
+        device = str(payload.device or "cpu").strip().lower()
+        resource_key = "training:cpu" if device == "cpu" else f"training:gpu:{device}"
+    task_id = uuid.uuid4().hex[:12]
+    request_payload = payload.model_dump(mode="json")
+    request_payload.update(
+        {
+            "split_mode": split.mode.value,
+            "train_dataset_ids": list(split.train_dataset_ids),
+            "test_dataset_ids": list(split.test_dataset_ids),
+            "experiment_percent": split.experiment_percent,
+            "validation_percent": split.validation_percent,
+            "schema_version": 2,
+        }
+    )
+    shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
+    record = shared_task_repository().create(
+        TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.TRAINING,
+            "payload.json",
+            resource_key,
+            priority=int(payload.queue_priority),
+            required_capabilities=(f"training.{framework}",),
+        )
+    )
+    job_dir = project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        job_dir / "job.json",
+        {
+            "id": task_id,
+            "task_id": task_id,
+            "status": "queued",
+            "message": "已进入后台训练队列",
+            "framework": framework,
+            "target": target,
+            "asset_algorithm_id": payload.algorithm_asset_id,
+            "algorithm_asset_id": payload.algorithm_asset_id,
+            "algorithm": payload.algorithm,
+            "model": payload.model,
+            "queue_priority": int(payload.queue_priority),
+            "resource_key": resource_key,
+            "split_mode": split.mode.value,
+            "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
+            "created_at": record.created_at,
+            "updated_at": record.updated_at,
+            "artifact_verified": False,
+        },
+    )
+    sync_jobs_index(project_id)
+    return JSONResponse(
+        status_code=202,
+        content={"ok": True, "task": _public_task(record)},
+    )
 
 
 def check_ultralytics_train_runtime(python_path: str):
@@ -5615,6 +5708,8 @@ def v12_start_train(project_id: str, payload: TrainReq):
         raise HTTPException(status_code=400, detail="请选择要迭代训练的算法")
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
+    if payload.split_mode:
+        return _enqueue_explicit_training(project_id, payload)
     mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
     iteration_base = _v54_iteration_base(project_id, payload.algorithm_asset_id or "", framework, strict_latest=True)
     if iteration_base:

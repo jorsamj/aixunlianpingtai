@@ -7,7 +7,7 @@ import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
 import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
 import {unwrapAlgorithmResponse} from './modules/algorithms.js?v=421800';
-import {iterationBasePresentation, projectedRandomSplit} from './modules/training.js?v=421800';
+import {buildTrainingPayload, iterationBasePresentation, projectedRandomSplit} from './modules/training.js?v=422000';
 import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
@@ -45,7 +45,7 @@ window.PlatformCore = {
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
-  training: {iterationBasePresentation, projectedRandomSplit},
+  training: {buildTrainingPayload, iterationBasePresentation, projectedRandomSplit},
   quality: {qualityChartModel},
   reports: {reportPresentation},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues}

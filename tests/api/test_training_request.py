@@ -1,5 +1,6 @@
 import io
 
+import pytest
 from PIL import Image
 
 
@@ -336,3 +337,66 @@ def test_success_without_verified_model_is_not_archived_as_algorithm_version(cli
         row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
     )
     assert stored["versions"] == []
+
+
+def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded_project, monkeypatch):
+    import app as app_module
+    from platform_core.task_runtime import TaskKind, TaskStatus
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "异步训练请求", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    monkeypatch.setattr(
+        app_module,
+        "_v48_dispatch_training_queues",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("web route dispatched training")),
+    )
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "split_mode": "independent_test_set",
+            "train_dataset_ids": ["train-ds"],
+            "test_dataset_ids": ["test-ds"],
+            "validation_percent": 20,
+            "experiment_percent": None,
+            "queue_priority": 7,
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    task = response.json()["task"]
+    assert task["kind"] == "TRAINING"
+    assert task["status"] == "QUEUED"
+    persisted = app_module.shared_task_repository().get(task["id"])
+    assert persisted is not None
+    assert persisted.kind is TaskKind.TRAINING
+    assert persisted.status is TaskStatus.QUEUED
+    assert persisted.priority == 7
+
+
+@pytest.mark.parametrize("percent", [1, 12.5, 37, 99])
+def test_explicit_random_test_percentage_is_accepted(client, seeded_project, percent):
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": f"随机试验集 {percent}", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "split_mode": "random_test_from_training_pool",
+            "train_dataset_ids": ["source"],
+            "test_dataset_ids": [],
+            "experiment_percent": percent,
+            "validation_percent": 20,
+        },
+    )
+    assert response.status_code == 202, response.text

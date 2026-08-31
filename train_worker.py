@@ -484,6 +484,13 @@ def main():
         def on_fit_epoch_end(trainer):
             nonlocal gate_reason, ai_plan, ai_rounds
             epoch=int(getattr(trainer,"epoch",0))+1
+            update_job(
+                job_file,
+                current_epoch=epoch,
+                total_epochs=int(args.epochs),
+                progress_percent=round(min(90.0, epoch / max(1, int(args.epochs)) * 90.0), 2),
+                message=f"训练中 · Epoch {epoch}/{int(args.epochs)}",
+            )
             if ai_enabled and epoch in ai_epochs and ai_rounds < max(1,int(args.ai_max_rounds or 1)) and ai_cfg:
                 try:
                     decision=_run_ai_intervention(ai_cfg,trainer,args,epoch,project_dir)
@@ -558,18 +565,22 @@ def main():
         best_path = next((path for path in verified if Path(path).stem.endswith("_best")), "")
         last_path = next((path for path in verified if Path(path).stem.endswith("_last")), "")
 
-        training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"ai_intervention_events":ai_events}
+        training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"test_result":{"status":"not_requested","metrics":{}},"ai_intervention_events":ai_events}
         try:
             best_model=YOLO(verified[0])
             val_metrics=best_model.val(data=args.data, split="val", verbose=False)
             training_report.update(build_report_from_metrics(val_metrics,getattr(best_model,"names",None)))
             try:
                 test_metrics=best_model.val(data=args.data, split="test", verbose=False)
-                training_report["test_metrics"]=(build_report_from_metrics(test_metrics,getattr(best_model,"names",None)).get("metrics") or {})
+                test_values=(build_report_from_metrics(test_metrics,getattr(best_model,"names",None)).get("metrics") or {})
+                training_report["test_metrics"]=test_values
+                training_report["test_result"]={"status":"succeeded","metrics":test_values}
             except Exception as te:
                 training_report["test_note"]="评测集为空或无法评测："+str(te)
+                training_report["test_result"]={"status":"failed","metrics":{},"error":str(te)}
         except Exception as ve:
             training_report["validation_error"]=str(ve)
+            training_report["test_result"]={"status":"failed","metrics":{},"error":"验证阶段失败，未执行最终试验集评估："+str(ve)}
         try:
             analysis_limit=int(args.val_max_samples) if int(args.val_max_samples or 0)>0 else 200
             training_report["error_samples"]=analyze_detection_errors(best_model,args.data,args.device,max_images=min(500,analysis_limit))
@@ -589,6 +600,7 @@ def main():
             artifact_verified=True,
             training_report=training_report,
             training_outcome=outcome,
+            progress_percent=100,
             finished_at=now_iso(),
         )
         print(f"[{now_iso()}] 训练完成", flush=True)

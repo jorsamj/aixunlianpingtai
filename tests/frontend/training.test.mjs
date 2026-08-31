@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {unwrapAlgorithmResponse} from '../../static/modules/algorithms.js';
-import {iterationBasePresentation, projectedRandomSplit} from '../../static/modules/training.js';
+import {buildTrainingPayload, iterationBasePresentation, projectedRandomSplit} from '../../static/modules/training.js';
 import {qualityChartModel} from '../../static/modules/quality.js';
 import {reportPresentation} from '../../static/modules/reports.js';
 
@@ -26,6 +26,35 @@ test('training candidate summary projects this run instead of persisted split fi
   assert.deepEqual(projectedRandomSplit(10, 20), {train: 8, experiment: 2});
   assert.deepEqual(projectedRandomSplit(2, 20), {train: 1, experiment: 1});
   assert.deepEqual(projectedRandomSplit(0, 20), {train: 0, experiment: 0});
+});
+
+test('final training payload keeps three roles and never auto-selects hidden test rows', () => {
+  const payload = buildTrainingPayload({
+    splitMode: 'independent_test_set',
+    trainDatasetIds: ['a'],
+    testDatasetIds: ['c'],
+    validationPercent: 20,
+    parameters: {epochs: 50}
+  });
+  assert.deepEqual(payload.train_dataset_ids, ['a']);
+  assert.deepEqual(payload.test_dataset_ids, ['c']);
+  assert.equal(payload.validation_percent, 20);
+  assert.equal(payload.experiment_percent, null);
+  assert.equal(payload.epochs, 50);
+  assert.equal('selected_image_ids' in payload, false);
+});
+
+test('random test mode accepts an arbitrary bounded percentage', () => {
+  const payload = buildTrainingPayload({
+    splitMode: 'random_test_from_training_pool',
+    trainDatasetIds: ['source'],
+    testDatasetIds: ['must-not-leak'],
+    experimentPercent: 12.5,
+    validationPercent: 15,
+  });
+  assert.deepEqual(payload.test_dataset_ids, []);
+  assert.equal(payload.experiment_percent, 12.5);
+  assert.equal(payload.validation_percent, 15);
 });
 
 test('quality chart model clamps scores and sorts label counts', () => {
