@@ -2,6 +2,7 @@ import {actionRegistry, invokeAction, registerAction} from './modules/actions.js
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=421800';
+import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {applyCleanConfirmation} from './modules/cleaning.js?v=421800';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
@@ -40,6 +41,7 @@ window.PlatformCore = {
   modalStack,
   messageFromApiError,
   annotation: {applyAnnotationResult},
+  annotationWorkbench: {createAnnotationWorkbench, queueWindow},
   cleaning: {applyCleanConfirmation},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},

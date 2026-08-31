@@ -69,6 +69,19 @@ test('annotation response updates gallery state without a reload', () => {
   ]);
 });
 
+test('annotation response preserves the true count above the preview limit', () => {
+  const boxes = Array.from({length: 80}, (_, index) => ({
+    class_id: 0, label: 'person', x1: index, y1: 1, x2: index + 1, y2: 2,
+  }));
+  const result = applyAnnotationResult(
+    [{id: 'image-1', filename: 'one.jpg'}],
+    {image: {id: 'image-1', box_count: 80}},
+    boxes,
+  );
+  assert.equal(result[0].box_count, 80);
+  assert.equal(result[0].annotation_preview.length, 64);
+});
+
 test('upload response exposes one decision batch for single or multiple files', () => {
   assert.deepEqual(uploadBatchFromResponse({batch_id: 'b1', uploaded_image_ids: ['one']}), {
     batchId: 'b1', imageIds: ['one'], images: []

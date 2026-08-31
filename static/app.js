@@ -484,6 +484,7 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
   };
 })();
 
+
 /* v42.17 final usability contracts: batch sequential annotation, translated
  * dataset labels, visible reference-label extraction, and truthful iteration UI. */
 window.installUsability417=function(){
@@ -3572,8 +3573,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(idx>=0){if(!applyResult){const fresh=r?.image||{};Object.assign(state.images[idx],fresh);state.images[idx].box_count=state.ann.boxes.length;state.images[idx].annotated=state.ann.boxes.length>0;state.images[idx].labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.images[idx].annotation_preview=state.ann.boxes.slice(0,64).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2}))}if(state.ann.boxes.length)state.images[idx].processing_status='processed';state.activeImage=state.images[idx]}
       state.annDirty=false;if(ss)ss.textContent=`已保存 · ${state.ann.boxes.length}框`;drawBoxes();renderAnnSide();
       try{if(typeof invalidateQuality411==='function')invalidateQuality411()}catch(_){}
-      // Refresh the gallery behind the annotation modal so thumbnail overlays change immediately.
-      try{if(state.page==='数据集')renderDatasets424()}catch(_){}
+      // Patch only the affected material card. Re-rendering the full gallery here
+      // blocks the main thread for seconds on large libraries and remounts the modal.
+      try{if(state.page==='数据集'&&typeof patchMaterialCard412==='function')patchMaterialCard412(state.activeImage)}catch(_){}
       // If annotation was opened from an image-preview modal, refresh that preview in place as well.
       try{const layers=[...document.querySelectorAll('.v424-modal-layer')],under=layers.length>1?layers[layers.length-2]:null,stage=under?.querySelector('.data412-previewstage');if(stage&&state.activeImage){stage.innerHTML=`<img src="${state.activeImage.url}">${(state.activeImage.annotation_preview||[]).map(b=>{const l=labelByCode414(b.label),w=Math.max(0,(b.x2-b.x1)/(state.activeImage.width||1)*100),h=Math.max(0,(b.y2-b.y1)/(state.activeImage.height||1)*100),x=(b.x1/(state.activeImage.width||1)*100),y=(b.y1/(state.activeImage.height||1)*100);return `<i class="ov412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%;border-color:${esc(l?.color||'#ef4444')}"><b style="background:${esc(l?.color||'#ef4444')}">${esc(b.label||'')}</b></i>`}).join('')}`}}catch(_){}
       if(!silent)toast(`标注已保存：${state.ann.boxes.length} 个框`);return true;
@@ -3804,5 +3806,89 @@ window.installUsability417?.();
     s.experiment=num('trV2Experiment',s.experiment);s.validation=num('trV2Validation',s.validation);
     const parameters={framework:target.framework==='paddle'?'paddle':'ultralytics',target:target.type==='server'?'remote':'local',server_id:target.server_id,algorithm:algorithm.key||'',algorithm_asset_id:a.id,model:c.model||algorithm.base_model||'',epochs:c.epochs||100,imgsz:c.imgsz||640,batch:c.batch||8,device:c.device||'cpu',include_empty:false,patience:c.patience??100,workers:c.workers??0,optimizer:c.optimizer||'auto',lr0:c.lr0??.01,lrf:c.lrf??.01,momentum:c.momentum??.937,weight_decay:c.weight_decay??.0005,warmup_epochs:c.warmup_epochs??3,close_mosaic:c.close_mosaic??10,mosaic:c.mosaic??1,mixup:c.mixup??0,hsv_h:c.hsv_h??.015,hsv_s:c.hsv_s??.7,hsv_v:c.hsv_v??.4,degrees:c.degrees??0,translate:c.translate??.1,scale:c.scale??.5,shear:c.shear??0,perspective:c.perspective??0,flipud:c.flipud??0,fliplr:c.fliplr??.5,cache:c.cache||'False',pretrained:c.pretrained!==false,amp:c.amp!==false,single_cls:!!c.single_cls,rect:!!c.rect,cos_lr:!!c.cos_lr,freeze:c.freeze??0,multi_scale:c.multi_scale??0,save_period:c.save_period??-1,seed:c.seed??0,deterministic:c.deterministic!==false,val_max_samples:c.val_max_samples??0,eval_interval:c.eval_interval??0,eval_metric:c.eval_metric||'map50',continue_threshold:c.continue_threshold??0,stop_threshold:c.stop_threshold??0,queue_priority:priority,auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};
     try{const payload=PlatformCore.training.buildTrainingPayload({splitMode:s.mode,trainDatasetIds:[...s.train],testDatasetIds:[...s.test],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),r=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${r.task?.id||''}`)}catch(e){toast(e.message||e)}
+  };
+})();
+
+/* Stable single-instance manual/batch annotation workbench. */
+(()=>{
+  const workbenchApi=()=>window.PlatformCore?.annotationWorkbench;
+  const queueIds=()=>Array.isArray(state.annotationQueue414)&&state.annotationQueue414.length?state.annotationQueue414.map(String):state.activeImage?[String(state.activeImage.id)]:[];
+  const imageById=id=>(state.images||[]).find(x=>String(x.id)===String(id));
+  const preload=url=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(true);image.onerror=()=>reject(new Error('图片加载失败'));image.src=url});
+
+  function ensureShell(){
+    if(document.querySelector('.ann420-stable'))return;
+    modal('图片标注',`<div class="ann-layout pro ann414 ann417 ann420-stable"><aside class="ann417-queue"><header><b>连续标注</b><span id="ann420Position">1 / 1</span></header><div id="ann420Queue"></div></aside><div class="ann-work"><div class="ann-toolbar"><button id="ann414Save" class="btn primary small" onclick="saveAnn(false)">保存并继续</button><label class="ann417-label"><span>绘制标签</span><select id="ann420Label" class="select" onchange="state.activeLabel=Number(this.value);renderAnnSide()"></select></label><button id="ann420Prev" class="btn small">上一张</button><button id="ann420Next" class="btn small">下一张</button><button class="btn small" onclick="undoAnn()">撤销</button><button class="btn small" onclick="redoAnn()">重做</button><button class="btn small danger" onclick="deleteActiveBox()">删除框</button><span class="ann414-state"><span id="ann420Filename"></span> · <b id="annSaveState">已保存</b></span><div class="ann-zoom"><button class="btn mini" onclick="zoomAnn(-0.1)">-</button><span id="zoomText">100%</span><button class="btn mini" onclick="zoomAnn(0.1)">+</button></div></div><div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div></div><aside class="side-panel ann-side"><div class="side-section"><div class="side-title">标注框 <span id="ann420BoxCount">0</span></div><div id="annBoxes"></div></div><div class="hint-card">标签统一来自“配置中心 → 标签管理”。拖拽新建框；切换图片前自动保存；画布和弹窗不会重复创建。</div></aside></div>`,true);
+  }
+
+  function updateShell(){
+    const image=state.activeImage;if(!image)return;ensureShell();
+    const ids=queueIds(),at=Math.max(0,ids.indexOf(String(image.id))),visible=workbenchApi()?.queueWindow(ids,String(image.id),9)||ids;
+    const queue=document.getElementById('ann420Queue');
+    if(queue)queue.innerHTML=visible.map(id=>{const row=imageById(id);return row?`<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em>${row.annotated?`${row.box_count||0} 框`:'待标注'}</em></span></button>`:''}).join('');
+    const position=document.getElementById('ann420Position');if(position)position.textContent=`${at+1} / ${ids.length}`;
+    const filename=document.getElementById('ann420Filename');if(filename)filename.textContent=image.filename||'';
+    const select=document.getElementById('ann420Label');if(select)select.innerHTML=(state.labels||[]).map(label=>`<option value="${Number(label.class_id)}" ${Number(state.activeLabel)===Number(label.class_id)?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('');
+    const previous=document.getElementById('ann420Prev'),next=document.getElementById('ann420Next');
+    if(previous){previous.disabled=at<=0;previous.onclick=()=>at>0&&goAnnotation417(ids[at-1])}
+    if(next){next.disabled=at>=ids.length-1;next.onclick=()=>at<ids.length-1&&goAnnotation417(ids[at+1])}
+    const count=document.getElementById('ann420BoxCount');if(count)count.textContent=String(state.ann?.boxes?.length||0);
+    const img=document.getElementById('annImg');if(img&&img.src!==new URL(image.url,location.href).href)img.src=image.url;
+    const stage=document.getElementById('annStage');if(stage){stage.style.transform=`scale(${state.annZoom||1})`;stage.classList.toggle('disabled',!(state.labels||[]).length)}
+    requestAnimationFrame(()=>{drawBoxes();if((state.labels||[]).length)bindAnnotationEvents();renderAnnSide()});
+  }
+
+  function ensureWorkbench(){
+    if(state.annotationWorkbench)return state.annotationWorkbench;
+    const api=workbenchApi();if(!api)return null;
+    state.annotationWorkbench=api.createAnnotationWorkbench({
+      load:async id=>{
+        const image=imageById(id);if(!image)throw new Error('图片不存在或尚未加载');
+        if(!(state.labels||[]).length&&typeof refreshLabels414==='function')await refreshLabels414(false);
+        const [response]=await Promise.all([apiRequestAnnotation420(id),preload(image.url)]);
+        return {image:response?.image||image,annotation:response?.annotation||{boxes:[]}};
+      },
+      save:async()=>window.saveAnn(true),
+      apply:value=>{
+        state.activeImage=value.image;state.ann=value.annotation||{boxes:[]};if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
+        const first=(state.labels||[]).find(label=>state.ann.boxes.some(box=>Number(box.class_id)===Number(label.class_id)))||(state.labels||[])[0];
+        state.activeLabel=first?.class_id??null;state.activeBox=null;state.annZoom=1;state.annDirty=false;state.annHistory=[];state.annRedo=[];updateShell();
+      }
+    });
+    return state.annotationWorkbench;
+  }
+
+  async function apiRequestAnnotation420(id){return api(`/api/projects/${pid()}/annotations/${id}`)}
+  window.openAnnotation=async function(id){
+    const key=String(id);if(!imageById(key))return toast('图片不存在或尚未加载');
+    if(!Array.isArray(state.annotationQueue414)||!state.annotationQueue414.some(value=>String(value)===key))state.annotationQueue414=[key];
+    try{return await ensureWorkbench()?.open(key)}catch(error){toast(`打开标注失败：${error.message||error}`);return false}
+  };
+  window.goAnnotation417=id=>window.openAnnotation(id);
+  window.renderAnnotator=updateShell;
+
+  const previousMarkDirty=window.markDirty;
+  window.markDirty=function(){state.annotationWorkbench?.markDirty();return previousMarkDirty?.()};
+  const previousSave=window.saveAnn;
+  window.saveAnn=async function(silent=false){
+    const savedId=String(state.activeImage?.id||''),ok=await previousSave?.(silent);
+    if(ok){state.annotationWorkbench?.markSaved();patchMaterialCard412(state.activeImage)}
+    if(ok&&!silent){const ids=queueIds(),at=ids.indexOf(savedId);if(at>=0&&at<ids.length-1)await state.annotationWorkbench?.open(ids[at+1])}
+    return ok;
+  };
+
+  window.patchMaterialCard412=function(image){
+    if(!image)return;const cards=[...document.querySelectorAll('.data412-card,.data429-card')],card=cards.find(node=>node.querySelector('.data426-title')?.textContent===String(image.filename||''));if(!card)return;
+    const meta=card.querySelectorAll('.data426-meta span');if(meta[1])meta[1].textContent=image.annotated?`已标注 · ${image.box_count||0}框`:'待标注';
+    const tags=card.querySelector('.data426-tags');if(tags)tags.innerHTML=(image.labels||[]).map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<em>暂无标签</em>';
+    const stage=card.querySelector('.data411-stage');if(stage){stage.querySelectorAll('.data412-box,.data411-box').forEach(node=>node.remove());const width=Number(image.width||1),height=Number(image.height||1);stage.insertAdjacentHTML('beforeend',(image.annotation_preview||[]).slice(0,24).map(box=>`<i class="data412-box" style="left:${100*Number(box.x1||0)/width}%;top:${100*Number(box.y1||0)/height}%;width:${100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width}%;height:${100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`).join(''))}
+  };
+
+  const previousClose=window.closeModal;
+  window.closeModal=async function(){
+    const layers=[...document.querySelectorAll('.v424-modal-layer')],top=layers.at(-1);
+    if(top?.querySelector('.ann420-stable')&&state.annotationWorkbench?.dirty){const ok=await window.saveAnn(true);if(!ok)return false}
+    if(top?.querySelector('.ann420-stable')){state.annotationWorkbench?.invalidate();state.annotationWorkbench=null;state.annotationQueue414=[];state.activeImage=null}
+    return previousClose?.();
   };
 })();

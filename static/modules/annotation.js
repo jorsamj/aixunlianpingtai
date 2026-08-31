@@ -1,7 +1,8 @@
 import {replaceMaterial} from './materials.js';
 
 export function applyAnnotationResult(materials, response, boxes) {
-  const preview = (boxes || []).slice(0, 64).map(box => ({
+  const allBoxes = boxes || [];
+  const preview = allBoxes.slice(0, 64).map(box => ({
     class_id: box.class_id,
     label: box.label,
     x1: box.x1,
@@ -13,9 +14,9 @@ export function applyAnnotationResult(materials, response, boxes) {
   return replaceMaterial(materials, {
     ...summary,
     id: summary.id,
-    annotated: preview.length > 0,
-    box_count: preview.length,
-    labels: [...new Set(preview.map(box => box.label).filter(Boolean))],
+    annotated: allBoxes.length > 0,
+    box_count: Number(summary.box_count ?? allBoxes.length),
+    labels: [...new Set(allBoxes.map(box => box.label).filter(Boolean))],
     annotation_preview: preview
   });
 }
