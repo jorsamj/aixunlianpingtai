@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
+from .process_control import ProcessIdentity
 
 
 SCHEMA = """
@@ -324,6 +325,37 @@ class TaskRepository:
             ).rowcount
         if changed != 1:
             raise PermissionError("task lease does not own heartbeat")
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result
+
+    def bind_process(
+        self,
+        task_id: str,
+        lease_token: str,
+        identity: ProcessIdentity,
+    ) -> TaskRecord:
+        now = utc_now()
+        with self._connect() as database:
+            changed = database.execute(
+                """
+                UPDATE tasks SET process_pid=?, process_create_time=?,
+                    process_command_hash=?, updated_at=?
+                 WHERE task_id=? AND lease_token=?
+                   AND status IN ('RUNNING','CANCEL_REQUESTED')
+                """,
+                (
+                    int(identity.pid),
+                    float(identity.create_time),
+                    str(identity.command_hash),
+                    now,
+                    str(task_id),
+                    str(lease_token),
+                ),
+            ).rowcount
+        if changed != 1:
+            raise PermissionError("task lease does not own process identity")
         result = self.get(task_id)
         if result is None:
             raise KeyError(task_id)
