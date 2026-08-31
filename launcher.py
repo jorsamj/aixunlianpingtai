@@ -13,6 +13,8 @@ import venv
 import webbrowser
 from pathlib import Path
 
+from platform_core.runtime_paths import resolve_data_dir
+
 BASE_DIR = Path(__file__).resolve().parent
 def _read_platform_version() -> str:
     vf = BASE_DIR / "VERSION.txt"
@@ -35,6 +37,38 @@ TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 def say(text=""):
     print(text, flush=True)
+
+
+def start_service_processes(py: Path, env: dict[str, str]):
+    process_env = dict(env)
+    data_dir = resolve_data_dir(base_dir=BASE_DIR)
+    process_env["MC_TRAIN_DATA_DIR"] = str(data_dir)
+    worker = subprocess.Popen(
+        [str(py), "task_worker.py", "--data-dir", str(data_dir), "--roles", "all"],
+        cwd=str(BASE_DIR),
+        env=process_env,
+        shell=False,
+    )
+    api = subprocess.Popen(
+        [str(py), "-m", "uvicorn", "app:app", "--host", HOST, "--port", str(PORT)],
+        cwd=str(BASE_DIR),
+        env=process_env,
+        shell=False,
+    )
+    return worker, api
+
+
+def stop_service_processes(*processes) -> None:
+    for process in processes:
+        if process is not None and process.poll() is None:
+            process.terminate()
+    for process in processes:
+        if process is None or process.poll() is not None:
+            continue
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
 
 def runtime_dir() -> Path:
@@ -339,9 +373,7 @@ def main():
 
     say(f"[4/5] 启动服务：{url}")
     say("转换入口：左侧菜单 → 部署中心 → 部署转换")
-    proc = subprocess.Popen([
-        str(py), "-m", "uvicorn", "app:app", "--host", HOST, "--port", str(PORT)
-    ], cwd=str(BASE_DIR), env=env)
+    worker_proc, proc = start_service_processes(py, env)
     try:
         deadline = time.time() + 35
         mismatch_seen = 0
@@ -361,22 +393,26 @@ def main():
                     )
             if proc.poll() is not None:
                 raise RuntimeError(f"服务进程已退出，退出码 {proc.returncode}")
+            if worker_proc.poll() is not None:
+                raise RuntimeError(f"后台 Worker 已退出，退出码 {worker_proc.returncode}")
             time.sleep(0.5)
         else:
             raise RuntimeError("服务启动超时，请查看上方 Uvicorn 日志。")
-        return proc.wait()
+        while True:
+            if proc.poll() is not None:
+                stop_service_processes(worker_proc)
+                return int(proc.returncode or 0)
+            if worker_proc.poll() is not None:
+                stop_service_processes(proc)
+                raise RuntimeError(f"后台 Worker 已退出，退出码 {worker_proc.returncode}")
+            time.sleep(0.5)
     except KeyboardInterrupt:
         say("\n正在停止服务...")
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        stop_service_processes(worker_proc, proc)
         return 0
     except Exception as e:
         say(f"[ERROR] {e}")
-        if proc.poll() is None:
-            proc.terminate()
+        stop_service_processes(worker_proc, proc)
         return 5
 
 

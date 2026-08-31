@@ -39,7 +39,7 @@ from platform_core.algorithms import (
 )
 from platform_core import auto_label as auto_label_core
 from platform_core.bootstrap import choose_project, choose_requested_project
-from platform_core.config import choose_data_dir
+from platform_core.runtime_paths import resolve_data_dir
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
@@ -52,6 +52,8 @@ from platform_core.resource_cache import ResourceCache
 from platform_core.secrets import KeyringSecretStore, secret_ref
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
+from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -73,19 +75,26 @@ PROCESS_REGISTRY: Dict[str, subprocess.Popen] = {}
 # v34: 持久化数据目录。默认放到用户目录，避免页面刷新、重启、升级版本后素材/数据丢失。
 # 如需强制使用当前程序目录下的 data，可在 start.bat 中设置 MC_TRAIN_DATA_DIR=%~dp0data。
 def _default_data_dir() -> Path:
-    custom = os.environ.get("MC_TRAIN_DATA_DIR")
-    if os.name == "nt":
-        root = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        candidates = [
-            root / "XJAlgo" / "data",
-            root / "XiaojiangAlgorithmTrain" / "data",
-            BASE_DIR / "data",
-        ]
-    else:
-        candidates = [BASE_DIR / "data"]
-    return choose_data_dir(Path(custom) if custom else None, candidates)
+    return resolve_data_dir(base_dir=BASE_DIR)
 
 DATA_DIR = _default_data_dir()
+
+_SHARED_TASK_REPOSITORY: Optional[TaskRepository] = None
+_SHARED_TASK_ARTIFACTS: Optional[ArtifactStore] = None
+
+
+def shared_task_repository() -> TaskRepository:
+    global _SHARED_TASK_REPOSITORY
+    if _SHARED_TASK_REPOSITORY is None:
+        _SHARED_TASK_REPOSITORY = TaskRepository(DATA_DIR / "task_runtime" / "tasks.sqlite3")
+    return _SHARED_TASK_REPOSITORY
+
+
+def shared_task_artifacts() -> ArtifactStore:
+    global _SHARED_TASK_ARTIFACTS
+    if _SHARED_TASK_ARTIFACTS is None:
+        _SHARED_TASK_ARTIFACTS = ArtifactStore(DATA_DIR / "task_runtime" / "artifacts")
+    return _SHARED_TASK_ARTIFACTS
 
 PROJECTS_FILE = DATA_DIR / "projects.json"
 SERVERS_FILE = DATA_DIR / "train_servers.json"
@@ -7973,28 +7982,87 @@ def _v33_run_video_frame_task(project_id: str, task_id: str):
         _v33_update_task(project_id, "video_frame_tasks", task_id, status="failed", status_text="失败", error=str(e), finished_at=now_iso())
 
 
+def _public_task(task: TaskRecord) -> Dict[str, Any]:
+    return {
+        "id": task.task_id,
+        "project_id": task.project_id,
+        "kind": task.kind.value,
+        "status": task.status.value,
+        "priority": task.priority,
+        "progress": task.progress,
+        "stage": task.stage,
+        "current_item": task.current_item,
+        "attempt": task.attempt,
+        "accepted": task.accepted,
+        "error": task.error,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "finished_at": task.finished_at,
+        "result_ref": task.result_ref,
+    }
+
+
+def _public_video_task(task: TaskRecord) -> Dict[str, Any]:
+    response = _public_task(task)
+    payload = shared_task_artifacts().read_json(
+        task.task_id,
+        task.payload_ref,
+        default={},
+    )
+    if isinstance(payload, dict):
+        response.update(
+            {
+                "video_name": payload.get("original_name"),
+                "dataset_id": payload.get("dataset_id") or "default",
+                "split": payload.get("split") or "unassigned",
+                "mode": payload.get("mode"),
+                "interval_seconds": payload.get("interval_seconds"),
+                "extract_fps": payload.get("extract_fps"),
+                "fixed_count": payload.get("fixed_count"),
+                "max_frames": payload.get("max_frames"),
+                "backend": payload.get("backend"),
+            }
+        )
+    if task.result_ref:
+        response["result"] = shared_task_artifacts().read_json(
+            task.task_id,
+            task.result_ref,
+            default={},
+        )
+    return response
+
+
+def _require_shared_task(project_id: str, task_id: str, kind: TaskKind) -> TaskRecord:
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not kind:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
 @app.get("/api/v33/projects/{project_id}/video-tasks")
-def v33_list_video_tasks(project_id: str):
+def v33_list_video_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
     get_project(project_id)
-    return {"items": _v33_load_tasks(project_id, "video_frame_tasks")}
+    page = shared_task_repository().list(
+        project_id=project_id,
+        kinds={TaskKind.VIDEO_FRAMES},
+        limit=max(1, min(100, int(limit))),
+        cursor=cursor,
+    )
+    return {"items": [_public_video_task(task) for task in page.items], "next_cursor": page.next_cursor}
 
 
 @app.get("/api/v33/projects/{project_id}/video-tasks/{task_id}")
 def v33_get_video_task(project_id: str, task_id: str):
     get_project(project_id)
-    t = _v33_get_task(project_id, "video_frame_tasks", task_id)
-    if not t:
-        raise HTTPException(status_code=404, detail="切帧任务不存在")
-    return t
+    task = _require_shared_task(project_id, task_id, TaskKind.VIDEO_FRAMES)
+    return _public_video_task(task)
 
 
 @app.post("/api/v33/projects/{project_id}/video-tasks/{task_id}/stop")
 def v33_stop_video_task(project_id: str, task_id: str):
     get_project(project_id)
-    if not _v33_get_task(project_id, "video_frame_tasks", task_id):
-        raise HTTPException(status_code=404, detail="切帧任务不存在")
-    _v33_update_task(project_id, "video_frame_tasks", task_id, stop_requested=True, status_text="正在停止")
-    return {"ok": True}
+    _require_shared_task(project_id, task_id, TaskKind.VIDEO_FRAMES)
+    return _public_task(shared_task_repository().request_cancel(task_id))
 
 
 @app.post("/api/v33/projects/{project_id}/video-tasks")
@@ -8003,9 +8071,13 @@ async def v33_create_video_task(
     video: UploadFile = File(...),
     dataset_id: str = Form("default"),
     split: str = Form("unassigned"),
-    interval_seconds: float = Form(1.0),
-    extract_fps: float = Form(0.0),
-    max_frames: int = Form(0),
+    mode: str = Form("interval_seconds"),
+    interval_seconds: Optional[float] = Form(None),
+    extract_fps: Optional[float] = Form(None),
+    fixed_count: Optional[int] = Form(None),
+    max_frames: Optional[int] = Form(None),
+    backend: str = Form("auto"),
+    priority: int = Form(50),
 ):
     get_project(project_id)
     ensure_project_dirs(project_id)
@@ -8013,40 +8085,55 @@ async def v33_create_video_task(
     ext = Path(filename).suffix.lower()
     if ext not in VIDEO_EXTS_V33:
         raise HTTPException(status_code=400, detail="仅支持 mp4、avi、mov、mkv、flv、wmv、webm 等常见视频格式")
+    try:
+        sampling_mode = SamplingMode(mode)
+        request = VideoSampleRequest(
+            mode=sampling_mode,
+            interval_seconds=interval_seconds if sampling_mode is SamplingMode.INTERVAL_SECONDS else None,
+            extract_fps=extract_fps if sampling_mode is SamplingMode.FPS else None,
+            fixed_count=fixed_count if sampling_mode is SamplingMode.FIXED_COUNT else None,
+            max_frames=max_frames if max_frames and max_frames > 0 else None,
+        )
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     task_id = uuid.uuid4().hex[:12]
-    video_dir = project_dir(project_id) / "videos" / task_id
-    video_dir.mkdir(parents=True, exist_ok=True)
-    video_path = video_dir / filename
+    source_ref = f"inputs/{filename}"
+    video_path = shared_task_artifacts().artifact_path(task_id, source_ref)
+    video_path.parent.mkdir(parents=True, exist_ok=True)
     with video_path.open("wb") as fp:
         while True:
             chunk = await video.read(1024 * 1024)
             if not chunk:
                 break
             fp.write(chunk)
-    task = {
-        "id": task_id,
-        "video_name": filename,
-        "video_path": str(video_path),
+    if video_path.stat().st_size <= 0:
+        video_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="上传的视频为空")
+    payload = {
+        "source_ref": source_ref,
+        "original_name": filename,
         "dataset_id": dataset_id or "default",
         "split": split or "unassigned",
-        "interval_seconds": float(interval_seconds or 1.0),
-        "extract_fps": float(extract_fps or 0.0),
-        "max_frames": int(max_frames or 0),
-        "status": "queued",
-        "status_text": "排队中",
-        "progress": 0,
-        "extracted_frames": 0,
-        "processed_frames": 0,
-        "stop_requested": False,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
+        "mode": request.mode.value,
+        "interval_seconds": request.interval_seconds,
+        "extract_fps": request.extract_fps,
+        "fixed_count": request.fixed_count,
+        "max_frames": request.max_frames,
+        "backend": str(backend or "auto").lower(),
     }
-    tasks = _v33_load_tasks(project_id, "video_frame_tasks")
-    tasks.insert(0, task)
-    _v33_save_tasks(project_id, "video_frame_tasks", tasks[:100])
-    th = threading.Thread(target=_v33_run_video_frame_task, args=(project_id, task_id), daemon=True)
-    th.start()
-    return task
+    shared_task_artifacts().atomic_write_json(task_id, "payload.json", payload)
+    record = shared_task_repository().create(
+        TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.VIDEO_FRAMES,
+            "payload.json",
+            "cpu:video",
+            priority=priority,
+            required_capabilities=("opencv",),
+        )
+    )
+    return JSONResponse(status_code=202, content=_public_video_task(record))
 
 
 class V33PrelabelTaskReq(BaseModel):

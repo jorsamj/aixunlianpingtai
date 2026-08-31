@@ -76,6 +76,21 @@ class Scheduler:
                 status,
                 result_ref,
             )
+        except InterruptedError as error:
+            current = self.repository.get(lease.task.task_id)
+            if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
+                self.repository.finish(
+                    lease.task.task_id,
+                    lease.lease_token,
+                    TaskStatus.CANCELLED,
+                )
+            else:
+                self.repository.finish(
+                    lease.task.task_id,
+                    lease.lease_token,
+                    TaskStatus.FAILED,
+                    error=str(error),
+                )
         except HardwareUnavailableError as error:
             self.repository.finish(
                 lease.task.task_id,

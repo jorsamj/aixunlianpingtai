@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, TypeVar
 
+from filelock import FileLock
+
 from .annotations import atomic_write_json
 
 
@@ -94,26 +96,30 @@ class MaterialStore:
         self.path = Path(path)
         self.revision_path = self.path.with_suffix(".revision")
         self._lock = _lock_for(self.path)
+        self._file_lock = FileLock(str(self.path.resolve()) + ".lock", timeout=30)
 
     def read(self) -> MaterialSnapshot:
         with self._lock:
-            return MaterialSnapshot(
-                revision=read_revision(self.revision_path),
-                rows=_cached_rows(self.path),
-            )
+            with self._file_lock:
+                return MaterialSnapshot(
+                    revision=read_revision(self.revision_path),
+                    rows=_cached_rows(self.path),
+                )
 
     def count(self) -> int:
         with self._lock:
-            return len(_cached_rows_shared(self.path))
+            with self._file_lock:
+                return len(_cached_rows_shared(self.path))
 
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
         with self._lock:
-            rows = _cached_rows(self.path)
-            result = fn(rows)
-            atomic_write_json(self.path, rows)
-            write_revision(self.revision_path, read_revision(self.revision_path) + 1)
-            _store_cached_rows(self.path, rows)
-            return result
+            with self._file_lock:
+                rows = _cached_rows(self.path)
+                result = fn(rows)
+                atomic_write_json(self.path, rows)
+                write_revision(self.revision_path, read_revision(self.revision_path) + 1)
+                _store_cached_rows(self.path, rows)
+                return result
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         incoming = dict(record)
@@ -126,6 +132,32 @@ class MaterialStore:
                     return dict(row)
             rows.append(incoming)
             return dict(incoming)
+
+        return self.mutate(apply)
+
+    def upsert_many(
+        self,
+        records: Iterable[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        incoming = [dict(record) for record in records]
+        for record in incoming:
+            if not str(record.get("id") or "").strip():
+                raise ValueError("素材 id 不能为空")
+
+        def apply(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            positions = {str(row.get("id")): index for index, row in enumerate(rows)}
+            persisted = []
+            for record in incoming:
+                image_id = str(record["id"])
+                position = positions.get(image_id)
+                if position is None:
+                    rows.append(dict(record))
+                    positions[image_id] = len(rows) - 1
+                    persisted.append(dict(record))
+                else:
+                    rows[position].update(record)
+                    persisted.append(dict(rows[position]))
+            return persisted
 
         return self.mutate(apply)
 

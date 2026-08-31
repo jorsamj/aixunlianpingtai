@@ -13,3 +13,4 @@ torch==2.12.1
 torchvision==0.27.1
 psutil>=5.9.0
 keyring>=25.6,<26
+filelock>=3.13,<4

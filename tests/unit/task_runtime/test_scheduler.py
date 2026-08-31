@@ -116,3 +116,33 @@ def test_scheduler_turns_cancel_request_into_cancelled(tmp_path):
     task = repository.get("video-3")
     assert task.status is TaskStatus.CANCELLED
     assert task.result_ref is None
+
+
+def test_cancel_interrupt_does_not_become_failed(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    repository.create(
+        TaskRecord.new(
+            "video-4",
+            "project-1",
+            TaskKind.VIDEO_FRAMES,
+            "payload.json",
+            "cpu:video",
+        )
+    )
+
+    class InterruptedHandler(RecordingHandler):
+        def run(self, context):
+            context.repository.request_cancel(context.task.task_id)
+            raise InterruptedError("cancelled at frame boundary")
+
+    Scheduler(
+        repository,
+        artifacts,
+        "worker-4",
+        {TaskKind.VIDEO_FRAMES: InterruptedHandler()},
+        set(),
+    ).run_once()
+    task = repository.get("video-4")
+    assert task.status is TaskStatus.CANCELLED
+    assert task.error is None
