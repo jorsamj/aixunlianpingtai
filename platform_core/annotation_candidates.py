@@ -116,6 +116,13 @@ class CandidateStore:
         manifest = self._manifest()
         return self._read_range(0, int(manifest.get("items") or 0))
 
+    def reject_all_reviewable(self) -> None:
+        self.apply_decisions(
+            CandidateDecision(image_id=str(item["image_id"]), accepted=False)
+            for item in self.all_items()
+            if item.get("status") in {"success", "empty"}
+        )
+
     def _manifest(self) -> dict[str, Any]:
         manifest = self.artifacts.read_json(self.task_id, "candidates/manifest.json", default=None)
         if not isinstance(manifest, dict):

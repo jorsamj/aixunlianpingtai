@@ -49,3 +49,16 @@ def test_candidate_artifact_rejects_path_traversal(tmp_path: Path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="../outside", page_size=2)
     with pytest.raises(ValueError, match="task id"):
         store.initialize(labels=["fire"], total_images=0)
+
+
+def test_all_rejected_is_not_interpreted_as_all_selected(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="reject-all", page_size=50)
+    store.initialize(labels=["fire"], total_images=2)
+    store.append_items([
+        {"image_id": "one", "status": "success", "boxes": [{"id": "a", "label": "fire"}]},
+        {"image_id": "two", "status": "empty", "boxes": []},
+    ])
+    store.reject_all_reviewable()
+    assert [item["accepted"] for item in store.all_items()] == [False, False]
+    assert store.summary()["accepted"] == 0
+    assert store.summary()["unreviewed"] == 0

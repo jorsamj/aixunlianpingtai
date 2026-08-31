@@ -1,8 +1,8 @@
 from dataclasses import replace
 from pathlib import Path
 
-from platform_core.annotation_candidates import CandidateStore
-from platform_core.annotation_task_service import run_ai_annotation
+from platform_core.annotation_candidates import CandidateDecision, CandidateStore
+from platform_core.annotation_task_service import commit_candidate_decisions, run_ai_annotation
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskStatus
 
 
@@ -81,3 +81,30 @@ def test_worker_stops_at_cancel_boundary_without_processing_more_images(tmp_path
 
     outcome = run_ai_annotation(context, annotate=must_not_run)
     assert outcome.status is TaskStatus.CANCELLED
+
+
+def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-1", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "image-1", "status": "success",
+        "boxes": [{"id": "candidate-1", "class_id": 0, "label": "fire",
+                   "x1": 1, "y1": 1, "x2": 20, "y2": 20}],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
+    written = []
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotation",
+        lambda _project, _image: {"boxes": list(written)},
+    )
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotation",
+        lambda _project, _image, boxes: written.__setitem__(slice(None), boxes),
+    )
+    first = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
+    second = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
+    assert first["boxes_added"] == 1
+    assert second["boxes_added"] == 0
+    assert [box["candidate_id"] for box in written] == ["candidate-1"]
+    assert written[0]["source_task_id"] == "commit-1"

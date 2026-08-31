@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -199,6 +201,84 @@ def _prepare_runtime_request(project_id: str, request: dict[str, Any]) -> dict[s
 def _public_error(error: Exception) -> str:
     text = str(error).replace("\r", " ").replace("\n", " ").strip()
     return text[:1000] or type(error).__name__
+
+
+def read_formal_annotation(project_id: str, image_id: str) -> dict[str, Any]:
+    from app import read_annotation
+
+    return read_annotation(project_id, image_id)
+
+
+def write_formal_annotation(project_id: str, image_id: str, boxes: list[dict[str, Any]]) -> None:
+    from app import write_annotation
+
+    write_annotation(project_id, image_id, boxes)
+
+
+def _candidate_id(image_id: str, box: dict[str, Any]) -> str:
+    supplied = str(box.get("id") or box.get("candidate_id") or "")
+    if supplied:
+        return supplied
+    body = json.dumps([image_id, box], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
+def commit_candidate_decisions(
+    project_id: str,
+    task_id: str,
+    store: CandidateStore,
+    *,
+    overwrite: bool,
+) -> dict[str, Any]:
+    journal_ref = "commit/result.json"
+    journal = store.artifacts.read_json(task_id, journal_ref, default={})
+    completed = {str(value) for value in (journal or {}).get("completed_image_ids") or []}
+    applied_images = []
+    boxes_added = 0
+    for item in store.all_items():
+        if item.get("accepted") is not True:
+            continue
+        image_id = str(item["image_id"])
+        applied_images.append(image_id)
+        if image_id in completed:
+            continue
+        previous = list(read_formal_annotation(project_id, image_id).get("boxes") or [])
+        existing = {
+            (str(box.get("source_task_id") or ""), str(box.get("candidate_id") or ""))
+            for box in previous
+        }
+        incoming = []
+        for box in item.get("boxes") or []:
+            candidate_id = _candidate_id(image_id, dict(box))
+            if (task_id, candidate_id) in existing:
+                continue
+            confirmed = dict(box)
+            confirmed.update({
+                "candidate_id": candidate_id,
+                "source_task_id": task_id,
+                "source": "ai_candidate_confirmed",
+            })
+            incoming.append(confirmed)
+        if overwrite and incoming:
+            replaced_classes = {box.get("class_id") for box in incoming}
+            previous = [box for box in previous if box.get("class_id") not in replaced_classes]
+        if incoming:
+            write_formal_annotation(project_id, image_id, previous + incoming)
+            boxes_added += len(incoming)
+        completed.add(image_id)
+        store.artifacts.atomic_write_json(task_id, journal_ref, {
+            "completed_image_ids": sorted(completed),
+            "last_image_id": image_id,
+        })
+    result = {
+        "applied_images": len(applied_images),
+        "applied_image_ids": applied_images,
+        "boxes_added": boxes_added,
+        "review": store.summary(),
+        "completed_image_ids": sorted(completed),
+    }
+    store.artifacts.atomic_write_json(task_id, journal_ref, result)
+    return result
 
 
 class AnnotationHandler:
