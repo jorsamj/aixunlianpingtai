@@ -1,5 +1,6 @@
 from .artifacts import ArtifactStore
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus
+from .repository import TaskRepository
 from .worker import TaskHandler, WorkerContext
 
 __all__ = [
@@ -9,6 +10,7 @@ __all__ = [
     "TaskLease",
     "TaskPage",
     "TaskRecord",
+    "TaskRepository",
     "TaskStatus",
     "WorkerContext",
 ]
