@@ -25,7 +25,11 @@ def build_worker_registration(data_dir: Path, roles: set[str]):
     capabilities: set[str] = set()
     for role in sorted(selected):
         module_name = ROLE_MODULES[role]
-        if importlib.util.find_spec(module_name) is None:
+        try:
+            available = importlib.util.find_spec(module_name) is not None
+        except ModuleNotFoundError:
+            available = False
+        if not available:
             continue
         module = importlib.import_module(module_name)
         registration = module.worker_registration(data_dir)
