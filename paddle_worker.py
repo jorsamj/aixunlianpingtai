@@ -1,13 +1,14 @@
 import argparse
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+from platform_core.paddle_command import build_paddle_command
 
 
 def now_iso():
@@ -109,26 +110,12 @@ def paddle_lr_options(lr0: float) -> str:
     return f"LearningRate.base_lr={lr}"
 
 
-def render_command(template: str, mapping: dict) -> str:
-    out = template
-    for k, v in mapping.items():
-        out = out.replace("{" + k + "}", str(v))
-    return out
-
-
-def ensure_eval_option(cmd: str, enable_eval: bool) -> str:
-    """Enable/disable PaddleDetection --eval without requiring every stored algorithm template to be regenerated."""
-    if not enable_eval:
-        return cmd.replace(" {paddle_eval_option}", "").replace("{paddle_eval_option}", "")
-    if "--eval" in cmd:
-        return cmd.replace(" {paddle_eval_option}", "").replace("{paddle_eval_option}", "")
-    # New templates have {paddle_eval_option}; old saved templates do not. Support both.
-    if "{paddle_eval_option}" in cmd:
-        return cmd.replace("{paddle_eval_option}", "--eval")
-    for needle in ['tools\\train.py"', 'tools/train.py"', 'tools\\train.py', 'tools/train.py']:
-        if needle in cmd:
-            return cmd.replace(needle, needle + " --eval", 1)
-    return cmd + " --eval"
+def _class_overrides(family: str, num_classes: int) -> dict[str, int]:
+    result = {}
+    for token in paddle_class_options(family, num_classes).split():
+        key, value = token.split("=", 1)
+        result[key] = int(value)
+    return result
 
 
 def copy_outputs(run_dir: Path, models_dir: Path, run_name: str):
@@ -163,7 +150,8 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--run-name", required=True)
-    parser.add_argument("--command-template", required=True)
+    parser.add_argument("--paddledet-dir", required=True)
+    parser.add_argument("--config", required=True)
     parser.add_argument("--num-classes", type=int, default=1)
     parser.add_argument("--family", default="")
     parser.add_argument("--lr0", type=float, default=0.001)
@@ -176,51 +164,56 @@ def main():
     models_dir = project_dir / "models"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    mapping = {
-        "project_dir": project_dir,
-        "dataset_dir": Path(args.dataset_dir),
-        "train_json": Path(args.train_json),
-        "val_json": Path(args.val_json),
-        "label_list": Path(args.label_list),
-        "model": args.model,
-        "pretrain_option": build_pretrain_option(args.model),
-        "paddle_class_options": paddle_class_options(args.family, args.num_classes),
-        "paddle_lr_options": paddle_lr_options(args.lr0),
-        "paddle_eval_option": "--eval" if args.enable_eval else "",
-        "num_classes": args.num_classes,
-        "epochs": args.epochs,
-        "batch": args.batch,
-        "device": args.device,
-        "run_dir": runs_dir,
-        "python": os.environ.get("PADDLE_PYTHON", sys.executable),
-        "paddledet_dir": os.environ.get("PADDLEDETECTION_DIR", r"D:\PaddleDetection"),
-        "paddlex_dir": os.environ.get("PADDLEX_DIR", r"D:\PaddleX"),
+    paddledet_dir = Path(args.paddledet_dir).expanduser().resolve()
+    script = paddledet_dir / "tools" / "train.py"
+    config = Path(args.config).expanduser().resolve()
+    python = Path(os.environ.get("PADDLE_PYTHON") or sys.executable).expanduser().resolve()
+    missing = [str(path) for path in (python, script, config) if not path.is_file()]
+    if missing:
+        update_job(job_file, status="failed", message="飞桨训练环境缺少文件：" + "；".join(missing), finished_at=now_iso())
+        raise SystemExit(2)
+    overrides = {
+        "TrainDataset.dataset_dir": str(Path(args.dataset_dir).resolve()),
+        "TrainDataset.anno_path": str(Path(args.train_json).resolve()),
+        "EvalDataset.dataset_dir": str(Path(args.dataset_dir).resolve()),
+        "EvalDataset.anno_path": str(Path(args.val_json).resolve()),
+        "TrainDataset.image_dir": "",
+        "EvalDataset.image_dir": "",
+        "epoch": args.epochs,
+        "worker_num": 0,
+        "TrainReader.batch_size": args.batch,
+        "EvalReader.batch_size": args.batch,
+        "LearningRate.base_lr": max(1e-5, min(float(args.lr0), 0.005)),
+        "use_gpu": str(args.device).lower() not in {"cpu", "-1"},
+        "save_dir": str(runs_dir.resolve()),
+        **_class_overrides(args.family, args.num_classes),
     }
-    cmd = render_command(args.command_template, mapping)
-    cmd = ensure_eval_option(cmd, bool(args.enable_eval))
-    update_job(job_file, status="running", message="飞桨训练中", run_dir=str(runs_dir), rendered_command=cmd, num_classes=args.num_classes, paddle_class_options=mapping.get("paddle_class_options"), paddle_lr0=args.lr0, paddle_eval=bool(args.enable_eval))
+    model = str(args.model or "").strip()
+    if model.lower().endswith((".pdparams", ".pdmodel", ".pdiparams")) or model.startswith(("http://", "https://")):
+        overrides["pretrain_weights"] = model
+    cmd = build_paddle_command(python=python, script=script, config=config, overrides=overrides)
+    if args.enable_eval:
+        cmd.insert(3, "--eval")
+    update_job(job_file, status="running", message="飞桨训练中", run_dir=str(runs_dir), rendered_command=cmd, num_classes=args.num_classes, paddle_class_options=_class_overrides(args.family, args.num_classes), paddle_lr0=args.lr0, paddle_eval=bool(args.enable_eval))
     safe_print(f"[{now_iso()}] 开始飞桨/Paddle训练")
     safe_print("数据集:", args.dataset_dir)
     safe_print("训练标注:", args.train_json)
     safe_print("验证标注:", args.val_json)
     safe_print("标签列表:", args.label_list)
     safe_print("类别数:", args.num_classes)
-    safe_print("类别覆盖:", mapping.get("paddle_class_options"))
-    safe_print("学习率覆盖:", mapping.get("paddle_lr_options"))
+    safe_print("类别覆盖:", _class_overrides(args.family, args.num_classes))
+    safe_print("学习率覆盖:", overrides["LearningRate.base_lr"])
     safe_print("基础模型:", args.model or "使用配置默认预训练权重/自动下载")
     safe_print("命令:", cmd)
     safe_print("训练中COCO评估:", "开启" if args.enable_eval else "关闭")
     safe_print("说明：v26 可在训练任务中动态开启/关闭 --eval。小数据集建议关闭，先保证模型完整训练；需要 AP/mAP 指标时再开启。")
-    safe_print("PaddleDetection目录：", mapping.get("paddledet_dir"))
+    safe_print("PaddleDetection目录：", paddledet_dir)
 
     try:
         child_env = os.environ.copy()
         child_env.setdefault("PYTHONIOENCODING", "utf-8")
         child_env.setdefault("PYTHONUTF8", "1")
-        if os.name == "nt":
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=str(runs_dir), shell=True, text=True, encoding="utf-8", errors="replace", env=child_env)
-        else:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=str(runs_dir), shell=True, text=True, encoding="utf-8", errors="replace", env=child_env)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=str(paddledet_dir), shell=False, text=True, encoding="utf-8", errors="replace", env=child_env)
         for line in proc.stdout or []:
             try:
                 print(line, end="", flush=True)

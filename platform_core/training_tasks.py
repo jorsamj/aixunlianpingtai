@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
@@ -179,9 +180,13 @@ def materialize_portable_dataset(
         root / "dataset" / "data.yaml",
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
     )
+    snapshot_path = root / "snapshot.json"
+    atomic_write_json(snapshot_path, dict(snapshot))
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "snapshot_ref": "snapshot.json",
+        "snapshot_sha256": _sha256(snapshot_path),
         "data_yaml_ref": "dataset/data.yaml",
         "splits": splits,
     }
@@ -228,6 +233,47 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
                 raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
             verified += 1
     return {"snapshot_id": manifest.get("snapshot_id"), "verified_files": verified}
+
+
+@dataclass(frozen=True)
+class RemoteTrainingBundle:
+    root: Path
+    manifest: Path
+    data_yaml: Path
+    snapshot: Path
+    snapshot_id: str
+    verified_files: int
+
+
+def resolve_remote_training_bundle(manifest_path: str | Path) -> RemoteTrainingBundle:
+    """Resolve and verify a received portable training bundle.
+
+    The sender may choose any archive name, but every reference inside the
+    manifest must stay relative to the extracted bundle root. No client-side
+    absolute path is accepted by the remote worker.
+    """
+
+    path = Path(manifest_path).resolve()
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    verification = verify_portable_dataset(path)
+    snapshot = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
+    if not snapshot.is_file():
+        raise FileNotFoundError("portable training snapshot does not exist")
+    expected = str(manifest.get("snapshot_sha256") or "")
+    if not expected or _sha256(snapshot) != expected:
+        raise ValueError("portable training snapshot SHA256 mismatch")
+    snapshot_value = json.loads(snapshot.read_text(encoding="utf-8"))
+    snapshot_id = str(manifest.get("snapshot_id") or "")
+    if not snapshot_id or str(snapshot_value.get("snapshot_id") or "") != snapshot_id:
+        raise ValueError("portable training snapshot identity mismatch")
+    return RemoteTrainingBundle(
+        root=path.parent,
+        manifest=path,
+        data_yaml=resolve_dataset_yaml(path),
+        snapshot=snapshot,
+        snapshot_id=snapshot_id,
+        verified_files=int(verification["verified_files"]),
+    )
 
 
 def _json(path: Path, default: Any) -> Any:

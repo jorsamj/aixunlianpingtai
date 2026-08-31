@@ -10,6 +10,7 @@ from PIL import Image
 from platform_core.training_tasks import (
     materialize_portable_dataset,
     resolve_dataset_yaml,
+    resolve_remote_training_bundle,
     verify_portable_dataset,
 )
 
@@ -69,6 +70,9 @@ def test_materialized_yaml_is_relative_verified_and_relocatable(tmp_path: Path):
     shutil.move(str(bundle), moved)
     assert resolve_dataset_yaml(moved / "manifest.json") == moved / "dataset" / "data.yaml"
     assert verify_portable_dataset(moved / "manifest.json")["verified_files"] == 4
+    remote = resolve_remote_training_bundle(moved / "manifest.json")
+    assert remote.snapshot == moved / "snapshot.json"
+    assert remote.snapshot_id == "snapshot-one"
 
 
 def test_verifier_rejects_tampered_image(tmp_path: Path):

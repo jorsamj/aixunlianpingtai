@@ -297,6 +297,7 @@ TRAINING_CATALOG: Dict[str, Any] = {
             "default_imgsz": 640,
             "default_batch": 4,
             "description": "飞桨轻量目标检测路线，适合后续闭源/国产化项目验证。需要本机配置 PaddleDetection。",
+            "config_relpath": "configs/ppyoloe/ppyoloe_crn_s_300e_coco.yml",
             "command_template": "{python} {paddledet_dir}\\tools\\train.py -c {paddledet_dir}\\configs\\ppyoloe\\ppyoloe_crn_s_300e_coco.yml -o TrainDataset.dataset_dir={dataset_dir} TrainDataset.anno_path={train_json} EvalDataset.dataset_dir={dataset_dir} EvalDataset.anno_path={val_json} epoch={epochs} batch_size={batch} save_dir={run_dir}",
         },
         {
@@ -311,6 +312,7 @@ TRAINING_CATALOG: Dict[str, Any] = {
             "default_imgsz": 640,
             "default_batch": 4,
             "description": "飞桨 PP-YOLOE+ 小模型，适合正式效果对比。需要本机配置 PaddleDetection。",
+            "config_relpath": "configs/ppyoloe/ppyoloe_plus_crn_s_80e_coco.yml",
             "command_template": "{python} {paddledet_dir}\\tools\\train.py -c {paddledet_dir}\\configs\\ppyoloe\\ppyoloe_plus_crn_s_80e_coco.yml -o TrainDataset.dataset_dir={dataset_dir} TrainDataset.anno_path={train_json} EvalDataset.dataset_dir={dataset_dir} EvalDataset.anno_path={val_json} epoch={epochs} batch_size={batch} save_dir={run_dir}",
         },
         {
@@ -325,6 +327,7 @@ TRAINING_CATALOG: Dict[str, Any] = {
             "default_imgsz": 640,
             "default_batch": 4,
             "description": "更适合先作为人员检测预标注源；如要训练，需要本机具备对应 PaddleX/PaddleDetection 训练能力。",
+            "config_relpath": "configs/ppyoloe/ppyoloe_crn_s_300e_coco.yml",
             "command_template": "{python} {paddledet_dir}\\tools\\train.py -c {paddledet_dir}\\configs\\ppyoloe\\ppyoloe_crn_s_300e_coco.yml -o TrainDataset.dataset_dir={dataset_dir} TrainDataset.anno_path={train_json} EvalDataset.dataset_dir={dataset_dir} EvalDataset.anno_path={val_json} epoch={epochs} batch_size={batch} save_dir={run_dir}",
         },
     ],
@@ -4511,7 +4514,17 @@ def start_train(project_id: str, payload: TrainReq):
             write_json(job_file, job); sync_jobs_index(project_id)
             raise HTTPException(status_code=500, detail=job["message"])
 
+    paddle_env: Dict[str, Any] = {}
     if framework == "paddle":
+        paddle_env = get_active_paddle_env() or {}
+        paddledet_dir = Path(str(paddle_env.get("paddledet_dir") or "")).expanduser()
+        config_value = str((alg or {}).get("config_path") or "").strip()
+        if not config_value and (alg or {}).get("config_relpath"):
+            config_value = str(paddledet_dir / Path(str(alg["config_relpath"])))
+        if not paddledet_dir.is_dir() or not (paddledet_dir / "tools" / "train.py").is_file():
+            raise HTTPException(status_code=400, detail="当前环境未配置可用的 PaddleDetection 目录，无法执行真实飞桨训练")
+        if not config_value or not Path(config_value).is_file():
+            raise HTTPException(status_code=400, detail="所选飞桨算法的配置文件不存在，无法执行真实训练")
         cmd = [
             sys.executable,
             str(BASE_DIR / "paddle_worker.py"),
@@ -4526,7 +4539,8 @@ def start_train(project_id: str, payload: TrainReq):
             "--device", payload.device,
             "--job-id", job_id,
             "--run-name", run_name,
-            "--command-template", payload.paddle_command or "",
+            "--paddledet-dir", str(paddledet_dir),
+            "--config", config_value,
             "--num-classes", str(len(build.get("labels", []) or [])),
             "--family", _paddle_family_key(alg),
             "--lr0", str(_safe_paddle_lr(payload.lr0, int((build.get("counts") or {}).get("train", 0)), str(payload.device).lower() == "cpu")),
@@ -4556,7 +4570,7 @@ def start_train(project_id: str, payload: TrainReq):
     proc_env.setdefault("PYTHONIOENCODING", "utf-8")
     proc_env.setdefault("PYTHONUTF8", "1")
     if framework == "paddle":
-        penv = get_active_paddle_env()
+        penv = paddle_env
         if penv.get("paddledet_dir"):
             proc_env["PADDLEDETECTION_DIR"] = penv.get("paddledet_dir", "")
         if penv.get("paddlex_dir"):
