@@ -4004,3 +4004,21 @@ window.installUsability417?.();
   };
   window.confirmAiLabel427=id=>completeAiReview60('partial');
 })();
+
+/* Persistent deployment tests: upload returns immediately and a Worker performs real Runtime inference. */
+(()=>{
+  const previousResult=window.renderDetectionResult;
+  window.renderDetectionResult=function(result,title){
+    const html=previousResult?.(result,title)||'',metrics=`<div class="report429-kpis"><div><span>预处理</span><b>${Number(result?.preprocess_ms||0).toFixed(2)} ms</b></div><div><span>模型推理</span><b>${Number(result?.inference_ms||0).toFixed(2)} ms</b></div><div><span>后处理</span><b>${Number(result?.postprocess_ms||0).toFixed(2)} ms</b></div><div><span>任务总耗时</span><b>${Number(result?.total_elapsed_ms||result?.elapsed_ms||0).toFixed(2)} ms</b></div></div>`;
+    return html+metrics;
+  };
+  window.benchPredictOne=async function(selectId,file,conf){
+    if(!file)throw new Error('请选择测试图片');const select=document.getElementById(selectId),model=(state.testModels||[])[Number(select?.value)];if(!model)throw new Error('请选择可用测试模型');
+    const format=String(model.runtime_format||String(model.path||'').split('.').pop()||'').toLowerCase(),vendor=['rknn','om','bmodel'].includes(format),framework=model.framework||'ultralytics';
+    const env=vendor?{}:(state.inferenceEnvs||[]).find(item=>item.framework===framework&&item.status==='ready');if(!vendor&&!env)throw new Error(`当前没有可用的${framework==='paddle'?'Paddle':'Ultralytics'} Runtime`);
+    const form=new FormData();form.append('file',file);form.append('model_name',model.model_name||model.path||'');form.append('model_source',model.model_source||'project');form.append('local_path',model.path||'');form.append('algorithm_id',model.algorithm_id||'');form.append('version_id',model.version_id||'');form.append('conf',conf||.25);form.append('inference_framework',framework);form.append('inference_env_id',env?.id||'');
+    let task=await api(`/api/v61/projects/${pid()}/deployment-tests`,{method:'POST',body:form}),attempt=0;
+    while(['QUEUED','RUNNING','CANCEL_REQUESTED'].includes(task.status)&&attempt++<700){const output=document.getElementById('benchResult');if(output)output.innerHTML=`<div class="loading">真实 Runtime 测试中 · ${esc(task.stage||task.status)} · ${Number(task.progress||0).toFixed(1)}%</div>`;await new Promise(resolve=>setTimeout(resolve,900));task=await api(`/api/v61/projects/${pid()}/deployment-tests/${task.id}`)}
+    if(task.status!=='SUCCEEDED')throw new Error(task.error||`部署测试未通过：${task.status}`);return {r:task.result||{},m:model,env};
+  };
+})();

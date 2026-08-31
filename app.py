@@ -6932,6 +6932,21 @@ def v12_test_models(project_id: str, probe_optional: bool = True):
         for v in a.get("versions", []):
             if str(v.get("stored_path", "")).lower().endswith(".pt"):
                 items.append({"label": f"算法版本：{a.get('name')} / {v.get('version_name')}", "algorithm_id": a.get("id"), "version_id": v.get("id"), "model_source": "algorithm_version", "framework": "ultralytics", "path": v.get("stored_path")})
+    # Real conversion artifacts are selectable in the deployment test page.
+    try:
+        for artifact in v39_list_deploy_artifacts(project_id).get("items", []):
+            suffix = Path(str(artifact.get("path") or "")).suffix.lower()
+            if suffix not in {".onnx", ".engine", ".om", ".rknn", ".bmodel"}:
+                continue
+            framework = "ultralytics" if suffix in {".onnx", ".engine"} else "vendor"
+            items.append({
+                "label": f"转换产物：{artifact.get('name')}",
+                "model_name": artifact.get("name") or "", "model_source": "deployment_artifact",
+                "framework": framework, "runtime_format": suffix.lstrip("."),
+                "path": artifact.get("path") or "",
+            })
+    except Exception:
+        pass
     return {"ok": True, "items": items}
 
 
@@ -10003,9 +10018,17 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     if str(resource.get("mode"))=="remote":
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
-        log=(jd/"worker.stdout.log").open("ab")
-        proc=subprocess.Popen([sys.executable,str(BASE_DIR/"deployment_worker.py"),"--job-dir",str(jd)],cwd=str(BASE_DIR),stdout=log,stderr=subprocess.STDOUT,env={**os.environ.copy(),"PYTHONUTF8":"1","PYTHONIOENCODING":"utf-8"})
-        DEPLOY_PROCESS_REGISTRY[job_id]=proc
+        shared_task_artifacts().atomic_write_json(job_id, "request.json", {
+            "job_dir": str(jd), "worker_path": str(BASE_DIR / "deployment_worker.py"),
+            "python_path": sys.executable,
+        })
+        shared_task_repository().create(TaskRecord.new(
+            job_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
+            f"conversion:{resource.get('id') or payload.target}",
+            required_capabilities=("conversion.runtime",),
+        ))
+        job["task_id"] = job_id
+        _write_deploy_job(project_id, job)
     return {"ok":True,"job":job}
 
 
@@ -10036,6 +10059,9 @@ def v39_deploy_job_log(project_id: str, job_id: str):
 def v39_stop_deploy_job(project_id: str, job_id: str):
     job=_read_deploy_job(project_id,job_id);job["cancel_requested"]=True
     proc=DEPLOY_PROCESS_REGISTRY.get(job_id)
+    durable = shared_task_repository().get(job_id)
+    if durable and durable.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+        shared_task_repository().request_cancel(job_id)
     if proc and proc.poll() is None:
         try:proc.terminate();time.sleep(.5)
         except:pass
@@ -10060,7 +10086,7 @@ def v39_delete_deploy_job(project_id: str, job_id: str):
 def v39_list_deploy_artifacts(project_id: str):
     rows=[]
     for j in v39_list_deploy_jobs(project_id)["items"]:
-        if j.get("status")!="done":continue
+        if j.get("status") not in {"done", "blocked_by_hardware"}:continue
         for o in j.get("outputs",[]) or []:
             p=Path(str(o.get("path") or ""))
             if not p.exists():continue
@@ -12573,6 +12599,93 @@ def retry_annotation_task(project_id: str, task_id: str):
         required_capabilities=task.required_capabilities,
     ), retry_of=task.task_id)
     return public_annotation_task(shared_task_repository().create(cloned))
+
+
+def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: str, local_path: str, algorithm_id: str, version_id: str) -> Path:
+    source = str(model_source or "project").lower()
+    if source == "deployment_artifact":
+        candidate = Path(str(local_path or "")).resolve()
+        root = deploy_root(project_id).resolve()
+        if not candidate.is_file() or root not in candidate.parents:
+            raise HTTPException(status_code=404, detail="转换产物不存在或不属于当前项目")
+        return candidate
+    if algorithm_id and version_id:
+        for algorithm in list_algorithms_internal(project_id):
+            if str(algorithm.get("id")) != str(algorithm_id):
+                continue
+            version = next((item for item in algorithm.get("versions", []) if str(item.get("id")) == str(version_id)), None)
+            path = Path(str((version or {}).get("stored_path") or ""))
+            if path.is_file():
+                return path
+        raise HTTPException(status_code=404, detail="算法版本模型不存在")
+    if source == "builtin":
+        return Path(resolve_ultralytics_model_path(model_name or "yolo11n.pt"))
+    path, _, _ = resolve_any_model_path(project_id, model_name, source, local_path)
+    return Path(path)
+
+
+def public_deployment_test(task: TaskRecord) -> Dict[str, Any]:
+    result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+    return {
+        "id": task.task_id, "project_id": task.project_id, "kind": task.kind.value,
+        "status": task.status.value, "progress": task.progress, "stage": task.stage,
+        "current_item": task.current_item, "created_at": task.created_at,
+        "updated_at": task.updated_at, "finished_at": task.finished_at,
+        "error": task.error, "result": result or {},
+    }
+
+
+@app.post("/api/v61/projects/{project_id}/deployment-tests")
+async def create_deployment_test(
+    project_id: str,
+    model_name: str = Form(""), model_source: str = Form("project"),
+    local_path: str = Form(""), algorithm_id: str = Form(""), version_id: str = Form(""),
+    conf: float = Form(0.25), inference_framework: str = Form("ultralytics"),
+    inference_env_id: str = Form(""), file: UploadFile = File(...),
+):
+    get_project(project_id)
+    model_path = _resolve_v61_test_model(
+        project_id, model_name=model_name, model_source=model_source, local_path=local_path,
+        algorithm_id=algorithm_id, version_id=version_id,
+    )
+    suffix = model_path.suffix.lower()
+    framework = "paddle" if suffix in {".pdparams", ".pdmodel", ".pdiparams"} else "ultralytics"
+    python_path = sys.executable if suffix in {".om", ".rknn", ".bmodel"} else resolve_inference_python(framework, inference_env_id)
+    extension = Path(file.filename or "test.jpg").suffix.lower()
+    if extension not in IMAGE_EXTS:
+        extension = ".jpg"
+    task_id = uuid.uuid4().hex[:12]
+    prediction_dir = project_dir(project_id) / "predictions" / task_id
+    prediction_dir.mkdir(parents=True, exist_ok=True)
+    input_path = prediction_dir / f"input{extension}"
+    output_path = prediction_dir / "result.jpg"
+    input_path.write_bytes(await file.read())
+    if input_path.stat().st_size <= 0:
+        raise HTTPException(status_code=400, detail="测试图片为空")
+    request = {
+        "model_path": str(model_path), "input_path": str(input_path), "output_path": str(output_path),
+        "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
+        "framework": framework, "python_path": python_path,
+        "runner_path": str(BASE_DIR / ("predict_paddle_runner.py" if framework == "paddle" else "predict_ultralytics_runner.py")),
+        "conf": max(0.0, min(1.0, float(conf))), "runtime_format": suffix.lstrip("."),
+    }
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+    record = shared_task_repository().create(TaskRecord.new(
+        task_id, project_id, TaskKind.DEPLOYMENT_TEST, "request.json", f"deployment-runtime:{suffix}",
+        required_capabilities=("deployment.runtime",),
+    ))
+    return JSONResponse(status_code=202, content=public_deployment_test(record))
+
+
+@app.get("/api/v61/projects/{project_id}/deployment-tests/{task_id}")
+def get_deployment_test(project_id: str, task_id: str):
+    return public_deployment_test(_require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST))
+
+
+@app.post("/api/v61/projects/{project_id}/deployment-tests/{task_id}/cancel")
+def cancel_deployment_test(project_id: str, task_id: str):
+    _require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST)
+    return public_deployment_test(shared_task_repository().request_cancel(task_id))
 
 
 

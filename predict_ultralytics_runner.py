@@ -23,6 +23,7 @@ def main():
     model = YOLO(args.model)
     results = model.predict(source=args.input, conf=args.conf, save=False, verbose=False)
     result = results[0]
+    speed = getattr(result, "speed", {}) or {}
     names = result.names
     detections = []
     img = Image.open(args.input).convert("RGB")
@@ -46,7 +47,16 @@ def main():
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     img.save(args.output, quality=92)
     elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
-    print(json.dumps({"ok": True, "detections": detections, "elapsed_ms": elapsed_ms, "engine": "ultralytics", "model": Path(args.model).name}, ensure_ascii=False))
+    print(json.dumps({
+        "ok": True,
+        "detections": detections,
+        "preprocess_ms": round(float(speed.get("preprocess") or 0), 2),
+        "inference_ms": round(float(speed.get("inference") or 0), 2),
+        "postprocess_ms": round(float(speed.get("postprocess") or 0), 2),
+        "elapsed_ms": elapsed_ms,
+        "engine": "ultralytics",
+        "model": Path(args.model).name,
+    }, ensure_ascii=False))
 
 
 if __name__ == "__main__":
