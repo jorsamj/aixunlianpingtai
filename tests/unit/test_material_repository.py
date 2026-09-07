@@ -81,6 +81,35 @@ def test_reference_count_and_id_only_page(tmp_path):
     assert set(page.items) == {"image-1", "image-3"}
 
 
+def test_legacy_external_rows_get_collision_safe_working_name(tmp_path):
+    repository = MaterialRepository(tmp_path)
+    legacy = {
+        "id": "remote-legacy-1",
+        "filename": "camera.jpg",
+        "stored_name": "",
+        "storage_source_id": "oss-a",
+        "storage_type": "oss",
+        "object_key": "archive/2026/camera.jpg",
+        "content_sha256": "a" * 64,
+        "labels": [],
+    }
+    persisted = repository.upsert(legacy)
+    assert persisted["stored_name"] == "remote-legacy-1.jpg"
+    assert repository.get("remote-legacy-1")["stored_name"] == "remote-legacy-1.jpg"
+    assert repository.get("remote-legacy-1")["object_key"] == "archive/2026/camera.jpg"
+
+    # Simulate a row persisted by an older build where payload_json still had stored_name="".
+    with repository._connect() as database:
+        payload = dict(legacy)
+        database.execute(
+            "UPDATE materials SET payload_json = ? WHERE id = ?",
+            (__import__("json").dumps(payload), "remote-legacy-1"),
+        )
+    recovered = repository.get("remote-legacy-1")
+    assert recovered["stored_name"] == "remote-legacy-1.jpg"
+    assert recovered["object_key"] == "archive/2026/camera.jpg"
+
+
 def test_concurrent_readers_observe_committed_batches(tmp_path):
     repository = MaterialRepository(tmp_path)
 
@@ -104,4 +133,3 @@ def test_compatibility_mutate_remains_atomic(tmp_path):
 
     assert changed == ["image-1", "image-2"]
     assert repository.count(processing_status="processed") == 2
-
