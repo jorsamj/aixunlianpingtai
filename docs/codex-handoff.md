@@ -5,7 +5,7 @@
 - 工作分支：`feat/windows-p0`
 - 稳定主分支：`main`
 - 本轮接管起点：`f42313f`（Codex 在额度耗尽前保存的 WIP）
-- 当前版本：`42.22.1`
+- 当前版本：`42.22.2`
 
 > 在前端、真实对象存储和回归测试完成前，不要直接合并 `main`。
 
@@ -73,13 +73,30 @@
 
 修复文件：
 - `platform_core/storage/import_tasks.py`
+- `platform_core/material_repository.py`
+- `tests/unit/test_material_repository.py`
 
 修复内容：
-- 外部素材仍然不复制进 `project/uploads`。
-- 但索引会生成稳定逻辑文件名 `<image_id>.<ext>` 作为兼容 `stored_name`。
-- `object_key` 仍指向真实外部对象，物理来源没有改变。
+- 新导入外部素材仍然不复制进 `project/uploads`，但索引生成稳定逻辑文件名 `<image_id>.<ext>`。
+- 对历史数据库中仍然存在 `stored_name=""` 的外部素材，`MaterialRepository` 读取时会兼容生成 `<image_id>.<ext>`。
+- `object_key` 完全保持原值，不改变 OSS/S3/远程服务器的物理来源。
+- 使用 `image_id` 作为工作文件名，避免不同目录/不同存储源中同名 `camera.jpg` 在导出/训练目录里碰撞。
 
-### 5. 本地验收产物误提交风险
+### 5. 外部素材批量源文件删除二次确认
+
+现状：后端已经要求外部素材批量删除源文件必须同时提交：
+- `delete_source=true`
+- `confirmation=DELETE_SOURCE`
+
+补充文件：
+- `tests/api/test_material_storage_deletion.py`
+
+新增回归约束：
+- 没有 confirmation 时必须返回 409；
+- 索引和源文件都必须继续存在；
+- 明确 confirmation 后才允许真正删除外部源文件和平台索引。
+
+### 6. 本地验收产物误提交风险
 
 修复文件：
 - `.gitignore`
@@ -89,13 +106,25 @@
 - `.task-check-data/`
 - `/yolo11n.pt`
 
-### 6. Playwright 健康状态断言与后端状态值不一致
+### 7. Playwright 健康状态断言与后端状态值不一致
 
 修复文件：
 - `tests/browser/storage-source.spec.mjs`
 
 修复内容：
 - 当前后端正式状态值是 `AVAILABLE / UNAVAILABLE`，浏览器测试不再错误期待 `HEALTHY`。
+
+### 8. 浏览器静态缓存版本未同步
+
+修复文件：
+- `VERSION.txt`
+- `static/index.html`
+- `static/main.mjs`
+
+修复内容：
+- 当前版本统一为 `42.22.2`。
+- `app.js` / `main.mjs` / `styles.css` 查询版本同步更新。
+- `storage.js` module cache key 更新为 `422202`，避免浏览器继续使用修复前的存储配置逻辑。
 
 ## 已知未完成 / 不得误报为完成
 
@@ -110,6 +139,8 @@
 
 因此当前不能宣称整个系统已经支持 10 万 / 50 万 / 100 万素材规模。需要把素材列表、训练选择器、筛选与“全选”逐步切换到服务端分页/ID 查询。
 
+> 这个改动影响现有页面状态模型和训练选择器，不能用临时 monkey patch 草率切换；应作为下一轮独立性能收口任务完成并做浏览器回归。
+
 ### P0：`MaterialRepository.mutate()` 仍是全表兼容事务
 
 旧代码仍有多处调用 `mutate()`；其实现会读取全表并重写全部 rows。大规模素材下必须逐步改成 set-based `patch/upsert/remove`，不能继续依赖全表 mutate。
@@ -119,14 +150,6 @@
 对象存储 list API 在流式扫描前通常不知道总对象数。当前已改为显示真实扫描计数，但前端仍可能同时显示旧 `progress` 百分比。
 
 不要伪造百分比。后续应将扫描 UI 改为“已扫描 N 个 / 可导入 M 张”的 indeterminate 进度，只有能确定总数时才显示百分比。
-
-### P1：批量外部源文件删除二次确认需要继续收口
-
-单张删除已要求：
-- `delete_source=true`
-- `confirmation=DELETE_SOURCE`
-
-批量删除接口需要再次确认同样的后端强约束，并补“没有 confirmation 必须拒绝”的 API 测试。
 
 ### P1：真实 MinIO / OSS 尚未在本机证明执行
 
@@ -177,9 +200,11 @@ Codex 在额度耗尽前报告：
 
 但这只是 Codex 当时本机输出，GitHub 当前没有对应 CI status，不能视为独立验证。
 
-人工接管后的修改尚未在用户 Windows 环境执行完整回归。因此当前状态必须写作：
+人工接管后的修改尚未在用户 Windows 环境执行完整回归。当前用户网络无法连接 `github.com:443`，所以本地 worktree 暂时也尚未拉取 `42.22.2`。
 
-- 代码已提交：是
+当前状态必须写作：
+
+- 代码已提交到 `feat/windows-p0`：是
 - 静态审查：已完成本轮重点项
 - 后端全量回归（人工接管后）：待执行
 - 前端单测（人工接管后）：待执行
@@ -196,6 +221,8 @@ Codex 在额度耗尽前报告：
 2. `git pull`
 3. 阅读本文件。
 4. 先运行与本轮相关的定向测试：
+   - `tests/unit/test_material_repository.py`
+   - `tests/api/test_material_storage_deletion.py`
    - storage frontend tests
    - storage provider unit tests
    - storage import worker integration tests
@@ -213,6 +240,7 @@ Codex 在额度耗尽前报告：
 - 编辑存储源不会丢凭据；
 - Local / OSS / S3 / Remote 的连接错误真实可见；
 - 外部索引导入不复制源文件；
+- 历史外部素材即使没有 stored_name 也可被旧导出/构建链路安全命名；
 - 本地 + 外部素材可混合进入 Training Worker；
 - SHA mismatch 阻止训练；
 - 外部删除默认只删索引；
