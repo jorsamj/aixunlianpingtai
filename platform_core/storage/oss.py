@@ -81,7 +81,16 @@ class OSSStorageProvider:
 
     def list_objects(self, prefix="", *, recursive=True, cursor=None, limit=1000):
         try:
-            iterator = self.oss2.ObjectIterator(self.bucket, prefix=self._key(prefix), marker=cursor or "", delimiter="" if recursive else "/", max_keys=max(1, min(1000, int(limit))))
+            # 对外 cursor 始终使用去掉配置 Prefix 后的公共 object_key；
+            # OSS marker 则必须使用 Bucket 内真实完整 key，否则配置 Prefix 后翻页会重复/错位。
+            marker = self._key(cursor) if cursor else ""
+            iterator = self.oss2.ObjectIterator(
+                self.bucket,
+                prefix=self._key(prefix),
+                marker=marker,
+                delimiter="" if recursive else "/",
+                max_keys=max(1, min(1000, int(limit))),
+            )
             items = []
             for item in iterator:
                 if getattr(item, "is_prefix", lambda: False)(): continue
