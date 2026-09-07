@@ -15,6 +15,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
 
 
 const modalStack = createModalStack();
@@ -56,5 +57,8 @@ window.PlatformCore = {
   quality: {qualityChartModel},
   reports: {reportPresentation},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
-  storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel}
+  storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
+  materialPaging: {buildMaterialQuery, requiresFullMaterialPool}
 };
+
+installMaterialPaginationRuntime();
