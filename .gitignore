@@ -9,4 +9,7 @@ playwright-report/
 .venv/
 data/
 artifacts/test-runs/
+.acceptance-data/
+.task-check-data/
+/yolo11n.pt
 
