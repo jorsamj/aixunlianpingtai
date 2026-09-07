@@ -104,7 +104,7 @@ class LocalStorageProvider:
 
     def _atomic_copy(self, source: BinaryIO, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.part-{uuid.uuid4().hex}")
+        temporary = destination.parent / f".part-{uuid.uuid4().hex}.tmp"
         try:
             with temporary.open("wb") as output:
                 shutil.copyfileobj(source, output, length=1024 * 1024)
@@ -216,4 +216,3 @@ class LocalStorageProvider:
 
     def materialize_to_local(self, object_key: str, destination: str | Path) -> ObjectMetadata:
         return self.download(object_key, destination)
-
