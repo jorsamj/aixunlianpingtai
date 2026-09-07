@@ -18,7 +18,7 @@ test('storage configuration creates, health-checks, and removes a real local sou
   const row = page.locator('.storage61-row').filter({hasText: name});
   await expect(row).toBeVisible();
   await row.getByRole('button', {name: '测试连接'}).click();
-  await expect(row.getByText('HEALTHY')).toBeVisible();
+  await expect(row.getByText('AVAILABLE')).toBeVisible();
 
   page.once('dialog', dialog => dialog.accept());
   await row.getByRole('button', {name: '删除'}).click();
