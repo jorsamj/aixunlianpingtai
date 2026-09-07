@@ -51,7 +51,7 @@ def test_v2_snapshot_contains_three_roles_provenance_and_content_hash():
         images,
         SplitRequest(
             mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
-            train_dataset_ids=("pool",),
+            train_image_ids=tuple(str(index) for index in range(6)),
             experiment_percent=20,
             validation_percent=20,
         ),

@@ -66,27 +66,26 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect(createAiDialog.locator('#ai417ReferenceLabels')).toContainText('fire · 明火');
   await createAiDialog.getByRole('button', {name: '取消'}).click();
 
-  await page.route(`**/api/v47/projects/${project.id}/ai-label-tasks/fake-task/result`, route => route.fulfill({
+  await page.route(`**/api/v60/projects/${project.id}/annotation-tasks/fake-task/candidates?*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
-      status: 'awaiting_confirmation',
-      task: {id: 'fake-task', status: 'awaiting_confirmation'},
-      result: {labels: ['fire'], items: [{
+      total: 1,
+      items: [{
         image_id: image.id,
         filename: image.filename,
         url: image.url,
         status: 'success',
         boxes: [{label: 'fire', confidence: 0.95, x1: 10, y1: 8, x2: 90, y2: 70}]
-      }]}
+      }]
     })
   }));
   await page.evaluate(() => window.reviewAiLabel427('fake-task'));
-  const candidateDialog = page.getByRole('dialog', {name: /AI标注结果确认/});
-  await expect(candidateDialog.getByText(/确认后才写入正式标注/)).toBeVisible();
-  await expect(candidateDialog.locator('.ai-candidate-box')).toBeVisible();
-  await expect(candidateDialog.getByRole('button', {name: /确认写入标注/})).toBeVisible();
-  await candidateDialog.getByRole('button', {name: /暂不应用/}).click();
+  const candidateDialog = page.getByRole('dialog', {name: /AI待确认标注/});
+  await expect(candidateDialog.getByText(/不会自动写入正式标注/)).toBeVisible();
+  await expect(candidateDialog.locator('.data412-box')).toBeVisible();
+  await expect(candidateDialog.getByRole('button', {name: '全部接受'})).toBeVisible();
+  await candidateDialog.getByRole('button', {name: '暂不处理'}).click();
 
   await page.evaluate(() => window.setPage('部署转换'));
   await page.locator('.deploy-target-card', {hasText: '华为 Atlas'}).click();

@@ -31,10 +31,43 @@ function uniqueIds(values) {
   return [...new Set((values || []).map(value => String(value).trim()).filter(Boolean))];
 }
 
+function isProcessedMaterial(row) {
+  return Boolean(
+    row?.processing_status === 'processed'
+    || row?.cleaned_at
+    || row?.clean_skipped
+    || row?.annotated
+  );
+}
+
+export function filterTrainingMaterials(materials, {query = '', labelCodes = []} = {}) {
+  const needle = String(query || '').trim().toLowerCase();
+  const labels = uniqueIds(labelCodes);
+  return (materials || []).filter(row => {
+    if (!row?.annotated || !isProcessedMaterial(row)) return false;
+    if (needle && !String(row.filename || '').toLowerCase().includes(needle)) return false;
+    const rowLabels = new Set((row.labels || []).map(String));
+    return !labels.length || labels.some(label => rowLabels.has(label));
+  });
+}
+
+export function applyMaterialSelection(currentIds, filteredIds, eligibleIds, action) {
+  const eligible = uniqueIds(eligibleIds);
+  const eligibleSet = new Set(eligible);
+  const selected = new Set(uniqueIds(currentIds).filter(id => eligibleSet.has(id)));
+  const filtered = uniqueIds(filteredIds).filter(id => eligibleSet.has(id));
+  if (action === 'select-filtered') filtered.forEach(id => selected.add(id));
+  else if (action === 'invert-filtered') filtered.forEach(id => selected.has(id) ? selected.delete(id) : selected.add(id));
+  else if (action === 'select-all') eligible.forEach(id => selected.add(id));
+  else if (action === 'clear-all') selected.clear();
+  else throw new Error('不支持的素材批量选择操作');
+  return eligible.filter(id => selected.has(id));
+}
+
 export function buildTrainingPayload({
   splitMode,
-  trainDatasetIds,
-  testDatasetIds = [],
+  trainImageIds,
+  testImageIds = [],
   experimentPercent = null,
   validationPercent = 20,
   parameters = {},
@@ -43,26 +76,28 @@ export function buildTrainingPayload({
   if (!['independent_test_set', 'random_test_from_training_pool'].includes(mode)) {
     throw new Error('不支持的试验集方式');
   }
-  const train = uniqueIds(trainDatasetIds);
-  if (!train.length) throw new Error('请选择训练数据集');
+  const train = uniqueIds(trainImageIds);
+  if (!train.length) throw new Error('请选择训练素材');
   const validation = Number(validationPercent);
   if (!(validation > 0 && validation < 100)) throw new Error('验证集比例必须在 0 到 100 之间');
-  const independent = mode === 'independent_test_set' ? uniqueIds(testDatasetIds) : [];
-  if (mode === 'independent_test_set' && !independent.length) throw new Error('请选择独立试验数据集');
-  if (independent.some(id => train.includes(id))) throw new Error('训练数据集与试验数据集不能重复');
+  const independent = mode === 'independent_test_set' ? uniqueIds(testImageIds) : [];
+  if (mode === 'independent_test_set' && !independent.length) throw new Error('请选择独立试验素材');
+  if (independent.some(id => train.includes(id))) throw new Error('训练素材与试验素材不能重复');
   const randomPercent = mode === 'random_test_from_training_pool' ? Number(experimentPercent) : null;
   if (mode === 'random_test_from_training_pool' && !(randomPercent > 0 && randomPercent < 100)) {
     throw new Error('试验集比例必须在 0 到 100 之间');
   }
   const payload = {...parameters};
   delete payload.selected_image_ids;
-  delete payload.train_image_ids;
   delete payload.val_image_ids;
+  delete payload.test_image_ids;
+  delete payload.train_dataset_ids;
+  delete payload.test_dataset_ids;
   return {
     ...payload,
     split_mode: mode,
-    train_dataset_ids: train,
-    test_dataset_ids: independent,
+    train_image_ids: train,
+    test_image_ids: independent,
     experiment_percent: randomPercent,
     validation_percent: validation,
   };

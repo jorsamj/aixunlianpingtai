@@ -556,8 +556,8 @@ window.installUsability417=function(){
   const baseSetPage417=window.setPage;
   window.setPage=function(page){window.toggleMobileSidebarV37?.(false);return baseSetPage417?.(page)};try{setPage=window.setPage}catch(_){}
   const baseRender417=render;
-  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.19.0';if(footer)footer.textContent='v42.19.0';return result};
-  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.19.0';if(footer)footer.textContent='v42.19.0'},delay));
+  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.21.0';if(footer)footer.textContent='v42.21.0';return result};
+  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.21.0';if(footer)footer.textContent='v42.21.0'},delay));
   if(state.page==='数据集')renderDatasets424();
 };
 
@@ -3789,8 +3789,10 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
 
 window.installUsability417?.();
 
-/* Durable v2 training split UI. The worker, not this page, performs the split. */
+window.__exactMaterialTrainingV3=true;
+/* Legacy dataset split UI. Retained for load-order compatibility and superseded below. */
 (()=>{
+  if(window.__exactMaterialTrainingV3)return;
   const previousStart=window.startAlgorithmTraining429;
   const num=(id,fallback)=>{const value=Number(document.getElementById(id)?.value);return Number.isFinite(value)?value:fallback};
   const splitState=()=>state.trainSplitV2||(state.trainSplitV2={mode:'random_test_from_training_pool',train:new Set(),test:new Set(),experiment:20,validation:20});
@@ -3806,6 +3808,55 @@ window.installUsability417?.();
     s.experiment=num('trV2Experiment',s.experiment);s.validation=num('trV2Validation',s.validation);
     const parameters={framework:target.framework==='paddle'?'paddle':'ultralytics',target:target.type==='server'?'remote':'local',server_id:target.server_id,algorithm:algorithm.key||'',algorithm_asset_id:a.id,model:c.model||algorithm.base_model||'',epochs:c.epochs||100,imgsz:c.imgsz||640,batch:c.batch||8,device:c.device||'cpu',include_empty:false,patience:c.patience??100,workers:c.workers??0,optimizer:c.optimizer||'auto',lr0:c.lr0??.01,lrf:c.lrf??.01,momentum:c.momentum??.937,weight_decay:c.weight_decay??.0005,warmup_epochs:c.warmup_epochs??3,close_mosaic:c.close_mosaic??10,mosaic:c.mosaic??1,mixup:c.mixup??0,hsv_h:c.hsv_h??.015,hsv_s:c.hsv_s??.7,hsv_v:c.hsv_v??.4,degrees:c.degrees??0,translate:c.translate??.1,scale:c.scale??.5,shear:c.shear??0,perspective:c.perspective??0,flipud:c.flipud??0,fliplr:c.fliplr??.5,cache:c.cache||'False',pretrained:c.pretrained!==false,amp:c.amp!==false,single_cls:!!c.single_cls,rect:!!c.rect,cos_lr:!!c.cos_lr,freeze:c.freeze??0,multi_scale:c.multi_scale??0,save_period:c.save_period??-1,seed:c.seed??0,deterministic:c.deterministic!==false,val_max_samples:c.val_max_samples??0,eval_interval:c.eval_interval??0,eval_metric:c.eval_metric||'map50',continue_threshold:c.continue_threshold??0,stop_threshold:c.stop_threshold??0,queue_priority:priority,auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};
     try{const payload=PlatformCore.training.buildTrainingPayload({splitMode:s.mode,trainDatasetIds:[...s.train],testDatasetIds:[...s.test],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),r=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${r.task?.id||''}`)}catch(e){toast(e.message||e)}
+  };
+})();
+
+/* Durable v3 exact-material training split UI. The worker only sees user-selected image ids. */
+(()=>{
+  const previousStart=window.startAlgorithmTraining429;
+  const trainingApi=()=>window.PlatformCore?.training;
+  const num=(id,fallback)=>{const value=Number(document.getElementById(id)?.value);return Number.isFinite(value)?value:fallback};
+  const freshState=()=>({mode:'random_test_from_training_pool',train:new Set(),test:new Set(),experiment:20,validation:20});
+  const splitState=()=>state.trainSplitV3||(state.trainSplitV3=freshState());
+  const allCandidates=()=>trainingApi()?.filterTrainingMaterials(state.images||[])||[];
+  const imageId=row=>String(row?.id||'');
+  const labelText=code=>(state.labels||[]).find(row=>String(row.code)===String(code))?.display_name||code;
+  const otherRole=role=>role==='train'?'test':'train';
+  function eligibleFor(role){const s=splitState(),blocked=s.mode==='independent_test_set'?s[otherRole(role)]:new Set();return allCandidates().filter(row=>!blocked.has(imageId(row)))}
+  function selectedLabels(ids){const chosen=new Set(ids),labels=new Set();(state.images||[]).forEach(row=>{if(chosen.has(imageId(row)))(row.labels||[]).forEach(code=>labels.add(labelText(code)))});return[...labels]}
+  function renderSplit(){
+    const root=document.querySelector('.train429-create'),panel=root?.querySelectorAll('.train428-panel')?.[1];if(!panel)return;
+    const s=splitState(),random=s.mode==='random_test_from_training_pool',labels=selectedLabels([...s.train]);state.train429Selected=s.train;
+    panel.innerHTML=`<header><b>2. 本次训练素材</b><span>按图片选择，标签仅用于筛选</span></header><div class="train-v3-summary"><div><span>训练候选</span><b>${s.train.size} 张</b><em>${esc(labels.join('、')||'尚未选择')}</em></div><div><span>独立试验素材</span><b>${random?'随机抽取':s.test.size+' 张'}</b><em>${random?`${s.experiment}% / 每次重新抽取`:'与训练素材严格隔离'}</em></div><div><span>可选素材</span><b>${allCandidates().length} 张</b><em>已处理且已标注</em></div></div><div class="train-v3-mode"><label class="check"><input type="radio" name="trV3Mode" value="random_test_from_training_pool" ${random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 从本次训练素材随机抽取试验集</label><label class="check"><input type="radio" name="trV3Mode" value="independent_test_set" ${!random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 单独选择试验素材</label></div><div class="train-v3-actions"><button class="btn primary" onclick="openTrainMaterialPickerV3('train')">选择训练素材</button>${random?`<label class="field compact"><span>试验集比例</span><div class="input-suffix428"><input id="trV3Experiment" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.experiment}" oninput="state.trainSplitV3.experiment=Number(this.value)"><span>%</span></div></label>`:`<button class="btn" onclick="openTrainMaterialPickerV3('test')">选择独立试验素材</button>`}<label class="field compact"><span>验证集比例</span><div class="input-suffix428"><input id="trV3Validation" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.validation}" oninput="state.trainSplitV3.validation=Number(this.value)"><span>%</span></div></label><button class="btn" onclick="trainQuality429()" ${s.train.size?'':'disabled'}>查看数据质量</button></div><small class="train-v3-note">每次打开默认全部不选。训练、验证和试验的最终图片名单会写入任务快照，可追溯且不会按数据集自动扩展。</small>`;
+    const algorithm=(state.algorithms||[]).find(row=>String(row.id)===String(state.train428AlgorithmId)),base=state.iteration414?.[state.train428AlgorithmId],start=root.querySelector('.train428-footer .btn.primary');
+    if(start)start.disabled=s.train.size<2||(!!algorithm?.versions?.length&&(!base?.version_name||!!base.error));
+  }
+  function pickerRows(){const p=state.trainMaterialPickerV3;if(!p)return[];const blocked=splitState().mode==='independent_test_set'?splitState()[otherRole(p.role)]:new Set();return(trainingApi()?.filterTrainingMaterials(state.images||[],{query:p.query,labelCodes:[...p.labels]})||[]).filter(row=>!blocked.has(imageId(row)))}
+  function renderPicker(){
+    const p=state.trainMaterialPickerV3,grid=document.getElementById('trV3Grid');if(!p||!grid)return;const rows=pickerRows(),pages=Math.max(1,Math.ceil(rows.length/p.pageSize));p.page=Math.min(Math.max(1,p.page),pages);const start=(p.page-1)*p.pageSize,current=rows.slice(start,start+p.pageSize);
+    grid.innerHTML=current.map(row=>{const id=imageId(row),on=p.selected.has(id);return `<label class="train-v3-card ${on?'on':''}"><input type="checkbox" ${on?'checked':''} onchange="toggleTrainMaterialV3('${id}',this.checked)"><img src="${row.url}" loading="lazy" decoding="async"><b title="${esc(row.filename||'')}">${esc(row.filename||'')}</b><span>${esc((row.labels||[]).map(labelText).join('、')||'无标签')}</span></label>`}).join('')||'<div class="empty">没有符合筛选条件的可训练图片</div>';
+    const count=document.getElementById('trV3PickerCount');if(count)count.textContent=`筛选结果 ${rows.length} 张 · 已选 ${p.selected.size} 张`;
+    const pager=document.getElementById('trV3Pager');if(pager)pager.innerHTML=`<button class="btn mini" ${p.page<=1?'disabled':''} onclick="trainMaterialPageV3(-1)">上一页</button><span>${p.page} / ${pages}</span><button class="btn mini" ${p.page>=pages?'disabled':''} onclick="trainMaterialPageV3(1)">下一页</button>`;
+  }
+  window.openTrainMaterialPickerV3=function(role){
+    const s=splitState();state.trainMaterialPickerV3={role,selected:new Set(s[role]),labels:new Set(),query:'',page:1,pageSize:80};
+    modal(role==='train'?'选择本次训练素材':'选择独立试验素材',`<div class="train-v3-picker"><header><div><b>${role==='train'?'训练候选素材':'独立试验素材'}</b><span>只有明确勾选的图片会进入本次任务</span></div><strong id="trV3PickerCount"></strong></header><div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${(state.labels||[]).map(row=>`<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name||row.code)}</button>`).join('')}</div></div><div class="picker412-actions train-v3-batch"><button class="btn mini" onclick="trainMaterialSelectV3('select-filtered')">选择当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button></div><div id="trV3Grid" class="train-v3-grid"></div><div id="trV3Pager" class="data426-pager"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmTrainMaterialPickerV3()">确认选择</button></div></div>`,true);setTimeout(renderPicker,20)
+  };
+  window.trainMaterialSearchV3=value=>{const p=state.trainMaterialPickerV3;if(!p)return;p.query=String(value||'');p.page=1;renderPicker()};
+  window.toggleTrainMaterialLabelV3=function(code){const p=state.trainMaterialPickerV3;if(!p)return;p.labels.has(code)?p.labels.delete(code):p.labels.add(code);p.page=1;document.querySelectorAll('#trV3Chips .data426-chip').forEach(button=>button.classList.toggle('on',button.dataset.label?p.labels.has(button.dataset.label):!p.labels.size));renderPicker()};
+  window.clearTrainMaterialLabelsV3=()=>{const p=state.trainMaterialPickerV3;if(!p)return;p.labels.clear();p.page=1;document.querySelectorAll('#trV3Chips .data426-chip').forEach(button=>button.classList.toggle('on',!button.dataset.label));renderPicker()};
+  window.toggleTrainMaterialV3=(id,on)=>{const p=state.trainMaterialPickerV3;if(!p)return;on?p.selected.add(String(id)):p.selected.delete(String(id));renderPicker()};
+  window.trainMaterialSelectV3=function(action){const p=state.trainMaterialPickerV3;if(!p)return;const filtered=pickerRows().map(imageId),eligible=eligibleFor(p.role).map(imageId);p.selected=new Set(trainingApi().applyMaterialSelection([...p.selected],filtered,eligible,action));renderPicker()};
+  window.trainMaterialPageV3=delta=>{const p=state.trainMaterialPickerV3;if(!p)return;p.page=Math.max(1,p.page+Number(delta||0));renderPicker()};
+  window.confirmTrainMaterialPickerV3=function(){const p=state.trainMaterialPickerV3;if(!p)return;const s=splitState();s[p.role]=new Set(p.selected);s[otherRole(p.role)].forEach(id=>s[p.role].has(id)&&s[otherRole(p.role)].delete(id));state.train429Selected=s.train;closeModal();setTimeout(renderSplit,20)};
+  window.setTrainSplitModeV3=mode=>{splitState().mode=mode;renderSplit()};
+  window.startAlgorithmTraining429=async function(aid){const result=await previousStart?.(aid);state.trainSplitV3=freshState();state.train429Selected=state.trainSplitV3.train;[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result};
+  window.submitTrain429=async function(){
+    const a=(state.algorithms||[]).find(row=>row.id===state.train428AlgorithmId),target=(state.targets||[]).find(row=>row.id===document.getElementById('tr429Target')?.value),algorithm=(target?.algorithms||[]).find(row=>row.key===document.getElementById('tr429Alg')?.value)||(target?.algorithms||[])[0],c=state.train428Config||{},s=splitState(),priority=readTrainingPriority428('tr429Priority');
+    if(!a||!target||!algorithm)return toast('训练资源或训练算法不可用');if(priority==null)return;
+    s.experiment=num('trV3Experiment',s.experiment);s.validation=num('trV3Validation',s.validation);
+    const parameters={framework:target.framework==='paddle'?'paddle':'ultralytics',target:target.type==='server'?'remote':'local',server_id:target.server_id,algorithm:algorithm.key||'',algorithm_asset_id:a.id,model:c.model||algorithm.base_model||'',epochs:c.epochs||100,imgsz:c.imgsz||640,batch:c.batch||8,device:c.device||'cpu',include_empty:false,patience:c.patience??100,workers:c.workers??0,optimizer:c.optimizer||'auto',lr0:c.lr0??.01,lrf:c.lrf??.01,momentum:c.momentum??.937,weight_decay:c.weight_decay??.0005,warmup_epochs:c.warmup_epochs??3,close_mosaic:c.close_mosaic??10,mosaic:c.mosaic??1,mixup:c.mixup??0,hsv_h:c.hsv_h??.015,hsv_s:c.hsv_s??.7,hsv_v:c.hsv_v??.4,degrees:c.degrees??0,translate:c.translate??.1,scale:c.scale??.5,shear:c.shear??0,perspective:c.perspective??0,flipud:c.flipud??0,fliplr:c.fliplr??.5,cache:c.cache||'False',pretrained:c.pretrained!==false,amp:c.amp!==false,single_cls:!!c.single_cls,rect:!!c.rect,cos_lr:!!c.cos_lr,freeze:c.freeze??0,multi_scale:c.multi_scale??0,save_period:c.save_period??-1,seed:c.seed??0,deterministic:c.deterministic!==false,val_max_samples:c.val_max_samples??0,eval_interval:c.eval_interval??0,eval_metric:c.eval_metric||'map50',continue_threshold:c.continue_threshold??0,stop_threshold:c.stop_threshold??0,queue_priority:priority,auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};
+    try{const payload=trainingApi().buildTrainingPayload({splitMode:s.mode,trainImageIds:[...s.train],testImageIds:[...s.test],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),response=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${response.task?.id||''}`)}catch(error){toast(error.message||error)}
   };
 })();
 

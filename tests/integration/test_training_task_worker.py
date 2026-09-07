@@ -52,14 +52,14 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     repository = TaskRepository(runtime / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime / "artifacts")
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "framework": "ultralytics",
         "target": "local",
         "algorithm_asset_id": "algorithm-one",
         "model": "mother.pt",
         "split_mode": "random_test_from_training_pool",
-        "train_dataset_ids": ["pool"],
-        "test_dataset_ids": [],
+        "train_image_ids": [f"image-{index}" for index in range(7)],
+        "test_image_ids": [],
         "experiment_percent": 25,
         "validation_percent": 20,
         "seed": 7,
@@ -109,7 +109,9 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     task = repository.get("task-one")
     assert task is not None and task.status is TaskStatus.SUCCEEDED
     result = artifacts.read_json("task-one", task.result_ref)
-    assert result["counts"] == {"train": 5, "validation": 1, "test": 2, "total": 8}
+    assert result["counts"] == {"train": 4, "validation": 1, "test": 2, "total": 7}
+    snapshot = artifacts.read_json("task-one", "snapshot.json")
+    assert "image-7" not in set(snapshot["ids"]["train"] + snapshot["ids"]["validation"] + snapshot["ids"]["test"])
     assert result["base_selection_reason"] == "mother_model"
     assert result["verified_models"][0]["size_bytes"] > 0
     assert (artifacts.artifact_path("task-one", "work/bundle/manifest.json")).is_file()

@@ -16,26 +16,28 @@ def image(image_id, dataset, content_hash, group, source="upload"):
     }
 
 
-def test_mode_a_uses_independent_test_and_derives_validation_from_training_pool():
+def test_mode_a_uses_exact_independent_test_images_and_derives_validation_from_selected_training_images():
     rows = [image(str(index), "train-ds", f"h{index}", f"g{index}") for index in range(10)]
     rows.append(image("test", "test-ds", "ht", "gt"))
+    rows.append(image("not-selected", "train-ds", "hidden", "hidden-group"))
     request = SplitRequest(
         mode=SplitMode.INDEPENDENT_TEST_SET,
-        train_dataset_ids=("train-ds",),
-        test_dataset_ids=("test-ds",),
+        train_image_ids=tuple(str(index) for index in range(10)),
+        test_image_ids=("test",),
         validation_percent=20,
     )
     manifest = build_split_manifest(rows, request, seed=19)
     assert manifest.counts == {"train": 8, "validation": 2, "test": 1, "total": 11}
-    assert manifest.requested["test_source"] == "independent_dataset"
+    assert manifest.requested["test_source"] == "independent_materials"
     assert manifest.ids["test"] == ("test",)
+    assert "not-selected" not in set().union(*map(set, manifest.ids.values()))
 
 
 def test_mode_b_draws_test_first_then_validation_without_leakage():
     rows = [image(str(index), "source", f"h{index}", f"g{index}") for index in range(20)]
     request = SplitRequest(
         mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
-        train_dataset_ids=("source",),
+        train_image_ids=tuple(str(index) for index in range(20)),
         experiment_percent=25,
         validation_percent=20,
     )
@@ -57,8 +59,8 @@ def test_content_hash_crossing_splits_is_rejected():
     ]
     request = SplitRequest(
         mode=SplitMode.INDEPENDENT_TEST_SET,
-        train_dataset_ids=("train",),
-        test_dataset_ids=("test",),
+        train_image_ids=("a", "c"),
+        test_image_ids=("b",),
         validation_percent=50,
     )
     with pytest.raises(ValueError, match="content hash leakage"):
@@ -78,7 +80,7 @@ def test_group_is_never_split_between_roles():
         rows,
         SplitRequest(
             mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
-            train_dataset_ids=("source",),
+            train_image_ids=("a", "b", "c", "d", "e", "f"),
             experiment_percent=20,
             validation_percent=20,
         ),
@@ -96,10 +98,69 @@ def test_group_is_never_split_between_roles():
 def test_invalid_percentages_are_rejected(field, value):
     values = {
         "mode": SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
-        "train_dataset_ids": ("source",),
+        "train_image_ids": ("a", "b", "c"),
         "experiment_percent": 20,
         "validation_percent": 20,
     }
     values[field] = value
     with pytest.raises(ValueError, match=field):
         SplitRequest(**values)
+
+
+def test_missing_requested_material_is_rejected_instead_of_expanding_a_dataset():
+    rows = [image("a", "shared", "ha", "ga"), image("b", "shared", "hb", "gb")]
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=("a", "missing"),
+        experiment_percent=20,
+        validation_percent=20,
+    )
+
+    with pytest.raises(ValueError, match="不存在"):
+        build_split_manifest(rows, request, seed=7)
+
+
+def test_train_and_independent_test_material_cannot_overlap():
+    with pytest.raises(ValueError, match="不能重复"):
+        SplitRequest(
+            mode=SplitMode.INDEPENDENT_TEST_SET,
+            train_image_ids=("a", "b"),
+            test_image_ids=("b",),
+            validation_percent=20,
+        )
+
+
+def test_random_test_split_preserves_two_source_groups_for_train_and_validation():
+    rows = [
+        image("a", "unused", "ha", "ga"),
+        image("b", "unused", "hb", "gb"),
+        image("c", "unused", "hc", "gc"),
+    ]
+    manifest = build_split_manifest(
+        rows,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=("a", "b", "c"),
+            experiment_percent=60,
+            validation_percent=50,
+        ),
+        seed=3,
+    )
+    assert manifest.counts == {"train": 1, "validation": 1, "test": 1, "total": 3}
+
+
+def test_processed_material_without_annotation_boxes_is_rejected():
+    rows = [
+        image("a", "unused", "ha", "ga"),
+        image("b", "unused", "hb", "gb"),
+        image("c", "unused", "hc", "gc"),
+    ]
+    rows[1]["boxes"] = []
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=("a", "b", "c"),
+        experiment_percent=20,
+        validation_percent=20,
+    )
+    with pytest.raises(ValueError, match="有效标注"):
+        build_split_manifest(rows, request, seed=4)

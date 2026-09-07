@@ -17,32 +17,32 @@ class SplitMode(str, Enum):
 @dataclass(frozen=True)
 class SplitRequest:
     mode: SplitMode
-    train_dataset_ids: tuple[str, ...]
-    test_dataset_ids: tuple[str, ...] = ()
+    train_image_ids: tuple[str, ...]
+    test_image_ids: tuple[str, ...] = ()
     experiment_percent: float | None = None
     validation_percent: float = 20
 
     def __post_init__(self) -> None:
         mode = SplitMode(self.mode)
-        train_ids = tuple(dict.fromkeys(str(value).strip() for value in self.train_dataset_ids if str(value).strip()))
-        test_ids = tuple(dict.fromkeys(str(value).strip() for value in self.test_dataset_ids if str(value).strip()))
+        train_ids = tuple(dict.fromkeys(str(value).strip() for value in self.train_image_ids if str(value).strip()))
+        test_ids = tuple(dict.fromkeys(str(value).strip() for value in self.test_image_ids if str(value).strip()))
         object.__setattr__(self, "mode", mode)
-        object.__setattr__(self, "train_dataset_ids", train_ids)
-        object.__setattr__(self, "test_dataset_ids", test_ids)
+        object.__setattr__(self, "train_image_ids", train_ids)
+        object.__setattr__(self, "test_image_ids", test_ids)
         if not train_ids:
-            raise ValueError("train_dataset_ids 不能为空")
+            raise ValueError("train_image_ids 不能为空")
         if not 0 < float(self.validation_percent) < 100:
             raise ValueError("validation_percent 必须大于 0 且小于 100")
         if mode == SplitMode.INDEPENDENT_TEST_SET:
             if not test_ids:
-                raise ValueError("test_dataset_ids 不能为空")
+                raise ValueError("test_image_ids 不能为空")
             if set(train_ids) & set(test_ids):
-                raise ValueError("训练数据集与独立试验数据集不能重复")
+                raise ValueError("训练素材与独立试验素材不能重复")
             if self.experiment_percent is not None:
                 raise ValueError("独立试验集模式不能设置 experiment_percent")
         else:
             if test_ids:
-                raise ValueError("随机抽取模式不能设置 test_dataset_ids")
+                raise ValueError("随机抽取模式不能设置 test_image_ids")
             if self.experiment_percent is None or not 0 < float(self.experiment_percent) < 100:
                 raise ValueError("experiment_percent 必须大于 0 且小于 100")
 
@@ -78,11 +78,17 @@ def _processed(row: Mapping[str, Any]) -> bool:
     )
 
 
-def _select_grouped(rows: Sequence[Mapping[str, Any]], percent: float, seed: int) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+def _select_grouped(
+    rows: Sequence[Mapping[str, Any]],
+    percent: float,
+    seed: int,
+    *,
+    min_remaining_groups: int = 1,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(_group_key(row), []).append(row)
-    if len(grouped) < 2:
+    if len(grouped) <= int(min_remaining_groups):
         raise ValueError("按来源分组后不足两个组，无法避免数据泄漏")
     keys = sorted(grouped)
     random.Random(int(seed)).shuffle(keys)
@@ -96,8 +102,14 @@ def _select_grouped(rows: Sequence[Mapping[str, Any]], percent: float, seed: int
             candidate = total + size
             if candidate < len(rows) and candidate not in choices:
                 choices[candidate] = (*selected, index)
+    allowed_totals = [
+        total for total, selected in choices.items()
+        if total > 0 and len(grouped) - len(selected) >= int(min_remaining_groups)
+    ]
+    if not allowed_totals:
+        raise ValueError("所选来源组不足以划分训练、验证和试验数据")
     selected_total = min(
-        (total for total in choices if total > 0),
+        allowed_totals,
         key=lambda total: (abs(total - target), total > target, total),
     )
     selected_keys = {keys[index] for index in choices[selected_total]}
@@ -146,26 +158,33 @@ def build_split_manifest(
             raise ValueError(f"素材 id 重复: {image_id}")
         by_id[image_id] = row
 
-    train_datasets = set(request.train_dataset_ids)
-    train_pool = [row for row in by_id.values() if str(row.get("dataset_id") or "") in train_datasets]
-    if not train_pool:
-        raise ValueError("训练数据集没有可用素材")
+    requested_ids = set(request.train_image_ids) | set(request.test_image_ids)
+    missing_ids = sorted(requested_ids - set(by_id))
+    if missing_ids:
+        raise ValueError(f"所选素材不存在: {', '.join(missing_ids[:5])}")
+    train_pool = [by_id[image_id] for image_id in request.train_image_ids]
+    unannotated_ids = sorted(
+        str(row.get("id")) for row in [*train_pool, *[by_id[image_id] for image_id in request.test_image_ids]]
+        if not list(row.get("boxes") or [])
+    )
+    if unannotated_ids:
+        raise ValueError(f"所选素材没有有效标注: {', '.join(unannotated_ids[:5])}")
 
     test_seed = int(seed)
     digest = hashlib.sha256(f"validation:{seed}".encode("utf-8")).digest()
     validation_seed = int.from_bytes(digest[:8], "big")
     if request.mode == SplitMode.INDEPENDENT_TEST_SET:
-        test_datasets = set(request.test_dataset_ids)
-        test_rows = [row for row in by_id.values() if str(row.get("dataset_id") or "") in test_datasets]
-        if not test_rows:
-            raise ValueError("独立试验数据集没有可用素材")
+        test_rows = [by_id[image_id] for image_id in request.test_image_ids]
         train_rows, validation_rows = _select_grouped(
             train_pool, request.validation_percent, validation_seed
         )
-        test_source = "independent_dataset"
+        test_source = "independent_materials"
     else:
         after_test, test_rows = _select_grouped(
-            train_pool, float(request.experiment_percent or 0), test_seed
+            train_pool,
+            float(request.experiment_percent or 0),
+            test_seed,
+            min_remaining_groups=2,
         )
         train_rows, validation_rows = _select_grouped(
             after_test, request.validation_percent, validation_seed
@@ -190,8 +209,8 @@ def build_split_manifest(
     counts["total"] = total
     requested = {
         "test_source": test_source,
-        "train_dataset_ids": list(request.train_dataset_ids),
-        "test_dataset_ids": list(request.test_dataset_ids),
+        "train_image_ids": list(request.train_image_ids),
+        "test_image_ids": list(request.test_image_ids),
         "experiment_percent": request.experiment_percent,
         "validation_percent": request.validation_percent,
     }
@@ -215,4 +234,3 @@ def build_split_manifest(
         test_seed=test_seed,
         validation_seed=validation_seed,
     )
-

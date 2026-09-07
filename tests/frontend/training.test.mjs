@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import {unwrapAlgorithmResponse} from '../../static/modules/algorithms.js';
-import {buildTrainingPayload, iterationBasePresentation, projectedRandomSplit} from '../../static/modules/training.js';
+import {
+  applyMaterialSelection,
+  buildTrainingPayload,
+  filterTrainingMaterials,
+  iterationBasePresentation,
+  projectedRandomSplit,
+} from '../../static/modules/training.js';
 import {qualityChartModel} from '../../static/modules/quality.js';
 import {reportPresentation} from '../../static/modules/reports.js';
 
@@ -32,30 +38,90 @@ test('training candidate summary projects this run instead of persisted split fi
 test('final training payload keeps three roles and never auto-selects hidden test rows', () => {
   const payload = buildTrainingPayload({
     splitMode: 'independent_test_set',
-    trainDatasetIds: ['a'],
-    testDatasetIds: ['c'],
+    trainImageIds: ['a', 'b', 'b'],
+    testImageIds: ['c'],
     validationPercent: 20,
     parameters: {epochs: 50}
   });
-  assert.deepEqual(payload.train_dataset_ids, ['a']);
-  assert.deepEqual(payload.test_dataset_ids, ['c']);
+  assert.deepEqual(payload.train_image_ids, ['a', 'b']);
+  assert.deepEqual(payload.test_image_ids, ['c']);
   assert.equal(payload.validation_percent, 20);
   assert.equal(payload.experiment_percent, null);
   assert.equal(payload.epochs, 50);
   assert.equal('selected_image_ids' in payload, false);
+  assert.equal('train_dataset_ids' in payload, false);
 });
 
 test('random test mode accepts an arbitrary bounded percentage', () => {
   const payload = buildTrainingPayload({
     splitMode: 'random_test_from_training_pool',
-    trainDatasetIds: ['source'],
-    testDatasetIds: ['must-not-leak'],
+    trainImageIds: ['one', 'two', 'three'],
+    testImageIds: ['must-not-leak'],
     experimentPercent: 12.5,
     validationPercent: 15,
   });
-  assert.deepEqual(payload.test_dataset_ids, []);
+  assert.deepEqual(payload.train_image_ids, ['one', 'two', 'three']);
+  assert.deepEqual(payload.test_image_ids, []);
   assert.equal(payload.experiment_percent, 12.5);
   assert.equal(payload.validation_percent, 15);
+});
+
+test('material training payload rejects empty and overlapping selections', () => {
+  assert.throws(() => buildTrainingPayload({
+    splitMode: 'random_test_from_training_pool',
+    trainImageIds: [],
+    experimentPercent: 20,
+    validationPercent: 20,
+  }), /请选择训练素材/);
+  assert.throws(() => buildTrainingPayload({
+    splitMode: 'independent_test_set',
+    trainImageIds: ['same'],
+    testImageIds: ['same'],
+    validationPercent: 20,
+  }), /不能重复/);
+});
+
+test('training material filter uses processed annotated images and OR label matching', () => {
+  const rows = [
+    {id: 'fire', filename: 'fire.jpg', annotated: true, processing_status: 'processed', labels: ['fire']},
+    {id: 'smoke', filename: 'smoke.jpg', annotated: true, cleaned_at: 'now', labels: ['smoke']},
+    {id: 'both', filename: 'scene.jpg', annotated: true, clean_skipped: true, labels: ['fire', 'smoke']},
+    {id: 'raw', filename: 'raw.jpg', annotated: false, processing_status: 'processed', labels: []},
+  ];
+  assert.deepEqual(
+    filterTrainingMaterials(rows, {labelCodes: ['fire', 'smoke']}).map(row => row.id),
+    ['fire', 'smoke', 'both'],
+  );
+  assert.deepEqual(
+    filterTrainingMaterials(rows, {query: 'scene', labelCodes: ['fire']}).map(row => row.id),
+    ['both'],
+  );
+});
+
+test('training material selection supports filtered, inverted, all, and none actions', () => {
+  assert.deepEqual(applyMaterialSelection(['a'], ['b', 'c'], ['a', 'b', 'c', 'd'], 'select-filtered'), ['a', 'b', 'c']);
+  assert.deepEqual(applyMaterialSelection(['a', 'b'], ['b', 'c'], ['a', 'b', 'c', 'd'], 'invert-filtered'), ['a', 'c']);
+  assert.deepEqual(applyMaterialSelection([], ['b'], ['a', 'b', 'c'], 'select-all'), ['a', 'b', 'c']);
+  assert.deepEqual(applyMaterialSelection(['a', 'b'], ['a'], ['a', 'b'], 'clear-all'), []);
+});
+
+test('final training dialog override selects materials instead of datasets', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('Durable v3 exact-material training split UI'), source.indexOf('Stable single-instance manual/batch annotation workbench'));
+  assert.match(block, /openTrainMaterialPickerV3/);
+  assert.match(block, /select-filtered/);
+  assert.match(block, /clear-all/);
+  assert.doesNotMatch(block, /datasetRows\(\)/);
+  assert.doesNotMatch(block, /trainDatasetIds/);
+});
+
+test('legacy dataset selector is disabled before the exact-material selector is installed', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const legacyStart = source.indexOf('Legacy dataset split UI');
+  const exactStart = source.indexOf('Durable v3 exact-material training split UI');
+  const legacyBlock = source.slice(legacyStart, exactStart);
+  assert.ok(source.indexOf('window.__exactMaterialTrainingV3=true') < legacyStart);
+  assert.match(legacyBlock, /if\(window\.__exactMaterialTrainingV3\)return/);
 });
 
 test('training dialog is not blocked by the legacy current-image pool guard', () => {

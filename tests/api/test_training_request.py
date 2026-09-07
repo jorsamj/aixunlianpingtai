@@ -360,8 +360,8 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
             "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
             "split_mode": "independent_test_set",
-            "train_dataset_ids": ["train-ds"],
-            "test_dataset_ids": ["test-ds"],
+            "train_image_ids": ["train-a", "train-b"],
+            "test_image_ids": ["test-a"],
             "validation_percent": 20,
             "experiment_percent": None,
             "queue_priority": 7,
@@ -377,6 +377,11 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     assert persisted.kind is TaskKind.TRAINING
     assert persisted.status is TaskStatus.QUEUED
     assert persisted.priority == 7
+    payload = app_module.shared_task_artifacts().read_json(task["id"], "payload.json")
+    assert payload["schema_version"] == 3
+    assert payload["train_image_ids"] == ["train-a", "train-b"]
+    assert payload["test_image_ids"] == ["test-a"]
+    assert not payload.get("train_dataset_ids")
 
 
 @pytest.mark.parametrize("percent", [1, 12.5, 37, 99])
@@ -393,10 +398,53 @@ def test_explicit_random_test_percentage_is_accepted(client, seeded_project, per
             "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
             "split_mode": "random_test_from_training_pool",
-            "train_dataset_ids": ["source"],
-            "test_dataset_ids": [],
+            "train_image_ids": ["one", "two", "three"],
+            "test_image_ids": [],
             "experiment_percent": percent,
             "validation_percent": 20,
         },
     )
     assert response.status_code == 202, response.text
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            {
+                "split_mode": "random_test_from_training_pool",
+                "train_image_ids": [],
+                "test_image_ids": [],
+                "experiment_percent": 20,
+            },
+            "train_image_ids",
+        ),
+        (
+            {
+                "split_mode": "independent_test_set",
+                "train_image_ids": ["same"],
+                "test_image_ids": ["same"],
+                "experiment_percent": None,
+            },
+            "不能重复",
+        ),
+    ],
+)
+def test_explicit_material_selection_rejects_invalid_requests(client, seeded_project, body, message):
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": f"素材校验-{message}", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "validation_percent": 20,
+            **body,
+        },
+    )
+    assert response.status_code == 400
+    assert message in response.json()["detail"]

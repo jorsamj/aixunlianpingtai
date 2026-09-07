@@ -28,7 +28,7 @@ async function seedTrainingProject(request, {withVersion = false} = {}) {
     labels: [{code: 'fire', display_name: '明火'}, {code: 'smoke', display_name: '烟雾'}]
   }})).json();
   const images = [];
-  for (const [name, color] of [['train.bmp', [190, 70, 50]], ['val.bmp', [80, 90, 190]]]) {
+  for (const [name, color] of [['train-a.bmp', [190, 70, 50]], ['train-b.bmp', [80, 90, 190]], ['test.bmp', [70, 160, 90]]]) {
     const upload = await request.post(`/api/projects/${project.id}/images`, {multipart: {
       dataset_id: 'default', files: {name, mimeType: 'image/bmp', buffer: bmp(100, 80, color)}
     }});
@@ -56,10 +56,10 @@ async function seedTrainingProject(request, {withVersion = false} = {}) {
 }
 
 async function selectAllTrainingMaterials(page, trainingDialog) {
-  await trainingDialog.getByRole('button', {name: '选择素材'}).click();
-  const picker = page.getByRole('dialog', {name: '选择训练素材'});
-  await picker.getByRole('button', {name: '全选当前'}).click();
-  await picker.getByRole('button', {name: '确定'}).click();
+  await trainingDialog.getByRole('button', {name: '选择训练素材'}).click();
+  const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
+  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await picker.getByRole('button', {name: '确认选择'}).click();
 }
 
 test('training dialog exposes iteration base, stacked quality charts, and report levels', async ({page, request}) => {
@@ -75,10 +75,10 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 
   const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(trainingDialog).toBeVisible();
-  await expect(trainingDialog.locator('#tr429Count')).toHaveText('0 张');
+  await expect(trainingDialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
   await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
-  await expect(trainingDialog.getByText('每次随机抽取试验集比例')).toBeVisible();
-  await expect(trainingDialog.locator('#tr429ExperimentPercent')).toHaveValue('20');
+  await expect(trainingDialog.getByText('从本次训练素材随机抽取试验集')).toBeVisible();
+  await expect(trainingDialog.locator('#trV3Experiment')).toHaveValue('20');
   const priority = trainingDialog.locator('#tr429Priority');
   await expect(priority).toHaveAttribute('type', 'number');
   await expect(priority).toHaveAttribute('min', '1');
@@ -125,13 +125,13 @@ test('training submit sends the selected candidate pool and configured experimen
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('#tr429Count')).toHaveText('0 张');
+  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
   await selectAllTrainingMaterials(page, dialog);
   await dialog.locator('#tr429Priority').fill('0');
   await dialog.getByRole('button', {name: '开始训练'}).click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
   expect(submitted).toBeUndefined();
-  await dialog.locator('#tr429ExperimentPercent').fill('35');
+  await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#tr429Priority').fill('7');
   await dialog.getByRole('button', {name: '配置设置'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
@@ -142,11 +142,11 @@ test('training submit sends the selected candidate pool and configured experimen
   await dialog.getByRole('button', {name: '开始训练'}).click();
   await expect.poll(() => submitted).toBeTruthy();
   expect(submitted.experiment_percent).toBe(35);
-  expect(submitted.random_experiment_split).toBe(true);
+  expect(submitted.split_mode).toBe('random_test_from_training_pool');
   expect(submitted.single_cls).toBe(true);
   expect(submitted.queue_priority).toBe(7);
-  expect(submitted.selected_image_ids).toHaveLength(2);
-  expect(submitted.train_image_ids).toBeUndefined();
+  expect(submitted.selected_image_ids).toBeUndefined();
+  expect(submitted.train_image_ids).toHaveLength(3);
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
@@ -167,11 +167,11 @@ test('versioned training locks the latest version and projects the current rando
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
 
   await expect(dialog).not.toContainText('YOLO11n 目标检测', {timeout: 500});
-  await expect(dialog.locator('#tr429Count')).toHaveText('0 张');
+  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
   await expect(dialog.getByText('训练引擎（迭代任务锁定）')).toBeVisible();
   await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
   await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
-  await expect(dialog.locator('.train429-split-summary')).toContainText('预计训练 0 张 / 试验 0 张');
+  await expect(dialog.locator('.train-v3-summary')).toContainText('随机抽取');
   await expect(dialog.getByText('YOLO11n 目标检测', {exact: true})).toBeHidden();
   await dialog.getByRole('button', {name: '配置设置'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
@@ -197,10 +197,13 @@ test('training queue displays numeric priorities and orders each resource by pri
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '训练任务'}));
   }, project.id);
   await page.goto('/');
+  await expect(page.locator('.nav-project-v')).toHaveText(project.name);
   await page.evaluate(jobs => {
     state.jobs = jobs;
     state.page = '训练任务';
     render();
+    clearInterval(state.jobPollTimer);
+    state.jobPollTimer = null;
   }, queuedJobs);
 
   const rows = page.locator('.train428-table tbody tr');

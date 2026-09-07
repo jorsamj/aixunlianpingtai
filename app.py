@@ -4160,6 +4160,7 @@ class TrainReq(BaseModel):
     val_labels: Optional[List[str]] = None
     train_image_ids: Optional[List[str]] = None
     val_image_ids: Optional[List[str]] = None
+    test_image_ids: Optional[List[str]] = None
     # v42.15：训练页可从训练/试验候选素材中按比例随机留出本次试验集。
     # selected_image_ids 是本次候选池；为空时保持旧版显式 train/val 选择兼容。
     selected_image_ids: Optional[List[str]] = None
@@ -4256,12 +4257,14 @@ def validate_train_request(payload: TrainReq):
 def _explicit_training_split(payload: TrainReq) -> SplitRequest:
     if not payload.split_mode:
         raise ValueError("split_mode 不能为空")
-    if payload.selected_image_ids or payload.train_image_ids or payload.val_image_ids:
-        raise ValueError("新版训练任务不能混用旧版图片选择字段")
+    if payload.selected_image_ids or payload.val_image_ids:
+        raise ValueError("新版训练任务不能混用旧版候选池或验证集字段")
+    if payload.train_dataset_ids or payload.test_dataset_ids:
+        raise ValueError("新版训练任务按素材选择，不能提交数据集分组")
     return SplitRequest(
         mode=SplitMode(payload.split_mode),
-        train_dataset_ids=tuple(payload.train_dataset_ids or ()),
-        test_dataset_ids=tuple(payload.test_dataset_ids or ()),
+        train_image_ids=tuple(payload.train_image_ids or ()),
+        test_image_ids=tuple(payload.test_image_ids or ()),
         experiment_percent=payload.experiment_percent,
         validation_percent=payload.validation_percent,
     )
@@ -4285,15 +4288,17 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         device = str(payload.device or "cpu").strip().lower()
         resource_key = "training:cpu" if device == "cpu" else f"training:gpu:{device}"
     task_id = uuid.uuid4().hex[:12]
-    request_payload = payload.model_dump(mode="json")
+    request_payload = payload.model_dump(mode="json", exclude_none=True)
+    request_payload.pop("train_dataset_ids", None)
+    request_payload.pop("test_dataset_ids", None)
     request_payload.update(
         {
             "split_mode": split.mode.value,
-            "train_dataset_ids": list(split.train_dataset_ids),
-            "test_dataset_ids": list(split.test_dataset_ids),
+            "train_image_ids": list(split.train_image_ids),
+            "test_image_ids": list(split.test_image_ids),
             "experiment_percent": split.experiment_percent,
             "validation_percent": split.validation_percent,
-            "schema_version": 2,
+            "schema_version": 3,
         }
     )
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
@@ -4326,6 +4331,8 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "queue_priority": int(payload.queue_priority),
             "resource_key": resource_key,
             "split_mode": split.mode.value,
+            "requested_train_images": len(split.train_image_ids),
+            "requested_test_images": len(split.test_image_ids),
             "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
             "created_at": record.created_at,
             "updated_at": record.updated_at,

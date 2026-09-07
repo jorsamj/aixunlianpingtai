@@ -79,7 +79,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await expect(dialog.getByRole('button', {name: '管理标签'})).toHaveCount(0);
   await expect(dialog.getByText('当前标签', {exact: true})).toHaveCount(0);
   await expect(dialog.getByLabel('绘制标签')).toBeVisible();
-  await expect(dialog.getByLabel('绘制标签').locator('option')).toContainText(['person · 人员']);
+  await expect(dialog.getByLabel('绘制标签').locator('option')).toHaveText(['人员 · person', '车辆 · vehicle']);
   await expect(dialog.getByText('连续标注', {exact: true})).toBeVisible();
   const imageBox = await dialog.locator('#annImg').boundingBox();
   expect(imageBox).not.toBeNull();
@@ -124,8 +124,8 @@ test('batch annotation opens a thumbnail queue and manual save advances to the n
 
   const dialog = page.getByRole('dialog', {name: '图片标注'});
   await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
-  await expect(dialog.getByText('queue-one.bmp', {exact: true})).toBeVisible();
-  await expect(dialog.getByText('queue-two.bmp', {exact: true})).toBeVisible();
+  await expect(dialog.locator('#ann420Filename')).toHaveText('queue-one.bmp');
+  await expect(dialog.getByRole('button', {name: /queue-two\.bmp/})).toBeVisible();
   await dialog.getByRole('button', {name: '保存并继续'}).click();
   await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
   await expect(dialog.locator('.ann414-state')).toContainText('queue-two.bmp');

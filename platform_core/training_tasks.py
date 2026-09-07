@@ -452,10 +452,23 @@ class TrainingHandler:
             raise FileNotFoundError("training project does not exist")
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 2, "hashing")
         images = _project_images(project)
+        train_image_ids = tuple(payload.get("train_image_ids") or ())
+        test_image_ids = tuple(payload.get("test_image_ids") or ())
+        if not train_image_ids and payload.get("train_dataset_ids"):
+            legacy_train_datasets = {str(value) for value in payload.get("train_dataset_ids") or ()}
+            legacy_test_datasets = {str(value) for value in payload.get("test_dataset_ids") or ()}
+            train_image_ids = tuple(
+                str(row.get("id")) for row in images
+                if str(row.get("dataset_id") or "") in legacy_train_datasets
+            )
+            test_image_ids = tuple(
+                str(row.get("id")) for row in images
+                if str(row.get("dataset_id") or "") in legacy_test_datasets
+            )
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
-            train_dataset_ids=tuple(payload.get("train_dataset_ids") or ()),
-            test_dataset_ids=tuple(payload.get("test_dataset_ids") or ()),
+            train_image_ids=train_image_ids,
+            test_image_ids=test_image_ids,
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
