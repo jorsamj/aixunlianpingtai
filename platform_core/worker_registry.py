@@ -8,6 +8,7 @@ from .task_runtime import TaskKind
 
 
 ROLE_MODULES = {
+    "storage": "platform_core.storage.import_tasks",
     "video": "platform_core.video_tasks",
     "training": "platform_core.training_tasks",
     "annotation": "platform_core.annotation_task_service",

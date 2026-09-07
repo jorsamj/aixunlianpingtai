@@ -907,6 +907,16 @@ class StorageSourceUpdateReq(BaseModel):
     enabled: Optional[bool] = None
 
 
+class StorageImportScanReq(BaseModel):
+    storage_source_id: str
+    prefix: str = ""
+    recursive: bool = True
+
+
+class StorageImportConfirmReq(BaseModel):
+    object_keys: Optional[List[str]] = None
+
+
 def _validate_storage_source_config(source_type: str, config: Dict[str, Any]) -> str:
     try:
         normalized = StorageType.parse(source_type).value
@@ -1058,6 +1068,67 @@ def delete_storage_source(source_id: str):
     if source.secret_ref:
         storage_credentials().delete(source.secret_ref)
     return {"ok": True, "deleted_id": source_id}
+
+
+def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
+    result = None
+    if task.result_ref:
+        result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default=None)
+    return {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "kind": task.kind.value,
+        "status": task.status.value,
+        "progress": task.progress,
+        "stage": task.stage,
+        "current_item": task.current_item,
+        "error": task.error,
+        "created_at": task.created_at,
+        "updated_at": task.updated_at,
+        "finished_at": task.finished_at,
+        "result": result,
+    }
+
+
+@app.post("/api/v61/projects/{project_id}/storage-imports/scan", status_code=202)
+def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
+    get_project(project_id)
+    source = storage_source_repository().get(payload.storage_source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="存储源不存在")
+    if not source.enabled:
+        raise HTTPException(status_code=409, detail="存储源已停用")
+    task_id = uuid.uuid4().hex[:12]
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", payload.model_dump(mode="json"))
+    task = shared_task_repository().create(TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
+        f"storage:{source.id}", required_capabilities=("storage.import",),
+    ))
+    return _public_storage_import_task(task)
+
+
+@app.get("/api/v61/projects/{project_id}/storage-imports/{task_id}")
+def get_storage_import_scan(project_id: str, task_id: str):
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
+        raise HTTPException(status_code=404, detail="存储导入任务不存在")
+    return _public_storage_import_task(task)
+
+
+@app.post("/api/v61/projects/{project_id}/storage-imports/{task_id}/confirm")
+def confirm_storage_import(project_id: str, task_id: str, payload: StorageImportConfirmReq):
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
+        raise HTTPException(status_code=404, detail="存储导入任务不存在")
+    if task.status is not TaskStatus.SUCCEEDED:
+        raise HTTPException(status_code=409, detail="存储扫描尚未成功完成")
+    from platform_core.storage.import_tasks import commit_storage_import
+    result = commit_storage_import(
+        DATA_DIR, project_id, shared_task_artifacts(), task_id, payload.object_keys
+    )
+    return {"ok": True, **result}
 
 
 @app.get("/api/v61/projects/{project_id}/materials")
@@ -1388,40 +1459,56 @@ def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
     return read_json(project_dir(project_id) / "annotations" / f"{image_id}.json", {"image_id": image_id, "boxes": []})
 
 
-def add_image_record(project_id: str, src: Path, original_name: str, source_type: str = "raw", dataset_id: str = "default") -> Optional[Dict[str, Any]]:
+def add_image_record(
+    project_id: str, src: Path, original_name: str,
+    source_type: str = "raw", dataset_id: str = "default",
+    storage_source_id: str = "default_local",
+) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
     ext = src.suffix.lower()
     if ext not in IMAGE_EXTS:
         return None
     img_id = uuid.uuid4().hex[:16]
     dst_name = f"{img_id}{ext}"
-    dst = p / "uploads" / dst_name
-    shutil.copy2(src, dst)
     try:
-        info = image_info(dst)
+        info = image_info(src)
     except Exception:
-        dst.unlink(missing_ok=True)
         return None
+    source_config = storage_source_repository().get(storage_source_id)
+    if source_config is None:
+        raise StorageError(
+            code="STORAGE_SOURCE_NOT_FOUND", message="素材保存位置不存在",
+            detail=f"找不到存储源 {storage_source_id}。",
+            solution="请刷新保存位置后重试。",
+        )
+    object_key = f"uploads/{dst_name}"
+    metadata = storage_manager(project_id).upload_object(
+        storage_source_id, object_key, src,
+        content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
+    )
+    content_hash = sha256_file(src)
     target_dataset_id = dataset_id or "default"
     record = {
         "id": img_id,
         "filename": original_name,
         "stored_name": dst_name,
         "url": material_content_url(project_id, img_id),
-        "storage_source_id": "default_local",
-        "storage_type": "local",
-        "object_key": f"uploads/{dst_name}",
-        "content_sha256": sha256_file(dst),
+        "storage_source_id": source_config.id,
+        "storage_type": source_config.type,
+        "object_key": object_key,
+        "content_sha256": content_hash,
+        "etag": metadata.etag,
         "width": info["width"],
         "height": info["height"],
         "source_type": source_type,
         "dataset_id": target_dataset_id,
         "split": "unassigned",
         "processing_status": initial_processing_status(has_valid_boxes=False),
-        "size_bytes": int(dst.stat().st_size) if dst.exists() else 0,
+        "size_bytes": int(metadata.size_bytes),
         "created_at": now_iso(),
     }
     annotation_path = p / "annotations" / f"{img_id}.json"
+    batch = None
     try:
         with _v50_dataset_locks(project_id, [target_dataset_id]):
             _v50_assert_dataset_writable_locked(project_id, target_dataset_id)
@@ -1437,10 +1524,12 @@ def add_image_record(project_id: str, src: Path, original_name: str, source_type
                 record = material_store(project_id).upsert(record)
             if not annotation_path.exists():
                 write_annotation(project_id, img_id, [])
-    except HTTPException as error:
-        if error.status_code == 409:
-            annotation_path.unlink(missing_ok=True)
-            dst.unlink(missing_ok=True)
+    except Exception:
+        annotation_path.unlink(missing_ok=True)
+        try:
+            storage_manager(project_id).delete_source_file(record)
+        except Exception:
+            pass
         raise
     if batch:
         return dict(batch["records"][str(img_id)])
@@ -2484,7 +2573,10 @@ def add_label(project_id: str, payload: AddLabelReq):
 
 
 @app.post("/api/projects/{project_id}/images")
-async def upload_images(project_id: str, files: List[UploadFile] = File(...), dataset_id: str = Form("default")):
+async def upload_images(
+    project_id: str, files: List[UploadFile] = File(...),
+    dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
+):
     get_project(project_id)
     p = project_dir(project_id)
     uploaded, failed = [], []
@@ -2508,11 +2600,15 @@ async def upload_images(project_id: str, files: List[UploadFile] = File(...), da
             if not tmp.exists() or tmp.stat().st_size <= 0:
                 failed.append({"name": filename, "reason": "文件为空"})
                 continue
-            record = add_image_record(project_id, tmp, filename, "raw", dataset_id)
+            record = add_image_record(
+                project_id, tmp, filename, "raw", dataset_id, storage_source_id
+            )
             if record:
                 uploaded.append(record)
             else:
                 failed.append({"name": filename, "reason": "图片损坏或无法识别"})
+        except StorageError as error:
+            failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
         except Exception as e:
             failed.append({"name": filename, "reason": str(e)})
         finally:
@@ -2528,7 +2624,7 @@ async def upload_images(project_id: str, files: List[UploadFile] = File(...), da
         "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
         "elapsed_seconds": round(max(0.0, time.time()-started), 2),
-        "total": len(load_images(project_id))
+        "total": material_store(project_id).count()
     }
 
 

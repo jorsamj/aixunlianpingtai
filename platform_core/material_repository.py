@@ -409,6 +409,14 @@ class MaterialRepository:
         with self._connect() as database:
             return int(database.execute("SELECT COUNT(*) FROM materials WHERE storage_source_id = ?", (str(storage_source_id),)).fetchone()[0])
 
+    def find_by_storage_reference(self, storage_source_id: str, object_key: str) -> dict[str, Any] | None:
+        with self._connect() as database:
+            row = database.execute(
+                "SELECT payload_json FROM materials WHERE storage_source_id = ? AND object_key = ? LIMIT 1",
+                (str(storage_source_id), str(object_key)),
+            ).fetchone()
+        return self._row_payload(row) if row else None
+
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
         """Compatibility transaction for legacy callers; new code must use set-based APIs."""
         with self._connect() as database:
