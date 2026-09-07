@@ -74,43 +74,48 @@ class StorageImportHandler:
             for item in page.items:
                 scanned += 1
                 key = str(item.key)
-                if Path(key).suffix.lower() not in IMAGE_EXTENSIONS:
-                    continue
-                if materials.find_by_storage_reference(source_id, key):
-                    duplicates += 1
-                    continue
-                try:
-                    with closing(provider.open_reader(key)) as stream:
-                        with Image.open(stream) as image:
-                            width, height = image.size
-                    content_sha256 = str(item.sha256 or "")
-                    if not content_sha256:
-                        with closing(provider.open_reader(key)) as stream:
-                            content_sha256 = _sha256_stream(stream)
-                    if len(content_sha256) != 64 or item.size_bytes <= 0:
-                        raise ValueError("object has no verifiable SHA256 or is empty")
-                    candidates.append({
-                        "filename": Path(key).name,
-                        "storage_source_id": source.id,
-                        "storage_type": source.type,
-                        "object_key": key,
-                        "content_sha256": content_sha256,
-                        "size_bytes": int(item.size_bytes),
-                        "etag": item.etag,
-                        "width": int(width),
-                        "height": int(height),
-                    })
-                except Exception as error:
-                    failed += 1
-                    failures.append({"object_key": key, "error": redact_storage_error(error)})
-                context.save_checkpoint({
+                if Path(key).suffix.lower() in IMAGE_EXTENSIONS:
+                    if materials.find_by_storage_reference(source_id, key):
+                        duplicates += 1
+                    else:
+                        try:
+                            with closing(provider.open_reader(key)) as stream:
+                                with Image.open(stream) as image:
+                                    width, height = image.size
+                            content_sha256 = str(item.sha256 or "")
+                            if not content_sha256:
+                                with closing(provider.open_reader(key)) as stream:
+                                    content_sha256 = _sha256_stream(stream)
+                            if len(content_sha256) != 64 or item.size_bytes <= 0:
+                                raise ValueError("object has no verifiable SHA256 or is empty")
+                            candidates.append({
+                                "filename": Path(key).name,
+                                "storage_source_id": source.id,
+                                "storage_type": source.type,
+                                "object_key": key,
+                                "content_sha256": content_sha256,
+                                "size_bytes": int(item.size_bytes),
+                                "etag": item.etag,
+                                "width": int(width),
+                                "height": int(height),
+                            })
+                        except Exception as error:
+                            failed += 1
+                            failures.append({"object_key": key, "error": redact_storage_error(error)})
+                checkpoint = {
                     "stage": "SCANNING", "scanned_files": scanned,
                     "importable_images": len(candidates), "duplicates": duplicates,
                     "failed": failed, "cursor": cursor,
-                })
+                }
+                context.save_checkpoint(checkpoint)
                 context.repository.heartbeat(
-                    context.task.task_id, context.lease.lease_token,
-                    stage="SCANNING", current_item=key,
+                    context.task.task_id,
+                    context.lease.lease_token,
+                    stage="SCANNING",
+                    current_item=(
+                        f"已扫描 {scanned} 个对象 · 可导入 {len(candidates)} 张 · "
+                        f"重复 {duplicates} · 失败 {failed} · 当前 {key}"
+                    ),
                 )
             if not page.next_cursor:
                 break
@@ -121,11 +126,21 @@ class StorageImportHandler:
             "recursive": recursive,
             "scanned_files": scanned,
             "importable_images": len(candidates),
+            # 兼容 v42.22 初版前端字段，避免真实扫描成功后页面错误显示为 0。
+            "scanned": scanned,
+            "importable": len(candidates),
             "duplicates": duplicates,
             "failed": failed,
             "candidates": candidates,
             "failures": failures[:200],
         }
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=99,
+            stage="FINALIZING",
+            current_item=f"扫描完成：{scanned} 个对象，可导入 {len(candidates)} 张",
+        )
         context.artifacts.atomic_write_json(context.task.task_id, "scan/result.json", result)
         return TaskStatus.SUCCEEDED, "scan/result.json"
 
@@ -157,10 +172,14 @@ def commit_storage_import(
             skipped += 1
             continue
         image_id = uuid.uuid4().hex[:16]
+        suffix = Path(key).suffix.lower()
+        stored_name = f"{image_id}{suffix}" if suffix in IMAGE_EXTENSIONS else f"{image_id}.img"
         records.append({
             "id": image_id,
             "filename": candidate.get("filename") or Path(key).name,
-            "stored_name": "",
+            # 外部素材不会复制到 project/uploads，但保留一个稳定、安全的逻辑文件名，
+            # 让仍依赖 stored_name 作为导出目标文件名的旧链路不会拿到空字符串。
+            "stored_name": stored_name,
             **dict(candidate),
             "url": f"/api/v61/projects/{project_id}/materials/{image_id}/content",
             "source_type": "storage_import",
