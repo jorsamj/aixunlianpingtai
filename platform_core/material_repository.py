@@ -80,6 +80,19 @@ def _basename(value: object) -> str:
     return Path(raw).name
 
 
+def _portable_stored_name(image_id: str, object_key: object, filename: object = "") -> str:
+    """Return a collision-safe local working name for externally indexed material.
+
+    Historical external rows may have stored_name="" because no copy lives in project/uploads.
+    Legacy dataset/export code still expects a basename, so expose a deterministic image-id name
+    without changing the physical storage reference.
+    """
+    suffix = Path(str(object_key or filename or "")).suffix.lower()
+    if not suffix or len(suffix) > 12 or not suffix.startswith(".") or not suffix[1:].isalnum():
+        suffix = ".bin"
+    return f"{image_id}{suffix}"
+
+
 def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
     row = dict(value)
     image_id = str(row.get("id") or "").strip()
@@ -97,8 +110,11 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(f"素材 {image_id} 缺少 object_key")
     if ".." in Path(object_key).parts or PureWindowsPath(object_key).drive:
         raise ValueError(f"素材 {image_id} 的 object_key 非法")
-    if not stored_name and storage_type == "local":
-        stored_name = Path(object_key).name
+    if not stored_name:
+        if source_id == "default_local":
+            stored_name = Path(object_key).name
+        else:
+            stored_name = _portable_stored_name(image_id, object_key, row.get("filename"))
     labels = sorted({str(label).strip() for label in row.get("labels") or [] if str(label).strip()})
     row.update({
         "id": image_id,
@@ -162,7 +178,18 @@ class MaterialRepository:
         value = json.loads(row["payload_json"])
         if not isinstance(value, dict):
             raise ValueError("material payload is invalid")
-        return dict(value)
+        payload = dict(value)
+        if not _basename(payload.get("stored_name")):
+            image_id = str(payload.get("id") or "").strip()
+            source_id = str(payload.get("storage_source_id") or "default_local").strip()
+            object_key = str(payload.get("object_key") or "").replace("\\", "/").lstrip("/")
+            if image_id and source_id != "default_local" and object_key:
+                payload["stored_name"] = _portable_stored_name(
+                    image_id, object_key, payload.get("filename")
+                )
+            elif object_key:
+                payload["stored_name"] = _basename(object_key)
+        return payload
 
     @staticmethod
     def _revision(database: sqlite3.Connection) -> int:
