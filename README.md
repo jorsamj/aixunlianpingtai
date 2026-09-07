@@ -1,107 +1,285 @@
-# 畅联云算法训练 v42.14.0
+# 畅联云算法训练 v42.21.0
 
-本版本以“真实可标注、标签 Schema 统一、算法版本连续迭代、核心按钮稳定”为重点收口。
+面向视觉算法生产流程的一体化平台，覆盖素材上传、数据清洗、人工与 AI 标注、训练任务调度、算法版本迭代、模型转换和部署测试。
 
-## v42.14 核心变化
+当前优先保证 Windows 本机开发与 CPU 闭环可运行；同一套任务协议、相对路径和 Worker 机制可迁移到 NVIDIA Linux。华为 Atlas、瑞芯微 RKNN、NVIDIA TensorRT 和算能 Sophon 等能力只有在对应 SDK、Runtime 与硬件验证通过后才会标记成功，不使用假进度、空产物或改后缀文件模拟结果。
 
-### 1. 标签管理移动到配置中心
-- 左侧新增：配置中心 → 标签管理。
-- 标签英文编码为训练/导入导出的主标识，例如 `fire`、`smoke`、`yellow_helmet`。
-- 中文名称为业务展示，例如“明火”“烟雾”“黄色安全帽”。
-- 支持颜色、快捷键、使用图片数、标注框数。
-- 修改英文标签会同步修改已有标注文件与图片索引。
-- 已被标注使用的标签禁止直接删除，避免 class_id 错位。
+## 当前版本重点
 
-### 2. 标注窗口不再维护标签库
-- 标注窗口只读取配置中心标签库。
-- 支持：新建矩形框、拖动、四角缩放、切换当前框标签、删除、撤销、重做、缩放、上一张/下一张。
-- 保存失败会明确提示，保存成功直接以后端返回的 Annotation 更新当前素材，不再全局刷新。
-- 保存后即时更新缩略图/大图预览的红色框、标签、框数量和标注状态。
-- 标签库为空时不允许画框，并引导到配置中心创建标签。
+### 素材与数据清洗
 
-### 3. 素材库标签筛选来自标签库
-- 已处理素材页顶部筛选项来自标签管理，而不是从当前图片临时提取。
-- 多标签仍采用 OR 逻辑：命中任意一个所选标签即可展示。
+- 单张或批量上传后立即显示缩略图，上传记录和素材索引持久化，刷新后仍可读取。
+- 未处理素材支持批量选择、批量清洗和批量无需清洗；无需清洗的素材直接进入已处理区。
+- 清洗使用 Pillow/OpenCV 检查损坏、精确重复、近似重复、尺寸、模糊度与亮度等问题。
+- 清洗扫描结果先进入确认环节，确认前不会删除图片；删除时同步处理素材文件和标注文件。
+- 数据列表支持文件名搜索和多标签筛选。标签选项来自统一标签库，多标签使用 OR 逻辑，命中任意选中标签即可显示。
 
-### 4. 批量清洗 / 批量无需清洗
-- 未处理素材页增加“批量清洗”“批量无需清洗”。
-- 批量选择窗口提供全选、反选。
-- 普通图片上传完成后同样提供本批次“批量清洗 / 批量无需清洗”。
-- 清洗确认删除素材时，已有图片文件与标注文件同步处理。
+### 人工标注
 
-### 5. 算法 CRUD 收口
-- 新建算法、编辑算法、删除算法统一直连 `/api/v12/.../algorithms` 正式资产接口。
-- 成功后局部更新算法列表，不再依赖旧 Blueprint/hotfix。
+- 标签统一在“配置中心 → 标签管理”维护，标注窗口不创建或删除标签。
+- 英文 `code` 是训练、导入和导出的稳定标识；中文 `display_name` 用于业务界面展示。
+- 支持矩形框新建、拖动、缩放、改标签、删除、撤销、重做及画布缩放。
+- 支持批量标注：左侧缩略图队列、中央稳定画布、右侧标注框信息。
+- 切换图片前会等待保存；稳定画布不会因切图反复销毁，过期接口响应不能覆盖当前图片。
+- 保存成功后同步更新素材摘要、标注数量和缩略图框；重新进入页面仍可恢复正式标注。
 
-### 6. 算法版本连续迭代
-- 后台训练入口会优先查找该算法最新可训练版本。
-- Ultralytics 使用最新 `.pt` 版本权重作为新一轮训练起点；Paddle 使用对应可训练权重。
-- 只有算法首次训练才使用所选母模型。
-- 训练弹窗会明确显示“本次从哪个版本继续迭代”。
+### AI 自动标注
 
-### 7. 训练素材质量图表化
-- 数据质量弹窗改为：综合质量结论、雷达图、KPI、维度进度条、标签分布图。
-- 继续使用真实 `/api/v44/.../data-quality` 指标结果。
+- 支持配置火山方舟、阿里云千问、本地 OpenAI 兼容服务和 Ollama 等视觉模型。
+- 每个模型配置可保存接口地址、模型名称、API Key、提示词模板、置信度等参数。
+- AI 标注由后台 Worker 执行，页面读取后端真实进度、已处理数量、失败数量、当前图片和错误原因。
+- 候选结果独立持久化，不会自动污染正式标注。
+- 候选结果支持全部接受、部分接受、修改后接受、全部拒绝和暂不处理。
+- 用户全部拒绝后任务仍可正常结束，并记录 `accepted=false`，正式标注保持不变。
 
-## 发布校验
-- Python 核心模块编译检查
-- 前端 `static/app.js` Node 语法检查
-- FastAPI/Uvicorn 实际启动检查
-- 标签新增/修改/使用量接口回归
-- 图片上传 → 手工标注 → 保存 → 索引同步回归
-- 标签英文编码修改 → 已有 annotation JSON + 图片预览摘要同步回归
-- 算法创建/编辑/列表接口回归
-- 算法版本 → 下一次迭代基础模型接口回归
-- 数据质量接口回归
+### 视频切帧
 
-### 8. 导入标签映射使用标准标签库
-- ZIP 导入后的 `class_0` 等原始类别，可映射到配置中心已有标准标签（例如 `fire`）。
-- 映射窗口支持本批次全选/反选；映射真实修改 annotation JSON、class_id 和图片摘要。
+- 视频任务由后台 Worker 执行，支持按秒间隔、目标 FPS 和固定帧数三种抽帧方式。
+- 实际生成的图片会写入素材库，任务结果记录视频信息、计划帧数、已提取数量、输出与失败原因。
+- 固定帧数模式按视频真实帧范围生成不重复采样位置，不只创建数据库占位记录。
 
-### 9. 核心交互审计
-- 扫描前端 `onclick/onchange/oninput` 首调用函数，发布前缺失引用为 0。
-- 修复历史模型配置旧入口 `editModelConfigV35`。
-- 修复删除未使用中间标签后，后续类别 class_id 必须前移的问题，避免训练类别错位。
+### 训练任务与算法迭代
 
-## Windows 闭环使用说明
+- 创建训练任务时按图片素材选择，不再把数据集作为训练选择单位。
+- 每次打开训练弹窗默认全部不选，支持逐张勾选、全选、全部不选、筛选结果全选和筛选结果反选。
+- 训练候选只包含已处理、已正式标注且文件存在的素材；标签仅用于筛选。
+- 支持两种试验集方式：
+  - 从本次训练素材中按任意合理百分比随机抽取；
+  - 单独选择独立试验素材。
+- 后台再从非试验素材中抽取验证集，并按来源组进行划分，避免同来源数据泄漏。
+- 任务快照保存最终训练、验证、试验素材 ID、数量、比例、随机种子和来源，可追溯且刷新后不改变。
+- 首次训练使用所选母模型；已有合格算法版本时，下一次训练强制锁定最新可训练版本权重，不能退回母模型。
+- 任务优先级范围为 1–999，数字越小优先级越高；同一资源同优先级按进入队列时间排序。
+- 支持排队任务插队，以及运行任务暂停、继续和停止。进程控制会校验持久化的进程身份。
+- 高级训练参数默认折叠并提供默认值，包含 Epoch、Batch、图片尺寸、优化器、学习率、数据增强、阶段评估和达标阈值等。
+- 训练完成后形成新的算法版本；算法综合报告和单版本训练报告分别保存。
 
-### 启动
+### 模型转换与部署测试
 
-在 Windows 10/11、64 位 Python 3.10–3.12 环境中双击 `start.bat`。启动器会创建/复用独立运行环境、检查依赖并打开 `http://127.0.0.1:8010/`。如果本机已经准备好全部依赖，也可以使用 `start_no_venv.bat` 跳过环境安装。端口可通过 `MC_PORT` 修改，数据目录可通过 `MC_TRAIN_DATA_DIR` 指向独立磁盘目录。
+- 转换任务由独立 Worker 执行，记录输入、输出、命令、标准输出、标准错误、退出码、耗时、工具版本、文件大小和 SHA256。
+- 通用路径优先执行真实 PT → ONNX 导出，并使用 ONNX Checker 与 ONNX Runtime 验证。
+- 部署资源页面会检测转换工具、版本、目标芯片和运行环境；资源不可用时明确显示缺少项。
+- 部署测试通过后台 Worker 调用对应真实 Runtime，结果包含检测框、类别、置信度和预处理/推理/后处理/总耗时。
+- 当前机器没有厂商 SDK、Runtime 或硬件时返回 `BLOCKED_BY_ENVIRONMENT` 或 `BLOCKED_BY_HARDWARE`，不会显示测试成功。
 
-### 训练与数据闭环
+## 运行架构
 
-- 上传后素材会持久化到数据目录，并立即进入缩略图审核；“批量清洗”和“批量无需清洗”分别写入真实状态，刷新页面不会丢失。
-- 清洗使用 OpenCV/Pillow 扫描重复、近似重复、尺寸、模糊、亮度和损坏问题；任务完成后由用户确认删除项，图片和对应标注会一起处理。
-- 标注框和标签通过正式 API 保存，标签编码来自“配置中心 → 标签管理”。英文 `code` 是训练/导出主标识，中文 `display_name` 仅用于界面展示。
-- 训练弹窗默认折叠高级参数，并默认从候选素材中随机留出 20% 试验集；每次启动都会生成新的 `split_seed`，比例可在 1–99% 间调整。已有算法版本时，所有训练入口只允许使用最新上一版本的已验证权重，不会静默回退到更早版本或母模型。
-- 训练任务会保存不可变数据快照、训练参数、试验比例和版本基线；算法综合报告与单版本报告分开保存。
+```text
+浏览器
+  │
+  ▼
+FastAPI Web/API
+  │  创建任务、读取状态、审核候选、下载产物
+  ▼
+SQLite 任务仓库 + ArtifactStore
+  │  按优先级、FIFO、资源能力发放租约
+  ▼
+Task Worker / Scheduler
+  ├─ annotation       AI 自动标注
+  ├─ video            视频切帧
+  ├─ training         Ultralytics 持久训练
+  ├─ conversion       ONNX/厂商模型转换
+  └─ deployment-test  真实 Runtime 推理测试
+```
 
-### 大模型自动标注
+Windows 一键启动时，启动器会使用同一个数据根目录启动 Web/API 和一个 `--roles all` 的任务 Worker。Linux 生产环境可以按角色拆分多个 Worker，并通过能力标签把 CUDA、TensorRT、CANN、RKNN 或 TPU-MLIR 任务发送到正确节点。
 
-在“配置中心 → 模型配置”中配置本地模型或在线视觉模型（火山方舟、阿里云千问、OpenAI 兼容接口、Ollama 等）的接口地址、API Key、图片字段、提示词字段和自动标注提示词模板。平台先保存候选框，用户确认后才写入正式标注文件；接口失败会保留错误原因，不会伪造标注结果。
+当前通用持久任务 Worker 的训练能力标识为 `training.ultralytics`。PaddleDetection 仍通过项目已有的独立 Paddle/远程训练执行环境接入，不应把它描述为已注册到该通用 Worker。
 
-### 转换能力边界
+持久化任务状态包括：
 
-平台只在真实工具链检测通过后创建转换任务，转换产物会经过非空、哈希、ONNX Checker 和 ONNX Runtime 校验；缺少 SDK 时不会把文件改名成假产物。
+```text
+QUEUED
+RUNNING
+AWAITING_CONFIRMATION
+PARTIAL_SUCCESS
+SUCCEEDED
+CANCEL_REQUESTED
+CANCELLED
+FAILED
+BLOCKED_BY_ENVIRONMENT
+BLOCKED_BY_HARDWARE
+```
 
-| 目标 | Windows 本机 | NVIDIA/Linux/厂商节点 |
+## Windows 快速启动
+
+### 环境要求
+
+- Windows 10/11 64 位；
+- 64 位 Python 3.10–3.12，推荐 Python 3.12；
+- 首次安装依赖需要能够访问 Python 包源；
+- 视频切帧依赖 OpenCV 可用的视频解码能力；遇到系统缺少的编码格式时，需要补充对应 FFmpeg/编解码环境；
+- NVIDIA GPU 训练还需要匹配的驱动、CUDA 与 PyTorch 环境；无 GPU 时可进行 CPU 小规模验证。
+
+### 获取代码
+
+```powershell
+git clone https://github.com/jorsamj/aixunlianpingtai.git
+cd aixunlianpingtai
+```
+
+### 推荐启动
+
+双击 `start.bat`，或在 PowerShell 中运行：
+
+```powershell
+.\start.ps1
+```
+
+启动器会：
+
+1. 检查 Python 版本；
+2. 创建或复用平台独立虚拟环境；
+3. 安装并实际导入检查核心依赖；
+4. 启动后台任务 Worker 和 Uvicorn API；
+5. 完成数据预加载后打开 `http://127.0.0.1:8010/`。
+
+如果当前 Python 环境已经安装全部依赖，可以运行：
+
+```powershell
+.\start_no_venv.bat
+```
+
+常用环境变量：
+
+| 变量 | 作用 | 默认值 |
 | --- | --- | --- |
-| ONNX | 支持真实 `.pt → .onnx` 导出和加载校验 | 支持 |
-| TensorRT Engine | 需安装并检测 `trtexec` | NVIDIA CUDA + TensorRT |
-| 华为 Atlas `.om` | 需 CANN ATC（建议 WSL2/远程） | Linux CANN Toolkit/ATC |
-| 瑞芯微 RK3588/RK3568 `.rknn` | 官方 RKNN-Toolkit2 通常不提供 Windows wheel | Linux/WSL2 或远程 RKNN-Toolkit2 |
-| 算能 `.bmodel` | 需 TPU-MLIR 工具链 | Linux/远程 TPU-MLIR |
+| `MC_PORT` | Web/API 端口 | `8010` |
+| `MC_HOST` | Web/API 监听地址 | `0.0.0.0` |
+| `MC_TRAIN_DATA_DIR` | 素材、任务数据库和产物根目录 | 平台自动解析的用户数据目录 |
+| `MC_TRAIN_VENV_DIR` | 指定平台虚拟环境目录 | 按 Python/平台版本隔离 |
+| `MC_SKIP_VENV` | 设为 `1` 时使用当前 Python | 未设置 |
+| `MC_PIP_INDEX_URL` | 自定义 Python 包镜像 | 自动选择 |
 
-部署资源页面会显示每个资源的“可用/不可用/未检测”状态和处理建议；只有检测通过且目标芯片匹配时，转换按钮才会真正可提交。
+不要把业务数据放进 Git 仓库。模型权重、任务数据库、上传素材和转换产物应放在 `MC_TRAIN_DATA_DIR` 或独立模型目录中。
 
-### Windows 验收命令
+### 环境诊断
+
+```powershell
+.\diagnose_runtime.bat
+python task_worker.py --data-dir "D:\your-data" --roles all --check
+```
+
+第二条命令只检查 Worker 注册、任务数据库位置、产物目录和能力，不执行任务。
+
+## NVIDIA Linux 与厂商转换节点
+
+正式生产建议把数据、模型、任务数据库、日志和产物放在持久卷中，并按角色部署进程：
+
+- NVIDIA Linux：Web/API、训练 Worker、部署测试 Worker、ONNX/TensorRT 转换 Worker；
+- 华为 CANN Linux：Atlas/Ascend Converter Worker；
+- RKNN Linux x86_64：RKNN-Toolkit2 Converter Worker；
+- 算能 Linux：TPU-MLIR Converter Worker。
+
+远程训练节点示例：
+
+```bash
+export MC_REMOTE_DATA_DIR=/srv/changlian/data
+export MC_REMOTE_HOST=0.0.0.0
+export MC_REMOTE_PORT=8020
+./start_remote_server.sh
+```
+
+远程部署转换服务示例：
+
+```bash
+export PYTHON_BIN=/opt/vendor-env/bin/python
+export DEPLOY_SERVER_PORT=8030
+./start_remote_deploy_server.sh
+```
+
+生产环境还应在反向代理层配置 TLS、访问控制和防火墙，并为远程接口设置非空 API Key。TensorRT Engine 通常应在最终目标 GPU、CUDA 与 TensorRT 版本环境中构建和验证。
+
+## 转换能力与验证边界
+
+| 目标格式 | Windows 开发机 | Linux/目标设备 | 判定成功的最低条件 |
+| --- | --- | --- | --- |
+| ONNX | 已支持 | 已支持 | 导出成功、文件非空、Checker 通过、ONNX Runtime 推理通过 |
+| TensorRT `.engine` | 仅在安装兼容 `trtexec` 时可执行 | NVIDIA GPU + CUDA + TensorRT | 构建成功，并在目标 TensorRT Runtime 反序列化和推理 |
+| Atlas `.om` | 通常通过远程 CANN 节点 | CANN/ATC + Atlas | ATC 成功；目标设备加载和推理后才算硬件验证 |
+| RKNN `.rknn` | 通常通过 Linux/WSL2 转换节点 | RKNN-Toolkit2 + RK3568/RK3588 | 转换成功；匹配芯片 Runtime 加载和推理 |
+| Sophon `.bmodel` | 通常通过远程 TPU-MLIR 节点 | TPU-MLIR + 算能设备 | 编译成功；BMRuntime 加载和推理 |
+
+只有当前置转换和目标 Runtime 验证都具备证据时才是最终 PASS。生成真实产物但尚无目标硬件时，必须保留为“已转换、未实机验证”或 `BLOCKED_BY_HARDWARE`。
+
+## 开发与测试
+
+安装开发依赖：
+
+```powershell
+python -m pip install -r requirements-dev.txt
+npm ci
+```
+
+运行完整自动化测试：
 
 ```powershell
 python -m pytest -q
 npm test
-npm exec -- playwright test
+npm run test:browser
+```
+
+运行真实 CPU 训练和 ONNX 转换验收：
+
+```powershell
 python -m pytest tests/e2e/test_real_yolo_training.py tests/e2e/test_real_onnx_conversion.py -v -s
 ```
 
-厂商硬件测试仅在对应 SDK/设备已配置时运行；未配置时显示可操作的缺失原因，不将 Windows CPU 结果冒充 Atlas、RKNN 或 TensorRT 实机验证。
+厂商硬件测试只有显式提供环境后才运行：
+
+```powershell
+$env:XJALGO_VENDOR_TARGET = "tensorrt"   # ascend / rockchip / tensorrt
+$env:XJALGO_VENDOR_TEST_ONNX = "D:\models\verified.onnx"
+$env:XJALGO_TRTEXEC_PATH = "C:\path\to\trtexec.exe"
+$env:XJALGO_TENSORRT_ENVIRONMENT = "RTX 4090 / CUDA 12.x / TensorRT 10.x"
+python -m pytest tests/hardware/test_vendor_conversion.py -v -s
+```
+
+没有设置目标、源 ONNX 和对应 SDK 参数时，该测试会明确跳过，不能据此宣称厂商转换通过。
+
+### 当前回归基线
+
+本仓库 v42.21.0 在上传前完成的自动化回归：
+
+- Python：248 项通过，2 项因当前环境条件跳过；
+- 前端 Node 测试：40 项通过；
+- Playwright 浏览器真实操作：13 项通过；
+- JavaScript 语法和 Git 差异检查通过。
+
+浏览器回归覆盖创建算法、素材上传、手工/批量标注与刷新恢复、标签筛选、清洗入口、AI 候选审核、转换资源、训练素材精确选择、最新版本迭代和优先级队列。
+
+这些结果只代表当前 Windows 测试环境中的已执行范围。Atlas、RKNN、TensorRT 和 Sophon 的最终目标硬件验证仍必须在对应服务器或开发板上单独完成。
+
+## 目录说明
+
+```text
+app.py                         FastAPI Web/API
+launcher.py                    Windows 一键启动器
+task_worker.py                 通用任务 Worker 与 Scheduler 入口
+platform_core/task_runtime/    持久任务、租约、调度与产物存储
+platform_core/training_tasks.py
+platform_core/video_tasks.py
+platform_core/annotation_task_service.py
+platform_core/deployment/      转换与部署测试任务
+static/                        当前 Web 前端
+tests/                         单元、API、集成、E2E、浏览器和硬件测试
+docs/superpowers/specs/        已确认的关键设计约束
+docs/superpowers/plans/        分阶段实施与验收计划
+```
+
+## 真实性原则
+
+平台判断功能完成时遵循：
+
+```text
+代码完成
++ 实际启动
++ 实际执行
++ 结果文件存在且非 0 字节
++ 数据库/任务状态正确
++ 前端状态与结果一致
++ 自动化测试通过
++ 相关回归通过
+```
+
+缺少 SDK、Runtime、驱动或目标硬件时应报告具体阻塞条件，不以“理论可行”替代实际验证。
