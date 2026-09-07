@@ -38,16 +38,22 @@ def test_existing_source_scan_and_confirm_indexes_without_copying(tmp_path):
     assert scheduler.run_once() is True
     completed = repository.get(task.task_id)
     assert completed.status is TaskStatus.SUCCEEDED
+    assert completed.progress == 100
     result = artifacts.read_json(task.task_id, completed.result_ref)
     assert result["scanned_files"] == 3
     assert result["importable_images"] == 2
+    assert result["scanned"] == result["scanned_files"]
+    assert result["importable"] == result["importable_images"]
     assert result["failed"] == 0
 
     confirmed = commit_storage_import(data, project_id, artifacts, task.task_id)
     assert confirmed["imported"] == 2
     materials = MaterialRepository(project)
+    rows = materials.read().rows
     assert materials.count() == 2
-    assert {row["storage_source_id"] for row in materials.read().rows} == {"external-a"}
+    assert {row["storage_source_id"] for row in rows} == {"external-a"}
+    assert all(row["stored_name"] for row in rows)
+    assert {row["stored_name"].rsplit(".", 1)[-1] for row in rows} == {"jpg", "png"}
     assert not (project / "uploads").exists()
     assert not (data / "cache" / "materials").exists()
     assert provider.exists("incoming/a.jpg")
@@ -70,3 +76,4 @@ def test_second_scan_reports_existing_source_keys_as_duplicates(tmp_path):
     result = artifacts.read_json(task.task_id, "scan/result.json")
     assert result["duplicates"] == 1
     assert result["importable_images"] == 0
+    assert result["importable"] == 0
