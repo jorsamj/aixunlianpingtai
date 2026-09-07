@@ -62,3 +62,12 @@ window.PlatformCore = {
 };
 
 installMaterialPaginationRuntime();
+
+for (const delay of [80, 500, 1800, 3600]) {
+  setTimeout(() => {
+    const badge = document.getElementById('versionBadge');
+    if (badge) badge.textContent = 'v42.22.3';
+    const footer = document.querySelector('.nav-footer b');
+    if (footer) footer.textContent = 'v42.22.3';
+  }, delay);
+}
