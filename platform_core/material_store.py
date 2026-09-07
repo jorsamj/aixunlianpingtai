@@ -98,7 +98,17 @@ class MaterialStore:
         self._lock = _lock_for(self.path)
         self._file_lock = FileLock(str(self.path.resolve()) + ".lock", timeout=30)
 
+    def _sqlite_delegate(self):
+        if self.path.name != "images.json" or not (self.path.parent / "materials.sqlite3").is_file():
+            return None
+        from .material_repository import MaterialRepository
+
+        return MaterialRepository(self.path.parent)
+
     def read(self) -> MaterialSnapshot:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.read()
         with self._lock:
             with self._file_lock:
                 return MaterialSnapshot(
@@ -107,11 +117,17 @@ class MaterialStore:
                 )
 
     def count(self) -> int:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.count()
         with self._lock:
             with self._file_lock:
                 return len(_cached_rows_shared(self.path))
 
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.mutate(fn)
         with self._lock:
             with self._file_lock:
                 rows = _cached_rows(self.path)
@@ -122,6 +138,9 @@ class MaterialStore:
                 return result
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.upsert(record)
         incoming = dict(record)
         image_id = str(incoming.get("id"))
 
@@ -139,6 +158,9 @@ class MaterialStore:
         self,
         records: Iterable[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.upsert_many(records)
         incoming = [dict(record) for record in records]
         for record in incoming:
             if not str(record.get("id") or "").strip():
@@ -162,6 +184,9 @@ class MaterialStore:
         return self.mutate(apply)
 
     def patch(self, patches: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.patch(patches)
         normalized_patches = {
             str(image_id): dict(patch)
             for image_id, patch in patches.items()
@@ -179,6 +204,9 @@ class MaterialStore:
         return self.mutate(apply)
 
     def remove(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.remove(image_ids)
         ids = {str(image_id) for image_id in image_ids}
 
         def apply(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

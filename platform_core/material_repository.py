@@ -88,6 +88,8 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
     source_id = str(row.get("storage_source_id") or "default_local").strip()
     storage_type = str(row.get("storage_type") or ("local" if source_id == "default_local" else "remote")).strip().lower()
     stored_name = _basename(row.get("stored_name"))
+    if not stored_name and source_id == "default_local":
+        stored_name = _basename(row.get("filename"))
     object_key = str(row.get("object_key") or "").replace("\\", "/").lstrip("/")
     if not object_key and stored_name:
         object_key = f"uploads/{stored_name}"

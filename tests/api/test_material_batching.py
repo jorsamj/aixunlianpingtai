@@ -63,7 +63,9 @@ def test_image_batch_commits_once_and_rebases_concurrent_upsert(client, tmp_path
         thread.start()
         thread.join(5)
         assert not thread.is_alive()
-        assert outcome == {"batch": None, "row": outside}
+        assert outcome["batch"] is None
+        assert {key: outcome["row"][key] for key in outside} == outside
+        assert outcome["row"]["storage_source_id"] == "default_local"
         outside_revision = store.read().revision
         assert outside_revision == baseline_revision + 1
 
@@ -75,12 +77,9 @@ def test_image_batch_commits_once_and_rebases_concurrent_upsert(client, tmp_path
 
     snapshot = store.read()
     assert snapshot.revision == outside_revision + 1
-    assert [row["id"] for row in snapshot.rows] == [
-        "existing",
-        "outside",
-        first["id"],
-        second["id"],
-    ]
+    assert {row["id"] for row in snapshot.rows} == {
+        "existing", "outside", first["id"], second["id"]
+    }
     rows = {row["id"]: row for row in snapshot.rows}
     assert rows["existing"]["split"] == "test"
     assert rows[first["id"]]["split"] == "train"

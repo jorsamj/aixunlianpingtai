@@ -12,6 +12,7 @@ import threading
 import uuid
 import zipfile
 import random
+import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
@@ -20,10 +21,10 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import requests
 import yaml
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, StrictInt
 from PIL import Image, ImageDraw
@@ -47,12 +48,21 @@ from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
 from platform_core.material_store import MaterialStore
+from platform_core.material_repository import MaterialRepository
 from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
 from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
 from platform_core.resource_cache import ResourceCache
-from platform_core.secrets import KeyringSecretStore, secret_ref
+from platform_core.secrets import KeyringSecretStore, SecretCredentialStore, secret_ref
+from platform_core.storage import (
+    StorageError,
+    StorageManager,
+    StorageProviderFactory,
+    StorageSource,
+    StorageSourceRepository,
+    StorageType,
+)
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.task_runtime import (
@@ -822,8 +832,54 @@ def ensure_project_dirs(pid: str):
         (p / d).mkdir(parents=True, exist_ok=True)
 
 
-def material_store(project_id: str) -> MaterialStore:
-    return MaterialStore(project_dir(project_id) / "images.json")
+def material_store(project_id: str) -> MaterialRepository:
+    return MaterialRepository(project_dir(project_id))
+
+
+def storage_source_repository() -> StorageSourceRepository:
+    def references(source_id: str) -> int:
+        projects_root = DATA_DIR / "projects"
+        if not projects_root.is_dir():
+            return 0
+        total = 0
+        for child in projects_root.iterdir():
+            if not child.is_dir() or not (child / "meta.json").is_file():
+                continue
+            total += MaterialRepository(child).reference_count(source_id)
+        return total
+
+    return StorageSourceRepository(
+        DATA_DIR / "storage" / "storage_sources.sqlite3",
+        reference_counter=references,
+    )
+
+
+def storage_credentials() -> SecretCredentialStore:
+    return SecretCredentialStore(_v35_secret_store())
+
+
+def storage_manager(project_id: str) -> StorageManager:
+    return StorageManager(
+        data_dir=DATA_DIR,
+        project_id=project_id,
+        materials=material_store(project_id),
+        sources=storage_source_repository(),
+        credentials=storage_credentials(),
+    )
+
+
+def material_content_url(project_id: str, image_id: str) -> str:
+    return f"/api/v61/projects/{project_id}/materials/{image_id}/content"
+
+
+def public_material(project_id: str, value: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(value)
+    row.setdefault("storage_source_id", "default_local")
+    row.setdefault("storage_type", "local")
+    if not row.get("object_key") and row.get("stored_name"):
+        row["object_key"] = f"uploads/{Path(str(row['stored_name'])).name}"
+    row["url"] = material_content_url(project_id, str(row.get("id") or ""))
+    return row
 
 
 def upload_batch_store(project_id: str) -> UploadBatchStore:
@@ -832,6 +888,230 @@ def upload_batch_store(project_id: str) -> UploadBatchStore:
 
 def load_images(project_id: str) -> list[dict]:
     return material_store(project_id).read().rows
+
+
+class StorageSourceCreateReq(BaseModel):
+    id: Optional[str] = None
+    name: str
+    type: str
+    config: Dict[str, Any] = {}
+    credentials: Dict[str, str] = {}
+    enabled: bool = True
+
+
+class StorageSourceUpdateReq(BaseModel):
+    name: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    credentials: Optional[Dict[str, str]] = None
+    clear_credentials: bool = False
+    enabled: Optional[bool] = None
+
+
+def _validate_storage_source_config(source_type: str, config: Dict[str, Any]) -> str:
+    try:
+        normalized = StorageType.parse(source_type).value
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    missing = []
+    if normalized == "oss":
+        if not str(config.get("endpoint") or "").strip():
+            missing.append("Endpoint")
+        if not str(config.get("bucket") or "").strip():
+            missing.append("Bucket")
+    elif normalized == "s3":
+        if not str(config.get("bucket") or "").strip():
+            missing.append("Bucket")
+    elif normalized == "remote":
+        if not str(config.get("base_url") or "").strip():
+            missing.append("服务器地址")
+        if not str(config.get("namespace") or "").strip():
+            missing.append("命名空间")
+    if missing:
+        raise HTTPException(status_code=422, detail="缺少必填配置：" + "、".join(missing))
+    return normalized
+
+
+def _public_storage_source(source: StorageSource) -> Dict[str, Any]:
+    state = {"configured": False, "masked": ""}
+    if source.secret_ref:
+        state = storage_credentials().public_state(source.secret_ref)
+    return source.to_public_dict(
+        secret_configured=bool(state["configured"]),
+        secret_masked=str(state["masked"]),
+    )
+
+
+def _raise_storage_error(error: StorageError, *, status_code: int = 503):
+    body = error.to_public_dict()
+    raise PlatformError(
+        code=str(body["code"]), message=str(body["message"]),
+        detail=str(body["detail"]), solution=str(body["solution"]),
+        status_code=status_code,
+    ) from error
+
+
+@app.get("/api/v61/storage-sources")
+def list_storage_sources():
+    return {"items": [_public_storage_source(source) for source in storage_source_repository().list()]}
+
+
+@app.post("/api/v61/storage-sources", status_code=201)
+def create_storage_source(payload: StorageSourceCreateReq):
+    source_id = str(payload.id or f"storage_{uuid.uuid4().hex[:12]}")
+    source_type = _validate_storage_source_config(payload.type, payload.config)
+    reference = secret_ref("storage-source", source_id) if payload.credentials else ""
+    repository = storage_source_repository()
+    try:
+        source = repository.create({
+            "id": source_id, "name": payload.name, "type": source_type,
+            "config": payload.config, "secret_ref": reference, "enabled": payload.enabled,
+        })
+        if payload.credentials:
+            try:
+                storage_credentials().set(reference, payload.credentials)
+            except Exception:
+                repository.delete(source_id)
+                raise
+        return _public_storage_source(source)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(status_code=409, detail="存储源名称或 ID 已存在") from error
+
+
+@app.patch("/api/v61/storage-sources/{source_id}")
+def update_storage_source(source_id: str, payload: StorageSourceUpdateReq):
+    repository = storage_source_repository()
+    current = repository.get(source_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="存储源不存在")
+    changes = payload.model_dump(exclude_unset=True)
+    credentials = changes.pop("credentials", None)
+    clear_credentials = bool(changes.pop("clear_credentials", False))
+    changes = {key: value for key, value in changes.items() if value is not None}
+    if "config" in changes:
+        _validate_storage_source_config(current.type, changes["config"])
+    reference = current.secret_ref or secret_ref("storage-source", source_id)
+    if credentials is not None:
+        if credentials:
+            storage_credentials().set(reference, credentials)
+            changes["secret_ref"] = reference
+        else:
+            storage_credentials().delete(reference)
+            changes["secret_ref"] = ""
+    elif clear_credentials:
+        storage_credentials().delete(reference)
+        changes["secret_ref"] = ""
+    try:
+        return _public_storage_source(repository.update(source_id, changes))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/v61/storage-sources/{source_id}/default")
+def set_default_storage_source(source_id: str):
+    try:
+        return _public_storage_source(storage_source_repository().set_default(source_id))
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/v61/storage-sources/{source_id}/test")
+def test_storage_source(source_id: str):
+    repository = storage_source_repository()
+    source = repository.get(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="存储源不存在")
+    secret = storage_credentials().get(source.secret_ref) if source.secret_ref else {}
+    try:
+        provider = StorageProviderFactory(
+            data_dir=DATA_DIR, project_dir=DATA_DIR / "projects",
+            credentials={source.id: secret or {}},
+        ).create(source)
+        health = provider.health_check()
+    except StorageError as error:
+        repository.record_health(source_id, ok=False, message=str(error))
+        _raise_storage_error(error)
+    repository.record_health(source_id, ok=health.ok, message=health.message)
+    if not health.ok:
+        raise PlatformError(
+            code="STORAGE_HEALTH_CHECK_FAILED", message="素材存储连接检测失败",
+            detail=health.message,
+            solution="请检查 Endpoint、Bucket、凭据、网络和访问权限。",
+            status_code=503,
+        )
+    return {"ok": True, "health": {"ok": health.ok, "status": health.status, "message": health.message, "details": dict(health.details)}, "source": _public_storage_source(repository.get(source_id))}
+
+
+@app.delete("/api/v61/storage-sources/{source_id}")
+def delete_storage_source(source_id: str):
+    repository = storage_source_repository()
+    source = repository.get(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="存储源不存在")
+    try:
+        repository.delete(source_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if source.secret_ref:
+        storage_credentials().delete(source.secret_ref)
+    return {"ok": True, "deleted_id": source_id}
+
+
+@app.get("/api/v61/projects/{project_id}/materials")
+def list_materials_v61(
+    project_id: str, cursor: Optional[str] = None, limit: int = 100,
+    query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
+    processing_status: Optional[str] = None,
+    label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
+):
+    get_project(project_id)
+    try:
+        page = material_store(project_id).list_page(
+            cursor=cursor, limit=limit, query=query,
+            storage_source_ids=storage_source_id, processing_status=processing_status,
+            labels=label, annotated=annotated,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "items": [public_material(project_id, item) for item in page.items],
+        "next_cursor": page.next_cursor, "total": page.total,
+    }
+
+
+@app.get("/api/v61/projects/{project_id}/materials/ids")
+def list_material_ids_v61(
+    project_id: str, cursor: Optional[str] = None, limit: int = 1000,
+    query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
+    processing_status: Optional[str] = None,
+    label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
+):
+    get_project(project_id)
+    page = material_store(project_id).list_ids(
+        cursor=cursor, limit=limit, query=query,
+        storage_source_ids=storage_source_id, processing_status=processing_status,
+        labels=label, annotated=annotated,
+    )
+    return {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
+
+
+@app.get("/api/v61/projects/{project_id}/materials/{image_id}/content")
+def material_content_v61(project_id: str, image_id: str):
+    get_project(project_id)
+    manager = storage_manager(project_id)
+    row = manager.material(image_id)
+    try:
+        if str(row.get("storage_type")) != "local":
+            signed = manager.preview_url(row)
+            if signed:
+                return RedirectResponse(signed, status_code=307)
+        resolved = manager.materialize(row)
+        return FileResponse(resolved.path)
+    except StorageError as error:
+        _raise_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
 
 
 def normalize_label(name: str) -> str:
@@ -1127,7 +1407,11 @@ def add_image_record(project_id: str, src: Path, original_name: str, source_type
         "id": img_id,
         "filename": original_name,
         "stored_name": dst_name,
-        "url": f"/data/projects/{project_id}/uploads/{dst_name}",
+        "url": material_content_url(project_id, img_id),
+        "storage_source_id": "default_local",
+        "storage_type": "local",
+        "object_key": f"uploads/{dst_name}",
+        "content_sha256": sha256_file(dst),
         "width": info["width"],
         "height": info["height"],
         "source_type": source_type,
@@ -2305,6 +2589,7 @@ def list_images(project_id: str, dataset_id: Optional[str] = None):
     if any(not x.get("annotation_summary_at") for x in all_images):
         _v52_schedule_annotation_index(project_id, all_images)
     for img in all_images:
+        img.update(public_material(project_id, img))
         img.setdefault("box_count", 0)
         img.setdefault("annotated", bool(img.get("box_count")))
         img.setdefault("labels", [])
