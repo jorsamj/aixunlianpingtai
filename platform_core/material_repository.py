@@ -305,8 +305,12 @@ class MaterialRepository:
             clauses.append("m.storage_source_id IN (" + ",".join("?" for _ in sources) + ")")
             params.extend(sources)
         if processing_status:
-            clauses.append("m.processing_status = ?")
-            params.append(str(processing_status))
+            normalized_status = str(processing_status).strip().lower()
+            if normalized_status == "unprocessed":
+                clauses.append("m.processing_status IN ('unprocessed','pending_decision','cleaning')")
+            else:
+                clauses.append("m.processing_status = ?")
+                params.append(normalized_status)
         if annotated is not None:
             clauses.append("m.annotated = ?")
             params.append(int(bool(annotated)))
@@ -445,16 +449,54 @@ class MaterialRepository:
         return self._row_payload(row) if row else None
 
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
-        """Compatibility transaction for legacy callers; new code must use set-based APIs."""
+        """Compatibility transaction for legacy callers without full-table rewrite.
+
+        Legacy callbacks still receive all rows, so they remain unsuitable for million-row hot
+        paths. This compatibility layer now diffs the callback result and persists only rows that
+        actually changed, were added, or were removed.
+        """
         with self._connect() as database:
             database.execute("BEGIN IMMEDIATE")
             try:
-                rows = [self._row_payload(row) for row in database.execute("SELECT payload_json FROM materials ORDER BY created_at, id").fetchall()]
+                stored = database.execute(
+                    "SELECT id, payload_json FROM materials ORDER BY created_at, id"
+                ).fetchall()
+                before_payload = {str(row["id"]): str(row["payload_json"]) for row in stored}
+                rows = [self._row_payload(row) for row in stored]
                 result = fn(rows)
-                database.execute("DELETE FROM materials")
-                for row in rows:
-                    self._write_row(database, row)
-                self._bump_revision(database)
+
+                after: dict[str, dict[str, Any]] = {}
+                after_payload: dict[str, str] = {}
+                for value in rows:
+                    normalized = normalize_material(value)
+                    image_id = normalized["id"]
+                    if image_id in after:
+                        raise ValueError(f"素材 id 重复：{image_id}")
+                    after[image_id] = normalized
+                    after_payload[image_id] = json.dumps(
+                        normalized,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+
+                deleted_ids = [image_id for image_id in before_payload if image_id not in after]
+                changed_ids = [
+                    image_id
+                    for image_id, payload in after_payload.items()
+                    if before_payload.get(image_id) != payload
+                ]
+
+                if deleted_ids:
+                    placeholders = ",".join("?" for _ in deleted_ids)
+                    database.execute(
+                        f"DELETE FROM materials WHERE id IN ({placeholders})",
+                        deleted_ids,
+                    )
+                for image_id in changed_ids:
+                    self._write_row(database, after[image_id])
+                if deleted_ids or changed_ids:
+                    self._bump_revision(database)
                 database.execute("COMMIT")
             except Exception:
                 database.execute("ROLLBACK")
