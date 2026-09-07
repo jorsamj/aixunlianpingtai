@@ -37,6 +37,16 @@ class StorageProviderFactory:
                 if not root.is_absolute():
                     root = self.data_dir / root
             return LocalStorageProvider(source.id, root)
+        secret = dict(self.credentials.get(source.id) or {})
+        if source_type is StorageType.REMOTE:
+            from .remote import RemoteStorageProvider
+            return RemoteStorageProvider(source.id, source.config, secret)
+        if source_type is StorageType.S3:
+            from .s3 import S3StorageProvider
+            return S3StorageProvider(source.id, source.config, secret)
+        if source_type is StorageType.OSS:
+            from .oss import OSSStorageProvider
+            return OSSStorageProvider(source.id, source.config, secret)
         raise StorageError(
             code="STORAGE_PROVIDER_UNAVAILABLE",
             message="当前存储 Provider 尚不可用",
@@ -44,4 +54,3 @@ class StorageProviderFactory:
             solution="请安装对应 SDK 并配置 Worker。",
             context={"source_id": source.id, "storage_type": source_type.value},
         )
-
