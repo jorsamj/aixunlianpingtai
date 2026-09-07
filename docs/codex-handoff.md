@@ -5,7 +5,7 @@
 - 工作分支：`feat/windows-p0`
 - 稳定主分支：`main`
 - 本轮接管起点：`f42313f`（Codex 在额度耗尽前保存的 WIP）
-- 当前版本：`42.22.2`
+- 当前版本：`42.22.3`
 
 > 在前端、真实对象存储和回归测试完成前，不要直接合并 `main`。
 
@@ -122,34 +122,109 @@
 - `static/main.mjs`
 
 修复内容：
-- 当前版本统一为 `42.22.2`。
+- 当前版本统一为 `42.22.3`。
 - `app.js` / `main.mjs` / `styles.css` 查询版本同步更新。
-- `storage.js` module cache key 更新为 `422202`，避免浏览器继续使用修复前的存储配置逻辑。
+- `storage.js` module cache key 已更新，避免浏览器继续使用修复前逻辑。
+
+### 9. 主素材页面接入服务端分页（v42.22.3）
+
+新增/修改：
+- `static/material-pagination-bootstrap.js`
+- `static/modules/material-pagination-runtime.js`
+- `static/main.mjs`
+- `static/index.html`
+- `tests/frontend/material-pagination-runtime.test.mjs`
+
+实现原则：
+- 不直接重写已经叠加很多版本逻辑的 `static/app.js`，通过独立分页运行时收口风险。
+- Bootstrap 在 `app.js` 之前安装 fetch 兼容层；普通页面初次 `loadRelated()` 对旧 `/api/projects/{id}/images` 请求只取 v61 当前页，默认 48 张，避免刷新就加载全部素材。
+- “数据集”页面使用 `/api/v61/projects/{id}/materials` cursor pagination。
+- 搜索、来源、处理状态、标签 OR、标注状态都传给服务端筛选，不再只筛当前浏览器内存中的全量数组。
+- 未处理状态在 Repository 层统一覆盖 `unprocessed / pending_decision / cleaning`。
+- 上一页/下一页使用 cursor stack，不使用高 offset 扫描。
+- “清洗当前素材 / 当前素材无需清洗”使用 `/materials/ids` 分页只读取 image_id，再提交批量任务，不把几十万条完整素材元数据拉到浏览器。
+- 训练任务、自动标注/清洗、质量中心、测试发布、部署测试、自动迭代暂时保留 full material mode，进入这些旧工作流时重新加载完整素材池，优先保证训练/评测正确性，避免只看到第一页。
+- 普通页面的摘要数量由服务端 total 补正；总标注框尚无独立 aggregate API，因此分页模式明确显示“当前页标注框”，不伪装成全库框数量。
+
+当前状态：
+- 代码已实现并提交。
+- 纯函数/静态加载顺序测试已补。
+- 尚未在用户 Windows 浏览器和 Playwright 中真实执行，因此不能标记“验收通过”。
+
+### 10. `MaterialRepository.mutate()` 去掉全表重写（v42.22.3）
+
+修改：
+- `platform_core/material_repository.py`
+- `tests/unit/test_material_repository.py`
+
+以前兼容 `mutate()` 每次都会：
+1. 读取全表；
+2. 执行旧 callback；
+3. `DELETE FROM materials`；
+4. 全量重新 INSERT；
+5. 重建所有 label rows。
+
+现在：
+- 为兼容旧 callback，仍会读取全表；
+- callback 完成后对比变更前/后的 normalized payload；
+- 只 DELETE 真正删除的 ID；
+- 只 `_write_row()` 真正新增/改变的素材；
+- 没有变化时不 bump revision；
+- 不再每次清空并重建整个 materials 表。
+
+这显著降低了旧功能的小批量操作写放大和 WAL 压力，但它仍不是百万行热路径的最终方案。
 
 ## 已知未完成 / 不得误报为完成
 
-### P0：主素材页面仍未真正使用服务端分页
+### P0：服务端分页已接入，但仍需真实浏览器回归
 
-虽然已经有：
-- `GET /api/v61/projects/{project_id}/materials`
-- `GET /api/v61/projects/{project_id}/materials/ids`
-- SQLite cursor pagination
+v42.22.3 已经实现主素材页面的服务端 cursor pagination，但在合并前必须真实验证：
+- 页面刷新不再请求全量 `/images` 数据；
+- 未处理/已处理切换；
+- 标签 OR 筛选；
+- 名称搜索；
+- 来源筛选；
+- 已标注/未标注；
+- 上一页/下一页；
+- 当前筛选批量清洗/无需清洗；
+- 上传后当前页刷新；
+- 标注保存后当前页刷新；
+- 从数据页进入训练任务后完整素材池恢复；
+- 训练全选/反选/精确 image_id 行为不受分页影响；
+- 自动标注、质量中心、测试发布/部署测试不只看到第一页。
 
-但旧主页面仍通过 `/api/projects/{project_id}/images` 一次读取全部素材到 `state.images`。
+在 Playwright/Windows 实测前，不得写成“10万/50万/100万素材页面已验收”。
 
-因此当前不能宣称整个系统已经支持 10 万 / 50 万 / 100 万素材规模。需要把素材列表、训练选择器、筛选与“全选”逐步切换到服务端分页/ID 查询。
+### P0：继续把高频旧 `mutate()` 调用改成 set-based API
 
-> 这个改动影响现有页面状态模型和训练选择器，不能用临时 monkey patch 草率切换；应作为下一轮独立性能收口任务完成并做浏览器回归。
+`mutate()` 已不再全表 DELETE+重建，但 legacy callback 仍然需要先读取全表。
 
-### P0：`MaterialRepository.mutate()` 仍是全表兼容事务
+后续应优先把这些高频操作迁移成 `patch / upsert / remove`：
+- 单张/批量 split 更新；
+- 自动划分；
+- 清洗确认/无需清洗；
+- AI/导入决策后的素材状态 patch；
+- 训练补充素材 split 更新。
 
-旧代码仍有多处调用 `mutate()`；其实现会读取全表并重写全部 rows。大规模素材下必须逐步改成 set-based `patch/upsert/remove`，不能继续依赖全表 mutate。
+复杂的历史“数据集物理删除恢复事务”先保留兼容流程，不在没有完整回归时强拆。
 
 ### P0：存储扫描没有可证明的真实总百分比
 
 对象存储 list API 在流式扫描前通常不知道总对象数。当前已改为显示真实扫描计数，但前端仍可能同时显示旧 `progress` 百分比。
 
 不要伪造百分比。后续应将扫描 UI 改为“已扫描 N 个 / 可导入 M 张”的 indeterminate 进度，只有能确定总数时才显示百分比。
+
+### P1：专用工作流仍采用 full material mode
+
+为了不破坏现有训练/自动标注/质量/发布逻辑，v42.22.3 在这些页面仍会加载完整素材池。
+
+下一阶段可逐步将：
+- 训练素材选择器；
+- AI 标注选择器；
+- 质量中心；
+- 发布/部署测试素材选择；
+
+改成服务端分页 + `/materials/ids` 的 exact image-id 合同。完成前不要为了“全站零全量读取”牺牲任务正确性。
 
 ### P1：真实 MinIO / OSS 尚未在本机证明执行
 
@@ -200,12 +275,14 @@ Codex 在额度耗尽前报告：
 
 但这只是 Codex 当时本机输出，GitHub 当前没有对应 CI status，不能视为独立验证。
 
-人工接管后的修改尚未在用户 Windows 环境执行完整回归。当前用户网络无法连接 `github.com:443`，所以本地 worktree 暂时也尚未拉取 `42.22.2`。
+人工接管后的修改尚未在用户 Windows 环境执行完整回归。当前用户网络无法连接 `github.com:443`，所以本地 worktree 暂时也尚未拉取 `42.22.3`。
 
 当前状态必须写作：
 
 - 代码已提交到 `feat/windows-p0`：是
 - 静态审查：已完成本轮重点项
+- MaterialRepository differential mutate：已实现，待本机测试
+- 主素材服务端分页：已实现，待浏览器/Playwright 回归
 - 后端全量回归（人工接管后）：待执行
 - 前端单测（人工接管后）：待执行
 - Playwright（人工接管后）：待执行
@@ -220,18 +297,19 @@ Codex 在额度耗尽前报告：
 1. `git checkout feat/windows-p0`
 2. `git pull`
 3. 阅读本文件。
-4. 先运行与本轮相关的定向测试：
+4. 先运行定向测试：
    - `tests/unit/test_material_repository.py`
    - `tests/api/test_material_storage_deletion.py`
-   - storage frontend tests
+   - `tests/frontend/material-pagination-runtime.test.mjs`
+   - `tests/frontend/storage-source-ui.test.mjs`
    - storage provider unit tests
    - storage import worker integration tests
-   - storage source Playwright
-5. 若定向测试通过，再跑完整前端测试和 Playwright。
-6. 最后再跑全量后端回归。
-7. 只修真实失败，不重构无关模块。
-8. 不恢复 dataset grouping，不恢复训练按 dataset 展开。
-9. 完成后报告：失败原因、修改文件、测试命令、结果、commit SHA。
+5. 再运行素材分页相关 Playwright：刷新、筛选、翻页、批量动作、进入训练页面恢复完整素材池。
+6. 若定向测试通过，再跑完整前端测试和 Playwright。
+7. 最后再跑全量后端回归。
+8. 只修真实失败，不重构无关模块。
+9. 不恢复 dataset grouping，不恢复训练按 dataset 展开。
+10. 完成后报告：失败原因、修改文件、测试命令、结果、commit SHA。
 
 ## 合并 main 的门槛
 
@@ -241,6 +319,8 @@ Codex 在额度耗尽前报告：
 - Local / OSS / S3 / Remote 的连接错误真实可见；
 - 外部索引导入不复制源文件；
 - 历史外部素材即使没有 stored_name 也可被旧导出/构建链路安全命名；
+- 主素材页面 server-side paging 真实浏览器回归通过；
+- 训练/自动标注/质量/发布工作流不会因为分页只看到第一页；
 - 本地 + 外部素材可混合进入 Training Worker；
 - SHA mismatch 阻止训练；
 - 外部删除默认只删索引；
