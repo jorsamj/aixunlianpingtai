@@ -65,6 +65,32 @@ def test_batch_external_delete_is_index_only_unless_explicitly_confirmed(client,
     assert (root / second["object_key"]).is_file()
 
 
+def test_batch_external_source_delete_requires_confirmation(client, tmp_path):
+    project_id, _source_id, root, row = create_external_material(client, tmp_path)
+    source_file = root / row["object_key"]
+
+    refused = client.post(
+        f"/api/v46/projects/{project_id}/images/batch-delete",
+        json={"image_ids": [row["id"]], "delete_source": True},
+    )
+    assert refused.status_code == 409
+    assert app_module.material_store(project_id).get(row["id"]) is not None
+    assert source_file.is_file()
+
+    deleted = client.post(
+        f"/api/v46/projects/{project_id}/images/batch-delete",
+        json={
+            "image_ids": [row["id"]],
+            "delete_source": True,
+            "confirmation": "DELETE_SOURCE",
+        },
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted"] == 1
+    assert app_module.material_store(project_id).get(row["id"]) is None
+    assert not source_file.exists()
+
+
 def test_storage_source_with_material_references_cannot_be_deleted(client, tmp_path):
     project_id, source_id, _root, row = create_external_material(client, tmp_path)
     blocked = client.delete(f"/api/v61/storage-sources/{source_id}")
