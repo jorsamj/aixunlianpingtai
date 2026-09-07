@@ -14,7 +14,7 @@ import {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, i
 import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
-import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422200';
+import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 
 
 const modalStack = createModalStack();
