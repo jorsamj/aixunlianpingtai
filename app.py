@@ -2720,7 +2720,10 @@ def v52_annotation_index_status(project_id: str):
 
 
 @app.delete("/api/projects/{project_id}/images/{image_id}")
-def delete_image(project_id: str, image_id: str):
+def delete_image(
+    project_id: str, image_id: str,
+    delete_source: Optional[bool] = None, confirmation: str = "",
+):
     get_project(project_id)
     p = project_dir(project_id)
     images = load_images(project_id)
@@ -2730,16 +2733,26 @@ def delete_image(project_id: str, image_id: str):
             target = img
     if not target:
         raise HTTPException(status_code=404, detail="图片不存在")
-    (p / "uploads" / target["stored_name"]).unlink(missing_ok=True)
+    source_id = str(target.get("storage_source_id") or "default_local")
+    should_delete_source = source_id == "default_local" if delete_source is None else bool(delete_source)
+    if should_delete_source and source_id != "default_local" and confirmation != "DELETE_SOURCE":
+        raise HTTPException(status_code=409, detail="删除外部源文件需要二次确认")
+    if should_delete_source:
+        try:
+            storage_manager(project_id).delete_source_file(target)
+        except StorageError as error:
+            _raise_storage_error(error)
     (p / "annotations" / f"{image_id}.json").unlink(missing_ok=True)
     material_store(project_id).remove([image_id])
-    return {"ok": True}
+    return {"ok": True, "source_deleted": should_delete_source, "index_deleted": True}
 
 
 
 
 class V46BatchDeleteImagesReq(BaseModel):
     image_ids: List[str]
+    delete_source: Optional[bool] = None
+    confirmation: str = ""
 
 
 @app.post("/api/v46/projects/{project_id}/images/batch-delete")
@@ -2750,6 +2763,12 @@ def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
         return {"ok": True, "deleted": 0, "deleted_images": [], "failed_items": []}
     p = project_dir(project_id)
     images = load_images(project_id)
+    selected_rows = [img for img in images if str(img.get("id")) in ids]
+    if payload.delete_source is True and payload.confirmation != "DELETE_SOURCE" and any(
+        str(img.get("storage_source_id") or "default_local") != "default_local"
+        for img in selected_rows
+    ):
+        raise HTTPException(status_code=409, detail="删除外部源文件需要二次确认")
     deleted_images = []
     failed_items = []
     found_ids = set()
@@ -2758,11 +2777,23 @@ def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
         if image_id not in ids:
             continue
         found_ids.add(image_id)
-        errors = delete_material_files(p, img)
+        errors = []
+        source_id = str(img.get("storage_source_id") or "default_local")
+        should_delete_source = source_id == "default_local" if payload.delete_source is None else bool(payload.delete_source)
+        if should_delete_source:
+            try:
+                storage_manager(project_id).delete_source_file(img)
+            except StorageError as error:
+                errors.append(f"源文件删除失败：{error.detail or error.message}")
+        if not errors:
+            try:
+                (p / "annotations" / f"{image_id}.json").unlink(missing_ok=True)
+            except OSError as error:
+                errors.append(f"标注文件删除失败：{error}")
         if errors:
             failed_items.append({"id": image_id, "filename": img.get("filename"), "errors": errors})
             continue
-        deleted_images.append({"id": image_id, "filename": img.get("filename")})
+        deleted_images.append({"id": image_id, "filename": img.get("filename"), "source_deleted": should_delete_source})
     for missing_id in sorted(ids - found_ids):
         failed_items.append({"id": missing_id, "filename": "", "errors": ["图片不存在"]})
     if deleted_images:
