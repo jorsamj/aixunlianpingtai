@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
+from platform_core.storage import StorageSourceRepository
 from platform_core.training_tasks import TrainingHandler
 
 
@@ -21,6 +22,8 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         encoding="utf-8",
     )
     images = []
+    external_root = tmp_path / "external-materials"
+    (external_root / "incoming").mkdir(parents=True)
     for index in range(8):
         image_id = f"image-{index}"
         stored_name = f"{image_id}.jpg"
@@ -40,12 +43,30 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
                 "annotated": True,
             }
         )
+        if index in {1, 4}:
+            external_path = external_root / "incoming" / stored_name
+            image_path.replace(external_path)
+            images[-1].update(
+                {
+                    "storage_source_id": "external_local",
+                    "storage_type": "local",
+                    "object_key": f"incoming/{stored_name}",
+                }
+            )
         (project / "annotations" / f"{image_id}.json").write_text(
             json.dumps({"image_id": image_id, "boxes": boxes}), encoding="utf-8"
         )
     (project / "images.json").write_text(json.dumps(images), encoding="utf-8")
     (project / "algorithms.json").write_text(
         json.dumps([{"id": "algorithm-one", "name": "fire", "versions": []}]), encoding="utf-8"
+    )
+    StorageSourceRepository(data_dir / "storage" / "storage_sources.sqlite3").create(
+        {
+            "id": "external_local",
+            "name": "External local",
+            "type": "local",
+            "config": {"root": str(external_root)},
+        }
     )
 
     runtime = data_dir / "task_runtime"
@@ -107,7 +128,7 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     )
     assert scheduler.run_once() is True
     task = repository.get("task-one")
-    assert task is not None and task.status is TaskStatus.SUCCEEDED
+    assert task is not None and task.status is TaskStatus.SUCCEEDED, task.error if task else "missing task"
     result = artifacts.read_json("task-one", task.result_ref)
     assert result["counts"] == {"train": 4, "validation": 1, "test": 2, "total": 7}
     snapshot = artifacts.read_json("task-one", "snapshot.json")
@@ -115,6 +136,14 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert result["base_selection_reason"] == "mother_model"
     assert result["verified_models"][0]["size_bytes"] > 0
     assert (artifacts.artifact_path("task-one", "work/bundle/manifest.json")).is_file()
+    bundle_manifest = artifacts.read_json("task-one", "work/bundle/manifest.json")
+    bundled_ids = {
+        item["image_id"]
+        for role in ("train", "validation", "test")
+        for item in bundle_manifest["splits"][role]
+    }
+    assert "image-1" in bundled_ids and "image-4" in bundled_ids
+    assert not (project / "uploads" / "image-1.jpg").exists()
     versions = json.loads((project / "algorithms.json").read_text(encoding="utf-8"))[0]["versions"]
     assert len(versions) == 1
     assert versions[0]["training_status"] == "SUCCEEDED"

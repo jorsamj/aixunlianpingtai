@@ -384,6 +384,22 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     assert not payload.get("train_dataset_ids")
 
 
+def test_training_route_rejects_dataset_group_contract(client, seeded_project):
+    project_id, _ = seeded_project
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "split_mode": "random_test_from_training_pool",
+            "train_dataset_ids": ["legacy-dataset"],
+            "train_image_ids": ["train-a", "train-b"],
+            "experiment_percent": 20,
+            "validation_percent": 20,
+        },
+    )
+    assert response.status_code == 422
+    assert "image_id" in response.text
+
+
 @pytest.mark.parametrize("percent", [1, 12.5, 37, 99])
 def test_explicit_random_test_percentage_is_accepted(client, seeded_project, percent):
     project_id, _ = seeded_project

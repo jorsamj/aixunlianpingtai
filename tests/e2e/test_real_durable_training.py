@@ -69,7 +69,7 @@ def test_real_durable_worker_produces_reloadable_yolo_model(tmp_path: Path):
             "algorithm_asset_id": "real-algorithm",
             "model": str(model),
             "split_mode": "random_test_from_training_pool",
-            "train_image_ids": [f"image-{index}" for index in range(8)],
+            "train_image_ids": [f"real-{index}" for index in range(8)],
             "test_image_ids": [],
             "experiment_percent": 25,
             "validation_percent": 20,

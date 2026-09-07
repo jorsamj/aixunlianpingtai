@@ -58,7 +58,14 @@ def _source(tmp_path: Path):
 
 def test_materialized_yaml_is_relative_verified_and_relocatable(tmp_path: Path):
     project, rows, snapshot = _source(tmp_path)
-    bundle = materialize_portable_dataset(tmp_path / "task", snapshot, rows, project)
+    requested = []
+
+    def materialize(row):
+        requested.append(row["id"])
+        return project / "uploads" / row["stored_name"]
+
+    bundle = materialize_portable_dataset(tmp_path / "task", snapshot, rows, materialize)
+    assert requested == ["image-0", "image-1", "image-2", "image-3"]
     data = yaml.safe_load((bundle / "dataset" / "data.yaml").read_text(encoding="utf-8"))
     assert data["path"] == "."
     assert data["train"] == "images/train"
@@ -77,7 +84,12 @@ def test_materialized_yaml_is_relative_verified_and_relocatable(tmp_path: Path):
 
 def test_verifier_rejects_tampered_image(tmp_path: Path):
     project, rows, snapshot = _source(tmp_path)
-    bundle = materialize_portable_dataset(tmp_path / "task", snapshot, rows, project)
+    bundle = materialize_portable_dataset(
+        tmp_path / "task",
+        snapshot,
+        rows,
+        lambda row: project / "uploads" / row["stored_name"],
+    )
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     member = manifest["splits"]["train"][0]
     (bundle / member["image_ref"]).write_bytes(b"tampered")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import time
 import uuid
 
 import app as app_module
@@ -41,6 +42,23 @@ def test_upload_to_selected_storage_source_enters_unified_pool(client, tmp_path)
     page = client.get(f"/api/v61/projects/{project['id']}/materials", params={"storage_source_id": source_id})
     assert [item["id"] for item in page.json()["items"]] == [row["id"]]
     assert client.get(row["url"]).content == image_bytes()
+
+    clean = client.post(
+        f"/api/v47/projects/{project['id']}/clean-tasks",
+        json={"image_ids": [row["id"]], "near_duplicate": False},
+    )
+    clean.raise_for_status()
+    task_id = clean.json()["id"]
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        result = client.get(
+            f"/api/v47/projects/{project['id']}/clean-tasks/{task_id}/result"
+        ).json()
+        if result["task"]["status"] in {"awaiting_confirmation", "failed"}:
+            break
+        time.sleep(0.05)
+    assert result["task"]["status"] == "awaiting_confirmation", result["task"]
+    assert result["task"]["processed_images"] == 1
 
 
 def test_failed_provider_upload_does_not_create_material_index(client, tmp_path):

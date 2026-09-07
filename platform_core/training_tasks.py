@@ -18,7 +18,10 @@ import yaml
 
 from .annotations import atomic_write_json
 from .algorithms import attach_version, choose_iteration_base, list_algorithms
+from .material_repository import MaterialRepository
+from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import build_snapshot
+from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 
@@ -113,7 +116,7 @@ def materialize_portable_dataset(
     task_root: str | Path,
     snapshot: Mapping[str, Any],
     source_images: Sequence[Mapping[str, Any]],
-    project_root: str | Path,
+    materialize: Callable[[Mapping[str, Any]], str | Path],
 ) -> Path:
     root = Path(task_root).resolve() / "bundle"
     manifest_path = root / "manifest.json"
@@ -124,7 +127,6 @@ def materialize_portable_dataset(
         verify_portable_dataset(manifest_path)
         return root
 
-    project = Path(project_root).resolve()
     by_id = {str(row.get("id")): row for row in source_images}
     schema = sorted(
         (dict(item) for item in (snapshot.get("label_schema") or []) if item.get("code")),
@@ -140,16 +142,17 @@ def materialize_portable_dataset(
             locked = snapshot_records.get(str(image_id))
             if row is None or locked is None:
                 raise ValueError(f"snapshot image is unavailable: {image_id}")
-            stored_name = Path(str(row.get("stored_name") or "")).name
-            if not stored_name:
-                raise ValueError(f"snapshot image has no stored name: {image_id}")
+            original_name = str(row.get("filename") or row.get("stored_name") or row.get("object_key") or "")
+            suffix = Path(original_name).suffix.lower() or ".jpg"
+            stored_name = f"{image_id}{suffix}"
             expected_hash = str(locked.get("content_sha256") or "")
             if not expected_hash:
                 raise ValueError(f"snapshot image has no content SHA256: {image_id}")
             image_ref = f"dataset/images/{role}/{stored_name}"
             label_ref = f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
             destination = _resolve_relative(root, image_ref)
-            _copy_or_link_verified(project / "uploads" / stored_name, destination, expected_hash)
+            source_path = Path(materialize(row)).resolve()
+            _copy_or_link_verified(source_path, destination, expected_hash)
             lines = []
             for box in row.get("boxes") or []:
                 label = str(box.get("label") or "").strip()
@@ -283,25 +286,26 @@ def _json(path: Path, default: Any) -> Any:
         return default
 
 
-def _project_images(project: Path) -> list[dict[str, Any]]:
-    value = _json(project / "images.json", [])
-    rows = value.get("items", []) if isinstance(value, dict) else value
-    if not isinstance(rows, list):
-        raise ValueError("images.json must contain an array")
+def _selected_project_images(
+    materials: MaterialRepository,
+    project: Path,
+    image_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    wanted = tuple(dict.fromkeys(str(value).strip() for value in image_ids if str(value).strip()))
+    if not wanted:
+        raise ValueError("train_image_ids 不能为空")
+    rows = materials.get_many(wanted)
+    found = {str(row.get("id")) for row in rows}
+    missing = [image_id for image_id in wanted if image_id not in found]
+    if missing:
+        raise ValueError(f"所选素材不存在: {', '.join(missing[:5])}")
+    by_id = {str(row.get("id")): row for row in rows}
     result = []
-    for source in rows:
-        row = dict(source)
+    for image_id in wanted:
+        row = dict(by_id[image_id])
         image_id = str(row.get("id") or "")
         annotation = _json(project / "annotations" / f"{image_id}.json", {})
         row["boxes"] = list(annotation.get("boxes") or row.get("boxes") or [])
-        stored_name = Path(str(row.get("stored_name") or "")).name
-        image_path = project / "uploads" / stored_name
-        if image_path.is_file():
-            actual_hash = _sha256(image_path)
-            recorded_hash = str(row.get("content_sha256") or "")
-            if recorded_hash and recorded_hash != actual_hash:
-                raise ValueError(f"material content hash changed: {image_id}")
-            row["content_sha256"] = actual_hash
         result.append(row)
     return result
 
@@ -451,20 +455,23 @@ class TrainingHandler:
         if not (project / "meta.json").is_file():
             raise FileNotFoundError("training project does not exist")
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 2, "hashing")
-        images = _project_images(project)
         train_image_ids = tuple(payload.get("train_image_ids") or ())
         test_image_ids = tuple(payload.get("test_image_ids") or ())
-        if not train_image_ids and payload.get("train_dataset_ids"):
-            legacy_train_datasets = {str(value) for value in payload.get("train_dataset_ids") or ()}
-            legacy_test_datasets = {str(value) for value in payload.get("test_dataset_ids") or ()}
-            train_image_ids = tuple(
-                str(row.get("id")) for row in images
-                if str(row.get("dataset_id") or "") in legacy_train_datasets
-            )
-            test_image_ids = tuple(
-                str(row.get("id")) for row in images
-                if str(row.get("dataset_id") or "") in legacy_test_datasets
-            )
+        if payload.get("train_dataset_ids") or payload.get("test_dataset_ids"):
+            raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止数据集分组回退")
+        materials = MaterialRepository(project)
+        images = _selected_project_images(materials, project, (*train_image_ids, *test_image_ids))
+        credentials = SecretCredentialStore(KeyringSecretStore())
+        storage = StorageManager(
+            data_dir=self.data_dir,
+            project_id=context.task.project_id,
+            materials=materials,
+            credentials=credentials,
+        )
+        for row in images:
+            resolved = storage.materialize(row)
+            row["content_sha256"] = resolved.content_sha256
+            row["size_bytes"] = resolved.size_bytes
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
             train_image_ids=train_image_ids,
@@ -481,7 +488,7 @@ class TrainingHandler:
             context.artifacts.artifact_path(context.task.task_id, "work"),
             snapshot,
             images,
-            project,
+            lambda row: storage.materialize(row).path,
         )
         verification = verify_portable_dataset(bundle / "manifest.json")
 

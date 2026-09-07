@@ -63,6 +63,26 @@ def test_storage_source_validation_and_wrong_remote_credentials_are_truthful(cli
     assert tested.json()["code"] == "STORAGE_HEALTH_CHECK_FAILED"
     assert "wrong-secret" not in tested.text
 
+    oss_id = "oss_" + uuid.uuid4().hex[:8]
+    oss = client.post("/api/v61/storage-sources", json={
+        "id": oss_id, "name": oss_id, "type": "oss",
+        "config": {
+            "endpoint": "http://127.0.0.1:1",
+            "bucket": "unreachable-bucket",
+            "timeout_seconds": 1,
+        },
+        "credentials": {
+            "access_key_id": "invalid-id",
+            "access_key_secret": "invalid-oss-secret",
+        },
+    })
+    assert oss.status_code == 201, oss.text
+    assert "invalid-oss-secret" not in oss.text
+    oss_test = client.post(f"/api/v61/storage-sources/{oss_id}/test")
+    assert oss_test.status_code == 503
+    assert oss_test.json()["code"] == "STORAGE_HEALTH_CHECK_FAILED"
+    assert "invalid-oss-secret" not in oss_test.text
+
 
 def test_default_local_is_always_present_and_cannot_be_deleted(client):
     sources = client.get("/api/v61/storage-sources")

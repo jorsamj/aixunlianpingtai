@@ -14,6 +14,7 @@ import {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, i
 import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
+import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422200';
 
 
 const modalStack = createModalStack();
@@ -54,5 +55,6 @@ window.PlatformCore = {
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
   quality: {qualityChartModel},
   reports: {reportPresentation},
-  video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues}
+  video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
+  storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel}
 };

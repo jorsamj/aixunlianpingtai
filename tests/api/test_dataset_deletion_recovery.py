@@ -41,6 +41,38 @@ def upload_png(client, project_id: str, dataset_id: str, filename: str) -> dict:
     return response.json()["uploaded"][0]
 
 
+def test_legacy_dataset_delete_refuses_remote_materials(client, tmp_path):
+    """The legacy grouped delete flow must never treat a remote object as uploads/<name>."""
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    row = upload_png(client, project_id, dataset_id, "remote.png")
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    object_key = "incoming/remote.png"
+    remote_path = external_root / object_key
+    remote_path.parent.mkdir(parents=True)
+    local_path = app_module.project_dir(project_id) / "uploads" / row["stored_name"]
+    local_path.replace(remote_path)
+    app_module.material_store(project_id).patch(
+        {
+            row["id"]: {
+                "storage_source_id": "external-source",
+                "storage_type": "local",
+                "object_key": object_key,
+            }
+        }
+    )
+
+    response = client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
+
+    assert response.status_code == 409
+    assert "多来源素材" in response.text
+    assert remote_path.is_file()
+    assert app_module.material_store(project_id).get(row["id"]) is not None
+    assert not journal_paths(app_module, project_id)
+
+
 def journal_paths(app_module, project_id: str):
     return sorted(
         (

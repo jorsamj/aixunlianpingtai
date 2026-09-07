@@ -20,6 +20,31 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, image = seeded_project
+    external_root = tmp_path / "annotation-source"
+    (external_root / "incoming").mkdir(parents=True)
+    source_id = "annotation_external"
+    source_response = client.post(
+        "/api/v61/storage-sources",
+        json={
+            "id": source_id,
+            "name": "Annotation external",
+            "type": "local",
+            "config": {"root": str(external_root)},
+        },
+    )
+    assert source_response.status_code == 201, source_response.text
+    source_path = app_module.project_dir(project_id) / "uploads" / image["stored_name"]
+    object_key = f"incoming/{image['stored_name']}"
+    source_path.replace(external_root / object_key)
+    app_module.material_store(project_id).patch(
+        {
+            image["id"]: {
+                "storage_source_id": source_id,
+                "storage_type": "local",
+                "object_key": object_key,
+            }
+        }
+    )
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "artifacts")
     monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
@@ -68,3 +93,4 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     assert len(formal) == 1
     assert formal[0]["source"] == "ai_candidate_confirmed"
     assert formal[0]["source_task_id"] == task_id
+    assert not source_path.exists()

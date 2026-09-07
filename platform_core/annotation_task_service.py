@@ -24,18 +24,19 @@ class WorkerOutcome:
 def load_task_images(project_id: str, image_ids: Iterable[str]) -> list[dict[str, Any]]:
     # Imported only while executing a claimed task. Worker registration and
     # health checks stay independent from the web application module.
-    from app import load_images, project_dir
+    from app import load_images, storage_manager
 
     ordered_ids = [str(value) for value in image_ids]
     wanted = set(ordered_ids)
     order = {image_id: index for index, image_id in enumerate(ordered_ids)}
+    manager = storage_manager(project_id)
     rows = []
     for image in load_images(project_id):
         image_id = str(image.get("id") or "")
         if image_id not in wanted:
             continue
         row = dict(image)
-        row["path"] = str(project_dir(project_id) / "uploads" / str(image.get("stored_name") or ""))
+        row["path"] = str(manager.materialize(row).path)
         rows.append(row)
     rows.sort(key=lambda image: order[str(image["id"])])
     if len(rows) != len(wanted):

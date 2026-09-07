@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from enum import Enum
@@ -12,8 +11,9 @@ from typing import Callable
 import cv2
 
 from .annotations import annotation_summary, atomic_write_json
-from .material_store import MaterialStore
+from .material_repository import MaterialRepository
 from .materials import initial_processing_status
+from .storage import StorageManager
 from .task_runtime import TaskKind, TaskStatus
 
 
@@ -252,18 +252,6 @@ class VideoFrameHandler:
             f"{task_id}:{int(source_frame_index)}".encode("utf-8")
         ).hexdigest()[:16]
 
-    @staticmethod
-    def _copy_verified(source: Path, destination: Path, expected_sha256: str) -> None:
-        if destination.is_file() and _sha256(destination) == expected_sha256:
-            return
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.tmp")
-        shutil.copy2(source, temporary)
-        if _sha256(temporary) != expected_sha256:
-            temporary.unlink(missing_ok=True)
-            raise OSError("copied frame checksum mismatch")
-        os.replace(temporary, destination)
-
     def _already_committed(self, context) -> str | None:
         result = context.artifacts.read_json(
             context.task.task_id,
@@ -273,17 +261,22 @@ class VideoFrameHandler:
         if not isinstance(result, dict):
             return None
         project_dir = self._project_dir(context.task.project_id)
-        rows = MaterialStore(project_dir / "images.json").read().rows
+        materials_repository = MaterialRepository(project_dir)
+        manager = StorageManager(
+            data_dir=self.data_dir,
+            project_id=context.task.project_id,
+            materials=materials_repository,
+        )
+        rows = materials_repository.read().rows
         by_id = {str(row.get("id")): row for row in rows}
         materials = result.get("materials") or []
         if not materials:
             return None
         for item in materials:
             image_id = str(item.get("image_id") or "")
-            stored_name = str(item.get("stored_name") or "")
             if image_id not in by_id:
                 return None
-            path = project_dir / "uploads" / stored_name
+            path = manager.materialize(by_id[image_id]).path
             if not path.is_file() or _sha256(path) != item.get("sha256"):
                 return None
         return "result.json"
@@ -322,10 +315,14 @@ class VideoFrameHandler:
             }
         )
         project_dir = self._project_dir(context.task.project_id)
-        uploads = project_dir / "uploads"
         annotations = project_dir / "annotations"
-        uploads.mkdir(parents=True, exist_ok=True)
         annotations.mkdir(parents=True, exist_ok=True)
+        materials_repository = MaterialRepository(project_dir)
+        manager = StorageManager(
+            data_dir=self.data_dir,
+            project_id=context.task.project_id,
+            materials=materials_repository,
+        )
         original_stem = Path(str(payload.get("original_name") or "video")).stem
         records = []
         result_materials = []
@@ -336,8 +333,15 @@ class VideoFrameHandler:
                 extracted.source_frame_index,
             )
             stored_name = f"{image_id}.jpg"
-            destination = uploads / stored_name
-            self._copy_verified(Path(extracted.path), destination, extracted.sha256)
+            object_key = f"uploads/{stored_name}"
+            metadata = manager.upload_object(
+                "default_local",
+                object_key,
+                Path(extracted.path),
+                content_type="image/jpeg",
+            )
+            if metadata.sha256 != extracted.sha256:
+                raise OSError("stored frame checksum mismatch")
             annotation_path = annotations / f"{image_id}.json"
             if not annotation_path.exists():
                 atomic_write_json(
@@ -351,9 +355,10 @@ class VideoFrameHandler:
                         f"{original_stem}_frame_{extracted.source_frame_index:09d}.jpg"
                     ),
                     "stored_name": stored_name,
-                    "url": (
-                        f"/data/projects/{context.task.project_id}/uploads/{stored_name}"
-                    ),
+                    "url": f"/api/v61/projects/{context.task.project_id}/materials/{image_id}/content",
+                    "storage_source_id": "default_local",
+                    "storage_type": "local",
+                    "object_key": object_key,
                     "width": 0,
                     "height": 0,
                     "source_type": "video_frame",
@@ -365,7 +370,8 @@ class VideoFrameHandler:
                     "dataset_id": str(payload.get("dataset_id") or "default"),
                     "split": str(payload.get("split") or "unassigned"),
                     "processing_status": initial_processing_status(False),
-                    "size_bytes": destination.stat().st_size,
+                    "size_bytes": metadata.size_bytes,
+                    "etag": metadata.etag,
                     "created_at": created_at,
                     **annotation_summary([]),
                 }
@@ -379,14 +385,14 @@ class VideoFrameHandler:
                 }
             )
         if records:
-            first_image = cv2.imread(str(uploads / records[0]["stored_name"]))
+            first_image = cv2.imread(str(Path(extraction.frames[0].path)))
             if first_image is None:
                 raise OSError("extracted frame cannot be decoded after copy")
             height, width = first_image.shape[:2]
             for record in records:
                 record["width"] = int(width)
                 record["height"] = int(height)
-        MaterialStore(project_dir / "images.json").upsert_many(records)
+        materials_repository.upsert_many(records)
         context.repository.heartbeat(
             context.task.task_id,
             context.lease.lease_token,

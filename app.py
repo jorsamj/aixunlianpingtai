@@ -26,7 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, StrictInt
+from pydantic import BaseModel, StrictInt, model_validator
 from PIL import Image, ImageDraw
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
@@ -49,7 +49,7 @@ from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
 from platform_core.material_store import MaterialStore
 from platform_core.material_repository import MaterialRepository
-from platform_core.materials import delete_material_files, initial_processing_status, mark_ready
+from platform_core.materials import initial_processing_status, mark_ready
 from platform_core.prompts import render_prompt, template_version_id, version_template
 from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
@@ -218,7 +218,7 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
     error = PlatformError(
         code="VALIDATION_ERROR",
         message="提交的数据不完整或格式不正确",
-        detail=json.dumps(exc.errors(), ensure_ascii=False),
+        detail=json.dumps(exc.errors(), ensure_ascii=False, default=str),
         solution="请检查必填项和字段格式。",
         status_code=422,
     )
@@ -868,6 +868,11 @@ def storage_manager(project_id: str) -> StorageManager:
     )
 
 
+def resolve_material_path(project_id: str, material: str | Dict[str, Any]) -> Path:
+    """Resolve any indexed material through its configured storage provider."""
+    return storage_manager(project_id).materialize(material).path
+
+
 def material_content_url(project_id: str, image_id: str) -> str:
     return f"/api/v61/projects/{project_id}/materials/{image_id}/content"
 
@@ -1341,12 +1346,14 @@ def _v50_cleanup_buffered_image_batch_files(
 ) -> List[str]:
     errors = []
     p = project_dir(project_id)
+    manager = storage_manager(project_id)
     for record in records:
         image_id = str(record.get("id") or "")
-        stored_name = str(record.get("stored_name") or "")
+        try:
+            manager.delete_source_file(record)
+        except Exception as error:
+            errors.append(f"{record.get('object_key') or record.get('stored_name')}: {error}")
         paths = []
-        if stored_name and Path(stored_name).name == stored_name:
-            paths.append(p / "uploads" / stored_name)
         if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", image_id):
             paths.append(p / "annotations" / f"{image_id}.json")
         for path in paths:
@@ -1505,7 +1512,9 @@ def add_image_record(
         "split": "unassigned",
         "processing_status": initial_processing_status(has_valid_boxes=False),
         "size_bytes": int(metadata.size_bytes),
-        "created_at": now_iso(),
+        # Microseconds preserve same-batch insertion order for deterministic
+        # duplicate-cleaning and cursor pagination.
+        "created_at": datetime.now().isoformat(timespec="microseconds"),
     }
     annotation_path = p / "annotations" / f"{img_id}.json"
     batch = None
@@ -2323,6 +2332,21 @@ def delete_dataset(project_id: str, dataset_id: str):
             datasets = _v50_read_datasets_strict(project_id)
             if not any(str(item.get("id")) == dataset_id for item in datasets):
                 raise HTTPException(status_code=404, detail="数据集不存在")
+            remote_rows = [
+                row
+                for row in material_store(project_id).read().rows
+                if str(row.get("dataset_id") or "default") == dataset_id
+                and str(row.get("storage_source_id") or "default_local")
+                != "default_local"
+            ]
+            if remote_rows:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "该历史数据集包含多来源素材，不能使用旧的数据集物理删除流程。"
+                        "请在统一素材池中按图片删除索引，并仅在明确确认后删除源文件。"
+                    ),
+                )
             _v50_write_dataset_delete_journal(journal)
             _v50_register_dataset_delete_token(
                 claim_token, project_id, dataset_id
@@ -2679,6 +2703,7 @@ def _v52_schedule_annotation_index(project_id: str, images: Optional[List[Dict[s
 def list_images(project_id: str, dataset_id: Optional[str] = None):
     get_project(project_id)
     all_images = load_images(project_id)
+    manager = storage_manager(project_id)
     size_patches = {}
     # v42.12：旧数据的标注摘要迁移改为后台索引，首屏不再逐张读取 annotation JSON。
     # 已有摘要直接返回；缺摘要的图片先以轻量元数据返回，后台完成后前端自动刷新一次。
@@ -2692,7 +2717,12 @@ def list_images(project_id: str, dataset_id: Optional[str] = None):
         img.setdefault("annotation_preview", [])
         if not img.get("size_bytes"):
             try:
-                img["size_bytes"] = int((project_dir(project_id) / "uploads" / img.get("stored_name", "")).stat().st_size)
+                normalized = manager.material(img)
+                img["size_bytes"] = int(
+                    manager.provider_for(str(normalized["storage_source_id"]))
+                    .stat(str(normalized["object_key"]))
+                    .size_bytes
+                )
             except Exception:
                 img["size_bytes"] = 0
             if img.get("id") is not None:
@@ -3202,7 +3232,7 @@ def build_dataset(project_id: str, payload: BuildDatasetReq):
 
     def copy_items(items: List[Tuple[Dict[str, Any], Dict[str, Any]]], part: str):
         for img, ann in items:
-            src = p / "uploads" / img["stored_name"]
+            src = resolve_material_path(project_id, img)
             dst_img = dataset / "images" / part / img["stored_name"]
             shutil.copy2(src, dst_img)
             label_path = dataset / "labels" / part / f"{Path(img['stored_name']).stem}.txt"
@@ -3327,7 +3357,7 @@ def build_paddle_dataset_internal(project_id: str, train_ratio: float = 0.8, inc
         coco_anns = []
         ann_id = 1
         for idx, (img, ann) in enumerate(items, start=1):
-            src = p / "uploads" / img["stored_name"]
+            src = resolve_material_path(project_id, img)
             dst_name = img["stored_name"]
             dst = dataset / "images" / part / dst_name
             shutil.copy2(src, dst)
@@ -3575,7 +3605,7 @@ def run_prelabel(project_id: str, payload: PrelabelRunReq):
     processed = 0
     errors = []
     for img in images:
-        img_path = p / "uploads" / img["stored_name"]
+        img_path = resolve_material_path(project_id, img)
         try:
             raw = call_prelabel_service(cfg, img_path)
             detections = parse_detection_objects(raw, target_label, float(cfg.get("threshold", 0.5)))
@@ -3638,25 +3668,17 @@ def _is_absolute_path_text(p: str) -> bool:
 
 
 def default_ultralytics_roots() -> List[str]:
-    roots: List[str] = []
-    if os.name == "nt":
-        roots.extend([
-            r"D:\lab\yolosuanfa\Ultralytics",
-            r"D:\lab\yolosuanfa",
+    configured = os.environ.get("MC_ULTRALYTICS_ROOTS", "")
+    roots = [value for value in configured.split(os.pathsep) if value]
+    roots.extend(
+        [
             str(BASE_DIR),
-        ])
-        for letter in "DECF":
-            p = f"{letter}:\\"
-            if Path(p).exists():
-                roots.append(p)
-    else:
-        roots.extend([str(BASE_DIR), str(Path.home()), "/mnt/data"])
-    # 去重但保序
-    out = []
-    for r in roots:
-        if r and r not in out:
-            out.append(r)
-    return out[:8]
+            str(Path.cwd()),
+            str(Path(sys.executable).resolve().parent.parent),
+            str(Path.home()),
+        ]
+    )
+    return list(dict.fromkeys(value for value in roots if value))[:8]
 
 
 def _candidate_python_paths(root: Path) -> List[Path]:
@@ -4339,8 +4361,8 @@ def select_paddle_env(payload: PaddleEnvReq):
     env = {
         "name": payload.name or "本机飞桨",
         "python_path": (payload.python_path or sys.executable).strip().strip('"'),
-        "paddledet_dir": (payload.paddledet_dir or r"D:\PaddleDetection").strip().strip('"'),
-        "paddlex_dir": (payload.paddlex_dir or r"D:\PaddleX").strip().strip('"'),
+        "paddledet_dir": (payload.paddledet_dir or os.environ.get("MC_PADDLEDET_DIR", "")).strip().strip('"'),
+        "paddlex_dir": (payload.paddlex_dir or os.environ.get("MC_PADDLEX_DIR", "")).strip().strip('"'),
         "updated_at": now_iso(),
     }
     if env["python_path"] and not Path(env["python_path"]).exists():
@@ -4372,27 +4394,19 @@ def test_paddle_env(payload: PaddleEnvReq):
 
 
 def default_paddle_roots() -> List[str]:
-    roots: List[str] = []
-    if os.name == "nt":
-        roots.extend([
-            r"D:\PaddleDetection",
-            r"D:\PaddleX",
-            r"D:\lab\PaddleDetection",
-            r"D:\lab\PaddleX",
-            r"D:\lab\yolosuanfa",
+    configured = os.environ.get("MC_PADDLE_ROOTS", "")
+    roots = [value for value in configured.split(os.pathsep) if value]
+    roots.extend(
+        [
+            os.environ.get("MC_PADDLEDET_DIR", ""),
+            os.environ.get("MC_PADDLEX_DIR", ""),
             str(BASE_DIR),
-        ])
-        for letter in "DECF":
-            root = Path(f"{letter}:\\")
-            if root.exists():
-                roots.append(str(root))
-    else:
-        roots.extend([str(BASE_DIR), str(Path.home()), "/mnt/data"])
-    out=[]
-    for r in roots:
-        if r and r not in out:
-            out.append(r)
-    return out[:12]
+            str(Path.cwd()),
+            str(Path(sys.executable).resolve().parent.parent),
+            str(Path.home()),
+        ]
+    )
+    return list(dict.fromkeys(value for value in roots if value))[:12]
 
 
 def _detect_paddle_candidate(root: Path) -> Optional[Dict[str, Any]]:
@@ -4513,6 +4527,13 @@ def test_train_server(payload: TrainServerReq):
 
 
 class TrainReq(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def reject_dataset_group_contract(cls, value):
+        if isinstance(value, dict) and (value.get("train_dataset_ids") or value.get("test_dataset_ids")):
+            raise ValueError("训练任务只按素材 image_id 选择，不能提交数据集分组")
+        return value
+
     framework: str = "ultralytics"  # ultralytics / paddle
     algorithm: Optional[str] = "yolo11n_det"
     algorithm_asset_id: Optional[str] = ""
@@ -4579,8 +4600,6 @@ class TrainReq(BaseModel):
     # Durable v2 split contract. When split_mode is present, the API only
     # persists the request; a standalone training worker prepares the snapshot.
     split_mode: Optional[Literal["independent_test_set", "random_test_from_training_pool"]] = None
-    train_dataset_ids: Optional[List[str]] = None
-    test_dataset_ids: Optional[List[str]] = None
     validation_percent: float = 20.0
     random_experiment_split: bool = True
     experiment_percent: Optional[float] = 20.0
@@ -4671,8 +4690,6 @@ def _explicit_training_split(payload: TrainReq) -> SplitRequest:
         raise ValueError("split_mode 不能为空")
     if payload.selected_image_ids or payload.val_image_ids:
         raise ValueError("新版训练任务不能混用旧版候选池或验证集字段")
-    if payload.train_dataset_ids or payload.test_dataset_ids:
-        raise ValueError("新版训练任务按素材选择，不能提交数据集分组")
     return SplitRequest(
         mode=SplitMode(payload.split_mode),
         train_image_ids=tuple(payload.train_image_ids or ()),
@@ -4701,8 +4718,6 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         resource_key = "training:cpu" if device == "cpu" else f"training:gpu:{device}"
     task_id = uuid.uuid4().hex[:12]
     request_payload = payload.model_dump(mode="json", exclude_none=True)
-    request_payload.pop("train_dataset_ids", None)
-    request_payload.pop("test_dataset_ids", None)
     request_payload.update(
         {
             "split_mode": split.mode.value,
@@ -5874,9 +5889,7 @@ def build_yolo_dataset_v12(project_id: str, dataset_id: Optional[str] = None, in
     counts = {"train": 0, "val": 0, "test": 0, "boxes": 0, "train_boxes": 0, "val_boxes": 0, "test_boxes": 0, "invalid_boxes": 0}
     for part, items in parts.items():
         for img, ann in items:
-            src = p / "uploads" / img["stored_name"]
-            if not src.exists():
-                continue
+            src = resolve_material_path(project_id, img)
             clean = []
             for b in ann.get("boxes", []):
                 nb = normalize_box_for_project(project_id, img, b, create_label=False)
@@ -5942,8 +5955,7 @@ def build_coco_dataset_v12(project_id: str, dataset_id: Optional[str] = None, in
     def write_part(part: str, json_name: str):
         coco_images = []; coco_anns = []; ann_id = 1
         for idx, (img, ann) in enumerate(parts[part], start=1):
-            src = p / "uploads" / img["stored_name"]
-            if not src.exists(): continue
+            src = resolve_material_path(project_id, img)
             shutil.copy2(src, dataset / "images" / part / img["stored_name"])
             coco_images.append(_coco_image_item(img, idx, f"images/{part}/{img['stored_name']}"))
             for b in ann.get("boxes", []):
@@ -6087,8 +6099,7 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
     selected_ids={"train":[],"val":[],"test":[]}
     for part,items in groups.items():
         for img,ann in items:
-            src=p/"uploads"/img["stored_name"]
-            if not src.exists(): continue
+            src=resolve_material_path(project_id,img)
             shutil.copy2(src,dataset/"images"/part/img["stored_name"])
             lines=[box_to_yolo_line(b,img["width"],img["height"]) for b in ann.get("boxes",[])]
             (dataset/"labels"/part/f"{Path(img['stored_name']).stem}.txt").write_text("\n".join(lines),encoding="utf-8")
@@ -8837,8 +8848,8 @@ def _v33_run_prelabel_task(project_id: str, task_id: str, payload: Dict[str, Any
             if cur.get("stop_requested"):
                 _v33_update_task(project_id, "prelabel_tasks", task_id, status="stopped", status_text="已停止", finished_at=now_iso())
                 return
-            img_path = project_dir(project_id) / "uploads" / img.get("stored_name", "")
             try:
+                img_path = resolve_material_path(project_id, img)
                 raw = call_prelabel_service(cfg, img_path)
                 detections = parse_detection_objects(raw, target_label, float(cfg.get("threshold", 0.5)))
                 new_boxes = []
@@ -9376,8 +9387,8 @@ def _v35_run_prelabel_task(project_id: str, task_id: str, payload: Dict[str, Any
             if cur.get("stop_requested"):
                 _v33_update_task(project_id, "prelabel_tasks", task_id, status="stopped", status_text="已停止", finished_at=now_iso())
                 return
-            img_path = project_dir(project_id) / "uploads" / img.get("stored_name", "")
             try:
+                img_path = resolve_material_path(project_id, img)
                 raw = _v35_call_model(cfg, img_path, payload, prompt_text, threshold)
                 detections = parse_detection_objects(raw, target_label, threshold)
                 new_boxes = []
@@ -10285,8 +10296,8 @@ def _deploy_prepare_calibration(project_id: str, dataset_id: str, split: str, li
     for im in images:
         if dataset_id and im.get("dataset_id","default") != dataset_id: continue
         if split and split != "all" and im.get("split","train") != split: continue
-        src=project_dir(project_id)/"uploads"/str(im.get("stored_name") or "")
-        if src.exists(): selected.append((src, im))
+        src=resolve_material_path(project_id,im)
+        selected.append((src, im))
     if limit>0: selected=selected[:limit]
     for i,(src,im) in enumerate(selected):
         shutil.copy2(src,dst/f"{i:05d}_{safe_filename(im.get('original_name') or src.name)}")
@@ -11384,10 +11395,8 @@ def _v42_hygiene_report(project_id: str, dataset_id: str, max_scan: int = 1000) 
     try:import cv2
     except Exception:cv2=None
     for x in rows:
-        raw_path=str(x.get('path') or '').strip()
-        fp=Path(raw_path) if raw_path else (project_dir(project_id)/'uploads'/str(x.get('stored_name') or ''))
-        if not fp.exists():broken.append(x.get('id'));continue
         try:
+            fp=resolve_material_path(project_id,x)
             h=hashlib.sha256(fp.read_bytes()).hexdigest()
             if h in seen:dups.append({"id":x.get('id'),"same_as":seen[h]})
             else:seen[h]=x.get('id')
@@ -11597,8 +11606,8 @@ class V44QualityReq(BaseModel):
 def _v44_image_quality(project_id: str, images: List[Dict[str, Any]]) -> Dict[str, Any]:
     hashes={};low_res=0;total_bytes=0;res_buckets={"small":0,"medium":0,"large":0}
     for img in images[:1500]:
-        path=project_dir(project_id)/"uploads"/img.get("stored_name","")
         try:
+            path=resolve_material_path(project_id,img)
             total_bytes+=path.stat().st_size
             if min(int(img.get("width") or 0),int(img.get("height") or 0))<320: low_res+=1
             area=int(img.get("width") or 0)*int(img.get("height") or 0)
@@ -11633,8 +11642,9 @@ def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> 
     if req.max_samples and req.max_samples>0:candidates=candidates[:int(req.max_samples)]
     total_bytes=0;resolution_buckets={"small":0,"medium":0,"large":0};label_images={label:0 for label in project.get("labels",[])}
     for row in candidates:
-        path=project_dir(project_id)/"uploads"/str(row.get("stored_name") or "")
-        try:row["content_hash"]=hashlib.sha1(path.read_bytes()).hexdigest();total_bytes+=path.stat().st_size
+        try:
+            path=resolve_material_path(project_id,row)
+            row["content_hash"]=hashlib.sha1(path.read_bytes()).hexdigest();total_bytes+=path.stat().st_size
         except Exception:pass
         area=int(row.get("width") or 0)*int(row.get("height") or 0);resolution_buckets["small" if area<640*480 else "medium" if area<1920*1080 else "large"]+=1
         for label in {box["label"] for box in row.get("boxes") or []}:label_images[label]=label_images.get(label,0)+1
@@ -11963,9 +11973,9 @@ def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
                 )
                 return
             issues: List[Dict[str, Any]] = []
-            path = pdir / 'uploads' / str(img.get('stored_name') or '')
             metrics: Dict[str, Any] = {}
             try:
+                path = resolve_material_path(project_id, img)
                 metrics = _v47_image_metrics(path)
                 if payload.get('exact_duplicate'):
                     prev = exact_seen.get(metrics['sha256'])
@@ -12662,8 +12672,8 @@ def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any
             cur = _v33_get_task(project_id, 'prelabel_tasks', task_id) or {}
             if cur.get('stop_requested'):
                 _v33_update_task(project_id, 'prelabel_tasks', task_id, status='stopped', status_text='已停止', finished_at=now_iso()); return
-            path = project_dir(project_id) / 'uploads' / str(img.get('stored_name') or '')
             try:
+                path = resolve_material_path(project_id, img)
                 prompt = _v47_build_annotation_prompt(
                     cfg,
                     selected_catalog,
