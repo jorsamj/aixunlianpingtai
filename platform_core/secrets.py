@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Optional, Protocol
 
@@ -74,3 +75,62 @@ class KeyringSecretStore:
 
     def masked(self, reference: str) -> str:
         return mask_secret(self.get(reference))
+
+
+class SecretCredentialStore:
+    """Stores a credential mapping as one opaque SecretStore value.
+
+    SQLite/JSON configuration only retains the reference. Public callers get
+    configuration state and an optional masked identifier, never the secret.
+    """
+
+    def __init__(self, backend: SecretStore) -> None:
+        self.backend = backend
+
+    def set(self, reference: str, credentials: dict[str, str]) -> None:
+        normalized = {
+            str(key): str(value)
+            for key, value in credentials.items()
+            if str(key).strip() and str(value)
+        }
+        if not normalized:
+            raise ValueError("credential payload cannot be empty")
+        self.backend.set(
+            reference,
+            json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+
+    def get(self, reference: str) -> dict[str, str] | None:
+        raw = self.backend.get(reference)
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("credential payload is not valid JSON") from error
+        if not isinstance(value, dict) or not all(
+            isinstance(key, str) and isinstance(item, str)
+            for key, item in value.items()
+        ):
+            raise RuntimeError("credential payload must be a string object")
+        return dict(value)
+
+    def delete(self, reference: str) -> None:
+        self.backend.delete(reference)
+
+    def public_state(self, reference: str) -> dict[str, object]:
+        value = self.get(reference)
+        identifier = ""
+        if value:
+            identifier = next(
+                (
+                    value[key]
+                    for key in ("access_key_id", "username", "client_id")
+                    if value.get(key)
+                ),
+                "",
+            )
+        return {
+            "configured": bool(value),
+            "masked": mask_secret(identifier) if identifier else ("已配置" if value else ""),
+        }
