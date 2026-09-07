@@ -69,6 +69,19 @@ def test_paginated_filters_and_multi_label_or(tmp_path):
     assert repository.count(labels=["fire", "smoke"]) == 2
 
 
+def test_unprocessed_filter_groups_transient_states(tmp_path):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([
+        material("image-1", status="pending_decision"),
+        material("image-2", status="cleaning"),
+        material("image-3", status="unprocessed"),
+        material("image-4", status="processed"),
+    ])
+    page = repository.list_page(processing_status="unprocessed", limit=20)
+    assert {row["id"] for row in page.items} == {"image-1", "image-2", "image-3"}
+    assert page.total == 3
+
+
 def test_reference_count_and_id_only_page(tmp_path):
     repository = MaterialRepository(tmp_path)
     repository.upsert_many([
@@ -133,3 +146,24 @@ def test_compatibility_mutate_remains_atomic(tmp_path):
 
     assert changed == ["image-1", "image-2"]
     assert repository.count(processing_status="processed") == 2
+
+
+def test_compatibility_mutate_only_rewrites_changed_rows(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([material("image-1"), material("image-2")])
+    original_write = MaterialRepository._write_row
+    written = []
+
+    def tracked_write(database, value):
+        written.append(str(value.get("id")))
+        return original_write(database, value)
+
+    monkeypatch.setattr(MaterialRepository, "_write_row", staticmethod(tracked_write))
+
+    def change_one(rows):
+        rows[0]["processing_status"] = "cleaning"
+        return rows[0]["id"]
+
+    assert repository.mutate(change_one) == "image-1"
+    assert written == ["image-1"]
+    assert repository.get("image-2")["processing_status"] == "processed"
