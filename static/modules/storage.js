@@ -38,15 +38,25 @@ export function buildStorageSourcePayload(values) {
   if (type === 'oss') {
     copy(config, 'endpoint', values.endpoint); copy(config, 'bucket', values.bucket); copy(config, 'prefix', values.prefix);
     copy(credentials, 'access_key_id', values.access_key_id); copy(credentials, 'access_key_secret', values.access_key_secret);
+    if (Boolean(credentials.access_key_id) !== Boolean(credentials.access_key_secret)) {
+      throw new Error('AccessKey ID 和 AccessKey Secret 必须同时填写');
+    }
   }
   if (type === 's3') {
     copy(config, 'endpoint', values.endpoint); copy(config, 'region', values.region); copy(config, 'bucket', values.bucket); copy(config, 'prefix', values.prefix);
     config.use_ssl = values.use_ssl !== false;
     copy(credentials, 'access_key_id', values.access_key_id); copy(credentials, 'secret_access_key', values.secret_access_key);
+    if (Boolean(credentials.access_key_id) !== Boolean(credentials.secret_access_key)) {
+      throw new Error('Access Key 和 Secret Key 必须同时填写');
+    }
   }
   if (type === 'remote') {
     copy(config, 'base_url', values.base_url); copy(config, 'namespace', values.namespace); copy(config, 'root', values.root);
     copy(credentials, 'token', values.token);
   }
-  return {name: String(values?.name || '').trim(), type, config, credentials, enabled: values?.enabled !== false};
+  const payload = {name: String(values?.name || '').trim(), type, config, enabled: values?.enabled !== false};
+  // PATCH 时不发送空 credentials。后端把显式 credentials={} 解释为“清除凭据”，
+  // 因此编辑已配置存储源且密钥留空时必须省略该字段，才能真正保留原密钥。
+  if (Object.keys(credentials).length) payload.credentials = credentials;
+  return payload;
 }
