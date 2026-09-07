@@ -115,13 +115,11 @@ test('final training dialog override selects materials instead of datasets', () 
   assert.doesNotMatch(block, /trainDatasetIds/);
 });
 
-test('legacy dataset selector is disabled before the exact-material selector is installed', () => {
+test('legacy dataset selector and dataset prerequisite are absent from training creation', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  const legacyStart = source.indexOf('Legacy dataset split UI');
-  const exactStart = source.indexOf('Durable v3 exact-material training split UI');
-  const legacyBlock = source.slice(legacyStart, exactStart);
-  assert.ok(source.indexOf('window.__exactMaterialTrainingV3=true') < legacyStart);
-  assert.match(legacyBlock, /if\(window\.__exactMaterialTrainingV3\)return/);
+  assert.equal(source.includes('Legacy dataset split UI'), false);
+  assert.equal(source.includes('trainDatasetIds'), false);
+  assert.equal(source.includes("if(!(state.datasets||[]).length)return toast('当前项目没有可用数据集')"), false);
 });
 
 test('training dialog is not blocked by the legacy current-image pool guard', () => {

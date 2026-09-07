@@ -149,6 +149,51 @@ test('training submit sends the selected candidate pool and configured experimen
   expect(submitted.train_image_ids).toHaveLength(3);
 });
 
+test('training material selection does not depend on dataset groups and supports exact batch selection', async ({page, request}) => {
+  const {project, algorithm} = await seedTrainingProject(request);
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
+  }, project.id);
+  await page.goto('/');
+  await page.getByRole('button', {name: /算法列表/}).click();
+  await page.evaluate(async algorithmId => {
+    state.datasets = [];
+    await window.startAlgorithmTraining429(algorithmId);
+  }, algorithm.id);
+  const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
+
+  await dialog.getByRole('button', {name: '选择训练素材'}).click();
+  const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
+  const checks = picker.getByRole('checkbox');
+  await expect(checks).toHaveCount(3);
+  await expect(checks.nth(0)).not.toBeChecked();
+  await expect(checks.nth(1)).not.toBeChecked();
+  await expect(checks.nth(2)).not.toBeChecked();
+
+  await checks.nth(0).evaluate(element => {
+    window.__trainingPickerFirstImage = element.closest('.train-v3-card').querySelector('img');
+  });
+  await checks.nth(0).check();
+  expect(await picker.locator('.train-v3-card').nth(0).evaluate(card => (
+    card.querySelector('img') === window.__trainingPickerFirstImage
+  ))).toBe(true);
+  await expect(picker.locator('#trV3PickerCount')).toContainText('已选 1 张');
+  await picker.getByRole('button', {name: '全部不选'}).click();
+  await expect(picker.locator('#trV3PickerCount')).toContainText('已选 0 张');
+  await picker.getByRole('button', {name: '明火'}).click();
+  await picker.getByRole('button', {name: '选择当前筛选结果'}).click();
+  await expect(picker.locator('#trV3PickerCount')).toContainText('筛选结果 1 张 · 已选 1 张');
+  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await expect(picker.locator('#trV3PickerCount')).toContainText('已选 3 张');
+  await picker.getByRole('button', {name: '全部不选'}).click();
+  await picker.getByRole('button', {name: '确认选择'}).click();
+
+  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
+  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeDisabled();
+});
+
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
   const {project, algorithm} = await seedTrainingProject(request, {withVersion: true});
   await page.route(`**/api/v54/projects/${project.id}/algorithms/${algorithm.id}/iteration-base?framework=ultralytics`, async route => {
