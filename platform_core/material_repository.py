@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
@@ -33,6 +34,8 @@ CREATE INDEX IF NOT EXISTS ix_materials_source ON materials(storage_source_id, c
 CREATE INDEX IF NOT EXISTS ix_materials_status ON materials(processing_status, created_at, id);
 CREATE INDEX IF NOT EXISTS ix_materials_filename ON materials(filename COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS ix_materials_created ON materials(created_at, id);
+CREATE INDEX IF NOT EXISTS ix_materials_content_sha256 ON materials(content_sha256) WHERE content_sha256 <> '';
+CREATE INDEX IF NOT EXISTS ix_materials_content_sha256_normalized ON materials(lower(trim(content_sha256))) WHERE content_sha256 <> '';
 CREATE TABLE IF NOT EXISTS material_labels (
     material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
     label_code TEXT NOT NULL,
@@ -123,7 +126,7 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
         "storage_source_id": source_id,
         "storage_type": storage_type,
         "object_key": object_key,
-        "content_sha256": str(row.get("content_sha256") or "").lower(),
+        "content_sha256": str(row.get("content_sha256") or "").strip().lower(),
         "size_bytes": max(0, int(row.get("size_bytes") or 0)),
         "etag": str(row.get("etag") or ""),
         "processing_status": str(row.get("processing_status") or "pending_decision"),
@@ -288,6 +291,73 @@ class MaterialRepository:
             ).fetchall()
         by_id = {str(row["id"]): self._row_payload(row) for row in rows}
         return [by_id[image_id] for image_id in ids if image_id in by_id]
+
+    def find_existing_content_hashes(self, hashes: Iterable[str]) -> set[str]:
+        """Return normalized content SHA256 values already indexed by the repository."""
+        existing: set[str] = set()
+        pending: set[str] = set()
+
+        def fetch_pending(database: sqlite3.Connection) -> None:
+            if not pending:
+                return
+            batch = tuple(pending)
+            database.executemany(
+                "INSERT OR IGNORE INTO material_content_hash_lookup(content_sha256) VALUES (?)",
+                ((content_hash,) for content_hash in batch),
+            )
+            placeholders = ",".join("?" for _ in batch)
+            unchecked = tuple(
+                str(row["content_sha256"])
+                for row in database.execute(
+                    "SELECT content_sha256 FROM material_content_hash_lookup "
+                    f"WHERE processed = 0 AND content_sha256 IN ({placeholders})",
+                    batch,
+                ).fetchall()
+            )
+            if not unchecked:
+                pending.clear()
+                return
+            lookup_placeholders = ",".join("?" for _ in unchecked)
+            rows = database.execute(
+                "SELECT DISTINCT content_sha256 FROM materials "
+                f"WHERE content_sha256 <> '' AND content_sha256 IN ({lookup_placeholders})",
+                unchecked,
+            ).fetchall()
+            exact_matches = {str(row["content_sha256"]).strip().lower() for row in rows}
+            existing.update(exact_matches)
+            unmatched = tuple(content_hash for content_hash in unchecked if content_hash not in exact_matches)
+            if unmatched:
+                normalized_placeholders = ",".join("?" for _ in unmatched)
+                normalized_rows = database.execute(
+                    "SELECT DISTINCT lower(trim(content_sha256)) AS content_sha256 FROM materials "
+                    "WHERE content_sha256 <> '' "
+                    f"AND lower(trim(content_sha256)) IN ({normalized_placeholders})",
+                    unmatched,
+                ).fetchall()
+                existing.update(str(row["content_sha256"]).strip().lower() for row in normalized_rows)
+            database.execute(
+                "UPDATE material_content_hash_lookup SET processed = 1 "
+                f"WHERE content_sha256 IN ({lookup_placeholders})",
+                unchecked,
+            )
+            pending.clear()
+
+        with closing(self._connect()) as database:
+            database.execute("PRAGMA temp_store=FILE")
+            database.execute(
+                "CREATE TEMP TABLE material_content_hash_lookup ("
+                "content_sha256 TEXT PRIMARY KEY, processed INTEGER NOT NULL DEFAULT 0"
+                ") WITHOUT ROWID"
+            )
+            for value in hashes:
+                content_hash = str(value or "").strip().lower()
+                if not content_hash or content_hash in existing:
+                    continue
+                pending.add(content_hash)
+                if len(pending) == 500:
+                    fetch_pending(database)
+            fetch_pending(database)
+        return existing
 
     @staticmethod
     def _filters(

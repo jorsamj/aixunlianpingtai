@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 from platform_core.material_repository import MaterialRepository
@@ -167,3 +168,320 @@ def test_compatibility_mutate_only_rewrites_changed_rows(tmp_path, monkeypatch):
     assert repository.mutate(change_one) == "image-1"
     assert written == ["image-1"]
     assert repository.get("image-2")["processing_status"] == "processed"
+
+
+def test_find_existing_content_hashes_streams_normalized_single_pass_batches(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    existing_hashes = [f"{index:064x}" for index in range(1201)]
+    repository.upsert_many([
+        {**material(f"image-{index:04d}"), "content_sha256": content_hash}
+        for index, content_hash in enumerate(existing_hashes)
+    ])
+
+    class OnePassHashes:
+        def __init__(self, values, state):
+            self.values = values
+            self.state = state
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("hash input was consumed more than once")
+            for value in self.values:
+                self.state["since_query"] += 1
+                if self.state["since_query"] > 500:
+                    raise AssertionError("hash input was materialized before the first batch query")
+                yield value
+
+    class TracedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.exact_query_parameter_counts = []
+            self.normalized_query_parameter_counts = []
+            self.closed = False
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, sql, parameters=()):
+            if "FROM material_content_hash_lookup" in sql and " IN (" in sql:
+                query_state["since_query"] = 0
+            if "FROM materials" in sql and " IN (" in sql:
+                assert "content_sha256 <> ''" in sql
+                if "lower(trim(content_sha256))" in sql:
+                    self.normalized_query_parameter_counts.append(len(parameters))
+                else:
+                    self.exact_query_parameter_counts.append(len(parameters))
+            return self.connection.execute(sql, parameters)
+
+        def close(self):
+            self.closed = True
+            self.connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    original_connect = repository._connect
+    traced = TracedConnection(original_connect())
+    monkeypatch.setattr(repository, "_connect", lambda: traced)
+    query_state = {"since_query": 0}
+    requested = OnePassHashes([
+        *(content_hash.upper() for content_hash in existing_hashes),
+        *(f"{index:064x}" for index in range(1201, 1300)),
+        "",
+        "   ",
+        existing_hashes[0].upper(),
+        f"  {existing_hashes[1].upper()}  ",
+    ], query_state)
+
+    assert repository.find_existing_content_hashes(requested) == set(existing_hashes)
+    assert requested.iterations == 1
+    assert traced.exact_query_parameter_counts == [500, 500, 300]
+    assert traced.normalized_query_parameter_counts == [99]
+    assert max([*traced.exact_query_parameter_counts, *traced.normalized_query_parameter_counts]) == 500
+    assert traced.closed
+
+
+def test_find_existing_content_hashes_ignores_blank_input_without_empty_in_clause(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+
+    class TracedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.executed_sql = []
+            self.closed = False
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, sql, parameters=()):
+            self.executed_sql.append(sql)
+            return self.connection.execute(sql, parameters)
+
+        def close(self):
+            self.closed = True
+            self.connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    traced = TracedConnection(repository._connect())
+    monkeypatch.setattr(repository, "_connect", lambda: traced)
+
+    assert repository.find_existing_content_hashes(["", " ", "\t", None]) == set()
+    assert not any("content_sha256 IN (" in sql for sql in traced.executed_sql)
+    assert traced.closed
+
+
+def test_find_existing_content_hashes_uses_distinct_rows_per_requested_hash(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    repeated_hashes = ("a" * 64, "b" * 64)
+    with repository._connect() as database:
+        database.executemany(
+            "INSERT INTO materials(id, object_key, content_sha256, payload_json) VALUES (?, ?, ?, ?)",
+            (
+                (f"duplicate-{index:04d}", f"uploads/{index:04d}.jpg", repeated_hashes[index % 2], "{}")
+                for index in range(2000)
+            ),
+        )
+
+    class TracedCursor:
+        def __init__(self, cursor, rows_per_query):
+            self.cursor = cursor
+            self.rows_per_query = rows_per_query
+
+        def fetchall(self):
+            rows = self.cursor.fetchall()
+            self.rows_per_query.append(len(rows))
+            return rows
+
+        def __getattr__(self, name):
+            return getattr(self.cursor, name)
+
+    class TracedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.exact_parameter_counts = []
+            self.rows_per_query = []
+            self.closed = False
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, sql, parameters=()):
+            cursor = self.connection.execute(sql, parameters)
+            if "FROM materials" not in sql or " IN (" not in sql:
+                return cursor
+            assert "content_sha256 <> ''" in sql
+            if "lower(trim(content_sha256))" in sql:
+                assert "SELECT DISTINCT lower(trim(content_sha256))" in sql
+                return cursor
+            assert "SELECT DISTINCT content_sha256" in sql
+            self.exact_parameter_counts.append(len(parameters))
+            return TracedCursor(cursor, self.rows_per_query)
+
+        def close(self):
+            self.closed = True
+            self.connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    traced = TracedConnection(repository._connect())
+    monkeypatch.setattr(repository, "_connect", lambda: traced)
+
+    assert repository.find_existing_content_hashes([*repeated_hashes, "c" * 64]) == set(repeated_hashes)
+    assert traced.rows_per_query == [2]
+    assert all(rows <= parameters for rows, parameters in zip(traced.rows_per_query, traced.exact_parameter_counts))
+    assert traced.closed
+
+
+def test_find_existing_content_hashes_checkpoints_missing_hashes_in_temp_table(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    missing_hashes = [f"{index + 5000:064x}" for index in range(500)]
+    state = {"since_checkpoint": 0}
+
+    def repeated_hashes():
+        for _batch in range(3):
+            for content_hash in missing_hashes:
+                state["since_checkpoint"] += 1
+                if state["since_checkpoint"] > 500:
+                    raise AssertionError("input was read past a batch before its TEMP checkpoint")
+                yield content_hash
+
+    class TracedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.exact_query_parameter_counts = []
+            self.normalized_query_parameter_counts = []
+            self.closed = False
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.connection.__exit__(*args)
+
+        def execute(self, sql, parameters=()):
+            if "FROM material_content_hash_lookup" in sql and " IN (" in sql:
+                state["since_checkpoint"] = 0
+            if "FROM materials" in sql and " IN (" in sql:
+                assert "content_sha256 <> ''" in sql
+                if "lower(trim(content_sha256))" in sql:
+                    self.normalized_query_parameter_counts.append(len(parameters))
+                else:
+                    self.exact_query_parameter_counts.append(len(parameters))
+            return self.connection.execute(sql, parameters)
+
+        def close(self):
+            self.closed = True
+            self.connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    traced = TracedConnection(repository._connect())
+    monkeypatch.setattr(repository, "_connect", lambda: traced)
+
+    assert repository.find_existing_content_hashes(repeated_hashes()) == set()
+    assert traced.exact_query_parameter_counts == [500]
+    assert traced.normalized_query_parameter_counts == [500]
+    assert traced.closed
+
+
+def test_repository_creates_content_sha256_partial_index_without_rewriting_existing_data(tmp_path):
+    database_path = tmp_path / "materials.sqlite3"
+    legacy_hash = f"  {'A' * 64}  "
+    with sqlite3.connect(database_path) as database:
+        database.execute(
+            """
+            CREATE TABLE materials (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL DEFAULT '',
+                storage_source_id TEXT NOT NULL DEFAULT 'default_local',
+                storage_type TEXT NOT NULL DEFAULT 'local',
+                object_key TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                etag TEXT NOT NULL DEFAULT '',
+                processing_status TEXT NOT NULL DEFAULT 'pending_decision',
+                box_count INTEGER NOT NULL DEFAULT 0,
+                annotated INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        database.execute(
+            "INSERT INTO materials(id, object_key, content_sha256, payload_json) VALUES (?, ?, ?, ?)",
+            ("legacy", "uploads/legacy.jpg", legacy_hash, '{"id":"legacy"}'),
+        )
+
+    repository = MaterialRepository(tmp_path)
+
+    assert repository.get("legacy") == {"id": "legacy"}
+    assert repository.find_existing_content_hashes(["a" * 64]) == {"a" * 64}
+    assert repository.upsert({**material("new-hash-a"), "content_sha256": legacy_hash})["content_sha256"] == "a" * 64
+    with repository._connect() as database:
+        index = database.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            ("ix_materials_content_sha256",),
+        ).fetchone()
+        normalized_index = database.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            ("ix_materials_content_sha256_normalized",),
+        ).fetchone()
+        legacy_row = database.execute(
+            "SELECT id, content_sha256, payload_json FROM materials WHERE id = ?",
+            ("legacy",),
+        ).fetchone()
+    assert index is not None
+    assert "WHERE content_sha256 <> ''" in index["sql"]
+    assert normalized_index is not None
+    assert "lower(trim(content_sha256))" in normalized_index["sql"]
+    assert dict(legacy_row) == {"id": "legacy", "content_sha256": legacy_hash, "payload_json": '{"id":"legacy"}'}
+
+
+def test_content_sha256_lookup_queries_use_their_partial_indexes(tmp_path):
+    repository = MaterialRepository(tmp_path)
+    content_hash = "a" * 64
+    repository.upsert({**material("indexed-hash-a"), "content_sha256": content_hash})
+
+    with repository._connect() as database:
+        exact_plan = database.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT DISTINCT content_sha256 FROM materials
+            WHERE content_sha256 <> '' AND content_sha256 IN (?)
+            """,
+            (content_hash,),
+        ).fetchall()
+        normalized_plan = database.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT DISTINCT lower(trim(content_sha256)) AS content_sha256 FROM materials
+            WHERE content_sha256 <> '' AND lower(trim(content_sha256)) IN (?)
+            """,
+            (content_hash,),
+        ).fetchall()
+
+    assert any(
+        "ix_materials_content_sha256" in row["detail"] and "normalized" not in row["detail"]
+        for row in exact_plan
+    )
+    assert any("ix_materials_content_sha256_normalized" in row["detail"] for row in normalized_plan)
