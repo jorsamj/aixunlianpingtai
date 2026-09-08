@@ -55,3 +55,10 @@ test('page renders cannot overwrite the current UI version with 42.22.0', () => 
   assert.doesNotMatch(source, /badge\.textContent='v42\.22\.0'/);
   assert.doesNotMatch(source, /footer\.textContent='v42\.22\.0'/);
 });
+
+
+test('upload cleaning decisions retain the complete current upload batch', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /recentUploadedMaterials61=\[\.\.\.uploaded\]/);
+  assert.doesNotMatch(source, /recentUploadedMaterials61=.*\.slice\(0,500\)/);
+});
