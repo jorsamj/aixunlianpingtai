@@ -137,7 +137,18 @@
 ### 5. NVIDIA Linux 尚未验收
 
 - Headless Linux Keyring/SecretStore 需要实测保存、重启、读取和脱敏。
-- `launcher.py` 当前仍存在 CPU PyTorch bootstrap 逻辑，不能未经处理直接用于全新 NVIDIA Linux 生产机。
+- 启动器策略测试证明 Linux 分支不会调用 `_run_install`，也不会访问 CPU PyTorch index；这只是 mock/subprocess-policy 证据，不是 NVIDIA 机器启动验收。
+- 真实 NVIDIA CUDA 启动：未验证
+
+## NVIDIA Launcher Safety Plan：本轮回归证据
+
+- `python -m py_compile launcher.py`：通过。
+- `python -m pytest tests/unit/test_launcher_torch_policy.py tests/unit/test_launcher_workers.py -q --basetemp .pytest-task3-targeted-basetemp -p no:cacheprovider`：`29 passed, 5 warnings in 0.22s`。其中 Linux policy tests 覆盖所有 Linux 路径：`_run_install` 调用数为零，且从不使用 CPU index；该结论仅限策略测试。
+- 同一组测试还覆盖 Windows pinned CPU bootstrap 及安装后 probe；均通过。此轮未以脚本入口执行 `launcher.py`，没有调用 pip，也没有改变本机 Torch。
+- 第一次以正常 Windows 权限运行 `python -m pytest -q`：`1 failed, 354 passed, 4 skipped, 20 warnings in 179.82s`。唯一失败是 `tests/api/test_storage_upload.py::test_upload_to_selected_storage_source_enters_unified_pool`：清洗任务在 10 秒阈值后仍为 `running`。可复跑诊断命令为 `python -m pytest tests/api/test_storage_upload.py::test_upload_to_selected_storage_source_enters_unified_pool -q`；连续单独执行 3 次均通过，耗时分别为 `0.62s`、`0.56s`、`0.55s`。未复现确定性前序依赖或根因，也没有因此改代码。
+- 第二次相同正常 Windows 权限 `python -m pytest -q`：`355 passed, 4 skipped, 20 warnings in 69.09s`（exit 0）。第一次的暂态超时仍是回归观察项，不能表述为“已修复”。
+- 受限会话使用默认 Windows Temp 时，pytest 枚举 `%LOCALAPPDATA%\\Temp\\pytest-of-<user>` 报 `PermissionError [WinError 5]`。强制工作树 D: `--basetemp` 后，既有 `test_legacy_dataset_delete_refuses_remote_materials` 以 `Path.replace()` 在 C:/D: 跨卷报 `WinError 17`。两者均为测试环境诊断，不计为产品失败。
+- 本轮未连接 Ubuntu 或 A800/NVIDIA 主机；不能把上述单测或 Windows 回归当成真实 Linux/CUDA 启动验证。真实 NVIDIA CUDA 启动：未验证
 
 ## 测试状态
 
@@ -147,13 +158,13 @@ Codex 额度耗尽前报告过：`318 passed, 4 skipped`，但那是人工接管
 
 - 代码提交到 `feat/windows-p0`：是
 - 静态审查：已做
-- 42.22.4 后端定向测试：待用户本机执行
+- NVIDIA Launcher 定向测试：`29 passed`（策略测试；非真机 CUDA）
 - 42.22.4 前端单测：待执行
 - Playwright：待执行
-- 全量后端回归：待执行
+- 全量后端回归：第二轮 `355 passed, 4 skipped, 20 warnings`；第一次曾出现一次未复现的清洗任务 10 秒超时，仍待后续观察
 - 真实 MinIO：待执行
 - 真实 OSS：待执行
-- NVIDIA Linux：待执行
+- NVIDIA Linux / CUDA 启动：未验证
 
 GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已经通过”。
 
