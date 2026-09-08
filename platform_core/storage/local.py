@@ -4,9 +4,10 @@ import hashlib
 import mimetypes
 import os
 import shutil
+import stat
 import uuid
 from pathlib import Path, PureWindowsPath
-from typing import BinaryIO, Mapping
+from typing import BinaryIO, Iterator, Mapping
 
 from .errors import StorageError
 from .models import ObjectMetadata, ObjectPage, StorageHealth, StorageType
@@ -74,6 +75,17 @@ class LocalStorageProvider:
                 f"本地存储目录不可访问：{error}", details={"root": str(self.root)}
             )
 
+    def _metadata(self, path: Path, *, object_key: str | None = None) -> ObjectMetadata:
+        stat_result = path.stat()
+        return ObjectMetadata(
+            key=object_key if object_key is not None else path.relative_to(self.root).as_posix(),
+            size_bytes=stat_result.st_size,
+            etag=f'"{stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"',
+            content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            sha256=_sha256(path),
+            last_modified=str(stat_result.st_mtime_ns),
+        )
+
     def stat(self, object_key: str) -> ObjectMetadata:
         path = self._path(object_key)
         if not path.is_file():
@@ -84,14 +96,81 @@ class LocalStorageProvider:
                 solution="请检查素材是否被外部移动或删除。",
                 context={"source_id": self.source_id, "object_key": object_key},
             )
-        return ObjectMetadata(
-            key=Path(object_key).as_posix(),
-            size_bytes=path.stat().st_size,
-            etag=f'"{path.stat().st_mtime_ns:x}-{path.stat().st_size:x}"',
-            content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-            sha256=_sha256(path),
-            last_modified=str(path.stat().st_mtime_ns),
-        )
+        return self._metadata(path, object_key=Path(object_key).as_posix())
+
+    def _is_link_like(self, path: Path) -> bool:
+        try:
+            if path.is_symlink():
+                return True
+            is_junction = getattr(path, "is_junction", None)
+            if callable(is_junction) and is_junction():
+                return True
+            if os.name != "nt":
+                return False
+            attributes = path.lstat().st_file_attributes
+            return bool(
+                attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)
+            )
+        except OSError:
+            return True
+
+    def _has_symlink_component(self, path: Path) -> bool:
+        relative = path.relative_to(self.root)
+        current = self.root
+        for part in relative.parts:
+            current = current / part
+            if self._is_link_like(current):
+                return True
+        return False
+
+    def _is_import_staging_segment(self, segment: str) -> bool:
+        return os.path.normcase(segment) == os.path.normcase(".import-staging")
+
+    def _is_import_staging_path(self, path: Path) -> bool:
+        relative = path.relative_to(self.root)
+        return bool(relative.parts) and self._is_import_staging_segment(relative.parts[0])
+
+    def iter_objects(
+        self, prefix: str = "", *, recursive: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        base = self._path(prefix, allow_empty=True)
+        requested = self.root / (Path(prefix) if prefix else Path())
+        if self._is_import_staging_path(base) or self._has_symlink_component(requested):
+            return
+        if not base.exists():
+            return
+        if base.is_file():
+            yield self._metadata(base)
+            return
+        if not base.is_dir():
+            return
+
+        pending: list[tuple[bool, Path]] = [(True, base)]
+        while pending:
+            is_directory, path = pending.pop()
+            if not is_directory:
+                yield self._metadata(path)
+                continue
+            directory = path
+            with os.scandir(directory) as scan:
+                descriptors: list[tuple[str, bool, Path]] = []
+                for entry in scan:
+                    path = Path(entry.path)
+                    if self._is_link_like(path):
+                        continue
+                    if entry.is_file(follow_symlinks=False):
+                        descriptors.append((entry.name, False, path))
+                    elif recursive and entry.is_dir(follow_symlinks=False):
+                        if directory == self.root and self._is_import_staging_segment(entry.name):
+                            continue
+                        descriptors.append((f"{entry.name}/", True, path))
+            for _key, is_child_directory, path in reversed(
+                sorted(descriptors, key=lambda descriptor: descriptor[0])
+            ):
+                if is_child_directory:
+                    pending.append((True, path))
+                else:
+                    pending.append((False, path))
 
     def exists(self, object_key: str) -> bool:
         return self._path(object_key).is_file()
