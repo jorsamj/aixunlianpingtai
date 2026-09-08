@@ -276,6 +276,26 @@ def torch_runtime_probe(py: Path) -> dict:
     }
 
 
+def _normalize_torch_probe(probe) -> dict:
+    if not isinstance(probe, dict):
+        return {}
+    normalized = dict(probe)
+    cuda_version = normalized.get("cuda_version")
+    if (
+        type(normalized.get("usable")) is not bool
+        or type(normalized.get("pinned_pair")) is not bool
+        or not isinstance(normalized.get("torch_version"), str)
+        or not normalized.get("torch_version")
+        or not isinstance(normalized.get("torchvision_version"), str)
+        or not normalized.get("torchvision_version")
+        or type(normalized.get("cuda_available")) is not bool
+        or (cuda_version is not None and not isinstance(cuda_version, str))
+    ):
+        return {}
+    normalized["cuda_version"] = cuda_version or ""
+    return normalized
+
+
 def _torch_pair_ready(py: Path) -> bool:
     probe = torch_runtime_probe(py)
     if probe["usable"] and probe["pinned_pair"]:
@@ -288,9 +308,31 @@ def _torch_pair_ready(py: Path) -> bool:
 
 
 def install_known_good_torch(py: Path):
-    # PyTorch is large. Reuse an already-good installation first, especially after a previous
-    # startup failed later while installing small web dependencies.
-    if _torch_pair_ready(py):
+    probe = _normalize_torch_probe(torch_runtime_probe(py))
+    if sys.platform != "win32":
+        if probe.get("usable"):
+            runtime_kind = (
+                f"CUDA {probe.get('cuda_version') or '可用'}"
+                if probe.get("cuda_available")
+                else "CPU"
+            )
+            say(
+                "      保留现有 PyTorch 环境："
+                f"{probe.get('torch_version', '未知')} "
+                f"{probe.get('torchvision_version', '未知')}（{runtime_kind}）"
+            )
+            return
+        raise RuntimeError(
+            "NVIDIA Linux 需要先安装与 CUDA 匹配且可用的 Torch/TorchVision 环境；"
+            "启动器不会安装 CPU Torch，也不会修改 CUDA 或 NVIDIA Driver。"
+        )
+
+    if probe.get("usable") and probe.get("pinned_pair"):
+        say(
+            "      PyTorch 已可用，跳过重复下载："
+            f"{probe.get('torch_version', '未知')} "
+            f"{probe.get('torchvision_version', '未知')}"
+        )
         return
 
     say(f"      安装稳定 PyTorch CPU 组合：torch {TORCH_VERSION} + torchvision {TORCHVISION_VERSION}")
@@ -311,13 +353,25 @@ def install_known_good_torch(py: Path):
             ],
         ),
     ]
+    last_probe_error = probe.get("error", "")
     for label, cmd in attempts:
-        if _run_install(cmd, label) and _torch_pair_ready(py):
+        _run_install(cmd, label)
+        raw_probe = torch_runtime_probe(py)
+        if isinstance(raw_probe, dict) and isinstance(raw_probe.get("error"), str):
+            last_probe_error = raw_probe.get("error")
+        probe = _normalize_torch_probe(raw_probe)
+        if probe.get("usable") and probe.get("pinned_pair"):
+            say(
+                "      PyTorch 已可用，跳过重复下载："
+                f"{probe.get('torch_version', '未知')} "
+                f"{probe.get('torchvision_version', '未知')}"
+            )
             return
 
     raise RuntimeError(
-        "PyTorch CPU 组件下载失败。请检查代理/防火墙是否拦截 download.pytorch.org，"
-        "或稍后重新运行 start.bat；已下载成功的文件会继续使用 pip 缓存。"
+        "PyTorch CPU 安装或安装后校验失败。请检查代理/防火墙是否拦截 download.pytorch.org，"
+        "或检查当前环境的 Torch/TorchVision 兼容性；"
+        f"最后一次 PyTorch runtime probe: {last_probe_error or '未提供诊断信息'}"
     )
 
 
