@@ -28,6 +28,8 @@
 - `directory_scan`：扫描 Local Storage Source 已有目录；
 - `server_zip`：校验并解压服务器 ZIP，然后扫描目标目录。
 
+历史请求未提供 `mode` 时继续按现有通用 `storage_scan` 处理，OSS、S3/MinIO 和 Remote Storage Source 的扫描能力不得回退。`storage_scan` 继续使用 Provider cursor；`directory_scan` 和 `server_zip` 才强制要求 Local source。
+
 不新增平行的导入任务系统，也不使用进程内临时线程承载服务器 ZIP 导入。
 
 任务采用同一生命周期：
@@ -103,6 +105,18 @@ POST /api/v61/projects/{project_id}/storage-imports/{task_id}/confirm
 }
 ```
 
+旧版请求：
+
+```json
+{
+  "storage_source_id": "minio_01",
+  "prefix": "incoming",
+  "recursive": true
+}
+```
+
+继续解释为 `mode=storage_scan`，不得因本轮改动失效。
+
 服务器 ZIP 请求：
 
 ```json
@@ -121,10 +135,10 @@ POST /api/v61/projects/{project_id}/storage-imports/{task_id}/confirm
 
 1. 验证任务处于 `AWAITING_CONFIRMATION`；
 2. 原子写入确认 artifact；
-3. 将同一任务安全转换回 `QUEUED`；
+3. 通过 `TaskRepository.resume_after_confirmation()` 将同一任务原子转换回 `QUEUED`；
 4. 由 Storage Worker 完成批量索引。
 
-重复确认必须幂等；冲突的第二次确认必须返回明确错误。
+该状态转换是 TaskRepository 的正式方法，不能由 `app.py` 直接执行 SQL，也不能复用语义不同的 `complete_review()`。它只能执行 `AWAITING_CONFIRMATION -> QUEUED`，同时写入 `accepted=true`、`stage=indexing_queued`、`finished_at=NULL`，并清空 `worker_id`、`lease_token`、`lease_expires_at`。重复确认必须幂等；冲突的第二次确认必须返回明确错误。
 
 ## 5. Durable Worker 与恢复
 
@@ -177,12 +191,16 @@ Worker 重启后依据 checkpoint 和实际文件状态恢复。未完成的 `.p
 - `etag`
 - `width`
 - `height`
-- `status`
+- `duplicate`
 - `error`
+- `selected`
+- `indexed`
+- `image_id`
+- `indexed_at`
 
-候选记录使用唯一约束防止恢复时重复写入。扫描按批次提交，建立素材索引时使用 `MaterialRepository.upsert_many()` 分批写入。
+候选记录使用 `object_key` 唯一约束和 `INSERT OR IGNORE` 防止恢复时重复写入。扫描按批次提交，建立素材索引时使用 `MaterialRepository.upsert_many()` 分批写入。`image_id` 必须在首次索引写入之前持久化到 candidate store；Worker 重试必须复用同一 ID。每批索引完成后再更新 `indexed` checkpoint，确保安全重跑不会产生重复素材。
 
-任务公开结果只返回聚合计数和必要状态，不返回全量候选数组。若后续需要候选明细，必须使用 cursor pagination。
+任务公开结果只返回聚合计数、`manifest_ref` 和必要状态，不返回全量候选数组。若后续需要候选明细，必须使用 cursor pagination。读取历史任务时仍兼容旧版小型 `scan/result.json.candidates`，但新任务不得继续写该数组。
 
 ## 7. Local 文件流式扫描
 
@@ -211,6 +229,16 @@ Worker 重启后依据 checkpoint 和实际文件状态恢复。未完成的 `.p
 - 解析后越过目标 prefix；
 - 多个成员归一化到同一目标路径。
 
+还必须防止 Zip Bomb。限制全部由跨平台配置或环境变量提供，至少包括：
+
+- ZIP 总 member 数上限；
+- 单 member 声明解压大小上限；
+- 总声明解压大小上限；
+- 异常压缩比上限；
+- 实际单文件和累计解压字节上限。
+
+实际写入字节不得超过 member 声明值和任务预估安全上限。解压过程中定期复查剩余磁盘空间；异常增长或空间不足必须立即失败并报告错误码、当前剩余空间、预计需要空间、实际已写入和解决方案。
+
 禁止调用未经保护的 `ZipFile.extractall()`。
 
 磁盘检查使用 ZIP 中声明的非目录成员解压总大小，加可配置安全余量。空间不足时任务在写入前失败，并返回：
@@ -220,18 +248,25 @@ Worker 重启后依据 checkpoint 和实际文件状态恢复。未完成的 `.p
 - 要求的安全余量；
 - 处理建议。
 
-每个成员写入同目录临时文件，完成后校验实际写入字节并原子替换到新目标。任务不得覆盖已有文件。
+### 8.1 Staging 与发布
 
-### 8.1 同路径冲突策略
+ZIP 不直接解压到正式素材目录。每个任务只可写入：
 
-用户已确认：
+```text
+<local-root>/.import-staging/<task_id>/payload/
+```
 
-- 目标文件不存在：写入原相对路径；
-- 已存在且 SHA256 相同：复用已有文件，不重复写入；
-- 已存在且 SHA256 不同：文件名追加短 SHA256 后缀，保留两份不同内容；
-- 新名称仍冲突时使用更长 SHA256，确保稳定且不覆盖。
+完整校验 ZIP、磁盘空间和全部成员后才开始流式解压到 staging。解压完成后校验文件数、字节数、CRC 和路径，再把 staging payload 在同一文件系统内原子发布为目标 prefix。
 
-这里的两份文件是两份不同内容，不属于同一素材的不必要副本。
+服务器 ZIP 的 `target_prefix` 必须是非空安全相对目录。若正式目标目录已经存在且非空，任务默认失败并明确提示“目标目录已存在”；本轮不支持 merge 或 overwrite。若目标目录存在但为空，可安全移除空目录后原子发布。
+
+失败或取消只清理当前任务的 staging，绝不能删除或修改已有正式素材。Worker 异常退出时保留 staging 供恢复；受控失败、取消或成功发布后清理当前任务 staging。
+
+Local 全根目录扫描必须排除保留目录 `.import-staging`，避免未发布文件进入素材池。
+
+### 8.2 发布恢复
+
+发布前在 payload 内写入只属于当前任务的发布标记。若 Worker 在目录原子发布后、checkpoint 写入前退出，恢复逻辑只能在目标目录存在匹配 task ID 的发布标记时接管该目录；否则非空目标仍按冲突失败。恢复确认发布归属后更新 checkpoint 并移除标记。
 
 ## 9. 素材去重语义
 
@@ -242,7 +277,7 @@ Worker 重启后依据 checkpoint 和实际文件状态恢复。未完成的 `.p
 - 相同文件名、不同 SHA256：视为不同素材；
 - 确认和任务恢复时再次执行去重，防止扫描后到确认前发生竞态。
 
-`MaterialRepository` 增加适合批量 SHA 查询的索引和分块查询接口，避免 SQLite 参数上限和每张素材单独查询。
+`MaterialRepository` 增加 `content_sha256` 索引和分块查询接口，避免 SQLite 参数上限和每张素材单独查询。
 
 新建索引的素材记录包含：
 
@@ -313,7 +348,7 @@ ZIP 模式字段：
 
 目录扫描总数未知时不显示百分比，只显示真实计数和当前路径。ZIP 解压只有在中央目录声明总字节可用时，才按实际已解压字节显示可证明的进度。
 
-任务进入 `AWAITING_CONFIRMATION` 后展示扫描摘要和确认按钮。确认后继续轮询同一任务的 indexing 状态。关闭弹窗只停止浏览器轮询，不发送取消请求。
+任务进入 `AWAITING_CONFIRMATION` 后展示扫描摘要和确认按钮。确认 API 只持久化选择、调用 TaskRepository 的原子重新排队方法并返回；确认后继续轮询同一任务的 indexing 状态。每批索引独立提交并保存 checkpoint。关闭弹窗只停止浏览器轮询，不发送取消请求。
 
 ## 13. Linux/NVIDIA 启动安全
 
@@ -398,4 +433,3 @@ ZIP 模式字段：
 - Linux/NVIDIA 未实测的部分如实报告；
 - 最终提交已推送到 `origin/feat/windows-p0`；
 - 不修改或合并 `main`。
-
