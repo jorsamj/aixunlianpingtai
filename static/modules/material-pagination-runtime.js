@@ -286,6 +286,13 @@ export function installMaterialPaginationRuntime() {
     loadMaterialPage61({reset: true});
   };
 
+  const baseMarkReady = window.markReady412;
+  window.markReady412 = async function markReadyAndRefreshPagedMaterials(imageIds) {
+    const result = await baseMarkReady?.(imageIds);
+    if (isPagedDataset()) await loadMaterialPage61({reset: true});
+    return result;
+  };
+
   window.renderData412Cards = function pagedMaterialCards() {
     if (!isPagedDataset() || suppressCardReload) return baseRenderCards?.();
     const q = document.getElementById('data412Q');

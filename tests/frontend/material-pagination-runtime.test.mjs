@@ -48,3 +48,10 @@ test('pagination bootstrap is loaded before the legacy app bundle', () => {
   assert.match(bootstrapSource, /\/api\/v61\/projects\/\$\{projectId\}\/materials/);
   assert.match(bootstrapSource, /state\.mode !== 'paged'/);
 });
+
+
+test('page renders cannot overwrite the current UI version with 42.22.0', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /badge\.textContent='v42\.22\.0'/);
+  assert.doesNotMatch(source, /footer\.textContent='v42\.22\.0'/);
+});

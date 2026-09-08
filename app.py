@@ -3751,7 +3751,14 @@ def _check_ultralytics_python(py: Path, root: Path) -> Optional[Dict[str, Any]]:
         " print(json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))\n"
     )
     try:
-        cp = subprocess.run([str(py), "-c", code], capture_output=True, text=True, timeout=15)
+        cp = subprocess.run(
+            [str(py), "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
         line = (cp.stdout or cp.stderr or "").strip().splitlines()[-1] if (cp.stdout or cp.stderr) else ""
         data = json.loads(line) if line else {"ok": False, "error": "无输出"}
         if not data.get("ok"):
