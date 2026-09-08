@@ -16,6 +16,7 @@ import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
+import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422204';
 
 
 const modalStack = createModalStack();
@@ -60,16 +61,18 @@ window.PlatformCore = {
   reports: {reportPresentation},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
-  materialPaging: {buildMaterialQuery, requiresFullMaterialPool}
+  materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
+  storageImport: {storageImportProgressText}
 };
 
 installMaterialPaginationRuntime();
+installStorageImportProgressRuntime();
 
 for (const delay of [80, 500, 1800, 3600]) {
   setTimeout(() => {
     const badge = document.getElementById('versionBadge');
-    if (badge) badge.textContent = 'v42.22.3';
+    if (badge) badge.textContent = 'v42.22.4';
     const footer = document.querySelector('.nav-footer b');
-    if (footer) footer.textContent = 'v42.22.3';
+    if (footer) footer.textContent = 'v42.22.4';
   }, delay);
 }
