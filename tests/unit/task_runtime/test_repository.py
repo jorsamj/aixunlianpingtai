@@ -1,4 +1,7 @@
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from threading import Barrier
 
 import pytest
 
@@ -172,6 +175,181 @@ def test_complete_review_is_guarded_idempotent_and_keeps_explicit_rejection(tmp_
             "review/other.json",
             accepted=True,
         )
+
+
+def test_resume_after_confirmation_requeues_material_import_and_is_idempotent(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(
+        TaskRecord.new(
+            "import-1",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "cpu:local",
+            required_capabilities=("archive",),
+        )
+    )
+    lease = repository.claim_next("import-worker", [TaskKind.MATERIAL_IMPORT], {"archive"})
+    assert lease is not None
+    repository.heartbeat(
+        "import-1",
+        lease.lease_token,
+        progress=75,
+        stage="reviewing",
+        current_item="batch-7",
+    )
+    repository.finish(
+        "import-1",
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        result_ref="candidates/manifest.json",
+        error="needs confirmation",
+    )
+
+    resumed = repository.resume_after_confirmation("import-1")
+
+    assert resumed.status is TaskStatus.QUEUED
+    assert resumed.stage == "indexing_queued"
+    assert resumed.progress == 0
+    assert resumed.current_item is None
+    assert resumed.error is None
+    assert resumed.accepted is True
+    assert resumed.finished_at is None
+    assert resumed.result_ref == "candidates/manifest.json"
+    assert repository.resume_after_confirmation("import-1") == resumed
+
+
+def test_resume_after_confirmation_rejects_rejected_material_import(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(
+        TaskRecord.new(
+            "import-rejected",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "cpu:local",
+            required_capabilities=("archive",),
+        )
+    )
+    lease = repository.claim_next("import-worker", [TaskKind.MATERIAL_IMPORT], {"archive"})
+    assert lease is not None
+    repository.finish(
+        "import-rejected",
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        accepted=False,
+    )
+    before = repository.get("import-rejected")
+
+    with pytest.raises(ValueError, match="cannot resume"):
+        repository.resume_after_confirmation("import-rejected")
+
+    assert repository.get("import-rejected") == before
+
+
+def test_resume_after_confirmation_is_atomic_for_concurrent_confirmations(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(
+        TaskRecord.new(
+            "import-concurrent",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "cpu:local",
+            required_capabilities=("archive",),
+        )
+    )
+    lease = repository.claim_next("import-worker", [TaskKind.MATERIAL_IMPORT], {"archive"})
+    assert lease is not None
+    repository.finish(
+        "import-concurrent",
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+    )
+    barrier = Barrier(2)
+
+    def confirm():
+        barrier.wait()
+        return repository.resume_after_confirmation("import-concurrent")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(confirm) for _ in range(2)]
+        results = [future.result() for future in futures]
+
+    assert all(record.accepted is True for record in results)
+    assert all(record.status is TaskStatus.QUEUED for record in results)
+    assert all(record.stage == "indexing_queued" for record in results)
+    assert len({record.updated_at for record in results}) == 1
+
+
+def test_confirmed_material_import_keeps_indexing_stage_through_claim_and_recovery(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(
+        TaskRecord.new(
+            "import-indexing",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "cpu:import",
+            required_capabilities=("archive",),
+        )
+    )
+    initial_lease = repository.claim_next(
+        "import-worker", [TaskKind.MATERIAL_IMPORT], {"archive"}
+    )
+    assert initial_lease is not None
+    repository.finish(
+        "import-indexing",
+        initial_lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+    )
+    repository.resume_after_confirmation("import-indexing")
+    repository.create(
+        TaskRecord.new(
+            "training-indexing",
+            "project-1",
+            TaskKind.TRAINING,
+            "requests/training.json",
+            "cpu:training",
+            required_capabilities=("cuda",),
+        )
+    )
+
+    import_lease = repository.claim_next(
+        "import-worker", [TaskKind.MATERIAL_IMPORT], {"archive"}
+    )
+    training_lease = repository.claim_next("training-worker", [TaskKind.TRAINING], {"cuda"})
+
+    assert import_lease is not None
+    assert import_lease.task.stage == "indexing"
+    assert repository.resume_after_confirmation("import-indexing") == import_lease.task
+    assert training_lease is not None
+    assert training_lease.task.stage == "running"
+    assert repository.release_expired(datetime.now(timezone.utc) + timedelta(minutes=1)) == 2
+    recovered_import = repository.get("import-indexing")
+    recovered_training = repository.get("training-indexing")
+    assert recovered_import is not None
+    assert recovered_import.stage == "indexing_queued"
+    assert repository.resume_after_confirmation("import-indexing") == recovered_import
+    assert recovered_training is not None
+    assert recovered_training.stage == "recovered"
+
+    running = replace(
+        TaskRecord.new(
+            "import-running",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "cpu:other",
+        ),
+        status=TaskStatus.RUNNING,
+        stage="running",
+        accepted=True,
+    )
+    repository.create(running)
+    with pytest.raises(ValueError, match="cannot resume"):
+        repository.resume_after_confirmation("import-running")
+    assert repository.get("import-running") == running
 
 
 def test_promote_can_move_a_task_ahead_even_when_current_priority_is_one(tmp_path):

@@ -216,7 +216,13 @@ class TaskRepository:
         return database.execute(
             """
             UPDATE tasks
-               SET status='QUEUED', stage='recovered', worker_id=NULL,
+               SET status='QUEUED',
+                   stage=CASE
+                       WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing'
+                           THEN 'indexing_queued'
+                       ELSE 'recovered'
+                   END,
+                   worker_id=NULL,
                    lease_token=NULL, lease_expires_at=NULL, updated_at=?
              WHERE status IN ('RUNNING','CANCEL_REQUESTED')
                AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
@@ -283,7 +289,13 @@ class TaskRepository:
             changed = database.execute(
                 """
                 UPDATE tasks
-                   SET status='RUNNING', stage='running', worker_id=?, lease_token=?,
+                   SET status='RUNNING',
+                       stage=CASE
+                           WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing_queued'
+                               THEN 'indexing'
+                           ELSE 'running'
+                       END,
+                       worker_id=?, lease_token=?,
                        lease_expires_at=?, attempt=attempt+1, updated_at=?, finished_at=NULL
                  WHERE task_id=? AND status='QUEUED'
                 """,
@@ -550,6 +562,50 @@ class TaskRepository:
         if result is None:
             raise KeyError(task_id)
         return result
+
+    def resume_after_confirmation(self, task_id: str) -> TaskRecord:
+        now = utc_now()
+        with self._connect() as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            if current.kind is not TaskKind.MATERIAL_IMPORT:
+                database.rollback()
+                raise ValueError("only material import tasks can resume after confirmation")
+            if current.accepted is False:
+                database.rollback()
+                raise ValueError("task cannot resume after confirmation")
+            if current.status is TaskStatus.AWAITING_CONFIRMATION:
+                database.execute(
+                    """
+                    UPDATE tasks SET status='QUEUED', stage='indexing_queued', progress=0,
+                        current_item=NULL, error=NULL, accepted=1, finished_at=NULL,
+                        updated_at=?, worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
+                     WHERE task_id=? AND status='AWAITING_CONFIRMATION'
+                    """,
+                    (now, str(task_id)),
+                )
+                row = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?",
+                    (str(task_id),),
+                ).fetchone()
+                database.commit()
+                return _from_row(row)
+            if current.accepted is True and (
+                (current.status is TaskStatus.QUEUED and current.stage == "indexing_queued")
+                or (current.status is TaskStatus.RUNNING and current.stage == "indexing")
+                or current.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}
+            ):
+                database.commit()
+                return current
+            database.rollback()
+            raise ValueError("task cannot resume after confirmation")
 
     def retry(self, task_id: str) -> TaskRecord:
         now = utc_now()
