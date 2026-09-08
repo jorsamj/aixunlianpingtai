@@ -33,6 +33,7 @@ REQ = BASE_DIR / "requirements.txt"
 TORCH_VERSION = "2.12.1"
 TORCHVISION_VERSION = "0.27.1"
 TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+TORCH_PROBE_JSON_PREFIX = "TORCH_PROBE_JSON:"
 
 
 def say(text=""):
@@ -201,17 +202,89 @@ def _run_install(cmd, label: str) -> bool:
         return False
 
 
-def _torch_pair_ready(py: Path) -> bool:
+def torch_runtime_probe(py: Path) -> dict:
     code = (
-        "import torch, torchvision; "
-        f"assert torch.__version__.split('+')[0]=='{TORCH_VERSION}', torch.__version__; "
-        f"assert torchvision.__version__.split('+')[0]=='{TORCHVISION_VERSION}', torchvision.__version__; "
-        "from torchvision.ops import nms; print(torch.__version__, torchvision.__version__)"
+        "import json, torch, torchvision; from torchvision.ops import nms; "
+        f"print({TORCH_PROBE_JSON_PREFIX!r} + json.dumps({{'torch_version': torch.__version__, "
+        "'torchvision_version': torchvision.__version__, "
+        "'cuda_available': torch.cuda.is_available(), "
+        "'cuda_version': torch.version.cuda}))"
     )
-    ok, out, _ = run_check(py, "PyTorch", code, timeout=60)
-    if ok:
-        say(f"      PyTorch 已可用，跳过重复下载：{out.splitlines()[-1] if out else 'OK'}")
-    return ok
+    ok, out, err = run_check(py, "PyTorch", code, timeout=60)
+    if not ok:
+        return {
+            "usable": False,
+            "pinned_pair": False,
+            "torch_version": "",
+            "torchvision_version": "",
+            "cuda_available": False,
+            "cuda_version": "",
+            "error": err or out or "PyTorch / TorchVision 导入检查失败",
+        }
+
+    try:
+        payloads = [
+            line[len(TORCH_PROBE_JSON_PREFIX):]
+            for line in out.splitlines()
+            if line.startswith(TORCH_PROBE_JSON_PREFIX)
+        ]
+        if len(payloads) != 1:
+            raise ValueError(
+                "未找到唯一的 TORCH_PROBE_JSON 前缀"
+                if not payloads
+                else "检测到多个 TORCH_PROBE_JSON 前缀"
+            )
+        runtime = json.loads(payloads[0])
+        if not isinstance(runtime, dict):
+            raise ValueError("probe payload 必须是 JSON object")
+
+        torch_version = runtime.get("torch_version")
+        torchvision_version = runtime.get("torchvision_version")
+        cuda_available = runtime.get("cuda_available")
+        cuda_version = runtime.get("cuda_version")
+        if not isinstance(torch_version, str) or not torch_version:
+            raise ValueError("torch_version 必须是非空字符串")
+        if not isinstance(torchvision_version, str) or not torchvision_version:
+            raise ValueError("torchvision_version 必须是非空字符串")
+        if type(cuda_available) is not bool:
+            raise ValueError("cuda_available 必须是 bool")
+        if cuda_version is not None and not isinstance(cuda_version, str):
+            raise ValueError("cuda_version 必须是字符串或 null")
+        cuda_version = cuda_version or ""
+    except (TypeError, ValueError, json.JSONDecodeError) as e:
+        return {
+            "usable": False,
+            "pinned_pair": False,
+            "torch_version": "",
+            "torchvision_version": "",
+            "cuda_available": False,
+            "cuda_version": "",
+            "error": f"无法解析 PyTorch runtime probe JSON: {e}; output: {out or '<empty>'}",
+        }
+
+    return {
+        "usable": True,
+        "pinned_pair": (
+            torch_version.split("+", 1)[0] == TORCH_VERSION
+            and torchvision_version.split("+", 1)[0] == TORCHVISION_VERSION
+        ),
+        "torch_version": torch_version,
+        "torchvision_version": torchvision_version,
+        "cuda_available": cuda_available,
+        "cuda_version": cuda_version,
+        "error": "",
+    }
+
+
+def _torch_pair_ready(py: Path) -> bool:
+    probe = torch_runtime_probe(py)
+    if probe["usable"] and probe["pinned_pair"]:
+        say(
+            "      PyTorch 已可用，跳过重复下载："
+            f"{probe['torch_version']} {probe['torchvision_version']}"
+        )
+        return True
+    return False
 
 
 def install_known_good_torch(py: Path):
