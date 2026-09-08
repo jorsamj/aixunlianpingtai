@@ -359,6 +359,49 @@ class MaterialRepository:
             fetch_pending(database)
         return existing
 
+    def find_existing_storage_references(
+        self, references: Iterable[tuple[object, object]],
+    ) -> set[tuple[str, str]]:
+        """Return exact source/object-key pairs already present, in bounded batches."""
+        existing: set[tuple[str, str]] = set()
+        pending: set[tuple[str, str]] = set()
+
+        with closing(self._connect()) as database:
+            database.execute("PRAGMA temp_store=FILE")
+            database.execute(
+                "CREATE TEMP TABLE requested_material_references ("
+                "storage_source_id TEXT NOT NULL, object_key TEXT NOT NULL, "
+                "PRIMARY KEY(storage_source_id, object_key)) WITHOUT ROWID"
+            )
+
+            def fetch_pending() -> None:
+                if not pending:
+                    return
+                database.executemany(
+                    "INSERT OR IGNORE INTO requested_material_references VALUES (?, ?)",
+                    pending,
+                )
+                existing.update(
+                    (str(row[0]), str(row[1]))
+                    for row in database.execute(
+                        "SELECT DISTINCT m.storage_source_id, m.object_key "
+                        "FROM materials m JOIN requested_material_references r "
+                        "ON r.storage_source_id=m.storage_source_id AND r.object_key=m.object_key"
+                    )
+                )
+                database.execute("DELETE FROM requested_material_references")
+                pending.clear()
+
+            for source_id, object_key in references:
+                reference = (str(source_id or "").strip(), str(object_key or ""))
+                if not reference[0] or not reference[1] or reference in existing:
+                    continue
+                pending.add(reference)
+                if len(pending) == 500:
+                    fetch_pending()
+            fetch_pending()
+        return existing
+
     @staticmethod
     def _filters(
         *, query: str = "", storage_source_ids: Sequence[str] | None = None,

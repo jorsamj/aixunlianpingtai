@@ -349,6 +349,29 @@ def test_find_existing_content_hashes_uses_distinct_rows_per_requested_hash(tmp_
     assert traced.closed
 
 
+def test_find_existing_storage_references_is_streamed_normalized_and_exact(tmp_path):
+    repository = MaterialRepository(tmp_path / "project")
+    repository.upsert_many([
+        {**material("image-1", source="source-a"), "object_key": "images/a.jpg"},
+        {**material("image-2", source="source-b"), "object_key": "images/a.jpg"},
+    ])
+
+    requested = (
+        value for value in [
+            ("source-a", "images/a.jpg"),
+            ("source-a", "images/a.jpg"),
+            ("source-a", "images/missing.jpg"),
+            ("source-b", "images/a.jpg"),
+            ("", "ignored.jpg"),
+        ]
+    )
+
+    assert repository.find_existing_storage_references(requested) == {
+        ("source-a", "images/a.jpg"),
+        ("source-b", "images/a.jpg"),
+    }
+
+
 def test_find_existing_content_hashes_checkpoints_missing_hashes_in_temp_table(tmp_path, monkeypatch):
     repository = MaterialRepository(tmp_path)
     missing_hashes = [f"{index + 5000:064x}" for index in range(500)]
