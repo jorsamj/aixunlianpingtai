@@ -3538,15 +3538,15 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.loadCore412=async function(){
     await ensureWorkspace(); if(!state.project)return;
     const id=state.project.id;
-    let ds=await safe(api(`/api/projects/${id}/datasets`)); state.datasets=ds?.items||[];
-    if(!state.datasets.length){await safe(api(`/api/projects/${id}/datasets`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'默认数据集',description:'',kind:'mixed'})}));ds=await safe(api(`/api/projects/${id}/datasets`));state.datasets=ds?.items||[]}
+    const snapshot=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(id)}&refresh=true`);
+    state.datasets=snapshot.datasets||[];state.labels=snapshot.labels||[];state.algorithms=snapshot.algorithms||[];state.jobs=snapshot.jobs||[];
+    state.materialSummary61=snapshot.material_summary;state.annotationSummary61=snapshot.annotation_summary;
     if(!state.datasets.find(d=>d.id===state.datasetId))state.datasetId=state.datasets[0]?.id||'default';
-    const [images,labels,algos]=await Promise.all([
-      safe(api(`/api/projects/${id}/images`)),
-      safe(api(`/api/v12/projects/${id}/labels`)),
-      safe(api(`/api/v12/projects/${id}/algorithms`))
-    ]);
-    state.images=images||[]; state.labels=labels?.items||[]; state.algorithms=algos?.items||[];
+    const full=window.PlatformCore?.materialPaging?.requiresFullMaterialPool(state.page)||false;
+    if(window.__materialPaging61)window.__materialPaging61.mode=full?'full':'paged';
+    if(full)state.images=await api(`/api/projects/${id}/images`);
+    else if(state.page==='数据集'&&window.reloadMaterialPage61)await window.reloadMaterialPage61();
+    else if(state.page==='数据集'||state.page==='素材接入')state.images=(await api(`/api/v61/projects/${id}/materials?limit=48`)).items||[];
   };
   async function pollAnnotationIndex412(){
     if(!state.project||state.__annPoll412)return; state.__annPoll412=true; const id=state.project.id;
@@ -3560,11 +3560,24 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(st&&!st.pending){const imgs=await safe(api(`/api/projects/${id}/images`));if(Array.isArray(imgs)){state.images=imgs;if(state.page==='数据集')renderDatasets424();try{renderSummary()}catch(e){}}}
     }finally{state.__annPoll412=false}
   }
-  async function extras412(){if(!state.project)return;const id=state.project.id;const q=p=>p.catch(()=>null);const [info,opts,pending,testModels,infer,rec,local,modelConfigs]=await Promise.all([
-    q(api(`/api/projects/${id}`)),q(api(`/api/training_options?project_id=${id}`)),q(api(`/api/v12/projects/${id}/publish/pending`)),q(api(`/api/v12/projects/${id}/test_models`)),q(api('/api/v16/inference_envs')),q(api('/api/system/recommendation')),q(api('/api/local_models')),q(api('/api/v35/model-configs'))
-  ]);if(info){state.project=info.project||state.project;state.jobs=info.jobs||[];state.models=info.models||[]}state.targets=opts?.targets||[];state.pending=pending?.items||[];state.testModels=testModels?.items||[];state.inferenceEnvs=infer?.items||[];state.rec=rec;state.localModels=local?.items||[];state.modelConfigs=modelConfigs?.items||state.modelConfigs||[];try{renderSummary()}catch(e){};pollAnnotationIndex412();
+  async function extras412(){
+    if(!state.project)return;const id=state.project.id,page=state.page,tasks=[];
+    const load=(key,url,field)=>tasks.push(api(url).then(value=>{state[key]=field?(value?.[field]||[]):value}));
+    if(['训练任务','训练资源','自动迭代'].includes(page))load('targets',`/api/training_options?project_id=${id}`,'targets');
+    if(['算法列表','训练任务','自动迭代'].includes(page))load('jobs',`/api/projects/${id}/jobs`);
+    if(['测试发布','部署测试'].includes(page)){
+      load('pending',`/api/v12/projects/${id}/publish/pending`,'items');
+      load('testModels',`/api/v12/projects/${id}/test_models`,'items');
+      load('inferenceEnvs','/api/v16/inference_envs','items');
+    }
+    if(['训练任务','测试发布','部署转换','部署产物'].includes(page))load('models',`/api/projects/${id}/models`);
+    if(['模型配置','自动标注','自动标注及清洗'].includes(page))load('modelConfigs','/api/v35/model-configs','items');
+    const results=await Promise.allSettled(tasks);for(const result of results)if(result.status==='rejected')toast(result.reason?.message||String(result.reason));
+    // Annotation JSON fallback is per image; ordinary refresh never starts a project scan.
   }
-  loadAll=async function(){await window.loadCore412();if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null)};
+  window.loadPageExtras413=extras412;
+  window.refreshCurrentPage413=async function(){await window.loadCore412();await extras412();if(['部署转换','部署产物','部署资源'].includes(state.page)&&typeof loadDeployData==='function')await loadDeployData(true)};
+  loadAll=window.refreshCurrentPage413;
   window.__clInit=async function(){const view=document.getElementById('view');if(view)view.innerHTML='<div class="boot412"><i></i><b>正在读取算法与素材</b><span>先加载核心数据，其余资源后台补齐</span></div>';await window.loadCore412();render();state.uiReady=true;if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null)};
 
   // -------- stable algorithm renderer --------
@@ -3647,10 +3660,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  function savedProject(){try{return JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}').projectId||''}catch(e){return ''}}
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0)));return `<div class="boot413"><div class="boot413-card"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span>${esc(st?.stage||'正在启动')}</span><b>${Math.round(p)}%</b></div><i><em style="width:${p}%"></em></i><p>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
  async function waitReady(){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};if(view)view.innerHTML=boot(st);for(let i=0;i<1800;i++){let r=null;try{r=await api('/api/v53/bootstrap/status')}catch(e){}if(r){st=r;if(view)view.innerHTML=boot(st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
- function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');x.projectId=state.project?.id||'';x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
+ function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;state.labels=s.labels||[];state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.versionInfo={version:V413,name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');x.projectId=state.project?.id||'';x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
  window.loadStartupSnapshot413=async function(force=false){const requested=savedProject();if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferred_project_id:requested,force:true})});if(requested&&!force){try{const direct=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(requested)}`);apply(direct);return direct}catch(e){}}await waitReady();const s=await api(`/api/v53/bootstrap/snapshot?preferred_project_id=${encodeURIComponent(requested)}`);apply(s);return s};
- window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render()}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
- const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V413;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;const t=r.textContent;r.textContent='重新加载中';try{await window.loadStartupSnapshot413(true);render();toast('数据与环境已重新加载')}catch(e){toast(e.message||e)}finally{r.disabled=false;r.textContent=t||'刷新'}}};
+ window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);await window.refreshCurrentPage413();state.uiReady=true;render()}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
+ const oldTop=renderTop;renderTop=function(){oldTop();const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V413;const r=document.getElementById('refreshBtn');if(r)r.onclick=async()=>{r.disabled=true;const t=r.textContent;r.textContent='刷新中';try{await window.refreshCurrentPage413();render();toast('当前页面已刷新')}catch(e){toast(e.message||e)}finally{r.disabled=false;r.textContent=t||'刷新'}}};
 })();
 
 /* ============================================================
@@ -4038,7 +4051,13 @@ window.installUsability417?.();
     const count=document.getElementById('trV3PickerCount');if(count)count.textContent=`筛选结果 ${rows.length} 张 · 已选 ${p.selected.size} 张`;
     const pager=document.getElementById('trV3Pager');if(pager)pager.innerHTML=`<button class="btn mini" ${p.page<=1?'disabled':''} onclick="trainMaterialPageV3(-1)">上一页</button><span>${p.page} / ${pages}</span><button class="btn mini" ${p.page>=pages?'disabled':''} onclick="trainMaterialPageV3(1)">下一页</button>`;
   }
-  window.openTrainMaterialPickerV3=function(role){
+  window.openTrainMaterialPickerV3=async function(role){
+    // The legacy V3 selector still pages locally. Load its pool only when opened,
+    // including when training was launched from the algorithm list.
+    const fetchPool=window.__materialPaging61?.originalFetch||window.fetch.bind(window);
+    const response=await fetchPool(`/api/projects/${pid()}/images`);
+    if(!response.ok)return toast('训练素材读取失败，请重试');
+    state.images=await response.json();
     const s=splitState();state.trainMaterialPickerV3={role,selected:new Set(),labels:new Set(),query:'',page:1,pageSize:80};
     modal(role==='train'?'选择本次训练素材':'选择独立试验素材',`<div class="train-v3-picker"><header><div><b>${role==='train'?'训练候选素材':'独立试验素材'}</b><span>只有明确勾选的图片会进入本次任务</span></div><strong id="trV3PickerCount"></strong></header><div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${(state.labels||[]).map(row=>`<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name||row.code)}</button>`).join('')}</div></div><div class="picker412-actions train-v3-batch"><button class="btn mini" onclick="trainMaterialSelectV3('select-filtered')">选择当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button></div><div id="trV3Grid" class="train-v3-grid"></div><div id="trV3Pager" class="data426-pager"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmTrainMaterialPickerV3()">确认选择</button></div></div>`,true);setTimeout(renderPicker,20)
   };

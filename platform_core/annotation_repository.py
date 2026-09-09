@@ -57,6 +57,14 @@ class AnnotationRepository:
         state = legacy.get('annotation_state') or ('annotated' if boxes else 'unannotated')
         return {**legacy, 'image_id': image_id, 'boxes': boxes, 'annotation_state': state, 'version': 0}
 
+    def summary(self):
+        """Count persisted states; legacy JSON remains a per-image lazy fallback."""
+        with closing(self._connect()) as db:
+            rows = db.execute('SELECT annotation_state, COUNT(*) AS total FROM annotations GROUP BY annotation_state').fetchall()
+        counts = {state: 0 for state in STATES}
+        counts.update({row['annotation_state']: int(row['total']) for row in rows})
+        return {**counts, 'total': sum(counts.values())}
+
     def upsert_many(self, rows):
         written = []
         with closing(self._connect()) as db, db:

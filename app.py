@@ -13837,17 +13837,13 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
     material_store(project_id).patch(patches); return load_images(project_id)
 
 def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None):
-    project=get_project(project_id); datasets=ensure_default_datasets(project_id); images=load_images(project_id); labels=project_label_items(project); algorithms=list_algorithms_internal(project_id)
-    try:sync_jobs_index(project_id)
-    except Exception:pass
+    # First paint reads repository counters and small metadata indexes only.
+    # Materials use v61 pagination; legacy annotation JSON is resolved per image.
+    project=get_project(project_id); datasets=ensure_default_datasets(project_id); labels=project_label_items(project); algorithms=list_algorithms_internal(project_id)
+    materials=material_store(project_id).summary()
+    annotations=AnnotationRepository(project_dir(project_id)).summary()
     jobs=read_json(project_dir(project_id)/"jobs"/"index.json",[]); jobs=jobs if isinstance(jobs,list) else []
-    models=list_models_internal(project_id); targets=prepared_targets if prepared_targets is not None else (training_options(project_id) or {}).get("targets",[]); inference=inference_env_items(probe_modules=False); rec=_system_recommendation_payload(); local=list_local_models()
-    try:pending=(v12_pending_models(project_id) or {}).get("items",[])
-    except Exception:pending=[]
-    try:test_models=(v12_test_models(project_id,probe_optional=False) or {}).get("items",[])
-    except Exception:test_models=[]
-    model_configs = [_v35_sanitize_secret(item) for item in _v35_model_items()]
-    return {"project":project,"datasets":datasets,"images":images,"labels":labels,"algorithms":algorithms,"jobs":jobs,"models":models,"targets":targets,"inference_envs":inference,"recommendation":rec,"local_models":(local or {}).get("items",[]) if isinstance(local,dict) else [],"model_configs":model_configs,"pending":pending,"test_models":test_models,"generated_at":now_iso()}
+    return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"jobs":jobs,"generated_at":now_iso()}
 
 def _v53_bootstrap_worker(preferred_project_id:str=""):
     global _V53_BOOTSTRAP_SNAPSHOT
@@ -13864,8 +13860,8 @@ def _v53_bootstrap_worker(preferred_project_id:str=""):
         for idx,p in enumerate(projects):
             pid0=str(p.get("id") or "")
             if not pid0:continue
-            ensure_project_dirs(pid0); _v50_recover_dataset_deletions(pid0); imgs=load_images(pid0); start_p=16+int(44*idx/total); span=max(1,int(44/total)); _v53_set_bootstrap(start_p,"加载素材与标注",f"{p.get('name') or pid0} · {len(imgs)} 张")
-            _v53_index_annotations_sync(pid0,imgs,start_p,span); list_algorithms_internal(pid0)
+            ensure_project_dirs(pid0); _v50_recover_dataset_deletions(pid0)
+            _v53_set_bootstrap(16+int(44*idx/total),"读取素材索引",f"{p.get('name') or pid0} · {material_store(pid0).count()} 张")
             # Worker threads are process-local. Requeue persisted upload
             # cleaning tasks after a restart so they cannot remain stuck in a
             # non-terminal state merely because the previous process exited.
@@ -13873,19 +13869,9 @@ def _v53_bootstrap_worker(preferred_project_id:str=""):
                 _v47_recover_clean_tasks(pid0)
             except Exception:
                 pass
-        _v53_set_bootstrap(64,"加载训练记录","正在读取训练任务、模型与算法版本")
-        try:sync_jobs_index(active_id)
-        except Exception:pass
-        list_models_internal(active_id); list_algorithms_internal(active_id)
-        _v53_set_bootstrap(74,"校验训练环境","正在确认 Ultralytics / 训练资源"); prepared_targets=(training_options(active_id) or {}).get("targets",[])
-        # Reading the cached model index is cheap, but importing torch merely to
-        # probe CUDA can take well over a minute on some Windows installations.
-        # Hardware recommendation remains available through its explicit API;
-        # it must not hold the whole platform in the bootstrap "running" state.
-        _v53_set_bootstrap(84,"读取本机资源","正在读取本机模型缓存"); list_local_models()
-        _v53_set_bootstrap(91,"生成首屏快照","正在整理算法、素材、版本和任务")
-        snap=_v53_build_snapshot(active_id,prepared_targets=prepared_targets); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; _V53_BOOTSTRAP_SNAPSHOT=snap
-        _V53_BOOTSTRAP_STATUS.update({"status":"ready","progress":100,"stage":"平台数据已就绪","message":f"{len(snap.get('images') or [])} 张素材 · {len(snap.get('algorithms') or [])} 个算法","finished_at":now_iso(),"updated_at":now_iso(),"active_project_id":active_id,"error":""})
+        _v53_set_bootstrap(91,"生成首屏快照","正在读取算法、素材计数和任务索引")
+        snap=_v53_build_snapshot(active_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; _V53_BOOTSTRAP_SNAPSHOT=snap
+        _V53_BOOTSTRAP_STATUS.update({"status":"ready","progress":100,"stage":"平台数据已就绪","message":f"{snap['material_summary']['total']} 张素材 · {len(snap.get('algorithms') or [])} 个算法","finished_at":now_iso(),"updated_at":now_iso(),"active_project_id":active_id,"error":""})
     except Exception as e:_V53_BOOTSTRAP_STATUS.update({"status":"failed","stage":"启动预加载失败","message":str(e),"error":repr(e),"finished_at":now_iso(),"updated_at":now_iso()})
 
 def _v53_start_bootstrap(preferred_project_id:str="", force:bool=False):
@@ -13897,10 +13883,7 @@ def _v53_start_bootstrap(preferred_project_id:str="", force:bool=False):
 
 @app.on_event("startup")
 def _v53_startup_bootstrap():
-    # Vendor imports are optional and can be slow on Windows. Warm their
-    # readiness cache in the background so the first deployment page remains
-    # responsive while the normal platform bootstrap continues independently.
-    _builtin_deploy_resources()
+    # Resource discovery is requested by the resource/deployment page.
     _v53_start_bootstrap()
 
 class V53BootstrapReq(BaseModel):
@@ -13913,13 +13896,13 @@ def v53_bootstrap_start(payload:V53BootstrapReq):_v53_start_bootstrap(payload.pr
 def v53_bootstrap_status():return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 
 @app.get("/api/v53/bootstrap/snapshot")
-def v53_bootstrap_snapshot(preferred_project_id:Optional[str]=""):
+def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=False):
     projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; requested=str(preferred_project_id or ""); counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else _v53_choose_project(projects,""); chosen_id=str(chosen.get("id")) if chosen else ""
     if _V53_BOOTSTRAP_STATUS.get("status")!="ready":
         if requested and chosen_id==requested:
             snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
         raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
-    if chosen_id and chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""):
+    if chosen_id and (refresh or chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")):
         snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
     return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
 

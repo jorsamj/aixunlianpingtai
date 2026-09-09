@@ -1,4 +1,8 @@
 export const FULL_MATERIAL_PAGES = new Set([
+  // These legacy selectors still filter state.images (training V3 also pages
+  // locally). Keep their complete pool only while visiting the relevant page.
+  // Dataset batch actions already use server filters and frozen manifests.
+  // main.mjs adds the untouched test/publish, deployment-test and iteration pages.
   '训练任务',
   '自动标注',
   '自动标注及清洗',
@@ -353,8 +357,8 @@ export function installMaterialPaginationRuntime() {
       } else if (full) {
         setTimeout(async () => {
           try {
-            if (typeof window.loadRelated === 'function') await window.loadRelated();
-            else if (typeof loadRelated === 'function') await loadRelated();
+            if (state.page !== target) return;
+            await window.refreshCurrentPage413?.();
             if (typeof window.render === 'function') window.render();
             else if (typeof render === 'function') render();
           } catch (error) {

@@ -463,6 +463,16 @@ class MaterialRepository:
     def count(self, **filters: Any) -> int:
         return self.count_filtered(filters)
 
+    def summary(self) -> dict[str, int]:
+        """Read indexed counters without hydrating material payloads or files."""
+        with self._connect() as database:
+            row = database.execute("""SELECT COUNT(*) AS total,
+                COALESCE(SUM(annotated), 0) AS annotated,
+                COALESCE(SUM(box_count), 0) AS boxes
+                FROM materials""").fetchone()
+            return {**{key: int(row[key]) for key in row.keys()},
+                    "revision": self._revision(database)}
+
     def count_filtered(self, filters: MaterialFilters | Mapping[str, Any] | None = None) -> int:
         clauses, params = self._filters(filters)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
