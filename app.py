@@ -62,6 +62,18 @@ from platform_core.storage import (
     StorageSource,
     StorageSourceRepository,
     StorageType,
+    redact_storage_error,
+)
+from platform_core.storage.import_candidates import ImportCandidateStore
+from platform_core.storage.import_tasks import (
+    MANIFEST_REF as STORAGE_IMPORT_MANIFEST_REF,
+    load_legacy_candidates,
+    server_import_dir,
+)
+from platform_core.storage.zip_import import (
+    ServerZipImportError,
+    resolve_server_zip,
+    safe_member_path,
 )
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
@@ -913,9 +925,29 @@ class StorageSourceUpdateReq(BaseModel):
 
 
 class StorageImportScanReq(BaseModel):
+    mode: Literal["storage_scan", "directory_scan", "server_zip"] = "storage_scan"
     storage_source_id: str
     prefix: str = ""
     recursive: bool = True
+    zip_path: Optional[str] = None
+    target_prefix: str = ""
+
+    @model_validator(mode="after")
+    def validate_mode_fields(self):
+        zip_path = str(self.zip_path or "").strip()
+        target_prefix = str(self.target_prefix or "").strip()
+        if self.mode == "server_zip":
+            if not zip_path:
+                raise ValueError("服务器 ZIP 模式必须选择 ZIP 文件")
+            if not target_prefix:
+                raise ValueError("服务器 ZIP 模式必须填写目标目录")
+            if str(self.prefix or "").strip():
+                raise ValueError("服务器 ZIP 模式不能同时提交扫描目录")
+        elif zip_path:
+            raise ValueError("非服务器 ZIP 模式不能提交 ZIP 文件")
+        elif target_prefix:
+            raise ValueError("非服务器 ZIP 模式不能提交 ZIP 目标目录")
+        return self
 
 
 class StorageImportConfirmReq(BaseModel):
@@ -1075,10 +1107,85 @@ def delete_storage_source(source_id: str):
     return {"ok": True, "deleted_id": source_id}
 
 
+_STORAGE_IMPORT_COUNTERS = {
+    "scanned_files", "importable_images", "duplicates", "invalid_images",
+    "skipped_files", "failed", "extracted_files", "extracted_bytes",
+    "declared_files", "declared_bytes", "selected", "indexed_at_least",
+    "newly_imported", "index_duplicates", "indexed", "imported", "candidates",
+    # Compatibility names used by the current storage-source UI.
+    "scanned", "importable",
+}
+
+
+def _public_storage_import_text(value: object, *, maximum: int = 500) -> str:
+    text = redact_storage_error(value)[:maximum]
+    # Worker-facing errors can include local roots. They are useful in server
+    # logs but must never disclose absolute filesystem paths through this API.
+    text = re.sub(r"(?<!\w)(?:[A-Za-z]:[\\/]|\\\\|/)[^\s\"'<>]*", "[REDACTED PATH]", text)
+    return text
+
+
+def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    public: Dict[str, Any] = {}
+    for key in _STORAGE_IMPORT_COUNTERS:
+        raw = value.get(key)
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, (int, float)):
+            public[key] = max(0, raw)
+    for key in ("stage", "mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref"):
+        raw = value.get(key)
+        if isinstance(raw, str):
+            public[key] = _public_storage_import_text(raw)
+    if isinstance(value.get("recursive"), bool):
+        public["recursive"] = value["recursive"]
+    error = value.get("error")
+    if isinstance(error, dict):
+        public_error = {
+            key: _public_storage_import_text(error.get(key))
+            for key in ("code", "message", "detail", "solution")
+            if error.get(key) is not None
+        }
+        context = error.get("context")
+        if isinstance(context, dict):
+            public_error["context"] = {
+                str(key)[:80]: number
+                for key, number in list(context.items())[:20]
+                if isinstance(number, (int, float)) and not isinstance(number, bool)
+            }
+        public["error"] = public_error
+    return public
+
+
 def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
+    artifacts = shared_task_artifacts()
     result = None
     if task.result_ref:
-        result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default=None)
+        result = _public_storage_import_mapping(
+            artifacts.read_json(task.task_id, task.result_ref, default=None)
+        )
+    checkpoint = artifacts.read_json(
+        task.task_id, "checkpoints/worker.json", default=None,
+    )
+    metrics = _public_storage_import_mapping(checkpoint) or {}
+    if isinstance(checkpoint, dict):
+        zip_import = checkpoint.get("zip_import")
+        if isinstance(zip_import, dict):
+            zip_metrics = _public_storage_import_mapping(zip_import) or {}
+            for key in _STORAGE_IMPORT_COUNTERS:
+                if key in zip_metrics:
+                    metrics[key] = zip_metrics[key]
+        else:
+            zip_import = {}
+        current = (
+            checkpoint.get("current_object")
+            or checkpoint.get("current_file")
+            or zip_import.get("current_file")
+        )
+        if isinstance(current, str):
+            metrics["current_file"] = _public_storage_import_text(current)
     return {
         "task_id": task.task_id,
         "project_id": task.project_id,
@@ -1086,11 +1193,12 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
         "status": task.status.value,
         "progress": task.progress,
         "stage": task.stage,
-        "current_item": task.current_item,
-        "error": task.error,
+        "current_item": _public_storage_import_text(task.current_item) if task.current_item else None,
+        "error": _public_storage_import_text(task.error) if task.error else None,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "finished_at": task.finished_at,
+        "metrics": metrics,
         "result": result,
     }
 
@@ -1103,8 +1211,33 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
         raise HTTPException(status_code=404, detail="存储源不存在")
     if not source.enabled:
         raise HTTPException(status_code=409, detail="存储源已停用")
+    if payload.mode in {"directory_scan", "server_zip"} and StorageType.parse(source.type) is not StorageType.LOCAL:
+        raise HTTPException(status_code=422, detail="目录扫描和服务器 ZIP 导入只能使用已启用的本地存储")
+    request_payload = payload.model_dump(mode="json")
+    if payload.mode == "server_zip":
+        relative_zip = str(payload.zip_path or "").strip()
+        try:
+            # Resolve now so an unsafe/out-of-root/missing request cannot create
+            # a durable task which is guaranteed to fail later. Only the caller's
+            # relative value is persisted; the resolved server path is discarded.
+            resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
+            target_prefix = safe_member_path(
+                str(payload.target_prefix or "").strip()
+            ).as_posix()
+        except ServerZipImportError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": error.code,
+                    "message": _public_storage_import_text(error.message),
+                    "detail": _public_storage_import_text(error.detail),
+                    "solution": _public_storage_import_text(error.solution),
+                },
+            ) from error
+        request_payload["zip_path"] = relative_zip
+        request_payload["target_prefix"] = target_prefix
     task_id = uuid.uuid4().hex[:12]
-    shared_task_artifacts().atomic_write_json(task_id, "request.json", payload.model_dump(mode="json"))
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
     task = shared_task_repository().create(TaskRecord.new(
         task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
         f"storage:{source.id}", required_capabilities=("storage.import",),
@@ -1121,19 +1254,47 @@ def get_storage_import_scan(project_id: str, task_id: str):
     return _public_storage_import_task(task)
 
 
-@app.post("/api/v61/projects/{project_id}/storage-imports/{task_id}/confirm")
+@app.post("/api/v61/projects/{project_id}/storage-imports/{task_id}/confirm", status_code=202)
 def confirm_storage_import(project_id: str, task_id: str, payload: StorageImportConfirmReq):
     get_project(project_id)
     task = shared_task_repository().get(task_id)
     if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
         raise HTTPException(status_code=404, detail="存储导入任务不存在")
-    if task.status is not TaskStatus.SUCCEEDED:
-        raise HTTPException(status_code=409, detail="存储扫描尚未成功完成")
-    from platform_core.storage.import_tasks import commit_storage_import
-    result = commit_storage_import(
-        DATA_DIR, project_id, shared_task_artifacts(), task_id, payload.object_keys
+    repeatable = (
+        task.accepted is True
+        and task.status in {
+            TaskStatus.QUEUED, TaskStatus.RUNNING,
+            TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS,
+        }
     )
-    return {"ok": True, **result}
+    if task.status is not TaskStatus.AWAITING_CONFIRMATION and not repeatable:
+        raise HTTPException(status_code=409, detail="存储扫描尚未进入待确认状态")
+
+    artifacts = shared_task_artifacts()
+    manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+    scan_result = artifacts.read_json(task_id, "scan/result.json", default=None)
+    if not manifest.is_file() and not (
+        isinstance(scan_result, dict) and isinstance(scan_result.get("candidates"), list)
+    ):
+        raise HTTPException(status_code=409, detail="存储扫描候选清单不存在")
+    candidate_store = ImportCandidateStore(manifest)
+    load_legacy_candidates(artifacts, task_id, candidate_store)
+    selected = payload.object_keys
+    keys = selected if selected is not None else (
+        row["object_key"] for row in candidate_store.iter_status("IMPORTABLE")
+    )
+    try:
+        selection = candidate_store.confirm(keys)
+        artifacts.atomic_write_json(task_id, "scan/confirmation.json", {
+            "accepted": True,
+            "selection_digest": selection.digest,
+            "selected_count": selection.selected_count,
+            "confirmed_at": selection.confirmed_at,
+        })
+        updated = shared_task_repository().resume_after_confirmation(task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return _public_storage_import_task(updated)
 
 
 @app.get("/api/v61/projects/{project_id}/materials")

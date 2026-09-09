@@ -97,3 +97,5 @@ def test_storage_scan_api_creates_a_durable_background_task(client, tmp_path):
     assert persisted.status_code == 200
     assert persisted.json()["task_id"] == task["task_id"]
     assert persisted.json()["kind"] == "MATERIAL_IMPORT"
+    request = app_module.shared_task_artifacts().read_json(task["task_id"], "request.json")
+    assert request["mode"] == "storage_scan"
