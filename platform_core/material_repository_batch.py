@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from contextlib import closing
 from typing import Any, Mapping
 
 from .material_repository import MaterialRepository, normalize_material
@@ -143,21 +144,88 @@ def _patch_filtered(
     batch_size: int = _SQL_ID_BATCH,
 ) -> int:
     selected = MaterialFilters.from_mapping(filters)
-    if expected_revision is not None and self.current_revision() != int(expected_revision):
-        raise ValueError("material repository revision changed; re-estimate before confirming")
-    changed = 0
-    cursor = None
-    while True:
-        page = self.iter_filtered_ids(
-            selected, cursor=cursor, limit=_bounded_batch_size(batch_size), include_total=False,
+    values = _validate_patch(patch)
+    size = _bounded_batch_size(batch_size)
+    revision = int(expected_revision) if expected_revision is not None else None
+    clauses, params = self._filters(selected)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
+    with closing(self._connect()) as database:
+        database.execute("PRAGMA temp_store=FILE")
+        database.execute(
+            "CREATE TEMP TABLE patch_filtered_selection ("
+            "material_id TEXT PRIMARY KEY"
+            ") WITHOUT ROWID"
         )
-        if not page.items:
-            break
-        changed += self.patch_many(page.items, patch, batch_size=batch_size)
-        cursor = page.next_cursor
-        if not cursor:
-            break
-    return changed
+
+        # The revision check and selection must observe one database snapshot.  The
+        # temporary manifest then freezes the estimated population while later
+        # batches remain small, independently committed write transactions.
+        database.execute("BEGIN")
+        try:
+            if revision is not None and self._revision(database) != revision:
+                raise ValueError("material repository revision changed; re-estimate before confirming")
+            database.execute(
+                "INSERT INTO patch_filtered_selection(material_id) "
+                "SELECT m.id FROM materials m" + where,
+                params,
+            )
+            database.execute("COMMIT")
+        except Exception:
+            database.execute("ROLLBACK")
+            raise
+
+        changed = 0
+        cursor = ""
+        while True:
+            batch = [
+                str(row["material_id"])
+                for row in database.execute(
+                    "SELECT material_id FROM patch_filtered_selection "
+                    "WHERE material_id > ? ORDER BY material_id LIMIT ?",
+                    (cursor, size),
+                ).fetchall()
+            ]
+            if not batch:
+                break
+
+            placeholders = ",".join("?" for _ in batch)
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                stored = database.execute(
+                    f"SELECT id, payload_json FROM materials WHERE id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                changed_rows = []
+                for stored_row in stored:
+                    before = self._row_payload(stored_row)
+                    candidate = dict(before)
+                    candidate.update(values)
+                    normalized = normalize_material(candidate)
+                    before_json = json.dumps(
+                        normalize_material(before),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    after_json = json.dumps(
+                        normalized,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if before_json != after_json:
+                        changed_rows.append(normalized)
+                _persist_batch(database, changed_rows)
+                if changed_rows:
+                    self._bump_revision(database)
+                database.execute("COMMIT")
+                changed += len(changed_rows)
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
+            cursor = batch[-1]
+        return changed
 
 
 def _add_labels_many(
