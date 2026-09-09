@@ -17,6 +17,7 @@ import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modu
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422204';
+import {buildServerImportRequest, serverImportView} from './modules/server-material-import.js?v=422205';
 
 
 const modalStack = createModalStack();
@@ -62,7 +63,8 @@ window.PlatformCore = {
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
-  storageImport: {storageImportProgressText}
+  storageImport: {storageImportProgressText},
+  serverMaterialImport: {buildServerImportRequest, serverImportView}
 };
 
 installMaterialPaginationRuntime();
