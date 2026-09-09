@@ -151,7 +151,12 @@ class TaskRepository:
         with self._connect() as database:
             return str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
-    def create(self, record: TaskRecord) -> TaskRecord:
+    def create(self, record: TaskRecord, *, artifacts=None) -> TaskRecord:
+        from .artifacts import ArtifactStore
+        from .task_logs import create_task_log
+
+        # Persist the real artifact before exposing its reference in a task row.
+        create_task_log(artifacts or ArtifactStore(self.path.parent / "artifacts"), record.task_id, record.log_ref)
         values = _to_values(record)
         columns = ",".join(values)
         placeholders = ",".join("?" for _ in values)
@@ -216,18 +221,20 @@ class TaskRepository:
         return database.execute(
             """
             UPDATE tasks
-               SET status='QUEUED',
+               SET status=CASE WHEN status='CANCEL_REQUESTED' THEN 'CANCELLED' ELSE 'QUEUED' END,
                    stage=CASE
+                       WHEN status='CANCEL_REQUESTED' THEN 'cancelled'
                        WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing'
                            THEN 'indexing_queued'
                        ELSE 'recovered'
                    END,
+                   finished_at=CASE WHEN status='CANCEL_REQUESTED' THEN ? ELSE finished_at END,
                    worker_id=NULL,
                    lease_token=NULL, lease_expires_at=NULL, updated_at=?
              WHERE status IN ('RUNNING','CANCEL_REQUESTED')
                AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
             """,
-            (now, now),
+            (now, now, now),
         ).rowcount
 
     def release_expired(self, now: datetime | str | None = None) -> int:

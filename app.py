@@ -13855,3 +13855,10 @@ def v54_label_schema(project_id: str):
 def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str = 'ultralytics'):
     get_project(project_id)
     return {'ok': True, 'base': _v54_iteration_base(project_id, algorithm_id, framework, strict_latest=True)}
+
+
+from platform_core.material_batches import material_batch_router
+
+app.include_router(material_batch_router(
+    get_project, material_store, shared_task_repository, shared_task_artifacts,
+))
