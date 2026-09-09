@@ -19,6 +19,7 @@ class TaskStatus(str, Enum):
 
 
 class TaskKind(str, Enum):
+    RESOURCE_DISCOVERY = "RESOURCE_DISCOVERY"
     MATERIAL_IMPORT = "MATERIAL_IMPORT"
     CLEANING = "CLEANING"
     AI_ANNOTATION = "AI_ANNOTATION"

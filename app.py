@@ -54,6 +54,11 @@ from platform_core.prompts import render_prompt, template_version_id, version_te
 from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
 from platform_core.resource_cache import ResourceCache
+from platform_core.resource_discovery import DiscoveryCache, probe_python_environment
+from platform_core.resource_discovery.tasks import (
+    CACHE_FILENAME as RESOURCE_DISCOVERY_CACHE_FILENAME,
+    PROGRESS_REF as RESOURCE_DISCOVERY_PROGRESS_REF,
+)
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore, secret_ref
 from platform_core.storage import (
     StorageError,
@@ -134,6 +139,7 @@ PROJECTS_FILE = DATA_DIR / "projects.json"
 SERVERS_FILE = DATA_DIR / "train_servers.json"
 LOCAL_MODELS_FILE = DATA_DIR / "local_models_scan.json"
 ULTRALYTICS_ENV_FILE = DATA_DIR / "ultralytics_env.json"
+RESOURCE_DISCOVERY_CACHE_FILE = DATA_DIR / RESOURCE_DISCOVERY_CACHE_FILENAME
 PADDLE_ENV_FILE = DATA_DIR / "paddle_env.json"
 PRELABEL_SERVICES_FILE = DATA_DIR / "prelabel_services.json"
 MODEL_CONFIGS_FILE = DATA_DIR / "model_configs.json"
@@ -3800,10 +3806,12 @@ def run_prelabel(project_id: str, payload: PrelabelRunReq):
 class LocalModelScanReq(BaseModel):
     roots: Optional[List[str]] = None
     max_results: int = 3000
+    scope: Optional[Literal["directory", "full"]] = None
 
 
 class UltralyticsEnvDetectReq(BaseModel):
     roots: Optional[List[str]] = None
+    scope: Literal["auto", "fast", "full"] = "auto"
 
 
 class UltralyticsEnvSelectReq(BaseModel):
@@ -3963,10 +3971,8 @@ def detect_ultralytics_env_internal(roots: Optional[List[str]]) -> Dict[str, Any
                     candidates.append(found)
     active = read_json(ULTRALYTICS_ENV_FILE, {})
     payload = {"ok": True, "active": active if isinstance(active, dict) else {}, "candidates": candidates, "roots": [str(x) for x in root_paths], "updated_at": now_iso()}
-    # 如果当前没有保存环境，但检测到一个，就自动设为 active，减少用户操作。
-    if candidates and not payload["active"].get("python_path"):
-        write_json(ULTRALYTICS_ENV_FILE, candidates[0])
-        payload["active"] = candidates[0]
+    # Compatibility helper only: discovery must not implicitly select or write
+    # an active interpreter. The explicit select endpoint owns that mutation.
     return payload
 
 
@@ -3974,21 +3980,19 @@ _ACTIVE_ULTRA_RUNTIME_CACHE: Dict[str, Any] = {}
 
 def get_active_ultralytics_env() -> Dict[str, Any]:
     global _ACTIVE_ULTRA_RUNTIME_CACHE
-    cached=_ACTIVE_ULTRA_RUNTIME_CACHE if isinstance(_ACTIVE_ULTRA_RUNTIME_CACHE,dict) else {}
-    cpy=str(cached.get("python_path") or "")
-    if cpy and _path_exists(cpy): return dict(cached)
-    env=read_json(ULTRALYTICS_ENV_FILE,{})
-    if isinstance(env,dict):
-        py=str(env.get("python_path") or "")
-        if py and _path_exists(py):
-            checked=_check_ultralytics_python(Path(py),Path(str(env.get("root") or BASE_DIR)))
-            if checked:
-                merged={**env,**checked}; _ACTIVE_ULTRA_RUNTIME_CACHE=merged; return dict(merged)
-    try:
-        checked=_check_ultralytics_python(Path(sys.executable),BASE_DIR)
-        if checked:
-            checked["name"]="平台内置 Ultralytics"; write_json(ULTRALYTICS_ENV_FILE,checked); _ACTIVE_ULTRA_RUNTIME_CACHE=checked; return dict(checked)
-    except Exception: pass
+    cached = _ACTIVE_ULTRA_RUNTIME_CACHE if isinstance(_ACTIVE_ULTRA_RUNTIME_CACHE, dict) else {}
+    cached_python = str(cached.get("python_path") or "")
+    if cached_python and _path_exists(cached_python):
+        return dict(cached)
+    env = read_json(ULTRALYTICS_ENV_FILE, {})
+    if isinstance(env, dict):
+        python_path = str(env.get("python_path") or "")
+        if python_path and _path_exists(python_path):
+            # Read-only callers must never launch a probe, choose a fallback
+            # interpreter, or persist a selection. Selection is explicit below.
+            _ACTIVE_ULTRA_RUNTIME_CACHE = dict(env)
+            return dict(env)
+    _ACTIVE_ULTRA_RUNTIME_CACHE = {}
     return {}
 def ultralytics_runtime_python() -> str:
     env = get_active_ultralytics_env()
@@ -4258,30 +4262,118 @@ def scan_local_models_internal(roots: Optional[List[str]], max_results: int = 30
     return payload
 
 
+def _discovery_cache() -> DiscoveryCache:
+    return DiscoveryCache(RESOURCE_DISCOVERY_CACHE_FILE)
+
+
+def _public_discovery_task(task: TaskRecord) -> Dict[str, Any]:
+    response = _public_task(task)
+    response["task_id"] = task.task_id
+    response["progress_determinate"] = False
+    progress = shared_task_artifacts().read_json(
+        task.task_id, RESOURCE_DISCOVERY_PROGRESS_REF, default={}
+    )
+    if isinstance(progress, dict):
+        response["metrics"] = progress
+        for key in (
+            "scanned_dirs", "python_candidates", "validated_environments",
+            "available_environments", "models_found", "permission_errors",
+        ):
+            if isinstance(progress.get(key), (int, float)):
+                response[key] = progress[key]
+        if progress.get("current_item"):
+            response["current_item"] = progress["current_item"]
+    if task.result_ref:
+        result = shared_task_artifacts().read_json(
+            task.task_id, task.result_ref, default=None
+        )
+        if isinstance(result, dict):
+            response["result"] = result
+    return response
+
+
+def _create_discovery_task(
+    discovery_type: str, scope: str, roots: Optional[List[str]]
+) -> TaskRecord:
+    cache = _discovery_cache()
+    generation = cache.next_generation(discovery_type)
+    task_id = uuid.uuid4().hex[:12]
+    request_payload = {
+        "discovery_type": discovery_type,
+        "scope": scope,
+        "roots": [str(value) for value in (roots or []) if str(value).strip()],
+        "generation": generation,
+    }
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
+    resource_name = "environment" if discovery_type == "ultralytics_environment" else "models"
+    return shared_task_repository().create(
+        TaskRecord.new(
+            task_id,
+            "__system__",
+            TaskKind.RESOURCE_DISCOVERY,
+            "request.json",
+            f"local-resource-discovery:{resource_name}",
+            required_capabilities=("resource.discovery",),
+        )
+    )
+
+
 @app.get("/api/local_models")
-def list_local_models():
+def list_local_models(limit: int = 200, cursor: Optional[str] = None):
+    cache = _discovery_cache()
+    metadata = cache.metadata()["models"]
+    if metadata["completed_generation"] > 0:
+        try:
+            page = cache.list_models(limit=max(1, min(5000, int(limit))), cursor=cursor)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "ok": True,
+            "items": list(page.items),
+            "total": metadata["row_count"],
+            "next_cursor": page.next_cursor,
+            "roots": [],
+            "updated_at": metadata["completed_at"] or "",
+            "scan_id": metadata["scan_id"],
+            "generation": metadata["completed_generation"],
+        }
+    # Preserve an existing pre-migration cache until the first durable scan.
     data = read_json(LOCAL_MODELS_FILE, {})
     if isinstance(data, list):
         return {"ok": True, "items": data, "total": len(data), "roots": [], "updated_at": ""}
     return data or {"ok": True, "items": [], "total": 0, "roots": [], "updated_at": ""}
 
 
-@app.post("/api/local_models/scan")
+@app.post("/api/local_models/scan", status_code=202)
 def scan_local_models(payload: LocalModelScanReq):
-    return scan_local_models_internal(payload.roots, payload.max_results)
+    roots = [value for value in (payload.roots or []) if str(value).strip()]
+    scope = payload.scope or ("directory" if roots else "full")
+    if scope == "directory" and not roots:
+        raise HTTPException(status_code=422, detail="指定目录扫描至少需要一个目录")
+    return _public_discovery_task(_create_discovery_task("local_models", scope, roots))
 
 
 @app.get("/api/ultralytics_env")
 def get_ultralytics_env():
-    active = read_json(ULTRALYTICS_ENV_FILE, {})
-    if not isinstance(active, dict):
-        active = {}
-    return {"ok": True, "active": active, "updated_at": now_iso()}
+    cache = _discovery_cache()
+    metadata = cache.metadata()["environment"]
+    candidates = cache.list_environments()
+    return {
+        "ok": True,
+        "active": get_active_ultralytics_env(),
+        "candidates": candidates,
+        "items": candidates,
+        "updated_at": metadata["completed_at"] or "",
+        "scan_id": metadata["scan_id"],
+        "generation": metadata["completed_generation"],
+    }
 
 
-@app.post("/api/ultralytics_env/detect")
+@app.post("/api/ultralytics_env/detect", status_code=202)
 def detect_ultralytics_env(payload: UltralyticsEnvDetectReq):
-    return detect_ultralytics_env_internal(payload.roots)
+    return _public_discovery_task(
+        _create_discovery_task("ultralytics_environment", payload.scope, payload.roots)
+    )
 
 
 @app.post("/api/ultralytics_env/select")
@@ -4290,15 +4382,51 @@ def select_ultralytics_env(payload: UltralyticsEnvSelectReq):
     if not py.exists():
         raise HTTPException(status_code=400, detail="python.exe 路径不存在")
     root = Path(payload.root.strip().strip('"')) if payload.root else py.parent.parent
-    found = _check_ultralytics_python(py, root)
-    if not found:
-        raise HTTPException(status_code=400, detail="这个 Python 环境没有检测到 ultralytics 包")
+    found = probe_python_environment(py)
+    if str(found.get("status") or "").upper() != "AVAILABLE":
+        reason = found.get("error") or found.get("compatibility") or {}
+        raise HTTPException(status_code=400, detail={
+            "message": "这个 Python 环境未通过 Ultralytics/Torch/TorchVision 可用性检测",
+            "reason": reason,
+        })
+    found["ok"] = True
+    found["root"] = str(root)
+    ultralytics_info = found.get("ultralytics")
+    found["version"] = (
+        str(ultralytics_info.get("version") or "")
+        if isinstance(ultralytics_info, dict) else ""
+    )
+    found["updated_at"] = now_iso()
     if payload.yolo_path:
         found["yolo_path"] = payload.yolo_path
     write_json(ULTRALYTICS_ENV_FILE, found)
     global _ACTIVE_ULTRA_RUNTIME_CACHE
     _ACTIVE_ULTRA_RUNTIME_CACHE = dict(found)
     return {"ok": True, "active": found}
+
+
+@app.get("/api/resource-discovery/tasks/{task_id}")
+def get_resource_discovery_task(task_id: str):
+    task = shared_task_repository().get(task_id)
+    if (
+        task is None
+        or task.project_id != "__system__"
+        or task.kind is not TaskKind.RESOURCE_DISCOVERY
+    ):
+        raise HTTPException(status_code=404, detail="资源检测任务不存在")
+    return _public_discovery_task(task)
+
+
+@app.post("/api/resource-discovery/tasks/{task_id}/cancel")
+def cancel_resource_discovery_task(task_id: str):
+    task = shared_task_repository().get(task_id)
+    if (
+        task is None
+        or task.project_id != "__system__"
+        or task.kind is not TaskKind.RESOURCE_DISCOVERY
+    ):
+        raise HTTPException(status_code=404, detail="资源检测任务不存在")
+    return _public_discovery_task(shared_task_repository().request_cancel(task_id))
 
 
 @app.get("/api/training_catalog")
