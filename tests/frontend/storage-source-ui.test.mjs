@@ -62,5 +62,9 @@ test('storage UI is appended only to expanded resource configuration', () => {
   assert.match(block, /素材存储配置/);
   assert.match(block, /storage_source_id/);
   assert.match(block, /storage-imports\/scan/);
+  assert.match(block, /浏览器上传/);
+  assert.match(block, /服务器本地目录/);
+  assert.match(block, /服务器 ZIP/);
+  assert.match(block, /source=>source\.type===['"]local['"]/);
   assert.doesNotMatch(block, /train_dataset_ids|test_dataset_ids/);
 });

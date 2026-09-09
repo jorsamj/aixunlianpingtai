@@ -540,9 +540,83 @@ setTimeout(()=>{try{renderNav()}catch(e){}},0);
   window.toggleStorageSource61=async(id,enabled)=>{try{await api(`/api/v61/storage-sources/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});await loadStorageSources61();renderStorageSources61()}catch(error){toast(error.message||error)}};
   window.deleteStorageSource61=async id=>{if(!confirm('只允许删除未被素材引用的存储源。确认删除该配置？'))return;try{await api(`/api/v61/storage-sources/${id}`,{method:'DELETE'});await loadStorageSources61();renderStorageSources61();toast('存储源配置已删除')}catch(error){toast(error.message||error)}};
 
-  window.openStorageImport61=async function(){await loadStorageSources61();const sources=storageApi().enabledStorageSources(state.storageSources61);if(!sources.length)return toast('没有可用存储源');modal('从存储导入素材',`<div class="storage61-import"><div class="form two"><div class="field"><label>存储源</label><select id="si61Source" class="select">${sources.map(source=>`<option value="${source.id}">${esc(source.name)}</option>`).join('')}</select></div><div class="field"><label>Prefix / 目录</label><input id="si61Prefix" class="input" placeholder="例如 incoming/2026"></div></div><label class="field check"><input id="si61Recursive" type="checkbox" checked> 递归扫描子目录</label><div id="si61Status" class="storage61-import-status">扫描只建立索引，不会把远程源文件永久复制到平台本地。</div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="startStorageImport61()">开始扫描</button></div></div>`,true)};
-  window.startStorageImport61=async function(){const status=document.getElementById('si61Status');try{const body={storage_source_id:document.getElementById('si61Source')?.value,prefix:document.getElementById('si61Prefix')?.value||'',recursive:document.getElementById('si61Recursive')?.checked!==false},task=await api(`/api/v61/projects/${pid()}/storage-imports/scan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(status)status.textContent='扫描任务已进入 Storage Worker 队列';let current=task;for(let attempt=0;attempt<600&&['QUEUED','RUNNING'].includes(current.status);attempt++){await new Promise(resolve=>setTimeout(resolve,1000));current=await api(`/api/v61/projects/${pid()}/storage-imports/${task.task_id}`);if(status)status.textContent=`${current.stage||current.status} · ${Number(current.progress||0).toFixed(1)}% · ${current.current_item||''}`}if(current.status!=='SUCCEEDED')throw new Error(current.error||`扫描未成功：${current.status}`);const result=current.result||{};if(status)status.innerHTML=`扫描完成：发现 <b>${result.scanned||0}</b> 个对象，可导入 <b>${result.importable||0}</b> 张，重复 <b>${result.duplicates||0}</b> 张。 <button class="btn mini primary" onclick="confirmStorageImport61('${task.task_id}')">确认建立索引</button>`}catch(error){if(status)status.innerHTML=`<span class="err">${esc(error.message||error)}</span>`}};
-  window.confirmStorageImport61=async taskId=>{try{const result=await api(`/api/v61/projects/${pid()}/storage-imports/${taskId}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await loadRelated();closeModal();toast(`已建立 ${result.imported||0} 条素材索引`);if(state.page==='数据集')renderDatasets424()}catch(error){toast(error.message||error)}};
+  window.installServerMaterialImport61=function(){
+    if(window.__serverMaterialImport61Installed)return true;
+    window.__serverMaterialImport61Installed=true;
+    const serverApi=()=>window.PlatformCore?.serverMaterialImport;
+    let pollController=null;
+    const taskKey=()=>`mc_server_material_import_${String(pid()||'default')}`;
+    const getSavedTask=()=>{try{return localStorage.getItem(taskKey())||''}catch(_){return ''}};
+    const saveTask=taskId=>{state.serverMaterialImportTaskId61=taskId||'';try{taskId?localStorage.setItem(taskKey(),taskId):localStorage.removeItem(taskKey())}catch(_){}};
+    const abortPolling=()=>{if(pollController&&!pollController.signal.aborted)pollController.abort();pollController=null};
+    const isAbort=error=>error?.name==='AbortError';
+    const taskUrl=taskId=>`/api/v61/projects/${encodeURIComponent(pid())}/storage-imports/${encodeURIComponent(taskId)}`;
+    const safeCount=value=>{const number=Number(value);return Number.isFinite(number)&&number>0?number:0};
+    async function importRequest(url,options={}){
+      const response=await fetch(url,options),text=await response.text();let body={};
+      try{body=text?JSON.parse(text):{}}catch(_){body={detail:text}}
+      if(response.ok)return body;
+      const detail=body?.detail,message=typeof detail==='object'?(detail.message||detail.detail||body.message):(body.message||detail),solution=typeof detail==='object'?detail.solution:body.solution;
+      throw new Error(`${message||`HTTP ${response.status}`}${solution?`\n建议：${solution}`:''}`);
+    }
+
+    function renderImportTask(task){
+      const status=document.getElementById('si61Status');if(!status)return;
+      const view=serverApi()?.serverImportView(task)||{},result=task?.result||{},metrics=task?.metrics||{};
+      const scanned=safeCount(result.scanned_files??result.scanned??metrics.scanned_files),importable=safeCount(result.importable_images??result.importable??metrics.importable_images),duplicates=safeCount(result.duplicates??metrics.duplicates),failed=safeCount(result.failed??metrics.failed)+safeCount(result.invalid_images??metrics.invalid_images),taskId=String(task?.task_id||'').replace(/[^A-Za-z0-9_-]/g,'');
+      const summary=(view.canConfirm||view.terminal)?`<div class="storage61-import-summary"><span>已扫描 <b>${scanned}</b></span><span>可导入 <b>${importable}</b></span><span>重复 <b>${duplicates}</b></span><span>失败 <b>${failed}</b></span></div>`:'';
+      const confirm=view.canConfirm?`<button id="si61Confirm" class="btn mini primary" onclick="confirmStorageImport61('${taskId}')">确认建立索引</button>`:'';
+      const error=(view.status==='FAILED'||view.status==='CANCELLED'||view.status==='BLOCKED_BY_ENVIRONMENT')?`<div class="alert err">${esc(task?.error||result?.error?.message||view.text||'导入失败')}</div>`:'';
+      status.innerHTML=`<div class="storage61-task-head"><b>${esc(view.text||task?.status||'处理中')}</b><small>${esc(task?.status||'')} ${task?.stage?`· ${esc(task.stage)}`:''}</small></div>${summary}${error}${confirm?`<div class="row end">${confirm}</div>`:''}`;
+    }
+
+    async function pollTask(taskId,initialTask){
+      if(!taskId)return null;
+      abortPolling();pollController=new AbortController();const signal=pollController.signal;
+      try{return await serverApi().pollServerImport({initialTask,signal,load:()=>importRequest(taskUrl(taskId),{signal}),render:renderImportTask})}
+      catch(error){if(!isAbort(error)){const status=document.getElementById('si61Status');if(status)status.innerHTML=`<div class="alert err">${esc(error?.message||error||'导入任务读取失败')}</div>`}return null}
+    }
+
+    window.setStorageImportMode61=function(mode){
+      state.serverMaterialImportMode61=mode;
+      document.querySelectorAll('#si61ImportShell [data-import-mode]').forEach(button=>button.classList.toggle('on',button.dataset.importMode===mode));
+      document.querySelectorAll('#si61ImportShell [data-import-panel]').forEach(panel=>panel.hidden=panel.dataset.importPanel!==mode);
+    };
+    window.openBrowserMaterialUpload61=function(){abortPolling();closeModal();setTimeout(()=>window.openDataUpload426?.(),30)};
+    window.closeStorageImport61=function(){abortPolling();return closeModal()};
+
+    window.openStorageImport61=async function(){
+      try{await loadStorageSources61()}catch(error){return toast(error.message||error)}
+      const localSources=storageApi().enabledStorageSources(state.storageSources61).filter(source=>source.type==='local'),options=localSources.map(source=>`<option value="${esc(source.id)}">${esc(source.name)}</option>`).join(''),disabled=localSources.length?'':'disabled',initialMode=localSources.length?'directory_scan':'browser_upload';
+      abortPolling();pollController=new AbortController();
+      modal('从存储导入素材',`<div id="si61ImportShell" class="storage61-import"><div class="storage61-import-modes" role="tablist" aria-label="素材导入方式"><button class="btn" data-import-mode="browser_upload" onclick="setStorageImportMode61('browser_upload')">浏览器上传</button><button class="btn" data-import-mode="directory_scan" onclick="setStorageImportMode61('directory_scan')">服务器本地目录</button><button class="btn" data-import-mode="server_zip" onclick="setStorageImportMode61('server_zip')">服务器 ZIP</button></div><section data-import-panel="browser_upload"><div class="storage61-import-help"><b>从当前电脑上传</b><span>继续使用现有图片 / ZIP 上传流程。</span></div><button class="btn primary" onclick="openBrowserMaterialUpload61()">打开浏览器上传</button></section><section data-import-panel="directory_scan"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61Source" class="select" ${disabled}>${options||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>目录（相对于存储源根目录）</label><input id="si61Prefix" class="input" placeholder="例如 incoming/2026"></div></div><label class="field check"><input id="si61Recursive" type="checkbox" checked> 递归扫描子目录</label><button class="btn primary" onclick="startStorageImport61('directory_scan')" ${disabled}>开始扫描</button></section><section data-import-panel="server_zip"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61ZipSource" class="select" ${disabled}>${options||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>服务器 ZIP（导入目录下的相对路径）</label><input id="si61ZipPath" class="input" placeholder="例如 fire.zip"></div><div class="field"><label>解压目标（相对于存储源根目录）</label><input id="si61TargetPrefix" class="input" placeholder="例如 fire/2026"></div></div><div class="storage61-import-help"><span>目标目录已存在且非空时会拒绝导入，不会覆盖原文件。</span></div><button class="btn primary" onclick="startStorageImport61('server_zip')" ${disabled}>校验并解压扫描</button></section><div id="si61Status" class="storage61-import-status">扫描和建立索引由后台 Worker 执行；关闭此窗口不会取消任务。</div><div class="row end"><button class="btn" onclick="closeStorageImport61()">关闭</button></div></div>`,true);
+      setStorageImportMode61(initialMode);
+      const saved=getSavedTask();
+      if(saved){saveTask(saved);pollTask(saved).then(task=>{if(!task&&document.getElementById('si61Status'))saveTask('')})}
+    };
+
+    window.startStorageImport61=async function(mode=state.serverMaterialImportMode61||'directory_scan'){
+      const status=document.getElementById('si61Status');
+      try{
+        const values=mode==='server_zip'?{mode,storageSourceId:document.getElementById('si61ZipSource')?.value,zipPath:document.getElementById('si61ZipPath')?.value,targetPrefix:document.getElementById('si61TargetPrefix')?.value}:{mode,storageSourceId:document.getElementById('si61Source')?.value,prefix:document.getElementById('si61Prefix')?.value,recursive:document.getElementById('si61Recursive')?.checked!==false};
+        const body=serverApi().buildServerImportRequest(values),task=await importRequest(`/api/v61/projects/${encodeURIComponent(pid())}/storage-imports/scan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),taskId=String(task.task_id||'');
+        if(!taskId)throw new Error('服务器未返回导入任务 ID');saveTask(taskId);await pollTask(taskId,task);
+      }catch(error){if(!isAbort(error)&&status)status.innerHTML=`<div class="alert err">${esc(error?.message||error||'创建导入任务失败')}</div>`}
+    };
+
+    window.confirmStorageImport61=async function(taskId){
+      const button=document.getElementById('si61Confirm');if(button)button.disabled=true;
+      try{
+        const task=await importRequest(`${taskUrl(taskId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});saveTask(taskId);const completed=await pollTask(taskId,task);
+        if(completed?.status==='SUCCEEDED'){await loadRelated();toast(`素材索引已建立：${safeCount(completed.result?.imported)} 条`);if(state.page==='数据集')renderDatasets424()}
+      }catch(error){if(!isAbort(error)){const status=document.getElementById('si61Status');if(status)status.innerHTML=`<div class="alert err">${esc(error?.message||error||'确认导入失败')}</div>`}}
+      finally{if(button?.isConnected)button.disabled=false}
+    };
+
+    const previousCloseImport=window.closeModal;
+    window.closeModal=async function(){if(document.getElementById('si61ImportShell'))abortPolling();return previousCloseImport?.()};
+    return true;
+  };
 
   const previousDatasetRender61=window.renderDatasets424;
   window.renderDatasets424=function(){

@@ -67,3 +67,36 @@ export function serverImportView(task = {}) {
     terminal: ['SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED', 'BLOCKED_BY_ENVIRONMENT'].includes(status),
   };
 }
+
+function abortError(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException('Polling stopped', 'AbortError');
+}
+
+function waitForNextPoll(delay, signal) {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delay);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    signal?.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+export async function pollServerImport({initialTask, load, render, signal, delay = 1200}) {
+  if (typeof load !== 'function') throw new TypeError('load must be a function');
+  let task = initialTask || await load();
+  while (true) {
+    if (signal?.aborted) throw abortError(signal);
+    render?.(task);
+    if (!serverImportView(task).active) return task;
+    await waitForNextPoll(delay, signal);
+    task = await load();
+  }
+}
