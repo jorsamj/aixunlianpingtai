@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import shutil
 import sys
 import traceback
@@ -371,7 +372,9 @@ def main():
     parser.add_argument("--epochs", type=int, required=True)
     parser.add_argument("--imgsz", type=int, required=True)
     parser.add_argument("--batch", type=int, required=True)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", required=True)
+    parser.add_argument("--assigned-device", required=True)
+    parser.add_argument("--requested-device", default="auto")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--patience", type=int, default=100)
@@ -467,7 +470,7 @@ def main():
     if args.freeze > 0:
         train_args["freeze"] = args.freeze
 
-    update_job(job_file, status="running", message="训练中", actual_train_params=train_args, actual_model=actual_model)
+    update_job(job_file, status="running", message="验证训练设备与资源", requested_train_params=train_args, actual_model=actual_model)
     print(f"[{now_iso()}] 开始训练", flush=True)
     print(f"模型: {actual_model}", flush=True)
     print(f"数据集: {args.data}", flush=True)
@@ -476,18 +479,56 @@ def main():
 
     telemetry = None
     try:
+        from platform_core.training_devices import normalize_training_device
+        assigned = normalize_training_device(args.assigned_device)
+        requested = normalize_training_device(args.requested_device)
+        if assigned == "auto" or normalize_training_device(args.device) != assigned:
+            raise RuntimeError("GPU_ASSIGNMENT_REQUIRED: concrete matching assigned device required")
+        if requested != "auto" and requested != assigned:
+            raise RuntimeError("TRAINING_DEVICE_ASSIGNMENT_MISMATCH")
+        resource_context = read_json(Path(args.resource_context), {}) if args.resource_context else {}
+        gpu_index = int(assigned[5:]) if assigned.startswith("cuda:") else None
+        # Bind the physical GPU before importing Torch. Ultralytics uses logical
+        # cuda:0 inside a single-GPU visibility mask, including for assigned cuda:N.
+        if gpu_index is not None:
+            visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+            entries = visible.split(",") if visible is not None else []
+            physical = resource_context.get("gpu_uuid") or (entries[gpu_index] if entries else str(gpu_index))
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(physical)
+            args.device = "0"
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+            args.device = "cpu"
         import ultralytics
         import torch
         from ultralytics import YOLO
         from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources
-        update_job(job_file, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
+        runtime_device = "cuda:0" if gpu_index is not None else "cpu"
+        allocation = torch.empty(1, device=runtime_device)
+        props = torch.cuda.get_device_properties(0) if gpu_index is not None else None
+        raw_uuid = getattr(props, "uuid", None) if props is not None else None
+        gpu_uuid = str(raw_uuid) if raw_uuid is not None else None
+        expected_uuid = resource_context.get("gpu_uuid")
+        if expected_uuid and gpu_uuid and str(expected_uuid).lower().removeprefix("gpu-") != gpu_uuid.lower().removeprefix("gpu-"):
+            raise RuntimeError("GPU_IDENTITY_MISMATCH: training process differs from reserved GPU")
+        if gpu_index is not None:
+            torch.cuda.synchronize(0)
+        evidence = dict(requested_device=requested, assigned_device=assigned, actual_device=assigned,
+                        runtime_device=str(allocation.device), gpu_index=gpu_index, gpu_uuid=gpu_uuid,
+                        gpu_name=str(props.name) if props is not None else None, pid=os.getpid(),
+                        python_executable=sys.executable, torch_version=str(torch.__version__),
+                        cuda_version=getattr(torch.version, "cuda", None), validated_at=now_iso())
+        del allocation
+        train_args["device"] = args.device
+        update_job(job_file, requested_device=requested, assigned_device=assigned, actual_device=assigned,
+                   device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         model = YOLO(actual_model)
-        resource_context = read_json(Path(args.resource_context), {}) if args.resource_context else {}
-        resolved = resolve_resources({**train_args, "resource_strategy": args.resource_strategy}, resource_context, model, torch)
+        resolved = resolve_resources({**train_args, "device": runtime_device, "resource_strategy": args.resource_strategy}, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
         persist_resolution(resolution_path, resolved)
-        update_job(job_file, resolved_resources=resolved, actual_train_params=train_args)
+        evidence["effective_args"] = dict(train_args)
+        update_job(job_file, resolved_resources=resolved, actual_train_params=train_args, device_evidence=evidence)
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
                                     gpu_uuid=resource_context.get("gpu_uuid"))
         telemetry.start()
@@ -541,13 +582,21 @@ def main():
         except Exception as cb_err:
             print(f"[WARN] 阶段质量门禁回调未启用: {cb_err}",flush=True)
         def attach_resource_callbacks(target):
-            target.add_callback("on_train_start", telemetry.on_train_start)
+            def verify_runtime(trainer):
+                telemetry.on_train_start(trainer)
+                if str(trainer.device) != runtime_device:
+                    raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
+                evidence.update(runtime_device=str(trainer.device), effective_args=dict(train_args))
+                update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=train_args)
+            target.add_callback("on_train_start", verify_runtime)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
             target.add_callback("on_fit_epoch_end", telemetry.on_epoch_end)
         attach_resource_callbacks(model)
         retries = 0
         while True:
             try:
+                evidence["effective_args"] = dict(train_args)
+                update_job(job_file, device_evidence=evidence, actual_train_params=train_args)
                 train_result = model.train(**train_args)
                 break
             except Exception as train_error:

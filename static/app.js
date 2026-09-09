@@ -3973,8 +3973,18 @@ window.installUsability417?.();
   const otherRole=role=>role==='train'?'test':'train';
   function eligibleFor(role){const s=splitState(),blocked=s.mode==='independent_test_set'?s[otherRole(role)]:new Set();return allCandidates().filter(row=>!blocked.has(imageId(row)))}
   function selectedLabels(ids){const chosen=new Set(ids),labels=new Set();(state.images||[]).forEach(row=>{if(chosen.has(imageId(row)))(row.labels||[]).forEach(code=>labels.add(labelText(code)))});return[...labels]}
+  function renderResources(root,panel){
+    if(root.querySelector('#trV3Device'))return;
+    const c=state.train428Config||(state.train428Config={}),report=state.trainingDevicesV3||{},options=report.options||[],field=document.createElement('section');
+    field.className='train-v3-resources';
+    field.innerHTML=`<header><b>执行设备与资源</b></header><div class="form two"><label class="field"><span>训练设备</span><select id="trV3Device" class="select">${options.map(row=>`<option value="${esc(row.id)}" ${row.available===false?'disabled':''}>${esc(row.label||row.id)}${row.available===false?'（不可用）':''}</option>`).join('')||'<option value="" disabled>设备读取失败</option>'}</select></label><label class="field"><span>GPU 使用策略</span><select id="trV3GpuPolicy" class="select"><option value="auto">自动</option><option value="exclusive">独占</option><option value="shared">共享</option></select></label></div><small>${esc(report.error||report.auto?.meaning||'按所选训练环境的可用设备执行')}</small>`;
+    panel.before(field);field.querySelector('#trV3Device').value=c.device||report.recommended||'auto';field.querySelector('#trV3GpuPolicy').value=c.gpu_policy||'auto';
+    field.querySelector('#trV3Device').addEventListener('change',event=>{c.device=event.target.value});
+    field.querySelector('#trV3GpuPolicy').addEventListener('change',event=>{c.gpu_policy=event.target.value});
+  }
   function renderSplit(){
     const root=document.querySelector('.train429-create'),panel=root?.querySelectorAll('.train428-panel')?.[1];if(!panel)return;
+    renderResources(root,panel);
     if(!root.querySelector('#trV3ResourceStrategy')){
       const field=document.createElement('label');field.className='field';
       field.innerHTML='<span>训练资源策略</span><select id="trV3ResourceStrategy" class="select"><option value="auto">自动调优（推荐）</option><option value="manual">手动：使用高级参数中的 batch / workers / cache</option></select><small>自动策略在后台按可用显存、CPU 和缓存空间解析参数；实际值与原因可在任务详情查看。</small>';
@@ -3995,7 +4005,7 @@ window.installUsability417?.();
     const pager=document.getElementById('trV3Pager');if(pager)pager.innerHTML=`<button class="btn mini" ${p.page<=1?'disabled':''} onclick="trainMaterialPageV3(-1)">上一页</button><span>${p.page} / ${pages}</span><button class="btn mini" ${p.page>=pages?'disabled':''} onclick="trainMaterialPageV3(1)">下一页</button>`;
   }
   window.openTrainMaterialPickerV3=function(role){
-    const s=splitState();state.trainMaterialPickerV3={role,selected:new Set(s[role]),labels:new Set(),query:'',page:1,pageSize:80};
+    const s=splitState();state.trainMaterialPickerV3={role,selected:new Set(),labels:new Set(),query:'',page:1,pageSize:80};
     modal(role==='train'?'选择本次训练素材':'选择独立试验素材',`<div class="train-v3-picker"><header><div><b>${role==='train'?'训练候选素材':'独立试验素材'}</b><span>只有明确勾选的图片会进入本次任务</span></div><strong id="trV3PickerCount"></strong></header><div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${(state.labels||[]).map(row=>`<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name||row.code)}</button>`).join('')}</div></div><div class="picker412-actions train-v3-batch"><button class="btn mini" onclick="trainMaterialSelectV3('select-filtered')">选择当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button></div><div id="trV3Grid" class="train-v3-grid"></div><div id="trV3Pager" class="data426-pager"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmTrainMaterialPickerV3()">确认选择</button></div></div>`,true);setTimeout(renderPicker,20)
   };
   window.trainMaterialSearchV3=value=>{const p=state.trainMaterialPickerV3;if(!p)return;p.query=String(value||'');p.page=1;renderPicker()};
@@ -4012,7 +4022,8 @@ window.installUsability417?.();
       const options=await api(`/api/training_options?project_id=${pid()}`);
       state.targets=options?.targets||[];
     }
-    const result=await previousStart?.(aid);state.trainSplitV3=freshState();state.train429Selected=state.trainSplitV3.train;[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
+    try{state.trainingDevicesV3=await api('/api/v62/training-devices')}catch(error){state.trainingDevicesV3={options:[],error:String(error.message||error)}}
+    const result=await previousStart?.(aid);state.train428Config=state.train428Config||{};state.train428Config.device=state.trainingDevicesV3.recommended||'auto';state.trainSplitV3=freshState();state.train429Selected=state.trainSplitV3.train;[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
   window.submitTrain429=async function(){
     const a=(state.algorithms||[]).find(row=>row.id===state.train428AlgorithmId),target=(state.targets||[]).find(row=>row.id===document.getElementById('tr429Target')?.value),algorithm=(target?.algorithms||[]).find(row=>row.key===document.getElementById('tr429Alg')?.value)||(target?.algorithms||[])[0],c=state.train428Config||{},s=splitState(),priority=readTrainingPriority428('tr429Priority');
@@ -4020,8 +4031,23 @@ window.installUsability417?.();
     s.experiment=num('trV3Experiment',s.experiment);s.validation=num('trV3Validation',s.validation);
     const parameters={framework:target.framework==='paddle'?'paddle':'ultralytics',target:target.type==='server'?'remote':'local',server_id:target.server_id,algorithm:algorithm.key||'',algorithm_asset_id:a.id,model:c.model||algorithm.base_model||'',epochs:c.epochs||100,imgsz:c.imgsz||640,batch:c.batch||8,device:c.device||'cpu',include_empty:false,patience:c.patience??100,workers:c.workers??0,optimizer:c.optimizer||'auto',lr0:c.lr0??.01,lrf:c.lrf??.01,momentum:c.momentum??.937,weight_decay:c.weight_decay??.0005,warmup_epochs:c.warmup_epochs??3,close_mosaic:c.close_mosaic??10,mosaic:c.mosaic??1,mixup:c.mixup??0,hsv_h:c.hsv_h??.015,hsv_s:c.hsv_s??.7,hsv_v:c.hsv_v??.4,degrees:c.degrees??0,translate:c.translate??.1,scale:c.scale??.5,shear:c.shear??0,perspective:c.perspective??0,flipud:c.flipud??0,fliplr:c.fliplr??.5,cache:c.cache||'False',pretrained:c.pretrained!==false,amp:c.amp!==false,single_cls:!!c.single_cls,rect:!!c.rect,cos_lr:!!c.cos_lr,freeze:c.freeze??0,multi_scale:c.multi_scale??0,save_period:c.save_period??-1,seed:c.seed??0,deterministic:c.deterministic!==false,val_max_samples:c.val_max_samples??0,eval_interval:c.eval_interval??0,eval_metric:c.eval_metric||'map50',continue_threshold:c.continue_threshold??0,stop_threshold:c.stop_threshold??0,queue_priority:priority,auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};
     parameters.resource_strategy=document.getElementById('trV3ResourceStrategy')?.value||c.resource_strategy||'auto';
+    parameters.device=document.getElementById('trV3Device')?.value||'';
+    parameters.gpu_policy=document.getElementById('trV3GpuPolicy')?.value||c.gpu_policy||'auto';
+    if(!parameters.device||!(state.trainingDevicesV3?.options||[]).some(row=>row.id===parameters.device&&row.available!==false))return toast('请重新打开训练窗口并选择可用设备');
     parameters.batch=c.batch??8;
     try{const payload=trainingApi().buildTrainingPayload({splitMode:s.mode,trainImageIds:[...s.train],testImageIds:[...s.test],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),response=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${response.task?.id||''}`)}catch(error){toast(error.message||error)}
+  };
+  const historicalLog=window.showTrainLog423;
+  window.showTrainLog423=async function(id){
+    try{
+      const job=await api(`/api/projects/${pid()}/jobs/${id}`);
+      if(!job.task_id)return historicalLog?.(id);
+      const e=job.device_evidence||{},r=job.resolved_resources||{},m=job.runtime_metrics||{},args=job.actual_train_params||{},diagnosis=m.diagnostic||{};
+      const labels={memory_pressure_oom:'显存不足，已触发 OOM',cpu_bottleneck:'CPU 供给不足',io_bottleneck:'数据读取受限',gpu_saturated:'GPU 持续繁忙',insufficient_samples:'采样不足',unknown:'暂无足够证据'};
+      const rows=[['请求设备',job.requested_device],['分配设备',job.assigned_device],['实际设备',job.actual_device],['GPU 名称',e.gpu_name],['GPU UUID',e.gpu_uuid],['GPU 索引',e.gpu_index],['进程 PID',e.pid],['Torch / CUDA',`${e.torch_version||'—'} / ${e.cuda_version||'—'}`],['实际 batch',args.batch??r.resolved_batch],['实际 workers',args.workers??r.resolved_workers],['实际 cache',args.cache??r.resolved_cache],['运行诊断',labels[diagnosis.code]||diagnosis.code||'等待采样']];
+      const log=await safe(api(`/api/projects/${pid()}/jobs/${id}/log`))||'';
+      modal('训练运行中心',`<div class="trainlog428"><h2>${esc(job.message||job.status||'等待执行')}</h2><p>Epoch ${esc(String(job.current_epoch||0))} / ${esc(String(job.total_epochs||job.epochs||'—'))}</p><table class="table"><tbody>${rows.map(([label,value])=>`<tr><th>${esc(label)}</th><td>${esc(value==null?'尚未产生':String(value))}</td></tr>`).join('')}</tbody></table><p>${esc((r.reasons||[]).join('；'))}</p><details><summary>工程师技术日志</summary><pre class="log">${esc(log)}</pre></details><div class="row end"><button class="btn" onclick="showTrainLog423('${id}')">刷新</button><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true);
+    }catch(error){toast(error.message||error)}
   };
 })();
 

@@ -578,7 +578,7 @@ def _bool(value: Any) -> str:
 def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping[str, Any], data_yaml: Path, model: str,
                    *, python_executable: str | None = None) -> list[str]:
     root = Path(__file__).resolve().parent.parent
-    device = normalize_training_device(payload.get("assigned_device") or payload.get("device"))
+    device = normalize_training_device(payload.get("assigned_device"))
     if device == "auto":
         raise ValueError("GPU_ASSIGNMENT_REQUIRED: training argv requires an assigned concrete device")
     argv = [
@@ -589,8 +589,10 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--model", str(model),
         "--epochs", str(int(payload.get("epochs") or 50)),
         "--imgsz", str(int(payload.get("imgsz") or 640)),
-        "--batch", str(int(payload.get("batch") or 8)),
-        "--device", device,
+        "--batch", str(int(payload.get("resolved_batch", payload.get("batch", 8)))),
+        "--device", device.removeprefix("cuda:"),
+        "--assigned-device", device,
+        "--requested-device", normalize_training_device(payload.get("requested_device", payload.get("device"))),
         "--job-id", task_id,
         "--run-name", f"train_{task_id}",
         "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
@@ -607,7 +609,8 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "continue_threshold": 0.0, "stop_threshold": 0.0,
     }
     for key, default in value_options.items():
-        argv.extend([f"--{key.replace('_', '-')}", str(payload.get(key, default))])
+        value = payload.get(f"resolved_{key}", payload.get(key, default)) if key in {"workers", "cache"} else payload.get(key, default)
+        argv.extend([f"--{key.replace('_', '-')}", str(value)])
     for key, default in {
         "single_cls": False, "pretrained": True, "rect": False, "amp": True,
         "cos_lr": False, "deterministic": True, "auto_supplement": False,
@@ -833,8 +836,8 @@ class TrainingHandler:
             "device": assigned_device,
             "requested_device": requested_device,
             "assigned_device": assigned_device,
-            "actual_device": assigned_device,
-            "device_evidence": device_evidence,
+            "actual_device": None,
+            "device_validation": device_evidence,
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
@@ -877,8 +880,10 @@ class TrainingHandler:
             "schema_version": 1,
             "requested_device": requested_device,
             "assigned_device": assigned_device,
-            "actual_device": assigned_device,
-            "device_evidence": device_evidence,
+            "actual_device": job.get("actual_device"),
+            "device_evidence": job.get("device_evidence"),
+            "device_validation": device_evidence,
+            "actual_train_params": job.get("actual_train_params"),
             "snapshot_id": snapshot["snapshot_id"],
             "snapshot_ref": "snapshot.json",
             "dataset_manifest_ref": "work/bundle/manifest.json",
