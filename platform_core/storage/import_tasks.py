@@ -616,17 +616,31 @@ class StorageImportHandler:
             by_reference = materials.get_by_storage_references(
                 (row["storage_source_id"], row["object_key"]) for row in batch
             )
+            existing_hashes = materials.find_existing_content_hashes(
+                row["content_sha256"] for row in batch
+            )
+            resolved: list[dict[str, Any]] = []
+            duplicate_rows: list[dict[str, Any]] = []
+            accepted_hashes: set[str] = set()
             for row in batch:
                 current = by_reference.get((row['storage_source_id'], row['object_key']))
                 row['existing_material'] = current is not None
                 if current is not None:
                     row['image_id'] = current['id']
-            store.bind_index_batch(batch)
-            by_id = {r['id']: r for r in materials.get_many(row['image_id'] for row in batch)}
-            imported_annotations = store.annotations_for_keys(row['object_key'] for row in batch)
-            skipped = store.skipped_boxes_for_keys(row['object_key'] for row in batch)
+                    resolved.append(row)
+                    continue
+                content_hash = str(row['content_sha256'])
+                if content_hash in existing_hashes or content_hash in accepted_hashes:
+                    duplicate_rows.append(row)
+                    continue
+                accepted_hashes.add(content_hash)
+                resolved.append(row)
+            store.bind_index_batch(resolved)
+            by_id = {r['id']: r for r in materials.get_many(row['image_id'] for row in resolved)}
+            imported_annotations = store.annotations_for_keys(row['object_key'] for row in resolved)
+            skipped = store.skipped_boxes_for_keys(row['object_key'] for row in resolved)
             records, annotation_rows = [], []
-            for row in batch:
+            for row in resolved:
                 current = by_id.get(row['image_id'])
                 if current and (current['storage_source_id'], current['object_key']) != (row['storage_source_id'], row['object_key']):
                     raise ValueError('stable image_id collision')
@@ -664,9 +678,10 @@ class StorageImportHandler:
             # same deterministic boxes preserves annotation version/content digest.
             materials.upsert_many(records)
             annotations.upsert_many(annotation_rows)
-            store.record_annotation_outcomes(batch)
+            store.record_annotation_outcomes(resolved)
             store.mark_indexed(batch)
-            for row in batch:
+            index_duplicates += len(duplicate_rows)
+            for row in resolved:
                 for counter in ('annotations_written', 'boxes_imported', 'boxes_skipped', 'negative_samples'):
                     progress_counts[counter] += row.get(counter, 0)
                 progress_counts['existing_materials_updated' if row['existing_material'] else 'new_materials_indexed'] += 1
