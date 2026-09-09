@@ -8,6 +8,11 @@ from .candidates import (
     discover_fast_python_candidates,
 )
 from .probe import PROBE_TIMEOUT_SECONDS, probe_python_environment, rank_environments
+from .model_resolver import (
+    OFFICIAL_DOWNLOADABLE_MODELS,
+    ModelResolution,
+    ModelResolver,
+)
 from .scanner import (
     MODEL_EXTENSIONS,
     MountInfo,
@@ -26,6 +31,9 @@ __all__ = [
     "CONDA_DISCOVERY_TIMEOUT_SECONDS",
     "PROBE_TIMEOUT_SECONDS",
     "MODEL_EXTENSIONS",
+    "OFFICIAL_DOWNLOADABLE_MODELS",
+    "ModelResolution",
+    "ModelResolver",
     "MountInfo",
     "ScanReport",
     "discover_fast_python_candidates",

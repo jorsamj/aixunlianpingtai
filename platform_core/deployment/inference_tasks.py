@@ -9,6 +9,7 @@ from typing import Any
 
 from platform_core.task_runtime import TaskKind, TaskStatus
 from platform_core.task_runtime.scheduler import HardwareUnavailableError
+from platform_core.resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 
 
 BOARD_ONLY = {
@@ -28,14 +29,25 @@ def _last_json_line(text: str) -> dict[str, Any]:
 
 def run_deployment_test(context) -> tuple[TaskStatus, str]:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
-    model = Path(str(request.get("model_path") or ""))
+    model_path = str(request.get("model_path") or "").strip()
+    model_reference = str(request.get("model_reference") or "").strip()
+    model_reference_type = str(request.get("model_reference_type") or "").strip()
+    is_official_reference = model_reference_type == "official_downloadable"
+    if is_official_reference:
+        if model_reference.casefold() not in OFFICIAL_DOWNLOADABLE_MODELS:
+            raise FileNotFoundError("官方模型引用不在平台允许列表中")
+        model_argument = model_reference
+        suffix = Path(model_reference).suffix.lower()
+    else:
+        model = Path(model_path)
+        if not model.is_file():
+            raise FileNotFoundError(f"测试模型不存在：{model}")
+        model_argument = str(model)
+        suffix = model.suffix.lower()
     image = Path(str(request.get("input_path") or ""))
     output = Path(str(request.get("output_path") or ""))
-    if not model.is_file():
-        raise FileNotFoundError(f"测试模型不存在：{model}")
     if not image.is_file():
         raise FileNotFoundError(f"测试图片不存在：{image}")
-    suffix = model.suffix.lower()
     if suffix in BOARD_ONLY:
         raise HardwareUnavailableError(BOARD_ONLY[suffix])
     if suffix not in {".pt", ".pth", ".onnx", ".engine", ".pdparams", ".pdmodel", ".pdiparams"}:
@@ -50,7 +62,7 @@ def run_deployment_test(context) -> tuple[TaskStatus, str]:
     log_ref = "logs/runtime.log"
     log_path = context.artifacts.artifact_path(context.task.task_id, log_ref)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [python_path, str(runner), "--model", str(model), "--input", str(image), "--output", str(output), "--conf", str(float(request.get("conf") or 0.25))]
+    command = [python_path, str(runner), "--model", model_argument, "--input", str(image), "--output", str(output), "--conf", str(float(request.get("conf") or 0.25))]
     context.repository.heartbeat(context.task.task_id, context.lease.lease_token, progress=5, stage="LOADING_RUNTIME", current_item=image.name)
     started = time.perf_counter()
     with log_path.open("w", encoding="utf-8", errors="ignore") as log:
@@ -76,7 +88,9 @@ def run_deployment_test(context) -> tuple[TaskStatus, str]:
     result = {
         **data,
         "task_id": context.task.task_id,
-        "model_path": str(model),
+        "model_path": model_path,
+        "model_reference": model_reference,
+        "model_reference_type": model_reference_type,
         "input_path": str(image),
         "output_path": str(output),
         "image_url": request.get("image_url") or "",

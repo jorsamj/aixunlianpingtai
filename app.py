@@ -54,7 +54,13 @@ from platform_core.prompts import render_prompt, template_version_id, version_te
 from platform_core.quality import compute_quality
 from platform_core.reports import build_algorithm_report, build_version_report
 from platform_core.resource_cache import ResourceCache
-from platform_core.resource_discovery import DiscoveryCache, probe_python_environment
+from platform_core.resource_discovery import (
+    DiscoveryCache,
+    ModelResolution,
+    ModelResolver,
+    OFFICIAL_DOWNLOADABLE_MODELS,
+    probe_python_environment,
+)
 from platform_core.resource_discovery.tasks import (
     CACHE_FILENAME as RESOURCE_DISCOVERY_CACHE_FILENAME,
     PROGRESS_REF as RESOURCE_DISCOVERY_PROGRESS_REF,
@@ -4001,19 +4007,42 @@ def ultralytics_runtime_python() -> str:
     return sys.executable
 
 
-def resolve_ultralytics_model_path(model_value: str) -> str:
-    value = (model_value or "").strip()
-    if not value:
-        return value
-    if _is_absolute_path_text(value) or "/" in value or "\\" in value:
-        return value
-    env = get_active_ultralytics_env()
-    root = env.get("root")
-    if root:
-        p = Path(root) / value
-        if p.exists():
-            return str(p)
-    return value
+def resolve_ultralytics_model(model_value: str, project_id: Optional[str] = None) -> ModelResolution:
+    """Resolve a checkpoint without coupling environment health to its presence."""
+    active_env = get_active_ultralytics_env()
+    project_root = project_dir(project_id) if project_id else None
+    project_models: List[Dict[str, Any]] = []
+    algorithm_versions: List[Dict[str, Any]] = []
+    if project_id:
+        try:
+            project_models = list_models_internal(project_id)
+        except Exception:
+            project_models = []
+        try:
+            for algorithm in list_algorithms_internal(project_id):
+                algorithm_versions.extend(algorithm.get("versions") or [])
+        except Exception:
+            algorithm_versions = []
+    try:
+        discovery_cache: Optional[DiscoveryCache] = _discovery_cache()
+    except (OSError, sqlite3.Error):
+        discovery_cache = None
+    resolver = ModelResolver(
+        selected_environment=active_env,
+        discovery_cache=discovery_cache,
+        project_model_dirs=((project_root / "models",) if project_root else ()),
+        project_models=project_models,
+        algorithm_versions=algorithm_versions,
+        platform_model_dirs=(DATA_DIR / "models", BASE_DIR / "models"),
+        cwd=BASE_DIR,
+    )
+    return resolver.resolve(model_value, project_id=project_id)
+
+
+def resolve_ultralytics_model_path(model_value: str, project_id: Optional[str] = None) -> str:
+    """Backward-compatible string wrapper around structured model resolution."""
+    resolution = resolve_ultralytics_model(model_value, project_id)
+    return str(resolution.path) if resolution.found else resolution.reference
 
 
 def default_scan_roots() -> List[str]:
@@ -4439,6 +4468,7 @@ def list_base_models(project_id: Optional[str] = None):
     """训练页基础模型下拉框。区分 Ultralytics 可训练权重和飞桨模型源。"""
     items: List[Dict[str, Any]] = []
     for name in ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt"]:
+        resolution = resolve_ultralytics_model(name, project_id)
         items.append({
             "label": f"官方 Ultralytics：{name}",
             "value": name,
@@ -4446,7 +4476,8 @@ def list_base_models(project_id: Optional[str] = None):
             "framework_key": "ultralytics",
             "train_framework": "ultralytics",
             "trainable": True,
-            "note": "首次训练会自动下载权重。"
+            "note": "已发现本地权重。" if resolution.found else "尚未下载，首次使用时可自动下载。",
+            **resolution.as_dict(),
         })
     active_env = get_active_ultralytics_env()
     for m in active_env.get("models", []) if isinstance(active_env.get("models", []), list) else []:
@@ -4458,7 +4489,10 @@ def list_base_models(project_id: Optional[str] = None):
                 "framework_key": "ultralytics",
                 "train_framework": "ultralytics",
                 "trainable": True,
-                "note": f"来自已保存 Ultralytics 环境：{active_env.get('root', '')}"
+                "note": f"来自已保存 Ultralytics 环境：{active_env.get('root', '')}",
+                "model_status": "FOUND",
+                "downloadable": False,
+                "environment_status": str(active_env.get("status") or "AVAILABLE").upper(),
             })
     if project_id:
         try:
@@ -4471,7 +4505,10 @@ def list_base_models(project_id: Optional[str] = None):
                         "framework_key": "ultralytics",
                         "train_framework": "ultralytics",
                         "trainable": True,
-                        "note": "可基于上一次 best.pt 继续训练。"
+                        "note": "可基于上一次 best.pt 继续训练。",
+                        "model_status": "FOUND",
+                        "downloadable": False,
+                        "environment_status": str(active_env.get("status") or "AVAILABLE").upper(),
                     })
         except Exception:
             pass
@@ -4485,7 +4522,10 @@ def list_base_models(project_id: Optional[str] = None):
                 "framework_key": "ultralytics",
                 "train_framework": "ultralytics",
                 "trainable": True,
-                "note": m.get("note") or "本机路径只适合本机训练。"
+                "note": m.get("note") or "本机路径只适合本机训练。",
+                "model_status": "FOUND",
+                "downloadable": False,
+                "environment_status": str(active_env.get("status") or "AVAILABLE").upper(),
             })
         elif m.get("trainable_paddle"):
             items.append({
@@ -4551,16 +4591,23 @@ def training_options(project_id: Optional[str] = None):
         models = []
         for m in ultra.get("models", []) if isinstance(ultra.get("models", []), list) else []:
             if str(m.get("path", "")).lower().endswith(".pt"):
-                models.append({"label": m.get("name") or Path(m.get("path", "")).name, "value": m.get("path"), "framework":"ultralytics", "source":"env"})
+                models.append({"label": m.get("name") or Path(m.get("path", "")).name, "value": m.get("path"), "framework":"ultralytics", "source":"env", "model_status":"FOUND", "downloadable":False, "environment_status":str(ultra.get("status") or "AVAILABLE").upper()})
         # 不在页面硬塞所有官方模型。训练算法/权重优先来自已检测环境或项目模型。
         # 如果环境里一个 .pt 都没有，才给一个 YOLO11n 默认兜底（Ultralytics 首次训练可自动下载）。
         if not models:
-            models.append({"label": "yolo11n.pt（默认，可自动下载）", "value": "yolo11n.pt", "framework":"ultralytics", "source":"official"})
+            resolution = resolve_ultralytics_model("yolo11n.pt", project_id)
+            models.append({
+                "label": "yolo11n.pt（默认，可自动下载）",
+                "value": str(resolution.path) if resolution.found else resolution.reference,
+                "framework":"ultralytics",
+                "source":"official",
+                **resolution.as_dict(),
+            })
         if project_id:
             try:
                 for m in list_models_internal(project_id):
                     if m.get("type") == "pt":
-                        models.append({"label": f"项目模型：{m.get('name')}", "value": m.get("path"), "framework":"ultralytics", "source":"project"})
+                        models.append({"label": f"项目模型：{m.get('name')}", "value": m.get("path"), "framework":"ultralytics", "source":"project", "model_status":"FOUND", "downloadable":False, "environment_status":str(ultra.get("status") or "AVAILABLE").upper()})
             except Exception:
                 pass
         # 训练算法从当前训练资源读取。Ultralytics 本质是同一个 detect 训练器，yolo11n/s/m 是基础权重/模型规模。
@@ -4581,6 +4628,7 @@ def training_options(project_id: Optional[str] = None):
             "python_path": ultra.get("python_path"),
             "root": ultra.get("root"),
             "version": ultra.get("version"),
+            "environment_status": str(ultra.get("status") or "AVAILABLE").upper(),
             "algorithms": algs,
             "base_models": models,
         })
@@ -5135,7 +5183,7 @@ def start_train(project_id: str, payload: TrainReq):
                 status_code=400,
                 detail="这个基础模型不是 Ultralytics .pt 训练权重，不能用于当前 YOLO 训练。请选择 yolo11n.pt、项目 best.pt 或本机扫描到的 .pt。",
             )
-        model_value = resolve_ultralytics_model_path(model_value)
+        model_value = resolve_ultralytics_model_path(model_value, project_id)
         build = build_dataset(project_id, BuildDatasetReq(train_ratio=payload.train_ratio, include_empty=payload.include_empty, dataset_id=payload.dataset_id))
     else:
         if payload.target == "remote":
@@ -6506,7 +6554,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
         raise HTTPException(status_code=400, detail="请选择基础模型权重")
     if model_value.lower().endswith((".pdparams", ".pdmodel", ".pdiparams", ".onnx", ".engine", ".rknn", ".bmodel")) or model_value.startswith("PP-"):
         raise HTTPException(status_code=400, detail="基础模型与训练框架冲突。Ultralytics 只能选择 .pt 权重。")
-    model_value = resolve_ultralytics_model_path(model_value)
+    model_value = resolve_ultralytics_model_path(model_value, project_id)
     base_selection["base_model_path"] = model_value
     # v42.4: one logical data pool; train/val/test are sample roles rather than separate named datasets.
     preflight = dataset_quality_report(project_id, None, payload.include_empty)
@@ -7547,7 +7595,7 @@ async def v12_predict_image(
         else:
             framework = "ultralytics"
             if source == "builtin":
-                model_value = resolve_ultralytics_model_path(model_name or "yolo11n.pt")
+                model_value = resolve_ultralytics_model_path(model_name or "yolo11n.pt", project_id)
             elif algorithm_id and version_id:
                 algos = list_algorithms_internal(project_id)
                 version = None
@@ -13346,14 +13394,14 @@ def retry_annotation_task(project_id: str, task_id: str):
     return public_annotation_task(shared_task_repository().create(cloned))
 
 
-def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: str, local_path: str, algorithm_id: str, version_id: str) -> Path:
+def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: str, local_path: str, algorithm_id: str, version_id: str) -> ModelResolution:
     source = str(model_source or "project").lower()
     if source == "deployment_artifact":
         candidate = Path(str(local_path or "")).resolve()
         root = deploy_root(project_id).resolve()
         if not candidate.is_file() or root not in candidate.parents:
             raise HTTPException(status_code=404, detail="转换产物不存在或不属于当前项目")
-        return candidate
+        return resolve_ultralytics_model(str(candidate), project_id)
     if algorithm_id and version_id:
         for algorithm in list_algorithms_internal(project_id):
             if str(algorithm.get("id")) != str(algorithm_id):
@@ -13361,12 +13409,21 @@ def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: s
             version = next((item for item in algorithm.get("versions", []) if str(item.get("id")) == str(version_id)), None)
             path = Path(str((version or {}).get("stored_path") or ""))
             if path.is_file():
-                return path
+                return resolve_ultralytics_model(str(path), project_id)
         raise HTTPException(status_code=404, detail="算法版本模型不存在")
     if source == "builtin":
-        return Path(resolve_ultralytics_model_path(model_name or "yolo11n.pt"))
+        requested = str(model_name or "yolo11n.pt").strip()
+        if Path(requested).is_absolute() or "/" in requested or "\\" in requested:
+            raise HTTPException(status_code=400, detail="内置模型只允许使用平台支持的官方模型名")
+        canonical = next(
+            (name for name in OFFICIAL_DOWNLOADABLE_MODELS if name.casefold() == requested.casefold()),
+            None,
+        )
+        if canonical is None:
+            raise HTTPException(status_code=400, detail="内置模型不在平台允许的官方模型列表中")
+        return resolve_ultralytics_model(canonical, project_id)
     path, _, _ = resolve_any_model_path(project_id, model_name, source, local_path)
-    return Path(path)
+    return resolve_ultralytics_model(str(path), project_id)
 
 
 def public_deployment_test(task: TaskRecord) -> Dict[str, Any]:
@@ -13389,11 +13446,16 @@ async def create_deployment_test(
     inference_env_id: str = Form(""), file: UploadFile = File(...),
 ):
     get_project(project_id)
-    model_path = _resolve_v61_test_model(
+    model_resolution = _resolve_v61_test_model(
         project_id, model_name=model_name, model_source=model_source, local_path=local_path,
         algorithm_id=algorithm_id, version_id=version_id,
     )
-    suffix = model_path.suffix.lower()
+    if not model_resolution.found and not model_resolution.downloadable:
+        raise HTTPException(status_code=404, detail="测试模型不存在，且不是允许自动下载的官方模型")
+    model_path = str(model_resolution.path) if model_resolution.found else ""
+    model_reference = "" if model_resolution.found else model_resolution.reference
+    model_reference_type = "" if model_resolution.found else "official_downloadable"
+    suffix = (model_resolution.path or Path(model_resolution.reference)).suffix.lower()
     framework = "paddle" if suffix in {".pdparams", ".pdmodel", ".pdiparams"} else "ultralytics"
     python_path = sys.executable if suffix in {".om", ".rknn", ".bmodel"} else resolve_inference_python(framework, inference_env_id)
     extension = Path(file.filename or "test.jpg").suffix.lower()
@@ -13408,7 +13470,13 @@ async def create_deployment_test(
     if input_path.stat().st_size <= 0:
         raise HTTPException(status_code=400, detail="测试图片为空")
     request = {
-        "model_path": str(model_path), "input_path": str(input_path), "output_path": str(output_path),
+        "model_path": model_path,
+        "model_reference": model_reference,
+        "model_reference_type": model_reference_type,
+        "model_status": model_resolution.status,
+        "downloadable": model_resolution.downloadable,
+        "environment_status": model_resolution.environment_status,
+        "input_path": str(input_path), "output_path": str(output_path),
         "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
         "framework": framework, "python_path": python_path,
         "runner_path": str(BASE_DIR / ("predict_paddle_runner.py" if framework == "paddle" else "predict_ultralytics_runner.py")),
