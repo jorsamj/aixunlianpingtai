@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
+from .material_selection import MaterialFilters
 from .material_store import MaterialSnapshot
 
 
@@ -69,6 +70,9 @@ class MaterialIdPage:
     items: list[str]
     next_cursor: str | None
     total: int
+
+    def __iter__(self):
+        return iter(self.items)
 
 
 def _now() -> str:
@@ -176,6 +180,10 @@ class MaterialRepository:
     def journal_mode(self) -> str:
         with self._connect() as database:
             return str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+
+    def current_revision(self) -> int:
+        with self._connect() as database:
+            return self._revision(database)
 
     @staticmethod
     def _row_payload(row: sqlite3.Row) -> dict[str, Any]:
@@ -405,40 +413,53 @@ class MaterialRepository:
 
     @staticmethod
     def _filters(
-        *, query: str = "", storage_source_ids: Sequence[str] | None = None,
-        processing_status: str | None = None, labels: Sequence[str] | None = None,
-        annotated: bool | None = None,
+        filters: MaterialFilters | Mapping[str, Any] | None = None, **legacy_filters: Any,
     ) -> tuple[list[str], list[Any]]:
+        """Build the sole authoritative SQL predicate for material selections."""
+        if filters is not None and legacy_filters:
+            raise ValueError("pass either filters or keyword filters, not both")
+        selected = MaterialFilters.from_mapping(filters if filters is not None else legacy_filters)
         clauses: list[str] = []
         params: list[Any] = []
-        if str(query).strip():
+        if selected.query:
             clauses.append("m.filename LIKE ? COLLATE NOCASE")
-            params.append(f"%{str(query).strip()}%")
-        sources = list(dict.fromkeys(str(value) for value in storage_source_ids or [] if str(value)))
-        if sources:
-            clauses.append("m.storage_source_id IN (" + ",".join("?" for _ in sources) + ")")
-            params.extend(sources)
-        if processing_status:
-            normalized_status = str(processing_status).strip().lower()
+            params.append(f"%{selected.query}%")
+        if selected.storage_source_ids:
+            clauses.append("m.storage_source_id IN (" + ",".join("?" for _ in selected.storage_source_ids) + ")")
+            params.extend(selected.storage_source_ids)
+        if selected.processing_status:
+            normalized_status = selected.processing_status
             if normalized_status == "unprocessed":
                 clauses.append("m.processing_status IN ('unprocessed','pending_decision','cleaning')")
             else:
                 clauses.append("m.processing_status = ?")
                 params.append(normalized_status)
-        if annotated is not None:
+        if selected.split:
+            clauses.append("COALESCE(json_extract(m.payload_json, '$.split'), 'unassigned') = ?")
+            params.append(selected.split)
+        if selected.annotated is not None:
             clauses.append("m.annotated = ?")
-            params.append(int(bool(annotated)))
-        selected_labels = list(dict.fromkeys(str(value) for value in labels or [] if str(value)))
-        if selected_labels:
+            params.append(int(selected.annotated))
+        if selected.annotation_state:
+            clauses.append(
+                "COALESCE(json_extract(m.payload_json, '$.annotation_state'), "
+                "json_extract(m.payload_json, '$.annotation_status'), "
+                "CASE WHEN m.annotated <> 0 THEN 'annotated' ELSE 'unannotated' END) = ?"
+            )
+            params.append(selected.annotation_state)
+        if selected.labels:
             clauses.append(
                 "EXISTS (SELECT 1 FROM material_labels ml WHERE ml.material_id = m.id AND ml.label_code IN ("
-                + ",".join("?" for _ in selected_labels) + "))"
+                + ",".join("?" for _ in selected.labels) + "))"
             )
-            params.extend(selected_labels)
+            params.extend(selected.labels)
         return clauses, params
 
     def count(self, **filters: Any) -> int:
-        clauses, params = self._filters(**filters)
+        return self.count_filtered(filters)
+
+    def count_filtered(self, filters: MaterialFilters | Mapping[str, Any] | None = None) -> int:
+        clauses, params = self._filters(filters)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as database:
             return int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
@@ -447,10 +468,15 @@ class MaterialRepository:
         self, *, cursor: str | None = None, limit: int = 100, query: str = "",
         storage_source_ids: Sequence[str] | None = None, processing_status: str | None = None,
         labels: Sequence[str] | None = None, annotated: bool | None = None,
+        split: str | None = None, annotation_state: str | None = None,
     ) -> MaterialPage:
         bounded = max(1, min(1000, int(limit)))
-        filter_values = dict(query=query, storage_source_ids=storage_source_ids, processing_status=processing_status, labels=labels, annotated=annotated)
-        clauses, params = self._filters(**filter_values)
+        filter_values = MaterialFilters(
+            query=query, storage_source_ids=tuple(storage_source_ids or ()),
+            processing_status=processing_status, split=split, labels=tuple(labels or ()),
+            annotated=annotated, annotation_state=annotation_state,
+        )
+        clauses, params = self._filters(filter_values)
         if cursor:
             created_at, image_id = _decode_cursor(cursor)
             clauses.append("(m.created_at > ? OR (m.created_at = ? AND m.id > ?))")
@@ -467,7 +493,34 @@ class MaterialRepository:
             next_cursor = _encode_cursor(str(visible[-1]["created_at"]), str(visible[-1]["id"]))
         return MaterialPage(
             items=[self._row_payload(row) for row in visible], next_cursor=next_cursor,
-            total=self.count(**filter_values),
+            total=self.count_filtered(filter_values),
+        )
+
+    def iter_filtered_ids(
+        self, filters: MaterialFilters | Mapping[str, Any] | None = None,
+        cursor: str | None = None, limit: int = 500, *, include_total: bool = True,
+    ) -> MaterialIdPage:
+        selected = MaterialFilters.from_mapping(filters)
+        bounded = max(1, min(500, int(limit)))
+        clauses, params = self._filters(selected)
+        if cursor:
+            created_at, image_id = _decode_cursor(cursor)
+            clauses.append("(m.created_at > ? OR (m.created_at = ? AND m.id > ?))")
+            params.extend((created_at, created_at, image_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self._connect() as database:
+            rows = database.execute(
+                "SELECT m.id, m.created_at FROM materials m" + where
+                + " ORDER BY m.created_at, m.id LIMIT ?",
+                [*params, bounded + 1],
+            ).fetchall()
+        visible = rows[:bounded]
+        next_cursor = None
+        if len(rows) > bounded and visible:
+            next_cursor = _encode_cursor(str(visible[-1]["created_at"]), str(visible[-1]["id"]))
+        return MaterialIdPage(
+            items=[str(row["id"]) for row in visible], next_cursor=next_cursor,
+            total=self.count_filtered(selected) if include_total else -1,
         )
 
     def list_ids(self, **kwargs: Any) -> MaterialIdPage:
