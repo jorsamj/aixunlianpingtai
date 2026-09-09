@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import math
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Mapping
 
 from .errors import StorageError
 from .models import ObjectMetadata, StorageType
@@ -11,6 +13,31 @@ from .models import ObjectMetadata, StorageType
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 BATCH_SIZE = 500
 MAX_TEXT_LINE = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class YoloDatasetLayout:
+    yaml_key: str
+    split_image_roots: dict[str, tuple[str, ...]]
+    names: dict[int, str]
+
+
+@dataclass(frozen=True)
+class ParsedYoloBox:
+    external_class_id: int
+    class_name: str
+    cx: float
+    cy: float
+    width: float
+    height: float
+    action: str
+    line_number: int
+
+
+@dataclass(frozen=True)
+class ParseResult:
+    boxes: tuple[ParsedYoloBox, ...]
+    issues: tuple[dict[str, object], ...]
 
 
 class YoloImportError(StorageError):
@@ -83,7 +110,7 @@ def parse_detection_line(line: str, class_ids: set[int]) -> tuple[dict | None, l
         return None, ["INVALID_CLASS_ID"]
     class_id = int(class_value)
     if class_id not in class_ids:
-        return None, ["UNKNOWN_CLASS"]
+        return None, ["UNKNOWN_CLASS_ID"]
     if width <= 0 or height <= 0:
         return None, ["ZERO_SIZE_BOX" if width == 0 or height == 0 else "INVALID_BOX_SIZE"]
     left, right = cx - width / 2, cx + width / 2
@@ -102,6 +129,98 @@ def parse_detection_line(line: str, class_ids: set[int]) -> tuple[dict | None, l
             codes.append("SEVERE_BOX_OVERFLOW")
     return {"class_id": class_id, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2,
             "w": clipped_w, "h": clipped_h, "clipped": clipped}, codes
+
+
+def _read_yaml_document(provider, yaml_key: str) -> dict:
+    import yaml
+    try:
+        with closing(provider.open_reader(yaml_key)) as stream:
+            raw = stream.read(MAX_TEXT_LINE + 1)
+        if len(raw) > MAX_TEXT_LINE:
+            raise YoloImportError("YOLO_YAML_TOO_LARGE", "Dataset YAML exceeds the size limit")
+        document = yaml.safe_load(raw)
+    except (yaml.YAMLError, UnicodeError, RecursionError) as error:
+        raise YoloImportError("YOLO_INVALID_YAML", "Dataset YAML is invalid") from error
+    except YoloImportError:
+        raise
+    except (OSError, StorageError, KeyError) as error:
+        raise YoloImportError("YOLO_YAML_READ_FAILED", "Dataset YAML could not be read") from error
+    if not isinstance(document, dict):
+        raise YoloImportError("YOLO_INVALID_YAML", "Dataset YAML must contain a mapping")
+    return document
+
+
+def _parse_names(document: Mapping) -> dict[int, str]:
+    names = document.get("names")
+    if isinstance(names, list):
+        names = dict(enumerate(names))
+    if not isinstance(names, dict) or not names or len(names) > 10000:
+        raise YoloImportError("YOLO_INVALID_CLASSES", "Dataset YAML requires a bounded names list or mapping")
+    parsed = {}
+    for key, name in names.items():
+        try:
+            class_id = int(key)
+        except (ValueError, TypeError, OverflowError) as error:
+            raise YoloImportError("YOLO_INVALID_CLASSES", "Class IDs must be nonnegative integers") from error
+        if (isinstance(key, bool) or str(class_id) != str(key) or class_id < 0 or class_id > 2**63 - 1
+                or not isinstance(name, str) or not name.strip() or len(name) > 1000):
+            raise YoloImportError("YOLO_INVALID_CLASSES", "Class IDs and names are invalid")
+        parsed[class_id] = name
+    return parsed
+
+
+def discover_yolo_layout(provider, prefix: str, dataset_yaml: str = "") -> YoloDatasetLayout:
+    """Discover a dataset YAML at the exact prefix root and resolve its split roots."""
+    prefix = resolve_reference(provider, prefix) if prefix else ""
+    if dataset_yaml:
+        yaml_key = resolve_reference(provider, dataset_yaml)
+    else:
+        root = prefix.rstrip("/")
+        candidates = [f"{root}/{name}" if root else name for name in ("data.yaml", "dataset.yaml")]
+        found = [key for key in candidates if provider.exists(key)]
+        if len(found) > 1:
+            raise YoloImportError("YOLO_YAML_AMBIGUOUS", "Multiple dataset YAML files found; choose dataset_yaml explicitly")
+        if not found:
+            raise YoloImportError("YOLO_YAML_REQUIRED", "YOLO import requires a dataset YAML file")
+        yaml_key = found[0]
+    document = _read_yaml_document(provider, yaml_key)
+    names = _parse_names(document)
+    base = str(PurePosixPath(yaml_key).parent)
+    if document.get("path") is not None:
+        base = resolve_reference(provider, document["path"], base)
+    splits: dict[str, tuple[str, ...]] = {}
+    values = [(key, document[key]) for key in ("train", "val", "test", "valid", "validation")
+              if document.get(key) is not None]
+    if isinstance(document.get("splits"), dict):
+        values.extend(document["splits"].items())
+    if not values:
+        raise YoloImportError("YOLO_SPLITS_REQUIRED", "Dataset YAML must declare image splits")
+    for split, references in values:
+        if not isinstance(split, str) or len(split) > 100:
+            raise YoloImportError("YOLO_INVALID_SPLIT", "Dataset split name is invalid")
+        references = references if isinstance(references, list) else [references]
+        splits[split] = tuple(resolve_reference(provider, reference, base) for reference in references)
+    return YoloDatasetLayout(yaml_key=yaml_key, split_image_roots=splits, names=names)
+
+
+def parse_yolo_text(text: str, names: Mapping[int, str], object_key: str) -> ParseResult:
+    """Parse a YOLO label document through the scanner's stable box rules."""
+    boxes = []
+    issues = []
+    class_ids = set(names)
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        box, codes = parse_detection_line(line, class_ids)
+        if box:
+            boxes.append(ParsedYoloBox(
+                external_class_id=box["class_id"], class_name=names[box["class_id"]],
+                cx=box["cx"], cy=box["cy"], width=box["w"], height=box["h"],
+                action="clipped" if box["clipped"] else "accepted", line_number=line_number,
+            ))
+        issues.extend({"object_key": object_key, "line_number": line_number, "code": code,
+                       "severity": "warning" if box else "error"} for code in codes)
+    return ParseResult(tuple(boxes), tuple(issues))
 
 
 class YoloImportScanner:
@@ -163,11 +282,12 @@ class YoloImportScanner:
         if dataset_yaml:
             self.yaml_key = resolve_reference(self.provider, dataset_yaml)
         else:
+            root = prefix.rstrip("/")
+            candidates = [f"{root}/{name}" if root else name for name in ("data.yaml", "dataset.yaml")]
             with closing(self.store._connect()) as connection:
                 found = connection.execute(
-                    "SELECT object_key FROM dataset_objects WHERE lower(object_key) IN ('data.yaml', 'dataset.yaml') "
-                    "OR lower(object_key) LIKE '%/data.yaml' OR lower(object_key) LIKE '%/dataset.yaml' "
-                    "ORDER BY object_key LIMIT 2").fetchall()
+                    "SELECT object_key FROM dataset_objects WHERE lower(object_key) IN (?, ?) "
+                    "ORDER BY object_key LIMIT 2", tuple(key.lower() for key in candidates)).fetchall()
             if len(found) > 1:
                 raise YoloImportError("YOLO_YAML_AMBIGUOUS", "Multiple dataset YAML files found; choose dataset_yaml explicitly")
             if not found:

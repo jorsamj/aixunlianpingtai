@@ -29,7 +29,7 @@ def objects(provider, prefix, recursive):
 
 @pytest.mark.parametrize("line,code", [
     ("0 .5 .5 nan .1", "NONFINITE_BOX"),
-    ("1 .5 .5 .1 .1", "UNKNOWN_CLASS"),
+    ("1 .5 .5 .1 .1", "UNKNOWN_CLASS_ID"),
     ("0 .5 .5 0 .1", "ZERO_SIZE_BOX"),
     ("0 2 .5 .1 .1", "FULLY_OUTSIDE_BOX"),
     ("0 .1 .1 .2 .2 .3 .3", "INVALID_DETECTION_FORMAT"),

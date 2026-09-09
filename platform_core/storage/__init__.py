@@ -9,11 +9,22 @@ from .remote import RemoteStorageProvider
 from .s3 import S3StorageProvider
 from .models import ObjectMetadata, ObjectPage, StorageHealth, StorageType
 from .source_repository import StorageSource, StorageSourceRepository
-from .yolo_import import YoloImportError, YoloImportScanner
+from .yolo_import import (
+    ParsedYoloBox,
+    YoloDatasetLayout,
+    YoloImportError,
+    YoloImportScanner,
+    discover_yolo_layout,
+    parse_yolo_text,
+)
 
 __all__ = [
     "YoloImportError",
     "YoloImportScanner",
+    "YoloDatasetLayout",
+    "ParsedYoloBox",
+    "discover_yolo_layout",
+    "parse_yolo_text",
     "ObjectMetadata",
     "ObjectPage",
     "StorageError",
