@@ -1,4 +1,4 @@
-"""Durable, bounded material operations. HTTP only estimates and queues work."""
+"""Durable material operations with selections frozen before queue publication."""
 from __future__ import annotations
 
 import hashlib
@@ -114,20 +114,54 @@ def create_batch(project_id, materials, repository, artifacts, payload):
     ):
         raise BatchRequestError("DELETE_SOURCE_CONFIRMATION_REQUIRED", "confirm source deletion using the estimate confirmation_token", 409)
     task_id = uuid.uuid4().hex
-    # A short write lock closes estimate/submit races; no ID enumeration or count here.
-    with closing(materials._connect()) as database:
-        database.execute("BEGIN IMMEDIATE")
-        if materials._revision(database) != selection.repository_revision:
-            raise BatchRequestError("MATERIAL_REVISION_CHANGED", "material repository changed; re-estimate before confirming", 409)
+    try:
+        selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+        # Prepare the schema before taking the material lock. No task exists yet.
+        with closing(BatchSelection(selection_path)):
+            pass
+        clauses, params = _predicate(materials, selection)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with closing(materials._connect()) as database:
+            database.execute("ATTACH DATABASE ? AS batch_selection", (str(selection_path),))
+            database.execute("PRAGMA batch_selection.synchronous=FULL")
+            database.execute("BEGIN IMMEDIATE")
+            if materials._revision(database) != selection.repository_revision:
+                raise BatchRequestError("MATERIAL_REVISION_CHANGED", "material repository changed; re-estimate before confirming", 409)
+            # Revision and membership use this single consistent transaction.
+            # Only the attached manifest is written, so correctness does not
+            # depend on cross-database atomic commits (unsupported with WAL).
+            inserted = database.execute(
+                "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
+                params,
+            ).rowcount
+            if selection.scope is not SelectionScope.FILTERED and inserted != len(selection.image_ids):
+                raise BatchRequestError("MATERIAL_SELECTION_CHANGED", "selected materials are missing; re-estimate before confirming", 409)
+            database.executemany(
+                "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
+                (("frozen", utc_now()), ("repository_revision", str(selection.repository_revision))),
+            )
+            database.commit()
+        # Every prerequisite is durable before publishing the executable row.
+        # A failure here leaves only unqueued artifacts, never a partial task.
         artifacts.atomic_write_json(task_id, "request.json", {
             "operation": operation.value, "selection_spec": selection.as_dict(), "options": options,
         })
-        record = repository.create(TaskRecord.new(
+        with closing(BatchSelection(selection_path)) as manifest:
+            artifacts.atomic_write_json(task_id, CHECKPOINT_REF, manifest.summary())
+        return repository.create(TaskRecord.new(
             task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
             f"materials:{project_id}", required_capabilities=("materials.batch",),
         ), artifacts=artifacts)
-        database.commit()
-    return record
+    except Exception as error:
+        try:
+            artifacts.atomic_write_json(task_id, "creation_failure.json", {
+                "task_id": task_id, "status": "CREATION_FAILED", "error": redact_storage_error(error),
+            })
+        except Exception:
+            pass  # An unavailable artifact volume must not hide the submit error.
+        if isinstance(error, BatchRequestError):
+            raise
+        raise BatchRequestError("BATCH_CREATION_FAILED", f"material batch creation failed: {redact_storage_error(error)}", 500) from error
 
 
 _SCHEMA = """
@@ -209,43 +243,6 @@ class BatchSelection:
                 "current": current, "errors": errors, "error_examples": errors,
                 "selection_frozen": self.frozen()}
 
-    def freeze(self, materials, selection, context):
-        if self.frozen():
-            return
-        # An interrupted freeze has not executed any operations. Rebuild it from
-        # one fresh read snapshot; published/frozen selections never change.
-        while True:
-            batch = self.rows(("pending",))
-            if not batch:
-                break
-            _check_active(context, "freezing")
-            with self.transaction():
-                self.database.executemany("DELETE FROM selection WHERE image_id=?", ((r["image_id"],) for r in batch))
-        clauses, params = _predicate(materials, selection)
-        cursor = None
-        with closing(materials._connect()) as source:
-            source.execute("BEGIN")
-            while True:
-                _check_active(context, "freezing")
-                page_clauses, page_params = list(clauses), list(params)
-                if cursor is not None:
-                    page_clauses.append("(m.created_at > ? OR (m.created_at = ? AND m.id > ?))")
-                    page_params.extend((cursor[0], cursor[0], cursor[1]))
-                where = " WHERE " + " AND ".join(page_clauses) if page_clauses else ""
-                rows = source.execute(
-                    "SELECT m.id,m.created_at FROM materials m" + where + " ORDER BY m.created_at,m.id LIMIT ?",
-                    (*page_params, BATCH_SIZE),
-                ).fetchall()
-                if not rows:
-                    break
-                with self.transaction():
-                    self.database.executemany("INSERT INTO selection(image_id) VALUES (?)", ((row["id"],) for row in rows))
-                cursor = (rows[-1]["created_at"], rows[-1]["id"])
-                context.save_checkpoint(self.summary())
-        with self.transaction():
-            self.database.execute("INSERT INTO meta(key,value) VALUES ('frozen',?)", (utc_now(),))
-        context.save_checkpoint(self.summary())
-
 
 def _check_active(context, stage="processing", current=None):
     current_task = context.repository.heartbeat(
@@ -253,6 +250,27 @@ def _check_active(context, stage="processing", current=None):
     )
     if current_task.status is TaskStatus.CANCEL_REQUESTED:
         raise InterruptedError("material batch cancelled")
+
+
+def _object_missing(error):
+    """Recognize structured provider not-found errors, including wrapped SDK errors."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error, FileNotFoundError):
+            return True
+        if str(getattr(error, "code", "")) in {"STORAGE_OBJECT_NOT_FOUND", "NoSuchKey", "NotFound", "404"}:
+            return True
+        response = getattr(error, "response", None)
+        if isinstance(response, dict):
+            if str((response.get("Error") or {}).get("Code", "")) in {"NoSuchKey", "NotFound", "404"}:
+                return True
+        elif getattr(response, "status_code", None) == 404:
+            return True
+        if getattr(error, "status", None) == 404:
+            return True
+        error = error.__cause__
+    return False
 
 
 class MaterialBatchHandler:
@@ -281,9 +299,9 @@ class MaterialBatchHandler:
             raise BatchRequestError("BATCH_OPERATION_NOT_READY", f"{operation.value} has no bounded durable adapter yet")
         project = context.artifacts._validate_task_id(context.task.project_id)
         materials = MaterialRepository(self.data_dir / "projects" / project)
-        append_task_log(context, "freezing", operation.value)
-        # Revision is intentionally not rechecked after submission.
-        manifest.freeze(materials, selection, context)
+        confirmed_revision = manifest.database.execute("SELECT value FROM meta WHERE key='repository_revision'").fetchone()
+        if not manifest.frozen() or confirmed_revision is None or confirmed_revision[0] != str(selection.repository_revision):
+            raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "batch has no confirmed immutable selection; create and confirm a new batch", 409)
         if context.task.retry_of:
             # Failed rows are replayed only by explicit retry, never in a tight loop.
             while batch := manifest.rows(("failed",)):
@@ -385,7 +403,23 @@ class MaterialBatchHandler:
                     if cache_key not in providers:
                         providers[cache_key] = _provider(self.data_dir, context.task.project_id, source)
                     material = tombstone["material"]
-                    providers[cache_key].delete(str(material["object_key"]))
+                    provider = providers[cache_key]
+                    object_key = str(material["object_key"])
+                    previously_attempted = bool(tombstone.get("delete_attempted_at"))
+                    if not previously_attempted:
+                        tombstone["delete_attempted_at"] = utc_now()
+                        # Commit intent before the external side effect so a
+                        # crash after deletion can recover without losing index cleanup.
+                        manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                                                  (json.dumps(tombstone, ensure_ascii=False), image_id))
+                    try:
+                        provider.delete(object_key)
+                    except Exception as error:
+                        if not previously_attempted or not _object_missing(error):
+                            raise
+                        if provider.exists(object_key) is not False:
+                            raise
+                        append_task_log(context, "source_already_deleted", f"image_id={image_id}")
                     manifest.database.execute("UPDATE selection SET source_deleted=1 WHERE image_id=?", (image_id,))
                 deletable.append(image_id)
             except Exception as error:

@@ -161,13 +161,18 @@ class TaskRepository:
         columns = ",".join(values)
         placeholders = ",".join("?" for _ in values)
         with self._connect() as database:
+            database.execute("BEGIN IMMEDIATE")
             database.execute(
                 f"INSERT INTO tasks ({columns}) VALUES ({placeholders})",
                 tuple(values.values()),
             )
-        created = self.get(record.task_id)
-        if created is None:
-            raise RuntimeError("task insert did not persist")
+            row = database.execute("SELECT * FROM tasks WHERE task_id=?", (record.task_id,)).fetchone()
+            if row is None:
+                raise RuntimeError("task insert did not persist")
+            # Resolve the return value before publishing the row. A failed read
+            # must roll back rather than report failure for a claimable task.
+            created = _from_row(row)
+            database.commit()
         return created
 
     def get(self, task_id: str) -> TaskRecord | None:
