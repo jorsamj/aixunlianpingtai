@@ -64,7 +64,8 @@ def normalize_boxes(
     return normalized
 
 
-def annotation_summary(boxes: Sequence[Mapping[str, Any]]) -> dict:
+def annotation_summary(boxes: Sequence[Mapping[str, Any]], annotation_state: str | None = None) -> dict:
+    state = annotation_state or ("annotated" if boxes else "unannotated")
     label_counts: dict[str, int] = {}
     for box in boxes:
         label = str(box.get("label") or "").strip()
@@ -81,7 +82,8 @@ def annotation_summary(boxes: Sequence[Mapping[str, Any]]) -> dict:
         "labels": labels,
         "label_counts": label_counts,
         "box_count": len(boxes),
-        "annotated": bool(boxes),
-        "annotation_status": "annotated" if boxes else "unannotated",
+        "annotated": state in {"annotated", "confirmed_empty"},
+        "annotation_state": state,
+        "annotation_status": state,
         "annotation_preview": preview,
     }

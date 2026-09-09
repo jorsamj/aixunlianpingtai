@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS materials (
     payload_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_materials_source ON materials(storage_source_id, created_at, id);
+CREATE INDEX IF NOT EXISTS ix_materials_reference ON materials(storage_source_id, object_key);
 CREATE INDEX IF NOT EXISTS ix_materials_status ON materials(processing_status, created_at, id);
 CREATE INDEX IF NOT EXISTS ix_materials_filename ON materials(filename COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS ix_materials_created ON materials(created_at, id);
@@ -552,6 +553,21 @@ class MaterialRepository:
     def reference_count(self, storage_source_id: str) -> int:
         with self._connect() as database:
             return int(database.execute("SELECT COUNT(*) FROM materials WHERE storage_source_id = ?", (str(storage_source_id),)).fetchone()[0])
+
+    def get_by_storage_references(self, references) -> dict[tuple[str, str], dict]:
+        references = list(references)
+        if len(references) > 500:
+            raise ValueError("storage reference lookup is limited to 500")
+        with closing(self._connect()) as db:
+            db.execute("CREATE TEMP TABLE requested_refs(source TEXT, key TEXT, PRIMARY KEY(source,key))")
+            db.executemany("INSERT OR IGNORE INTO requested_refs VALUES (?,?)", references)
+            rows = db.execute("SELECT m.payload_json FROM materials m JOIN requested_refs r "
+                              "ON m.storage_source_id=r.source AND m.object_key=r.key ORDER BY m.created_at, m.id")
+            result = {}
+            for row in rows:
+                value = self._row_payload(row)
+                result.setdefault((value['storage_source_id'], value['object_key']), value)
+            return result
 
     def find_by_storage_reference(self, storage_source_id: str, object_key: str) -> dict[str, Any] | None:
         with self._connect() as database:

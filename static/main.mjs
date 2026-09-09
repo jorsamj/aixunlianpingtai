@@ -17,7 +17,7 @@ import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modu
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422300';
-import {buildServerImportRequest, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422300';
+import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422301';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422300';
 
 
@@ -65,7 +65,7 @@ window.PlatformCore = {
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   storageImport: {storageImportProgressText},
-  serverMaterialImport: {buildServerImportRequest, pollServerImport, serverImportView}
+  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView}
 };
 
 installMaterialPaginationRuntime();

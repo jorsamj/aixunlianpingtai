@@ -11,6 +11,7 @@ from typing import Callable
 import cv2
 
 from .annotations import annotation_summary, atomic_write_json
+from .annotation_repository import AnnotationRepository
 from .material_repository import MaterialRepository
 from .materials import initial_processing_status
 from .storage import StorageManager
@@ -317,6 +318,7 @@ class VideoFrameHandler:
         project_dir = self._project_dir(context.task.project_id)
         annotations = project_dir / "annotations"
         annotations.mkdir(parents=True, exist_ok=True)
+        annotation_repository = AnnotationRepository(project_dir)
         materials_repository = MaterialRepository(project_dir)
         manager = StorageManager(
             data_dir=self.data_dir,
@@ -343,11 +345,8 @@ class VideoFrameHandler:
             if metadata.sha256 != extracted.sha256:
                 raise OSError("stored frame checksum mismatch")
             annotation_path = annotations / f"{image_id}.json"
-            if not annotation_path.exists():
-                atomic_write_json(
-                    annotation_path,
-                    {"image_id": image_id, "boxes": [], "updated_at": created_at},
-                )
+            if not annotation_path.exists() and annotation_repository.get(image_id)['version'] == 0:
+                annotation_repository.upsert(image_id, [], 'unannotated')
             records.append(
                 {
                     "id": image_id,

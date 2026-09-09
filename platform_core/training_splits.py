@@ -71,7 +71,8 @@ def _group_key(row: Mapping[str, Any]) -> str:
 
 def _processed(row: Mapping[str, Any]) -> bool:
     return bool(
-        row.get("annotated")
+        row.get('annotation_state') in {'annotated', 'confirmed_empty'}
+        or row.get("annotated")
         or row.get("processing_status") == "processed"
         or row.get("cleaned_at")
         or row.get("clean_skipped")

@@ -6,6 +6,7 @@ fields. No manifest or complete selection is retained in Python or JSON.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 import uuid
@@ -71,6 +72,14 @@ CREATE TABLE IF NOT EXISTS annotation_issues (
     PRIMARY KEY (object_key, line_number, code)
 );
 CREATE INDEX IF NOT EXISTS ix_annotation_issues_code ON annotation_issues(code);
+CREATE TABLE IF NOT EXISTS confirmation_details (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS indexing_outcomes (
+    object_key TEXT PRIMARY KEY, image_id TEXT NOT NULL, existing_material INTEGER NOT NULL,
+    annotations_written INTEGER NOT NULL DEFAULT 0, boxes_imported INTEGER NOT NULL DEFAULT 0,
+    boxes_skipped INTEGER NOT NULL DEFAULT 0, negative_samples INTEGER NOT NULL DEFAULT 0
+);
 """
 _SCAN_FIELDS = (
     "object_key", "filename", "storage_source_id", "storage_type", "content_sha256",
@@ -365,7 +374,7 @@ class ImportCandidateStore:
                 lookup()
         return found
 
-    def confirm(self, selected_keys: Iterable[object]) -> Confirmation:
+    def confirm(self, selected_keys: Iterable[object], *, details: dict | None = None) -> Confirmation:
         """Atomically freeze a valid selection; identical retries return its original record."""
         with self._transaction() as connection:
             connection.execute("CREATE TEMP TABLE selection (object_key TEXT PRIMARY KEY)")
@@ -381,6 +390,9 @@ class ImportCandidateStore:
                 count += 1
             value = digest.hexdigest()
             previous = connection.execute("SELECT digest, selected_count, confirmed_at FROM meta WHERE singleton=1").fetchone()
+            saved = connection.execute("SELECT payload FROM confirmation_details WHERE singleton=1").fetchone()
+            if saved and json.loads(saved[0]) != details:
+                raise ValueError("conflicting import mapping or quality confirmation")
             if previous is not None:
                 if previous["digest"] != value:
                     raise ValueError("conflicting import selection confirmation")
@@ -396,7 +408,72 @@ class ImportCandidateStore:
             confirmed = Confirmation(value, count, _now())
             connection.execute("INSERT INTO meta VALUES (1, ?, ?, ?)",
                                (confirmed.digest, confirmed.selected_count, confirmed.confirmed_at))
+            if details is not None:
+                connection.execute("INSERT INTO confirmation_details VALUES(1,?)", (json.dumps(details, sort_keys=True),))
             return confirmed
+
+    def selection_facts(self, keys=None):
+        """Validate a caller selection in SQLite and hash its image/annotation contents."""
+        with closing(self._connect()) as db:
+            db.execute("CREATE TEMP TABLE wanted(object_key TEXT PRIMARY KEY)")
+            if keys is None:
+                db.execute("INSERT INTO wanted SELECT object_key FROM candidates WHERE status='IMPORTABLE'")
+            else:
+                db.executemany("INSERT OR IGNORE INTO wanted VALUES(?)", ((_key(key),) for key in keys))
+            if db.execute("SELECT 1 FROM wanted w LEFT JOIN candidates c USING(object_key) "
+                          "WHERE c.object_key IS NULL OR c.status!='IMPORTABLE' LIMIT 1").fetchone():
+                raise ValueError("selection contains unknown or non-IMPORTABLE object_key")
+            digest = hashlib.sha256()
+            for query in (
+                "SELECT c.object_key,c.content_sha256,c.width,c.height,m.annotation_status,m.label_key "
+                "FROM candidates c JOIN wanted w USING(object_key) LEFT JOIN dataset_manifest m USING(object_key) ORDER BY c.object_key",
+                "SELECT a.* FROM candidate_annotations a JOIN wanted w USING(object_key) ORDER BY a.object_key,a.line_number",
+                "SELECT * FROM label_mapping ORDER BY class_id",
+            ):
+                for row in db.execute(query):
+                    digest.update(json.dumps(tuple(row), ensure_ascii=False, separators=(',', ':')).encode('utf-8') + b'\n')
+            classes = [dict(row) for row in db.execute(
+                "SELECT DISTINCT l.class_id,l.name FROM label_mapping l JOIN candidate_annotations a USING(class_id) "
+                "JOIN wanted w USING(object_key) ORDER BY l.class_id")]
+            return {'content_digest': digest.hexdigest(), 'classes': classes}
+
+    def external_classes(self):
+        with closing(self._connect()) as db:
+            return [dict(row) for row in db.execute("SELECT DISTINCT l.class_id,l.name FROM label_mapping l "
+                "JOIN candidate_annotations a USING(class_id) JOIN candidates c USING(object_key) "
+                "WHERE c.status='IMPORTABLE' ORDER BY l.class_id LIMIT 10000")]
+
+    def bind_index_batch(self, rows):
+        """Freeze resolved image IDs and new/existing provenance before material writes."""
+        with self._transaction() as db:
+            for row in rows:
+                db.execute("INSERT OR IGNORE INTO indexing_outcomes(object_key,image_id,existing_material) VALUES(?,?,?)",
+                           (row['object_key'], row['image_id'], int(row.get('existing_material', False))))
+                saved = db.execute("SELECT image_id,existing_material FROM indexing_outcomes WHERE object_key=?", (row['object_key'],)).fetchone()
+                row['image_id'], row['existing_material'] = saved
+                db.execute("UPDATE candidates SET image_id=? WHERE object_key=? AND indexed=0", (row['image_id'], row['object_key']))
+
+    def record_annotation_outcomes(self, rows):
+        with self._transaction() as db:
+            db.executemany("UPDATE indexing_outcomes SET annotations_written=?,boxes_imported=?,boxes_skipped=?,negative_samples=? WHERE object_key=?",
+                ((r.get('annotations_written', 0), r.get('boxes_imported', 0), r.get('boxes_skipped', 0), r.get('negative_samples', 0), r['object_key']) for r in rows))
+
+    def indexing_counts(self):
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT COALESCE(SUM(o.annotations_written),0),COALESCE(SUM(o.boxes_imported),0),"
+                "COALESCE(SUM(o.boxes_skipped),0),COALESCE(SUM(o.negative_samples),0),"
+                "COALESCE(SUM(o.existing_material),0),COALESCE(SUM(1-o.existing_material),0) "
+                "FROM indexing_outcomes o JOIN candidates c USING(object_key) WHERE c.indexed=1").fetchone()
+            return dict(zip(('annotations_written','boxes_imported','boxes_skipped','negative_samples',
+                             'existing_materials_updated','new_materials_indexed'), row))
+
+    def skipped_boxes_for_keys(self, keys):
+        keys = list(keys)
+        if not keys:
+            return {}
+        with closing(self._connect()) as db:
+            return dict(db.execute("SELECT object_key,COUNT(DISTINCT line_number) FROM annotation_issues "
+                "WHERE severity='error' AND line_number>0 AND object_key IN (" + ','.join('?' for _ in keys) + ") GROUP BY object_key", keys))
 
     def assign_image_ids(self, task_id: str, batch_size: int = 500) -> int:
         """Persist UUID5 IDs in bounded transactions; return the number newly assigned."""

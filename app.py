@@ -26,10 +26,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, StrictInt, model_validator
+from pydantic import BaseModel, Field, StrictInt, model_validator
 from PIL import Image, ImageDraw
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.storage.import_confirmation import confirm_import, public_quality
 from platform_core.algorithms import (
     choose_iteration_base,
     is_trainable_version,
@@ -943,9 +945,19 @@ class StorageImportScanReq(BaseModel):
     recursive: bool = True
     zip_path: Optional[str] = None
     target_prefix: str = ""
+    import_format: Literal['auto', 'images', 'yolo', 'coco', 'voc'] = 'images'
+    dataset_yaml: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_mode_fields(self):
+        if self.import_format in {'coco', 'voc'}:
+            raise ValueError('服务器导入暂不支持 COCO/VOC；请使用 YOLO 或明确选择仅图片')
+        if self.dataset_yaml:
+            value = self.dataset_yaml.replace('\\', '/')
+            if value.startswith('/') or ':' in value or '..' in value.split('/'):
+                raise ValueError('dataset_yaml 必须是存储源内的相对路径')
+            if self.import_format == 'images':
+                raise ValueError('仅图片模式不能提交 dataset_yaml')
         zip_path = str(self.zip_path or "").strip()
         target_prefix = str(self.target_prefix or "").strip()
         if self.mode == "server_zip":
@@ -964,6 +976,9 @@ class StorageImportScanReq(BaseModel):
 
 class StorageImportConfirmReq(BaseModel):
     object_keys: Optional[List[str]] = None
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
+    create_labels: List[str] = Field(default_factory=list)
+    accept_quality_report: bool = False
 
 
 def _validate_storage_source_config(source_type: str, config: Dict[str, Any]) -> str:
@@ -1126,6 +1141,8 @@ _STORAGE_IMPORT_COUNTERS = {
     "newly_imported", "index_duplicates", "indexed", "imported", "candidates",
     # Compatibility names used by the current storage-source UI.
     "scanned", "importable",
+    "annotations_written", "boxes_imported", "boxes_skipped", "negative_samples",
+    "existing_materials_updated", "new_materials_indexed",
 }
 
 
@@ -1147,7 +1164,7 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
             continue
         if isinstance(raw, (int, float)):
             public[key] = max(0, raw)
-    for key in ("stage", "mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref"):
+    for key in ("stage", "mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref", "import_format", "dataset_yaml"):
         raw = value.get(key)
         if isinstance(raw, str):
             public[key] = _public_storage_import_text(raw)
@@ -1168,6 +1185,7 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
                 if isinstance(number, (int, float)) and not isinstance(number, bool)
             }
         public["error"] = public_error
+    public.update(public_quality(value, _public_storage_import_text))
     return public
 
 
@@ -1291,18 +1309,18 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
         raise HTTPException(status_code=409, detail="存储扫描候选清单不存在")
     candidate_store = ImportCandidateStore(manifest)
     load_legacy_candidates(artifacts, task_id, candidate_store)
-    selected = payload.object_keys
-    keys = selected if selected is not None else (
-        row["object_key"] for row in candidate_store.iter_status("IMPORTABLE")
-    )
     try:
-        selection = candidate_store.confirm(keys)
-        artifacts.atomic_write_json(task_id, "scan/confirmation.json", {
-            "accepted": True,
-            "selection_digest": selection.digest,
-            "selected_count": selection.selected_count,
-            "confirmed_at": selection.confirmed_at,
-        })
+        project = get_project(project_id)
+        if any(normalize_label(code) != code for code in payload.create_labels):
+            raise ValueError('新建标签必须使用规范的平台标签编码')
+        def create_import_label(code):
+            current = get_project(project_id)
+            ensure_label(current, code)
+            return code
+        confirm_import(candidate_store, artifacts, task_id,
+            object_keys=payload.object_keys, label_mapping=payload.label_mapping,
+            create_labels=payload.create_labels, accept_quality_report=payload.accept_quality_report,
+            labels=project_label_items(project), create_label=create_import_label)
         updated = shared_task_repository().resume_after_confirmation(task_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -1615,20 +1633,16 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
-def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]):
-    updated = now_iso()
-    atomic_write_json(project_dir(project_id) / "annotations" / f"{image_id}.json", {
-        "image_id": image_id,
-        "boxes": boxes,
-        "updated_at": updated,
-    })
+def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
+    saved = AnnotationRepository(project_dir(project_id)).upsert(image_id, boxes, annotation_state)
+    updated = saved['updated_at']
     # v42.11：把标注摘要同步进 images.json。列表页/首次启动无需逐张再次读取 annotation json，
     # 同时保留前 32 个框用于数据卡片和预览叠加显示。
     patch = {
-        **annotation_summary(boxes),
+        **annotation_summary(boxes, saved['annotation_state']),
         "annotation_summary_at": updated,
     }
-    if boxes:
+    if saved['annotation_state'] in {'annotated', 'confirmed_empty'}:
         patch["processing_status"] = "processed"
         patch["annotated_at"] = updated
     if not _v50_queue_image_patch(project_id, image_id, patch):
@@ -1636,7 +1650,7 @@ def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]
 
 
 def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
-    return read_json(project_dir(project_id) / "annotations" / f"{image_id}.json", {"image_id": image_id, "boxes": []})
+    return AnnotationRepository(project_dir(project_id)).get(image_id)
 
 
 def add_image_record(
@@ -1705,9 +1719,10 @@ def add_image_record(
             else:
                 record = material_store(project_id).upsert(record)
             if not annotation_path.exists():
-                write_annotation(project_id, img_id, [])
+                write_annotation(project_id, img_id, [], 'unannotated')
     except Exception:
         annotation_path.unlink(missing_ok=True)
+        AnnotationRepository(p).remove([img_id])
         try:
             storage_manager(project_id).delete_source_file(record)
         except Exception:
@@ -2843,7 +2858,7 @@ def _v52_annotation_index_worker(project_id: str):
             anns = read_annotation(project_id, image_id)
             boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
             patch = {
-                **annotation_summary(boxes),
+                **annotation_summary(boxes, anns.get('annotation_state')),
                 "annotation_summary_at": anns.get("updated_at") or now_iso(),
             }
             if boxes:
@@ -2946,6 +2961,7 @@ def delete_image(
         except StorageError as error:
             _raise_storage_error(error)
     (p / "annotations" / f"{image_id}.json").unlink(missing_ok=True)
+    AnnotationRepository(p).remove([image_id])
     material_store(project_id).remove([image_id])
     return {"ok": True, "source_deleted": should_delete_source, "index_deleted": True}
 
@@ -3000,6 +3016,7 @@ def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
     for missing_id in sorted(ids - found_ids):
         failed_items.append({"id": missing_id, "filename": "", "errors": ["图片不存在"]})
     if deleted_images:
+        AnnotationRepository(p).remove(item['id'] for item in deleted_images)
         material_store(project_id).remove(item["id"] for item in deleted_images)
     return {
         "ok": not failed_items,
@@ -3381,7 +3398,7 @@ def build_dataset(project_id: str, payload: BuildDatasetReq):
     empty_count = 0
     for img in images:
         ann = read_annotation(project_id, img["id"])
-        if ann.get("boxes") or payload.include_empty:
+        if ann.get("boxes") or ann.get('annotation_state') == 'confirmed_empty' or payload.include_empty:
             selected.append((img, ann))
             if not ann.get("boxes"):
                 empty_count += 1
@@ -3494,7 +3511,7 @@ def build_paddle_dataset_internal(project_id: str, train_ratio: float = 0.8, inc
     empty_count = 0
     for img in images:
         ann = read_annotation(project_id, img["id"])
-        if ann.get("boxes") or include_empty:
+        if ann.get("boxes") or ann.get('annotation_state') == 'confirmed_empty' or include_empty:
             selected.append((img, ann))
             if not ann.get("boxes"):
                 empty_count += 1
@@ -5906,7 +5923,7 @@ def dataset_quality_report(project_id: str, dataset_id: Optional[str] = None, in
                 clean.append(nb)
             else:
                 result["invalid_boxes"] += 1
-        if clean or include_empty:
+        if clean or ann.get('annotation_state') == 'confirmed_empty' or include_empty:
             result["splits"][split]["images"] += 1
         if clean:
             result["annotated_images"] += 1
@@ -5930,7 +5947,7 @@ def dataset_quality_report(project_id: str, dataset_id: Optional[str] = None, in
     unused = [k for k, v in result["label_usage"].items() if v == 0]
     if unused:
         result["warnings"].append("以下标签没有样本：" + "、".join(unused))
-    result["can_train"] = result["splits"]["train"]["boxes"] > 0 and result["box_count"] > 0
+    result["can_train"] = result["splits"]["train"]["images"] > 0
     return result
 
 
@@ -6201,7 +6218,7 @@ def dataset_items_by_split(project_id: str, dataset_id: Optional[str], include_e
     result = {"train": [], "val": [], "test": []}
     for img in sorted(images, key=lambda x: x.get("id", "")):
         ann = read_annotation(project_id, img["id"])
-        if not ann.get("boxes") and not include_empty:
+        if not ann.get("boxes") and ann.get('annotation_state') != 'confirmed_empty' and not include_empty:
             continue
         split = (img.get("split") or "train").lower()
         if split not in result:
@@ -6241,7 +6258,7 @@ def build_yolo_dataset_v12(project_id: str, dataset_id: Optional[str] = None, in
                     clean.append(nb)
                 else:
                     counts["invalid_boxes"] += 1
-            if not clean and not include_empty:
+            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not include_empty:
                 continue
             shutil.copy2(src, dataset / "images" / part / img["stored_name"])
             lines = []
@@ -6396,7 +6413,7 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
                 nb = normalize_box_for_project(project_id, img, b, create_label=False)
                 if nb:
                     clean.append(nb)
-            if not clean and not payload.include_empty:
+            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not payload.include_empty:
                 continue
             labs = {str(b.get("label") or "") for b in clean}
             if combined_filter and not labs.intersection(combined_filter):
@@ -6421,7 +6438,7 @@ def build_yolo_dataset_v44(project_id: str, payload: TrainReq) -> Dict[str, Any]
             for b in ann.get("boxes", []):
                 nb=normalize_box_for_project(project_id,img,b,create_label=False)
                 if nb: clean.append(nb)
-            if not clean and not payload.include_empty:
+            if not clean and ann.get('annotation_state') != 'confirmed_empty' and not payload.include_empty:
                 continue
             labs={str(b.get("label") or "") for b in clean}
             filt=train_filter if split=="train" else val_filter if split=="val" else set()
@@ -13694,11 +13711,11 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
     patches={}; total=len(pending); workers=min(8,max(2,os.cpu_count() or 2))
     def one(img):
         iid=str(img.get("id") or ""); ann=read_annotation(project_id,iid); boxes=ann.get("boxes",[]) if isinstance(ann,dict) else []
-        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso()
+        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),ann.get('annotation_state')
     done=0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(one,img) for img in pending]):
-            iid,boxes,updated=fut.result(); patch={**annotation_summary(boxes),"annotation_summary_at":updated}
+            iid,boxes,updated,annotation_state=fut.result(); patch={**annotation_summary(boxes,annotation_state),"annotation_summary_at":updated}
             if boxes:patch["processing_status"]="processed"
             patches[iid]=patch
             done+=1

@@ -269,6 +269,8 @@ class YoloImportScanner:
                     raise YoloImportError("YOLO_INVALID_TEXT", "Dataset text must use UTF-8 encoding") from error
 
     def prepare(self, import_format="auto", *, prefix="", recursive=True, dataset_yaml=None):
+        if import_format in {'coco', 'voc'}:
+            raise YoloImportError('UNSUPPORTED_IMPORT_FORMAT', 'Server import currently supports YOLO detection and images only; COCO/VOC are unsupported')
         if import_format not in {"auto", "images", "yolo"}:
             raise YoloImportError("INVALID_IMPORT_FORMAT", "import_format must be auto, images or yolo")
         if import_format == "images":
@@ -292,6 +294,12 @@ class YoloImportScanner:
                 raise YoloImportError("YOLO_YAML_AMBIGUOUS", "Multiple dataset YAML files found; choose dataset_yaml explicitly")
             if not found:
                 if import_format == "auto":
+                    with closing(self.store._connect()) as connection:
+                        unsupported = connection.execute("SELECT 1 FROM dataset_objects WHERE "
+                            "lower(object_key) LIKE '%.xml' OR lower(object_key) LIKE '%coco%.json' "
+                            "OR lower(object_key) LIKE '%annotations%.json' OR lower(object_key) LIKE '%instances_%.json' LIMIT 1").fetchone()
+                    if unsupported:
+                        raise YoloImportError('UNSUPPORTED_IMPORT_FORMAT', 'COCO/VOC annotations were detected; choose images explicitly to import without annotations')
                     return "images"
                 raise YoloImportError("YOLO_YAML_REQUIRED", "YOLO import requires a dataset YAML file")
             self.yaml_key = found[0][0]

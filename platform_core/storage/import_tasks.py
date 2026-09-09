@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from contextlib import closing
@@ -11,12 +12,15 @@ from typing import Any, Iterable, Iterator
 from PIL import Image, UnidentifiedImageError
 
 from platform_core.material_repository import MaterialRepository
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.annotations import annotation_summary
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
 
 from .errors import redact_storage_error
 from .factory import StorageProviderFactory
 from .import_candidates import ImportCandidateStore
+from .import_confirmation import mapping_suggestions
 from .models import StorageType
 from .source_repository import StorageSourceRepository
 from .yolo_import import YoloImportError, YoloImportScanner, YoloScanCancelled
@@ -164,7 +168,7 @@ class StorageImportHandler:
         return base
 
     @staticmethod
-    def _flush_scan_batch(store, materials, rows: list[dict[str, Any]]) -> None:
+    def _flush_scan_batch(store, materials, rows: list[dict[str, Any]], supplement=False) -> None:
         if not rows:
             return
         valid = [row for row in rows if row["status"] == "IMPORTABLE"]
@@ -178,6 +182,10 @@ class StorageImportHandler:
         for row in valid:
             content_hash = str(row["content_sha256"])
             reference = (str(row["storage_source_id"]), str(row["object_key"]))
+            if supplement and reference in material_references:
+                # The same object is a metadata/annotation update, not a second material.
+                batch_hashes.add(content_hash)
+                continue
             if (
                 reference in material_references
                 or content_hash in material_hashes
@@ -269,14 +277,14 @@ class StorageImportHandler:
         current_key = ""
         for item in objects:
             if context.cancel_requested():
-                self._flush_scan_batch(store, materials, batch)
+                self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
                 return TaskStatus.CANCELLED, None
             current_key = str(item.key)
             batch.append(self._inspect(provider, source, item))
             if len(batch) >= BATCH_SIZE:
-                self._flush_scan_batch(store, materials, batch)
+                self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
                 self._checkpoint_scan(context, store, current_key)
-        self._flush_scan_batch(store, materials, batch)
+        self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
         self._checkpoint_scan(context, store, current_key)
         quality = scanner.scan_annotations() if import_format == "yolo" else None
 
@@ -304,6 +312,11 @@ class StorageImportHandler:
             result["import_format"] = import_format
         if quality is not None:
             result.update({"dataset_yaml": scanner.yaml_key, "quality": quality})
+            meta_path = self.data_dir / 'projects' / context.task.project_id / 'meta.json'
+            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            labels = [{**(meta.get('label_meta', [])[i] if i < len(meta.get('label_meta', [])) else {}), 'code': code}
+                      for i, code in enumerate(meta.get('labels') or [])]
+            result['external_classes'] = mapping_suggestions(store.external_classes(), labels)
         context.repository.heartbeat(
             context.task.task_id,
             context.lease.lease_token,
@@ -512,6 +525,7 @@ class StorageImportHandler:
             "labels": [],
             "box_count": 0,
             "annotated": False,
+            "annotation_state": "unannotated",
         }
 
     @staticmethod
@@ -581,10 +595,17 @@ class StorageImportHandler:
         materials = MaterialRepository(
             self.data_dir / "projects" / context.task.project_id
         )
+        annotations = AnnotationRepository(self.data_dir / 'projects' / context.task.project_id)
+        project_meta_path = self.data_dir / 'projects' / context.task.project_id / 'meta.json'
+        project_meta = json.loads(project_meta_path.read_text(encoding='utf-8'))
+        label_ids = {code: i for i, code in enumerate(project_meta.get('labels') or [])
+                     if i >= len(project_meta.get('label_meta') or [])
+                     or (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'}
         checkpoint = context.load_checkpoint()
         newly_imported = max(0, int(checkpoint.get("newly_imported", 0) or 0))
         index_duplicates = max(0, int(checkpoint.get("index_duplicates", 0) or 0))
         indexed_at_least = max(0, int(checkpoint.get("indexed_at_least", 0) or 0))
+        progress_counts = store.indexing_counts()
 
         while True:
             if context.cancel_requested():
@@ -592,53 +613,67 @@ class StorageImportHandler:
             batch = store.pending_index_batch(BATCH_SIZE)
             if not batch:
                 break
-            ids = [str(row["image_id"]) for row in batch]
-            by_id = {row["id"]: row for row in materials.get_many(ids)}
-            existing_references = materials.find_existing_storage_references(
+            by_reference = materials.get_by_storage_references(
                 (row["storage_source_id"], row["object_key"]) for row in batch
             )
-            existing_hashes = materials.find_existing_content_hashes(
-                row["content_sha256"] for row in batch
-            )
-            records: list[dict[str, Any]] = []
-            acknowledged: list[dict[str, Any]] = []
-            accepted_hashes: set[str] = set()
-            accepted_references: set[tuple[str, str]] = set()
             for row in batch:
-                current = by_id.get(str(row["image_id"]))
+                current = by_reference.get((row['storage_source_id'], row['object_key']))
+                row['existing_material'] = current is not None
                 if current is not None:
-                    if (
-                        str(current.get("storage_source_id")) != str(row["storage_source_id"])
-                        or str(current.get("object_key")) != str(row["object_key"])
-                        or str(current.get("content_sha256")) != str(row["content_sha256"])
-                    ):
-                        raise ValueError(
-                            f"stable image_id collision for {row['object_key']}"
-                        )
-                    acknowledged.append(row)
-                    continue
-                reference = (str(row["storage_source_id"]), str(row["object_key"]))
-                content_hash = str(row["content_sha256"])
-                if (
-                    reference in existing_references
-                    or reference in accepted_references
-                    or content_hash in existing_hashes
-                    or content_hash in accepted_hashes
-                ):
-                    index_duplicates += 1
-                    acknowledged.append(row)
-                    continue
-                records.append(self._material_record(row, context.task.project_id))
-                acknowledged.append(row)
-                accepted_references.add(reference)
-                accepted_hashes.add(content_hash)
-            if records:
-                materials.upsert_many(records)
-                newly_imported += len(records)
-            store.mark_indexed(acknowledged)
+                    row['image_id'] = current['id']
+            store.bind_index_batch(batch)
+            by_id = {r['id']: r for r in materials.get_many(row['image_id'] for row in batch)}
+            imported_annotations = store.annotations_for_keys(row['object_key'] for row in batch)
+            skipped = store.skipped_boxes_for_keys(row['object_key'] for row in batch)
+            records, annotation_rows = [], []
+            for row in batch:
+                current = by_id.get(row['image_id'])
+                if current and (current['storage_source_id'], current['object_key']) != (row['storage_source_id'], row['object_key']):
+                    raise ValueError('stable image_id collision')
+                record = dict(current) if current else self._material_record(row, context.task.project_id)
+                for field in ('content_sha256', 'size_bytes', 'etag', 'width', 'height'):
+                    record[field] = row[field]
+                candidate = imported_annotations.get(row['object_key'])
+                row['boxes_skipped'] = skipped.get(row['object_key'], 0)
+                if candidate:
+                    record['imported_split'] = candidate['split']
+                    boxes = []
+                    for box in candidate['boxes']:
+                        code = (confirmation.get('label_mapping') or {}).get(str(box['class_id']))
+                        if code not in label_ids:
+                            raise ValueError('confirmed platform label is no longer active; resolve the label before retrying')
+                        width, height = float(row['width']), float(row['height'])
+                        boxes.append({'id': f"{row['image_id']}-{box['line_number']}",
+                            'label': code, 'class_id': label_ids[code],
+                            'x1': max(0.0, (box['cx']-box['w']/2)*width),
+                            'y1': max(0.0, (box['cy']-box['h']/2)*height),
+                            'x2': min(width, (box['cx']+box['w']/2)*width),
+                            'y2': min(height, (box['cy']+box['h']/2)*height)})
+                    state = 'annotated' if boxes else ('confirmed_empty' if candidate['annotation_status'] == 'confirmed_empty' else 'unannotated')
+                    # A missing/invalid sidecar cannot erase an existing annotation.
+                    if boxes or state == 'confirmed_empty' or not current:
+                        annotation_rows.append({'image_id': row['image_id'], 'boxes': boxes, 'annotation_state': state})
+                        record.update(annotation_summary(boxes, state))
+                        record['annotation_summary_at'] = confirmation['confirmed_at']
+                        if state != 'unannotated':
+                            record['processing_status'] = 'processed'
+                        row.update(annotations_written=int(state != 'unannotated'),
+                                   boxes_imported=len(boxes), negative_samples=int(state == 'confirmed_empty'))
+                records.append(record)
+            # Material identity is durable before annotation writes. Replaying the
+            # same deterministic boxes preserves annotation version/content digest.
+            materials.upsert_many(records)
+            annotations.upsert_many(annotation_rows)
+            store.record_annotation_outcomes(batch)
+            store.mark_indexed(batch)
+            for row in batch:
+                for counter in ('annotations_written', 'boxes_imported', 'boxes_skipped', 'negative_samples'):
+                    progress_counts[counter] += row.get(counter, 0)
+                progress_counts['existing_materials_updated' if row['existing_material'] else 'new_materials_indexed'] += 1
+            newly_imported = progress_counts['new_materials_indexed']
             # Checkpoint a true lower bound. Counting only one pending page would
             # overstate progress when more than 500 candidates remain.
-            indexed_at_least = min(selected_count, indexed_at_least + len(acknowledged))
+            indexed_at_least = min(selected_count, indexed_at_least + len(batch))
             checkpoint = {
                 "stage": "indexing",
                 "selected": selected_count,
@@ -646,6 +681,7 @@ class StorageImportHandler:
                 "newly_imported": newly_imported,
                 "index_duplicates": index_duplicates,
                 "current_object": batch[-1]["object_key"],
+                **progress_counts,
             }
             context.save_checkpoint(checkpoint)
             context.repository.heartbeat(
@@ -681,6 +717,7 @@ class StorageImportHandler:
             "skipped_files": counts.get("SKIPPED", 0),
             "failed": counts.get("FAILED", 0),
             "scan_result_ref": SCAN_RESULT_REF if isinstance(scan_result, dict) else None,
+            **store.indexing_counts(),
         }
         if selected_count > counts.get("IMPORTABLE", 0):
             raise RuntimeError("confirmed candidate count exceeds importable candidate count")
@@ -733,6 +770,8 @@ def commit_storage_import(
     result = artifacts.read_json(task_id, SCAN_RESULT_REF, default=None)
     if not isinstance(result, dict):
         raise ValueError("storage scan result does not exist")
+    if result.get('import_format') == 'yolo':
+        raise ValueError('YOLO imports require the label-mapping confirmation API')
     store = ImportCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
     load_legacy_candidates(artifacts, task_id, store)
     keys = selected_keys

@@ -7,10 +7,15 @@ export function buildServerImportRequest(values = {}) {
   const mode = String(values.mode || 'directory_scan');
   const storageSourceId = String(values.storageSourceId || '').trim();
   if (!storageSourceId) throw new Error('请选择本地存储源');
+  const importFormat = String(values.importFormat || 'auto');
+  if (!['auto', 'images', 'yolo'].includes(importFormat)) throw new Error('暂不支持 COCO/VOC 服务器导入');
+  const format = {import_format: importFormat};
+  if (values.datasetYaml && importFormat !== 'images') format.dataset_yaml = String(values.datasetYaml).trim();
 
   if (mode === 'directory_scan') {
     return {
       mode,
+      ...format,
       storage_source_id: storageSourceId,
       prefix: String(values.prefix || '').trim(),
       recursive: values.recursive !== false,
@@ -23,6 +28,7 @@ export function buildServerImportRequest(values = {}) {
     if (!targetPrefix) throw new Error('请填写 ZIP 解压目标目录');
     return {
       mode,
+      ...format,
       storage_source_id: storageSourceId,
       zip_path: zipPath,
       target_prefix: targetPrefix,
@@ -30,6 +36,17 @@ export function buildServerImportRequest(values = {}) {
     };
   }
   throw new Error(`不支持的导入方式：${mode}`);
+}
+
+export function buildImportConfirmation(rows = [], acceptQualityReport = false) {
+  const label_mapping = {}, create_labels = [];
+  for (const row of rows) {
+    const code = String(row.code || '').trim();
+    if (!code) throw new Error(`请选择外部类别 ${row.name || row.classId} 对应的平台标签`);
+    label_mapping[String(row.classId)] = code;
+    if (row.create) create_labels.push(code);
+  }
+  return {label_mapping, create_labels: [...new Set(create_labels)], accept_quality_report: Boolean(acceptQualityReport)};
 }
 
 export function serverImportView(task = {}) {

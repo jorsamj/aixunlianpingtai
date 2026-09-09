@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 import yaml
 
 from .annotations import atomic_write_json
+from .annotation_repository import AnnotationRepository
 from .algorithms import attach_version, choose_iteration_base, list_algorithms
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
@@ -539,11 +540,14 @@ def _selected_project_images(
         raise ValueError(f"所选素材不存在: {', '.join(missing[:5])}")
     by_id = {str(row.get("id")): row for row in rows}
     result = []
+    annotations = AnnotationRepository(project)
     for image_id in wanted:
         row = dict(by_id[image_id])
         image_id = str(row.get("id") or "")
-        annotation = _json(project / "annotations" / f"{image_id}.json", {})
-        row["boxes"] = list(annotation.get("boxes") or row.get("boxes") or [])
+        annotation = annotations.get(image_id)
+        row['annotation_state'] = annotation['annotation_state']
+        row['annotated'] = annotation['annotation_state'] in {'annotated', 'confirmed_empty'}
+        row["boxes"] = list(annotation.get("boxes") or [])
         result.append(row)
     return result
 
@@ -553,7 +557,7 @@ def _label_schema(project: Path) -> list[dict[str, Any]]:
     items = []
     for index, value in enumerate(meta.get("label_meta") or meta.get("labels") or []):
         item = dict(value) if isinstance(value, dict) else {"code": str(value)}
-        if item.get("active") is False:
+        if item.get("active") is False or item.get('status', 'active') != 'active':
             continue
         item["class_id"] = int(item.get("class_id", index))
         if item.get("code"):
