@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -24,6 +25,10 @@ from .snapshots import build_snapshot
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
+
+
+TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
+TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 
 
 def _sha256(path: Path) -> str:
@@ -70,27 +75,95 @@ def _atomic_text(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _copy_or_link_verified(source: Path, destination: Path, expected_hash: str) -> None:
+def _same_file_identity(left: Path, right: Path) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except (NotImplementedError, OSError):
+        return False
+
+
+def _copy_verified_isolated(source: Path, destination: Path, expected_hash: str) -> None:
     if not source.is_file() or source.stat().st_size <= 0:
         raise FileNotFoundError(f"training image does not exist: {source.name}")
     actual = _sha256(source)
     if actual != expected_hash:
         raise ValueError(f"source image SHA256 changed: {source.name}")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if source == destination:
+        raise ValueError("training image source and portable destination must be different paths")
     if destination.exists():
-        if _sha256(destination) != expected_hash:
-            raise ValueError(f"existing portable image SHA256 mismatch: {destination.name}")
-        return
+        if destination.is_symlink():
+            pass
+        elif not destination.is_file():
+            raise ValueError(f"existing portable image is not a file: {destination.name}")
+        elif _sha256(destination) == expected_hash and not _same_file_identity(source, destination):
+            return
+
+    descriptor, name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".copy",
+    )
+    temporary = Path(name)
     try:
-        if source.stat().st_dev == destination.parent.stat().st_dev:
-            os.link(source, destination)
-        else:
-            shutil.copy2(source, destination)
-    except OSError:
-        shutil.copy2(source, destination)
-    if destination.stat().st_size <= 0 or _sha256(destination) != expected_hash:
-        destination.unlink(missing_ok=True)
-        raise OSError(f"portable image verification failed: {destination.name}")
+        with source.open("rb") as input_stream:
+            with os.fdopen(descriptor, "wb") as output_stream:
+                descriptor = -1
+                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
+        if temporary.stat().st_size <= 0 or _sha256(temporary) != expected_hash:
+            raise OSError(f"portable image verification failed: {destination.name}")
+        os.replace(temporary, destination)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def _cleanup_orphan_bundle_copies(root: Path) -> None:
+    """Remove only unpublished sibling copy files from a rebuildable bundle."""
+    if not root.is_dir():
+        return
+    for candidate in root.rglob(".*.copy"):
+        if candidate.is_symlink() or candidate.is_file():
+            candidate.unlink(missing_ok=True)
+
+
+def _safety_reserve_bytes(configured: int | None) -> int:
+    raw: int | str = configured if configured is not None else os.environ.get(
+        TRAINING_BUNDLE_SAFETY_RESERVE_ENV,
+        TRAINING_BUNDLE_SAFETY_RESERVE_BYTES,
+    )
+    try:
+        reserve = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{TRAINING_BUNDLE_SAFETY_RESERVE_ENV} must be a non-negative integer") from error
+    if reserve < 0:
+        raise ValueError(f"{TRAINING_BUNDLE_SAFETY_RESERVE_ENV} must be a non-negative integer")
+    return reserve
+
+
+def _nearest_existing(path: Path) -> Path:
+    candidate = path
+    while not candidate.exists():
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+    return candidate
+
+
+def _check_bundle_disk_space(root: Path, remaining_bytes: int, atomic_copy_bytes: int, reserve_bytes: int) -> None:
+    required = max(0, remaining_bytes) + max(0, atomic_copy_bytes) + reserve_bytes
+    free = shutil.disk_usage(_nearest_existing(root)).free
+    if free < required:
+        raise OSError(
+            errno.ENOSPC,
+            "Insufficient disk space for training bundle: "
+            f"free={free} bytes, required={required} bytes, "
+            f"remaining={remaining_bytes} bytes, atomic_copy_peak={atomic_copy_bytes} bytes, "
+            f"safety_reserve={reserve_bytes} bytes",
+        )
 
 
 def _yolo_line(box: Mapping[str, Any], width: float, height: float, class_id: int) -> str:
@@ -117,15 +190,17 @@ def materialize_portable_dataset(
     snapshot: Mapping[str, Any],
     source_images: Sequence[Mapping[str, Any]],
     materialize: Callable[[Mapping[str, Any]], str | Path],
+    *,
+    safety_reserve_bytes: int | None = None,
 ) -> Path:
     root = Path(task_root).resolve() / "bundle"
+    root.mkdir(parents=True, exist_ok=True)
+    _cleanup_orphan_bundle_copies(root)
     manifest_path = root / "manifest.json"
     if manifest_path.exists():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
         if str(existing.get("snapshot_id") or "") != str(snapshot.get("snapshot_id") or ""):
             raise ValueError("portable bundle already belongs to a different snapshot")
-        verify_portable_dataset(manifest_path)
-        return root
 
     by_id = {str(row.get("id")): row for row in source_images}
     schema = sorted(
@@ -135,8 +210,8 @@ def materialize_portable_dataset(
     class_ids = {str(item["code"]): int(item.get("class_id", index)) for index, item in enumerate(schema)}
     names = {class_id: code for code, class_id in class_ids.items()}
     snapshot_records = {str(row.get("image_id")): row for row in snapshot.get("images") or []}
-    splits: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}
-    for role in splits:
+    planned: list[dict[str, Any]] = []
+    for role in ("train", "validation", "test"):
         for image_id in (snapshot.get("ids") or {}).get(role, []):
             row = by_id.get(str(image_id))
             locked = snapshot_records.get(str(image_id))
@@ -148,30 +223,62 @@ def materialize_portable_dataset(
             expected_hash = str(locked.get("content_sha256") or "")
             if not expected_hash:
                 raise ValueError(f"snapshot image has no content SHA256: {image_id}")
-            image_ref = f"dataset/images/{role}/{stored_name}"
-            label_ref = f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
-            destination = _resolve_relative(root, image_ref)
             source_path = Path(materialize(row)).resolve()
-            _copy_or_link_verified(source_path, destination, expected_hash)
-            lines = []
-            for box in row.get("boxes") or []:
-                label = str(box.get("label") or "").strip()
-                if label not in class_ids:
-                    raise ValueError(f"annotation label is not in locked schema: {label}")
-                lines.append(
-                    _yolo_line(box, float(row.get("width") or 0), float(row.get("height") or 0), class_ids[label])
-                )
-            label_path = _resolve_relative(root, label_ref)
-            _atomic_text(label_path, "\n".join(lines))
-            splits[role].append(
+            if not source_path.is_file() or source_path.stat().st_size <= 0:
+                raise FileNotFoundError(f"training image does not exist: {source_path.name}")
+            planned.append(
                 {
+                    "role": role,
                     "image_id": str(image_id),
-                    "image_ref": image_ref,
-                    "label_ref": label_ref,
-                    "content_sha256": expected_hash,
-                    "label_sha256": _sha256(label_path),
+                    "row": row,
+                    "stored_name": stored_name,
+                    "expected_hash": expected_hash,
+                    "source_path": source_path,
+                    "size_bytes": source_path.stat().st_size,
                 }
             )
+
+    total_size_bytes = sum(int(item["size_bytes"]) for item in planned)
+    peak_copy_bytes = max((int(item["size_bytes"]) for item in planned), default=0)
+    reserve_bytes = _safety_reserve_bytes(safety_reserve_bytes)
+    _check_bundle_disk_space(root, total_size_bytes, peak_copy_bytes, reserve_bytes)
+
+    splits: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}
+    remaining_bytes = total_size_bytes
+    for item in planned:
+        role = str(item["role"])
+        image_id = str(item["image_id"])
+        row = item["row"]
+        stored_name = str(item["stored_name"])
+        expected_hash = str(item["expected_hash"])
+        source_path = Path(item["source_path"])
+        size_bytes = int(item["size_bytes"])
+        image_ref = f"dataset/images/{role}/{stored_name}"
+        label_ref = f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
+        destination = _resolve_relative(root, image_ref)
+        _check_bundle_disk_space(root, remaining_bytes, size_bytes, reserve_bytes)
+        _copy_verified_isolated(source_path, destination, expected_hash)
+        remaining_bytes -= size_bytes
+        lines = []
+        for box in row.get("boxes") or []:
+            label = str(box.get("label") or "").strip()
+            if label not in class_ids:
+                raise ValueError(f"annotation label is not in locked schema: {label}")
+            lines.append(
+                _yolo_line(box, float(row.get("width") or 0), float(row.get("height") or 0), class_ids[label])
+            )
+        label_path = _resolve_relative(root, label_ref)
+        _atomic_text(label_path, "\n".join(lines))
+        splits[role].append(
+            {
+                "image_id": image_id,
+                "image_ref": image_ref,
+                "label_ref": label_ref,
+                "content_sha256": expected_hash,
+                "size_bytes": size_bytes,
+                "label_sha256": _sha256(label_path),
+            }
+        )
     data_yaml = {
         "path": ".",
         "train": "images/train",
@@ -191,6 +298,7 @@ def materialize_portable_dataset(
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": _sha256(snapshot_path),
         "data_yaml_ref": "dataset/data.yaml",
+        "total_size_bytes": total_size_bytes,
         "splits": splits,
     }
     atomic_write_json(manifest_path, manifest)
