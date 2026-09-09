@@ -217,7 +217,23 @@ Training Worker 使用其实际训练 Python 再验证：
 
 不再提交 `selected_image_ids`。`/api/v12/.../train/start` 因此进入 `_enqueue_explicit_training()`，素材快照、StorageManager materialize、版本迭代和训练执行都由 durable Training Worker 完成。旧同步路径仅用于读取历史任务，不再由新版 UI 调用。
 
-## 五、Worker 实例和任务竞争
+## 五、训练工作副本只读隔离
+
+当前 `materialize_portable_dataset()` 在源文件与 bundle 位于同一文件系统时使用 hard link。该策略会让原始素材与训练副本共享 inode；Ultralytics 校验异常 JPEG 时可能重写 bundle 中的 JPEG，进而修改原始素材并使存储索引中的 size/SHA256 失效。
+
+训练数据准备改为原子真实复制：
+
+1. `StorageManager.materialize()` 只负责提供经过 SHA256 校验的只读来源；
+2. bundle 图片先复制到同目录临时文件；
+3. 对临时文件执行大小和 SHA256 校验；
+4. 使用 `os.replace()` 原子发布为训练工作副本；
+5. 工作副本保持可写，允许第三方框架修复副本，但不得与源文件共享 inode；
+6. 已存在 bundle 文件时必须校验 snapshot SHA256，不匹配则失败，不覆盖来源；
+7. 不使用 symlink、hard link 或无法证明隔离性的文件系统快捷方式。
+
+这一策略会增加训练快照所需磁盘空间，但以数据安全为优先。训练前应检查可用空间；空间不足时明确失败，不能退回 hard link。定向测试必须在同一文件系统创建源文件和 bundle，修改 bundle 后证明源文件 SHA256、大小和内容完全不变，并在支持 inode 的平台确认二者 inode 不同。
+
+## 六、Worker 实例和任务竞争
 
 TaskRepository 新增 `worker_instances` 表，主键由 `hostname + resolved data_dir + sorted roles` 的摘要组成，记录 owner token、PID、started/heartbeat/expires 时间。
 
@@ -230,13 +246,13 @@ Worker 启动时原子注册：
 
 任务层现有 lease 和 resource key 继续负责单任务所有权，实例租约只阻止无意重复的同机全角色 Worker。
 
-## 六、刷新和首屏性能
+## 七、刷新和首屏性能
 
 `/api/v53/bootstrap/snapshot` 不再返回完整素材数组，只返回项目、标签、算法、资源摘要、任务摘要和素材聚合数量。普通数据页仍由 cursor API 加载 48 张首屏。
 
 训练素材选择、批处理、自动标注等原 full-material 页面逐步改用服务端分页、筛选计数和 manifest selection，不再通过 `state.images` 保存全部素材。刷新按钮只更新当前页面依赖和 revision；后台额外配置继续惰性加载。启动等待只用于数据库迁移/必要恢复，不因扫描全量素材而阻塞页面。
 
-## 七、错误与可观测性
+## 八、错误与可观测性
 
 所有新任务错误包含稳定错误码、中文说明、当前阶段和处理建议。公开 API 不返回服务器绝对路径或密钥。服务端日志保留 task ID、worker ID、批次和原始异常。
 
@@ -252,7 +268,7 @@ Worker 启动时原子注册：
 - `CUDA_DEVICE_INDEX_INVALID`
 - `DUPLICATE_WORKER_INSTANCE`
 
-## 八、兼容和发布边界
+## 九、兼容和发布边界
 
 - 旧图片-only 导入任务继续可恢复，新增表采用惰性迁移。
 - 旧 `scan/result.json` candidates 兼容读取。
@@ -260,7 +276,7 @@ Worker 启动时原子注册：
 - 现有 StorageManager、SecretStore、TaskRepository lease 和算法版本选择逻辑不替换。
 - 第一版只对 YOLO 标注导入报告真实支持；COCO/VOC 显示“尚未支持”，后续可通过同一 parser 接口增加。
 
-## 九、验证范围
+## 十、验证范围
 
 按本轮要求优先代码正确性：
 
@@ -269,4 +285,3 @@ Worker 启动时原子注册：
 3. 不重复运行无关全量回归。
 4. 当前 Windows 环境无法证明 A800 真实占用；交付时提供 Linux 最小验收：任务 argv、train_worker Torch/CUDA 记录和 `nvidia-smi` 进程/利用率三项必须同时吻合。
 5. 未接入的真实 OSS/S3/Remote 环境明确标记未验证，不以模拟 Provider 代替真实结果。
-
