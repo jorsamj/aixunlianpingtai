@@ -1,4 +1,4 @@
-# 畅联云算法训练 v42.21.1
+# 畅联云算法训练 v42.23.0
 
 面向视觉算法生产流程的一体化平台，覆盖素材上传、数据清洗、人工与 AI 标注、训练任务调度、算法版本迭代、模型转换和部署测试。
 
@@ -13,6 +13,15 @@
 - 清洗使用 Pillow/OpenCV 检查损坏、精确重复、近似重复、尺寸、模糊度与亮度等问题。
 - 清洗扫描结果先进入确认环节，确认前不会删除图片；删除时同步处理素材文件和标注文件。
 - 数据列表支持文件名搜索和多标签筛选。标签选项来自统一标签库，多标签使用 OR 逻辑，命中任意选中标签即可显示。
+
+### 多来源存储与服务器素材导入
+
+- 统一素材池支持 Local、阿里云 OSS、S3/MinIO 和 Remote Server；标签、素材 ID 与物理存储来源彼此独立。
+- 远程素材只建立 `image_id → storage_source_id → object_key` 索引，训练、标注和清洗通过 `StorageManager` 解析，不会因导入而全量复制到平台上传目录。
+- Local 目录扫描使用流式遍历；扫描候选写入每任务独立的 SQLite manifest，结果 JSON 只保存汇总与 manifest 引用。
+- 扫描按对象路径和内容 SHA256 去重；确认导入通过正式的原子状态转换重新进入队列，由 Worker 分批、幂等建立索引。
+- 服务器 ZIP 只接受允许导入目录内的相对路径，先进行 Zip Slip/Zip Bomb/磁盘空间检查并解压到任务 staging；目标目录已存在时默认拒绝覆盖。
+- 关闭扫描弹窗只停止浏览器轮询，不会取消后台 durable task；重新打开页面可以继续读取任务状态。
 
 ### 人工标注
 
@@ -62,6 +71,15 @@
 - 部署资源页面会检测转换工具、版本、目标芯片和运行环境；资源不可用时明确显示缺少项。
 - 部署测试通过后台 Worker 调用对应真实 Runtime，结果包含检测框、类别、置信度和预处理/推理/后处理/总耗时。
 - 当前机器没有厂商 SDK、Runtime 或硬件时返回 `BLOCKED_BY_ENVIRONMENT` 或 `BLOCKED_BY_HARDWARE`，不会显示测试成功。
+
+### 本机训练环境与模型发现
+
+- Ultralytics 环境检测与模型文件检测已经解耦：Python、Ultralytics、Torch、TorchVision 和 CUDA 均可正常导入时，即使没有 `yolo11n.pt`，环境仍可判定为可用。
+- 一键检测先发现当前解释器、PATH、Conda、venv/.venv、AppData、Program Files 和已保存环境；候选 Python 会由真实子进程执行导入探测。
+- 快速发现不足时可创建后台全机深度检测任务；Windows 动态枚举本地磁盘，Linux 枚举合理挂载点，并跳过虚拟或网络文件系统。
+- 本机模型支持指定目录扫描和后台全机扫描，覆盖 PT/PTH/ONNX/Engine/RKNN/BModel/OM/Paddle 等格式；结果持久化分页展示，刷新页面不会自动重新扫描。
+- 官方 YOLO 模型按环境模型目录、Ultralytics `weights_dir`、已扫描缓存、项目目录、平台缓存和当前目录依次解析；未找到时显示“未下载/可下载”，不会把环境误判为失败。
+- 启动器在 Linux 上优先复用当前已经通过 CUDA 探测的 PyTorch 环境，不会为本轮 Windows 启动流程主动覆盖成 CPU Torch。
 
 ## 运行架构
 
@@ -238,9 +256,9 @@ python -m pytest tests/hardware/test_vendor_conversion.py -v -s
 
 没有设置目标、源 ONNX 和对应 SDK 参数时，该测试会明确跳过，不能据此宣称厂商转换通过。
 
-### 当前回归基线
+### 当前回归与验证边界
 
-本仓库 v42.21.1 在上传前完成的自动化回归：
+以下是 v42.21.1 的历史自动化回归基线，不覆盖 v42.23.0 本轮新增代码：
 
 - Python：248 项通过，2 项因当前环境条件跳过；
 - 前端 Node 测试：40 项通过；
@@ -249,7 +267,7 @@ python -m pytest tests/hardware/test_vendor_conversion.py -v -s
 
 浏览器回归覆盖创建算法、素材上传、手工/批量标注与刷新恢复、标签筛选、清洗入口、AI 候选审核、转换资源、训练素材精确选择、最新版本迭代和优先级队列。
 
-这些结果只代表当前 Windows 测试环境中的已执行范围。Atlas、RKNN、TensorRT 和 Sophon 的最终目标硬件验证仍必须在对应服务器或开发板上单独完成。
+v42.23.0 按用户要求完成代码收口后未运行最终全量回归。真实 OSS/MinIO、Linux/NVIDIA CUDA、全机深度扫描以及最新资源发现 UI 的浏览器 E2E 均未验证，不能视为通过。Atlas、RKNN、TensorRT 和 Sophon 的最终目标硬件验证仍必须在对应服务器或开发板上单独完成。
 
 ## 目录说明
 
@@ -258,6 +276,8 @@ app.py                         FastAPI Web/API
 launcher.py                    Windows 一键启动器
 task_worker.py                 通用任务 Worker 与 Scheduler 入口
 platform_core/task_runtime/    持久任务、租约、调度与产物存储
+platform_core/storage/         多来源存储 Provider、解析与缓存
+platform_core/discovery/       本机环境/模型发现、持久缓存与后台扫描
 platform_core/training_tasks.py
 platform_core/video_tasks.py
 platform_core/annotation_task_service.py

@@ -16,8 +16,8 @@ import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
-import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422204';
-import {buildServerImportRequest, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422206';
+import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422300';
+import {buildServerImportRequest, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422300';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422300';
 
 
@@ -76,8 +76,8 @@ installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 for (const delay of [80, 500, 1800, 3600]) {
   setTimeout(() => {
     const badge = document.getElementById('versionBadge');
-    if (badge) badge.textContent = 'v42.22.4';
+    if (badge) badge.textContent = 'v42.23.0';
     const footer = document.querySelector('.nav-footer b');
-    if (footer) footer.textContent = 'v42.22.4';
+    if (footer) footer.textContent = 'v42.23.0';
   }, delay);
 }

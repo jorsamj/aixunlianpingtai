@@ -5,8 +5,8 @@
 - 工作分支：`feat/windows-p0`
 - 稳定主分支：`main`
 - Codex WIP 接管起点：`f42313f`
-- 当前版本：`42.22.4`
-- 当前阶段：**停止继续加新功能，等待真实环境验收**
+- 当前版本：`42.23.0`
+- 当前阶段：**功能代码已收口；按用户要求未运行本轮最终全量回归，等待最小人工验收**
 - 合并要求：在 Windows 前端、后端回归、Playwright、真实对象存储验证完成前，不合并 `main`。
 
 ## 不得回退的产品约束
@@ -99,13 +99,37 @@
 - 关闭弹窗只停止浏览器轮询，不停止 durable worker task；
 - 成功后同时展示 scanned/importable/duplicates/failed。
 
-## 仍未完成 / 不得误报完成
+## v42.23.0：持久素材导入与本机资源发现
 
-### 1. 真实 Windows 浏览器回归
+### Durable server-local import
 
-用户本机此前无法连接 `github.com:443`，因此 42.22.2+ 尚未拉到本地执行。
+- 每个 `MATERIAL_IMPORT` 任务使用独立 SQLite candidate manifest，扫描结果 JSON 只保留汇总和 manifest 引用；兼容读取旧版小型 candidates JSON。
+- `TaskRepository.resume_after_confirmation()` 原子执行 `AWAITING_CONFIRMATION → QUEUED`，清理旧 lease/worker 信息并以 `indexing_queued` 重新交给 Worker；重复确认保持幂等。
+- Local 目录使用流式扫描，不再为每页重复 `list(rglob()) + sorted()`；候选依靠 UNIQUE/INSERT OR IGNORE 支持 Worker 恢复与安全重跑。
+- 重复判断同时覆盖 `storage_source_id + object_key` 与 `content_sha256`，批量查询已有哈希，避免逐对象 N+1。
+- indexing 由 Worker 分批读取 manifest、分批写 `MaterialRepository`、保存候选状态；HTTP 确认请求不再同步写入大批量素材。
+- 服务器 ZIP 使用允许导入根目录内的相对路径，先校验 member、数量、单文件/总大小、压缩比、路径逃逸、符号链接和磁盘空间，再解压到 `.import-staging/<task_id>`；默认不覆盖非空目标目录。
+- 前端提供存储浏览、Local 目录和服务器 ZIP 三种导入入口，显示真实计数和当前对象；关闭弹窗只终止浏览器轮询，不取消后台任务。
 
-必须验证：
+### NVIDIA launcher 保护
+
+- Linux 启动策略在现有 `torch.cuda.is_available() == True` 时复用当前 CUDA PyTorch，不进入 Windows CPU Torch bootstrap。
+- 此结论有策略/回归代码证据，但本轮没有连接 Linux/NVIDIA 主机，因此不能记为真机通过。
+
+### Ultralytics 环境发现与全机模型扫描
+
+- 环境探测只验证候选 Python 中的 Python/Ultralytics/Torch/TorchVision/CUDA/GPU，不依赖任何具体 `.pt` 文件。
+- 快速候选覆盖当前解释器、PATH、Conda、venv/.venv、AppData、Program Files、已保存环境；每个候选均通过子进程真实 import 探测，多环境完整返回并优先推荐可用 CUDA 环境。
+- 全机发现使用 durable `RESOURCE_DISCOVERY` task，Windows 动态枚举本地磁盘，Linux 枚举合理本地挂载点；跳过虚拟/网络文件系统并记录权限失败和真实扫描计数。
+- 环境与模型结果使用持久发现缓存；GET 只读取缓存，不会因刷新页面重新触发全机扫描。模型扫描支持指定目录与全机后台模式、稳定分页和显式重新检测。
+- `ModelResolver` 按环境目录、Ultralytics `weights_dir`、扫描缓存、项目模型目录、平台缓存、当前目录解析；官方 YOLO 名称找不到时返回 missing/downloadable，不把环境标为 failed。
+- 前端已接入一键检测、深度检测、全机模型扫描、真实进度和显式环境选择；未自动选择第一条环境。
+
+## 当前未验证 / 不得误报完成
+
+### 1. v42.23.0 最终回归与最新 UI 浏览器 E2E
+
+用户明确要求本轮代码完成后不再运行测试、直接提交，因此没有执行 v42.23.0 最终全量 pytest、前端 Node 或 Playwright 回归。以下流程仍需最小人工验收：
 - 素材页刷新不再全量加载；
 - 未处理/已处理、搜索、标签 OR、来源、标注状态筛选；
 - 上一页/下一页；
@@ -115,6 +139,8 @@
 - 训练全选/反选和 exact image ID 不受分页影响；
 - 自动标注、质量、测试发布、部署测试不只看到第一页；
 - 对象存储扫描期间不再出现假百分比。
+- 一键检测不因缺少 `yolo11n.pt` 失败；多环境展示、显式选择和缓存刷新行为正确。
+- 全机资源扫描任务关闭弹窗后仍继续，返回后可恢复进度与分页结果。
 
 ### 2. 高频 legacy `mutate()` 仍有全表读取
 
@@ -140,6 +166,12 @@
 - 启动器策略测试证明 Linux 分支不会调用 `_run_install`，也不会访问 CPU PyTorch index；这只是 mock/subprocess-policy 证据，不是 NVIDIA 机器启动验收。
 - 真实 NVIDIA CUDA 启动：未验证
 
+### 6. 全机深度扫描未实跑
+
+- Windows 多磁盘和 Linux 多挂载点的代码路径已经实现，但本轮未在真实全机范围执行。
+- 权限拒绝、长时间扫描、取消/恢复、超大模型结果分页仍需真实机器操作确认。
+- 最新资源发现 UI 没有执行浏览器 E2E，不能记录为已通过。
+
 ## NVIDIA Launcher Safety Plan：本轮回归证据
 
 - `python -m py_compile launcher.py`：通过。
@@ -152,15 +184,16 @@
 
 ## 测试状态
 
-Codex 额度耗尽前报告过：`318 passed, 4 skipped`，但那是人工接管前的版本，不能覆盖 42.22.1~42.22.4。
+Codex 额度耗尽前报告过：`318 passed, 4 skipped`，但那是人工接管前的版本，不能覆盖 42.22.1~42.23.0。
 
-当前必须写成：
+当前必须写成（历史证据与 v42.23.0 本轮验证范围分开）：
 
 - 代码提交到 `feat/windows-p0`：是
 - 静态审查：已做
 - NVIDIA Launcher 定向测试：`29 passed`（策略测试；非真机 CUDA）
-- 42.22.4 前端单测：待执行
-- Playwright：待执行
+- v42.23.0 最终后端回归：按用户要求未运行
+- v42.23.0 前端 Node 回归：按用户要求未运行
+- v42.23.0 Playwright / 最新资源发现 UI E2E：按用户要求未运行
 - 全量后端回归：第二轮 `355 passed, 4 skipped, 20 warnings`；第一次曾出现一次未复现的清洗任务 10 秒超时，仍待后续观察
 - 真实 MinIO：待执行
 - 真实 OSS：待执行
@@ -168,11 +201,11 @@ Codex 额度耗尽前报告过：`318 passed, 4 skipped`，但那是人工接管
 
 GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已经通过”。
 
-## 网络恢复后的验收顺序
+## 后续最小验收顺序
 
 1. `git checkout feat/windows-p0`
 2. `git pull --ff-only origin feat/windows-p0`
-3. 确认 `VERSION.txt = 42.22.4`
+3. 确认 `VERSION.txt = 42.23.0`
 4. 先跑定向测试：
    - `tests/unit/test_material_repository.py`
    - `tests/unit/test_material_repository_batch.py`
