@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from contextlib import closing
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -14,13 +16,23 @@ from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
 from .errors import redact_storage_error
 from .factory import StorageProviderFactory
 from .import_candidates import ImportCandidateStore
+from .models import StorageType
 from .source_repository import StorageSourceRepository
+from .zip_import import (
+    ExtractionCancelled,
+    ServerZipImportError,
+    UnsafeArchive,
+    extract_server_zip,
+    finalize_server_zip_publication,
+    resolve_server_zip,
+)
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MANIFEST_REF = "scan/candidates.sqlite3"
 SCAN_RESULT_REF = "scan/result.json"
 FINAL_RESULT_REF = "scan/final.json"
+ERROR_RESULT_REF = "scan/error.json"
 BATCH_SIZE = 500
 
 
@@ -67,6 +79,13 @@ def iter_provider_objects(provider, prefix: str, recursive: bool) -> Iterator[An
 def _stored_name(image_id: str, object_key: str) -> str:
     suffix = Path(object_key).suffix.lower()
     return f"{image_id}{suffix}" if suffix in IMAGE_EXTENSIONS else f"{image_id}.img"
+
+
+def server_import_dir(data_dir: Path) -> Path:
+    configured = os.environ.get("MC_SERVER_IMPORT_DIR", "").strip()
+    return (
+        Path(configured).expanduser() if configured else data_dir / "imports"
+    ).resolve()
 
 
 class StorageImportHandler:
@@ -174,6 +193,7 @@ class StorageImportHandler:
         counts = store.counts()
         scanned = sum(counts.values())
         checkpoint = {
+            **context.load_checkpoint(),
             "stage": "SCANNING",
             "scanned_files": scanned,
             "importable_images": counts.get("IMPORTABLE", 0),
@@ -252,6 +272,177 @@ class StorageImportHandler:
             context.task.task_id, SCAN_RESULT_REF, result,
         )
         return TaskStatus.AWAITING_CONFIRMATION, SCAN_RESULT_REF
+
+    @staticmethod
+    def _zip_error(
+        context, error: ServerZipImportError, live_state: dict[str, Any] | None = None,
+    ) -> str:
+        checkpoint = context.load_checkpoint()
+        zip_state = checkpoint.get("zip_import")
+        zip_state = zip_state if isinstance(zip_state, dict) else {}
+        if live_state:
+            zip_state = {**zip_state, **live_state}
+        result = {
+            "stage": "cancelled" if isinstance(error, ExtractionCancelled) else "failed",
+            "mode": "server_zip",
+            "error": {
+                "code": error.code,
+                "message": error.message,
+                "detail": error.detail,
+                "solution": error.solution,
+                "context": dict(error.context),
+            },
+            "extracted_files": max(0, int(zip_state.get("extracted_files") or 0)),
+            "extracted_bytes": max(0, int(zip_state.get("extracted_bytes") or 0)),
+            "declared_files": max(0, int(zip_state.get("declared_files") or 0)),
+            "declared_bytes": max(0, int(zip_state.get("declared_bytes") or 0)),
+            "current_file": str(zip_state.get("current_file") or ""),
+        }
+        context.artifacts.atomic_write_json(
+            context.task.task_id, ERROR_RESULT_REF, result,
+        )
+        return ERROR_RESULT_REF
+
+    def _server_zip_source(self, context, request):
+        source_id = str(request.get("storage_source_id") or "")
+        source = StorageSourceRepository(
+            self.data_dir / "storage" / "storage_sources.sqlite3"
+        ).get(source_id)
+        if source is None:
+            raise UnsafeArchive(
+                "The storage source does not exist",
+                code="ZIP_LOCAL_STORAGE_REQUIRED",
+                solution="Choose an existing local storage source.",
+            )
+        # Reject remote providers before resolving credentials or performing a
+        # health check. Server ZIP publication requires an atomic local rename.
+        if StorageType.parse(source.type) is not StorageType.LOCAL:
+            raise UnsafeArchive(
+                "Server ZIP import requires a local storage source",
+                code="ZIP_LOCAL_STORAGE_REQUIRED",
+                solution="Choose a configured local storage source for server ZIP import.",
+            )
+        source, provider = self._source_and_provider(context, request)
+        root = getattr(provider, "root", None)
+        if not isinstance(root, Path):
+            raise UnsafeArchive(
+                "The local storage provider does not expose a physical root",
+                code="ZIP_LOCAL_STORAGE_REQUIRED",
+                solution="Repair or replace the configured local storage provider.",
+            )
+        target_prefix = str(request.get("target_prefix") or "").strip()
+        if not target_prefix:
+            raise UnsafeArchive(
+                "target_prefix is required for server ZIP import",
+                code="ZIP_TARGET_REQUIRED",
+                solution="Choose a new, non-empty directory under the local storage root.",
+            )
+        zip_path = str(request.get("zip_path") or "")
+        archive = resolve_server_zip(server_import_dir(self.data_dir), zip_path)
+        return source, provider, root, target_prefix, zip_path, archive
+
+    def _server_zip(self, context, request):
+        live_state: dict[str, Any] = {}
+        try:
+            _source, _provider, root, target_prefix, zip_path, archive = (
+                self._server_zip_source(context, request)
+            )
+            checkpoint = context.load_checkpoint()
+            saved = checkpoint.get("zip_import")
+            saved = dict(saved) if isinstance(saved, dict) else {}
+            if saved.get("published") is True:
+                if (
+                    saved.get("target_prefix") != target_prefix
+                    or saved.get("zip_path") != zip_path
+                ):
+                    raise UnsafeArchive(
+                        "Server ZIP request no longer matches its durable checkpoint",
+                        code="ZIP_CHECKPOINT_MISMATCH",
+                        solution="Create a new import task instead of changing a running task.",
+                    )
+                finalize_server_zip_publication(
+                    root, target_prefix, task_id=context.task.task_id,
+                )
+            else:
+                completed = saved.get("completed_members")
+                completed = completed if isinstance(completed, dict) else {}
+
+                def on_extract(progress):
+                    if progress.completed_member is not None:
+                        completed[progress.completed_member.name] = asdict(
+                            progress.completed_member
+                        )
+                    state = {
+                        "zip_path": zip_path,
+                        "target_prefix": target_prefix,
+                        "published": False,
+                        "completed_members": completed,
+                        "extracted_files": progress.extracted_files,
+                        "extracted_bytes": progress.extracted_bytes,
+                        "declared_files": progress.declared_files,
+                        "declared_bytes": progress.declared_bytes,
+                        "current_file": progress.current_member,
+                    }
+                    live_state.clear()
+                    live_state.update(state)
+                    # Persist only completed members. Chunk heartbeats remain live
+                    # without rewriting an ever-growing checkpoint every MiB.
+                    if progress.completed_member is not None:
+                        context.save_checkpoint({"stage": "extracting", "zip_import": state})
+                    percent = (
+                        min(45.0, 45.0 * progress.extracted_bytes / progress.declared_bytes)
+                        if progress.declared_bytes else 0.0
+                    )
+                    context.repository.heartbeat(
+                        context.task.task_id,
+                        context.lease.lease_token,
+                        progress=percent,
+                        stage="extracting",
+                        current_item=(
+                            f"已解压 {progress.extracted_files} 个文件 · "
+                            f"{progress.extracted_bytes} 字节 · 当前 {progress.current_member}"
+                        ),
+                    )
+                    return not context.cancel_requested()
+
+                if context.cancel_requested():
+                    return TaskStatus.CANCELLED, None
+                report = extract_server_zip(
+                    archive,
+                    root,
+                    target_prefix,
+                    task_id=context.task.task_id,
+                    completed=completed,
+                    on_progress=on_extract,
+                )
+                state = {
+                    "zip_path": zip_path,
+                    "target_prefix": target_prefix,
+                    "published": True,
+                    "completed_members": {
+                        name: asdict(record) for name, record in report.members.items()
+                    },
+                    "extracted_files": report.extracted_files,
+                    "extracted_bytes": report.extracted_bytes,
+                    "declared_files": report.extracted_files,
+                    "declared_bytes": report.extracted_bytes,
+                    "current_file": "",
+                }
+                # This checkpoint precedes marker removal. A crash before it is
+                # recovered through the task-owned marker and verified records.
+                context.save_checkpoint({"stage": "published", "zip_import": state})
+                finalize_server_zip_publication(
+                    root, target_prefix, task_id=context.task.task_id,
+                )
+
+            scan_request = dict(request)
+            scan_request["prefix"] = target_prefix
+            scan_request["recursive"] = bool(request.get("recursive", True))
+            return self._scan(context, scan_request)
+        except ExtractionCancelled as error:
+            return TaskStatus.CANCELLED, self._zip_error(context, error, live_state)
+        except ServerZipImportError as error:
+            return TaskStatus.FAILED, self._zip_error(context, error, live_state)
 
     @staticmethod
     def _material_record(row: dict[str, Any], project_id: str) -> dict[str, Any]:
@@ -460,6 +651,8 @@ class StorageImportHandler:
         )
         if isinstance(confirmation, dict) and confirmation.get("accepted") is True:
             return self._index_confirmed(context, request)
+        if str(request.get("mode") or "") == "server_zip":
+            return self._server_zip(context, request)
         return self._scan(context, request)
 
     def recover(self, context):
@@ -469,6 +662,8 @@ class StorageImportHandler:
         )
         if isinstance(confirmation, dict) and confirmation.get("accepted") is True:
             return self._index_confirmed(context, request)
+        if str(request.get("mode") or "") == "server_zip":
+            return self._server_zip(context, request)
         result = context.artifacts.read_json(
             context.task.task_id, SCAN_RESULT_REF, default=None,
         )
