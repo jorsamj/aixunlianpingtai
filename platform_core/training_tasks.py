@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,8 @@ from .training_splits import SplitMode, SplitRequest, build_split_manifest
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
 TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
+TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
+_TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 
 
 def _sha256(path: Path) -> str:
@@ -39,7 +42,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _resolve_relative(root: Path, reference: str) -> Path:
+def _portable_relative(reference: str) -> Path:
     raw = str(reference or "")
     value = Path(raw)
     windows = PureWindowsPath(raw)
@@ -54,6 +57,11 @@ def _resolve_relative(root: Path, reference: str) -> Path:
         or ".." in windows.parts
     ):
         raise ValueError("relative portable dataset reference required")
+    return value
+
+
+def _resolve_relative(root: Path, reference: str) -> Path:
+    value = _portable_relative(reference)
     base = root.resolve()
     resolved = (base / value).resolve()
     if resolved != base and base not in resolved.parents:
@@ -75,33 +83,99 @@ def _atomic_text(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _same_file_identity(left: Path, right: Path) -> bool:
+def _path_info(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _is_link_like(path: Path) -> bool:
+    info = _path_info(path)
+    if info is None:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+
+
+def _same_physical_file(left: Path, right: Path) -> bool:
     try:
         return os.path.samefile(left, right)
     except (NotImplementedError, OSError):
-        return False
+        # Unknown identity is never sufficient proof that reuse is safe.
+        return True
 
 
-def _copy_verified_isolated(source: Path, destination: Path, expected_hash: str) -> None:
-    if not source.is_file() or source.stat().st_size <= 0:
+def _prepare_bundle_root(task_root: str | Path) -> tuple[Path, Path]:
+    work_input = Path(task_root)
+    if _is_link_like(work_input):
+        raise ValueError("training work path must be a real directory, not a link")
+    work = work_input.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    root = work / "bundle"
+    info = _path_info(root)
+    if info is not None:
+        if _is_link_like(root):
+            raise ValueError("training bundle path must be a real bundle directory, not a link")
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError("training bundle path must be a directory")
+    else:
+        root.mkdir()
+    return work, root
+
+
+def _bundle_output_path(root: Path, reference: str) -> Path:
+    relative = _portable_relative(reference)
+    current = root
+    for part in relative.parts[:-1]:
+        current = current / part
+        info = _path_info(current)
+        if info is None:
+            current.mkdir()
+        elif _is_link_like(current):
+            raise ValueError("training bundle output parent must not be a link or reparse point")
+        elif not stat.S_ISDIR(info.st_mode):
+            raise ValueError("training bundle output parent must be a directory")
+    return root / relative
+
+
+def _copy_verified_isolated(
+    source: Path,
+    destination: Path,
+    expected_hash: str,
+    *,
+    bundle_root: Path | None = None,
+) -> None:
+    source_info = source.stat() if source.is_file() else None
+    if source_info is None or source_info.st_size <= 0:
         raise FileNotFoundError(f"training image does not exist: {source.name}")
+    source_size = source_info.st_size
     actual = _sha256(source)
     if actual != expected_hash:
         raise ValueError(f"source image SHA256 changed: {source.name}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    if bundle_root is None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        try:
+            relative = destination.relative_to(bundle_root).as_posix()
+        except ValueError as error:
+            raise ValueError("portable destination must stay inside the bundle") from error
+        if _bundle_output_path(bundle_root, relative) != destination:
+            raise ValueError("portable destination must stay inside the bundle")
     if source == destination:
         raise ValueError("training image source and portable destination must be different paths")
-    if destination.exists():
-        if destination.is_symlink():
+    destination_link = _is_link_like(destination)
+    if destination_link or destination.exists():
+        if destination_link:
             pass
         elif not destination.is_file():
             raise ValueError(f"existing portable image is not a file: {destination.name}")
-        elif _sha256(destination) == expected_hash and not _same_file_identity(source, destination):
+        elif _sha256(destination) == expected_hash and not _same_physical_file(source, destination):
             return
 
     descriptor, name = tempfile.mkstemp(
         dir=destination.parent,
-        prefix=f".{destination.name}.",
+        prefix=f"{_TRAINING_BUNDLE_COPY_PREFIX}{os.getpid()}.",
         suffix=".copy",
     )
     temporary = Path(name)
@@ -112,7 +186,13 @@ def _copy_verified_isolated(source: Path, destination: Path, expected_hash: str)
                 shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
                 output_stream.flush()
                 os.fsync(output_stream.fileno())
-        if temporary.stat().st_size <= 0 or _sha256(temporary) != expected_hash:
+        copied_size = temporary.stat().st_size
+        if copied_size != source_size:
+            raise OSError(
+                f"portable image size verification failed: {destination.name}; "
+                f"expected={source_size}, actual={copied_size}"
+            )
+        if copied_size <= 0 or _sha256(temporary) != expected_hash:
             raise OSError(f"portable image verification failed: {destination.name}")
         os.replace(temporary, destination)
     finally:
@@ -121,12 +201,61 @@ def _copy_verified_isolated(source: Path, destination: Path, expected_hash: str)
         temporary.unlink(missing_ok=True)
 
 
-def _cleanup_orphan_bundle_copies(root: Path) -> None:
-    """Remove only unpublished sibling copy files from a rebuildable bundle."""
-    if not root.is_dir():
-        return
-    for candidate in root.rglob(".*.copy"):
-        if candidate.is_symlink() or candidate.is_file():
+def _process_is_running(process_id: int) -> bool:
+    if process_id <= 0:
+        return False
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
+def _cleanup_orphan_bundle_copies(
+    root: Path,
+    *,
+    expected_work: Path,
+    now: float | None = None,
+) -> None:
+    """Remove only aged, owned temp copies without traversing link-like paths."""
+    work_info = _path_info(expected_work)
+    if (
+        work_info is None
+        or _is_link_like(expected_work)
+        or not stat.S_ISDIR(work_info.st_mode)
+        or root.parent != expected_work
+        or root.name != "bundle"
+    ):
+        raise ValueError("cleanup root is outside the validated training work boundary")
+    info = _path_info(root)
+    if info is None or _is_link_like(root) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("cleanup requires a validated real bundle directory")
+    current_time = time.time() if now is None else now
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for candidate in directory.iterdir():
+            candidate_info = _path_info(candidate)
+            if candidate_info is None or _is_link_like(candidate):
+                continue
+            if stat.S_ISDIR(candidate_info.st_mode):
+                pending.append(candidate)
+                continue
+            if not stat.S_ISREG(candidate_info.st_mode):
+                continue
+            name = candidate.name
+            if not name.startswith(_TRAINING_BUNDLE_COPY_PREFIX) or not name.endswith(".copy"):
+                continue
+            owner_and_token = name[len(_TRAINING_BUNDLE_COPY_PREFIX) : -len(".copy")]
+            owner, separator, token = owner_and_token.partition(".")
+            if not separator or not token or not owner.isdecimal():
+                continue
+            if current_time - candidate_info.st_mtime < TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS:
+                continue
+            if _process_is_running(int(owner)):
+                continue
             candidate.unlink(missing_ok=True)
 
 
@@ -193,10 +322,11 @@ def materialize_portable_dataset(
     *,
     safety_reserve_bytes: int | None = None,
 ) -> Path:
-    root = Path(task_root).resolve() / "bundle"
-    root.mkdir(parents=True, exist_ok=True)
-    _cleanup_orphan_bundle_copies(root)
+    work, root = _prepare_bundle_root(task_root)
+    _cleanup_orphan_bundle_copies(root, expected_work=work)
     manifest_path = root / "manifest.json"
+    if _is_link_like(manifest_path):
+        raise ValueError("training bundle manifest must not be a link or reparse point")
     if manifest_path.exists():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
         if str(existing.get("snapshot_id") or "") != str(snapshot.get("snapshot_id") or ""):
@@ -255,9 +385,9 @@ def materialize_portable_dataset(
         size_bytes = int(item["size_bytes"])
         image_ref = f"dataset/images/{role}/{stored_name}"
         label_ref = f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
-        destination = _resolve_relative(root, image_ref)
+        destination = _bundle_output_path(root, image_ref)
         _check_bundle_disk_space(root, remaining_bytes, size_bytes, reserve_bytes)
-        _copy_verified_isolated(source_path, destination, expected_hash)
+        _copy_verified_isolated(source_path, destination, expected_hash, bundle_root=root)
         remaining_bytes -= size_bytes
         lines = []
         for box in row.get("boxes") or []:
@@ -267,7 +397,7 @@ def materialize_portable_dataset(
             lines.append(
                 _yolo_line(box, float(row.get("width") or 0), float(row.get("height") or 0), class_ids[label])
             )
-        label_path = _resolve_relative(root, label_ref)
+        label_path = _bundle_output_path(root, label_ref)
         _atomic_text(label_path, "\n".join(lines))
         splits[role].append(
             {
@@ -287,7 +417,7 @@ def materialize_portable_dataset(
         "names": names,
     }
     _atomic_text(
-        root / "dataset" / "data.yaml",
+        _bundle_output_path(root, "dataset/data.yaml"),
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
     )
     snapshot_path = root / "snapshot.json"
