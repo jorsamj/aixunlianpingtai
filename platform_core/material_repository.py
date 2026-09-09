@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS material_migrations (
     imported_count INTEGER NOT NULL,
     imported_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS material_storage_audit (
+    task_id TEXT NOT NULL, image_id TEXT NOT NULL, action TEXT NOT NULL,
+    old_sha256 TEXT NOT NULL, new_sha256 TEXT NOT NULL, recorded_at TEXT NOT NULL,
+    PRIMARY KEY(task_id,image_id)
+);
 """
 
 
@@ -606,6 +611,72 @@ class MaterialRepository:
     def reference_count(self, storage_source_id: str) -> int:
         with self._connect() as database:
             return int(database.execute("SELECT COUNT(*) FROM materials WHERE storage_source_id = ?", (str(storage_source_id),)).fetchone()[0])
+
+    def snapshot_storage_references(self, manifest_path, source_id):
+        """Copy only index metadata to the task DB in a consistent SQLite snapshot."""
+        with closing(self._connect()) as db:
+            db.execute('ATTACH DATABASE ? AS rescan', (str(manifest_path),))
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                db.execute('DELETE FROM rescan.rescan_baseline')
+                db.execute('INSERT INTO rescan.rescan_baseline SELECT id,object_key,payload_json '
+                           'FROM materials WHERE storage_source_id=?', (source_id,))
+                db.execute("INSERT OR REPLACE INTO rescan.rescan_meta VALUES('baseline_complete','true')")
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+
+    def reconcile_storage_batch(self, task_id, source_id, changes):
+        """Preserve annotation payload and atomically audit idempotent metadata patches."""
+        changes = list(changes)
+        if len(changes) > 500:
+            raise ValueError('reconciliation batch is limited to 500 objects')
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                db.execute('CREATE TEMP TABLE changes(object_key TEXT PRIMARY KEY,payload TEXT)')
+                db.executemany('INSERT INTO changes VALUES(?,?)',
+                               ((r['object_key'], json.dumps(r)) for r in changes))
+                cursor = db.execute('SELECT m.id,m.payload_json,c.payload FROM materials m '
+                    'JOIN changes c USING(object_key) LEFT JOIN material_storage_audit a '
+                    'ON a.task_id=? AND a.image_id=m.id WHERE m.storage_source_id=? AND a.image_id IS NULL',
+                    (task_id, source_id))
+                count = 0
+                while rows := cursor.fetchmany(500):
+                    updates, audits = [], []
+                    for row in rows:
+                        current, change = json.loads(row[1]), json.loads(row[2])
+                        old_hash = str(current.get('content_sha256') or '')
+                        if old_hash != str(change.get('old_sha256') or ''):
+                            raise ValueError('material changed since rescan; create a new rescan')
+                        action = change['category']
+                        if action == 'MISSING':
+                            current.update(source_available=False, source_status='MISSING')
+                        else:
+                            for field in ('content_sha256', 'size_bytes', 'etag', 'width', 'height'):
+                                current[field] = change[field]
+                            current.update(source_available=True, source_status='AVAILABLE')
+                            if action == 'CHANGED':
+                                current.update(needs_review=True, annotation_needs_review=True,
+                                    annotation_review_reason='SOURCE_CONTENT_CHANGED',
+                                    content_cache_generation=change['content_sha256'])
+                        now = _now()
+                        current.update(storage_rescan_task_id=task_id, updated_at=now)
+                        updates.append((current.get('content_sha256', ''), current.get('size_bytes', 0),
+                                        current.get('etag', ''), now, json.dumps(current), row[0]))
+                        audits.append((task_id, row[0], action, old_hash,
+                                       current.get('content_sha256', ''), now))
+                    db.executemany('UPDATE materials SET content_sha256=?,size_bytes=?,etag=?,updated_at=?,payload_json=? WHERE id=?', updates)
+                    db.executemany('INSERT INTO material_storage_audit VALUES(?,?,?,?,?,?)', audits)
+                    count += len(updates)
+                if count:
+                    self._bump_revision(db)
+                db.commit()
+                return count
+            except BaseException:
+                db.rollback()
+                raise
 
     def get_by_storage_references(self, references) -> dict[tuple[str, str], dict]:
         references = list(references)

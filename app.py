@@ -1235,6 +1235,81 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
     }
 
 
+class StorageRescanConfirmReq(BaseModel):
+    new: Literal['import', 'ignore'] = 'import'
+    missing: Literal['mark_unavailable', 'ignore'] = 'mark_unavailable'
+    changed: Literal['update', 'ignore'] = 'update'
+
+
+def _storage_rescan_task(project_id: str, task_id: str):
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
+        raise HTTPException(status_code=404, detail='重扫描任务不存在')
+    request = shared_task_artifacts().read_json(task_id, task.payload_ref, default={})
+    if request.get('mode') != 'storage_rescan':
+        raise HTTPException(status_code=404, detail='重扫描任务不存在')
+    return task
+
+
+def _public_storage_rescan(task):
+    artifacts = shared_task_artifacts()
+    result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+    checkpoint = artifacts.read_json(task.task_id, 'checkpoints/worker.json', default={})
+    summary = result if 'counts' in result else checkpoint
+    return {'task_id': task.task_id, 'project_id': task.project_id, 'status': task.status.value,
+            'stage': task.stage, 'accepted': task.accepted,
+            'current_item': _public_storage_import_text(task.current_item or ''),
+            'error': _public_storage_import_mapping(result).get('error') if result else None,
+            'counts': {key: max(0, int(value)) for key, value in summary.get('counts', {}).items()
+                       if key in {'NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED'}},
+            'examples': {key: [_public_storage_import_text(value) for value in values[:20]]
+                         for key, values in summary.get('examples', {}).items()},
+            'applied': max(0, int(summary.get('applied') or 0))}
+
+
+@app.post('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans', status_code=202)
+def create_storage_rescan(project_id: str, source_id: str):
+    get_project(project_id)
+    source = storage_source_repository().get(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail='存储源不存在')
+    if not source.enabled:
+        raise HTTPException(status_code=409, detail='存储源已停用')
+    task_id = uuid.uuid4().hex[:12]
+    shared_task_artifacts().atomic_write_json(task_id, 'request.json', {
+        'mode': 'storage_rescan', 'storage_source_id': source_id})
+    task = shared_task_repository().create(TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_IMPORT, 'request.json',
+        f'storage:{source_id}', required_capabilities=('storage.rescan',)))
+    return _public_storage_rescan(task)
+
+
+@app.get('/api/v61/projects/{project_id}/storage-rescans/{task_id}')
+def get_storage_rescan(project_id: str, task_id: str):
+    return _public_storage_rescan(_storage_rescan_task(project_id, task_id))
+
+
+@app.post('/api/v61/projects/{project_id}/storage-rescans/{task_id}/confirm', status_code=202)
+def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescanConfirmReq):
+    from platform_core.storage.rescan_tasks import confirm_rescan
+    task = _storage_rescan_task(project_id, task_id)
+    if task.status is not TaskStatus.AWAITING_CONFIRMATION and task.accepted is not True:
+        raise HTTPException(status_code=409, detail='重扫描尚未进入待确认状态')
+    try:
+        confirm_rescan(shared_task_artifacts(), task_id, payload.model_dump())
+        task = shared_task_repository().resume_after_confirmation(task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return _public_storage_rescan(task)
+
+
+@app.post('/api/v61/projects/{project_id}/storage-rescans/{task_id}/cancel')
+def cancel_storage_rescan(project_id: str, task_id: str):
+    _storage_rescan_task(project_id, task_id)
+    return _public_storage_rescan(shared_task_repository().request_cancel(task_id))
+
+
 @app.post("/api/v61/projects/{project_id}/storage-imports/scan", status_code=202)
 def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
     get_project(project_id)
@@ -1288,6 +1363,11 @@ def get_storage_import_scan(project_id: str, task_id: str):
 
 @app.post("/api/v61/projects/{project_id}/storage-imports/{task_id}/confirm", status_code=202)
 def confirm_storage_import(project_id: str, task_id: str, payload: StorageImportConfirmReq):
+    request_task = shared_task_repository().get(task_id)
+    if request_task and request_task.project_id == project_id:
+        request = shared_task_artifacts().read_json(task_id, request_task.payload_ref, default={})
+        if request.get('mode') == 'storage_rescan':
+            raise HTTPException(status_code=409, detail='请使用重扫描确认接口选择恢复策略')
     get_project(project_id)
     task = shared_task_repository().get(task_id)
     if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:

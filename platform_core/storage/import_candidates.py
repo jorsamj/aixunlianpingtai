@@ -530,3 +530,98 @@ class ImportCandidateStore:
                     (timestamp, key),
                 ).rowcount
         return changed
+
+
+class RescanCandidateStore(ImportCandidateStore):
+    """A task-owned inventory, baseline and immutable reconciliation decision."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        with self._transaction() as db:
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS rescan_baseline (
+                    image_id TEXT PRIMARY KEY, object_key TEXT NOT NULL, payload TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_rescan_baseline_key ON rescan_baseline(object_key);
+                CREATE TABLE IF NOT EXISTS rescan_objects (
+                    object_key TEXT PRIMARY KEY, category TEXT NOT NULL,
+                    payload TEXT NOT NULL, applied INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS ix_rescan_category ON rescan_objects(category,applied,object_key);
+                CREATE TABLE IF NOT EXISTS rescan_meta (key TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            """)
+
+    def meta(self, key):
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT payload FROM rescan_meta WHERE key=?", (key,)).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def set_meta(self, key, value):
+        with self._transaction() as db:
+            db.execute("INSERT OR REPLACE INTO rescan_meta VALUES(?,?)", (key, json.dumps(value)))
+
+    def baseline_batch(self, rows):
+        with self._transaction() as db:
+            db.executemany("INSERT OR REPLACE INTO rescan_baseline VALUES(?,?,?)",
+                           ((r['id'], r['object_key'], json.dumps(r)) for r in rows))
+
+    def baseline_for_keys(self, keys):
+        keys = list(keys)
+        if len(keys) > 500:
+            raise ValueError('rescan lookup is limited to 500 keys')
+        if not keys:
+            return {}
+        with closing(self._connect()) as db:
+            result = {}
+            for row in db.execute('SELECT object_key,payload FROM rescan_baseline WHERE object_key IN ('
+                                  + ','.join('?' for _ in keys) + ') ORDER BY image_id', keys):
+                result.setdefault(row[0], json.loads(row[1]))
+            return result
+
+    def restart_inventory(self):
+        # Interrupted listings must restart: providers need not return sorted keys.
+        with self._transaction() as db:
+            db.execute('DELETE FROM rescan_objects')
+            db.execute('DELETE FROM candidates')
+
+    def object_batch(self, rows):
+        with self._transaction() as db:
+            db.executemany('INSERT OR REPLACE INTO rescan_objects(object_key,category,payload) VALUES(?,?,?)',
+                           ((r['object_key'], r['category'], json.dumps(r)) for r in rows))
+
+    def finish_inventory(self):
+        with self._transaction() as db:
+            db.execute("INSERT OR IGNORE INTO rescan_objects(object_key,category,payload) "
+                       "SELECT b.object_key,'MISSING',b.payload FROM rescan_baseline b "
+                       "WHERE NOT EXISTS(SELECT 1 FROM rescan_objects o WHERE o.object_key=b.object_key)")
+            db.execute("INSERT OR REPLACE INTO rescan_meta VALUES('scan_complete','true')")
+
+    def summary(self):
+        with closing(self._connect()) as db:
+            counts = dict(db.execute('SELECT category,COUNT(*) FROM rescan_objects GROUP BY category'))
+            examples = {category: [r[0] for r in db.execute(
+                'SELECT object_key FROM rescan_objects WHERE category=? ORDER BY object_key LIMIT 20', (category,))]
+                for category in ('NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED')}
+            return {'counts': counts, 'examples': examples,
+                    'applied': db.execute('SELECT COUNT(*) FROM rescan_objects WHERE applied=1').fetchone()[0]}
+
+    def confirm_policy(self, policy):
+        with self._transaction() as db:
+            previous = db.execute("SELECT payload FROM rescan_meta WHERE key='policy'").fetchone()
+            if previous and json.loads(previous[0]) != policy:
+                raise ValueError('rescan policy is already confirmed; create a new rescan to change it')
+            if not db.execute("SELECT 1 FROM rescan_meta WHERE key='scan_complete'").fetchone():
+                raise ValueError('rescan is incomplete')
+            db.execute("INSERT OR IGNORE INTO rescan_meta VALUES('policy',?)", (json.dumps(policy, sort_keys=True),))
+
+    def pending_objects(self, categories, limit=500):
+        with closing(self._connect()) as db:
+            return [dict(json.loads(r['payload']), category=r['category']) for r in db.execute(
+                'SELECT payload,category FROM rescan_objects WHERE applied=0 AND category IN ('
+                + ','.join('?' for _ in categories) + ') ORDER BY object_key LIMIT ?',
+                (*categories, min(500, max(1, int(limit)))))] if categories else []
+
+    def mark_applied(self, rows):
+        with self._transaction() as db:
+            db.executemany('UPDATE rescan_objects SET applied=1 WHERE object_key=?',
+                           ((r['object_key'],) for r in rows))

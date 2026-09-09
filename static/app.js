@@ -526,8 +526,42 @@ window.__resourceDiscoveryDependencies={
   window.renderStorageSources61=async function(){
     const view=document.getElementById('view');if(!view)return;
     view.innerHTML=`<section class="storage61-shell"><div class="label414-head"><div><h2>素材存储配置</h2><p>所有位置共同组成统一素材池；训练仍只按图片 ID 精确选择。</p></div><div class="row"><button class="btn" onclick="openStorageImport61()">从存储导入素材</button><button class="btn primary" onclick="openStorageSource61()">＋ 新增存储源</button></div></div><section class="panel"><div class="storage61-table"><div class="storage61-row head"><span>名称 / 类型</span><span>地址 / Bucket</span><span>连接状态</span><span>启用状态</span><span>操作</span></div><div id="storage61Rows"><div class="empty">正在读取存储配置…</div></div></div></section><div class="storage61-note"><b>安全与兼容</b><span>密钥只保存到系统安全凭据库，浏览器不会读取真实密钥。历史 project/uploads 素材继续由“平台本地存储”管理，不移动原文件。</span></div></section>`;
-    try{await loadStorageSources61();const rows=document.getElementById('storage61Rows');if(rows)rows.innerHTML=storageRows61()}
+    try{await loadStorageSources61();const rows=document.getElementById('storage61Rows');if(rows){rows.innerHTML=storageRows61();[...rows.children].forEach((row,index)=>{const source=state.storageSources61[index];if(!source?.enabled)return;const button=document.createElement('button');button.className='btn mini';button.textContent='重新扫描 / 恢复';button.onclick=()=>openStorageRescan61(source.id);row.querySelector('.row')?.appendChild(button)})}}
     catch(error){const rows=document.getElementById('storage61Rows');if(rows)rows.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
+  };
+
+  window.openStorageRescan61=async function(sourceId){
+    const project=String(pid()||'');if(!project){toast('请先选择项目');return}
+    const base=`/api/v61/projects/${encodeURIComponent(project)}`;
+    const savedKey=`mc_storage_rescan_${project}_${sourceId}`;
+    let taskId='',pollGeneration=0;
+    try{taskId=localStorage.getItem(savedKey)||''}catch(_){}
+    modal('存储源重新扫描 / 恢复',`<p>扫描当前项目引用的整个存储源，确认后同步新增、缺失和内容变化。</p><div id="sr61Status">正在读取任务…</div><div id="sr61Policy" hidden><label><input id="sr61New" type="checkbox" checked> 建立新增图片索引</label><br><label><input id="sr61Missing" type="checkbox" checked> 缺失文件标记不可用，保留索引</label><br><label><input id="sr61Changed" type="checkbox" checked> 更新变更内容，保留标注并标记需要复核</label><br><button id="sr61Confirm" class="btn primary">确认应用</button></div><div class="row"><button id="sr61Start" class="btn">开始新的扫描</button><button id="sr61Cancel" class="btn">取消任务</button><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
+    const target=document.getElementById('sr61Status'),selection=document.getElementById('sr61Policy');
+    const endpoint=()=>`${base}/storage-rescans/${encodeURIComponent(taskId)}`;
+    const active=()=>document.getElementById('sr61Status')===target;
+    const terminal=status=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status);
+    async function poll(generation){
+      try{
+        const task=await api(endpoint());if(!active()||generation!==pollGeneration)return;
+        const names={NEW:'新增',MISSING:'缺失',CHANGED:'内容变更',UNCHANGED:'未变',INVALID:'无法校验',SKIPPED:'跳过'};
+        target.innerHTML=`<p>${esc(task.status)} · ${esc(task.current_item||task.stage||'')}</p><p>${Object.entries(names).map(([key,label])=>`${label} ${Number(task.counts?.[key]||0)}`).join(' · ')}</p>${Object.entries(task.examples||{}).filter(([,keys])=>keys.length).map(([key,keys])=>`<details><summary>${esc(names[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${task.error?`<p class="alert err">${esc(task.error.message||'扫描失败')}</p>`:''}`;
+        selection.hidden=task.status!=='AWAITING_CONFIRMATION';
+        document.getElementById('sr61Start').disabled=!terminal(task.status);
+        document.getElementById('sr61Cancel').disabled=terminal(task.status);
+        if(!terminal(task.status)&&task.status!=='AWAITING_CONFIRMATION')setTimeout(()=>{if(active()&&generation===pollGeneration)poll(generation)},2000);
+      }catch(error){if(active()){target.textContent=error.message||String(error);document.getElementById('sr61Start').disabled=false}}
+    }
+    document.getElementById('sr61Start').onclick=async()=>{
+      const button=document.getElementById('sr61Start');button.disabled=true;
+      try{const task=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans`,{method:'POST'});taskId=task.task_id;try{localStorage.setItem(savedKey,taskId)}catch(_){}poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error);button.disabled=false}
+    };
+    document.getElementById('sr61Confirm').onclick=async()=>{
+      const button=document.getElementById('sr61Confirm');button.disabled=true;
+      try{await api(`${endpoint()}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new:document.getElementById('sr61New').checked?'import':'ignore',missing:document.getElementById('sr61Missing').checked?'mark_unavailable':'ignore',changed:document.getElementById('sr61Changed').checked?'update':'ignore'})});selection.hidden=true;poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error);button.disabled=false}
+    };
+    document.getElementById('sr61Cancel').onclick=async()=>{if(taskId){try{await api(`${endpoint()}/cancel`,{method:'POST'});poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error)}}};
+    if(taskId)poll(++pollGeneration);else{target.textContent='点击开始扫描。扫描进度按实际已核对对象计数。';document.getElementById('sr61Cancel').disabled=true}
   };
 
   function sourceFields61(type,source={}){

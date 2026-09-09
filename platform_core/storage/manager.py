@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import BinaryIO, Callable, Mapping
 
+from filelock import FileLock
+
 from platform_core.material_repository import MaterialRepository, normalize_material
 from platform_core.secrets import SecretCredentialStore
 
@@ -75,6 +77,10 @@ class StorageManager:
 
     def materialize(self, value: str | Mapping[str, object]) -> MaterializedFile:
         row = self.material(value)
+        if row.get('source_available') is False:
+            raise StorageError(code='SOURCE_UNAVAILABLE', message='素材源文件不可用',
+                solution='请恢复源文件后，在存储源配置中重新扫描并确认恢复。',
+                context={'image_id': row['id'], 'source_id': row['storage_source_id']})
         provider = self.provider_for(str(row["storage_source_id"]))
         object_key = str(row["object_key"])
         expected = str(row.get("content_sha256") or "")
@@ -85,9 +91,9 @@ class StorageManager:
             actual = metadata.sha256 or (file_sha256(local_path) if local_path else "")
             if expected and actual != expected:
                 raise StorageError(
-                    code="STORAGE_SHA256_MISMATCH", message="素材完整性校验失败",
+                    code="SOURCE_CONTENT_CHANGED", message="素材完整性校验失败",
                     detail=f"素材 {row['id']} 的本地文件已发生变化。",
-                    solution="请重新导入素材或恢复原文件，禁止继续训练。",
+                    solution="请在存储源配置中重新扫描，确认内容变化后恢复索引，并复核已有标注。",
                     context={"image_id": row["id"], "source_id": provider.source_id, "object_key": object_key},
                 )
             if not expected or int(row.get("size_bytes") or 0) != metadata.size_bytes:
@@ -106,7 +112,27 @@ class StorageManager:
                     context={"image_id": row["id"], "source_id": provider.source_id},
                 )
             self.materials.patch({str(row["id"]): {"content_sha256": expected, "size_bytes": metadata.size_bytes, "etag": metadata.etag}})
-        return self.cache.materialize(provider, object_key, expected_sha256=expected, suffix=suffix)
+        try:
+            return self.cache.materialize(provider, object_key, expected_sha256=expected, suffix=suffix)
+        except StorageError as error:
+            if error.code != 'STORAGE_SHA256_MISMATCH':
+                raise
+            raise StorageError(code='SOURCE_CONTENT_CHANGED', message='素材源内容已变化',
+                detail=error.detail,
+                solution='请在存储源配置中重新扫描，确认内容变化后恢复索引，并复核已有标注。',
+                context=error.context) from error
+
+    def invalidate_content_cache(self, content_sha256: str, filename: str) -> None:
+        """Safe adapter for the current content-addressed cache; never touches sources."""
+        if not content_sha256:
+            return
+        target = self.cache.path_for(content_sha256, Path(filename).suffix).resolve()
+        if not target.is_relative_to(self.cache.root):
+            raise ValueError('cache invalidation escaped cache root')
+        if not target.parent.exists():
+            return
+        with FileLock(str(target) + '.lock', timeout=30):
+            target.unlink(missing_ok=True)
 
     def preview_url(self, value: str | Mapping[str, object], *, expires_seconds: int = 900) -> str | None:
         row = self.material(value)
@@ -127,4 +153,3 @@ class StorageManager:
     def delete_source_file(self, value: str | Mapping[str, object]) -> None:
         row = self.material(value)
         self.provider_for(str(row["storage_source_id"])).delete(str(row["object_key"]))
-

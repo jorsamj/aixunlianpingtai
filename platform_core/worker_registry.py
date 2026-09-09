@@ -9,7 +9,7 @@ from .task_runtime import TaskKind
 
 ROLE_MODULES = {
     "discovery": "platform_core.resource_discovery.tasks",
-    "storage": "platform_core.storage.import_tasks",
+    "storage": "platform_core.storage.rescan_tasks",
     "materials": "platform_core.material_batches",
     "video": "platform_core.video_tasks",
     "training": "platform_core.training_tasks",
