@@ -22,6 +22,7 @@ class Scheduler:
         lease_seconds: int = 30,
         poll_seconds: float = 0.25,
         gpu_resources=None,
+        worker_instance=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -31,6 +32,7 @@ class Scheduler:
         self.lease_seconds = max(3, int(lease_seconds))
         self.poll_seconds = max(0.05, float(poll_seconds))
         self.gpu_resources = gpu_resources
+        self.worker_instance = worker_instance
         if self.gpu_resources is None and TaskKind.TRAINING in self.handlers:
             from ..gpu_resources import GPUResourceManager
             self.gpu_resources = GPUResourceManager(repository, artifacts)
@@ -130,6 +132,27 @@ class Scheduler:
 
     def serve_forever(self, stop: threading.Event | None = None) -> None:
         stop_event = stop or threading.Event()
-        while not stop_event.is_set():
-            if not self.run_once():
-                stop_event.wait(self.poll_seconds)
+        renewal_stop = threading.Event()
+        renewal = None
+        if self.worker_instance is not None:
+            def renew_instance() -> None:
+                interval = max(1.0, self.worker_instance.lease_seconds / 3)
+                while not renewal_stop.wait(interval):
+                    try:
+                        self.worker_instance.renew()
+                    except PermissionError:
+                        stop_event.set()
+                        return
+
+            renewal = threading.Thread(target=renew_instance, name="worker-instance-lease", daemon=True)
+            renewal.start()
+        try:
+            while not stop_event.is_set():
+                if not self.run_once():
+                    stop_event.wait(self.poll_seconds)
+        finally:
+            renewal_stop.set()
+            if renewal is not None:
+                renewal.join(timeout=max(1.0, self.worker_instance.lease_seconds / 3 + 0.5))
+            if self.worker_instance is not None:
+                self.worker_instance.release()

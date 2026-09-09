@@ -50,6 +50,17 @@ CREATE INDEX IF NOT EXISTS idx_task_resource
     ON tasks(resource_key, status, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_task_project_list
     ON tasks(project_id, created_at DESC, task_id DESC);
+CREATE TABLE IF NOT EXISTS worker_instances (
+    instance_key TEXT PRIMARY KEY,
+    owner_token TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_worker_instances_expiry
+    ON worker_instances(expires_at);
 """
 
 

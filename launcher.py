@@ -45,7 +45,10 @@ def start_service_processes(py: Path, env: dict[str, str]):
     data_dir = resolve_data_dir(base_dir=BASE_DIR)
     process_env["MC_TRAIN_DATA_DIR"] = str(data_dir)
     worker = subprocess.Popen(
-        [str(py), "task_worker.py", "--data-dir", str(data_dir), "--roles", "all"],
+        [
+            str(py), "task_worker.py", "--data-dir", str(data_dir),
+            "--roles", "all", "--worker-id", f"{socket.gethostname()}-launcher-all-default",
+        ],
         cwd=str(BASE_DIR),
         env=process_env,
         shell=False,

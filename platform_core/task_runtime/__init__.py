@@ -10,6 +10,12 @@ from .process_control import (
 from .repository import TaskRepository
 from .scheduler import HardwareUnavailableError, Scheduler
 from .worker import TaskHandler, WorkerContext
+from .worker_instances import (
+    DuplicateWorkerInstance,
+    WorkerInstanceLease,
+    WorkerInstanceService,
+    worker_instance_key,
+)
 
 __all__ = [
     "ArtifactStore",
@@ -26,6 +32,10 @@ __all__ = [
     "TaskRepository",
     "TaskStatus",
     "WorkerContext",
+    "DuplicateWorkerInstance",
+    "WorkerInstanceLease",
+    "WorkerInstanceService",
+    "worker_instance_key",
     "hash_command",
     "launch_process",
 ]
