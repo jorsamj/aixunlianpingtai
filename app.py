@@ -4915,7 +4915,8 @@ class TrainReq(BaseModel):
     model: str = "yolo11n.pt"
     epochs: int = 50
     imgsz: int = 640
-    batch: int = 8
+    batch: StrictInt = 8
+    resource_strategy: Literal["auto", "manual"] = "auto"
     device: str = "auto"
     gpu_policy: Literal["auto", "exclusive", "shared"] = "auto"
     estimated_gpu_memory_bytes: Optional[int] = Field(default=None, gt=0)
@@ -4930,7 +4931,7 @@ class TrainReq(BaseModel):
     paddle_command: Optional[str] = ""
     # v20 进阶训练参数，Ultralytics 本机训练生效。
     patience: int = 100
-    workers: int = 0
+    workers: StrictInt = 0
     optimizer: str = "auto"
     lr0: float = 0.01
     lrf: float = 0.01
@@ -5010,6 +5011,8 @@ def validate_train_request(payload: TrainReq):
         raise HTTPException(status_code=400, detail="图片尺寸 imgsz 不能小于 32")
     if int(payload.batch) == 0 or int(payload.batch) < -1:
         raise HTTPException(status_code=400, detail="batch 只能是正整数或 -1（Ultralytics 自动批大小）")
+    if payload.resource_strategy == "manual" and not 1 <= payload.batch <= 4096:
+        raise HTTPException(status_code=400, detail="手动资源策略 batch 必须是 1~4096 的整数；自动估算请选择 auto 策略")
     if int(payload.patience) < 0:
         raise HTTPException(status_code=400, detail="patience 不能小于 0")
     if int(payload.workers) < 0:
@@ -5461,7 +5464,15 @@ def job_status(project_id: str, job_id: str):
     try: _v48_dispatch_training_queues(project_id)
     except Exception: pass
     sync_jobs_index(project_id)
-    return read_json(job_file, job)
+    response = read_json(job_file, job)
+    from platform_core.training_metrics import read_metrics
+    task = _durable_training_task(project_id, job_id)
+    metrics_path = (shared_task_artifacts().artifact_path(job_id, "training-metrics.sqlite3")
+                    if task else job_file.parent / "training-metrics.sqlite3")
+    response["runtime_metrics"] = read_metrics(metrics_path)
+    if task:
+        response["resolved_resources"] = shared_task_artifacts().read_json(job_id, "resolved-resources.json", default={})
+    return response
 
 
 @app.get("/api/projects/{project_id}/jobs/{job_id}/log", response_class=PlainTextResponse)

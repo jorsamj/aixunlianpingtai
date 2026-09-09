@@ -383,6 +383,10 @@ def main():
     parser.add_argument("--close-mosaic", type=int, default=10)
     parser.add_argument("--mosaic", type=float, default=1.0)
     parser.add_argument("--cache", default="False")
+    parser.add_argument("--resource-strategy", choices=("auto", "manual"), default="auto")
+    parser.add_argument("--resource-context", default="")
+    parser.add_argument("--resource-resolution", default="")
+    parser.add_argument("--metrics-db", default="")
     parser.add_argument("--single-cls", default="false")
     parser.add_argument("--pretrained", default="true")
     parser.add_argument("--rect", default="false")
@@ -470,11 +474,23 @@ def main():
     print("实际训练参数:", flush=True)
     print(json.dumps(train_args, ensure_ascii=False, indent=2, default=str), flush=True)
 
+    telemetry = None
     try:
         import ultralytics
+        import torch
         from ultralytics import YOLO
+        from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources
         update_job(job_file, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         model = YOLO(actual_model)
+        resource_context = read_json(Path(args.resource_context), {}) if args.resource_context else {}
+        resolved = resolve_resources({**train_args, "resource_strategy": args.resource_strategy}, resource_context, model, torch)
+        resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
+        train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
+        persist_resolution(resolution_path, resolved)
+        update_job(job_file, resolved_resources=resolved, actual_train_params=train_args)
+        telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
+                                    gpu_uuid=resource_context.get("gpu_uuid"))
+        telemetry.start()
         gate_events=[]
         gate_reason=""
         ai_events=[]; ai_plan=None; ai_rounds=0
@@ -524,7 +540,42 @@ def main():
             model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
         except Exception as cb_err:
             print(f"[WARN] 阶段质量门禁回调未启用: {cb_err}",flush=True)
-        train_result=model.train(**train_args)
+        def attach_resource_callbacks(target):
+            target.add_callback("on_train_start", telemetry.on_train_start)
+            target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
+            target.add_callback("on_fit_epoch_end", telemetry.on_epoch_end)
+        attach_resource_callbacks(model)
+        retries = 0
+        while True:
+            try:
+                train_result = model.train(**train_args)
+                break
+            except Exception as train_error:
+                is_oom = isinstance(train_error, torch.cuda.OutOfMemoryError) or "cuda out of memory" in str(train_error).lower()
+                is_oom = is_oom or "runtime changed batch; explicit worker retry required" in str(train_error)
+                if not is_oom:
+                    raise
+                telemetry.oom = True
+                if args.resource_strategy != "auto" or train_args["batch"] <= 1 or retries >= 6:
+                    raise
+                retries += 1
+                train_args["batch"] = max(1, train_args["batch"] // 2)
+                train_args["workers"] = min(train_args["workers"], train_args["batch"])
+                resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)
+                resolved["reasons"].append(f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; same assigned GPU")
+                with telemetry.lock:
+                    telemetry.resolved = dict(resolved)
+                persist_resolution(resolution_path, resolved)
+                update_job(job_file, resolved_resources=resolved, actual_train_params=train_args)
+                print(f"[资源调整] CUDA OOM；第 {retries}/6 次重试，batch={train_args['batch']}", flush=True)
+            # Release traceback-held tensors before building the next bounded attempt.
+            del model
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            model = YOLO(actual_model)
+            model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+            attach_resource_callbacks(model)
         first_run_dir=runs_dir/args.run_name
         if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
             first_last=first_run_dir/"weights"/"last.pt"; first_best=first_run_dir/"weights"/"best.pt"
@@ -611,6 +662,9 @@ def main():
         traceback.print_exc()
         update_job(job_file, status="failed", message=f"训练失败：{e}", artifact_verified=False, finished_at=now_iso())
         sys.exit(1)
+    finally:
+        if telemetry is not None:
+            telemetry.close()
 
 
 if __name__ == "__main__":

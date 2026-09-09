@@ -146,6 +146,44 @@ def sample_gpus(python_executable=None):
     return rows
 
 
+def update_reservation_evidence(repository, lease, metrics):
+    """Worker telemetry may shrink its own budget only with a fresh full window.
+
+    Never trust client sharing flags to replace measured CPU/IO evidence here.
+    Board-wide used memory is a conservative upper bound on this process usage.
+    """
+    diagnostic = metrics.get("diagnostic") or {}
+    stamp = metrics.get("sampled_at")
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(stamp))).total_seconds()
+    except (TypeError, ValueError):
+        return
+    if not 0 <= age <= 15:
+        return
+    estimated = _number(metrics.get("estimated_gpu_memory_bytes"))
+    latest = metrics.get("latest") or {}
+    observed = _number(latest.get("gpu_used_bytes"))
+    total = _number(latest.get("gpu_total_bytes"))
+    known = (diagnostic.get("window_samples", 0) >= 6 and estimated and observed and total)
+    eligible = bool(known and diagnostic.get("cpu_bottleneck") is False and
+                    diagnostic.get("io_bottleneck") is False and
+                    diagnostic.get("code") not in {"memory_pressure", "memory_pressure_oom"})
+    with repository._connect() as database:
+        database.execute("BEGIN IMMEDIATE")
+        row = database.execute("SELECT * FROM gpu_reservations WHERE task_id=? AND lease_token=? AND worker_id=?",
+                               (lease.task.task_id, lease.lease_token, lease.worker_id)).fetchone()
+        if row is not None:
+            budget = max(estimated or 0, int((observed or 0) * 1.2))
+            eligible = bool(eligible and budget <= total * 0.25)
+            # Do not shrink a reservation based on idle/startup samples.
+            resolved_budget = min(row["reserved_bytes"], budget) if known and metrics.get("epoch_duration_seconds") else row["reserved_bytes"]
+            database.execute("UPDATE gpu_reservations SET estimated_bytes=?,reserved_bytes=?,share_eligible=?,sharing_evidence_at=? "
+                             "WHERE task_id=? AND lease_token=? AND worker_id=?",
+                             (budget or None, resolved_budget, int(eligible), stamp if eligible else None,
+                              lease.task.task_id, lease.lease_token, lease.worker_id))
+        database.commit()
+
+
 class GPUResourceManager:
     def __init__(self, repository, artifacts, *, worker_slot="default", python_executable=None,
                  config=None, sampler=None):

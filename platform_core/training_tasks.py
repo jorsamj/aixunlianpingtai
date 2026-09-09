@@ -28,6 +28,7 @@ from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
+from .training_metrics import read_metrics
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -592,6 +593,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--device", device,
         "--job-id", task_id,
         "--run-name", f"train_{task_id}",
+        "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
     ]
     value_options = {
         "patience": 100, "workers": 0, "optimizer": "auto", "lr0": 0.01,
@@ -614,6 +616,9 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         payload_key = "ai_intervention_enabled" if key == "ai_intervention" else key
         argv.extend([f"--{key.replace('_', '-')}", _bool(payload.get(payload_key, default))])
     argv.extend(["--supplement-count", str(int(payload.get("supplement_count") or 0))])
+    for option in ("resource_context", "resource_resolution", "metrics_db"):
+        if payload.get(option):
+            argv.extend(["--" + option.replace("_", "-"), str(payload[option])])
     return argv
 
 
@@ -634,6 +639,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
             )
             context.repository.bind_process(context.task.task_id, context.lease.lease_token, launched.identity)
             controller = ProcessController()
+            next_metrics = 0.0
             while launched.process.poll() is None:
                 if context.cancel_requested():
                     controller.terminate_tree(launched.identity)
@@ -648,6 +654,12 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     time.sleep(0.25)
                     continue
                 job = _json(job_file, {})
+                if time.monotonic() >= next_metrics:
+                    metrics = read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3"))
+                    # Feed scheduler evidence with ownership fencing; never infer unknown CPU/IO pressure.
+                    from .gpu_resources import update_reservation_evidence
+                    update_reservation_evidence(context.repository, context.lease, metrics)
+                    next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
                 current = str(job.get("current_epoch") or "") or None
                 context.repository.heartbeat(
@@ -781,6 +793,24 @@ class TrainingHandler:
             artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
         )
         model = str(base.get("base_model_path") or mother)
+        with context.repository._connect() as database:
+            reservations = database.execute("SELECT * FROM gpu_reservations").fetchall()
+        resource_context = {
+            "gpu_uuid": assignment.get("gpu_uuid"),
+            "reserved_bytes": assignment.get("reserved_bytes"),
+            "concurrent_reservations": max(1, len(reservations)),
+            "other_reserved_bytes": sum(row["reserved_bytes"] for row in reservations
+                if row["task_id"] != context.task.task_id and row["gpu_uuid"] == assignment.get("gpu_uuid")),
+            "dataset_bytes": sum(int(row.get("size_bytes") or 0) for row in images),
+            "train_image_count": manifest.counts.get("train", 0),
+            "decoded_dataset_bytes": (sum(max(int(row["width"]) * int(row["height"]), int(payload.get("imgsz") or 640) ** 2) * 3 for row in images)
+                if all(row.get("width") and row.get("height") for row in images) else None),
+            "remote_cache_ready": True,  # All selected objects have been verified in the local portable bundle.
+        }
+        context.artifacts.atomic_write_json(context.task.task_id, "resource-context.json", resource_context)
+        payload.update(resource_context=str(context.artifacts.artifact_path(context.task.task_id, "resource-context.json")),
+                       resource_resolution=str(context.artifacts.artifact_path(context.task.task_id, "resolved-resources.json")),
+                       metrics_db=str(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")))
         job_dir = project / "jobs" / context.task.task_id
         job_dir.mkdir(parents=True, exist_ok=True)
         job_file = job_dir / "job.json"
@@ -807,6 +837,7 @@ class TrainingHandler:
             "device_evidence": device_evidence,
             "created_at": context.task.created_at,
             "artifact_verified": False,
+            "resource_strategy": payload.get("resource_strategy", "auto"),
         }
         atomic_write_json(job_file, job)
         argv = _training_argv(
@@ -862,6 +893,8 @@ class TrainingHandler:
             "verified_models": verified_models,
             "training_report": training_report,
             "dataset_verification": verification,
+            "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
+            "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
         }
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         existing = next(

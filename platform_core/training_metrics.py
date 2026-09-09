@@ -1,0 +1,290 @@
+"""Worker-side bounded resource resolution and low-frequency training telemetry.
+
+The estimate is deliberately conservative, not a hardware benchmark. Unknown
+telemetry is retained as null and never treated as evidence for GPU sharing.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import shutil
+import sqlite3
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .annotations import atomic_write_json
+from .gpu_resources import sample_gpus
+
+GIB = 1024 ** 3
+
+
+def host_resources():
+    cores = os.cpu_count() or 1
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+    available = None
+    try:
+        import psutil
+        available = int(psutil.virtual_memory().available)
+        affinity = psutil.Process().cpu_affinity()
+        cores = min(cores, len(affinity))
+    except (ImportError, AttributeError, OSError):
+        pass
+    return max(1, cores), available
+
+
+def normalize_cache(value):
+    value = str(value).lower().strip()
+    if value in {"false", "none", "0", ""}:
+        return False
+    if value in {"ram", "true", "1"}:
+        return "ram"
+    if value == "disk":
+        return "disk"
+    raise ValueError("RESOURCE_CACHE_INVALID: cache must be ram, disk, or false")
+
+
+def resolve_resources(request, context, model, torch):
+    """Resolve after GPU assignment, in the trainer process, before model.train.
+
+    Parameter count captures the actual loaded model scale, including custom
+    checkpoints. This bounded estimate avoids an unbounded autobatch probe.
+    """
+    strategy = str(request.get("resource_strategy") or "auto")
+    if strategy not in {"auto", "manual"}:
+        raise ValueError("RESOURCE_STRATEGY_INVALID")
+    cores, ram = host_resources()
+    concurrency = max(1, int(context.get("concurrent_reservations") or 1))
+    cpu_budget = max(1, cores // concurrency)
+    dataset_bytes = max(0, int(context.get("dataset_bytes") or 0))
+    decoded = context.get("decoded_dataset_bytes")
+    decoded = max(0, int(decoded)) if decoded is not None else None
+    disk = shutil.disk_usage(Path(request["data"]).parent).free
+    # Include decoded buffers, augmentation copies, and competing workers.
+    cache_budget = max(0, int((ram or 0) * 0.25 / concurrency) - GIB)
+    disk_need = max(dataset_bytes * 8, (decoded or 0) * 2)
+    reasons = []
+    if strategy == "manual":
+        batch, workers = int(request["batch"]), int(request["workers"])
+        cache = normalize_cache(request["cache"])
+        if not 1 <= batch <= 4096 or not 0 <= workers <= cpu_budget:
+            raise ValueError(f"RESOURCE_MANUAL_INVALID: batch must be 1..4096; workers must be 0..{cpu_budget}")
+        if os.name == "nt" and workers > 4:
+            raise ValueError("RESOURCE_MANUAL_INVALID: Windows supports at most 4 loader workers")
+        if request.get("device") == "cpu" and workers != 0:
+            raise ValueError("RESOURCE_MANUAL_INVALID: this Ultralytics CPU runtime requires workers=0")
+        if cache == "ram" and (decoded is None or decoded <= 0 or decoded * 3 > cache_budget):
+            raise ValueError("RESOURCE_RAM_UNSAFE: decoded dataset size or available RAM does not support requested cache")
+        if cache == "disk" and (decoded is None or disk_need + 2 * GIB > disk):
+            raise ValueError("RESOURCE_DISK_UNSAFE: insufficient known disk headroom for requested cache")
+        reasons.append("Validated manual values; incompatible runtime changes fail explicitly")
+    else:
+        cache = False
+        local_ready = context.get("remote_cache_ready") is True
+        if local_ready and decoded and decoded * 3 <= cache_budget:
+            cache = "ram"
+            reasons.append("RAM cache fits decoded dataset plus 3x buffer allowance within shared RAM budget")
+        elif local_ready and decoded and dataset_bytes and disk_need + 2 * GIB <= disk:
+            cache = "disk"
+            reasons.append("Disk cache fits decoded data estimate and 2 GiB reserve")
+        else:
+            reasons.append("Cache disabled: dataset size, local materialization, RAM or disk headroom is insufficient/unknown")
+        cap = 2 if os.name == "nt" else 8
+        if cache != "ram":
+            cap = min(cap, 4)  # Bound simultaneous reads when storage speed is unknown.
+        workers = min(cap, max(1, cpu_budget - 1))
+        if request.get("device") == "cpu":
+            workers = 0
+        reasons.append(f"Loader workers use {cores} available cores / {concurrency} reservations; {os.name} and storage cap={cap}")
+        batch = 1
+    estimated = None
+    free = total = None
+    if str(request.get("device", "")).startswith("cuda:"):
+        index = int(request["device"].split(":")[1])
+        torch.cuda.set_device(index)
+        free, total = (int(value) for value in torch.cuda.mem_get_info(index))
+        params = sum(int(value.numel()) for value in model.model.parameters())
+        # Training state plus activations at the requested image area/model scale.
+        fixed = max(GIB, params * 24)
+        per_image = int(256 * 1024 ** 2 * max(1.0, (params / 3_000_000) ** 0.55)
+                        * (int(request["imgsz"]) / 640) ** 2 * (1 + float(request.get("multi_scale") or 0)) ** 2)
+        other = max(0, int(context.get("other_reserved_bytes") or 0))
+        budget = max(0, int((free - other - GIB) * 0.65))
+        reserved = context.get("reserved_bytes")
+        if reserved:
+            budget = min(budget, int(reserved))
+        if strategy == "auto":
+            maximum = min(64, (budget - fixed) // max(1, per_image))
+            if maximum < 1:
+                raise RuntimeError("GPU_MEMORY_INSUFFICIENT: batch=1 exceeds conservative budget; no CPU fallback")
+            batch = 2 ** int(math.log2(maximum))
+            reasons.append(f"Bounded estimate: actual free={free}, safety=1 GiB + 35%, parameters={params}, imgsz={request['imgsz']}; batch cap=64")
+        estimated = fixed + batch * per_image
+    elif strategy == "auto":
+        reasons.append("Explicit CPU assignment uses conservative batch=1")
+    loader_limit = min(batch, int(context.get("train_image_count") or batch),
+                       max(1, cores // max(1, torch.cuda.device_count())))
+    if strategy == "auto":
+        workers = min(workers, loader_limit)
+    elif workers > loader_limit:
+        raise ValueError(f"RESOURCE_MANUAL_INVALID: runtime loader limits workers to {loader_limit}")
+    return dict(resource_strategy=strategy, resolved_batch=batch, resolved_workers=workers,
+                resolved_cache=cache, reasons=reasons, estimated_gpu_memory_bytes=estimated,
+                gpu_free_bytes_at_resolution=free, gpu_total_bytes=total,
+                available_cpu_cores=cores, concurrent_reservations=concurrency,
+                available_ram_bytes=ram, dataset_bytes=dataset_bytes,
+                decoded_dataset_bytes=decoded, sampled_at=datetime.now(timezone.utc).isoformat())
+
+
+def diagnose_window(samples, oom=False):
+    """Deterministic 30-second window; missing evidence never enables sharing."""
+    if oom:
+        return {"code": "memory_pressure_oom", "cpu_bottleneck": None, "io_bottleneck": None}
+    if len(samples) < 6:
+        return {"code": "insufficient_samples", "cpu_bottleneck": None, "io_bottleneck": None}
+    def mean(key):
+        values = [row[key] for row in samples if row.get(key) is not None]
+        return sum(values) / len(values) if len(values) == len(samples) else None
+    gpu, cpu, io, memory = (mean(key) for key in ("gpu_utilization", "cpu_percent", "io_wait_percent", "gpu_memory_percent"))
+    cpu_busy = cpu >= 85 if cpu is not None else None
+    io_busy = io >= 15 if io is not None else None
+    if memory is not None and memory >= 90:
+        code = "memory_pressure"
+    elif gpu is None:
+        code = "telemetry_unavailable"
+    elif gpu < 50 and cpu_busy:
+        code = "cpu_bottleneck"
+    elif gpu < 50 and io_busy:
+        code = "io_bottleneck"
+    elif gpu >= 70:
+        code = "healthy_utilization"
+    elif gpu < 50 and cpu_busy is False and io_busy is False and memory is not None and memory < 65:
+        code = "batch_headroom"
+    else:
+        code = "data_pipeline_or_unknown"
+    return dict(code=code, cpu_bottleneck=cpu_busy, io_bottleneck=io_busy,
+                gpu_utilization=gpu, gpu_memory_percent=memory, window_samples=len(samples))
+
+
+def read_metrics(path):
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    try:
+        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1) as db:
+            row = db.execute("SELECT value FROM summary WHERE id=1").fetchone()
+        return json.loads(row[0]) if row else {}
+    except (sqlite3.Error, ValueError, OSError):
+        return {}
+
+
+class TrainingMetrics:
+    def __init__(self, path, resolved, gpu_uuid=None, interval=5):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.resolved = dict(resolved)
+        self.gpu_uuid = gpu_uuid
+        self.interval = max(5, float(interval))
+        self.started = time.monotonic()
+        self.epoch_started = self.started
+        self.epoch_duration = self.images_per_second = None
+        self.oom = False
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.psutil = None
+        try:
+            import psutil
+            self.psutil = psutil
+            psutil.cpu_percent()
+        except ImportError:
+            pass
+        with self.connect() as db:
+            db.executescript("CREATE TABLE IF NOT EXISTS samples (id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
+                             "CREATE TABLE IF NOT EXISTS summary (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);"
+                             "CREATE TABLE IF NOT EXISTS epochs (id INTEGER PRIMARY KEY, value TEXT NOT NULL);")
+        self.thread = threading.Thread(target=self._run, name="training-metrics", daemon=True)
+
+    def connect(self):
+        return sqlite3.connect(self.path, timeout=2)
+
+    def start(self):
+        self.thread.start()
+
+    def _run(self):
+        while not self.stop_event.is_set():
+            try:
+                self.sample()
+            except Exception:
+                # Telemetry failure must not interrupt training; stale summary cannot authorize sharing.
+                pass
+            self.stop_event.wait(self.interval)
+
+    def sample(self):
+        sample = dict(sampled_at=datetime.now(timezone.utc).isoformat(), gpu_utilization=None,
+                      gpu_memory_percent=None, gpu_used_bytes=None, gpu_total_bytes=None,
+                      cpu_percent=None, io_wait_percent=None)
+        if self.psutil:
+            sample["cpu_percent"] = self.psutil.cpu_percent()
+            sample["io_wait_percent"] = getattr(self.psutil.cpu_times_percent(), "iowait", None)
+        if self.gpu_uuid:
+            gpu = next((row for row in sample_gpus() if row["uuid"] == self.gpu_uuid), None)
+            if gpu and gpu.get("total_bytes") and gpu.get("free_bytes") is not None:
+                sample.update(gpu_utilization=gpu["utilization"], gpu_total_bytes=gpu["total_bytes"],
+                              gpu_used_bytes=gpu["total_bytes"] - gpu["free_bytes"],
+                              gpu_memory_percent=100 * (1 - gpu["free_bytes"] / gpu["total_bytes"]))
+        with self.lock, self.connect() as db:
+            db.execute("INSERT INTO samples(value) VALUES (?)", (json.dumps(sample),))
+            db.execute("DELETE FROM samples WHERE id NOT IN (SELECT id FROM samples ORDER BY id DESC LIMIT 720)")
+            rows = [json.loads(row[0]) for row in db.execute("SELECT value FROM samples ORDER BY id DESC LIMIT 6")]
+            summary = dict(self.resolved, latest=sample, diagnostic=diagnose_window(rows, self.oom),
+                           epoch_duration_seconds=self.epoch_duration, images_per_second=self.images_per_second,
+                           total_duration_seconds=round(time.monotonic() - self.started, 3),
+                           sampled_at=sample["sampled_at"], interval_seconds=self.interval)
+            db.execute("INSERT OR REPLACE INTO summary VALUES (1,?)", (json.dumps(summary),))
+
+    def on_train_start(self, trainer):
+        actual = dict(resolved_batch=int(trainer.batch_size),
+                      resolved_workers=int(trainer.train_loader.num_workers),
+                      resolved_cache=normalize_cache(trainer.args.cache))
+        if any(actual[key] != self.resolved[key] for key in actual):
+            raise RuntimeError(f"RESOURCE_RUNTIME_MISMATCH: requested={self.resolved}; actual={actual}")
+        # Ultralytics can disable RAM caching when its own safety check fails.
+        dataset = trainer.train_loader.dataset
+        if actual["resolved_cache"] == "ram" and hasattr(dataset, "ims") and any(image is None for image in dataset.ims):
+            raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: runtime declined requested RAM cache")
+
+    def on_epoch_start(self, trainer):
+        self.epoch_started = time.monotonic()
+        actual = int(trainer.batch_size)
+        if actual != self.resolved["resolved_batch"]:
+            # Runtime-internal OOM changes must never be silent, including manual mode.
+            raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: runtime changed batch; explicit worker retry required")
+
+    def on_epoch_end(self, trainer):
+        duration = max(0.001, time.monotonic() - self.epoch_started)
+        count = len(trainer.train_loader.dataset)
+        with self.lock, self.connect() as db:
+            self.epoch_duration = round(duration, 3)
+            self.images_per_second = round(count / duration, 3)
+            db.execute("INSERT INTO epochs(value) VALUES (?)", (json.dumps(dict(
+                epoch=int(trainer.epoch) + 1, duration_seconds=self.epoch_duration,
+                images_per_second=self.images_per_second, images=count)),))
+            db.execute("DELETE FROM epochs WHERE id NOT IN (SELECT id FROM epochs ORDER BY id DESC LIMIT 1000)")
+
+    def close(self):
+        self.stop_event.set()
+        self.thread.join(timeout=6)
+        if not self.thread.is_alive():
+            try:
+                self.sample()
+            except Exception:
+                pass
+
+
+def persist_resolution(path, resolved):
+    atomic_write_json(Path(path), resolved)
