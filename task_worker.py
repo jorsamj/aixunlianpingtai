@@ -8,6 +8,8 @@ import uuid
 
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskRepository
+from platform_core.gpu_resources import GPUResourceManager
+from platform_core.training_devices import training_python
 from platform_core.worker_registry import ROLE_MODULES, build_worker_registration
 
 
@@ -18,6 +20,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--roles", nargs="+", default=["all"])
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--training-slot", default=None,
+                        help="Named training-only slot for intentional GPU concurrency (requires --roles training)")
     return parser
 
 
@@ -28,6 +32,9 @@ def main(argv=None) -> int:
     repository = TaskRepository(runtime_dir / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime_dir / "artifacts")
     roles = set(args.roles)
+    if args.training_slot is not None and (roles != {"training"} or not args.training_slot.strip() or args.training_slot == "default"):
+        print("--training-slot requires --roles training and a non-default, non-empty slot name", file=sys.stderr)
+        return 2
     handlers, capabilities = build_worker_registration(data_dir, roles)
     worker_id = args.worker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 
@@ -43,6 +50,7 @@ def main(argv=None) -> int:
                     "handlers": sorted(kind.value for kind in handlers),
                     "capabilities": sorted(capabilities),
                     "web_imported": "app" in sys.modules,
+                    "training_slot": args.training_slot or "default",
                 },
                 ensure_ascii=False,
             )
@@ -58,6 +66,8 @@ def main(argv=None) -> int:
         worker_id,
         handlers,
         capabilities,
+        gpu_resources=GPUResourceManager(repository, artifacts, worker_slot=args.training_slot or "default",
+                                         python_executable=training_python(data_dir)) if "training.ultralytics" in capabilities else None,
     )
     if args.once:
         scheduler.run_once()

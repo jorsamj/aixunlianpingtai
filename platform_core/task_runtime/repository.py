@@ -11,6 +11,7 @@ from typing import Iterable
 
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
+from ..gpu_resources import GPU_SCHEMA
 
 
 SCHEMA = """
@@ -110,6 +111,7 @@ def _from_row(row: sqlite3.Row) -> TaskRecord:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         finished_at=row["finished_at"],
+        resource_wait_reason=row["resource_wait_reason"],
     )
 
 
@@ -138,6 +140,9 @@ class TaskRepository:
             columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
             if "queue_rank" not in columns:
                 database.execute("ALTER TABLE tasks ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0")
+            if "resource_wait_reason" not in columns:
+                database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
+            database.executescript(GPU_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
@@ -223,7 +228,7 @@ class TaskRepository:
         return TaskPage(tuple(_from_row(row) for row in visible), next_cursor)
 
     def _release_expired_in(self, database: sqlite3.Connection, now: str) -> int:
-        return database.execute(
+        count = database.execute(
             """
             UPDATE tasks
                SET status=CASE WHEN status='CANCEL_REQUESTED' THEN 'CANCELLED' ELSE 'QUEUED' END,
@@ -241,6 +246,8 @@ class TaskRepository:
             """,
             (now, now, now),
         ).rowcount
+        database.execute("DELETE FROM gpu_reservations WHERE expires_at<=?", (now,))
+        return count
 
     def release_expired(self, now: datetime | str | None = None) -> int:
         now_text = _iso(now)
@@ -256,6 +263,7 @@ class TaskRepository:
         kinds: Iterable[TaskKind | str],
         capabilities: Iterable[str],
         lease_seconds: int = 30,
+        admission=None,
     ) -> TaskLease | None:
         kind_values = tuple(
             item.value if isinstance(item, TaskKind) else str(item) for item in kinds
@@ -276,25 +284,31 @@ class TaskRepository:
                 SELECT candidate.* FROM tasks candidate
                  WHERE candidate.status='QUEUED'
                    AND candidate.kind IN ({placeholders})
-                   AND NOT EXISTS (
+                   AND ((? AND candidate.kind='TRAINING'
+                         AND candidate.resource_key NOT LIKE 'training:remote:%') OR NOT EXISTS (
                        SELECT 1 FROM tasks active
                         WHERE active.resource_key=candidate.resource_key
                           AND active.status IN ('RUNNING','CANCEL_REQUESTED')
                           AND active.lease_expires_at>?
-                   )
+                   ))
                  ORDER BY candidate.priority ASC, candidate.queue_rank DESC, candidate.created_at ASC,
                           candidate.task_id ASC
                 """,
-                (*kind_values, now_text),
+                (*kind_values, int(admission is not None), now_text),
             ).fetchall()
-            chosen = next(
-                (
-                    row
-                    for row in rows
-                    if set(json.loads(row["required_capabilities"] or "[]")) <= available
-                ),
-                None,
-            )
+            chosen = None
+            for candidate in rows:
+                if not set(json.loads(candidate["required_capabilities"] or "[]")) <= available:
+                    continue
+                if admission is not None:
+                    allowed, reason = admission(database, candidate, worker_id, token, expires_at, now_text)
+                    if not allowed:
+                        database.execute("UPDATE tasks SET stage='resource_waiting', resource_wait_reason=?, updated_at=? "
+                                         "WHERE task_id=? AND (stage<>'resource_waiting' OR resource_wait_reason IS NOT ?)",
+                                         (reason, now_text, candidate["task_id"], reason))
+                        continue
+                chosen = candidate
+                break
             if chosen is None:
                 database.commit()
                 return None
@@ -308,7 +322,7 @@ class TaskRepository:
                            ELSE 'running'
                        END,
                        worker_id=?, lease_token=?,
-                       lease_expires_at=?, attempt=attempt+1, updated_at=?, finished_at=NULL
+                       lease_expires_at=?, attempt=attempt+1, updated_at=?, finished_at=NULL, resource_wait_reason=NULL
                  WHERE task_id=? AND status='QUEUED'
                 """,
                 (worker_id, token, expires_at, now_text, chosen["task_id"]),

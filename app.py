@@ -101,6 +101,7 @@ from platform_core.task_runtime import (
 )
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
+from platform_core.gpu_resources import GPUResourceManager
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -4893,6 +4894,11 @@ def training_devices():
     return discover_training_devices(training_python(DATA_DIR))
 
 
+@app.get("/api/v62/gpu-resources")
+def gpu_resources():
+    return GPUResourceManager(shared_task_repository(), shared_task_artifacts()).summary()
+
+
 class TrainReq(BaseModel):
     @model_validator(mode="before")
     @classmethod
@@ -4911,6 +4917,9 @@ class TrainReq(BaseModel):
     imgsz: int = 640
     batch: int = 8
     device: str = "auto"
+    gpu_policy: Literal["auto", "exclusive", "shared"] = "auto"
+    estimated_gpu_memory_bytes: Optional[int] = Field(default=None, gt=0)
+    gpu_sharing_evidence: Optional[Dict[str, Any]] = None
     train_ratio: float = 0.8
     include_empty: bool = False
     dataset_id: Optional[str] = None
@@ -9038,6 +9047,7 @@ def _public_task(task: TaskRecord) -> Dict[str, Any]:
         "priority": task.priority,
         "progress": task.progress,
         "stage": task.stage,
+        "resource_wait_reason": task.resource_wait_reason,
         "current_item": task.current_item,
         "attempt": task.attempt,
         "accepted": task.accepted,

@@ -21,6 +21,7 @@ class Scheduler:
         capabilities: set[str],
         lease_seconds: int = 30,
         poll_seconds: float = 0.25,
+        gpu_resources=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -29,6 +30,10 @@ class Scheduler:
         self.capabilities = set(capabilities)
         self.lease_seconds = max(3, int(lease_seconds))
         self.poll_seconds = max(0.05, float(poll_seconds))
+        self.gpu_resources = gpu_resources
+        if self.gpu_resources is None and TaskKind.TRAINING in self.handlers:
+            from ..gpu_resources import GPUResourceManager
+            self.gpu_resources = GPUResourceManager(repository, artifacts)
 
     def _renew_lease(self, context: WorkerContext, stop: threading.Event) -> None:
         interval = max(1.0, self.lease_seconds / 3)
@@ -43,11 +48,14 @@ class Scheduler:
 
     def run_once(self) -> bool:
         self.repository.release_expired()
+        if self.gpu_resources is not None:
+            self.gpu_resources.refresh()
         lease = self.repository.claim_next(
             self.worker_id,
             tuple(self.handlers),
             self.capabilities,
             self.lease_seconds,
+            admission=self.gpu_resources.admit if self.gpu_resources else None,
         )
         if lease is None:
             return False
@@ -63,6 +71,9 @@ class Scheduler:
         )
         renewal.start()
         try:
+            if lease.task.kind is TaskKind.TRAINING and not lease.task.resource_key.startswith("training:remote:"):
+                assignment = self.gpu_resources.assignment(lease)
+                self.artifacts.atomic_write_json(lease.task.task_id, "assignment.json", assignment)
             recovered = lease.task.attempt > 1 or bool(context.load_checkpoint())
             status, result_ref = (
                 handler.recover(context) if recovered else handler.run(context)

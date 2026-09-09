@@ -698,11 +698,9 @@ class TrainingHandler:
         assignment = context.artifacts.read_json(context.task.task_id, "assignment.json", default={})
         assigned_device = assignment.get("assigned_device") if isinstance(assignment, dict) else None
         if not assigned_device:
-            if requested_device == "auto":
-                raise EnvironmentError("GPU_ASSIGNMENT_REQUIRED: auto requires a concrete scheduler assignment")
-            assigned_device = requested_device
-            assignment = {"requested_device": requested_device, "assigned_device": assigned_device}
-            context.artifacts.atomic_write_json(context.task.task_id, "assignment.json", assignment)
+            raise EnvironmentError("GPU_ASSIGNMENT_REQUIRED: training requires a concrete scheduler assignment")
+        if assignment.get("lease_token") != context.lease.lease_token or assignment.get("worker_id") != context.lease.worker_id:
+            raise EnvironmentError("GPU_ASSIGNMENT_STALE: assignment does not belong to the current worker lease")
         assigned_device = normalize_training_device(assigned_device)
         if assigned_device == "auto" or (requested_device != "auto" and assigned_device != requested_device):
             raise EnvironmentError(
@@ -710,6 +708,18 @@ class TrainingHandler:
             )
         python_executable = _training_python(self.data_dir)
         device_evidence = validate_training_device(python_executable, assigned_device)
+        if assigned_device.startswith("cuda:"):
+            with context.repository._connect() as database:
+                reservation = database.execute(
+                    "SELECT gpu_uuid FROM gpu_reservations WHERE task_id=? AND lease_token=? AND expires_at>?",
+                    (context.task.task_id, context.lease.lease_token, datetime.now(timezone.utc).isoformat()),
+                ).fetchone()
+            if reservation is None or reservation["gpu_uuid"] != assignment.get("gpu_uuid"):
+                raise EnvironmentError("GPU_RESERVATION_REQUIRED: training does not own a current reservation")
+            gpu = next((item for item in device_evidence.get("gpus", [])
+                        if item.get("index") == int(assigned_device[5:])), {})
+            if gpu.get("uuid") and str(gpu["uuid"]).lower().removeprefix("gpu-") != str(assignment["gpu_uuid"]).lower().removeprefix("gpu-"):
+                raise EnvironmentError("GPU_IDENTITY_MISMATCH: trainer CUDA index differs from reserved physical GPU")
         context.artifacts.atomic_write_json(context.task.task_id, "device-validation.json", device_evidence)
         payload = {**payload, "requested_device": requested_device, "assigned_device": assigned_device,
                    "device": assigned_device}
