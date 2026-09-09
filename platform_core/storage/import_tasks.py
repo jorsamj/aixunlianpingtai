@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
@@ -18,6 +19,7 @@ from .factory import StorageProviderFactory
 from .import_candidates import ImportCandidateStore
 from .models import StorageType
 from .source_repository import StorageSourceRepository
+from .yolo_import import YoloImportError, YoloImportScanner, YoloScanCancelled
 from .zip_import import (
     ExtractionCancelled,
     ServerZipImportError,
@@ -216,6 +218,18 @@ class StorageImportHandler:
         )
 
     def _scan(self, context, request):
+        try:
+            return self._scan_impl(context, request)
+        except YoloScanCancelled:
+            return TaskStatus.CANCELLED, None
+        except YoloImportError as error:
+            context.artifacts.atomic_write_json(context.task.task_id, ERROR_RESULT_REF, {
+                "stage": "failed", "mode": str(request.get("mode") or "storage_scan"),
+                "error": error.to_public_dict(),
+            })
+            return TaskStatus.FAILED, ERROR_RESULT_REF
+
+    def _scan_impl(self, context, request):
         source, provider = self._source_and_provider(context, request)
         materials = MaterialRepository(
             self.data_dir / "projects" / context.task.project_id
@@ -225,9 +239,35 @@ class StorageImportHandler:
         store = ImportCandidateStore(
             context.artifacts.artifact_path(context.task.task_id, MANIFEST_REF)
         )
+        last_heartbeat = time.monotonic()
+
+        def yolo_progress(key):
+            nonlocal last_heartbeat
+            if time.monotonic() - last_heartbeat >= 5:
+                context.repository.heartbeat(
+                    context.task.task_id, context.lease.lease_token,
+                    stage="SCANNING", current_item=f"YOLO 数据集分析：{key}",
+                )
+                last_heartbeat = time.monotonic()
+
+        scanner = YoloImportScanner(
+            provider, store, iter_provider_objects, cancelled=context.cancel_requested,
+            progress=yolo_progress,
+        )
+        # Payloads created before format selection was introduced retain image-only behavior.
+        import_format = scanner.prepare(
+            str(request.get("import_format", "images")), prefix=prefix, recursive=recursive,
+            dataset_yaml=request.get("dataset_yaml") or request.get("yaml_key"),
+        )
+        if import_format == "yolo":
+            objects = scanner.iter_images()
+        elif request.get("import_format") == "auto":
+            objects = scanner.iter_inventory()
+        else:
+            objects = iter_provider_objects(provider, prefix, recursive)
         batch: list[dict[str, Any]] = []
         current_key = ""
-        for item in iter_provider_objects(provider, prefix, recursive):
+        for item in objects:
             if context.cancel_requested():
                 self._flush_scan_batch(store, materials, batch)
                 return TaskStatus.CANCELLED, None
@@ -238,6 +278,7 @@ class StorageImportHandler:
                 self._checkpoint_scan(context, store, current_key)
         self._flush_scan_batch(store, materials, batch)
         self._checkpoint_scan(context, store, current_key)
+        quality = scanner.scan_annotations() if import_format == "yolo" else None
 
         counts = store.counts()
         scanned = sum(counts.values())
@@ -259,6 +300,10 @@ class StorageImportHandler:
             "manifest_ref": MANIFEST_REF,
             "failure_examples": store.failure_page(limit=200),
         }
+        if "import_format" in request or import_format == "yolo":
+            result["import_format"] = import_format
+        if quality is not None:
+            result.update({"dataset_yaml": scanner.yaml_key, "quality": quality})
         context.repository.heartbeat(
             context.task.task_id,
             context.lease.lease_token,

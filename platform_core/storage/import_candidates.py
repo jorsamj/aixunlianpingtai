@@ -46,6 +46,31 @@ CREATE TABLE IF NOT EXISTS meta (
     selected_count INTEGER NOT NULL,
     confirmed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dataset_objects (
+    object_key TEXT PRIMARY KEY, size_bytes INTEGER NOT NULL, etag TEXT NOT NULL,
+    sha256 TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dataset_manifest (
+    object_key TEXT PRIMARY KEY, split TEXT NOT NULL, label_key TEXT,
+    annotation_status TEXT NOT NULL DEFAULT 'unannotated',
+    box_count INTEGER NOT NULL DEFAULT 0, yaml_key TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS candidate_annotations (
+    object_key TEXT NOT NULL REFERENCES dataset_manifest(object_key),
+    line_number INTEGER NOT NULL, class_id INTEGER NOT NULL,
+    cx REAL NOT NULL, cy REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,
+    clipped INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (object_key, line_number)
+);
+CREATE TABLE IF NOT EXISTS label_mapping (
+    class_id INTEGER PRIMARY KEY, name TEXT NOT NULL, target_label_id TEXT
+);
+CREATE TABLE IF NOT EXISTS annotation_issues (
+    object_key TEXT NOT NULL, line_number INTEGER NOT NULL,
+    code TEXT NOT NULL, severity TEXT NOT NULL,
+    PRIMARY KEY (object_key, line_number, code)
+);
+CREATE INDEX IF NOT EXISTS ix_annotation_issues_code ON annotation_issues(code);
 """
 _SCAN_FIELDS = (
     "object_key", "filename", "storage_source_id", "storage_type", "content_sha256",
@@ -214,6 +239,80 @@ class ImportCandidateStore:
             return {row[0]: row[1] for row in connection.execute(
                 "SELECT status, COUNT(*) FROM candidates GROUP BY status"
             )}
+
+    def inventory_many(self, rows: Iterable[Mapping[str, object]]) -> None:
+        with self._transaction() as connection:
+            connection.executemany(
+                "INSERT OR REPLACE INTO dataset_objects VALUES (?, ?, ?, ?)",
+                ((_key(row.get("object_key")), _nonnegative_int(row.get("size_bytes")),
+                  _text(row.get("etag")), _text(row.get("sha256"))) for row in rows),
+            )
+
+    def manifest_many(self, rows: Iterable[Mapping[str, object]]) -> None:
+        with self._transaction() as connection:
+            connection.executemany(
+                "INSERT OR IGNORE INTO dataset_manifest (object_key, split, yaml_key) VALUES (?, ?, ?)",
+                ((_key(row.get("object_key")), _text(row.get("split")),
+                  _key(row.get("yaml_key"))) for row in rows),
+            )
+
+    def annotation_batch(self, images: Iterable[Mapping[str, object]],
+                         boxes: Iterable[Mapping[str, object]],
+                         issues: Iterable[Mapping[str, object]]) -> None:
+        """Append bounded annotation chunks; callers reset once before rescanning."""
+        with self._transaction() as connection:
+            connection.executemany(
+                "UPDATE dataset_manifest SET label_key=?, annotation_status=?, box_count=? WHERE object_key=?",
+                ((row.get("label_key"), row["annotation_status"], row["box_count"],
+                  row["object_key"]) for row in images),
+            )
+            connection.executemany(
+                "INSERT OR REPLACE INTO candidate_annotations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ((row["object_key"], row["line_number"], row["class_id"], row["cx"],
+                  row["cy"], row["w"], row["h"], int(row.get("clipped", False))) for row in boxes),
+            )
+            connection.executemany(
+                "INSERT OR IGNORE INTO annotation_issues VALUES (?, ?, ?, ?)",
+                ((row["object_key"], row["line_number"], row["code"], row["severity"]) for row in issues),
+            )
+
+    def set_label_mapping(self, names: Mapping[int, str]) -> None:
+        with self._transaction() as connection:
+            connection.executemany(
+                "INSERT INTO label_mapping (class_id, name) VALUES (?, ?) "
+                "ON CONFLICT(class_id) DO UPDATE SET name=excluded.name", names.items(),
+            )
+
+    def annotations_for_keys(self, keys: Iterable[str]) -> dict[str, dict]:
+        """Read one caller-bounded image batch, including its persisted boxes."""
+        keys = list(keys)
+        if len(keys) > 500:
+            raise ValueError("annotation lookup is limited to 500 image keys")
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with closing(self._connect()) as connection:
+            result = {row["object_key"]: {**dict(row), "boxes": []} for row in connection.execute(
+                f"SELECT * FROM dataset_manifest WHERE object_key IN ({placeholders})", keys)}
+            for row in connection.execute(
+                f"SELECT * FROM candidate_annotations WHERE object_key IN ({placeholders}) ORDER BY object_key, line_number", keys
+            ):
+                result[row["object_key"]]["boxes"].append(dict(row))
+            return result
+
+    def quality_summary(self, example_limit: int = 20) -> dict:
+        with closing(self._connect()) as connection:
+            return {
+                "images": connection.execute("SELECT COUNT(*) FROM dataset_manifest").fetchone()[0],
+                "boxes": connection.execute("SELECT COUNT(*) FROM candidate_annotations").fetchone()[0],
+                "classes": connection.execute("SELECT COUNT(*) FROM label_mapping").fetchone()[0],
+                "annotation_status": dict(connection.execute(
+                    "SELECT annotation_status, COUNT(*) FROM dataset_manifest GROUP BY annotation_status")),
+                "issues": dict(connection.execute("SELECT code, COUNT(*) FROM annotation_issues GROUP BY code")),
+                "examples": [dict(row) for row in connection.execute(
+                    "SELECT * FROM annotation_issues ORDER BY object_key, line_number, code LIMIT ?",
+                    (_limit(example_limit, 100),))],
+            }
 
     def iter_status(self, status: str, batch_size: int = 500) -> Iterator[dict]:
         """Yield individual rows in key order, reading at most one bounded page."""
