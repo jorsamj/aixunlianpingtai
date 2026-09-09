@@ -18,6 +18,7 @@ import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, 
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422204';
 import {buildServerImportRequest, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422206';
+import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422300';
 
 
 const modalStack = createModalStack();
@@ -70,6 +71,7 @@ window.PlatformCore = {
 installMaterialPaginationRuntime();
 installStorageImportProgressRuntime();
 window.installServerMaterialImport61?.();
+installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 
 for (const delay of [80, 500, 1800, 3600]) {
   setTimeout(() => {
