@@ -184,9 +184,9 @@ export function installMaterialPaginationRuntime() {
 
     const buttons = [...document.querySelectorAll('.data426-head button')];
     const clean = buttons.find(button => button.textContent.trim() === '清洗当前素材');
-    if (clean) clean.onclick = async () => window.createClean427?.({image_ids: await window.materialFilteredIds61()});
+    if (clean) clean.onclick = () => window.runMaterialBatch62?.('CLEAN');
     const ready = buttons.find(button => button.textContent.trim() === '当前素材无需清洗');
-    if (ready) ready.onclick = async () => window.markReady412?.(await window.materialFilteredIds61());
+    if (ready) ready.onclick = () => window.runMaterialBatch62?.('MARK_CLEAN_SKIPPED');
   }
 
   function renderPagedDataset61() {
@@ -286,11 +286,32 @@ export function installMaterialPaginationRuntime() {
     loadMaterialPage61({reset: true});
   };
 
+  window.materialBatchFilters61 = () => {
+    const value = filters61();
+    return {
+      query: value.query,
+      storage_source_ids: value.sourceId && value.sourceId !== 'all' ? [value.sourceId] : [],
+      processing_status: value.processingStatus,
+      labels: [...value.labels],
+      annotated: value.annotated === 'marked' ? true : value.annotated === 'unmarked' ? false : null,
+    };
+  };
+  window.materialCurrentPageIds61 = () => (state.images || []).map(row => String(row.id));
+  window.materialSelectedIds61 = () => [...(state.data412Selected || new Set())].map(String);
+  window.reloadMaterialPage61 = () => loadMaterialPage61({reset: true});
+
   const baseMarkReady = window.markReady412;
   window.markReady412 = async function markReadyAndRefreshPagedMaterials(imageIds) {
     const result = await baseMarkReady?.(imageIds);
     if (isPagedDataset()) await loadMaterialPage61({reset: true});
     return result;
+  };
+
+  const baseBatchDelete = window.batchDelete412;
+  window.batchDelete412 = async function durablePagedDelete() {
+    if (!isPagedDataset()) return baseBatchDelete?.();
+    if (!(state.data412Selected?.size)) return window.toast?.('请选择要删除的素材');
+    return window.runMaterialBatch62?.('DELETE_INDEX', {scope: 'SELECTED'});
   };
 
   window.renderData412Cards = function pagedMaterialCards() {

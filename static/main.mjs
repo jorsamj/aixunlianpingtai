@@ -19,6 +19,7 @@ import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntim
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422300';
 import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422301';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422300';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422400';
 
 
 const modalStack = createModalStack();
@@ -69,6 +70,18 @@ window.PlatformCore = {
 };
 
 installMaterialPaginationRuntime();
+installMaterialBatchRuntime({
+  projectId: () => state.project?.id,
+  currentPageIds: () => window.materialCurrentPageIds61?.() || [],
+  selectedIds: () => window.materialSelectedIds61?.() || [],
+  filteredSpec: () => window.materialBatchFilters61?.() || {},
+  notify: message => window.toast?.(message),
+  refresh: async () => {
+    state.data412Selected?.clear?.();
+    state.data412DeleteMode = false;
+    if (state.page === '数据集') await window.reloadMaterialPage61?.();
+  },
+});
 installStorageImportProgressRuntime();
 window.installServerMaterialImport61?.();
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
