@@ -100,6 +100,7 @@ from platform_core.task_runtime import (
     TaskStatus,
 )
 from platform_core.training_splits import SplitMode, SplitRequest
+from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -4887,12 +4888,19 @@ def test_train_server(payload: TrainServerReq):
         raise HTTPException(status_code=400, detail=f"连接失败：{e}")
 
 
+@app.get("/api/v62/training-devices")
+def training_devices():
+    return discover_training_devices(training_python(DATA_DIR))
+
+
 class TrainReq(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_dataset_group_contract(cls, value):
         if isinstance(value, dict) and (value.get("train_dataset_ids") or value.get("test_dataset_ids")):
             raise ValueError("训练任务只按素材 image_id 选择，不能提交数据集分组")
+        if isinstance(value, dict):
+            value = {**value, "device": normalize_training_device(value.get("device", "auto"))}
         return value
 
     framework: str = "ultralytics"  # ultralytics / paddle
@@ -4902,7 +4910,7 @@ class TrainReq(BaseModel):
     epochs: int = 50
     imgsz: int = 640
     batch: int = 8
-    device: str = "cpu"
+    device: str = "auto"
     train_ratio: float = 0.8
     include_empty: bool = False
     dataset_id: Optional[str] = None
@@ -5075,8 +5083,8 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             raise HTTPException(status_code=400, detail="远程训练必须选择训练服务器")
         resource_key = f"training:remote:{remote_id}"
     else:
-        device = str(payload.device or "cpu").strip().lower()
-        resource_key = "training:cpu" if device == "cpu" else f"training:gpu:{device}"
+        device = normalize_training_device(payload.device)
+        resource_key = f"training:{device}"
     task_id = uuid.uuid4().hex[:12]
     request_payload = payload.model_dump(mode="json", exclude_none=True)
     request_payload.update(
@@ -5087,6 +5095,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "experiment_percent": split.experiment_percent,
             "validation_percent": split.validation_percent,
             "schema_version": 3,
+            "requested_device": payload.device,
         }
     )
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
@@ -5118,6 +5127,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "model": payload.model,
             "queue_priority": int(payload.queue_priority),
             "resource_key": resource_key,
+            "device": payload.device,
+            "requested_device": payload.device,
+            "assigned_device": None,
+            "actual_device": None,
             "split_mode": split.mode.value,
             "requested_train_images": len(split.train_image_ids),
             "requested_test_images": len(split.test_image_ids),

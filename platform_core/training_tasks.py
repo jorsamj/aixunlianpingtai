@@ -27,6 +27,7 @@ from .snapshots import build_snapshot
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
+from .training_devices import normalize_training_device, training_python, validate_training_device
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -566,21 +567,21 @@ def _label_schema(project: Path) -> list[dict[str, Any]]:
 
 
 def _training_python(data_dir: Path) -> str:
-    configured = _json(data_dir / "ultralytics_env.json", {})
-    candidate = Path(str(configured.get("python_path") or "")) if isinstance(configured, dict) else Path()
-    if str(candidate) and candidate.is_file():
-        return str(candidate)
-    return sys.executable
+    return training_python(data_dir)
 
 
 def _bool(value: Any) -> str:
     return "true" if bool(value) else "false"
 
 
-def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping[str, Any], data_yaml: Path, model: str) -> list[str]:
+def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping[str, Any], data_yaml: Path, model: str,
+                   *, python_executable: str | None = None) -> list[str]:
     root = Path(__file__).resolve().parent.parent
+    device = normalize_training_device(payload.get("assigned_device") or payload.get("device"))
+    if device == "auto":
+        raise ValueError("GPU_ASSIGNMENT_REQUIRED: training argv requires an assigned concrete device")
     argv = [
-        _training_python(data_dir),
+        python_executable or _training_python(data_dir),
         str(root / "train_worker.py"),
         "--project-dir", str(project),
         "--data", str(data_yaml),
@@ -588,7 +589,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--epochs", str(int(payload.get("epochs") or 50)),
         "--imgsz", str(int(payload.get("imgsz") or 640)),
         "--batch", str(int(payload.get("batch") or 8)),
-        "--device", str(payload.get("device") or "cpu"),
+        "--device", device,
         "--job-id", task_id,
         "--run-name", f"train_{task_id}",
     ]
@@ -693,6 +694,25 @@ class TrainingHandler:
             raise EnvironmentError("remote training requires a configured NVIDIA training worker")
         if str(payload.get("framework") or "ultralytics").lower() != "ultralytics":
             raise EnvironmentError("Paddle training worker is not configured in this environment")
+        requested_device = normalize_training_device(payload.get("requested_device", payload.get("device")))
+        assignment = context.artifacts.read_json(context.task.task_id, "assignment.json", default={})
+        assigned_device = assignment.get("assigned_device") if isinstance(assignment, dict) else None
+        if not assigned_device:
+            if requested_device == "auto":
+                raise EnvironmentError("GPU_ASSIGNMENT_REQUIRED: auto requires a concrete scheduler assignment")
+            assigned_device = requested_device
+            assignment = {"requested_device": requested_device, "assigned_device": assigned_device}
+            context.artifacts.atomic_write_json(context.task.task_id, "assignment.json", assignment)
+        assigned_device = normalize_training_device(assigned_device)
+        if assigned_device == "auto" or (requested_device != "auto" and assigned_device != requested_device):
+            raise EnvironmentError(
+                f"TRAINING_DEVICE_ASSIGNMENT_MISMATCH: requested={requested_device}; assigned={assigned_device}"
+            )
+        python_executable = _training_python(self.data_dir)
+        device_evidence = validate_training_device(python_executable, assigned_device)
+        context.artifacts.atomic_write_json(context.task.task_id, "device-validation.json", device_evidence)
+        payload = {**payload, "requested_device": requested_device, "assigned_device": assigned_device,
+                   "device": assigned_device}
         project = self.data_dir / "projects" / context.task.project_id
         if not (project / "meta.json").is_file():
             raise FileNotFoundError("training project does not exist")
@@ -770,7 +790,11 @@ class TrainingHandler:
             "epochs": int(payload.get("epochs") or 50),
             "imgsz": int(payload.get("imgsz") or 640),
             "batch": int(payload.get("batch") or 8),
-            "device": str(payload.get("device") or "cpu"),
+            "device": assigned_device,
+            "requested_device": requested_device,
+            "assigned_device": assigned_device,
+            "actual_device": assigned_device,
+            "device_evidence": device_evidence,
             "created_at": context.task.created_at,
             "artifact_verified": False,
         }
@@ -785,6 +809,7 @@ class TrainingHandler:
                 context.artifacts.artifact_path(context.task.task_id, "work/runtime-data.yaml"),
             ),
             model,
+            python_executable=python_executable,
         )
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 20, "starting_trainer")
         job = self.process_runner(context, argv, job_file)
@@ -809,6 +834,10 @@ class TrainingHandler:
         final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
         result = {
             "schema_version": 1,
+            "requested_device": requested_device,
+            "assigned_device": assigned_device,
+            "actual_device": assigned_device,
+            "device_evidence": device_evidence,
             "snapshot_id": snapshot["snapshot_id"],
             "snapshot_ref": "snapshot.json",
             "dataset_manifest_ref": "work/bundle/manifest.json",
