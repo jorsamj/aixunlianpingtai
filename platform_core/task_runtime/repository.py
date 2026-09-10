@@ -71,6 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_worker_instances_expiry
 
 TERMINAL_STATUSES = {
     TaskStatus.PARTIAL_SUCCESS,
+    TaskStatus.POST_PROCESSING_FAILED,
     TaskStatus.SUCCEEDED,
     TaskStatus.CANCELLED,
     TaskStatus.FAILED,
@@ -429,6 +430,7 @@ class TaskRepository:
                    SET status='RUNNING',
                        stage=CASE
                            WHEN stage='cancel_recovery' THEN 'cancel_recovery'
+                           WHEN stage='post_processing_queued' THEN 'post_processing'
                            WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing_queued'
                                THEN 'indexing'
                            ELSE 'running'
@@ -756,7 +758,12 @@ class TaskRepository:
 
     def retry(self, task_id: str) -> TaskRecord:
         now = utc_now()
-        terminal_values = tuple(status.value for status in TERMINAL_STATUSES)
+        # A completed training whose post-processing failed must retain its
+        # result_ref and verified weights; only retry_post_processing may
+        # requeue it.  Generic retry would otherwise erase those artifacts and
+        # accidentally launch model training again.
+        terminal_values = tuple(status.value for status in TERMINAL_STATUSES
+                                if status is not TaskStatus.POST_PROCESSING_FAILED)
         placeholders = ",".join("?" for _ in terminal_values)
         with self._connect() as database:
             changed = database.execute(
@@ -765,13 +772,39 @@ class TaskRepository:
                     current_item=NULL, retry_of=task_id, error=NULL, accepted=NULL,
                     result_ref=NULL, worker_id=NULL, lease_token=NULL,
                     lease_expires_at=NULL, process_pid=NULL, process_create_time=NULL,
-                    process_command_hash=NULL, finished_at=NULL, updated_at=?
+                    process_command_hash=NULL, process_group_id=NULL, process_launch_token=NULL,
+                    finished_at=NULL, updated_at=?
                  WHERE task_id=? AND status IN ({placeholders})
                 """,
                 (now, str(task_id), *terminal_values),
             ).rowcount
         if changed != 1:
             raise ValueError("only terminal tasks can be retried")
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result
+
+    def retry_post_processing(self, task_id: str) -> TaskRecord:
+        """Atomically requeue only the post-training stages; model training is immutable."""
+        now = utc_now()
+        with self._connect() as database:
+            changed = database.execute(
+                """
+                UPDATE tasks SET status='QUEUED', stage='post_processing_queued', progress=95,
+                    current_item=NULL, retry_of=task_id, error=NULL, finished_at=NULL,
+                    worker_id=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=?
+                 WHERE task_id=? AND status='POST_PROCESSING_FAILED' AND result_ref IS NOT NULL
+                """,
+                (now, str(task_id)),
+            ).rowcount
+        if changed != 1:
+            current = self.get(task_id)
+            if current is not None and current.stage in {"post_processing_queued", "post_processing"} and current.status in {
+                TaskStatus.QUEUED, TaskStatus.RUNNING
+            }:
+                return current
+            raise ValueError("only post-processing failures with preserved training artifacts can be retried")
         result = self.get(task_id)
         if result is None:
             raise KeyError(task_id)

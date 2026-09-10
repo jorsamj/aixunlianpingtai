@@ -154,6 +154,7 @@ def final_evaluate_main():
     parser.add_argument("--data", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--device", required=True)
+    parser.add_argument("--split", choices=("val", "test"), default="test")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     output = Path(args.output).resolve()
@@ -161,7 +162,7 @@ def final_evaluate_main():
     try:
         from ultralytics import YOLO
         model = YOLO(args.model)
-        metrics = model.val(data=args.data, split="test", device=args.device, verbose=False)
+        metrics = model.val(data=args.data, split=args.split, device=args.device, verbose=False)
         report = build_report_from_metrics(metrics, getattr(model, "names", None))
         result.update(
             status="succeeded",
@@ -826,12 +827,23 @@ def main():
         best_path = next((path for path in verified if Path(path).stem.endswith("_best")), "")
         last_path = next((path for path in verified if Path(path).stem.endswith("_last")), "")
 
-        training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"test_result":{"status":"sealed_pending_final_evaluation","metrics":{}},"ai_intervention_events":ai_events}
+        training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"validation_status":"pending","metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"test_result":{"status":"sealed_pending_final_evaluation","metrics":{}},"ai_intervention_events":ai_events}
+        # Persist the verified weights before validation/report generation.  A
+        # supervising Worker that restarts during validation can then preserve
+        # and resume from best.pt instead of launching training again.
+        update_job(job_file,status="train_completed",stage="train_completed",
+                   message="训练完成，模型产物校验通过，准备验证",
+                   run_dir=str(run_dir),models=copied,verified_models=verified,
+                   best_path=best_path,last_path=last_path,artifact_verified=True,
+                   training_report=training_report)
         try:
+            update_job(job_file, stage="validating", message="训练完成，正在验证 best.pt")
             best_model=YOLO(verified[0])
             val_metrics=best_model.val(data=args.data, split="val", verbose=False)
             training_report.update(build_report_from_metrics(val_metrics,getattr(best_model,"names",None)))
+            training_report["validation_status"]="succeeded"
         except Exception as ve:
+            training_report["validation_status"]="failed"
             training_report["validation_error"]=str(ve)
         try:
             analysis_limit=int(args.val_max_samples) if int(args.val_max_samples or 0)>0 else 200
@@ -843,6 +855,7 @@ def main():
         update_job(
             job_file,
             status="done",
+            stage="train_completed",
             message="训练完成，模型产物校验通过",
             run_dir=str(run_dir),
             models=copied,

@@ -783,6 +783,24 @@ def _append_access_evidence(context, event: str, **details: Any) -> None:
     )
 
 
+def _preserve_training_models(context, sources: Sequence[str]) -> list[dict[str, Any]]:
+    preserved = []
+    for index, source_value in enumerate(sources):
+        source = Path(str(source_value)).resolve()
+        if not source.is_file() or source.stat().st_size <= 0:
+            raise RuntimeError(f"verified training model is missing: {source.name}")
+        ref = f"outputs/{index:02d}_{source.name}"
+        destination = context.artifacts.artifact_path(context.task.task_id, ref)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source != destination.resolve():
+            shutil.copy2(source, destination)
+        digest = _sha256(destination)
+        preserved.append({"ref": ref, "sha256": digest, "size_bytes": destination.stat().st_size})
+    if not preserved:
+        raise RuntimeError("training reported success without a verified model")
+    return preserved
+
+
 def _final_evaluation_argv(
     data_dir: Path,
     python_executable: str,
@@ -790,6 +808,7 @@ def _final_evaluation_argv(
     model: Path,
     assigned_device: str,
     output: Path,
+    split: str = "test",
 ) -> list[str]:
     root = Path(__file__).resolve().parent.parent
     # CUDA_VISIBLE_DEVICES binds the scheduler's physical device below, so the
@@ -802,6 +821,7 @@ def _final_evaluation_argv(
         "--data", str(data_yaml),
         "--model", str(model),
         "--device", device,
+        "--split", split,
         "--output", str(output),
     ]
 
@@ -859,8 +879,13 @@ class TrainingHandler:
         self.process_runner = process_runner or _run_training_process
 
     def _committed(self, context) -> str | None:
+        checkpoint = context.load_checkpoint() or {}
+        if checkpoint.get("stage") != "committed":
+            return None
         result = context.artifacts.read_json(context.task.task_id, "result.json", default=None)
         if not isinstance(result, dict):
+            return None
+        if result.get("post_processing_error"):
             return None
         for model in result.get("verified_models") or []:
             path = context.artifacts.artifact_path(context.task.task_id, str(model.get("ref") or ""))
@@ -868,10 +893,66 @@ class TrainingHandler:
                 return None
         return "result.json"
 
+    def _record_post_processing_failure(self, context, error: Exception):
+        # Fence every recovery write with the current lease.  An old Worker
+        # must not overwrite artifacts after another Worker has taken over.
+        context.repository.heartbeat(context.task.task_id, context.lease.lease_token)
+        checkpoint = context.load_checkpoint() or {}
+        if checkpoint.get("stage") != "train_completed":
+            job_file = (self.data_dir / "projects" / context.task.project_id /
+                        "jobs" / context.task.task_id / "job.json")
+            job = _json(job_file, {})
+            if job.get("artifact_verified") and job.get("verified_models"):
+                models = _preserve_training_models(context, job.get("verified_models") or [])
+                checkpoint = {"stage": "train_completed", "snapshot_id": job.get("snapshot_id"),
+                              "verified_models": models}
+                context.save_checkpoint(checkpoint)
+        models = list(checkpoint.get("verified_models") or [])
+        if checkpoint.get("stage") != "train_completed" or not models:
+            raise error
+        message = f"{type(error).__name__}: {error}"
+        result = context.artifacts.read_json(context.task.task_id, "result.json", default={})
+        result = dict(result) if isinstance(result, dict) else {}
+        payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+        project = self.data_dir / "projects" / context.task.project_id
+        job_file = project / "jobs" / context.task.task_id / "job.json"
+        job = _json(job_file, {})
+        result.update(
+            schema_version=1,
+            snapshot_id=checkpoint.get("snapshot_id"),
+            snapshot_ref="snapshot.json",
+            verified_models=models,
+            training_report=job.get("training_report") or result.get("training_report") or {},
+            requested_device=(payload or {}).get("requested_device", (payload or {}).get("device")),
+            assigned_device=job.get("assigned_device"),
+            actual_device=job.get("actual_device"),
+            requested_config=job.get("requested_config"),
+            effective_config=job.get("effective_config"),
+            actual_config=job.get("actual_config"),
+            post_processing_error=message,
+        )
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        if job_file.parent.is_dir():
+            atomic_write_json(job_file, {**job, "status": "post_processing_failed",
+                                         "stage": "post_processing_failed", "message": message,
+                                         "artifact_verified": True})
+        context.save_checkpoint({**checkpoint, "stage": "train_completed", "result_ref": "result.json"})
+        return TaskStatus.POST_PROCESSING_FAILED, "result.json"
+
     def run(self, context):
+        try:
+            return self._run(context)
+        except InterruptedError:
+            raise
+        except Exception as error:
+            return self._record_post_processing_failure(context, error)
+
+    def _run(self, context):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
         if not isinstance(payload, dict):
             raise ValueError("training payload is invalid")
+        resume_checkpoint = context.load_checkpoint() or {}
+        resume_post_processing = resume_checkpoint.get("stage") == "train_completed"
         if str(payload.get("target") or "local").lower() != "local":
             raise EnvironmentError("remote training requires a configured NVIDIA training worker")
         if str(payload.get("framework") or "ultralytics").lower() != "ultralytics":
@@ -976,7 +1057,8 @@ class TrainingHandler:
                 counts=snapshot.get("counts"),
                 test_access="sealed",
             )
-        context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
+        if not resume_post_processing:
+            context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 10, "materializing")
         try:
             bundle = materialize_portable_dataset(
@@ -1032,6 +1114,15 @@ class TrainingHandler:
             strict_latest=bool(algorithm.get("versions")),
             artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
         )
+        if resume_post_processing:
+            previous_result = context.artifacts.read_json(context.task.task_id, "result.json", default={})
+            if isinstance(previous_result, dict):
+                base = {
+                    **base,
+                    "base_version_id": previous_result.get("base_version_id"),
+                    "base_version_name": previous_result.get("base_version_name"),
+                    "base_selection_reason": previous_result.get("base_selection_reason"),
+                }
         model = str(base.get("base_model_path") or mother)
         with context.repository._connect() as database:
             reservations = database.execute("SELECT * FROM gpu_reservations").fetchall()
@@ -1057,7 +1148,7 @@ class TrainingHandler:
         job_dir = project / "jobs" / context.task.task_id
         job_dir.mkdir(parents=True, exist_ok=True)
         job_file = job_dir / "job.json"
-        job = {
+        fresh_job = {
             "id": context.task.task_id,
             "task_id": context.task.task_id,
             "status": "queued",
@@ -1086,6 +1177,9 @@ class TrainingHandler:
             "actual_config": None,
             "adjustment_reasons": [],
         }
+        job = ({**fresh_job, **_json(job_file, {}), "status": "post_processing",
+                "assigned_device": assigned_device, "device_validation": device_evidence}
+               if resume_post_processing else fresh_job)
         atomic_write_json(job_file, job)
         preflight = authoritative_preflight(
             snapshot,
@@ -1115,22 +1209,38 @@ class TrainingHandler:
             )
         atomic_write_json(job_file, job)
         require_preflight(preflight)
+        runtime_yaml = materialize_runtime_yaml(
+            bundle / "manifest.json",
+            context.artifacts.artifact_path(context.task.task_id, "work/training-runtime-data.yaml"),
+        )
         argv = _training_argv(
             self.data_dir,
             project,
             context.task.task_id,
             payload,
-            materialize_runtime_yaml(
-                bundle / "manifest.json",
-                context.artifacts.artifact_path(context.task.task_id, "work/training-runtime-data.yaml"),
-            ),
+            runtime_yaml,
             model,
             python_executable=python_executable,
         )
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 20, "starting_trainer")
-        job = self.process_runner(context, argv, job_file)
-        if not job.get("artifact_verified"):
-            raise RuntimeError(str(job.get("message") or "training produced no verified model"))
+        preserved = list(resume_checkpoint.get("verified_models") or []) if resume_post_processing else []
+        if preserved:
+            for item in preserved:
+                path = context.artifacts.artifact_path(context.task.task_id, item["ref"])
+                if not path.is_file() or _sha256(path) != item.get("sha256"):
+                    raise RuntimeError("POST_PROCESSING_ARTIFACT_INVALID: preserved best/last model is missing or changed")
+            job = _json(job_file, {})
+            job["verified_models"] = [str(context.artifacts.artifact_path(context.task.task_id, row["ref"])) for row in preserved]
+            job["best_path"] = job["verified_models"][0]
+            atomic_write_json(job_file, job)
+        else:
+            job = self.process_runner(context, argv, job_file)
+            if not job.get("artifact_verified"):
+                raise RuntimeError(str(job.get("message") or "training produced no verified model"))
+            preserved = _preserve_training_models(context, job.get("verified_models") or [])
+            context.save_checkpoint({"stage": "train_completed", "snapshot_id": snapshot["snapshot_id"],
+                                     "verified_models": preserved})
+        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 96, "train_completed")
         _append_access_evidence(
             context,
             "best_model_selected",
@@ -1138,8 +1248,33 @@ class TrainingHandler:
             test_access="sealed",
         )
         training_report = dict(job.get("training_report") or {})
+        post_error = str(training_report.get("validation_error") or "")
+        if training_report.get("validation_status") != "succeeded":
+            context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 96, "validating")
+            validation_output = context.artifacts.artifact_path(context.task.task_id, "validation/result.json")
+            try:
+                validation_result = _run_final_evaluation_process(
+                    context,
+                    _final_evaluation_argv(
+                        self.data_dir, python_executable, runtime_yaml,
+                        context.artifacts.artifact_path(context.task.task_id, preserved[0]["ref"]),
+                        assigned_device, validation_output, split="val",
+                    ),
+                    validation_output,
+                    job_dir,
+                    cuda_visible_devices=("-1" if assigned_device == "cpu" else
+                                          str(assignment.get("gpu_uuid") or assigned_device.removeprefix("cuda:"))),
+                )
+                training_report.update(validation_result.get("metrics") or {})
+                training_report.pop("validation_error", None)
+                training_report["validation_status"] = "succeeded"
+                post_error = ""
+            except Exception as error:
+                training_report["validation_status"] = "failed"
+                post_error = str(error)
         test_ids = list((snapshot.get("ids") or {}).get("test") or [])
         if test_ids:
+            context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 97, "testing")
             final_bundle = materialize_portable_dataset(
                 context.artifacts.artifact_path(context.task.task_id, "work/final-evaluation"),
                 snapshot,
@@ -1189,26 +1324,14 @@ class TrainingHandler:
                 training_report["test_metrics"] = {}
                 training_report["test_result"] = {"status": "failed", "metrics": {}, "error": str(error)}
                 _append_access_evidence(context, "final_evaluation_completed", status="failed", error=str(error))
+                post_error = post_error or str(error)
         else:
             training_report["test_result"] = {"status": "not_requested", "metrics": {}}
         job["training_report"] = training_report
         atomic_write_json(job_file, job)
-        verified_models = []
-        for index, source_value in enumerate(job.get("verified_models") or []):
-            source = Path(str(source_value)).resolve()
-            if not source.is_file() or source.stat().st_size <= 0:
-                raise RuntimeError(f"verified training model is missing: {source.name}")
-            ref = f"outputs/{index:02d}_{source.name}"
-            destination = context.artifacts.artifact_path(context.task.task_id, ref)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if source != destination.resolve():
-                shutil.copy2(source, destination)
-            digest = _sha256(destination)
-            verified_models.append({"ref": ref, "sha256": digest, "size_bytes": destination.stat().st_size})
-        if not verified_models:
-            raise RuntimeError("training reported success without a verified model")
-        partial = (training_report.get("test_result") or {}).get("status") == "failed"
-        final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
+        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 99, "generating_report")
+        verified_models = preserved
+        final_status = TaskStatus.POST_PROCESSING_FAILED if post_error else TaskStatus.SUCCEEDED
         result = {
             "schema_version": 1,
             "requested_device": requested_device,
@@ -1236,6 +1359,7 @@ class TrainingHandler:
             "base_selection_reason": base.get("base_selection_reason"),
             "verified_models": verified_models,
             "training_report": training_report,
+            "post_processing_error": post_error or None,
             "dataset_verification": verification,
             "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
             "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
@@ -1245,12 +1369,13 @@ class TrainingHandler:
             (version for version in algorithm.get("versions") or [] if version.get("task_id") == context.task.task_id),
             None,
         )
-        if existing is None:
+        if existing is None and not post_error:
             primary = context.artifacts.artifact_path(context.task.task_id, verified_models[0]["ref"])
-            attach_version(
-                algorithms_path,
-                str(algorithm.get("id")),
-                {
+            try:
+                attach_version(
+                    algorithms_path,
+                    str(algorithm.get("id")),
+                    {
                     "id": uuid.uuid4().hex[:12],
                     "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
                     "stored_path": str(primary),
@@ -1264,9 +1389,18 @@ class TrainingHandler:
                     "task_id": context.task.task_id,
                     "job_id": context.task.task_id,
                     "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot["snapshot_id"], "result_ref": "result.json"})
+                    },
+                )
+            except Exception as error:
+                post_error = str(error)
+                result["post_processing_error"] = post_error
+                final_status = TaskStatus.POST_PROCESSING_FAILED
+                context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        if final_status is TaskStatus.POST_PROCESSING_FAILED:
+            context.save_checkpoint({"stage": "train_completed", "snapshot_id": snapshot["snapshot_id"],
+                                     "verified_models": verified_models, "result_ref": "result.json"})
+        else:
+            context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot["snapshot_id"], "result_ref": "result.json"})
         return final_status, "result.json"
 
     def recover(self, context):
@@ -1295,6 +1429,16 @@ class TrainingHandler:
                 _append_access_evidence(context, "orphan_training_process_terminated", pid=task.process_pid)
         if task.stage == "cancel_recovery":
             return TaskStatus.CANCELLED, None
+        checkpoint = context.load_checkpoint() or {}
+        if checkpoint.get("stage") != "train_completed":
+            job_file = (self.data_dir / "projects" / context.task.project_id /
+                        "jobs" / context.task.task_id / "job.json")
+            job = _json(job_file, {})
+            if job.get("artifact_verified") and job.get("verified_models"):
+                preserved = _preserve_training_models(context, job.get("verified_models") or [])
+                context.save_checkpoint({"stage": "train_completed",
+                                         "snapshot_id": job.get("snapshot_id"),
+                                         "verified_models": preserved})
         return self.run(context)
 
 

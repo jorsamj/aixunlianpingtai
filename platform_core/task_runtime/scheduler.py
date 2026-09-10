@@ -144,6 +144,11 @@ class Scheduler:
                 status,
                 result_ref,
             )
+        except PermissionError:
+            # Ownership fencing rejected this Worker after its lease expired
+            # or was taken over.  Do not write a terminal state with a stale
+            # token; the current owner is now authoritative.
+            pass
         except InterruptedError as error:
             current = self.repository.get(lease.task.task_id)
             if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:

@@ -716,6 +716,7 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             TaskStatus.CANCEL_REQUESTED: "running",
             TaskStatus.SUCCEEDED: "done",
             TaskStatus.PARTIAL_SUCCESS: "done",
+            TaskStatus.POST_PROCESSING_FAILED: "post_processing_failed",
             TaskStatus.CANCELLED: "stopped",
             TaskStatus.FAILED: "failed",
             TaskStatus.BLOCKED_BY_ENVIRONMENT: "failed",
@@ -732,6 +733,12 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
         if durable.error:
             job["error"] = durable.error
             job["message"] = durable.error
+        elif durable.status is TaskStatus.POST_PROCESSING_FAILED and durable.result_ref:
+            failure_result = shared_task_artifacts().read_json(durable.task_id, durable.result_ref, default={})
+            failure = failure_result.get("post_processing_error") if isinstance(failure_result, dict) else None
+            if failure:
+                job["error"] = failure
+                job["message"] = failure
         if durable.finished_at:
             job["finished_at"] = durable.finished_at
     proc = PROCESS_REGISTRY.get(job_id) if job_id else None
@@ -5923,6 +5930,38 @@ def job_log(project_id: str, job_id: str):
     return text[-80000:]
 
 
+@app.post("/api/v63/projects/{project_id}/training-tasks/{job_id}/retry-post-processing", status_code=202)
+def retry_training_post_processing(project_id: str, job_id: str):
+    task = shared_task_repository().get(job_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.TRAINING:
+        raise HTTPException(status_code=404, detail="训练任务不存在")
+    if task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING} and task.stage in {
+        "post_processing_queued", "post_processing",
+    }:
+        return {"ok": True, "task": _public_task(task)}
+    if task.status is not TaskStatus.POST_PROCESSING_FAILED or not task.result_ref:
+        raise HTTPException(status_code=409, detail="仅训练已完成且后处理失败的任务可以重试后处理")
+    result = shared_task_artifacts().read_json(job_id, task.result_ref, default={})
+    models = list(result.get("verified_models") or []) if isinstance(result, dict) else []
+    for model in models:
+        path = shared_task_artifacts().artifact_path(job_id, str(model.get("ref") or ""))
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise HTTPException(status_code=409, detail="已保存的训练模型不存在，不能重试后处理")
+        hasher = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
+        if digest != model.get("sha256"):
+            raise HTTPException(status_code=409, detail="已保存的训练模型校验失败，不能重试后处理")
+    if not models:
+        raise HTTPException(status_code=409, detail="任务没有可用的 best.pt/last.pt 产物")
+    try:
+        return {"ok": True, "task": _public_task(shared_task_repository().retry_post_processing(job_id))}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @app.post("/api/projects/{project_id}/jobs/{job_id}/stop")
 def stop_job(project_id: str, job_id: str):
     get_project(project_id)
@@ -9501,7 +9540,7 @@ def _v33_run_video_frame_task(project_id: str, task_id: str):
 
 
 def _public_task(task: TaskRecord) -> Dict[str, Any]:
-    return {
+    response = {
         "id": task.task_id,
         "project_id": task.project_id,
         "kind": task.kind.value,
@@ -9519,6 +9558,11 @@ def _public_task(task: TaskRecord) -> Dict[str, Any]:
         "finished_at": task.finished_at,
         "result_ref": task.result_ref,
     }
+    if task.status is TaskStatus.POST_PROCESSING_FAILED and not response["error"] and task.result_ref:
+        result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default={})
+        if isinstance(result, dict):
+            response["error"] = result.get("post_processing_error")
+    return response
 
 
 def _public_video_task(task: TaskRecord) -> Dict[str, Any]:
