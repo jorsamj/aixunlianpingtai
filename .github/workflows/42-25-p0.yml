@@ -1,0 +1,41 @@
+name: 42.25 P0 checks
+
+on:
+  push:
+    branches:
+      - feat/42.25.0
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  targeted-p0:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install targeted test dependencies
+        run: python -m pip install pytest psutil pyyaml
+      - name: Compile changed P0 modules
+        run: >-
+          python -m py_compile
+          platform_core/training_splits.py
+          platform_core/annotation_repository.py
+          platform_core/algorithms.py
+          platform_core/training_tasks.py
+          platform_core/deployment/conversion_tasks.py
+      - name: Run targeted P0 tests
+        run: >-
+          python -m pytest
+          tests/unit/test_training_splits.py
+          tests/unit/test_annotation_repository.py
+          tests/unit/test_algorithms.py
+          tests/unit/test_conversion_tasks.py
+          -q
