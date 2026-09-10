@@ -74,12 +74,203 @@ def _group_key(row: Mapping[str, Any]) -> str:
 
 def _processed(row: Mapping[str, Any]) -> bool:
     return bool(
-        row.get('annotation_state') in {'annotated', 'confirmed_empty'}
+        row.get("annotation_state") in {"annotated", "confirmed_empty"}
         or row.get("annotated")
         or row.get("processing_status") == "processed"
         or row.get("cleaned_at")
         or row.get("clean_skipped")
     )
+
+
+def _identity(row: Mapping[str, Any]) -> str:
+    for key in ("stored_name", "stored_path", "path"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return PurePath(value.replace("\\", "/")).as_posix().casefold()
+    return ""
+
+
+def _selected_gt_fingerprint(
+    row: Mapping[str, Any],
+    selected_labels: Sequence[str],
+) -> str:
+    """Canonical selected-label GT semantics for duplicate-content checks.
+
+    Box IDs and provenance are intentionally ignored. Unrelated classes are
+    ignored when this task has an explicit selected-label schema.
+    """
+    selected = set(str(value) for value in selected_labels if str(value))
+    boxes = []
+    for raw in row.get("boxes") or ():
+        box = dict(raw)
+        label_id = str(box.get("label_id") or "").strip()
+        if selected and label_id not in selected:
+            continue
+        label_key = label_id or str(box.get("label") or box.get("class_id") or "").strip()
+        if not label_key:
+            continue
+        if all(key in box for key in ("x1", "y1", "x2", "y2")):
+            geometry = {
+                "x1": float(box["x1"]),
+                "y1": float(box["y1"]),
+                "x2": float(box["x2"]),
+                "y2": float(box["y2"]),
+            }
+        else:
+            geometry = {
+                "cx": float(box.get("cx", 0)),
+                "cy": float(box.get("cy", 0)),
+                "w": float(box.get("w", 0)),
+                "h": float(box.get("h", 0)),
+            }
+        boxes.append({"label": label_key, **geometry})
+    boxes.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    return hashlib.sha256(
+        json.dumps(boxes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_duplicate_annotations(
+    rows: Sequence[Mapping[str, Any]],
+    selected_labels: Sequence[str],
+) -> dict[str, tuple[str, ...]]:
+    """Reject exact-content duplicates whose selected-label GT disagrees."""
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        digest = str(row.get("content_sha256") or "").strip()
+        if digest:
+            grouped.setdefault(digest, []).append(row)
+
+    duplicates: dict[str, tuple[str, ...]] = {}
+    for digest, members in grouped.items():
+        if len(members) <= 1:
+            continue
+        ids = tuple(sorted(str(row.get("id") or "") for row in members))
+        fingerprints = {_selected_gt_fingerprint(row, selected_labels) for row in members}
+        if len(fingerprints) > 1:
+            raise ValueError(
+                "duplicate annotation conflict: "
+                f"{digest} 的重复素材在本次训练标签下 Ground Truth 不一致：{', '.join(ids[:8])}"
+            )
+        duplicates[digest] = ids
+    return duplicates
+
+
+def _build_leakage_components(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    """Build transitive leakage components before any random split assignment."""
+    indexed = [row for row in rows if str(row.get("id") or "").strip()]
+    parents = list(range(len(indexed)))
+    ranks = [0] * len(indexed)
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root == right_root:
+            return
+        if ranks[left_root] < ranks[right_root]:
+            left_root, right_root = right_root, left_root
+        parents[right_root] = left_root
+        if ranks[left_root] == ranks[right_root]:
+            ranks[left_root] += 1
+
+    owners: dict[tuple[str, str], int] = {}
+    for index, row in enumerate(indexed):
+        identities = (
+            ("content", str(row.get("content_sha256") or "").strip()),
+            ("group", _group_key(row)),
+            ("file", _identity(row)),
+        )
+        for namespace, value in identities:
+            if not value:
+                continue
+            key = (namespace, value)
+            previous = owners.setdefault(key, index)
+            if previous != index:
+                union(previous, index)
+
+    members: dict[int, list[str]] = {}
+    for index, row in enumerate(indexed):
+        members.setdefault(find(index), []).append(str(row.get("id")))
+    component_name = {
+        root: "component:" + min(image_ids)
+        for root, image_ids in members.items()
+    }
+    return {
+        str(row.get("id")): component_name[find(index)]
+        for index, row in enumerate(indexed)
+    }
+
+
+def _assert_requested_component_separation(
+    train_rows: Sequence[Mapping[str, Any]],
+    test_rows: Sequence[Mapping[str, Any]],
+    components: Mapping[str, str],
+) -> None:
+    train_hashes = {
+        str(row.get("content_sha256") or "").strip()
+        for row in train_rows
+        if str(row.get("content_sha256") or "").strip()
+    }
+    test_hashes = {
+        str(row.get("content_sha256") or "").strip()
+        for row in test_rows
+        if str(row.get("content_sha256") or "").strip()
+    }
+    shared_hashes = sorted(train_hashes & test_hashes)
+    if shared_hashes:
+        raise ValueError(
+            f"content hash leakage: {shared_hashes[0]} 同时出现在请求的 train 和 test"
+        )
+
+    train_components = {
+        components.get(str(row.get("id") or ""), "")
+        for row in train_rows
+    }
+    test_components = {
+        components.get(str(row.get("id") or ""), "")
+        for row in test_rows
+    }
+    overlap = sorted(value for value in train_components & test_components if value)
+    if overlap:
+        raise ValueError(
+            "leakage component conflict: 独立 Train/Test 请求包含同一来源组或文件身份，"
+            f"首个冲突组件 {overlap[0]}"
+        )
+
+
+def _dedupe_exact_content(
+    rows: Sequence[Mapping[str, Any]],
+    exclusions: dict[str, str],
+) -> tuple[list[Mapping[str, Any]], int]:
+    """Keep one canonical material record per exact SHA after GT is validated."""
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    without_hash: list[Mapping[str, Any]] = []
+    for row in rows:
+        digest = str(row.get("content_sha256") or "").strip()
+        if digest:
+            grouped.setdefault(digest, []).append(row)
+        else:
+            without_hash.append(row)
+
+    kept = list(without_hash)
+    removed = 0
+    for members in grouped.values():
+        ordered = sorted(members, key=lambda row: str(row.get("id") or ""))
+        canonical = ordered[0]
+        kept.append(canonical)
+        canonical_id = str(canonical.get("id") or "")
+        for duplicate in ordered[1:]:
+            duplicate_id = str(duplicate.get("id") or "")
+            exclusions[duplicate_id] = f"exact_duplicate_of:{canonical_id}"
+            removed += 1
+    return kept, removed
 
 
 def _select_grouped(
@@ -88,18 +279,20 @@ def _select_grouped(
     seed: int,
     *,
     min_remaining_groups: int = 1,
+    group_ids: Mapping[str, str] | None = None,
 ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
-        grouped.setdefault(_group_key(row), []).append(row)
+        image_id = str(row.get("id") or "")
+        key = (group_ids or {}).get(image_id) or _group_key(row)
+        grouped.setdefault(key, []).append(row)
     if len(grouped) <= int(min_remaining_groups):
-        raise ValueError("按来源分组后不足两个组，无法避免数据泄漏")
+        raise ValueError("按泄漏组件分组后不足两个组，无法避免数据泄漏")
     keys = sorted(grouped)
     random.Random(int(seed)).shuffle(keys)
     sizes = [len(grouped[key]) for key in keys]
     target = max(1, min(len(rows) - 1, round(len(rows) * float(percent) / 100)))
 
-    # Exact subset-sum where possible. Seeded key order makes ties deterministic.
     choices: dict[int, tuple[int, ...]] = {0: ()}
     for index, size in enumerate(sizes):
         for total, selected in list(choices.items())[::-1]:
@@ -111,23 +304,21 @@ def _select_grouped(
         if total > 0 and len(grouped) - len(selected) >= int(min_remaining_groups)
     ]
     if not allowed_totals:
-        raise ValueError("所选来源组不足以划分训练、验证和试验数据")
+        raise ValueError("所选泄漏组件不足以划分训练、验证和试验数据")
     selected_total = min(
         allowed_totals,
         key=lambda total: (abs(total - target), total > target, total),
     )
     selected_keys = {keys[index] for index in choices[selected_total]}
-    selected = [row for row in rows if _group_key(row) in selected_keys]
-    remaining = [row for row in rows if _group_key(row) not in selected_keys]
+    selected = [
+        row for row in rows
+        if ((group_ids or {}).get(str(row.get("id") or "")) or _group_key(row)) in selected_keys
+    ]
+    remaining = [
+        row for row in rows
+        if ((group_ids or {}).get(str(row.get("id") or "")) or _group_key(row)) not in selected_keys
+    ]
     return remaining, selected
-
-
-def _identity(row: Mapping[str, Any]) -> str:
-    for key in ("stored_name", "stored_path", "path"):
-        value = str(row.get(key) or "").strip()
-        if value:
-            return PurePath(value.replace("\\", "/")).as_posix().casefold()
-    return ""
 
 
 def _assert_no_leakage(role_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
@@ -186,23 +377,49 @@ def build_split_manifest(
         if not annotation_scope_covers(row.get("annotation_scope"), selected_labels):
             exclusions[image_id] = "annotation_scope_incomplete_for_selected_labels"
             return False
-        # Once the complete selected-label scope is proven, selected boxes are
-        # positives and an empty filtered result is a legitimate scoped negative.
         return True
 
-    train_pool = [by_id[image_id] for image_id in request.train_image_ids if eligible(by_id[image_id])]
-    if not train_pool:
+    requested_train_rows = [
+        by_id[image_id] for image_id in request.train_image_ids
+        if eligible(by_id[image_id])
+    ]
+    if not requested_train_rows:
         raise ValueError("所选训练素材在本次训练标签作用域下无可用 Ground Truth")
+
+    requested_test_rows = (
+        [
+            by_id[image_id] for image_id in request.test_image_ids
+            if eligible(by_id[image_id])
+        ]
+        if request.mode == SplitMode.INDEPENDENT_TEST_SET
+        else []
+    )
+    if request.mode == SplitMode.INDEPENDENT_TEST_SET and not requested_test_rows:
+        raise ValueError("独立试验素材在本次训练标签作用域下无可用 Ground Truth")
+
+    integrity_rows = [*requested_train_rows, *requested_test_rows]
+    duplicate_groups = _validate_duplicate_annotations(integrity_rows, selected_labels)
+    components = _build_leakage_components(integrity_rows)
+    if request.mode == SplitMode.INDEPENDENT_TEST_SET:
+        _assert_requested_component_separation(
+            requested_train_rows, requested_test_rows, components
+        )
+
+    train_pool, deduped_train = _dedupe_exact_content(requested_train_rows, exclusions)
+    deduped_test = 0
+    test_rows: list[Mapping[str, Any]] = []
+    if request.mode == SplitMode.INDEPENDENT_TEST_SET:
+        test_rows, deduped_test = _dedupe_exact_content(requested_test_rows, exclusions)
 
     test_seed = int(seed)
     digest = hashlib.sha256(f"validation:{seed}".encode("utf-8")).digest()
     validation_seed = int.from_bytes(digest[:8], "big")
     if request.mode == SplitMode.INDEPENDENT_TEST_SET:
-        test_rows = [by_id[image_id] for image_id in request.test_image_ids if eligible(by_id[image_id])]
-        if not test_rows:
-            raise ValueError("独立试验素材在本次训练标签作用域下无可用 Ground Truth")
         train_rows, validation_rows = _select_grouped(
-            train_pool, request.validation_percent, validation_seed
+            train_pool,
+            request.validation_percent,
+            validation_seed,
+            group_ids=components,
         )
         test_source = "independent_materials"
     else:
@@ -211,9 +428,13 @@ def build_split_manifest(
             float(request.experiment_percent or 0),
             test_seed,
             min_remaining_groups=2,
+            group_ids=components,
         )
         train_rows, validation_rows = _select_grouped(
-            after_test, request.validation_percent, validation_seed
+            after_test,
+            request.validation_percent,
+            validation_seed,
+            group_ids=components,
         )
         test_source = "random_from_training_pool"
 
@@ -241,12 +462,17 @@ def build_split_manifest(
         "validation_percent": request.validation_percent,
         "training_label_ids": list(selected_labels),
         "excluded_image_count": len(exclusions),
+        "duplicate_content_group_count": len(duplicate_groups),
+        "deduplicated_image_count": deduped_train + deduped_test,
     }
     actual_ratios = {
         role: round(len(value) * 100 / total, 6) for role, value in ids.items()
     }
     selected_rows = [row for rows in roles.values() for row in rows]
-    groups = {str(row.get("id")): _group_key(row) for row in selected_rows}
+    groups = {
+        str(row.get("id")): components.get(str(row.get("id")), _group_key(row))
+        for row in selected_rows
+    }
     hashes = {
         str(row.get("id")): str(row.get("content_sha256") or "").strip()
         for row in selected_rows
