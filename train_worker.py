@@ -632,7 +632,12 @@ def main():
             if resume_model.is_file():
                 next_data=args.data; supplemented=[]
                 if ai_plan.get("action")=="supplement_and_retrain":
-                    next_data,supplemented=_supplement_snapshot(project_dir,args.data,ai_plan.get("target_labels") or [],max(1,int(args.supplement_count or 50)),ai_rounds)
+                    # The task-level image selection, split manifest and label schema are immutable.
+                    # Pulling project-global images into this directory would bypass scope checks,
+                    # leak across splits and reuse platform class IDs as YOLO IDs.  Keep the
+                    # already-materialized dataset and restrict the automated action to epochs.
+                    ai_plan={**ai_plan,"action":"extend_epochs","reason":
+                        str(ai_plan.get("reason") or "")+"；本次训练素材与标签已冻结，不在训练进程中追加项目全局素材"}
                 extra=max(1,int(ai_plan.get("extra_epochs") or args.ai_extra_epochs or 20))
                 phase={"action":ai_plan.get("action"),"reason":ai_plan.get("reason"),"target_labels":ai_plan.get("target_labels") or [],"supplemented_image_ids":supplemented,"extra_epochs":extra,"data_yaml":next_data,"started_at":now_iso()}
                 update_job(job_file,ai_continuation=phase,message="AI建议已执行，进入追加训练")

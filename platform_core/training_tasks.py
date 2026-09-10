@@ -18,7 +18,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
-from .annotations import atomic_write_json
+from .annotations import annotation_scope_covers, atomic_write_json
 from .annotation_repository import AnnotationRepository
 from .algorithms import attach_version, choose_iteration_base, list_algorithms
 from .material_repository import MaterialRepository
@@ -337,12 +337,16 @@ def materialize_portable_dataset(
             raise ValueError("portable bundle already belongs to a different snapshot")
 
     by_id = {str(row.get("id")): row for row in source_images}
-    schema = sorted(
-        (dict(item) for item in (snapshot.get("label_schema") or []) if item.get("code")),
-        key=lambda item: (int(item.get("class_id", 10**9)), str(item.get("code"))),
-    )
-    class_ids = {str(item["code"]): int(item.get("class_id", index)) for index, item in enumerate(schema)}
-    names = {class_id: code for code, class_id in class_ids.items()}
+    schema = [dict(item) for item in (snapshot.get("label_schema") or [])]
+    class_ids = {
+        str(item.get("label_id") or ""): int(item.get("yolo_class_id", item.get("class_id", -1)))
+        for item in schema
+    }
+    if not class_ids or "" in class_ids or sorted(class_ids.values()) != list(range(len(schema))):
+        raise ValueError("训练快照中的 stable label_id -> YOLO class id 映射无效")
+    names = {index: str(schema[index].get("code") or "") for index in range(len(schema))}
+    if any(not value for value in names.values()) or len(set(names.values())) != len(names):
+        raise ValueError("训练快照中的 YOLO names 为空或重复")
     snapshot_records = {str(row.get("image_id")): row for row in snapshot.get("images") or []}
     planned: list[dict[str, Any]] = []
     for role in ("train", "validation", "test"):
@@ -383,6 +387,7 @@ def materialize_portable_dataset(
         role = str(item["role"])
         image_id = str(item["image_id"])
         row = item["row"]
+        locked = snapshot_records[image_id]
         stored_name = str(item["stored_name"])
         expected_hash = str(item["expected_hash"])
         source_path = Path(item["source_path"])
@@ -393,13 +398,26 @@ def materialize_portable_dataset(
         _check_bundle_disk_space(root, remaining_bytes, size_bytes, reserve_bytes)
         _copy_verified_isolated(source_path, destination, expected_hash, bundle_root=root)
         remaining_bytes -= size_bytes
+        current_annotation_hash = str(row.get("annotation_hash") or "")
+        if current_annotation_hash and current_annotation_hash != str(locked.get("annotation_hash") or ""):
+            raise ValueError(f"snapshot annotation has changed: {image_id}")
+        selected_boxes = [
+            box for box in (row.get("boxes") or [])
+            if str(box.get("label_id") or "") in class_ids
+        ]
+        if not selected_boxes:
+            state = str(row.get("annotation_state") or "unannotated")
+            if state not in {"annotated", "confirmed_empty"} or not annotation_scope_covers(
+                row.get("annotation_scope"), class_ids.keys()
+            ):
+                raise ValueError(
+                    f"training image is not a legal negative for the frozen label scope: {image_id}"
+                )
         lines = []
-        for box in row.get("boxes") or []:
-            label = str(box.get("label") or "").strip()
-            if label not in class_ids:
-                raise ValueError(f"annotation label is not in locked schema: {label}")
+        for box in selected_boxes:
+            label_id = str(box.get("label_id") or "").strip()
             lines.append(
-                _yolo_line(box, float(row.get("width") or 0), float(row.get("height") or 0), class_ids[label])
+                _yolo_line(box, float(row.get("width") or 0), float(row.get("height") or 0), class_ids[label_id])
             )
         label_path = _bundle_output_path(root, label_ref)
         _atomic_text(label_path, "\n".join(lines))
@@ -433,6 +451,8 @@ def materialize_portable_dataset(
         "snapshot_sha256": _sha256(snapshot_path),
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": total_size_bytes,
+        "training_label_schema_snapshot": schema,
+        "excluded_images": dict(snapshot.get("excluded_images") or {}),
         "splits": splits,
     }
     atomic_write_json(manifest_path, manifest)
@@ -466,7 +486,22 @@ def materialize_runtime_yaml(manifest_path: str | Path, destination: str | Path)
 def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     path = Path(manifest_path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    resolve_dataset_yaml(path)
+    data_yaml = resolve_dataset_yaml(path)
+    data = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+    schema = list(manifest.get("training_label_schema_snapshot") or ())
+    if schema:  # Legacy bundles predate the embedded frozen-label contract.
+        expected_names = {
+            int(item.get("yolo_class_id", item.get("class_id", -1))): str(item.get("code") or "")
+            for item in schema
+        }
+        actual_names_raw = data.get("names") or {}
+        actual_names = (
+            {index: str(value) for index, value in enumerate(actual_names_raw)}
+            if isinstance(actual_names_raw, list)
+            else {int(key): str(value) for key, value in actual_names_raw.items()}
+        )
+        if expected_names != actual_names or sorted(expected_names) != list(range(len(schema))):
+            raise ValueError("portable data.yaml names 与本次训练标签冻结快照不一致")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -552,6 +587,7 @@ def _selected_project_images(
         row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
         row['confirmed_empty_scope'] = list(annotation.get('confirmed_empty_scope') or [])
         row['annotated'] = annotation['annotation_state'] in {'annotated', 'confirmed_empty'}
+        row['annotation_hash'] = str(annotation.get('content_digest') or '')
         row["boxes"] = list(annotation.get("boxes") or [])
         result.append(row)
     return result
@@ -770,7 +806,12 @@ class TrainingHandler:
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
-        manifest = build_split_manifest(images, split_request, seed=int(payload.get("seed") or 0))
+        manifest = build_split_manifest(
+            images,
+            split_request,
+            seed=int(payload.get("seed") or 0),
+            training_label_ids=training_label_ids,
+        )
         snapshot = build_snapshot(images, manifest, locked_labels)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})

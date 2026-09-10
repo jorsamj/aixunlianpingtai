@@ -12,6 +12,28 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _frozen_yolo_schema(label_schema: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Validate and preserve the task-frozen stable-label -> YOLO mapping."""
+    schema = [dict(item) for item in label_schema]
+    if not schema:
+        raise ValueError("本次训练标签冻结快照为空")
+    label_ids = [str(item.get("label_id") or "").strip() for item in schema]
+    codes = [str(item.get("code") or "").strip() for item in schema]
+    yolo_ids = [int(item.get("yolo_class_id", item.get("class_id", -1))) for item in schema]
+    if any(not value for value in label_ids) or len(set(label_ids)) != len(label_ids):
+        raise ValueError("本次训练标签必须使用唯一稳定 label_id")
+    if any(not value for value in codes) or len(set(codes)) != len(codes):
+        raise ValueError("本次训练标签 code 为空或重复")
+    if yolo_ids != list(range(len(schema))):
+        raise ValueError("YOLO class id 必须是冻结快照中从 0 开始的连续序列")
+    for item, label_id, code, yolo_id in zip(schema, label_ids, codes, yolo_ids):
+        item["label_id"] = label_id
+        item["code"] = code
+        item["class_id"] = yolo_id
+        item["yolo_class_id"] = yolo_id
+    return schema
+
+
 def build_snapshot(
     images: Sequence[Mapping[str, Any]],
     train_image_ids: Sequence[str] | SplitManifest,
@@ -82,7 +104,9 @@ def _build_snapshot_v2(
 ) -> dict:
     by_id = {str(image.get("id")): image for image in images if image.get("id") is not None}
     records: list[dict[str, Any]] = []
-    label_counts: dict[str, int] = {}
+    stable_schema = _frozen_yolo_schema(label_schema)
+    selected_label_ids = {str(item["label_id"]) for item in stable_schema}
+    label_counts: dict[str, int] = {str(item["label_id"]): 0 for item in stable_schema}
     for role in ("train", "validation", "test"):
         for image_id in manifest.ids[role]:
             image = by_id.get(image_id)
@@ -103,13 +127,14 @@ def _build_snapshot_v2(
                 image.get("annotation_hash")
                 or hashlib.sha256(_canonical(boxes).encode("utf-8")).hexdigest()
             )
-            labels = sorted(
-                {str(box.get("label") or "").strip() for box in boxes if str(box.get("label") or "").strip()}
-            )
+            labels = sorted({
+                str(box.get("label_id") or "").strip() for box in boxes
+                if str(box.get("label_id") or "").strip() in selected_label_ids
+            })
             for box in boxes:
-                label = str(box.get("label") or "").strip()
-                if label:
-                    label_counts[label] = label_counts.get(label, 0) + 1
+                label_id = str(box.get("label_id") or "").strip()
+                if label_id in selected_label_ids:
+                    label_counts[label_id] += 1
             records.append(
                 {
                     "image_id": image_id,
@@ -123,15 +148,15 @@ def _build_snapshot_v2(
                     "storage_type": str(image.get("storage_type") or "local"),
                     "object_key": str(image.get("object_key") or ""),
                     "annotation_hash": annotation_hash,
+                    "annotation_state": str(image.get("annotation_state") or "unannotated"),
+                    "annotation_scope": list(image.get("annotation_scope") or []),
                     "stored_name": str(image.get("stored_name") or ""),
-                    "box_count": len(boxes),
+                    "box_count": sum(
+                        1 for box in boxes if str(box.get("label_id") or "") in selected_label_ids
+                    ),
                     "labels": labels,
                 }
             )
-    stable_schema = sorted(
-        [dict(item) for item in label_schema if item.get("code")],
-        key=lambda item: (int(item.get("class_id", 10**9)), str(item.get("code"))),
-    )
     ids = {role: list(manifest.ids[role]) for role in ("train", "validation", "test")}
     payload = {
         "schema_version": 2,
@@ -147,6 +172,7 @@ def _build_snapshot_v2(
         "test_image_ids": ids["test"],
         "label_schema": stable_schema,
         "label_counts": dict(sorted(label_counts.items())),
+        "excluded_images": dict(manifest.exclusions),
         "images": records,
     }
     snapshot_id = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()

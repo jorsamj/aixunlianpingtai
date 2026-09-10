@@ -8,6 +8,8 @@ from enum import Enum
 from pathlib import PurePath
 from typing import Any, Mapping, Sequence
 
+from .annotations import annotation_scope_covers
+
 
 class SplitMode(str, Enum):
     INDEPENDENT_TEST_SET = "independent_test_set"
@@ -56,6 +58,7 @@ class SplitManifest:
     actual_ratios: dict[str, float]
     groups: dict[str, str]
     content_hashes: dict[str, str]
+    exclusions: dict[str, str]
     test_seed: int
     validation_seed: int
 
@@ -149,6 +152,7 @@ def build_split_manifest(
     request: SplitRequest,
     *,
     seed: int,
+    training_label_ids: Sequence[object] | None = None,
 ) -> SplitManifest:
     by_id: dict[str, Mapping[str, Any]] = {}
     for row in images:
@@ -163,19 +167,40 @@ def build_split_manifest(
     missing_ids = sorted(requested_ids - set(by_id))
     if missing_ids:
         raise ValueError(f"所选素材不存在: {', '.join(missing_ids[:5])}")
-    train_pool = [by_id[image_id] for image_id in request.train_image_ids]
-    unannotated_ids = sorted(
-        str(row.get("id")) for row in [*train_pool, *[by_id[image_id] for image_id in request.test_image_ids]]
-        if not list(row.get("boxes") or [])
-    )
-    if unannotated_ids:
-        raise ValueError(f"所选素材没有有效标注: {', '.join(unannotated_ids[:5])}")
+    selected_labels = tuple(dict.fromkeys(
+        str(value).strip() for value in (training_label_ids or ()) if str(value).strip()
+    ))
+    exclusions: dict[str, str] = {}
+
+    def eligible(row: Mapping[str, Any]) -> bool:
+        image_id = str(row.get("id") or "")
+        if not selected_labels:
+            if list(row.get("boxes") or []):
+                return True
+            exclusions[image_id] = "no_effective_annotation"
+            return False
+        state = str(row.get("annotation_state") or "unannotated")
+        if state not in {"annotated", "confirmed_empty"}:
+            exclusions[image_id] = "unannotated"
+            return False
+        if not annotation_scope_covers(row.get("annotation_scope"), selected_labels):
+            exclusions[image_id] = "annotation_scope_incomplete_for_selected_labels"
+            return False
+        # Once the complete selected-label scope is proven, selected boxes are
+        # positives and an empty filtered result is a legitimate scoped negative.
+        return True
+
+    train_pool = [by_id[image_id] for image_id in request.train_image_ids if eligible(by_id[image_id])]
+    if not train_pool:
+        raise ValueError("所选训练素材在本次训练标签作用域下无可用 Ground Truth")
 
     test_seed = int(seed)
     digest = hashlib.sha256(f"validation:{seed}".encode("utf-8")).digest()
     validation_seed = int.from_bytes(digest[:8], "big")
     if request.mode == SplitMode.INDEPENDENT_TEST_SET:
-        test_rows = [by_id[image_id] for image_id in request.test_image_ids]
+        test_rows = [by_id[image_id] for image_id in request.test_image_ids if eligible(by_id[image_id])]
+        if not test_rows:
+            raise ValueError("独立试验素材在本次训练标签作用域下无可用 Ground Truth")
         train_rows, validation_rows = _select_grouped(
             train_pool, request.validation_percent, validation_seed
         )
@@ -214,6 +239,8 @@ def build_split_manifest(
         "test_image_ids": list(request.test_image_ids),
         "experiment_percent": request.experiment_percent,
         "validation_percent": request.validation_percent,
+        "training_label_ids": list(selected_labels),
+        "excluded_image_count": len(exclusions),
     }
     actual_ratios = {
         role: round(len(value) * 100 / total, 6) for role, value in ids.items()
@@ -232,6 +259,7 @@ def build_split_manifest(
         actual_ratios=actual_ratios,
         groups=groups,
         content_hashes=hashes,
+        exclusions=dict(sorted(exclusions.items())),
         test_seed=test_seed,
         validation_seed=validation_seed,
     )
