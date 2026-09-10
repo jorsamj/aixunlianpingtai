@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
@@ -41,6 +42,9 @@ SCAN_RESULT_REF = "scan/result.json"
 FINAL_RESULT_REF = "scan/final.json"
 ERROR_RESULT_REF = "scan/error.json"
 BATCH_SIZE = 500
+MAX_IMPORT_SCAN_WORKERS = 16
+DEFAULT_ZIP_CHECKPOINT_MEMBERS = 8192
+DEFAULT_ZIP_CHECKPOINT_SECONDS = 30.0
 
 
 def _sha256_stream(stream) -> str:
@@ -93,6 +97,44 @@ def server_import_dir(data_dir: Path) -> Path:
     return (
         Path(configured).expanduser() if configured else data_dir / "imports"
     ).resolve()
+
+
+def _positive_int_env(name: str, default: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(1, min(int(default), int(maximum)))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a positive integer") from error
+    if value < 1 or value > maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+def _positive_float_env(name: str, default: float, maximum: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(0.1, min(float(default), float(maximum)))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a positive number") from error
+    if not (0 < value <= maximum):
+        raise ValueError(f"{name} must be greater than 0 and at most {maximum}")
+    return value
+
+
+def _scan_worker_count(source) -> int:
+    """Use bounded concurrency only for local files; remote SDKs stay serial."""
+    try:
+        local = StorageType.parse(source.type) is StorageType.LOCAL
+    except (TypeError, ValueError):
+        local = False
+    if not local:
+        return 1
+    default = min(8, max(1, int(os.cpu_count() or 1)))
+    return _positive_int_env("MC_IMPORT_SCAN_WORKERS", default, MAX_IMPORT_SCAN_WORKERS)
 
 
 class StorageImportHandler:
@@ -275,19 +317,45 @@ class StorageImportHandler:
             objects = scanner.iter_inventory()
         else:
             objects = iter_provider_objects(provider, prefix, recursive)
-        batch: list[dict[str, Any]] = []
+
+        scan_workers = _scan_worker_count(source)
+        executor = ThreadPoolExecutor(
+            max_workers=scan_workers,
+            thread_name_prefix="material-inspect",
+        ) if scan_workers > 1 else None
+        pending_items: list[Any] = []
         current_key = ""
-        for item in objects:
-            if context.cancel_requested():
-                self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
-                return TaskStatus.CANCELLED, None
-            current_key = str(item.key)
-            batch.append(self._inspect(provider, source, item))
-            if len(batch) >= BATCH_SIZE:
-                self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
-                self._checkpoint_scan(context, store, current_key)
-        self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
-        self._checkpoint_scan(context, store, current_key)
+
+        def flush_items() -> None:
+            if not pending_items:
+                return
+            if executor is None:
+                inspected = [self._inspect(provider, source, item) for item in pending_items]
+            else:
+                inspected = list(executor.map(
+                    lambda item: self._inspect(provider, source, item),
+                    pending_items,
+                ))
+            pending_items.clear()
+            self._flush_scan_batch(
+                store, materials, inspected, import_format == 'yolo',
+            )
+            self._checkpoint_scan(context, store, current_key)
+
+        try:
+            for item in objects:
+                if context.cancel_requested():
+                    flush_items()
+                    return TaskStatus.CANCELLED, None
+                current_key = str(item.key)
+                pending_items.append(item)
+                if len(pending_items) >= BATCH_SIZE:
+                    flush_items()
+            flush_items()
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+
         quality = scanner.scan_annotations() if import_format == "yolo" else None
 
         counts = store.counts()
@@ -298,6 +366,7 @@ class StorageImportHandler:
             "storage_source_id": source.id,
             "prefix": prefix,
             "recursive": recursive,
+            "scan_workers": scan_workers,
             "scanned_files": scanned,
             "importable_images": counts.get("IMPORTABLE", 0),
             "duplicates": counts.get("DUPLICATE", 0),
@@ -429,8 +498,22 @@ class StorageImportHandler:
             else:
                 completed = saved.get("completed_members")
                 completed = completed if isinstance(completed, dict) else {}
+                checkpoint_members = _positive_int_env(
+                    "MC_ZIP_CHECKPOINT_MEMBERS",
+                    DEFAULT_ZIP_CHECKPOINT_MEMBERS,
+                    100_000,
+                )
+                checkpoint_seconds = _positive_float_env(
+                    "MC_ZIP_CHECKPOINT_SECONDS",
+                    DEFAULT_ZIP_CHECKPOINT_SECONDS,
+                    3600.0,
+                )
+                last_checkpoint_files = len(completed)
+                last_checkpoint_at = time.monotonic()
+                checkpoint_saves = 0
 
                 def on_extract(progress):
+                    nonlocal last_checkpoint_files, last_checkpoint_at, checkpoint_saves
                     if progress.completed_member is not None:
                         completed[progress.completed_member.name] = asdict(
                             progress.completed_member
@@ -445,13 +528,29 @@ class StorageImportHandler:
                         "declared_files": progress.declared_files,
                         "declared_bytes": progress.declared_bytes,
                         "current_file": progress.current_member,
+                        "checkpoint_saves": checkpoint_saves,
                     }
                     live_state.clear()
                     live_state.update(state)
-                    # Persist only completed members. Chunk heartbeats remain live
-                    # without rewriting an ever-growing checkpoint every MiB.
-                    if progress.completed_member is not None:
+                    now = time.monotonic()
+                    completed_delta = progress.extracted_files - last_checkpoint_files
+                    due = (
+                        progress.completed_member is not None
+                        and (
+                            completed_delta >= checkpoint_members
+                            or now - last_checkpoint_at >= checkpoint_seconds
+                            or (
+                                progress.declared_files > 0
+                                and progress.extracted_files >= progress.declared_files
+                            )
+                        )
+                    )
+                    if due:
+                        checkpoint_saves += 1
+                        state["checkpoint_saves"] = checkpoint_saves
                         context.save_checkpoint({"stage": "extracting", "zip_import": state})
+                        last_checkpoint_files = progress.extracted_files
+                        last_checkpoint_at = now
                     percent = (
                         min(45.0, 45.0 * progress.extracted_bytes / progress.declared_bytes)
                         if progress.declared_bytes else 0.0
@@ -490,6 +589,7 @@ class StorageImportHandler:
                     "declared_files": report.extracted_files,
                     "declared_bytes": report.extracted_bytes,
                     "current_file": "",
+                    "checkpoint_saves": checkpoint_saves,
                 }
                 # This checkpoint precedes marker removal. A crash before it is
                 # recovered through the task-owned marker and verified records.
