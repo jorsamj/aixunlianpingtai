@@ -223,6 +223,12 @@ def parse_yolo_text(text: str, names: Mapping[int, str], object_key: str) -> Par
     return ParseResult(tuple(boxes), tuple(issues))
 
 
+def _inside_prefix(key: str, prefix: str) -> bool:
+    root = str(prefix or "").strip("/")
+    value = str(key or "").strip("/")
+    return not root or value == root or value.startswith(root + "/")
+
+
 class YoloImportScanner:
     def __init__(self, provider, store, iter_objects, *, cancelled=lambda: False, progress=lambda key: None):
         self.provider = provider
@@ -239,8 +245,15 @@ class YoloImportScanner:
         self.progress(key)
 
     def _inventory(self, prefix: str, recursive: bool):
+        """Inventory object identity/size without hashing local contents eagerly."""
         batch = []
-        for item in self.iter_objects(self.provider, prefix, recursive):
+        cheap_local = getattr(self.provider, "iter_objects_metadata", None)
+        objects = (
+            cheap_local(prefix, recursive=recursive)
+            if callable(cheap_local)
+            else self.iter_objects(self.provider, prefix, recursive)
+        )
+        for item in objects:
             if self.cancelled():
                 raise YoloScanCancelled()
             key = resolve_reference(self.provider, item.key)
@@ -279,7 +292,12 @@ class YoloImportScanner:
         with self.store._transaction() as connection:
             for table in ("candidate_annotations", "annotation_issues", "dataset_manifest", "dataset_objects", "label_mapping"):
                 connection.execute(f"DELETE FROM {table}")
+        self.names = {}
         prefix = resolve_reference(self.provider, prefix) if prefix else ""
+        # One bounded subtree inventory is enough for the normal server-ZIP
+        # layout. Older code immediately inventoried the entire storage root a
+        # second time whenever prefix was non-empty, so import cost grew with
+        # all historical datasets instead of this ZIP alone.
         self._inventory(prefix, recursive)
         if dataset_yaml:
             self.yaml_key = resolve_reference(self.provider, dataset_yaml)
@@ -336,35 +354,50 @@ class YoloImportScanner:
         base = str(PurePosixPath(self.yaml_key).parent)
         if document.get("path") is not None:
             base = resolve_reference(self.provider, document["path"], base)
-        # YAML may refer to siblings of the selected prefix. One source inventory
-        # avoids an exists/stat round trip for each image and each possible TXT.
-        if prefix or not recursive:
-            self._inventory("", True)
         splits = [(key, document[key]) for key in ("train", "val", "test", "valid", "validation") if document.get(key) is not None]
         if isinstance(document.get("splits"), dict):
             splits.extend(document["splits"].items())
         if not splits:
             raise YoloImportError("YOLO_SPLITS_REQUIRED", "Dataset YAML must declare image splits")
+
+        resolved_splits: list[tuple[str, str]] = []
         for split, references in splits:
             if not isinstance(split, str) or len(split) > 100:
                 raise YoloImportError("YOLO_INVALID_SPLIT", "Dataset split name is invalid")
             references = references if isinstance(references, list) else [references]
             for reference in references:
-                key = resolve_reference(self.provider, reference, base)
-                if PurePosixPath(key).suffix.lower() == ".txt":
-                    entries = []
-                    for line in self._lines(key):
-                        if not line:
-                            continue
-                        # Relative list entries are resolved against the list's directory.
-                        entries.append(resolve_reference(self.provider, line, str(PurePosixPath(key).parent)))
-                        if len(entries) == BATCH_SIZE:
-                            self._add_list_entries(entries, split)
-                            entries.clear()
-                    if entries:
+                resolved_splits.append((split, resolve_reference(self.provider, reference, base)))
+
+        # Compatibility for deliberately cross-prefix datasets: only fall back
+        # to a full-source inventory when YAML actually references outside the
+        # requested subtree. Typical self-contained ZIPs never pay this cost.
+        full_inventory = False
+        if (prefix or not recursive) and any(
+            not _inside_prefix(key, prefix) for _, key in resolved_splits
+        ):
+            self._inventory("", True)
+            full_inventory = True
+
+        for split, key in resolved_splits:
+            if PurePosixPath(key).suffix.lower() == ".txt":
+                entries = []
+                for line in self._lines(key):
+                    if not line:
+                        continue
+                    entry = resolve_reference(self.provider, line, str(PurePosixPath(key).parent))
+                    if not full_inventory and prefix and not _inside_prefix(entry, prefix):
+                        # Rare list-file escape: retain compatibility, but make
+                        # the expensive fallback conditional on actual data.
+                        self._inventory("", True)
+                        full_inventory = True
+                    entries.append(entry)
+                    if len(entries) == BATCH_SIZE:
                         self._add_list_entries(entries, split)
-                else:
-                    self._add_reference(key, split)
+                        entries.clear()
+                if entries:
+                    self._add_list_entries(entries, split)
+            else:
+                self._add_reference(key, split)
         return "yolo"
 
     def _add_list_entries(self, keys, split):
@@ -444,7 +477,7 @@ class YoloImportScanner:
             with closing(self.store._connect()) as connection:
                 images = connection.execute(
                     "SELECT object_key FROM dataset_manifest WHERE object_key>? ORDER BY object_key LIMIT ?",
-                    (after, 100)).fetchall()
+                    (after, BATCH_SIZE)).fetchall()
                 if not images:
                     return self.store.quality_summary()
                 options = {key for image in images for key in self._label_options(image[0])}
