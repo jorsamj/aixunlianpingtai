@@ -33,6 +33,7 @@ jobs:
           task_worker.py
           platform_core/task_runtime/repository.py
           platform_core/task_runtime/audited_repository.py
+          platform_core/annotation_task_service.py
           platform_core/training_splits.py
           platform_core/training_labels.py
           platform_core/training_preflight.py
@@ -46,6 +47,7 @@ jobs:
           python -m pytest
           tests/unit/task_runtime/test_repository.py
           tests/unit/task_runtime/test_retry_audit.py
+          tests/unit/test_annotation_task_service.py
           tests/unit/test_training_splits.py
           tests/unit/test_training_labels.py
           tests/unit/test_task_worker.py
