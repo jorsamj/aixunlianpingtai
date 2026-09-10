@@ -4,10 +4,17 @@ import json
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from platform_core.task_runtime import TaskKind, TaskStatus
+from platform_core.task_runtime import (
+    ProcessController,
+    ProcessIdentity,
+    TaskKind,
+    TaskStatus,
+    launch_process,
+)
 from platform_core.task_runtime.scheduler import HardwareUnavailableError
 from platform_core.resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 
@@ -27,8 +34,28 @@ def _last_json_line(text: str) -> dict[str, Any]:
     raise RuntimeError("推理执行器没有返回结构化结果")
 
 
+def _finished_result(context, request: dict[str, Any]) -> str | None:
+    """Publish an already verified result after a lease/process crash boundary."""
+    result = context.artifacts.read_json(context.task.task_id, "result.json", default=None)
+    if not isinstance(result, dict) or str(result.get("task_id") or "") != context.task.task_id:
+        return None
+    output = Path(str(request.get("output_path") or ""))
+    if not output.is_file() or output.stat().st_size <= 0:
+        return None
+    expected_size = int(result.get("output_size_bytes") or 0)
+    if expected_size <= 0 or output.stat().st_size != expected_size:
+        return None
+    return "result.json"
+
+
 def run_deployment_test(context) -> tuple[TaskStatus, str]:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+    if not isinstance(request, dict):
+        raise ValueError("部署测试请求无效")
+    finished = _finished_result(context, request)
+    if finished:
+        return TaskStatus.SUCCEEDED, finished
+
     model_path = str(request.get("model_path") or "").strip()
     model_reference = str(request.get("model_reference") or "").strip()
     model_reference_type = str(request.get("model_reference_type") or "").strip()
@@ -65,20 +92,64 @@ def run_deployment_test(context) -> tuple[TaskStatus, str]:
     command = [python_path, str(runner), "--model", model_argument, "--input", str(image), "--output", str(output), "--conf", str(float(request.get("conf") or 0.25))]
     context.repository.heartbeat(context.task.task_id, context.lease.lease_token, progress=5, stage="LOADING_RUNTIME", current_item=image.name)
     started = time.perf_counter()
-    with log_path.open("w", encoding="utf-8", errors="ignore") as log:
-        process = subprocess.Popen(command, cwd=str(runner.parent), stdout=log, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore")
-        while process.poll() is None:
-            if context.cancel_requested():
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                raise InterruptedError("deployment test cancelled")
-            time.sleep(0.2)
+    launched = None
+    controller = ProcessController()
+    try:
+        with log_path.open("w", encoding="utf-8", errors="ignore") as log:
+            launched = launch_process(
+                command,
+                cwd=runner.parent,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+            )
+            context.repository.bind_process(
+                context.task.task_id,
+                context.lease.lease_token,
+                launched.identity,
+            )
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "process-identity.json",
+                {
+                    "pid": launched.identity.pid,
+                    "process_create_time": launched.identity.create_time,
+                    "process_group_id": launched.identity.process_group_id,
+                    "command_hash": launched.identity.command_hash,
+                    "launch_token": launched.identity.launch_token,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "command": command,
+                },
+            )
+            while launched.process.poll() is None:
+                if context.cancel_requested():
+                    controller.terminate_tree(launched.identity)
+                    raise InterruptedError("deployment test cancelled")
+                context.repository.heartbeat(
+                    context.task.task_id,
+                    context.lease.lease_token,
+                    progress=50,
+                    stage="RUNNING_INFERENCE",
+                    current_item=image.name,
+                )
+                time.sleep(0.25)
+    except BaseException:
+        # Lease loss / SQLite failure is also a stop condition. Do not leave an
+        # unowned inference child running after another Worker may take over.
+        if launched is not None and launched.process.poll() is None:
+            try:
+                controller.terminate_tree(launched.identity)
+            except (ProcessLookupError, PermissionError):
+                pass
+        raise
+
     text = log_path.read_text(encoding="utf-8", errors="ignore")
-    if process.returncode != 0:
-        message = text[-2000:] or f"推理进程退出码 {process.returncode}"
+    if launched is None:
+        raise RuntimeError("推理进程未启动")
+    if launched.process.returncode != 0:
+        message = text[-2000:] or f"推理进程退出码 {launched.process.returncode}"
         if suffix in {".engine"}:
             raise HardwareUnavailableError(message)
         raise RuntimeError(message)
@@ -109,6 +180,33 @@ class DeploymentTestHandler:
         return run_deployment_test(context)
 
     def recover(self, context):
+        task = context.task
+        if task.process_pid and task.process_create_time is not None and task.process_command_hash:
+            identity = ProcessIdentity(
+                task.process_pid,
+                task.process_create_time,
+                task.process_command_hash,
+                task.process_group_id,
+                task.process_launch_token,
+            )
+            controller = ProcessController()
+            try:
+                controller.inspect(identity)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                raise EnvironmentError(f"DEPLOYMENT_PROCESS_IDENTITY_UNVERIFIED: {error}") from error
+            else:
+                controller.terminate_tree(identity)
+                context.artifacts.atomic_write_json(
+                    task.task_id,
+                    "recovery.json",
+                    {
+                        "action": "verified_process_terminated",
+                        "pid": task.process_pid,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
         return run_deployment_test(context)
 
 
