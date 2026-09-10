@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -49,11 +50,165 @@ def _bump_revision(item: dict) -> int:
     return revision
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _training_artifact_manifest(version: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Freeze model/schema lineage for durable training versions when available.
+
+    TrainingHandler stores weights at ``<task artifact root>/outputs`` and a
+    sibling snapshot.json/payload.json. Legacy/manual versions may not have
+    that layout; they remain readable but are not retroactively fabricated.
+    """
+    task_id = str(version.get("task_id") or "").strip()
+    stored_value = str(
+        version.get("stored_path") or version.get("best_path") or version.get("last_path") or ""
+    ).strip()
+    if not task_id or not stored_value:
+        return None
+    model = Path(stored_value).expanduser()
+    if not model.is_file() or model.stat().st_size <= 0:
+        return None
+    task_root = model.parent.parent if model.parent.name == "outputs" else None
+    if task_root is None or task_root.name != task_id:
+        return None
+
+    snapshot_path = task_root / "snapshot.json"
+    if not snapshot_path.is_file():
+        raise PlatformError(
+            code="TRAINING_ARTIFACT_MANIFEST_MISSING",
+            message="训练版本缺少冻结数据快照",
+            detail=f"任务 {task_id} 的模型位于标准任务产物目录，但 snapshot.json 不存在。",
+            solution="不要发布该版本；请恢复该训练任务完整产物后重试后处理。",
+            status_code=409,
+        )
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise PlatformError(
+            code="TRAINING_ARTIFACT_MANIFEST_INVALID",
+            message="训练版本快照无法读取",
+            detail=str(error),
+            solution="请恢复有效 snapshot.json 后重试，平台不会猜测标签映射。",
+            status_code=409,
+        ) from error
+    snapshot_id = str(snapshot.get("snapshot_id") or "")
+    recorded_snapshot_id = str(version.get("snapshot_id") or "")
+    if not snapshot_id or (recorded_snapshot_id and snapshot_id != recorded_snapshot_id):
+        raise PlatformError(
+            code="TRAINING_ARTIFACT_MANIFEST_INVALID",
+            message="训练版本与数据快照不一致",
+            detail=f"version snapshot_id={recorded_snapshot_id or '<空>'}，artifact snapshot_id={snapshot_id or '<空>'}。",
+            solution="请检查任务产物归属，禁止把其他训练任务的模型和快照拼接成一个版本。",
+            status_code=409,
+        )
+    labels = [dict(row) for row in (snapshot.get("label_schema") or []) if isinstance(row, Mapping)]
+    if not labels:
+        raise PlatformError(
+            code="TRAINING_ARTIFACT_MANIFEST_INVALID",
+            message="训练版本缺少冻结标签映射",
+            detail="snapshot.json 中 label_schema 为空。",
+            solution="请恢复该训练任务真实标签快照后重试。",
+            status_code=409,
+        )
+    labels.sort(key=lambda row: int(row.get("yolo_class_id", row.get("class_id", 10**9))))
+    yolo_ids = [int(row.get("yolo_class_id", row.get("class_id", -1))) for row in labels]
+    if yolo_ids != list(range(len(labels))):
+        raise PlatformError(
+            code="TRAINING_ARTIFACT_MANIFEST_INVALID",
+            message="训练版本的 YOLO 标签映射不连续",
+            detail=f"实际 class ids={yolo_ids[:20]}。",
+            solution="请恢复训练时冻结的 task-local class id 映射，不能使用当前项目标签顺序替代。",
+            status_code=409,
+        )
+
+    payload = {}
+    payload_path = task_root / "payload.json"
+    if payload_path.is_file():
+        try:
+            value = json.loads(payload_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                payload = value
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+    names = [str(row.get("code") or row.get("display_name") or "") for row in labels]
+    if any(not name for name in names):
+        raise PlatformError(
+            code="TRAINING_ARTIFACT_MANIFEST_INVALID",
+            message="训练版本标签名称不完整",
+            detail="冻结标签映射中存在空 code/display_name。",
+            solution="请恢复有效标签快照后重试。",
+            status_code=409,
+        )
+    manifest = {
+        "schema_version": 1,
+        "task_id": task_id,
+        "framework": str(version.get("framework") or payload.get("framework") or ""),
+        "task_type": str(payload.get("task_type") or payload.get("task") or "detect"),
+        "input_size": payload.get("imgsz"),
+        "snapshot_id": snapshot_id,
+        "parent_version_id": str(version.get("parent_version_id") or ""),
+        "num_classes": len(labels),
+        "names": names,
+        "labels": [
+            {
+                "label_id": str(row.get("label_id") or ""),
+                "code": str(row.get("code") or ""),
+                "display_name": str(row.get("display_name") or row.get("code") or ""),
+                "platform_class_id": row.get("platform_class_id"),
+                "yolo_class_id": int(row.get("yolo_class_id", row.get("class_id", -1))),
+            }
+            for row in labels
+        ],
+        "model": {
+            "name": model.name,
+            "size_bytes": model.stat().st_size,
+            "sha256": _file_sha256(model),
+        },
+    }
+    manifest["manifest_sha256"] = hashlib.sha256(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return manifest
+
+
+def _artifact_manifest_mismatch(version: Mapping[str, Any], path: Path, framework: str) -> str:
+    manifest = version.get("artifact_manifest")
+    if not isinstance(manifest, Mapping):
+        return ""
+    recorded_framework = str(manifest.get("framework") or "").strip().lower()
+    if recorded_framework and recorded_framework != str(framework).strip().lower():
+        return f"artifact manifest framework={recorded_framework} 与 {framework} 不一致"
+    model = manifest.get("model")
+    if not isinstance(model, Mapping):
+        return "artifact manifest 缺少 model 完整性信息"
+    try:
+        expected_size = int(model.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        expected_size = 0
+    expected_hash = str(model.get("sha256") or "").strip().lower()
+    if expected_size <= 0 or len(expected_hash) != 64:
+        return "artifact manifest 的模型大小或 SHA256 无效"
+    try:
+        if path.stat().st_size != expected_size:
+            return "模型文件大小与 artifact manifest 不一致"
+        if _file_sha256(path) != expected_hash:
+            return "模型文件 SHA256 与 artifact manifest 不一致"
+    except OSError as error:
+        return f"模型完整性校验失败：{error}"
+    return ""
+
+
 @contextmanager
 def _algorithm_store_lock(path: Path, timeout: float = _ALGORITHM_LOCK_TIMEOUT_SECONDS):
     """Serialize algorithms.json read-modify-write across threads and processes.
 
-    The JSON file itself is still atomically replaced.  A persistent sibling
+    The JSON file itself is still atomically replaced. A persistent sibling
     lock file provides the cross-process fence on both Windows and POSIX.
     """
     path = Path(path)
@@ -103,8 +258,6 @@ def _algorithm_store_lock(path: Path, timeout: float = _ALGORITHM_LOCK_TIMEOUT_S
 
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 except OSError:
-                    # Process exit releases an OS lock; do not mask the mutation
-                    # result solely because explicit unlock reporting failed.
                     pass
 
 
@@ -141,7 +294,6 @@ def is_trainable_version(version: Mapping[str, Any], framework: str) -> bool:
     successful = status in {
         "SUCCEEDED",
         "PARTIAL_SUCCESS",
-        # Compatibility with versions archived before the durable task runtime.
         "DONE",
         "FINISHED",
         "COMPLETED",
@@ -163,20 +315,9 @@ def choose_iteration_base(
     artifact_validator: Callable[[Path], bool] | None = None,
     current_version_id: str | None = None,
 ) -> dict:
-    """Choose the checkpoint used for an iterative training run.
-
-    The historical/default mode keeps the backwards-compatible "newest usable"
-    fallback. Product training uses ``strict_latest=True``.  When an explicit
-    ``current_version_id`` exists (including after rollback), that exact version
-    is authoritative and no newer/older version or mother model may silently
-    replace it.
-    """
+    """Choose the checkpoint used for an iterative training run."""
     allowed_suffixes = {".pt"} if framework == "ultralytics" else {".pdparams", ".pdmodel", ".pdiparams"}
-    ordered = sorted(
-        versions or [],
-        key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""),
-        reverse=True,
-    )
+    ordered = sorted(versions or [], key=_version_sort_key, reverse=True)
     if current_version_id:
         current = next((row for row in ordered if str(row.get("id")) == str(current_version_id)), None)
         if current is None:
@@ -209,14 +350,7 @@ def choose_iteration_base(
                 solution="请修复当前版本产物，或回退到一个有效版本后再开始训练。",
                 status_code=409,
             )
-        candidate = next(
-            (
-                str(latest.get(field) or "").strip()
-                for field in ("best_path", "last_path", "stored_path", "path")
-                if str(latest.get(field) or "").strip()
-            ),
-            "",
-        )
+        candidate = next((str(latest.get(field) or "").strip() for field in ("best_path", "last_path", "stored_path", "path") if str(latest.get(field) or "").strip()), "")
         path = Path(candidate).expanduser() if candidate else None
         reason = ""
         if not candidate:
@@ -227,10 +361,12 @@ def choose_iteration_base(
             reason = f"模型产物格式 {path.suffix or '<无扩展名>'} 与 {framework} 框架不匹配"
         elif latest.get("artifact_verified") is False:
             reason = "模型产物未通过完整性校验"
-        elif artifact_validator is not None:
+        elif path is not None:
+            reason = _artifact_manifest_mismatch(latest, path.resolve(), framework)
+        if not reason and artifact_validator is not None and path is not None:
             try:
                 valid = bool(artifact_validator(path.resolve()))
-            except Exception as error:  # validators are intentionally fail-closed
+            except Exception as error:
                 valid = False
                 reason = f"模型产物校验异常：{error}"
             if not valid and not reason:
@@ -251,14 +387,7 @@ def choose_iteration_base(
             "base_selection_reason": "current_verified_version" if current_version_id else "latest_verified_version",
         }
     for version in ordered:
-        candidate = next(
-            (
-                str(version.get(field) or "").strip()
-                for field in ("best_path", "last_path", "stored_path", "path")
-                if str(version.get(field) or "").strip()
-            ),
-            "",
-        )
+        candidate = next((str(version.get(field) or "").strip() for field in ("best_path", "last_path", "stored_path", "path") if str(version.get(field) or "").strip()), "")
         if not candidate:
             continue
         path = Path(candidate).expanduser()
@@ -285,21 +414,9 @@ def list_algorithms(path: Path) -> list[dict]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise PlatformError(
-            code="ALGORITHM_STORE_INVALID",
-            message="算法资产文件无法读取",
-            detail=str(error),
-            solution="请恢复 algorithms.json 备份，或检查文件是否为有效 JSON。",
-            status_code=500,
-        ) from error
+        raise PlatformError("ALGORITHM_STORE_INVALID", "算法资产文件无法读取", str(error), "请恢复 algorithms.json 备份，或检查文件是否为有效 JSON。", 500) from error
     if not isinstance(value, list):
-        raise PlatformError(
-            code="ALGORITHM_STORE_INVALID",
-            message="算法资产文件格式不正确",
-            detail="algorithms.json 的根节点必须是数组。",
-            solution="请恢复有效的算法资产文件。",
-            status_code=500,
-        )
+        raise PlatformError("ALGORITHM_STORE_INVALID", "算法资产文件格式不正确", "algorithms.json 的根节点必须是数组。", "请恢复有效的算法资产文件。", 500)
     return value
 
 
@@ -308,63 +425,30 @@ def _save_algorithms_unlocked(path: Path, algorithms: Sequence[Mapping[str, Any]
 
 
 def save_algorithms(path: Path, algorithms: Sequence[Mapping[str, Any]]) -> None:
-    """Compatibility whole-store write, serialized across processes.
-
-    New mutation paths should prefer the dedicated create/update/attach/rollback
-    functions so a fresh read happens under the same cross-process lock.
-    """
     with _algorithm_store_lock(path):
         _save_algorithms_unlocked(path, algorithms)
 
 
-def create_algorithm(
-    path: Path,
-    payload: Mapping[str, Any],
-    now: str,
-    algorithm_id: str | None = None,
-) -> dict:
+def create_algorithm(path: Path, payload: Mapping[str, Any], now: str, algorithm_id: str | None = None) -> dict:
     name = str(payload.get("name") or "").strip()
     if not name:
-        raise PlatformError(
-            code="ALGORITHM_NAME_REQUIRED",
-            message="算法名称不能为空",
-            detail="创建算法时必须填写名称。",
-            solution="请输入一个能够区分业务用途的算法名称。",
-        )
+        raise PlatformError("ALGORITHM_NAME_REQUIRED", "算法名称不能为空", "创建算法时必须填写名称。", "请输入一个能够区分业务用途的算法名称。")
     with _algorithm_store_lock(path):
         algorithms = list_algorithms(path)
         if any(str(item.get("name") or "").strip().casefold() == name.casefold() for item in algorithms):
-            raise PlatformError(
-                code="ALGORITHM_NAME_EXISTS",
-                message="算法名称已存在",
-                detail=f"当前项目中已经存在名为“{name}”的算法。",
-                solution="请使用不同名称，或编辑已有算法。",
-                status_code=409,
-            )
+            raise PlatformError("ALGORITHM_NAME_EXISTS", "算法名称已存在", f"当前项目中已经存在名为“{name}”的算法。", "请使用不同名称，或编辑已有算法。", 409)
         item = {
-            "id": algorithm_id or uuid.uuid4().hex[:12],
-            "name": name,
-            "remark": str(payload.get("remark") or ""),
-            "industry": str(payload.get("industry") or "").strip(),
-            "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
-            "versions": [],
-            "revision": 1,
-            "created_at": now,
-            "updated_at": now,
+            "id": algorithm_id or uuid.uuid4().hex[:12], "name": name,
+            "remark": str(payload.get("remark") or ""), "industry": str(payload.get("industry") or "").strip(),
+            "algorithm_type": str(payload.get("algorithm_type") or "").strip(), "versions": [], "revision": 1,
+            "created_at": now, "updated_at": now,
         }
         algorithms.insert(0, item)
         _save_algorithms_unlocked(path, algorithms)
         return item
 
 
-def update_algorithm(
-    path: Path,
-    algorithm_id: str,
-    payload: Mapping[str, Any],
-    now: str,
-    *,
-    expected_revision: int | None = None,
-) -> dict:
+def update_algorithm(path: Path, algorithm_id: str, payload: Mapping[str, Any], now: str, *, expected_revision: int | None = None) -> dict:
     with _algorithm_store_lock(path):
         algorithms = list_algorithms(path)
         item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
@@ -372,62 +456,45 @@ def update_algorithm(
             raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
         _assert_expected_revision(item, expected_revision)
         proposed_name = str(payload.get("name") or item.get("name") or "").strip()
-        if any(
-            str(row.get("id")) != str(algorithm_id)
-            and str(row.get("name") or "").strip().casefold() == proposed_name.casefold()
-            for row in algorithms
-        ):
+        if any(str(row.get("id")) != str(algorithm_id) and str(row.get("name") or "").strip().casefold() == proposed_name.casefold() for row in algorithms):
             raise PlatformError("ALGORITHM_NAME_EXISTS", "算法名称已存在", f"算法名称“{proposed_name}”已被使用。", "请使用不同名称。", 409)
-        item.update({
-            "name": proposed_name,
-            "remark": str(payload.get("remark") or ""),
-            "industry": str(payload.get("industry") or "").strip(),
-            "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
-            "updated_at": now,
-        })
+        item.update({"name": proposed_name, "remark": str(payload.get("remark") or ""), "industry": str(payload.get("industry") or "").strip(), "algorithm_type": str(payload.get("algorithm_type") or "").strip(), "updated_at": now})
         _bump_revision(item)
         _save_algorithms_unlocked(path, algorithms)
         return item
 
 
-def delete_algorithm(
-    path: Path,
-    algorithm_id: str,
-    *,
-    expected_revision: int | None = None,
-) -> None:
+def delete_algorithm(path: Path, algorithm_id: str, *, expected_revision: int | None = None) -> None:
     with _algorithm_store_lock(path):
         algorithms = list_algorithms(path)
         item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
         if item is None:
             raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
         _assert_expected_revision(item, expected_revision)
-        remaining = [row for row in algorithms if str(row.get("id")) != str(algorithm_id)]
-        _save_algorithms_unlocked(path, remaining)
+        _save_algorithms_unlocked(path, [row for row in algorithms if str(row.get("id")) != str(algorithm_id)])
 
 
-def attach_version(
-    path: Path,
-    algorithm_id: str,
-    version: Mapping[str, Any],
-    *,
-    expected_revision: int | None = None,
-) -> dict:
+def attach_version(path: Path, algorithm_id: str, version: Mapping[str, Any], *, expected_revision: int | None = None) -> dict:
     with _algorithm_store_lock(path):
         algorithms = list_algorithms(path)
         item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
         if item is None:
             raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-        _assert_expected_revision(item, expected_revision)
-        ensure_current_version(item, str(version.get("framework") or ""))
         attached = dict(version)
         versions = list(item.get("versions") or [])
         task_id = str(attached.get("task_id") or "").strip()
         if task_id:
             existing = next((row for row in versions if str(row.get("task_id") or "") == task_id), None)
             if existing is not None:
+                # Idempotent replay must succeed even if another operation has
+                # advanced the algorithm revision since the original commit.
                 return dict(existing)
+        _assert_expected_revision(item, expected_revision)
+        ensure_current_version(item, str(version.get("framework") or ""))
         attached.setdefault("parent_version_id", str(item.get("current_version_id") or ""))
+        manifest = _training_artifact_manifest(attached)
+        if manifest is not None:
+            attached["artifact_manifest"] = manifest
         versions.append(attached)
         versions.sort(key=_version_sort_key, reverse=True)
         item["versions"] = versions
@@ -438,15 +505,7 @@ def attach_version(
         return attached
 
 
-def rollback_current_version(
-    path: Path,
-    algorithm_id: str,
-    version_id: str,
-    *,
-    actor: str,
-    now: str | None = None,
-    expected_revision: int | None = None,
-) -> dict:
+def rollback_current_version(path: Path, algorithm_id: str, version_id: str, *, actor: str, now: str | None = None, expected_revision: int | None = None) -> dict:
     """Atomically move only the current pointer; immutable version history is untouched."""
     with _algorithm_store_lock(path):
         algorithms = list_algorithms(path)
@@ -463,13 +522,7 @@ def rollback_current_version(
         changed_at = now or datetime.now(timezone.utc).isoformat()
         item["current_version_id"] = str(version_id)
         item["updated_at"] = changed_at
-        item.setdefault("version_pointer_audit", []).append({
-            "action": "rollback",
-            "from_version_id": previous,
-            "to_version_id": str(version_id),
-            "user": str(actor or "unknown"),
-            "time": changed_at,
-        })
+        item.setdefault("version_pointer_audit", []).append({"action": "rollback", "from_version_id": previous, "to_version_id": str(version_id), "user": str(actor or "unknown"), "time": changed_at})
         _bump_revision(item)
         _save_algorithms_unlocked(path, algorithms)
         return {"algorithm": item, "changed": True, "from_version_id": previous, "to_version_id": str(version_id)}
