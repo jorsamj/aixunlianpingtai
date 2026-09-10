@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -5,7 +6,14 @@ import pytest
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
-def _failed_task(tmp_path: Path, task_id: str = "attempt-1"):
+def _failed_task(
+    tmp_path: Path,
+    task_id: str = "attempt-1",
+    *,
+    kind: TaskKind = TaskKind.AI_ANNOTATION,
+    resource_key: str = "vision:model-1",
+    capability: str = "vision_provider",
+):
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "artifacts")
     artifacts.atomic_write_json(task_id, "payload.json", {"image_ids": ["a", "b"], "mode": "real"})
@@ -13,18 +21,18 @@ def _failed_task(tmp_path: Path, task_id: str = "attempt-1"):
         TaskRecord.new(
             task_id,
             "project-1",
-            TaskKind.MATERIAL_BATCH,
+            kind,
             "payload.json",
-            "materials:project-1",
+            resource_key,
             priority=7,
-            required_capabilities=("materials.batch",),
+            required_capabilities=(capability,),
         ),
         artifacts=artifacts,
     )
     lease = repository.claim_next(
         "worker-1",
-        [TaskKind.MATERIAL_BATCH],
-        {"materials.batch"},
+        [kind],
+        {capability},
     )
     assert lease is not None
     failed = repository.finish(
@@ -81,8 +89,8 @@ def test_retry_chain_must_continue_from_latest_terminal_attempt(tmp_path: Path):
     second = repository.retry(failed.task_id)
     lease = repository.claim_next(
         "worker-2",
-        [TaskKind.MATERIAL_BATCH],
-        {"materials.batch"},
+        [TaskKind.AI_ANNOTATION],
+        {"vision_provider"},
     )
     assert lease is not None
     assert lease.task.task_id == second.task_id
@@ -99,6 +107,48 @@ def test_retry_chain_must_continue_from_latest_terminal_attempt(tmp_path: Path):
     third = repository.retry(second_failed.task_id)
     assert third.task_id not in {failed.task_id, second_failed.task_id}
     assert third.retry_of == second_failed.task_id
+
+
+def test_material_batch_retry_clones_frozen_selection_database(tmp_path: Path):
+    repository, artifacts, _original, failed = _failed_task(
+        tmp_path,
+        kind=TaskKind.MATERIAL_BATCH,
+        resource_key="materials:project-1",
+        capability="materials.batch",
+    )
+    selection = artifacts.artifact_path(failed.task_id, "selection.sqlite3")
+    selection.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(selection) as database:
+        database.execute("PRAGMA journal_mode=WAL")
+        database.execute("CREATE TABLE selection(image_id TEXT PRIMARY KEY, state TEXT NOT NULL)")
+        database.executemany(
+            "INSERT INTO selection(image_id,state) VALUES (?,?)",
+            [("done", "succeeded"), ("retry", "failed")],
+        )
+        database.commit()
+
+    retried = repository.retry(failed.task_id)
+    cloned = artifacts.artifact_path(retried.task_id, "selection.sqlite3")
+
+    with sqlite3.connect(cloned) as database:
+        rows = database.execute("SELECT image_id,state FROM selection ORDER BY image_id").fetchall()
+    assert rows == [("done", "succeeded"), ("retry", "failed")]
+    assert cloned != selection
+
+
+def test_material_batch_retry_fails_if_frozen_selection_is_missing(tmp_path: Path):
+    repository, _artifacts, _original, failed = _failed_task(
+        tmp_path,
+        kind=TaskKind.MATERIAL_BATCH,
+        resource_key="materials:project-1",
+        capability="materials.batch",
+    )
+
+    with pytest.raises(ValueError, match="required retry state is missing"):
+        repository.retry(failed.task_id)
+
+    assert repository.get(failed.task_id) == failed
+    assert len(repository.list(project_id="project-1", limit=20).items) == 1
 
 
 def test_retry_rejects_missing_payload_without_mutating_source(tmp_path: Path):
