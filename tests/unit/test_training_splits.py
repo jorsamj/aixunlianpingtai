@@ -51,7 +51,7 @@ def test_mode_b_draws_test_first_then_validation_without_leakage():
     assert build_split_manifest(rows, request, seed=42).ids == manifest.ids
 
 
-def test_content_hash_crossing_splits_is_rejected():
+def test_content_hash_crossing_explicit_train_test_is_rejected_before_split():
     rows = [
         image("a", "train", "same", "group-a"),
         image("b", "test", "same", "group-b"),
@@ -65,6 +65,52 @@ def test_content_hash_crossing_splits_is_rejected():
     )
     with pytest.raises(ValueError, match="content hash leakage"):
         build_split_manifest(rows, request, seed=1)
+
+
+def test_equal_exact_duplicates_are_canonicalized_before_random_split():
+    rows = [
+        image("a", "source", "same", "group-a"),
+        image("b", "source", "same", "group-b"),
+        image("c", "source", "hc", "group-c"),
+        image("d", "source", "hd", "group-d"),
+        image("e", "source", "he", "group-e"),
+        image("f", "source", "hf", "group-f"),
+    ]
+    manifest = build_split_manifest(
+        rows,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=("a", "b", "c", "d", "e", "f"),
+            experiment_percent=20,
+            validation_percent=20,
+        ),
+        seed=7,
+    )
+    selected = set().union(*map(set, manifest.ids.values()))
+    assert "a" in selected
+    assert "b" not in selected
+    assert manifest.exclusions["b"] == "exact_duplicate_of:a"
+    assert manifest.requested["duplicate_content_group_count"] == 1
+    assert manifest.requested["deduplicated_image_count"] == 1
+
+
+def test_exact_duplicate_with_different_ground_truth_is_blocked_before_split():
+    rows = [
+        image("a", "source", "same", "group-a"),
+        image("b", "source", "same", "group-b"),
+        image("c", "source", "hc", "group-c"),
+        image("d", "source", "hd", "group-d"),
+    ]
+    rows[1]["boxes"] = [{"label": "fire", "x1": 1, "y1": 1, "x2": 10, "y2": 10}]
+    rows[0]["boxes"] = [{"label": "fire", "x1": 2, "y1": 2, "x2": 11, "y2": 11}]
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=("a", "b", "c", "d"),
+        experiment_percent=25,
+        validation_percent=25,
+    )
+    with pytest.raises(ValueError, match="duplicate annotation conflict"):
+        build_split_manifest(rows, request, seed=4)
 
 
 def test_group_is_never_split_between_roles():
