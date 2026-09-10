@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
+from platform_core.task_runtime.repository import TaskRepository as CoreTaskRepository
 
 
 def _failed_task(
@@ -71,6 +72,42 @@ def test_retry_creates_new_task_and_preserves_terminal_source_row(tmp_path: Path
         "mode": "real",
     }
     assert artifacts.artifact_path(retried.task_id, retried.log_ref).is_file()
+
+
+def test_direct_core_repository_import_cannot_restore_same_row_retry(tmp_path: Path):
+    repository = CoreTaskRepository(tmp_path / "direct" / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "direct" / "artifacts")
+    artifacts.atomic_write_json("direct-1", "payload.json", {"mode": "direct-import"})
+    repository.create(
+        TaskRecord.new(
+            "direct-1",
+            "project-1",
+            TaskKind.AI_ANNOTATION,
+            "payload.json",
+            "vision:model-1",
+            required_capabilities=("vision_provider",),
+        ),
+        artifacts=artifacts,
+    )
+    lease = repository.claim_next(
+        "worker-direct",
+        [TaskKind.AI_ANNOTATION],
+        {"vision_provider"},
+    )
+    assert lease is not None
+    failed = repository.finish(
+        "direct-1",
+        lease.lease_token,
+        TaskStatus.FAILED,
+        error="direct failure",
+    )
+
+    retried = repository.retry(failed.task_id)
+
+    assert retried.task_id != failed.task_id
+    assert retried.retry_of == failed.task_id
+    assert repository.get(failed.task_id) == failed
+    assert artifacts.read_json(retried.task_id, retried.payload_ref) == {"mode": "direct-import"}
 
 
 def test_retry_double_submit_is_idempotent_while_child_is_active(tmp_path: Path):
