@@ -81,6 +81,8 @@ class AnnotationRepository:
         scope = _normalize_scope(legacy.get('annotation_scope'))
         if state == 'annotated' and not scope:
             scope = _normalize_scope(box.get('label') or box.get('code') for box in boxes)
+        if state == 'confirmed_empty' and not scope:
+            scope = ['*']
         return {
             **legacy,
             'image_id': image_id,
@@ -103,6 +105,7 @@ class AnnotationRepository:
 
     def upsert_many(self, rows):
         written = []
+        projections = {}
         with closing(self._connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:
@@ -116,6 +119,12 @@ class AnnotationRepository:
                     scope = _normalize_scope(
                         box.get('label') or box.get('code') for box in boxes
                     )
+                if state == 'confirmed_empty' and not scope:
+                    # Explicit confirmed-empty means the reviewer/importer verified
+                    # the image against the full active label set at that point.
+                    # '*' keeps this legacy/global scope distinguishable from
+                    # unannotated while allowing future partial scopes by code.
+                    scope = ['*']
                 if state == 'unannotated':
                     scope = []
                 boxes_payload = json.dumps(
@@ -167,7 +176,27 @@ class AnnotationRepository:
                         now,
                     ),
                 )
+                projections[image_id] = {
+                    'annotation_state': state,
+                    'annotation_scope': scope,
+                    'annotation_hash': digest,
+                    'annotated': state in {'annotated', 'confirmed_empty'},
+                    'box_count': len(boxes),
+                    'labels': sorted({
+                        str(box.get('label') or box.get('code') or '').strip()
+                        for box in boxes
+                        if str(box.get('label') or box.get('code') or '').strip()
+                    }),
+                }
                 written.append(image_id)
+        if projections and (
+            (self.project_path / 'materials.sqlite3').exists()
+            or (self.project_path / 'images.json').exists()
+        ):
+            # Keep searchable material metadata as a projection only. Annotation
+            # Repository remains the ground-truth authority.
+            from .material_repository import MaterialRepository
+            MaterialRepository(self.project_path).patch(projections)
         return written
 
     def upsert(self, image_id, boxes, annotation_state=None, annotation_scope=None):
