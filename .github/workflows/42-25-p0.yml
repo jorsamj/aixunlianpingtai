@@ -38,6 +38,7 @@ jobs:
           platform_core/algorithms.py
           platform_core/training_tasks.py
           platform_core/deployment/conversion_tasks.py
+          platform_core/deployment/inference_tasks.py
       - name: Run targeted P0 tests
         run: >-
           python -m pytest
@@ -47,4 +48,5 @@ jobs:
           tests/unit/test_annotation_repository.py
           tests/unit/test_algorithms.py
           tests/unit/test_conversion_tasks.py
+          tests/unit/test_deployment_inference_tasks.py
           -q
