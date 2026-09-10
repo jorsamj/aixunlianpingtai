@@ -7,7 +7,7 @@ from .process_control import (
     hash_command,
     launch_process,
 )
-from .repository import TaskRepository
+from .audited_repository import TaskRepository
 from .scheduler import HardwareUnavailableError, Scheduler
 from .worker import TaskHandler, WorkerContext
 from .worker_instances import (
