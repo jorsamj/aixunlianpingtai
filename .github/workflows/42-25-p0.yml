@@ -47,6 +47,7 @@ jobs:
           tests/unit/test_task_worker.py
           tests/unit/test_annotation_repository.py
           tests/unit/test_algorithms.py
+          tests/unit/test_algorithm_artifact_manifest.py
           tests/unit/test_conversion_tasks.py
           tests/unit/test_deployment_inference_tasks.py
           -q
