@@ -76,6 +76,27 @@ def test_duplicate_content_with_different_annotations_is_rejected_before_split()
         )
 
 
+def test_legacy_missing_scope_matches_explicit_scope_when_boxes_are_identical():
+    rows = [
+        image("legacy", "same"),
+        image("new", "same", annotation_scope=["fire"]),
+        image("c", "hc"),
+        image("d", "hd"),
+        image("e", "he"),
+        image("f", "hf"),
+        image("g", "hg"),
+    ]
+
+    manifest = build_split_manifest(
+        rows,
+        random_request("legacy", "new", "c", "d", "e", "f", "g"),
+        seed=13,
+    )
+
+    assert manifest.excluded_duplicate_ids == ("new",)
+    assert manifest.duplicate_groups == {"same": ("legacy", "new")}
+
+
 def test_component_relations_are_transitive_across_source_fields():
     rows = [
         image("a", "ha", group="capture-a"),
