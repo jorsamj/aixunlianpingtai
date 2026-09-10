@@ -60,3 +60,20 @@ export function buildStorageSourcePayload(values) {
   if (Object.keys(credentials).length) payload.credentials = credentials;
   return payload;
 }
+
+export function buildLabelRemapPayload(externalClassId, currentTargetLabelId, nextTargetLabelId) {
+  const classId = Number(externalClassId);
+  if (!Number.isInteger(classId) || classId < 0) throw new Error('外部类别编号无效');
+  const next = String(nextTargetLabelId ?? '').trim();
+  return {
+    external_class_id: classId,
+    action: next ? 'map' : 'ignore',
+    target_label_id: next || null,
+    expected_current_label_id: currentTargetLabelId || null,
+  };
+}
+
+export function isLabelRemapTerminal(status) {
+  return ['SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED',
+    'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE'].includes(String(status || ''));
+}

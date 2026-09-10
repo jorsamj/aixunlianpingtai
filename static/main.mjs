@@ -14,7 +14,7 @@ import {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, i
 import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
-import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
+import {buildLabelRemapPayload, buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, isLabelRemapTerminal, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422500';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
 import {buildServerImportRequest, buildImportConfirmation, externalClassMappingHtml, pollServerImport, sampleGalleryHtml, serverImportView} from './modules/server-material-import.js?v=422500';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
@@ -62,7 +62,7 @@ window.PlatformCore = {
   quality: {qualityChartModel},
   reports: {reportPresentation},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
-  storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
+  storage: {buildLabelRemapPayload, buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, isLabelRemapTerminal, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, externalClassMappingHtml, pollServerImport, sampleGalleryHtml, serverImportView}
 };

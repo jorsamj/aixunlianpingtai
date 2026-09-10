@@ -253,5 +253,9 @@ class StorageRescanHandler(StorageImportHandler):
 
 def worker_registration(data_dir: Path):
     from platform_core.task_runtime import TaskKind
-    return {'handlers': {TaskKind.MATERIAL_IMPORT: StorageRescanHandler(data_dir)},
-            'capabilities': {'storage.import', 'storage.rescan'}}
+    from platform_core.label_remap_tasks import LabelRemapHandler
+    return {'handlers': {
+                TaskKind.MATERIAL_IMPORT: StorageRescanHandler(data_dir),
+                TaskKind.LABEL_REMAP: LabelRemapHandler(data_dir),
+            },
+            'capabilities': {'storage.import', 'storage.rescan', 'storage.label_remap'}}

@@ -613,6 +613,10 @@ class StorageImportHandler:
                 if (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'
             }
         label_by_code = {item['code']: item for item in label_by_id.values()}
+        external_label_by_class = {
+            int(item['class_id']): str(item.get('name') or '')
+            for item in store.external_classes()
+        }
         checkpoint = context.load_checkpoint()
         newly_imported = max(0, int(checkpoint.get("newly_imported", 0) or 0))
         index_duplicates = max(0, int(checkpoint.get("index_duplicates", 0) or 0))
@@ -682,7 +686,13 @@ class StorageImportHandler:
                             'x1': max(0.0, (box['cx']-box['w']/2)*width),
                             'y1': max(0.0, (box['cy']-box['h']/2)*height),
                             'x2': min(width, (box['cx']+box['w']/2)*width),
-                            'y2': min(height, (box['cy']+box['h']/2)*height)})
+                            'y2': min(height, (box['cy']+box['h']/2)*height),
+                            'provenance': {
+                                'source': 'external_import',
+                                'import_id': str(confirmation.get('import_id') or context.task.task_id),
+                                'external_class_id': int(box['class_id']),
+                                'external_label': external_label_by_class.get(int(box['class_id']), ''),
+                            }})
                     state = 'annotated' if boxes else ('confirmed_empty' if candidate['annotation_status'] == 'confirmed_empty' else 'unannotated')
                     # A missing/invalid sidecar cannot erase an existing annotation.
                     if boxes or state == 'confirmed_empty' or not current:

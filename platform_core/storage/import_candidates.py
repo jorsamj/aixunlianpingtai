@@ -85,6 +85,25 @@ CREATE TABLE IF NOT EXISTS indexing_outcomes (
     annotations_written INTEGER NOT NULL DEFAULT 0, boxes_imported INTEGER NOT NULL DEFAULT 0,
     boxes_skipped INTEGER NOT NULL DEFAULT 0, negative_samples INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS label_remap_history (
+    remap_task_id TEXT PRIMARY KEY,
+    import_id TEXT NOT NULL,
+    class_id INTEGER NOT NULL,
+    external_label TEXT NOT NULL,
+    old_target_label_id TEXT,
+    new_target_label_id TEXT,
+    requested_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    affected_images INTEGER NOT NULL,
+    affected_annotations INTEGER NOT NULL,
+    affected_boxes INTEGER NOT NULL,
+    processed_images INTEGER NOT NULL DEFAULT 0,
+    changed_boxes INTEGER NOT NULL DEFAULT 0,
+    audit_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_label_remap_history_class
+    ON label_remap_history(import_id, class_id, requested_at, remap_task_id);
 """
 _SCAN_FIELDS = (
     "import_id", "preview_id", "object_key", "filename", "storage_source_id", "storage_type", "content_sha256",
@@ -242,6 +261,19 @@ class ImportCandidateStore:
             "CREATE INDEX IF NOT EXISTS ix_candidate_annotations_class "
             "ON candidate_annotations(class_id, object_key, line_number)"
         )
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS label_remap_history (
+                remap_task_id TEXT PRIMARY KEY, import_id TEXT NOT NULL,
+                class_id INTEGER NOT NULL, external_label TEXT NOT NULL,
+                old_target_label_id TEXT, new_target_label_id TEXT,
+                requested_at TEXT NOT NULL, completed_at TEXT, status TEXT NOT NULL,
+                affected_images INTEGER NOT NULL, affected_annotations INTEGER NOT NULL,
+                affected_boxes INTEGER NOT NULL, processed_images INTEGER NOT NULL DEFAULT 0,
+                changed_boxes INTEGER NOT NULL DEFAULT 0, audit_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_label_remap_history_class
+                ON label_remap_history(import_id, class_id, requested_at, remap_task_id);
+        """)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -495,6 +527,120 @@ class ImportCandidateStore:
                 "WHERE (?='' OR l.import_id=?) "
                 "GROUP BY l.import_id,l.class_id,l.name,l.action,l.target_label_id,l.target_label_code "
                 "ORDER BY l.class_id LIMIT 10000", (self.import_id, self.import_id))]
+
+    def label_mapping_state(self) -> list[dict]:
+        """Return the immutable import decision plus the latest completed correction."""
+        classes = self.external_classes()
+        with closing(self._connect()) as db:
+            history = [dict(row) for row in db.execute(
+                "SELECT * FROM label_remap_history WHERE (?='' OR import_id=?) "
+                "ORDER BY requested_at,remap_task_id", (self.import_id, self.import_id))]
+        by_class: dict[int, list[dict]] = {}
+        for row in history:
+            row["audit"] = json.loads(row.pop("audit_json") or "{}")
+            by_class.setdefault(int(row["class_id"]), []).append(row)
+        result = []
+        for item in classes:
+            rows = by_class.get(int(item["class_id"]), [])
+            completed = [row for row in rows if row["status"] == "SUCCEEDED"]
+            initial = item.get("target_label_id")
+            current = completed[-1]["new_target_label_id"] if completed else initial
+            result.append({**item, "initial_target_label_id": initial,
+                           "current_target_label_id": current, "remaps": rows})
+        return result
+
+    def remap_impact(self, class_id: int) -> dict[str, int]:
+        """Aggregate the indexed import scope without loading image IDs into Python."""
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT COUNT(DISTINCT o.image_id),COUNT(DISTINCT a.object_key),COUNT(*) "
+                "FROM candidate_annotations a JOIN candidates c USING(object_key) "
+                "JOIN indexing_outcomes o USING(object_key) "
+                "WHERE c.indexed=1 AND a.class_id=? AND (?='' OR c.import_id=?)",
+                (int(class_id), self.import_id, self.import_id),
+            ).fetchone()
+        return {"affected_images": int(row[0]), "affected_annotations": int(row[1]),
+                "affected_boxes": int(row[2])}
+
+    def reserve_label_remap(self, remap_task_id: str, class_id: int,
+                            old_target_label_id: str | None,
+                            new_target_label_id: str | None, audit: Mapping[str, object]) -> dict:
+        """Atomically reserve one correction against the current completed mapping."""
+        class_id = int(class_id)
+        requested_at = str(audit.get("requested_at") or _now())
+        impact = self.remap_impact(class_id)
+        with self._transaction() as db:
+            source = db.execute(
+                "SELECT name,target_label_id FROM label_mapping WHERE class_id=? "
+                "AND (?='' OR import_id=?)", (class_id, self.import_id, self.import_id)).fetchone()
+            if source is None:
+                raise ValueError("unknown external class")
+            latest = db.execute(
+                "SELECT new_target_label_id FROM label_remap_history WHERE class_id=? "
+                "AND (?='' OR import_id=?) AND status='SUCCEEDED' "
+                "ORDER BY requested_at DESC,remap_task_id DESC LIMIT 1",
+                (class_id, self.import_id, self.import_id)).fetchone()
+            current = latest[0] if latest else source["target_label_id"]
+            if current != old_target_label_id:
+                raise ValueError("label mapping changed; refresh before confirming")
+            if current == new_target_label_id:
+                raise ValueError("new label mapping is unchanged")
+            active = db.execute(
+                "SELECT remap_task_id FROM label_remap_history WHERE class_id=? "
+                "AND (?='' OR import_id=?) AND status IN ('QUEUED','RUNNING') LIMIT 1",
+                (class_id, self.import_id, self.import_id)).fetchone()
+            if active:
+                raise ValueError(f"label remap already running: {active[0]}")
+            payload = {**dict(audit), "import_id": self.import_id,
+                       "external_class_id": class_id, "external_label": source["name"],
+                       "old_target_label_id": current, "new_target_label_id": new_target_label_id,
+                       "impact": impact}
+            db.execute(
+                "INSERT INTO label_remap_history(remap_task_id,import_id,class_id,external_label,"
+                "old_target_label_id,new_target_label_id,requested_at,status,affected_images,"
+                "affected_annotations,affected_boxes,audit_json) VALUES(?,?,?,?,?,?,?,'QUEUED',?,?,?,?)",
+                (str(remap_task_id), self.import_id, class_id, source["name"], current,
+                 new_target_label_id, requested_at, impact["affected_images"],
+                 impact["affected_annotations"], impact["affected_boxes"],
+                 json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+            )
+        return payload
+
+    def mark_label_remap(self, remap_task_id: str, status: str, *,
+                         processed_images: int = 0, changed_boxes: int = 0) -> None:
+        if status not in {"RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"}:
+            raise ValueError("invalid label remap status")
+        with self._transaction() as db:
+            changed = db.execute(
+                "UPDATE label_remap_history SET status=?,completed_at=?,processed_images=?,"
+                "changed_boxes=? WHERE remap_task_id=?",
+                (status, _now() if status in {"SUCCEEDED", "FAILED", "CANCELLED"} else None,
+                 max(0, int(processed_images)), max(0, int(changed_boxes)), str(remap_task_id)),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("label remap audit record is missing")
+
+    def remap_target_batch(self, class_id: int, *, after_object_key: str = "",
+                           limit: int = 250) -> list[dict]:
+        """Read a bounded, stable page of source boxes and their persisted image IDs."""
+        bounded = _limit(limit, 500)
+        with closing(self._connect()) as db:
+            keys = db.execute(
+                "SELECT DISTINCT a.object_key,o.image_id,c.width,c.height "
+                "FROM candidate_annotations a JOIN candidates c USING(object_key) "
+                "JOIN indexing_outcomes o USING(object_key) "
+                "WHERE c.indexed=1 AND a.class_id=? AND a.object_key>? "
+                "AND (?='' OR c.import_id=?) ORDER BY a.object_key LIMIT ?",
+                (int(class_id), str(after_object_key), self.import_id, self.import_id, bounded),
+            ).fetchall()
+            result = []
+            for row in keys:
+                boxes = [dict(box) for box in db.execute(
+                    "SELECT line_number,cx,cy,w,h,clipped FROM candidate_annotations "
+                    "WHERE object_key=? AND class_id=? ORDER BY line_number",
+                    (row["object_key"], int(class_id)))]
+                result.append({**dict(row), "boxes": boxes})
+            return result
 
     def save_label_decisions(self, decisions: Mapping[str, Mapping[str, object]]) -> None:
         with self._transaction() as db:

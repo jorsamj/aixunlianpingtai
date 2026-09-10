@@ -997,6 +997,23 @@ class StorageImportConfirmReq(BaseModel):
     accept_quality_report: bool = False
 
 
+class StorageImportLabelRemapReq(BaseModel):
+    external_class_id: StrictInt
+    action: Literal["map", "ignore"] = "map"
+    target_label_id: Optional[str] = None
+    expected_current_label_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_target(self):
+        if self.external_class_id < 0:
+            raise ValueError("external_class_id must be non-negative")
+        if self.action == "map" and not str(self.target_label_id or "").strip():
+            raise ValueError("map action requires target_label_id")
+        if self.action == "ignore" and self.target_label_id is not None:
+            raise ValueError("ignore action cannot include target_label_id")
+        return self
+
+
 def _validate_storage_source_config(source_type: str, config: Dict[str, Any]) -> str:
     try:
         normalized = StorageType.parse(source_type).value
@@ -1498,6 +1515,136 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_import_task(updated)
+
+
+def _require_completed_storage_import(project_id: str, import_id: str):
+    task, request, store = _storage_import_candidate_store(project_id, import_id)
+    if request.get("mode") == "storage_rescan":
+        raise HTTPException(status_code=404, detail="素材导入记录不存在")
+    if task.status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+        raise HTTPException(status_code=409, detail="素材尚未完成正式导入，不能修正标签映射")
+    return task, request, store
+
+
+def _public_label_remap_task(task: TaskRecord) -> Dict[str, Any]:
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else None
+    checkpoint = artifacts.read_json(task.task_id, "checkpoints/worker.json", default={})
+    return {
+        "task_id": task.task_id, "project_id": task.project_id,
+        "status": task.status.value, "stage": task.stage, "progress": task.progress,
+        "current_item": _public_storage_import_text(task.current_item) if task.current_item else None,
+        "error": _public_storage_import_text(task.error) if task.error else None,
+        "import_id": str(request.get("import_id") or ""),
+        "external_class_id": request.get("external_class_id"),
+        "external_label": _public_storage_import_text(request.get("external_label") or ""),
+        "old_target_label_id": request.get("old_target_label_id"),
+        "new_target_label_id": request.get("new_target_label_id"),
+        "impact": {key: max(0, int((request.get("impact") or {}).get(key) or 0))
+                   for key in ("affected_images", "affected_annotations", "affected_boxes")},
+        "processed_images": max(0, int((checkpoint or {}).get("processed_images") or 0)),
+        "changed_boxes": max(0, int((checkpoint or {}).get("changed_boxes") or 0)),
+        "result": result if isinstance(result, dict) else None,
+        "created_at": task.created_at, "updated_at": task.updated_at,
+        "finished_at": task.finished_at,
+    }
+
+
+@app.get("/api/v61/projects/{project_id}/storage-sources/{source_id}/imports")
+def list_storage_source_imports(project_id: str, source_id: str, limit: int = 50):
+    get_project(project_id)
+    if storage_source_repository().get(source_id) is None:
+        raise HTTPException(status_code=404, detail="存储源不存在")
+    page = shared_task_repository().list(project_id=project_id, kinds=(TaskKind.MATERIAL_IMPORT,),
+                                         limit=max(1, min(100, int(limit))))
+    items = []
+    for task in page.items:
+        request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+        if request.get("storage_source_id") != source_id or request.get("mode") == "storage_rescan":
+            continue
+        manifest = shared_task_artifacts().artifact_path(task.task_id, STORAGE_IMPORT_MANIFEST_REF)
+        if not manifest.is_file():
+            continue
+        store = ImportCandidateStore(manifest, import_id=task.task_id)
+        classes = store.label_mapping_state()
+        if not classes:
+            continue
+        items.append({"import_id": task.task_id, "status": task.status.value,
+                      "created_at": task.created_at, "finished_at": task.finished_at,
+                      "external_classes": len(classes)})
+    return {"items": items}
+
+
+@app.get("/api/v61/projects/{project_id}/storage-imports/{import_id}/label-mappings")
+def get_storage_import_label_mappings(project_id: str, import_id: str):
+    _task, _request, store = _require_completed_storage_import(project_id, import_id)
+    catalog = project_label_items(get_project(project_id))
+    labels = {str(item["label_id"]): item for item in catalog}
+    items = []
+    for row in store.label_mapping_state():
+        audits = [{key: audit.get(key) for key in (
+            "remap_task_id", "old_target_label_id", "new_target_label_id", "requested_at",
+            "completed_at", "status", "affected_images", "affected_annotations",
+            "affected_boxes", "processed_images", "changed_boxes")}
+                  for audit in row.get("remaps") or []]
+        items.append({"external_class_id": int(row["class_id"]),
+                      "external_label": _public_storage_import_text(row.get("name") or ""),
+                      "initial_target": labels.get(str(row.get("initial_target_label_id") or "")),
+                      "current_target": labels.get(str(row.get("current_target_label_id") or "")),
+                      "initial_target_label_id": row.get("initial_target_label_id"),
+                      "current_target_label_id": row.get("current_target_label_id"),
+                      "impact": store.remap_impact(int(row["class_id"])), "audits": audits})
+    return {"import_id": import_id, "items": items,
+            "labels": active_label_options(catalog)}
+
+
+@app.post("/api/v61/projects/{project_id}/storage-imports/{import_id}/label-remaps", status_code=202)
+def create_storage_import_label_remap(project_id: str, import_id: str,
+                                      payload: StorageImportLabelRemapReq):
+    _source_task, _request, store = _require_completed_storage_import(project_id, import_id)
+    labels = {str(item["label_id"]): item for item in project_label_items(get_project(project_id))
+              if item.get("status", "active") == "active"}
+    new_target = None if payload.action == "ignore" else str(payload.target_label_id)
+    target = labels.get(new_target) if new_target is not None else None
+    if new_target is not None and target is None:
+        raise HTTPException(status_code=422, detail="目标平台标签不存在或已停用")
+    task_id = uuid.uuid4().hex[:12]
+    requested_at = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    reserved = False
+    try:
+        request = store.reserve_label_remap(
+            task_id, payload.external_class_id, payload.expected_current_label_id, new_target,
+            {"requested_at": requested_at, "requested_by": "platform_user",
+             "target_label_snapshot": target},
+        )
+        reserved = True
+        request["project_id"] = project_id
+        shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+        task = shared_task_repository().create(TaskRecord.new(
+            task_id, project_id, TaskKind.LABEL_REMAP, "request.json",
+            f"annotations:{project_id}", required_capabilities=("storage.label_remap",)))
+    except ValueError as error:
+        if reserved:
+            store.mark_label_remap(task_id, "FAILED")
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except BaseException:
+        if reserved:
+            store.mark_label_remap(task_id, "FAILED")
+        raise
+    return _public_label_remap_task(task)
+
+
+@app.get("/api/v61/projects/{project_id}/storage-imports/{import_id}/label-remaps/{task_id}")
+def get_storage_import_label_remap(project_id: str, import_id: str, task_id: str):
+    _require_completed_storage_import(project_id, import_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.LABEL_REMAP:
+        raise HTTPException(status_code=404, detail="标签重映射任务不存在")
+    request = shared_task_artifacts().read_json(task_id, task.payload_ref, default={})
+    if request.get("import_id") != import_id:
+        raise HTTPException(status_code=404, detail="标签重映射任务不存在")
+    return _public_label_remap_task(task)
 
 
 @app.get("/api/v61/projects/{project_id}/materials")

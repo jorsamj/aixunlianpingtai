@@ -526,7 +526,7 @@ window.__resourceDiscoveryDependencies={
   window.renderStorageSources61=async function(){
     const view=document.getElementById('view');if(!view)return;
     view.innerHTML=`<section class="storage61-shell"><div class="label414-head"><div><h2>素材存储配置</h2><p>所有位置共同组成统一素材池；训练仍只按图片 ID 精确选择。</p></div><div class="row"><button class="btn" onclick="openStorageImport61()">从存储导入素材</button><button class="btn primary" onclick="openStorageSource61()">＋ 新增存储源</button></div></div><section class="panel"><div class="storage61-table"><div class="storage61-row head"><span>名称 / 类型</span><span>地址 / Bucket</span><span>连接状态</span><span>启用状态</span><span>操作</span></div><div id="storage61Rows"><div class="empty">正在读取存储配置…</div></div></div></section><div class="storage61-note"><b>安全与兼容</b><span>密钥只保存到系统安全凭据库，浏览器不会读取真实密钥。历史 project/uploads 素材继续由“平台本地存储”管理，不移动原文件。</span></div></section>`;
-    try{await loadStorageSources61();const rows=document.getElementById('storage61Rows');if(rows){rows.innerHTML=storageRows61();[...rows.children].forEach((row,index)=>{const source=state.storageSources61[index];if(!source?.enabled)return;const button=document.createElement('button');button.className='btn mini';button.textContent='重新扫描 / 恢复';button.onclick=()=>openStorageRescan61(source.id);row.querySelector('.row')?.appendChild(button)})}}
+    try{await loadStorageSources61();const rows=document.getElementById('storage61Rows');if(rows){rows.innerHTML=storageRows61();[...rows.children].forEach((row,index)=>{const source=state.storageSources61[index];if(!source)return;const actions=row.querySelector('.row');const mappings=document.createElement('button');mappings.className='btn mini';mappings.textContent='标签映射记录';mappings.onclick=()=>openStorageImportMappings61(source.id);actions?.appendChild(mappings);if(source.enabled){const button=document.createElement('button');button.className='btn mini';button.textContent='重新扫描 / 恢复';button.onclick=()=>openStorageRescan61(source.id);actions?.appendChild(button)}})}}
     catch(error){const rows=document.getElementById('storage61Rows');if(rows)rows.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
   };
 
@@ -582,6 +582,47 @@ window.__resourceDiscoveryDependencies={
   window.defaultStorageSource61=async id=>{try{await api(`/api/v61/storage-sources/${id}/default`,{method:'POST'});await loadStorageSources61();renderStorageSources61();toast('默认保存位置已更新')}catch(error){toast(error.message||error)}};
   window.toggleStorageSource61=async(id,enabled)=>{try{await api(`/api/v61/storage-sources/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});await loadStorageSources61();renderStorageSources61()}catch(error){toast(error.message||error)}};
   window.deleteStorageSource61=async id=>{if(!confirm('只允许删除未被素材引用的存储源。确认删除该配置？'))return;try{await api(`/api/v61/storage-sources/${id}`,{method:'DELETE'});await loadStorageSources61();renderStorageSources61();toast('存储源配置已删除')}catch(error){toast(error.message||error)}};
+
+  window.openStorageImportMappings61=async function(sourceId){
+    const project=String(pid()||'');if(!project)return toast('请先选择项目');
+    const marker=`mapping-list-${Date.now()}`;
+    modal('外部素材标签映射',`<div id="${marker}"><div class="empty">正在读取已完成的导入记录…</div></div><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
+    try{
+      const data=await api(`/api/v61/projects/${encodeURIComponent(project)}/storage-sources/${encodeURIComponent(sourceId)}/imports`),target=document.getElementById(marker);if(!target)return;
+      const items=data.items||[];target.innerHTML=items.length?items.map(item=>`<div class="storage61-import-summary"><span><b>导入 ${esc(item.import_id)}</b><small>${esc(item.status)} · ${esc(String(item.created_at||'').replace('T',' ').slice(0,19))}</small></span><span>外部类别 <b>${Number(item.external_classes||0)}</b></span><button class="btn mini" onclick="openStorageImportMappingDetail61('${esc(item.import_id)}')">查看 / 修正</button></div>`).join(''):'<div class="empty">该存储源暂无可修正的已标注导入记录</div>';
+    }catch(error){const target=document.getElementById(marker);if(target)target.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
+  };
+
+  window.openStorageImportMappingDetail61=async function(importId){
+    const project=String(pid()||''),base=`/api/v61/projects/${encodeURIComponent(project)}/storage-imports/${encodeURIComponent(importId)}`,marker=`mapping-detail-${Date.now()}`;
+    modal(`标签映射 · ${esc(importId)}`,`<div id="${marker}"><div class="empty">正在读取映射及影响范围…</div></div><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
+    const render=async()=>{
+      const data=await api(`${base}/label-mappings`),target=document.getElementById(marker);if(!target)return;
+      const labels=data.labels||[],options=current=>`<option value="" ${current?'':'selected'}>忽略该外部类别</option>${labels.map(label=>`<option value="${esc(label.label_id)}" ${label.label_id===current?'selected':''}>${esc(label.code)} / ${esc(label.display_name||label.code)}</option>`).join('')}`;
+      target.innerHTML=(data.items||[]).map(item=>{const impact=item.impact||{},current=item.current_target_label_id||'',audits=item.audits||[];return `<section class="panel" data-remap-class="${item.external_class_id}" data-current-label="${esc(current)}"><div class="row between"><div><b>外部 ${item.external_class_id} · ${esc(item.external_label)}</b><small>影响素材 ${Number(impact.affected_images||0)} · annotation ${Number(impact.affected_annotations||0)} · 框 ${Number(impact.affected_boxes||0)}</small></div><div class="row"><select class="select" data-remap-target>${options(current)}</select><button class="btn mini primary" data-remap-submit>确认修正</button></div></div>${audits.length?`<details><summary>审计记录（${audits.length}）</summary>${audits.map(audit=>`<p>${esc(audit.requested_at||'')} · ${esc(audit.status||'')} · ${esc(audit.old_target_label_id||'忽略')} → ${esc(audit.new_target_label_id||'忽略')} · 已处理 ${Number(audit.processed_images||0)} 张</p>`).join('')}</details>`:''}<div data-remap-progress></div></section>`}).join('')||'<div class="empty">该导入没有外部标签映射</div>';
+      target.querySelectorAll('[data-remap-submit]').forEach(button=>button.onclick=async()=>{
+        const section=button.closest('[data-remap-class]'),classId=section.dataset.remapClass,current=section.dataset.currentLabel||null,next=section.querySelector('[data-remap-target]').value||null,progress=section.querySelector('[data-remap-progress]');
+        if((current||null)===(next||null))return toast('映射没有变化');
+        if(!confirm(`将修正 ${Number(impactFor(section,data).affected_boxes||0)} 个标注框。此操作不会修改外部源文件，是否继续？`))return;
+        button.disabled=true;
+        try{const body=storageApi().buildLabelRemapPayload(classId,current,next),task=await api(`${base}/label-remaps`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});await pollLabelRemap61(base,task,progress,marker);if(document.getElementById(marker))await render()}
+        catch(error){if(progress)progress.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`;button.disabled=false}
+      });
+    };
+    const impactFor=(section,data)=>(data.items||[]).find(item=>String(item.external_class_id)===String(section.dataset.remapClass))?.impact||{};
+    try{await render()}catch(error){const target=document.getElementById(marker);if(target)target.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
+  };
+
+  async function pollLabelRemap61(base,task,progress,marker){
+    while(task&&!storageApi().isLabelRemapTerminal(task.status)&&document.getElementById(marker)){
+      if(progress)progress.textContent=`${task.current_item||task.stage||'排队中'} · ${Number(task.processed_images||0)} / ${Number(task.impact?.affected_images||0)}`;
+      await new Promise(resolve=>setTimeout(resolve,1000));
+      if(!document.getElementById(marker))return task;
+      task=await api(`${base}/label-remaps/${encodeURIComponent(task.task_id)}`);
+    }
+    if(progress&&task)progress.innerHTML=task.status==='SUCCEEDED'?`<div class="alert ok">修正完成：处理 ${Number(task.result?.processed_images||task.processed_images||0)} 张，实际更新 ${Number(task.result?.changed_boxes||task.changed_boxes||0)} 个框</div>`:`<div class="alert err">${esc(task.error||task.status||'修正失败')}</div>`;
+    return task;
+  }
 
   window.installServerMaterialImport61=function(){
     if(window.__serverMaterialImport61Installed)return true;
