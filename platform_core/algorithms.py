@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 import json
+import os
 import threading
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -10,10 +15,97 @@ from .errors import PlatformError
 
 
 _ALGORITHM_WRITE_LOCK = threading.RLock()
+_ALGORITHM_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 def _version_sort_key(version: Mapping[str, Any]) -> str:
     return str(version.get("finished_at") or version.get("created_at") or version.get("version_name") or "")
+
+
+def _algorithm_revision(item: Mapping[str, Any]) -> int:
+    try:
+        return max(0, int(item.get("revision") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _assert_expected_revision(item: Mapping[str, Any], expected_revision: int | None) -> None:
+    if expected_revision is None:
+        return
+    actual = _algorithm_revision(item)
+    if int(expected_revision) != actual:
+        raise PlatformError(
+            code="ALGORITHM_REVISION_CONFLICT",
+            message="算法已被其他任务更新",
+            detail=f"期望 revision={int(expected_revision)}，当前 revision={actual}。",
+            solution="请刷新算法状态后重新提交操作，平台不会覆盖其他 Worker 已写入的版本。",
+            status_code=409,
+        )
+
+
+def _bump_revision(item: dict) -> int:
+    revision = _algorithm_revision(item) + 1
+    item["revision"] = revision
+    return revision
+
+
+@contextmanager
+def _algorithm_store_lock(path: Path, timeout: float = _ALGORITHM_LOCK_TIMEOUT_SECONDS):
+    """Serialize algorithms.json read-modify-write across threads and processes.
+
+    The JSON file itself is still atomically replaced.  A persistent sibling
+    lock file provides the cross-process fence on both Windows and POSIX.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    with _ALGORITHM_WRITE_LOCK:
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            acquired = False
+            while not acquired:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except (OSError, BlockingIOError) as error:
+                    if time.monotonic() >= deadline:
+                        raise PlatformError(
+                            code="ALGORITHM_STORE_BUSY",
+                            message="算法版本正在被其他进程更新",
+                            detail=f"等待 {lock_path.name} 超时：{error}",
+                            solution="请稍后重试；平台没有覆盖正在进行的算法版本写入。",
+                            status_code=409,
+                        ) from error
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    # Process exit releases an OS lock; do not mask the mutation
+                    # result solely because explicit unlock reporting failed.
+                    pass
 
 
 def resolve_current_version(algorithm: Mapping[str, Any], framework: str = "") -> dict | None:
@@ -74,9 +166,10 @@ def choose_iteration_base(
     """Choose the checkpoint used for an iterative training run.
 
     The historical/default mode keeps the backwards-compatible "newest usable"
-    fallback. Product training uses ``strict_latest=True`` to select the newest
-    successful, verified, trainable version. Failed/cancelled attempts are task
-    history, not algorithm versions and never poison a later iteration.
+    fallback. Product training uses ``strict_latest=True``.  When an explicit
+    ``current_version_id`` exists (including after rollback), that exact version
+    is authoritative and no newer/older version or mother model may silently
+    replace it.
     """
     allowed_suffixes = {".pt"} if framework == "ultralytics" else {".pdparams", ".pdmodel", ".pdiparams"}
     ordered = sorted(
@@ -86,8 +179,15 @@ def choose_iteration_base(
     )
     if current_version_id:
         current = next((row for row in ordered if str(row.get("id")) == str(current_version_id)), None)
-        if current is not None:
-            ordered = [current, *(row for row in ordered if str(row.get("id")) != str(current_version_id))]
+        if current is None:
+            raise PlatformError(
+                code="CURRENT_VERSION_UNAVAILABLE",
+                message="当前算法版本不存在",
+                detail=f"current_version_id={current_version_id} 未在算法版本历史中找到。",
+                solution="请刷新算法版本，或回滚到一个仍存在且可训练的有效版本。",
+                status_code=409,
+            )
+        ordered = [current, *(row for row in ordered if str(row.get("id")) != str(current_version_id))]
     if strict_latest and ordered:
         eligible = [row for row in ordered if is_trainable_version(row, framework)]
         if not eligible:
@@ -137,10 +237,10 @@ def choose_iteration_base(
                 reason = "模型产物无法被当前训练环境加载"
         if reason:
             raise PlatformError(
-                code="ITERATION_BASE_UNAVAILABLE",
-                message="上一版本模型不可用，无法开始迭代训练",
-                detail=f"上一版本 {latest.get('version_name') or latest.get('id') or '未知版本'}：{reason}。",
-                solution="请修复或重新归档上一版本的有效训练权重后再开始迭代。平台不会自动回退到更早版本或母算法。",
+                code="CURRENT_VERSION_UNAVAILABLE" if current_version_id else "ITERATION_BASE_UNAVAILABLE",
+                message="当前算法版本不可用于继续训练" if current_version_id else "上一版本模型不可用，无法开始迭代训练",
+                detail=f"版本 {latest.get('version_name') or latest.get('id') or '未知版本'}：{reason}。",
+                solution="请修复当前版本产物，或回滚到一个有效版本后再开始训练。平台不会自动改用其他历史版本或母算法。",
                 status_code=409,
             )
         return {
@@ -203,8 +303,18 @@ def list_algorithms(path: Path) -> list[dict]:
     return value
 
 
-def save_algorithms(path: Path, algorithms: Sequence[Mapping[str, Any]]) -> None:
+def _save_algorithms_unlocked(path: Path, algorithms: Sequence[Mapping[str, Any]]) -> None:
     atomic_write_json(path, list(algorithms))
+
+
+def save_algorithms(path: Path, algorithms: Sequence[Mapping[str, Any]]) -> None:
+    """Compatibility whole-store write, serialized across processes.
+
+    New mutation paths should prefer the dedicated create/update/attach/rollback
+    functions so a fresh read happens under the same cross-process lock.
+    """
+    with _algorithm_store_lock(path):
+        _save_algorithms_unlocked(path, algorithms)
 
 
 def create_algorithm(
@@ -221,87 +331,129 @@ def create_algorithm(
             detail="创建算法时必须填写名称。",
             solution="请输入一个能够区分业务用途的算法名称。",
         )
-    algorithms = list_algorithms(path)
-    if any(str(item.get("name") or "").strip().casefold() == name.casefold() for item in algorithms):
-        raise PlatformError(
-            code="ALGORITHM_NAME_EXISTS",
-            message="算法名称已存在",
-            detail=f"当前项目中已经存在名为“{name}”的算法。",
-            solution="请使用不同名称，或编辑已有算法。",
-            status_code=409,
-        )
-    item = {
-        "id": algorithm_id or uuid.uuid4().hex[:12],
-        "name": name,
-        "remark": str(payload.get("remark") or ""),
-        "industry": str(payload.get("industry") or "").strip(),
-        "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
-        "versions": [],
-        "created_at": now,
-        "updated_at": now,
-    }
-    algorithms.insert(0, item)
-    save_algorithms(path, algorithms)
-    return item
+    with _algorithm_store_lock(path):
+        algorithms = list_algorithms(path)
+        if any(str(item.get("name") or "").strip().casefold() == name.casefold() for item in algorithms):
+            raise PlatformError(
+                code="ALGORITHM_NAME_EXISTS",
+                message="算法名称已存在",
+                detail=f"当前项目中已经存在名为“{name}”的算法。",
+                solution="请使用不同名称，或编辑已有算法。",
+                status_code=409,
+            )
+        item = {
+            "id": algorithm_id or uuid.uuid4().hex[:12],
+            "name": name,
+            "remark": str(payload.get("remark") or ""),
+            "industry": str(payload.get("industry") or "").strip(),
+            "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
+            "versions": [],
+            "revision": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+        algorithms.insert(0, item)
+        _save_algorithms_unlocked(path, algorithms)
+        return item
 
 
-def update_algorithm(path: Path, algorithm_id: str, payload: Mapping[str, Any], now: str) -> dict:
-    algorithms = list_algorithms(path)
-    item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
-    if item is None:
-        raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-    proposed_name = str(payload.get("name") or item.get("name") or "").strip()
-    if any(
-        str(row.get("id")) != str(algorithm_id)
-        and str(row.get("name") or "").strip().casefold() == proposed_name.casefold()
-        for row in algorithms
-    ):
-        raise PlatformError("ALGORITHM_NAME_EXISTS", "算法名称已存在", f"算法名称“{proposed_name}”已被使用。", "请使用不同名称。", 409)
-    item.update({
-        "name": proposed_name,
-        "remark": str(payload.get("remark") or ""),
-        "industry": str(payload.get("industry") or "").strip(),
-        "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
-        "updated_at": now,
-    })
-    save_algorithms(path, algorithms)
-    return item
-
-
-def delete_algorithm(path: Path, algorithm_id: str) -> None:
-    algorithms = list_algorithms(path)
-    remaining = [row for row in algorithms if str(row.get("id")) != str(algorithm_id)]
-    if len(remaining) == len(algorithms):
-        raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-    save_algorithms(path, remaining)
-
-
-def attach_version(path: Path, algorithm_id: str, version: Mapping[str, Any]) -> dict:
-    with _ALGORITHM_WRITE_LOCK:
+def update_algorithm(
+    path: Path,
+    algorithm_id: str,
+    payload: Mapping[str, Any],
+    now: str,
+    *,
+    expected_revision: int | None = None,
+) -> dict:
+    with _algorithm_store_lock(path):
         algorithms = list_algorithms(path)
         item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
         if item is None:
             raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+        _assert_expected_revision(item, expected_revision)
+        proposed_name = str(payload.get("name") or item.get("name") or "").strip()
+        if any(
+            str(row.get("id")) != str(algorithm_id)
+            and str(row.get("name") or "").strip().casefold() == proposed_name.casefold()
+            for row in algorithms
+        ):
+            raise PlatformError("ALGORITHM_NAME_EXISTS", "算法名称已存在", f"算法名称“{proposed_name}”已被使用。", "请使用不同名称。", 409)
+        item.update({
+            "name": proposed_name,
+            "remark": str(payload.get("remark") or ""),
+            "industry": str(payload.get("industry") or "").strip(),
+            "algorithm_type": str(payload.get("algorithm_type") or "").strip(),
+            "updated_at": now,
+        })
+        _bump_revision(item)
+        _save_algorithms_unlocked(path, algorithms)
+        return item
+
+
+def delete_algorithm(
+    path: Path,
+    algorithm_id: str,
+    *,
+    expected_revision: int | None = None,
+) -> None:
+    with _algorithm_store_lock(path):
+        algorithms = list_algorithms(path)
+        item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
+        if item is None:
+            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+        _assert_expected_revision(item, expected_revision)
+        remaining = [row for row in algorithms if str(row.get("id")) != str(algorithm_id)]
+        _save_algorithms_unlocked(path, remaining)
+
+
+def attach_version(
+    path: Path,
+    algorithm_id: str,
+    version: Mapping[str, Any],
+    *,
+    expected_revision: int | None = None,
+) -> dict:
+    with _algorithm_store_lock(path):
+        algorithms = list_algorithms(path)
+        item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
+        if item is None:
+            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+        _assert_expected_revision(item, expected_revision)
         ensure_current_version(item, str(version.get("framework") or ""))
         attached = dict(version)
-        attached.setdefault("parent_version_id", str(item.get("current_version_id") or ""))
         versions = list(item.get("versions") or [])
+        task_id = str(attached.get("task_id") or "").strip()
+        if task_id:
+            existing = next((row for row in versions if str(row.get("task_id") or "") == task_id), None)
+            if existing is not None:
+                return dict(existing)
+        attached.setdefault("parent_version_id", str(item.get("current_version_id") or ""))
         versions.append(attached)
         versions.sort(key=_version_sort_key, reverse=True)
         item["versions"] = versions
         item["current_version_id"] = str(attached.get("id") or "")
         item["updated_at"] = str(attached.get("finished_at") or attached.get("created_at") or item.get("updated_at") or "")
-        save_algorithms(path, algorithms)
+        _bump_revision(item)
+        _save_algorithms_unlocked(path, algorithms)
         return attached
 
 
-def rollback_current_version(path: Path, algorithm_id: str, version_id: str, *, actor: str, now: str | None = None) -> dict:
+def rollback_current_version(
+    path: Path,
+    algorithm_id: str,
+    version_id: str,
+    *,
+    actor: str,
+    now: str | None = None,
+    expected_revision: int | None = None,
+) -> dict:
     """Atomically move only the current pointer; immutable version history is untouched."""
-    with _ALGORITHM_WRITE_LOCK:
+    with _algorithm_store_lock(path):
         algorithms = list_algorithms(path)
         item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
         if item is None:
             raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+        _assert_expected_revision(item, expected_revision)
         target = next((row for row in (item.get("versions") or []) if str(row.get("id")) == str(version_id)), None)
         if target is None:
             raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {version_id}。", "请刷新版本列表后重试。", 404)
@@ -318,5 +470,6 @@ def rollback_current_version(path: Path, algorithm_id: str, version_id: str, *, 
             "user": str(actor or "unknown"),
             "time": changed_at,
         })
-        save_algorithms(path, algorithms)
+        _bump_revision(item)
+        _save_algorithms_unlocked(path, algorithms)
         return {"algorithm": item, "changed": True, "from_version_id": previous, "to_version_id": str(version_id)}
