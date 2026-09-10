@@ -75,14 +75,27 @@ class LocalStorageProvider:
                 f"本地存储目录不可访问：{error}", details={"root": str(self.root)}
             )
 
-    def _metadata(self, path: Path, *, object_key: str | None = None) -> ObjectMetadata:
+    def _metadata(
+        self,
+        path: Path,
+        *,
+        object_key: str | None = None,
+        include_sha256: bool = True,
+    ) -> ObjectMetadata:
+        """Return object metadata, optionally without reading file contents.
+
+        Full ``stat()`` and the public ``iter_objects()`` keep their historical
+        SHA256 contract. Large import discovery can use
+        ``iter_objects_metadata()`` to inventory size/etag/path without hashing
+        every image, label and YAML file before the candidate inspection phase.
+        """
         stat_result = path.stat()
         return ObjectMetadata(
             key=object_key if object_key is not None else path.relative_to(self.root).as_posix(),
             size_bytes=stat_result.st_size,
             etag=f'"{stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"',
             content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-            sha256=_sha256(path),
+            sha256=_sha256(path) if include_sha256 else "",
             last_modified=str(stat_result.st_mtime_ns),
         )
 
@@ -130,8 +143,12 @@ class LocalStorageProvider:
         relative = path.relative_to(self.root)
         return bool(relative.parts) and self._is_import_staging_segment(relative.parts[0])
 
-    def iter_objects(
-        self, prefix: str = "", *, recursive: bool = True,
+    def _iter_objects(
+        self,
+        prefix: str,
+        *,
+        recursive: bool,
+        include_sha256: bool,
     ) -> Iterator[ObjectMetadata]:
         base = self._path(prefix, allow_empty=True)
         requested = self.root / (Path(prefix) if prefix else Path())
@@ -140,7 +157,7 @@ class LocalStorageProvider:
         if not base.exists():
             return
         if base.is_file():
-            yield self._metadata(base)
+            yield self._metadata(base, include_sha256=include_sha256)
             return
         if not base.is_dir():
             return
@@ -149,7 +166,7 @@ class LocalStorageProvider:
         while pending:
             is_directory, path = pending.pop()
             if not is_directory:
-                yield self._metadata(path)
+                yield self._metadata(path, include_sha256=include_sha256)
                 continue
             directory = path
             with os.scandir(directory) as scan:
@@ -171,6 +188,27 @@ class LocalStorageProvider:
                     pending.append((True, path))
                 else:
                     pending.append((False, path))
+
+    def iter_objects(
+        self, prefix: str = "", *, recursive: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        """Historical full-metadata iterator, including content SHA256."""
+        yield from self._iter_objects(
+            prefix, recursive=recursive, include_sha256=True,
+        )
+
+    def iter_objects_metadata(
+        self, prefix: str = "", *, recursive: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        """Cheap import inventory iterator that never reads file contents.
+
+        Candidate inspection remains responsible for hashing actual images once.
+        This prevents YOLO discovery from hashing image bytes plus every small
+        label/YAML file before the real validation pass.
+        """
+        yield from self._iter_objects(
+            prefix, recursive=recursive, include_sha256=False,
+        )
 
     def exists(self, object_key: str) -> bool:
         return self._path(object_key).is_file()
