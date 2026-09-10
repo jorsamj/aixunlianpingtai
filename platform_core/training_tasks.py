@@ -1113,6 +1113,7 @@ class TrainingHandler:
             "ultralytics",
             strict_latest=bool(algorithm.get("versions")),
             artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
+            current_version_id=str(algorithm.get("current_version_id") or "") or None,
         )
         if resume_post_processing:
             previous_result = context.artifacts.read_json(context.task.task_id, "result.json", default={})
@@ -1388,6 +1389,7 @@ class TrainingHandler:
                     "result_ref": "result.json",
                     "task_id": context.task.task_id,
                     "job_id": context.task.task_id,
+                    "parent_version_id": base.get("base_version_id") or "",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
