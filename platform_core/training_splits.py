@@ -66,8 +66,8 @@ _COMPONENT_RELATION_FIELDS = (
     "group_id",
     "video_task_id",
     "source_group_id",
-    "camera_id",
-    "session_id",
+    "near_duplicate_group_id",
+    "sequence_group_id",
 )
 
 
@@ -87,6 +87,32 @@ def _identity(row: Mapping[str, Any]) -> str:
         if value:
             return PurePath(value.replace("\\", "/")).as_posix().casefold()
     return ""
+
+
+def _relation_tokens(row: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    tokens: list[tuple[str, str]] = []
+    content_hash = str(row.get("content_sha256") or "").strip().lower()
+    if content_hash:
+        tokens.append(("content_sha256", content_hash))
+    identity = _identity(row)
+    if identity:
+        tokens.append(("file_identity", identity))
+    for field in _COMPONENT_RELATION_FIELDS:
+        value = str(row.get(field) or "").strip()
+        if value:
+            tokens.append((field, value))
+
+    explicit_camera_session = str(
+        row.get("camera_session_id") or row.get("capture_session_id") or ""
+    ).strip()
+    if explicit_camera_session:
+        tokens.append(("camera_session", explicit_camera_session))
+    else:
+        camera_id = str(row.get("camera_id") or "").strip()
+        session_id = str(row.get("session_id") or "").strip()
+        if camera_id and session_id:
+            tokens.append(("camera_session", f"{camera_id}\x1f{session_id}"))
+    return tuple(tokens)
 
 
 def _canonical_box(box: Mapping[str, Any]) -> dict[str, Any]:
@@ -252,18 +278,7 @@ def _component_keys(
 
     for row in rows:
         image_id = str(row.get("id") or "").strip()
-        relations: list[tuple[str, str]] = []
-        content_hash = str(row.get("content_sha256") or "").strip().lower()
-        if content_hash:
-            relations.append(("content_sha256", content_hash))
-        identity = _identity(row)
-        if identity:
-            relations.append(("file_identity", identity))
-        for field in _COMPONENT_RELATION_FIELDS:
-            value = str(row.get(field) or "").strip()
-            if value:
-                relations.append((field, value))
-        for token in relations:
+        for token in _relation_tokens(row):
             owner = token_owner.setdefault(token, image_id)
             union(owner, image_id)
 
@@ -329,24 +344,17 @@ def _select_grouped(
 
 
 def _assert_no_leakage(role_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
-    checks: list[tuple[str, Any]] = [
-        ("content hash", lambda row: str(row.get("content_sha256") or "").strip().lower()),
-        ("file identity", _identity),
-    ]
-    checks.extend(
-        (field.replace("_", " "), lambda row, field=field: str(row.get(field) or "").strip())
-        for field in _COMPONENT_RELATION_FIELDS
-    )
-    for label, getter in checks:
-        owners: dict[str, str] = {}
-        for role, rows in role_rows.items():
-            for row in rows:
-                value = getter(row)
-                if not value:
-                    continue
-                previous = owners.setdefault(value, role)
+    owners: dict[tuple[str, str], str] = {}
+    for role, rows in role_rows.items():
+        for row in rows:
+            for relation_type, value in _relation_tokens(row):
+                token = (relation_type, value)
+                previous = owners.setdefault(token, role)
                 if previous != role:
-                    raise ValueError(f"{label} leakage: {value} 同时出现在 {previous} 和 {role}")
+                    label = relation_type.replace("_", " ")
+                    raise ValueError(
+                        f"{label} leakage: {value} 同时出现在 {previous} 和 {role}"
+                    )
 
 
 def build_split_manifest(
