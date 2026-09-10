@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/42-25-apply-v19-durable-bridge.yml
       - scripts/apply_v19_durable_bridge_patch.py
+      - scripts/apply_browser_bridge_strict_mapping.py
 
 permissions:
   contents: write
@@ -29,8 +30,10 @@ jobs:
           pytest psutil pyyaml pillow
           fastapi httpx python-multipart requests
           keyring filelock boto3 oss2 opencv-python-headless
-      - name: Apply fail-closed compatibility patch
-        run: python scripts/apply_v19_durable_bridge_patch.py
+      - name: Apply fail-closed compatibility patches
+        run: |
+          python scripts/apply_v19_durable_bridge_patch.py
+          python scripts/apply_browser_bridge_strict_mapping.py
       - name: Compile bridge and app
         run: >-
           python -m py_compile
@@ -40,15 +43,15 @@ jobs:
           platform_core/storage/optimized_import_tasks.py
       - name: Run browser bridge tests
         run: python -m pytest tests/unit/storage/test_browser_v19_bridge.py -q
-      - name: Commit audited app change
+      - name: Commit audited compatibility changes
         shell: bash
         run: |
-          if git diff --quiet -- app.py; then
-            echo "app.py already patched"
+          if git diff --quiet -- app.py platform_core/storage/browser_v19_bridge.py; then
+            echo "compatibility bridge already patched"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app.py
-          git commit -m "perf: route browser yolo zip through durable worker"
+          git add app.py platform_core/storage/browser_v19_bridge.py
+          git commit -m "fix: keep browser yolo mapping explicit"
           git push origin HEAD:feat/42.25.0
