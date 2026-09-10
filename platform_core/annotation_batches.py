@@ -3,7 +3,7 @@ from PIL import Image
 
 from .annotation_candidates import CandidateStore
 from .annotation_runtime import prepare_request
-from .annotation_task_service import annotate_one, _public_error
+from .annotation_task_service import annotate_one, _freeze_review_scope, _public_error
 from .storage.errors import redact_storage_error
 from .storage.import_tasks import _provider
 from .storage.manager import StorageManager
@@ -24,6 +24,10 @@ class AnnotationBatch:
         try:
             # Client/model and credentials are reused across this task's images.
             self.runtime = prepare_request(data_dir, project, options)
+            # Material-batch AI annotation enters the same human review/commit
+            # pipeline as a standalone annotation task. Freeze the exact stable
+            # label IDs here, before any candidate can later become formal GT.
+            _freeze_review_scope(context, self.runtime)
         except Exception as error:
             self.configuration_error = self.public_error(error)
 
