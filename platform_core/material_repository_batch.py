@@ -11,8 +11,9 @@ from .material_selection import MaterialFilters
 
 _SQL_ID_BATCH = 500
 MUTABLE_MATERIAL_FIELDS = frozenset({
-    "filename", "processing_status", "split", "labels", "label_counts",
+    "filename", "processing_status", "split", "labels", "label_ids", "label_counts",
     "box_count", "annotated", "annotation_state", "annotation_status",
+    "annotation_scope", "confirmed_empty_scope", "ground_truth_complete",
     "annotation_preview", "annotation_summary_at", "negative_sample",
     "cleaned_at", "updated_at", "width", "height", "dataset_id",
 })

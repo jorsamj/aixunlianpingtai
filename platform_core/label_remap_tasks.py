@@ -89,7 +89,10 @@ class LabelRemapHandler:
                 summary_at = datetime.now(timezone.utc).isoformat()
                 materials.patch({
                     outcome["image_id"]: {
-                        **annotation_summary(outcome["boxes"], outcome["annotation_state"]),
+                        **annotation_summary(
+                            outcome["boxes"], outcome["annotation_state"],
+                            outcome.get("annotation_scope"),
+                        ),
                         "annotation_summary_at": summary_at,
                         "label_remap_task_id": context.task.task_id,
                     }

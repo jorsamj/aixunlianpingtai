@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
+from .annotations import normalize_annotation_scope
 from .material_selection import MaterialFilters
 from .material_store import MaterialSnapshot
 
@@ -129,6 +130,16 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
         else:
             stored_name = _portable_stored_name(image_id, object_key, row.get("filename"))
     labels = sorted({str(label).strip() for label in row.get("labels") or [] if str(label).strip()})
+    stable_label_ids = sorted({str(label_id).strip() for label_id in row.get("label_ids") or []
+                               if str(label_id).strip()})
+    annotation_state = str(row.get("annotation_state") or row.get("annotation_status") or
+                           ("annotated" if row.get("annotated") else "unannotated"))
+    if annotation_state not in {"unannotated", "annotated", "confirmed_empty"}:
+        annotation_state = "annotated" if int(row.get("box_count") or 0) > 0 else "unannotated"
+    raw_scope = row.get("annotation_scope")
+    if raw_scope is None and annotation_state == "confirmed_empty":
+        raw_scope = row.get("confirmed_empty_scope")
+    annotation_scope = normalize_annotation_scope(raw_scope)
     row.update({
         "id": image_id,
         "filename": str(row.get("filename") or stored_name or image_id),
@@ -141,8 +152,14 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
         "etag": str(row.get("etag") or ""),
         "processing_status": str(row.get("processing_status") or "pending_decision"),
         "box_count": max(0, int(row.get("box_count") or 0)),
-        "annotated": bool(row.get("annotated") or int(row.get("box_count") or 0) > 0),
+        "annotated": annotation_state in {"annotated", "confirmed_empty"},
+        "annotation_state": annotation_state,
+        "annotation_status": annotation_state,
+        "annotation_scope": annotation_scope,
+        "confirmed_empty_scope": annotation_scope if annotation_state == "confirmed_empty" else [],
+        "ground_truth_complete": annotation_state in {"annotated", "confirmed_empty"} and bool(annotation_scope),
         "labels": labels,
+        "label_ids": stable_label_ids,
         "created_at": str(row.get("created_at") or _now()),
         "updated_at": str(row.get("updated_at") or ""),
     })

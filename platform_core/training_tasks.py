@@ -548,6 +548,8 @@ def _selected_project_images(
         image_id = str(row.get("id") or "")
         annotation = annotations.get(image_id)
         row['annotation_state'] = annotation['annotation_state']
+        row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
+        row['confirmed_empty_scope'] = list(annotation.get('confirmed_empty_scope') or [])
         row['annotated'] = annotation['annotation_state'] in {'annotated', 'confirmed_empty'}
         row["boxes"] = list(annotation.get("boxes") or [])
         result.append(row)

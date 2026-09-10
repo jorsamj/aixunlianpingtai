@@ -613,6 +613,16 @@ class StorageImportHandler:
                 if (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'
             }
         label_by_code = {item['code']: item for item in label_by_id.values()}
+        dataset_annotation_scope: list[str] = []
+        for mapped_value in (confirmation.get('label_mapping') or {}).values():
+            mapped_id = str(mapped_value)
+            if mapped_id not in label_by_id and not confirmation.get('import_id'):
+                legacy_target = label_by_code.get(mapped_id)
+                mapped_id = next((label_id for label_id, item in label_by_id.items()
+                                  if item is legacy_target), '')
+            if mapped_id in label_by_id:
+                dataset_annotation_scope.append(mapped_id)
+        dataset_annotation_scope = sorted(set(dataset_annotation_scope))
         external_label_by_class = {
             int(item['class_id']): str(item.get('name') or '')
             for item in store.external_classes()
@@ -693,11 +703,18 @@ class StorageImportHandler:
                                 'external_class_id': int(box['class_id']),
                                 'external_label': external_label_by_class.get(int(box['class_id']), ''),
                             }})
-                    state = 'annotated' if boxes else ('confirmed_empty' if candidate['annotation_status'] == 'confirmed_empty' else 'unannotated')
+                    state = 'annotated' if boxes else (
+                        'confirmed_empty'
+                        if candidate['annotation_status'] == 'confirmed_empty' and dataset_annotation_scope
+                        else 'unannotated'
+                    )
+                    scope = dataset_annotation_scope if state in {'annotated', 'confirmed_empty'} else []
                     # A missing/invalid sidecar cannot erase an existing annotation.
                     if boxes or state == 'confirmed_empty' or not current:
-                        annotation_rows.append({'image_id': row['image_id'], 'boxes': boxes, 'annotation_state': state})
-                        record.update(annotation_summary(boxes, state))
+                        annotation_rows.append({'image_id': row['image_id'], 'boxes': boxes,
+                                                'annotation_state': state,
+                                                'annotation_scope': scope})
+                        record.update(annotation_summary(boxes, state, scope))
                         record['annotation_summary_at'] = confirmation['confirmed_at']
                         if state != 'unannotated':
                             record['processing_status'] = 'processed'

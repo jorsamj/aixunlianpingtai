@@ -6,7 +6,63 @@ from typing import Any, Mapping, Sequence
 
 
 PREVIEW_LIMIT = 32
-PREVIEW_FIELDS = ("class_id", "label", "x1", "y1", "x2", "y2")
+PREVIEW_FIELDS = ("label_id", "class_id", "label", "x1", "y1", "x2", "y2")
+
+
+def normalize_annotation_scope(values: Sequence[object] | None) -> list[str]:
+    """Return a stable-label scope without inferring unchecked classes."""
+    if isinstance(values, (str, bytes)):
+        values = [values]
+    return sorted({str(value).strip() for value in (values or []) if str(value).strip()})
+
+
+def normalize_annotation_contract(
+    boxes: Sequence[Mapping[str, Any]],
+    annotation_state: str | None = None,
+    annotation_scope: Sequence[object] | None = None,
+    confirmed_empty_scope: Sequence[object] | None = None,
+) -> tuple[str, list[str]]:
+    """Normalize state/scope while reading the legacy confirmed-empty field safely."""
+    state = str(annotation_state or ("annotated" if boxes else "unannotated"))
+    if state not in {"unannotated", "annotated", "confirmed_empty"}:
+        raise ValueError("invalid annotation state")
+    if bool(boxes) != (state == "annotated"):
+        raise ValueError("annotation state does not agree with boxes")
+    supplied = annotation_scope
+    if supplied is None and state == "confirmed_empty":
+        supplied = confirmed_empty_scope
+    scope = normalize_annotation_scope(supplied)
+    if state == "annotated":
+        scope = normalize_annotation_scope([
+            *scope,
+            *(box.get("label_id") for box in boxes if box.get("label_id")),
+        ])
+    elif state == "unannotated":
+        scope = []
+    return state, scope
+
+
+def annotation_scope_covers(
+    annotation_scope: Sequence[object] | None,
+    selected_label_ids: Sequence[object] | None,
+) -> bool:
+    selected = set(normalize_annotation_scope(selected_label_ids))
+    return bool(selected) and selected.issubset(set(normalize_annotation_scope(annotation_scope)))
+
+
+def legal_negative_for_labels(
+    boxes: Sequence[Mapping[str, Any]],
+    annotation_state: str | None,
+    annotation_scope: Sequence[object] | None,
+    selected_label_ids: Sequence[object] | None,
+) -> bool:
+    """A filtered empty image is negative only when every selected class was checked."""
+    selected = set(normalize_annotation_scope(selected_label_ids))
+    if not selected or annotation_state not in {"annotated", "confirmed_empty"}:
+        return False
+    if any(str(box.get("label_id") or "") in selected for box in boxes):
+        return False
+    return selected.issubset(set(normalize_annotation_scope(annotation_scope)))
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -64,13 +120,24 @@ def normalize_boxes(
     return normalized
 
 
-def annotation_summary(boxes: Sequence[Mapping[str, Any]], annotation_state: str | None = None) -> dict:
-    state = annotation_state or ("annotated" if boxes else "unannotated")
+def annotation_summary(
+    boxes: Sequence[Mapping[str, Any]],
+    annotation_state: str | None = None,
+    annotation_scope: Sequence[object] | None = None,
+    confirmed_empty_scope: Sequence[object] | None = None,
+) -> dict:
+    state, scope = normalize_annotation_contract(
+        boxes, annotation_state, annotation_scope, confirmed_empty_scope,
+    )
     label_counts: dict[str, int] = {}
+    stable_label_ids: set[str] = set()
     for box in boxes:
         label = str(box.get("label") or "").strip()
         if label:
             label_counts[label] = label_counts.get(label, 0) + 1
+        label_id = str(box.get("label_id") or "").strip()
+        if label_id:
+            stable_label_ids.add(label_id)
     labels = sorted(
         label_counts
     )
@@ -80,10 +147,14 @@ def annotation_summary(boxes: Sequence[Mapping[str, Any]], annotation_state: str
     ]
     return {
         "labels": labels,
+        "label_ids": sorted(stable_label_ids),
         "label_counts": label_counts,
         "box_count": len(boxes),
         "annotated": state in {"annotated", "confirmed_empty"},
         "annotation_state": state,
         "annotation_status": state,
+        "annotation_scope": scope,
+        "confirmed_empty_scope": scope if state == "confirmed_empty" else [],
+        "ground_truth_complete": state in {"annotated", "confirmed_empty"} and bool(scope),
         "annotation_preview": preview,
     }

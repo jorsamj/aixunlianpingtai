@@ -1960,13 +1960,19 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
-def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
-    saved = AnnotationRepository(project_dir(project_id)).upsert(image_id, boxes, annotation_state)
+def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]],
+                     annotation_state=None, annotation_scope=None):
+    repository = AnnotationRepository(project_dir(project_id))
+    if annotation_scope is None:
+        annotation_scope = repository.get(image_id).get('annotation_scope') or []
+    saved = repository.upsert(
+        image_id, boxes, annotation_state, annotation_scope,
+    )
     updated = saved['updated_at']
     # v42.11：把标注摘要同步进 images.json。列表页/首次启动无需逐张再次读取 annotation json，
     # 同时保留前 32 个框用于数据卡片和预览叠加显示。
     patch = {
-        **annotation_summary(boxes, saved['annotation_state']),
+        **annotation_summary(boxes, saved['annotation_state'], saved.get('annotation_scope')),
         "annotation_summary_at": updated,
     }
     if saved['annotation_state'] in {'annotated', 'confirmed_empty'}:
@@ -3191,7 +3197,8 @@ def _v52_annotation_index_worker(project_id: str):
             anns = read_annotation(project_id, image_id)
             boxes = anns.get("boxes", []) if isinstance(anns, dict) else []
             patch = {
-                **annotation_summary(boxes, anns.get('annotation_state')),
+                **annotation_summary(boxes, anns.get('annotation_state'),
+                                     anns.get('annotation_scope'), anns.get('confirmed_empty_scope')),
                 "annotation_summary_at": anns.get("updated_at") or now_iso(),
             }
             if boxes:
@@ -3672,6 +3679,8 @@ def get_annotation(project_id: str, image_id: str):
 
 class AnnotationSave(BaseModel):
     boxes: List[Dict[str, Any]]
+    annotation_state: Optional[Literal['annotated', 'confirmed_empty', 'unannotated']] = None
+    annotation_scope: Optional[List[str]] = None
 
 
 @app.post("/api/projects/{project_id}/annotations/{image_id}")
@@ -3681,10 +3690,9 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
     img = next((x for x in images if x["id"] == image_id), None)
     if not img:
         raise HTTPException(status_code=404, detail="图片不存在")
-    label_ids = {
-        str(item["code"]): int(item["class_id"])
-        for item in active_label_options(project_label_items(project))
-    }
+    label_catalog = active_label_options(project_label_items(project))
+    label_ids = {str(item["code"]): int(item["class_id"]) for item in label_catalog}
+    stable_ids = {str(item["code"]): str(item["label_id"]) for item in label_catalog}
     try:
         clean_boxes = normalize_boxes(
             payload.boxes,
@@ -3709,7 +3717,24 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             solution="请检查标注框是否位于图片内部且宽高大于零。",
             status_code=422,
         ) from error
-    write_annotation(project_id, image_id, clean_boxes)
+    for box in clean_boxes:
+        box['label_id'] = stable_ids[str(box['label'])]
+    state = payload.annotation_state or ('annotated' if clean_boxes else 'confirmed_empty')
+    scope = payload.annotation_scope
+    if scope is None:
+        scope = sorted({str(box['label_id']) for box in clean_boxes})
+    else:
+        allowed_scope = set(stable_ids.values())
+        unknown_scope = sorted({str(label_id) for label_id in scope} - allowed_scope)
+        if unknown_scope:
+            raise PlatformError(
+                code="ANNOTATION_SCOPE_LABEL_NOT_FOUND",
+                message="标注保存失败",
+                detail=f"标注作用域包含不存在或已停用的标签：{', '.join(unknown_scope[:5])}",
+                solution="请刷新标签库后重新选择标注作用域。",
+                status_code=422,
+            )
+    write_annotation(project_id, image_id, clean_boxes, state, scope)
     fresh = next((x for x in load_images(project_id) if str(x.get("id")) == str(image_id)), img)
     return {"ok": True, "image": fresh, "annotation": read_annotation(project_id, image_id), "saved_boxes": len(clean_boxes)}
 
@@ -14038,11 +14063,14 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
     patches={}; total=len(pending); workers=min(8,max(2,os.cpu_count() or 2))
     def one(img):
         iid=str(img.get("id") or ""); ann=read_annotation(project_id,iid); boxes=ann.get("boxes",[]) if isinstance(ann,dict) else []
-        return iid,boxes,(ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),ann.get('annotation_state')
+        return (iid, boxes,
+                (ann.get("updated_at") if isinstance(ann,dict) else "") or now_iso(),
+                ann.get('annotation_state'), ann.get('annotation_scope'),
+                ann.get('confirmed_empty_scope'))
     done=0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(one,img) for img in pending]):
-            iid,boxes,updated,annotation_state=fut.result(); patch={**annotation_summary(boxes,annotation_state),"annotation_summary_at":updated}
+            iid,boxes,updated,annotation_state,annotation_scope,empty_scope=fut.result(); patch={**annotation_summary(boxes,annotation_state,annotation_scope,empty_scope),"annotation_summary_at":updated}
             if boxes:patch["processing_status"]="processed"
             patches[iid]=patch
             done+=1

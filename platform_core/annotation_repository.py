@@ -8,6 +8,8 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .annotations import normalize_annotation_contract
+
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
 
@@ -15,6 +17,7 @@ STATES = {"unannotated", "annotated", "confirmed_empty"}
 class AnnotationRepository:
     def __init__(self, project_path: str | Path):
         self.project_path = Path(project_path)
+        self._stable_labels_cache = None
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "annotations.sqlite3"
         with closing(self._connect()) as db:
@@ -24,7 +27,8 @@ class AnnotationRepository:
                     annotation_state TEXT NOT NULL CHECK(annotation_state IN
                         ('unannotated','annotated','confirmed_empty')),
                     version INTEGER NOT NULL, content_digest TEXT NOT NULL,
-                    boxes_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    boxes_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    annotation_scope_json TEXT NOT NULL DEFAULT '[]'
                 );
                 CREATE INDEX IF NOT EXISTS ix_annotations_state ON annotations(annotation_state, image_id);
                 CREATE INDEX IF NOT EXISTS ix_annotations_updated ON annotations(updated_at);
@@ -34,6 +38,9 @@ class AnnotationRepository:
                     PRIMARY KEY(task_id, image_id)
                 );
             """)
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(annotations)")}
+            if "annotation_scope_json" not in columns:
+                db.execute("ALTER TABLE annotations ADD COLUMN annotation_scope_json TEXT NOT NULL DEFAULT '[]'")
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=30)
@@ -48,19 +55,54 @@ class AnnotationRepository:
             raise ValueError("invalid annotation image_id")
         return image_id
 
+    def _boxes_with_stable_labels(self, boxes):
+        if self._stable_labels_cache is None:
+            meta_path = self.project_path / 'meta.json'
+            try:
+                project = json.loads(meta_path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                project = {}
+            codes = list(project.get('labels') or [])
+            metadata = list(project.get('label_meta') or [])
+            self._stable_labels_cache = {
+                str(code): str(metadata[index].get('label_id'))
+                for index, code in enumerate(codes)
+                if index < len(metadata) and isinstance(metadata[index], dict)
+                and metadata[index].get('label_id')
+            }
+        result = []
+        for raw in boxes:
+            box = dict(raw)
+            if not box.get('label_id'):
+                label = str(box.get('label') or '')
+                stable_id = self._stable_labels_cache.get(label)
+                if stable_id:
+                    box['label_id'] = stable_id
+            result.append(box)
+        return result
+
     def get(self, image_id):
         image_id = self._id(image_id)
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
         if row:
             result = dict(row)
-            result['boxes'] = json.loads(result.pop('boxes_json'))
+            result['boxes'] = self._boxes_with_stable_labels(json.loads(result.pop('boxes_json')))
+            result['annotation_scope'] = json.loads(result.pop('annotation_scope_json', '[]') or '[]')
+            result['confirmed_empty_scope'] = (
+                list(result['annotation_scope']) if result['annotation_state'] == 'confirmed_empty' else []
+            )
             return result
         path = self.project_path / 'annotations' / f'{image_id}.json'
         legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
-        boxes = legacy.get('boxes') or []
-        state = legacy.get('annotation_state') or ('annotated' if boxes else 'unannotated')
-        return {**legacy, 'image_id': image_id, 'boxes': boxes, 'annotation_state': state, 'version': 0}
+        boxes = self._boxes_with_stable_labels(legacy.get('boxes') or [])
+        state, scope = normalize_annotation_contract(
+            boxes, legacy.get('annotation_state'), legacy.get('annotation_scope'),
+            legacy.get('confirmed_empty_scope'),
+        )
+        return {**legacy, 'image_id': image_id, 'boxes': boxes, 'annotation_state': state,
+                'annotation_scope': scope,
+                'confirmed_empty_scope': scope if state == 'confirmed_empty' else [], 'version': 0}
 
     def summary(self):
         """Count persisted states; legacy JSON remains a per-image lazy fallback."""
@@ -76,24 +118,30 @@ class AnnotationRepository:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:
                 image_id = self._id(row['image_id'])
-                boxes = list(row.get('boxes') or [])
-                state = row.get('annotation_state') or ('annotated' if boxes else 'confirmed_empty')
-                if state not in STATES or bool(boxes) != (state == 'annotated'):
-                    raise ValueError('annotation state does not agree with boxes')
+                boxes = self._boxes_with_stable_labels(row.get('boxes') or [])
+                default_state = row.get('annotation_state') or ('annotated' if boxes else 'confirmed_empty')
+                state, scope = normalize_annotation_contract(
+                    boxes, default_state, row.get('annotation_scope'), row.get('confirmed_empty_scope'),
+                )
                 payload = json.dumps(boxes, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
-                digest = hashlib.sha256((state + '\n' + payload).encode('utf-8')).hexdigest()
+                scope_payload = json.dumps(scope, ensure_ascii=False, separators=(',', ':'))
+                digest = hashlib.sha256((state + '\n' + scope_payload + '\n' + payload).encode('utf-8')).hexdigest()
                 now = datetime.now(timezone.utc).isoformat()
-                db.execute("""INSERT INTO annotations VALUES (?, ?, 1, ?, ?, ?, ?)
+                db.execute("""INSERT INTO annotations
+                    (image_id,annotation_state,version,content_digest,boxes_json,created_at,updated_at,annotation_scope_json)
+                    VALUES (?, ?, 1, ?, ?, ?, ?, ?)
                     ON CONFLICT(image_id) DO UPDATE SET annotation_state=excluded.annotation_state,
                     version=annotations.version+1, content_digest=excluded.content_digest,
-                    boxes_json=excluded.boxes_json, updated_at=excluded.updated_at
+                    boxes_json=excluded.boxes_json, updated_at=excluded.updated_at,
+                    annotation_scope_json=excluded.annotation_scope_json
                     WHERE annotations.content_digest != excluded.content_digest""",
-                    (image_id, state, digest, payload, now, now))
+                    (image_id, state, digest, payload, now, now, scope_payload))
                 written.append(image_id)
         return written
 
-    def upsert(self, image_id, boxes, annotation_state=None):
-        self.upsert_many([{'image_id': image_id, 'boxes': boxes, 'annotation_state': annotation_state}])
+    def upsert(self, image_id, boxes, annotation_state=None, annotation_scope=None):
+        self.upsert_many([{'image_id': image_id, 'boxes': boxes, 'annotation_state': annotation_state,
+                           'annotation_scope': annotation_scope}])
         return self.get(image_id)
 
     def remap_imported_class(self, rows):
@@ -114,13 +162,18 @@ class AnnotationRepository:
                 saved = db.execute('SELECT * FROM annotations WHERE image_id=?', (image_id,)).fetchone()
                 if saved:
                     current = dict(saved)
-                    boxes = list(json.loads(current['boxes_json']))
+                    boxes = self._boxes_with_stable_labels(json.loads(current['boxes_json']))
                     old_state = current['annotation_state']
+                    old_scope = json.loads(current.get('annotation_scope_json') or '[]')
                 else:
                     legacy_path = self.project_path / 'annotations' / f'{image_id}.json'
                     legacy = json.loads(legacy_path.read_text(encoding='utf-8')) if legacy_path.is_file() else {}
-                    boxes = list(legacy.get('boxes') or [])
+                    boxes = self._boxes_with_stable_labels(legacy.get('boxes') or [])
                     old_state = legacy.get('annotation_state') or ('annotated' if boxes else 'unannotated')
+                    _, old_scope = normalize_annotation_contract(
+                        boxes, old_state, legacy.get('annotation_scope'),
+                        legacy.get('confirmed_empty_scope'),
+                    )
                 remap_task_id = str(operation['remap_task_id'])
                 replay = db.execute(
                     'SELECT changed_boxes FROM annotation_remap_audit WHERE task_id=? AND image_id=?',
@@ -128,6 +181,7 @@ class AnnotationRepository:
                 if replay is not None:
                     results.append({'image_id': image_id, 'boxes': boxes,
                                     'annotation_state': old_state,
+                                    'annotation_scope': old_scope,
                                     'changed_boxes': int(replay['changed_boxes'])})
                     continue
                 import_id = str(operation['import_id'])
@@ -191,20 +245,35 @@ class AnnotationRepository:
                         })
                 new_state = 'annotated' if rewritten else (
                     'confirmed_empty' if old_state == 'confirmed_empty' else 'unannotated')
+                new_scope = list(old_scope)
+                if old_label_id in new_scope:
+                    new_scope = [item for item in new_scope if item != old_label_id]
+                    if target is not None:
+                        new_scope.append(str(target['label_id']))
+                new_state, new_scope = normalize_annotation_contract(
+                    rewritten, new_state, new_scope,
+                )
                 payload = json.dumps(rewritten, ensure_ascii=False, sort_keys=True,
                                      separators=(',', ':'), allow_nan=False)
-                digest = hashlib.sha256((new_state + '\n' + payload).encode('utf-8')).hexdigest()
+                scope_payload = json.dumps(new_scope, ensure_ascii=False, separators=(',', ':'))
+                digest = hashlib.sha256(
+                    (new_state + '\n' + scope_payload + '\n' + payload).encode('utf-8')
+                ).hexdigest()
                 now = datetime.now(timezone.utc).isoformat()
-                db.execute("""INSERT INTO annotations VALUES (?, ?, 1, ?, ?, ?, ?)
+                db.execute("""INSERT INTO annotations
+                    (image_id,annotation_state,version,content_digest,boxes_json,created_at,updated_at,annotation_scope_json)
+                    VALUES (?, ?, 1, ?, ?, ?, ?, ?)
                     ON CONFLICT(image_id) DO UPDATE SET annotation_state=excluded.annotation_state,
                     version=annotations.version+1,content_digest=excluded.content_digest,
-                    boxes_json=excluded.boxes_json,updated_at=excluded.updated_at
+                    boxes_json=excluded.boxes_json,updated_at=excluded.updated_at,
+                    annotation_scope_json=excluded.annotation_scope_json
                     WHERE annotations.content_digest != excluded.content_digest""",
-                    (image_id, new_state, digest, payload, now, now))
+                    (image_id, new_state, digest, payload, now, now, scope_payload))
                 db.execute('INSERT INTO annotation_remap_audit VALUES(?,?,?,?)',
                            (remap_task_id, image_id, changed_boxes, now))
                 results.append({'image_id': image_id, 'boxes': rewritten,
-                                'annotation_state': new_state, 'changed_boxes': changed_boxes})
+                                'annotation_state': new_state, 'annotation_scope': new_scope,
+                                'changed_boxes': changed_boxes})
         return results
 
     def remove(self, image_ids):
