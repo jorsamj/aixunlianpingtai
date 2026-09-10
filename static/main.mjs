@@ -19,9 +19,11 @@ import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntim
 import {buildServerImportRequest, buildImportConfirmation, externalClassMappingHtml, pollServerImport, sampleGalleryHtml, serverImportView} from './modules/server-material-import.js?v=422500';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422400';
+import {createPageLifecycle} from './modules/page-lifecycle.js?v=422500';
 
 
 const modalStack = createModalStack();
+const pageLifecycle = createPageLifecycle({getPage: () => state.page});
 
 for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
 
@@ -51,7 +53,15 @@ window.PlatformCore = {
   messageFromApiError,
   annotation: {applyAnnotationResult},
   annotationWorkbench: {createAnnotationWorkbench, queueWindow},
-  taskPoller: {createTaskPoller, isTaskActive, taskProgress},
+  taskPoller: {
+    createTaskPoller: options => createTaskPoller({
+      ...options,
+      signal: options?.signal || pageLifecycle.signal({modal: !document.getElementById('modal')?.classList.contains('hidden')})
+    }),
+    isTaskActive,
+    taskProgress
+  },
+  pageLifecycle,
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation},
   labels: {activeLabelOptions},
@@ -82,6 +92,35 @@ installMaterialBatchRuntime({
 });
 window.installServerMaterialImport61?.();
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
+
+const authoritativeSetPage = window.setPage;
+if (typeof authoritativeSetPage === 'function') {
+  window.setPage = function lifecycleSetPage(page) {
+    const target = page === '自动标注' ? '自动标注及清洗' : String(page || '');
+    pageLifecycle.enter(target);
+    return authoritativeSetPage(page);
+  };
+}
+
+const authoritativeModal = window.modal;
+if (typeof authoritativeModal === 'function') {
+  window.modal = function lifecycleModal(...args) {
+    pageLifecycle.openModal();
+    return authoritativeModal(...args);
+  };
+}
+
+const authoritativeCloseModal = window.closeModal;
+if (typeof authoritativeCloseModal === 'function') {
+  window.closeModal = function lifecycleCloseModal(...args) {
+    pageLifecycle.closeModal();
+    return authoritativeCloseModal(...args);
+  };
+}
+
+pageLifecycle.bootstrap(() => window.__clInit?.()).catch(error => {
+  console.error('Platform bootstrap failed', error);
+});
 
 for (const delay of [80, 500, 1800, 3600]) {
   setTimeout(() => {

@@ -18,16 +18,16 @@ export function taskProgress(task = {}) {
   };
 }
 
-export function createTaskPoller({load, onUpdate, onError = () => {}, delay = 1600, schedule = setTimeout, cancelSchedule = clearTimeout}) {
+export function createTaskPoller({load, onUpdate, onError = () => {}, delay = 1600, schedule = setTimeout, cancelSchedule = clearTimeout, signal = null}) {
   let stopped = false;
   let timer = null;
   let generation = 0;
   async function refresh() {
-    if (stopped) return null;
+    if (stopped || signal?.aborted) return null;
     const token = ++generation;
     try {
       const task = await load();
-      if (stopped || token !== generation) return null;
+      if (stopped || signal?.aborted || token !== generation) return null;
       onUpdate(task);
       if (isTaskActive(task?.status)) timer = schedule(refresh, delay);
       return task;
@@ -36,7 +36,7 @@ export function createTaskPoller({load, onUpdate, onError = () => {}, delay = 16
       return null;
     }
   }
-  return {
+  const poller = {
     refresh,
     start: refresh,
     stop() {
@@ -46,4 +46,6 @@ export function createTaskPoller({load, onUpdate, onError = () => {}, delay = 16
       timer = null;
     }
   };
+  signal?.addEventListener('abort', () => poller.stop(), {once: true});
+  return poller;
 }

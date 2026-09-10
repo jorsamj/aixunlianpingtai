@@ -3554,7 +3554,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V411},50);
   // Run the one initial load only after every version override above has been installed.
-  queueMicrotask(()=>{if(window.__clInit)window.__clInit()});
+  // The module entry owns the single bootstrap after lifecycle guards are installed.
 })();
 
 /* ============================================================
