@@ -8689,7 +8689,16 @@ def v19_update_job(project_id: str, job_id: str, **kwargs):
 
 
 def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
+    # Compatibility preview only: never serialize 10k/50k/100k image rows into
+    # job.json or the upload response. The durable Storage Worker owns the full
+    # candidate manifest after /start.
+    try:
+        preview_limit = int(os.environ.get("MC_BROWSER_ZIP_PREVIEW_IMAGES", "500") or 500)
+    except (TypeError, ValueError):
+        preview_limit = 500
+    preview_limit = max(50, min(2000, preview_limit))
     images: List[Dict[str, Any]] = []
+    image_count = 0
     hints = set()
     file_count = 0
     total_size = 0
@@ -8703,13 +8712,15 @@ def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
             low = name.lower()
             suffix = Path(low).suffix
             if suffix in IMAGE_EXTS:
-                images.append({
-                    "path": name,
-                    "name": Path(name).name,
-                    "split": _v18_split_from_path(Path(name)),
-                    "size_kb": round((info.file_size or 0) / 1024, 1),
-                })
-            if low.endswith("data.yaml") or low.endswith("data.yml") or "/labels/" in low:
+                image_count += 1
+                if len(images) < preview_limit:
+                    images.append({
+                        "path": name,
+                        "name": Path(name).name,
+                        "split": _v18_split_from_path(Path(name)),
+                        "size_kb": round((info.file_size or 0) / 1024, 1),
+                    })
+            if low.endswith("data.yaml") or low.endswith("data.yml") or low.endswith("dataset.yaml") or "/labels/" in low:
                 hints.add("YOLO")
             if low.endswith(".json") and ("coco" in low or "annotation" in low or "_annotations" in low):
                 hints.add("COCO")
@@ -8717,8 +8728,10 @@ def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
                 hints.add("VOC")
     return {
         "file_count": file_count,
-        "image_count": len(images),
+        "image_count": image_count,
         "images": images,
+        "images_preview_count": len(images),
+        "images_truncated": image_count > len(images),
         "format_hints": sorted(hints) or ["未知"],
         "uncompressed_size_mb": round(total_size / 1024 / 1024, 2),
     }
