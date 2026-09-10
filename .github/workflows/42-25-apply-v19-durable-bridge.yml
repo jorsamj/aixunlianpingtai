@@ -24,7 +24,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused dependencies
-        run: python -m pip install pytest pillow filelock psutil
+        run: >-
+          python -m pip install
+          pytest psutil pyyaml pillow
+          fastapi httpx python-multipart requests
+          keyring filelock boto3 oss2 opencv-python-headless
       - name: Apply fail-closed compatibility patch
         run: python scripts/apply_v19_durable_bridge_patch.py
       - name: Compile bridge and app
