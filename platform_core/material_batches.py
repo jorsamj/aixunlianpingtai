@@ -12,12 +12,15 @@ from pathlib import Path
 
 from filelock import FileLock
 
+from .cleaning import DurableHashIndex, clean_options
+from .cleaning_batches import clean_batch
 from .material_repository import MaterialRepository
 from .material_repository_batch import _transform_many
 from .material_selection import MaterialSelectionSpec, SelectionScope
 from .materials import mark_ready
 from .storage.errors import redact_storage_error
 from .storage.import_tasks import _provider
+from .storage.manager import StorageManager
 from .storage.source_repository import StorageSource, StorageSourceRepository
 from .task_runtime import TaskKind, TaskRecord, TaskStatus
 from .task_runtime.models import utc_now
@@ -39,7 +42,11 @@ class BatchOperation(str, Enum):
     AI_ANNOTATE = "AI_ANNOTATE"
 
 
-NOT_READY = {BatchOperation.CLEAN, BatchOperation.AI_ANNOTATE}
+NOT_READY = {BatchOperation.AI_ANNOTATE}
+AI_NOT_READY_REASON = (
+    "AI_ANNOTATE requires Worker-only provider/configuration, prompt/catalog and "
+    "bounded candidate review/commit services; existing AI services import app and load all materials"
+)
 
 
 class BatchRequestError(ValueError):
@@ -61,6 +68,8 @@ def parse_request(payload):
     if not isinstance(options, dict):
         raise ValueError("options must be an object")
     options = dict(options)
+    if operation is BatchOperation.CLEAN:
+        options = clean_options(options)
     if operation in {BatchOperation.ADD_LABELS, BatchOperation.REMOVE_LABELS}:
         labels = options.get("labels")
         if not isinstance(labels, list) or not labels or len(labels) > BATCH_SIZE:
@@ -98,6 +107,7 @@ def estimate_batch(project_id, materials, payload):
               "selection_spec": confirmed_selection.as_dict(), "supported": operation not in NOT_READY}
     if operation in NOT_READY:
         result["error_code"] = "BATCH_OPERATION_NOT_READY"
+        result["message"] = AI_NOT_READY_REASON
     if operation is BatchOperation.DELETE_SOURCE:
         result["confirmation_token"] = _confirmation_token(project_id, operation, confirmed_selection, options)
     return result
@@ -106,7 +116,7 @@ def estimate_batch(project_id, materials, payload):
 def create_batch(project_id, materials, repository, artifacts, payload):
     operation, selection, options = parse_request(payload)
     if operation in NOT_READY:
-        raise BatchRequestError("BATCH_OPERATION_NOT_READY", f"{operation.value} has no bounded durable adapter yet")
+        raise BatchRequestError("BATCH_OPERATION_NOT_READY", AI_NOT_READY_REASON)
     if selection.repository_revision is None:
         raise BatchRequestError("BATCH_ESTIMATE_REQUIRED", "estimate and provide selection_spec.repository_revision first", 409)
     if operation is BatchOperation.DELETE_SOURCE and options.get("confirmation_token") != _confirmation_token(
@@ -235,18 +245,20 @@ class BatchSelection:
 
     def summary(self, current=None):
         counts = dict(self.database.execute("SELECT state,count FROM counters"))
+        flagged = self.database.execute("SELECT value FROM meta WHERE key='clean_flagged'").fetchone()
         errors = [{"image_id": row[0], "error": row[1], "retryable": True} for row in self.database.execute(
             "SELECT image_id,error FROM selection WHERE state='failed' ORDER BY image_id LIMIT 10",
         )]
         return {"total": sum(counts.values()), "processed": counts["succeeded"] + counts["failed"],
                 "succeeded": counts["succeeded"], "failed": counts["failed"], "current_image_id": current,
                 "current": current, "errors": errors, "error_examples": errors,
+                "flagged": int(flagged[0]) if flagged else 0,
                 "selection_frozen": self.frozen()}
 
 
-def _check_active(context, stage="processing", current=None):
+def _check_active(context, stage="processing", current=None, progress=None):
     current_task = context.repository.heartbeat(
-        context.task.task_id, context.lease.lease_token, stage=stage, current_item=current,
+        context.task.task_id, context.lease.lease_token, stage=stage, current_item=current, progress=progress,
     )
     if current_task.status is TaskStatus.CANCEL_REQUESTED:
         raise InterruptedError("material batch cancelled")
@@ -296,7 +308,7 @@ class MaterialBatchHandler:
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
         operation, selection, options = parse_request(payload)
         if operation in NOT_READY:
-            raise BatchRequestError("BATCH_OPERATION_NOT_READY", f"{operation.value} has no bounded durable adapter yet")
+            raise BatchRequestError("BATCH_OPERATION_NOT_READY", AI_NOT_READY_REASON)
         project = context.artifacts._validate_task_id(context.task.project_id)
         materials = MaterialRepository(self.data_dir / "projects" / project)
         confirmed_revision = manifest.database.execute("SELECT value FROM meta WHERE key='repository_revision'").fetchone()
@@ -310,6 +322,11 @@ class MaterialBatchHandler:
         append_task_log(context, "processing", f"operation={operation.value} total={manifest.summary()['total']}")
         sources = StorageSourceRepository(self.data_dir / "storage" / "storage_sources.sqlite3") if operation is BatchOperation.DELETE_SOURCE else None
         source_cache, providers = {}, {}
+        manager = index = None
+        if operation is BatchOperation.CLEAN:
+            manager = StorageManager(data_dir=self.data_dir, project_id=project, materials=materials,
+                provider_resolver=lambda source, _secret: _provider(self.data_dir, project, source))
+            index = DurableHashIndex(manifest.database, lambda: _check_active(context, "duplicate_lookup"))
         while batch := manifest.rows():
             _check_active(context)
             ids = [row["image_id"] for row in batch]
@@ -318,6 +335,8 @@ class MaterialBatchHandler:
             context.save_checkpoint(manifest.summary(current))
             if operation is BatchOperation.DELETE_SOURCE:
                 self._delete_sources(context, manifest, materials, batch, sources, source_cache, providers)
+            elif operation is BatchOperation.CLEAN:
+                clean_batch(context, manifest, materials, batch, options, manager, index, _check_active)
             else:
                 try:
                     existing = {row["id"] for row in materials.get_many(ids)}
@@ -349,6 +368,10 @@ class MaterialBatchHandler:
             context.save_checkpoint(checkpoint)
             append_task_log(context, "checkpoint", f"processed={checkpoint['processed']} succeeded={checkpoint['succeeded']} failed={checkpoint['failed']}")
         summary = manifest.summary()
+        if operation is BatchOperation.CLEAN:
+            summary.update({"clean_results_ref": SELECTION_REF,
+                            "review_required": bool(summary["flagged"]),
+                            "scan_only": True})
         context.save_checkpoint(summary)
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, summary)
         status = (TaskStatus.PARTIAL_SUCCESS if summary["succeeded"] else TaskStatus.FAILED) if summary["failed"] else TaskStatus.SUCCEEDED
@@ -453,6 +476,10 @@ def public_batch(task, artifacts):
             "stage": task.stage, "total": checkpoint.get("total") if frozen else None,
             "processed": checkpoint.get("processed", 0), "succeeded": checkpoint.get("succeeded", 0),
             "failed": checkpoint.get("failed", 0), "current_image_id": checkpoint.get("current_image_id"),
+            "flagged": checkpoint.get("flagged", 0),
+            "scan_only": request.get("operation") == BatchOperation.CLEAN.value,
+            "results_url": (f"/api/v62/projects/{task.project_id}/material-batches/{task.task_id}/results"
+                            if request.get("operation") == BatchOperation.CLEAN.value else None),
             "error_examples": error_examples, "selection_frozen": frozen,
             "log_available": available, "log_ref": task.log_ref if available else None,
             "created_at": task.created_at, "updated_at": task.updated_at, "finished_at": task.finished_at}
@@ -498,6 +525,30 @@ def material_batch_router(get_project, material_store, task_repository, task_art
     def cancel(project_id: str, task_id: str):
         require_task(project_id, task_id)
         return public_batch(task_repository().request_cancel(task_id), task_artifacts())
+
+    @router.get("/{task_id}/results")
+    def results(project_id: str, task_id: str, cursor: str = "", limit: int = 100):
+        task = require_task(project_id, task_id)
+        request = task_artifacts().read_json(task_id, task.payload_ref, default={})
+        if request.get("operation") != BatchOperation.CLEAN.value:
+            raise HTTPException(409, detail="this task has no cleaning results")
+        if not 1 <= limit <= BATCH_SIZE:
+            raise HTTPException(422, detail="limit must be between 1 and 500")
+        path = task_artifacts().artifact_path(task_id, SELECTION_REF)
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+            database.execute("BEGIN")
+            if database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clean_results'").fetchone() is None:
+                return {"items": [], "next_cursor": None, "scan_only": True}
+            rows = database.execute(
+                "SELECT r.image_id,r.result_json,s.state,s.error FROM clean_results r "
+                "JOIN selection s ON s.image_id=r.image_id WHERE r.image_id>? ORDER BY r.image_id LIMIT ?",
+                (cursor, limit),
+            ).fetchall()
+            next_cursor = rows[-1][0] if rows and database.execute(
+                "SELECT 1 FROM clean_results WHERE image_id>? LIMIT 1", (rows[-1][0],),
+            ).fetchone() else None
+            return {"items": [{**json.loads(row[1]), "item_state": row[2], "item_error": row[3]} for row in rows],
+                    "next_cursor": next_cursor, "scan_only": True}
 
     @router.post("/{task_id}/retry", status_code=202)
     def retry(project_id: str, task_id: str):

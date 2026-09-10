@@ -45,7 +45,8 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     const total = Number(task.total || 0);
     const processed = Number(task.processed || 0);
     const failed = Number(task.failed || 0);
-    tell(`${task.operation || '批量任务'}：${task.status} ${processed}/${total}${failed ? `，失败 ${failed}` : ''}`);
+    const cleaning = task.operation === 'CLEAN' ? `，发现问题 ${Number(task.flagged || 0)} 张（仅检查，待复核）` : '';
+    tell(`${task.operation || '批量任务'}：${task.status} ${processed}/${total}${failed ? `，失败 ${failed}` : ''}${cleaning}`);
   }
 
   function poll(taskId) {
@@ -83,9 +84,10 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     const estimate = await json(await fetch(`${base()}/estimate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
     }));
-    if (!estimate.supported) throw new Error(estimate.error_code === 'BATCH_OPERATION_NOT_READY' ? '该批量操作尚未具备安全后台执行链路' : '当前操作不可用');
+    if (!estimate.supported) throw new Error(estimate.message || (estimate.error_code === 'BATCH_OPERATION_NOT_READY' ? '该批量操作尚未具备安全后台执行链路' : '当前操作不可用'));
     if (!Number(estimate.count || 0)) throw new Error('当前范围没有可处理素材');
-    if (!window.confirm(`本次将处理 ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
+    const cleanNote = operation === 'CLEAN' ? '清洗将检查并记录问题，不自动删除或确认素材。\n' : '';
+    if (!window.confirm(`${cleanNote}本次将处理 ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
     payload.selection_spec = estimate.selection_spec;
     if (operation === 'DELETE_SOURCE') payload.options.confirmation_token = estimate.confirmation_token;
     const task = await json(await fetch(base(), {

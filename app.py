@@ -12336,53 +12336,13 @@ def _v47_file_for(project_id: str, folder: str, task_id: str) -> Path:
     return d / f'{task_id}.json'
 
 
-def _v47_dhash(path: Path) -> int:
-    from PIL import Image
-    with Image.open(path) as im:
-        g = im.convert('L').resize((9, 8))
-        vals = list(g.getdata())
-    out = 0
-    for y in range(8):
-        row = vals[y * 9:(y + 1) * 9]
-        for x in range(8):
-            out = (out << 1) | (1 if row[x] > row[x + 1] else 0)
-    return out
-
-
-def _v47_hamming(a: int, b: int) -> int:
-    return int((a ^ b).bit_count())
-
-
-def _v47_image_metrics(path: Path) -> Dict[str, Any]:
-    import hashlib
-    raw = path.read_bytes()
-    exact = hashlib.sha256(raw).hexdigest()
-    try:
-        import cv2  # type: ignore
-        img = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError('OpenCV无法解码图片')
-        h, w = img.shape[:2]
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        brightness = float(gray.mean())
-        # entropy gives a cheap signal for blank/near-blank data
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).ravel()
-        prob = hist / max(1.0, float(hist.sum()))
-        import numpy as np
-        nz = prob[prob > 0]
-        entropy = float(-(nz * np.log2(nz)).sum()) if len(nz) else 0.0
-    except Exception:
-        from PIL import Image, ImageStat
-        with Image.open(path) as im:
-            im.verify()
-        with Image.open(path) as im:
-            w, h = im.size
-            g = im.convert('L')
-            brightness = float(ImageStat.Stat(g).mean[0])
-        blur_score = 0.0
-        entropy = 0.0
-    return {'width': int(w), 'height': int(h), 'sha256': exact, 'dhash': _v47_dhash(path), 'blur_score': round(blur_score, 3), 'brightness': round(brightness, 3), 'entropy': round(entropy, 3)}
+from platform_core.cleaning import (
+    MemoryHashIndex as _V47MemoryHashIndex,
+    dhash as _v47_dhash,
+    hamming as _v47_hamming,
+    image_metrics as _v47_image_metrics,
+    metric_issues as _v47_metric_issues,
+)
 
 
 class V47CleanReq(BaseModel):
@@ -12427,9 +12387,7 @@ def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
             raise RuntimeError('没有可清洗的图片')
         total = len(images)
         rows: List[Dict[str, Any]] = []
-        exact_seen: Dict[str, str] = {}
-        # 4x16bit LSH bands keep near-duplicate candidate checks sub-quadratic for large pools.
-        bands: Dict[Tuple[int, int], List[Tuple[int, str]]] = defaultdict(list)
+        hash_index = _V47MemoryHashIndex()
         started = time.time()
         last_saved_count = 0
         last_saved_at = time.monotonic()
@@ -12452,42 +12410,8 @@ def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
             try:
                 path = resolve_material_path(project_id, img)
                 metrics = _v47_image_metrics(path)
-                if payload.get('exact_duplicate'):
-                    prev = exact_seen.get(metrics['sha256'])
-                    if prev:
-                        issues.append({'code': 'exact_duplicate', 'name': '重复图', 'detail': '与另一张图片完全相同', 'related_image_id': prev})
-                    else:
-                        exact_seen[metrics['sha256']] = str(img.get('id'))
-                if payload.get('near_duplicate') and not any(x['code'] == 'exact_duplicate' for x in issues):
-                    dh = int(metrics['dhash']); candidates: Dict[str, int] = {}
-                    for band in range(4):
-                        key = (band, (dh >> (band * 16)) & 0xffff)
-                        for old_hash, old_id in bands.get(key, []):
-                            candidates[old_id] = old_hash
-                    threshold = max(0, min(20, int(payload.get('near_duplicate_hamming') or 5)))
-                    best = None
-                    for old_id, old_hash in candidates.items():
-                        dist = _v47_hamming(dh, old_hash)
-                        if dist <= threshold and (best is None or dist < best[0]):
-                            best = (dist, old_id)
-                    if best:
-                        issues.append({'code': 'near_duplicate', 'name': '近似重复', 'detail': f'感知哈希距离 {best[0]}', 'related_image_id': best[1]})
-                    for band in range(4):
-                        key = (band, (dh >> (band * 16)) & 0xffff)
-                        bands[key].append((dh, str(img.get('id'))))
-                w, h = int(metrics['width']), int(metrics['height'])
-                if w < int(payload.get('min_width') or 0) or h < int(payload.get('min_height') or 0):
-                    issues.append({'code': 'resolution_low', 'name': '分辨率偏低', 'detail': f'{w}×{h}'})
-                if (payload.get('max_width') and w > int(payload.get('max_width'))) or (payload.get('max_height') and h > int(payload.get('max_height'))):
-                    issues.append({'code': 'resolution_high', 'name': '分辨率过高', 'detail': f'{w}×{h}'})
-                if payload.get('blur_check') and float(metrics.get('blur_score') or 0) < float(payload.get('blur_min_laplacian') or 45):
-                    issues.append({'code': 'blur', 'name': '疑似模糊', 'detail': f"清晰度 {metrics.get('blur_score')}"})
-                if payload.get('brightness_check'):
-                    b = float(metrics.get('brightness') or 0)
-                    if b < float(payload.get('brightness_min') or 15):
-                        issues.append({'code': 'too_dark', 'name': '疑似过暗', 'detail': f'平均亮度 {b:.1f}'})
-                    if b > float(payload.get('brightness_max') or 245):
-                        issues.append({'code': 'too_bright', 'name': '疑似过亮', 'detail': f'平均亮度 {b:.1f}'})
+                issues, near_indexed = _v47_metric_issues(metrics, payload, str(img.get('id')), hash_index)
+                hash_index.remember(str(img.get('id')), metrics, near_indexed)
             except Exception as e:
                 if payload.get('corrupt_check'):
                     issues.append({'code': 'corrupt', 'name': '图片损坏', 'detail': str(e)[:180]})
