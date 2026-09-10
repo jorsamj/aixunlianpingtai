@@ -307,7 +307,8 @@
 - Modify: `docs/codex-handoff.md`
 - Modify: cache/version constants in `static/index.html`, `static/main.mjs`, `static/app.js`
 
-- [ ] Review Task 0 authority map and remove remaining superseded paths directly related to this release.
-- [ ] Run bounded compile/import/JS syntax/diff checks only; document actual verified and NOT VERIFIED items.
+- [ ] 优先检查实现本身，仅对本轮受影响的 Python/JavaScript 执行编译、构建或语法检查；不编写低价值测试，不重复运行已经通过且不能提供新信息的检查。
+- [ ] 只有编译/构建出现具体失败、仓库规则强制要求或存在明确数据安全风险时，才增加最小必要定向检查；单项检查预计长时间运行时先停止，不自行扩大测试范围。
+- [ ] 编译/构建通过且没有具体失败信号后立即停止验证；将当前环境无法确认的能力列为 `NOT VERIFIED`，说明原因，并给出最小手动验证步骤、预期结果和注意事项。
 - [ ] Set version/cache identifiers to 42.25.0 and update handoff/release notes.
 - [ ] Commit `release: prepare version 42.25.0`, push only `feat/42.25.0`, report all task SHAs and Linux/A800 minimum acceptance steps.

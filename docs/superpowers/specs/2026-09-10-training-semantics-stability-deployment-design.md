@@ -131,6 +131,6 @@ EarlyStopping 是正常 TRAIN_COMPLETED。若 best.pt/last.pt 已存在而 Valid
 
 ## 13. 验证与完成条件
 
-每个 Task 独立 commit。优先做 Python compile/import、JavaScript syntax 和 API/payload/Worker 合同检查；只有具体失败信号、核心数据安全或仓库规则要求时才做定向测试。禁止先跑整套 pytest 或长时间挂起测试。
+每个 Task 独立 commit。Task 19 只对本轮受影响代码做编译、构建或语法检查；已经通过且不能提供新信息的检查不重复运行。只有出现具体失败信号、仓库规则强制要求或明确数据安全风险时才增加最小必要定向检查。编译/构建通过且没有具体失败信号后立即停止验证，禁止自行扩大测试范围、先跑整套 pytest 或运行长时间挂起测试。
 
 没有真实 Linux/A800/2 万素材/Atlas/RK3568/Sophon 环境的部分必须标记 `NOT VERIFIED`，并给出最小人工验收步骤。所有 Task 完成后才更新 `VERSION.txt` 为 42.25.0、生成 release commit 并推送开发分支。
