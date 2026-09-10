@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from platform_core.storage.import_candidates import ImportCandidateStore
+from platform_core.storage.local import LocalStorageProvider
 from platform_core.storage.models import ObjectMetadata, StorageType
 from platform_core.storage.yolo_import import (
     YoloImportError, YoloImportScanner, parse_detection_line, resolve_reference,
@@ -102,3 +103,61 @@ def test_list_file_same_directory_and_safe_yaml(tmp_path):
     with pytest.raises(YoloImportError) as error:
         scanner.prepare("yolo")
     assert error.value.code == "YOLO_INVALID_YAML"
+
+
+def test_prefix_scanner_does_not_reinventory_entire_storage_for_self_contained_zip(tmp_path):
+    provider = MemoryProvider({
+        "zip-a/data.yaml": b"names: [cat]\ntrain: images/train\nval: images/val\n",
+        "zip-a/images/train/a.jpg": b"image",
+        "zip-a/labels/train/a.txt": b"0 .5 .5 .2 .2\n",
+        "zip-a/images/val/b.jpg": b"image",
+        "zip-a/labels/val/b.txt": b"0 .5 .5 .2 .2\n",
+        "old-dataset/images/old.jpg": b"unrelated",
+    })
+    calls = []
+
+    def recording_objects(provider, prefix, recursive):
+        calls.append((prefix, recursive))
+        yield from objects(provider, prefix, recursive)
+
+    store = ImportCandidateStore(tmp_path / "candidates.sqlite3")
+    scanner = YoloImportScanner(provider, store, recording_objects)
+    assert scanner.prepare("yolo", prefix="zip-a", dataset_yaml="zip-a/data.yaml") == "yolo"
+    assert calls == [("zip-a", True)]
+    assert len(list(scanner.iter_images())) == 2
+
+
+def test_cross_prefix_yaml_keeps_compatibility_by_explicit_full_inventory(tmp_path):
+    provider = MemoryProvider({
+        "zip-a/data.yaml": b"path: ..\nnames: [cat]\ntrain: shared/images\n",
+        "shared/images/a.jpg": b"image",
+        "shared/labels/a.txt": b"0 .5 .5 .2 .2\n",
+    })
+    calls = []
+
+    def recording_objects(provider, prefix, recursive):
+        calls.append((prefix, recursive))
+        yield from objects(provider, prefix, recursive)
+
+    store = ImportCandidateStore(tmp_path / "candidates.sqlite3")
+    scanner = YoloImportScanner(provider, store, recording_objects)
+    assert scanner.prepare("yolo", prefix="zip-a", dataset_yaml="zip-a/data.yaml") == "yolo"
+    assert calls == [("zip-a", True), ("", True)]
+    assert len(list(scanner.iter_images())) == 1
+
+
+def test_local_inventory_metadata_does_not_hash_contents(tmp_path, monkeypatch):
+    root = tmp_path / "storage"
+    root.mkdir()
+    (root / "data.yaml").write_text("names: [cat]\ntrain: images\n", encoding="utf-8")
+    (root / "labels.txt").write_text("0 .5 .5 .2 .2\n", encoding="utf-8")
+    (root / "image.jpg").write_bytes(b"not-read-by-inventory")
+
+    def unexpected_hash(_path):
+        raise AssertionError("cheap inventory must not hash file contents")
+
+    monkeypatch.setattr("platform_core.storage.local._sha256", unexpected_hash)
+    provider = LocalStorageProvider("local", root)
+    rows = list(provider.iter_objects_metadata())
+    assert {row.key for row in rows} == {"data.yaml", "image.jpg", "labels.txt"}
+    assert all(row.sha256 == "" for row in rows)
