@@ -199,8 +199,8 @@ def _auto_confirm(
     meta_path = data_dir / "projects" / project_id / "meta.json"
     labels = _label_rows(meta_path)
     suggestions = mapping_suggestions(store.external_classes(), labels)
-    occupied = {str(row.get("code") or "") for row in labels}
     actions: dict[str, dict[str, Any]] = {}
+    unresolved: list[str] = []
     for row in suggestions:
         class_id = int(row["class_id"])
         key = str(class_id)
@@ -208,13 +208,13 @@ def _auto_confirm(
         if target_id:
             actions[key] = {"action": "map", "target_label_id": target_id}
             continue
-        code = _safe_code(str(row.get("name") or ""), class_id, occupied)
-        occupied.add(code)
-        actions[key] = {
-            "action": "create",
-            "code": code,
-            "display_name": str(row.get("name") or code),
-        }
+        unresolved.append(f"{class_id}:{str(row.get('name') or '')}")
+    if unresolved:
+        raise ValueError(
+            "YOLO 外部标签无法唯一映射到现有平台标签："
+            + ", ".join(unresolved[:20])
+            + "。请使用服务器素材导入的标签映射确认页处理后再导入；系统不会自动创建标签。"
+        )
     confirm_import(
         store,
         artifacts,
