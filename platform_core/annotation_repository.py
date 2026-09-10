@@ -8,7 +8,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .annotations import normalize_annotation_contract
+from .annotations import normalize_annotation_contract, normalize_annotation_scope
 
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
@@ -55,7 +55,12 @@ class AnnotationRepository:
             raise ValueError("invalid annotation image_id")
         return image_id
 
-    def _boxes_with_stable_labels(self, boxes):
+    def _stable_labels(self):
+        """Return current authoritative stable-label maps.
+
+        ``label_id`` is the semantic identity. Legacy ``class_id`` and code are
+        projections that may change when labels are reordered or renamed.
+        """
         if self._stable_labels_cache is None:
             meta_path = self.project_path / 'meta.json'
             try:
@@ -64,22 +69,63 @@ class AnnotationRepository:
                 project = {}
             codes = list(project.get('labels') or [])
             metadata = list(project.get('label_meta') or [])
-            self._stable_labels_cache = {
-                str(code): str(metadata[index].get('label_id'))
-                for index, code in enumerate(codes)
-                if index < len(metadata) and isinstance(metadata[index], dict)
-                and metadata[index].get('label_id')
-            }
+            by_code = {}
+            by_id = {}
+            for index, code in enumerate(codes):
+                if index >= len(metadata) or not isinstance(metadata[index], dict):
+                    continue
+                label_id = str(metadata[index].get('label_id') or '').strip()
+                if not label_id:
+                    continue
+                item = {'label_id': label_id, 'code': str(code), 'class_id': int(index)}
+                by_code[str(code)] = item
+                by_id[label_id] = item
+            self._stable_labels_cache = {'by_code': by_code, 'by_id': by_id}
+        return self._stable_labels_cache
+
+    def _boxes_with_stable_labels(self, boxes, *, strict=False):
+        maps = self._stable_labels()
+        by_code = maps['by_code']
+        by_id = maps['by_id']
+        schema_available = bool(by_id)
         result = []
         for raw in boxes:
             box = dict(raw)
-            if not box.get('label_id'):
-                label = str(box.get('label') or '')
-                stable_id = self._stable_labels_cache.get(label)
-                if stable_id:
-                    box['label_id'] = stable_id
+            label_id = str(box.get('label_id') or '').strip()
+            label = str(box.get('label') or '').strip()
+            if label_id:
+                authoritative = by_id.get(label_id)
+                if authoritative is None:
+                    if strict and schema_available:
+                        raise ValueError(f"annotation box references unknown stable label_id: {label_id}")
+                else:
+                    # Stable label identity wins over stale code/class projections.
+                    box['label_id'] = label_id
+                    box['label'] = authoritative['code']
+                    box['class_id'] = authoritative['class_id']
+            elif label:
+                authoritative = by_code.get(label)
+                if authoritative is not None:
+                    box['label_id'] = authoritative['label_id']
+                    box['label'] = authoritative['code']
+                    box['class_id'] = authoritative['class_id']
+                elif strict and schema_available:
+                    raise ValueError(f"annotation box references unknown label code: {label}")
+            elif strict and schema_available:
+                raise ValueError("annotation box is missing stable label identity")
             result.append(box)
         return result
+
+    def _validated_scope(self, scope):
+        normalized = normalize_annotation_scope(scope)
+        by_id = self._stable_labels()['by_id']
+        if by_id:
+            unknown = [label_id for label_id in normalized if label_id not in by_id]
+            if unknown:
+                raise ValueError(
+                    "annotation scope references unknown stable label_id: " + ", ".join(unknown[:8])
+                )
+        return normalized
 
     def get(self, image_id):
         image_id = self._id(image_id)
@@ -144,14 +190,19 @@ class AnnotationRepository:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:
                 image_id = self._id(row['image_id'])
-                boxes = self._boxes_with_stable_labels(row.get('boxes') or [])
+                boxes = self._boxes_with_stable_labels(row.get('boxes') or [], strict=True)
                 # Empty boxes are not evidence of a verified negative. Only an
                 # explicit caller contract (human confirmation or trusted import)
                 # may write confirmed_empty.
                 default_state = row.get('annotation_state') or ('annotated' if boxes else 'unannotated')
+                requested_scope = row.get('annotation_scope')
+                if requested_scope is None and default_state == 'confirmed_empty':
+                    requested_scope = row.get('confirmed_empty_scope')
+                requested_scope = self._validated_scope(requested_scope)
                 state, scope = normalize_annotation_contract(
-                    boxes, default_state, row.get('annotation_scope'), row.get('confirmed_empty_scope'),
+                    boxes, default_state, requested_scope, row.get('confirmed_empty_scope'),
                 )
+                scope = self._validated_scope(scope)
                 payload = json.dumps(boxes, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
                 scope_payload = json.dumps(scope, ensure_ascii=False, separators=(',', ':'))
                 digest = hashlib.sha256((state + '\n' + scope_payload + '\n' + payload).encode('utf-8')).hexdigest()
@@ -272,6 +323,8 @@ class AnnotationRepository:
                                            'external_class_id': external_class_id,
                                            'external_label': str(operation.get('external_label') or '')},
                         })
+                if rewritten:
+                    rewritten = self._boxes_with_stable_labels(rewritten, strict=True)
                 new_state = 'annotated' if rewritten else (
                     'confirmed_empty' if old_state == 'confirmed_empty' else 'unannotated')
                 new_scope = list(old_scope)
@@ -279,6 +332,7 @@ class AnnotationRepository:
                     new_scope = [item for item in new_scope if item != old_label_id]
                     if target is not None:
                         new_scope.append(str(target['label_id']))
+                new_scope = self._validated_scope(new_scope)
                 new_state, new_scope = normalize_annotation_contract(
                     rewritten, new_state, new_scope,
                 )
