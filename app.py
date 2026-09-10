@@ -1,6 +1,7 @@
 import json
 import base64
 import hashlib
+import mimetypes
 import math
 import re
 import os
@@ -24,7 +25,7 @@ import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictInt, model_validator
 from PIL import Image, ImageDraw
@@ -48,7 +49,12 @@ from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
-from platform_core.labels import active_label_options
+from platform_core.labels import (
+    active_label_options,
+    ensure_stable_label_ids,
+    new_label_id,
+    project_label_file_lock,
+)
 from platform_core.material_store import MaterialStore
 from platform_core.material_repository import MaterialRepository
 from platform_core.materials import initial_processing_status, mark_ready
@@ -976,10 +982,18 @@ class StorageImportScanReq(BaseModel):
         return self
 
 
+class StorageImportClassActionReq(BaseModel):
+    action: Literal["map", "create", "preserve", "ignore"]
+    target_label_id: Optional[str] = None
+    code: Optional[str] = None
+    display_name: Optional[str] = None
+
+
 class StorageImportConfirmReq(BaseModel):
     object_keys: Optional[List[str]] = None
     label_mapping: Dict[str, str] = Field(default_factory=dict)
     create_labels: List[str] = Field(default_factory=list)
+    class_actions: Dict[str, StorageImportClassActionReq] = Field(default_factory=dict)
     accept_quality_report: bool = False
 
 
@@ -1361,6 +1375,70 @@ def get_storage_import_scan(project_id: str, task_id: str):
     return _public_storage_import_task(task)
 
 
+def _storage_import_candidate_store(project_id: str, task_id: str):
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
+        raise HTTPException(status_code=404, detail="存储导入任务不存在")
+    request = shared_task_artifacts().read_json(task_id, task.payload_ref, default={})
+    manifest = shared_task_artifacts().artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+    if not manifest.is_file():
+        raise HTTPException(status_code=409, detail="存储扫描候选清单不存在")
+    return task, request, ImportCandidateStore(manifest, import_id=task_id)
+
+
+@app.get("/api/v61/projects/{project_id}/storage-imports/{task_id}/classes/{class_id}/samples")
+def storage_import_class_samples(project_id: str, task_id: str, class_id: int,
+                                 page: int = 0, limit: int = 6):
+    _task, _request, store = _storage_import_candidate_store(project_id, task_id)
+    try:
+        result = store.class_samples(class_id, page=page, limit=limit)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="无效的样例查询")
+    result["items"] = [{
+        "preview_id": row["preview_id"],
+        "filename": Path(str(row.get("filename") or "sample")).name,
+        "width": max(0, int(row.get("width") or 0)),
+        "height": max(0, int(row.get("height") or 0)),
+        "boxes": row.get("boxes") or [],
+        "preview_url": (f"/api/v61/projects/{project_id}/storage-imports/{task_id}/"
+                        f"samples/{row['preview_id']}/content"),
+    } for row in result["items"]]
+    return result
+
+
+@app.get("/api/v61/projects/{project_id}/storage-imports/{task_id}/samples/{preview_id}/content")
+def storage_import_sample_content(project_id: str, task_id: str, preview_id: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", preview_id):
+        raise HTTPException(status_code=404, detail="导入样例不存在")
+    _task, request, store = _storage_import_candidate_store(project_id, task_id)
+    candidate = store.candidate_by_preview_id(preview_id)
+    if candidate is None or candidate["storage_source_id"] != request.get("storage_source_id"):
+        raise HTTPException(status_code=404, detail="导入样例不存在")
+    try:
+        manager = storage_manager(project_id)
+        provider = manager.provider_for(str(candidate["storage_source_id"]))
+        signed = provider.generate_preview_url(str(candidate["object_key"]), expires_seconds=300)
+        if signed:
+            return RedirectResponse(signed, status_code=307)
+        stream = provider.open_reader(str(candidate["object_key"]))
+        media_type = mimetypes.guess_type(str(candidate.get("filename") or ""))[0] or "application/octet-stream"
+        def chunks():
+            try:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                stream.close()
+        return StreamingResponse(chunks(), media_type=media_type,
+                                 headers={"Cache-Control": "private, max-age=60"})
+    except StorageError as error:
+        _raise_storage_error(error, status_code=404 if error.code in {
+            "MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
+
+
 @app.post("/api/v61/projects/{project_id}/storage-imports/{task_id}/confirm", status_code=202)
 def confirm_storage_import(project_id: str, task_id: str, payload: StorageImportConfirmReq):
     request_task = shared_task_repository().get(task_id)
@@ -1389,19 +1467,32 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
         isinstance(scan_result, dict) and isinstance(scan_result.get("candidates"), list)
     ):
         raise HTTPException(status_code=409, detail="存储扫描候选清单不存在")
-    candidate_store = ImportCandidateStore(manifest)
+    candidate_store = ImportCandidateStore(manifest, import_id=task_id)
     load_legacy_candidates(artifacts, task_id, candidate_store)
     try:
         project = get_project(project_id)
         if any(normalize_label(code) != code for code in payload.create_labels):
             raise ValueError('新建标签必须使用规范的平台标签编码')
-        def create_import_label(code):
-            current = get_project(project_id)
-            ensure_label(current, code)
-            return code
+        def create_import_label(spec):
+            meta_path = project_dir(project_id) / "meta.json"
+            with project_label_file_lock(meta_path):
+                current = get_project(project_id)
+                changed = ensure_stable_label_ids(current)
+                existing = next((item for item in _project_label_items(current)
+                                 if item['label_id'] == spec['label_id']), None)
+                if existing:
+                    if changed:
+                        save_project(current)
+                    return existing
+                ensure_label(current, spec['code'], display_name=spec['display_name'],
+                             label_id=spec['label_id'])
+                return next(item for item in _project_label_items(current)
+                            if item['label_id'] == spec['label_id'])
         confirm_import(candidate_store, artifacts, task_id,
             object_keys=payload.object_keys, label_mapping=payload.label_mapping,
-            create_labels=payload.create_labels, accept_quality_report=payload.accept_quality_report,
+            create_labels=payload.create_labels,
+            class_actions={key: value.model_dump(mode='json') for key, value in payload.class_actions.items()},
+            accept_quality_report=payload.accept_quality_report,
             labels=project_label_items(project), create_label=create_import_label)
         updated = shared_task_repository().resume_after_confirmation(task_id)
     except ValueError as error:
@@ -1471,17 +1562,24 @@ def default_label_color(index: int) -> str:
     return palette[index % len(palette)]
 
 
-def ensure_label(project: Dict[str, Any], label: str) -> int:
+def ensure_label(project: Dict[str, Any], label: str, *, display_name: Optional[str] = None,
+                 label_id: Optional[str] = None) -> int:
     label = normalize_label(label)
     if not label:
         raise HTTPException(status_code=400, detail="标签不能为空")
     labels = project.setdefault("labels", [])
+    changed = ensure_stable_label_ids(project)
     for i, item in enumerate(labels):
         if item == label:
+            if changed:
+                save_project(project)
             return i
     labels.append(label)
     meta = project.setdefault("label_meta", [])
-    meta.append({"code": label, "display_name": label, "color": default_label_color(len(labels)-1), "type": "bbox", "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
+    meta.append({"label_id": label_id or new_label_id(), "code": label,
+                 "display_name": display_name or label,
+                 "color": default_label_color(len(labels)-1), "type": "bbox",
+                 "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
     save_project(project)
     return len(labels) - 1
 
@@ -2804,7 +2902,10 @@ def create_project(payload: ProjectCreate):
                 display_name = code
         if code and code not in labels:
             labels.append(code)
-            label_meta.append({"code": code, "display_name": display_name or code, "color": color or default_label_color(len(labels)-1), "type": "bbox", "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
+            label_meta.append({"label_id": new_label_id(), "code": code,
+                               "display_name": display_name or code,
+                               "color": color or default_label_color(len(labels)-1),
+                               "type": "bbox", "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="项目名称不能为空")
     # 项目创建不再强制填写标签；标签在数据集/标注环节维护。
@@ -2850,19 +2951,22 @@ class AddLabelReq(BaseModel):
 
 @app.post("/api/projects/{project_id}/labels")
 def add_label(project_id: str, payload: AddLabelReq):
-    project = get_project(project_id)
-    idx = ensure_label(project, payload.label)
-    project = get_project(project_id)
-    meta = project.setdefault("label_meta", [])
-    while len(meta) < len(project.get("labels", [])):
-        code = project["labels"][len(meta)]
-        meta.append({"code": code, "display_name": code, "color": default_label_color(len(meta)), "type": "bbox", "hotkey": str(len(meta)+1) if len(meta) < 9 else ""})
-    if idx < len(meta):
-        if payload.display_name:
-            meta[idx]["display_name"] = payload.display_name
-        if payload.color:
-            meta[idx]["color"] = payload.color
-    save_project(project)
+    meta_path = project_dir(project_id) / "meta.json"
+    with project_label_file_lock(meta_path):
+        project = get_project(project_id)
+        idx = ensure_label(project, payload.label, display_name=payload.display_name or None)
+        meta = project.setdefault("label_meta", [])
+        while len(meta) < len(project.get("labels", [])):
+            code = project["labels"][len(meta)]
+            meta.append({"label_id": new_label_id(), "code": code, "display_name": code,
+                         "color": default_label_color(len(meta)), "type": "bbox",
+                         "hotkey": str(len(meta)+1) if len(meta) < 9 else ""})
+        if idx < len(meta):
+            if payload.display_name:
+                meta[idx]["display_name"] = payload.display_name
+            if payload.color:
+                meta[idx]["color"] = payload.color
+        save_project(project)
     return {"ok": True, "class_id": idx, "labels": project["labels"], "label_meta": project.get("label_meta", [])}
 
 
@@ -5948,7 +6052,7 @@ def job_report(project_id: str, job_id: str = "", model_path: Optional[Path] = N
     return report
 
 
-def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
     labels = project.get("labels", [])
     meta = project.get("label_meta", [])
     items = []
@@ -5956,6 +6060,7 @@ def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
         m = meta[i] if i < len(meta) and isinstance(meta[i], dict) else {}
         display_name = m.get("display_name") or code
         items.append({
+            "label_id": m["label_id"],
             "class_id": i,
             "code": code,
             "display_name": display_name,
@@ -5966,6 +6071,19 @@ def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
             "status": m.get("status") or "active",
         })
     return items
+
+
+def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+    project_id = str(project.get("id") or "")
+    if not project_id:
+        ensure_stable_label_ids(project)
+        return _project_label_items(project)
+    meta_path = project_dir(project_id) / "meta.json"
+    with project_label_file_lock(meta_path):
+        current = get_project(project_id)
+        if ensure_stable_label_ids(current):
+            save_project(current)
+        return _project_label_items(current)
 
 
 def normalize_box_for_project(project_id: str, img: Dict[str, Any], box: Dict[str, Any], create_label: bool = True) -> Optional[Dict[str, Any]]:

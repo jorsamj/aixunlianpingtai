@@ -318,6 +318,26 @@ def test_large_iteration_and_pending_batches_have_hard_limits(store):
     assert len(store.pending_index_batch(0)) == 1
 
 
+def test_external_class_stats_are_import_scoped_and_bounded(tmp_path):
+    scoped = ImportCandidateStore(tmp_path / "candidates.sqlite3", import_id="import-a")
+    scoped.upsert_many([candidate("a.jpg"), candidate("b.jpg")])
+    scoped.manifest_many([
+        {"object_key": "a.jpg", "split": "train", "yaml_key": "data.yaml"},
+        {"object_key": "b.jpg", "split": "train", "yaml_key": "data.yaml"},
+    ])
+    scoped.set_label_mapping({7: "forklift"})
+    scoped.annotation_batch([], [
+        {"object_key": "a.jpg", "line_number": 1, "class_id": 7, "cx": .5, "cy": .5, "w": .2, "h": .2},
+        {"object_key": "a.jpg", "line_number": 2, "class_id": 7, "cx": .4, "cy": .4, "w": .1, "h": .1},
+        {"object_key": "b.jpg", "line_number": 1, "class_id": 7, "cx": .5, "cy": .5, "w": .2, "h": .2},
+    ], [])
+    assert scoped.external_classes() == [{
+        "import_id": "import-a", "class_id": 7, "name": "forklift",
+        "image_count": 2, "box_count": 3, "action": None,
+        "target_label_id": None, "target_label_code": None,
+    }]
+
+
 def test_upsert_rollback_on_bad_input_and_connection_settings(store):
     with pytest.raises(ValueError, match="object_key"):
         store.upsert_many([candidate("valid"), candidate("")])

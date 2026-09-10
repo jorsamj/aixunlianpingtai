@@ -13,7 +13,8 @@ from PIL import Image, UnidentifiedImageError
 
 from platform_core.material_repository import MaterialRepository
 from platform_core.annotation_repository import AnnotationRepository
-from platform_core.annotations import annotation_summary
+from platform_core.annotations import annotation_summary, atomic_write_json
+from platform_core.labels import ensure_stable_label_ids, project_label_file_lock
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
 
@@ -245,7 +246,8 @@ class StorageImportHandler:
         prefix = str(request.get("prefix") or "")
         recursive = bool(request.get("recursive", True))
         store = ImportCandidateStore(
-            context.artifacts.artifact_path(context.task.task_id, MANIFEST_REF)
+            context.artifacts.artifact_path(context.task.task_id, MANIFEST_REF),
+            import_id=context.task.task_id,
         )
         last_heartbeat = time.monotonic()
 
@@ -313,7 +315,10 @@ class StorageImportHandler:
         if quality is not None:
             result.update({"dataset_yaml": scanner.yaml_key, "quality": quality})
             meta_path = self.data_dir / 'projects' / context.task.project_id / 'meta.json'
-            meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            with project_label_file_lock(meta_path):
+                meta = json.loads(meta_path.read_text(encoding='utf-8'))
+                if ensure_stable_label_ids(meta):
+                    atomic_write_json(meta_path, meta)
             labels = [{**(meta.get('label_meta', [])[i] if i < len(meta.get('label_meta', [])) else {}), 'code': code}
                       for i, code in enumerate(meta.get('labels') or [])]
             result['external_classes'] = mapping_suggestions(store.external_classes(), labels)
@@ -570,7 +575,8 @@ class StorageImportHandler:
         if not isinstance(confirmation, dict) or confirmation.get("accepted") is not True:
             raise ValueError("material import confirmation is missing")
         store = ImportCandidateStore(
-            context.artifacts.artifact_path(context.task.task_id, MANIFEST_REF)
+            context.artifacts.artifact_path(context.task.task_id, MANIFEST_REF),
+            import_id=context.task.task_id,
         )
         load_legacy_candidates(context.artifacts, context.task.task_id, store)
         selected_count = max(0, int(confirmation.get("selected_count") or 0))
@@ -597,10 +603,16 @@ class StorageImportHandler:
         )
         annotations = AnnotationRepository(self.data_dir / 'projects' / context.task.project_id)
         project_meta_path = self.data_dir / 'projects' / context.task.project_id / 'meta.json'
-        project_meta = json.loads(project_meta_path.read_text(encoding='utf-8'))
-        label_ids = {code: i for i, code in enumerate(project_meta.get('labels') or [])
-                     if i >= len(project_meta.get('label_meta') or [])
-                     or (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'}
+        with project_label_file_lock(project_meta_path):
+            project_meta = json.loads(project_meta_path.read_text(encoding='utf-8'))
+            if ensure_stable_label_ids(project_meta):
+                atomic_write_json(project_meta_path, project_meta)
+            label_by_id = {
+                str(project_meta['label_meta'][i]['label_id']): {'class_id': i, 'code': code}
+                for i, code in enumerate(project_meta.get('labels') or [])
+                if (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'
+            }
+        label_by_code = {item['code']: item for item in label_by_id.values()}
         checkpoint = context.load_checkpoint()
         newly_imported = max(0, int(checkpoint.get("newly_imported", 0) or 0))
         index_duplicates = max(0, int(checkpoint.get("index_duplicates", 0) or 0))
@@ -653,12 +665,20 @@ class StorageImportHandler:
                     record['imported_split'] = candidate['split']
                     boxes = []
                     for box in candidate['boxes']:
-                        code = (confirmation.get('label_mapping') or {}).get(str(box['class_id']))
-                        if code not in label_ids:
+                        target_label_id = (confirmation.get('label_mapping') or {}).get(str(box['class_id']))
+                        if target_label_id is None:
+                            continue
+                        target = label_by_id.get(str(target_label_id))
+                        if target is None and not confirmation.get('import_id'):
+                            target = label_by_code.get(str(target_label_id))
+                            target_label_id = next((label_id for label_id, item in label_by_id.items()
+                                                    if item is target), target_label_id)
+                        if target is None:
                             raise ValueError('confirmed platform label is no longer active; resolve the label before retrying')
                         width, height = float(row['width']), float(row['height'])
                         boxes.append({'id': f"{row['image_id']}-{box['line_number']}",
-                            'label': code, 'class_id': label_ids[code],
+                            'label_id': str(target_label_id), 'label': target['code'],
+                            'class_id': target['class_id'],
                             'x1': max(0.0, (box['cx']-box['w']/2)*width),
                             'y1': max(0.0, (box['cy']-box['h']/2)*height),
                             'x2': min(width, (box['cx']+box['w']/2)*width),

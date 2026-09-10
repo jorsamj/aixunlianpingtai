@@ -1,4 +1,4 @@
-from platform_core.labels import active_label_options, labels_match_any
+from platform_core.labels import active_label_options, ensure_stable_label_ids, labels_match_any
 
 
 LABELS = [
@@ -17,3 +17,12 @@ def test_material_filter_uses_or_logic():
     assert labels_match_any(["smoke"], {"smoke", "fire"})
     assert not labels_match_any(["person"], {"smoke", "fire"})
 
+
+def test_stable_label_ids_are_backfilled_once_and_survive_renames():
+    project = {"labels": ["fire"], "label_meta": [{"code": "fire"}]}
+    assert ensure_stable_label_ids(project)
+    label_id = project["label_meta"][0]["label_id"]
+    project["labels"][0] = "flame"
+    project["label_meta"][0]["code"] = "flame"
+    assert not ensure_stable_label_ids(project)
+    assert project["label_meta"][0]["label_id"] == label_id

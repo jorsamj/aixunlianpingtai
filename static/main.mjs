@@ -16,8 +16,7 @@ import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
-import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422400';
-import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422400';
+import {buildServerImportRequest, buildImportConfirmation, externalClassMappingHtml, pollServerImport, sampleGalleryHtml, serverImportView} from './modules/server-material-import.js?v=422500';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422400';
 
@@ -65,8 +64,7 @@ window.PlatformCore = {
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
-  storageImport: {storageImportProgressText},
-  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView}
+  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, externalClassMappingHtml, pollServerImport, sampleGalleryHtml, serverImportView}
 };
 
 installMaterialPaginationRuntime();
@@ -82,7 +80,6 @@ installMaterialBatchRuntime({
     if (state.page === '数据集') await window.reloadMaterialPage61?.();
   },
 });
-installStorageImportProgressRuntime();
 window.installServerMaterialImport61?.();
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 

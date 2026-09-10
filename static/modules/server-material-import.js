@@ -39,14 +39,42 @@ export function buildServerImportRequest(values = {}) {
 }
 
 export function buildImportConfirmation(rows = [], acceptQualityReport = false) {
-  const label_mapping = {}, create_labels = [];
+  const class_actions = {};
   for (const row of rows) {
-    const code = String(row.code || '').trim();
-    if (!code) throw new Error(`请选择外部类别 ${row.name || row.classId} 对应的平台标签`);
-    label_mapping[String(row.classId)] = code;
-    if (row.create) create_labels.push(code);
+    const classId = String(row.classId);
+    const action = String(row.action || 'map');
+    if (action === 'ignore') class_actions[classId] = {action};
+    else if (action === 'map') {
+      const target_label_id = String(row.targetLabelId || '').trim();
+      if (!target_label_id) throw new Error(`请选择外部类别 ${row.name || classId} 对应的平台标签`);
+      class_actions[classId] = {action, target_label_id};
+    } else if (action === 'create') {
+      const code = String(row.code || '').trim();
+      const display_name = String(row.displayName || '').trim();
+      if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(code) || !display_name) {
+        throw new Error(`外部类别 ${row.name || classId} 的新标签需要英文 code 和显示名称`);
+      }
+      class_actions[classId] = {action, code, display_name};
+    } else if (action === 'preserve') class_actions[classId] = {action};
+    else throw new Error(`外部类别 ${row.name || classId} 的处理方式无效`);
   }
-  return {label_mapping, create_labels: [...new Set(create_labels)], accept_quality_report: Boolean(acceptQualityReport)};
+  return {class_actions, accept_quality_report: Boolean(acceptQualityReport)};
+}
+
+export function externalClassMappingHtml(classes = [], labels = [], escape = value => String(value)) {
+  return classes.map(row => {
+    const classId = escape(row.class_id), name = escape(row.name);
+    const options = labels.map(label => `<option value="${escape(label.label_id)}" ${label.label_id === row.suggested_target_label_id ? 'selected' : ''}>${escape(label.code)} · ${escape(label.display_name || label.code)}</option>`).join('');
+    return `<div class="storage61-mapping-row" data-import-class="${classId}" data-import-name="${name}"><div><b>${classId} · ${name}</b><small>${Number(row.image_count || 0)} 图 · ${Number(row.box_count || 0)} 框</small></div><select class="select" data-class-action><option value="map">映射现有标签</option><option value="create">创建新标签</option><option value="preserve">保留原名创建</option><option value="ignore">忽略</option></select><select class="select" data-target-label><option value="">请选择平台标签</option>${options}</select><input class="input" data-new-code placeholder="英文 code" hidden><input class="input" data-new-display placeholder="显示名称" hidden><button type="button" class="btn mini" data-sample-class="${classId}">查看样例</button></div>`;
+  }).join('');
+}
+
+export function sampleGalleryHtml(items = [], escape = value => String(value)) {
+  return items.map(item => {
+    const width = Number(item.width || 1), height = Number(item.height || 1);
+    const boxes = (item.boxes || []).map(box => `<rect x="${(Number(box.cx)-Number(box.w)/2)*width}" y="${(Number(box.cy)-Number(box.h)/2)*height}" width="${Number(box.w)*width}" height="${Number(box.h)*height}" fill="none" stroke="#ef4444" stroke-width="${Math.max(1, width/300)}"/>`).join('');
+    return `<figure class="storage61-import-sample"><div style="position:relative"><img src="${escape(item.preview_url)}" alt="${escape(item.filename)}"><svg viewBox="0 0 ${width} ${height}" style="position:absolute;inset:0;width:100%;height:100%">${boxes}</svg></div><figcaption>${escape(item.filename)}</figcaption></figure>`;
+  }).join('') || '<div class="empty">该类别暂无可用样例</div>';
 }
 
 export function serverImportView(task = {}) {

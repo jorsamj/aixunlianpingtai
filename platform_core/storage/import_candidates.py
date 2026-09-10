@@ -21,6 +21,8 @@ from .errors import redact_storage_error
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS candidates (
+    import_id TEXT NOT NULL DEFAULT '',
+    preview_id TEXT NOT NULL DEFAULT '',
     object_key TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
     storage_source_id TEXT NOT NULL,
@@ -63,8 +65,10 @@ CREATE TABLE IF NOT EXISTS candidate_annotations (
     clipped INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (object_key, line_number)
 );
+CREATE INDEX IF NOT EXISTS ix_candidate_annotations_class ON candidate_annotations(class_id, object_key, line_number);
 CREATE TABLE IF NOT EXISTS label_mapping (
-    class_id INTEGER PRIMARY KEY, name TEXT NOT NULL, target_label_id TEXT
+    class_id INTEGER PRIMARY KEY, name TEXT NOT NULL, target_label_id TEXT,
+    import_id TEXT NOT NULL DEFAULT '', action TEXT, target_label_code TEXT
 );
 CREATE TABLE IF NOT EXISTS annotation_issues (
     object_key TEXT NOT NULL, line_number INTEGER NOT NULL,
@@ -73,7 +77,8 @@ CREATE TABLE IF NOT EXISTS annotation_issues (
 );
 CREATE INDEX IF NOT EXISTS ix_annotation_issues_code ON annotation_issues(code);
 CREATE TABLE IF NOT EXISTS confirmation_details (
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL,
+    import_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS indexing_outcomes (
     object_key TEXT PRIMARY KEY, image_id TEXT NOT NULL, existing_material INTEGER NOT NULL,
@@ -82,7 +87,7 @@ CREATE TABLE IF NOT EXISTS indexing_outcomes (
 );
 """
 _SCAN_FIELDS = (
-    "object_key", "filename", "storage_source_id", "storage_type", "content_sha256",
+    "import_id", "preview_id", "object_key", "filename", "storage_source_id", "storage_type", "content_sha256",
     "size_bytes", "etag", "width", "height", "status", "error", "duplicate",
 )
 # Include provider credential names and their SDK/header aliases. Keep this
@@ -201,11 +206,42 @@ class Confirmation:
 
 
 class ImportCandidateStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, import_id: str = "") -> None:
         self.path = Path(path)
+        self.import_id = _text(import_id).strip()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
             connection.executescript(_SCHEMA)
+            self._migrate(connection)
+            if self.import_id:
+                connection.execute("UPDATE candidates SET import_id=? WHERE import_id=''", (self.import_id,))
+                for row in connection.execute("SELECT object_key FROM candidates WHERE preview_id='' ").fetchall():
+                    connection.execute("UPDATE candidates SET preview_id=? WHERE object_key=?", (
+                        uuid.uuid5(uuid.NAMESPACE_URL, f'{self.import_id}:{row[0]}').hex, row[0]))
+                connection.execute("UPDATE label_mapping SET import_id=? WHERE import_id=''", (self.import_id,))
+                connection.execute("UPDATE confirmation_details SET import_id=? WHERE import_id=''", (self.import_id,))
+            connection.commit()
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        additions = {
+            "candidates": {"import_id": "TEXT NOT NULL DEFAULT ''",
+                           "preview_id": "TEXT NOT NULL DEFAULT ''"},
+            "label_mapping": {
+                "import_id": "TEXT NOT NULL DEFAULT ''", "action": "TEXT",
+                "target_label_code": "TEXT",
+            },
+            "confirmation_details": {"import_id": "TEXT NOT NULL DEFAULT ''"},
+        }
+        for table, columns in additions.items():
+            existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            for name, definition in columns.items():
+                if name not in existing:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_candidate_annotations_class "
+            "ON candidate_annotations(class_id, object_key, line_number)"
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -234,6 +270,10 @@ class ImportCandidateStore:
         def values():
             for row in rows:
                 normalized = normalize_candidate(row)
+                normalized["import_id"] = self.import_id
+                normalized["preview_id"] = uuid.uuid5(
+                    uuid.NAMESPACE_URL, f'{self.import_id}:{normalized["object_key"]}'
+                ).hex
                 yield tuple(normalized[field] for field in _SCAN_FIELDS)
 
         with self._transaction() as connection:
@@ -288,8 +328,9 @@ class ImportCandidateStore:
     def set_label_mapping(self, names: Mapping[int, str]) -> None:
         with self._transaction() as connection:
             connection.executemany(
-                "INSERT INTO label_mapping (class_id, name) VALUES (?, ?) "
-                "ON CONFLICT(class_id) DO UPDATE SET name=excluded.name", names.items(),
+                "INSERT INTO label_mapping (class_id, name, import_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(class_id) DO UPDATE SET name=excluded.name,import_id=excluded.import_id",
+                ((class_id, name, self.import_id) for class_id, name in names.items()),
             )
 
     def annotations_for_keys(self, keys: Iterable[str]) -> dict[str, dict]:
@@ -409,7 +450,10 @@ class ImportCandidateStore:
             connection.execute("INSERT INTO meta VALUES (1, ?, ?, ?)",
                                (confirmed.digest, confirmed.selected_count, confirmed.confirmed_at))
             if details is not None:
-                connection.execute("INSERT INTO confirmation_details VALUES(1,?)", (json.dumps(details, sort_keys=True),))
+                connection.execute(
+                    "INSERT INTO confirmation_details(singleton,payload,import_id) VALUES(1,?,?)",
+                    (json.dumps(details, sort_keys=True), self.import_id),
+                )
             return confirmed
 
     def selection_facts(self, keys=None):
@@ -428,20 +472,85 @@ class ImportCandidateStore:
                 "SELECT c.object_key,c.content_sha256,c.width,c.height,m.annotation_status,m.label_key "
                 "FROM candidates c JOIN wanted w USING(object_key) LEFT JOIN dataset_manifest m USING(object_key) ORDER BY c.object_key",
                 "SELECT a.* FROM candidate_annotations a JOIN wanted w USING(object_key) ORDER BY a.object_key,a.line_number",
-                "SELECT * FROM label_mapping ORDER BY class_id",
+                "SELECT class_id,name,import_id FROM label_mapping ORDER BY class_id",
             ):
                 for row in db.execute(query):
                     digest.update(json.dumps(tuple(row), ensure_ascii=False, separators=(',', ':')).encode('utf-8') + b'\n')
             classes = [dict(row) for row in db.execute(
-                "SELECT DISTINCT l.class_id,l.name FROM label_mapping l JOIN candidate_annotations a USING(class_id) "
-                "JOIN wanted w USING(object_key) ORDER BY l.class_id")]
+                "SELECT l.class_id,l.name FROM label_mapping l "
+                "LEFT JOIN candidate_annotations a ON a.class_id=l.class_id "
+                "LEFT JOIN wanted w ON w.object_key=a.object_key "
+                "WHERE (?='' OR l.import_id=?) GROUP BY l.class_id,l.name ORDER BY l.class_id",
+                (self.import_id, self.import_id))]
             return {'content_digest': digest.hexdigest(), 'classes': classes}
 
     def external_classes(self):
         with closing(self._connect()) as db:
-            return [dict(row) for row in db.execute("SELECT DISTINCT l.class_id,l.name FROM label_mapping l "
-                "JOIN candidate_annotations a USING(class_id) JOIN candidates c USING(object_key) "
-                "WHERE c.status='IMPORTABLE' ORDER BY l.class_id LIMIT 10000")]
+            return [dict(row) for row in db.execute(
+                "SELECT l.import_id,l.class_id,l.name,COUNT(DISTINCT c.object_key) image_count,"
+                "COUNT(c.object_key) box_count,l.action,l.target_label_id,l.target_label_code FROM label_mapping l "
+                "LEFT JOIN candidate_annotations a ON a.class_id=l.class_id "
+                "LEFT JOIN candidates c ON c.object_key=a.object_key AND c.status='IMPORTABLE' "
+                "AND c.import_id=l.import_id "
+                "WHERE (?='' OR l.import_id=?) "
+                "GROUP BY l.import_id,l.class_id,l.name,l.action,l.target_label_id,l.target_label_code "
+                "ORDER BY l.class_id LIMIT 10000", (self.import_id, self.import_id))]
+
+    def save_label_decisions(self, decisions: Mapping[str, Mapping[str, object]]) -> None:
+        with self._transaction() as db:
+            for external_id, decision in decisions.items():
+                updated = db.execute(
+                    "UPDATE label_mapping SET action=?,target_label_id=?,target_label_code=? "
+                    "WHERE class_id=? AND (?='' OR import_id=?)",
+                    (decision.get("action"), decision.get("target_label_id"),
+                     decision.get("target_label_code"), int(external_id),
+                     self.import_id, self.import_id),
+                ).rowcount
+                if updated != 1:
+                    raise ValueError(f"unknown external class {external_id}")
+
+    def class_samples(self, class_id: int, *, page: int = 0, limit: int = 6) -> dict:
+        """Return a small deterministic spread without loading all matching rows."""
+        page = max(0, int(page))
+        limit = _limit(limit, 12)
+        with closing(self._connect()) as db:
+            total = db.execute(
+                "SELECT COUNT(DISTINCT a.object_key) FROM candidate_annotations a "
+                "JOIN candidates c USING(object_key) WHERE a.class_id=? AND c.status='IMPORTABLE' "
+                "AND (?='' OR c.import_id=?)", (int(class_id), self.import_id, self.import_id),
+            ).fetchone()[0]
+            if not total:
+                return {"items": [], "page": page, "limit": limit, "total": 0}
+            window = min(limit, total)
+            shift = (page * window) % total
+            offsets = sorted({(shift + ((i * total) // window)) % total for i in range(window)})
+            items = []
+            for offset in offsets:
+                row = db.execute(
+                    "SELECT c.preview_id,c.filename,c.width,c.height,c.storage_source_id,c.object_key "
+                    "FROM candidate_annotations a JOIN candidates c USING(object_key) "
+                    "WHERE a.class_id=? AND c.status='IMPORTABLE' AND (?='' OR c.import_id=?) "
+                    "GROUP BY c.object_key ORDER BY c.object_key LIMIT 1 OFFSET ?",
+                    (int(class_id), self.import_id, self.import_id, offset),
+                ).fetchone()
+                if row:
+                    item = dict(row)
+                    item["boxes"] = [dict(box) for box in db.execute(
+                        "SELECT line_number,cx,cy,w,h,clipped FROM candidate_annotations "
+                        "WHERE class_id=? AND object_key=? ORDER BY line_number LIMIT 100",
+                        (int(class_id), row["object_key"]),
+                    )]
+                    items.append(item)
+            return {"items": items, "page": page, "limit": limit, "total": total}
+
+    def candidate_by_preview_id(self, preview_id: str) -> dict | None:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT object_key,storage_source_id,storage_type,filename FROM candidates "
+                "WHERE preview_id=? AND status='IMPORTABLE' AND (?='' OR import_id=?) LIMIT 1",
+                (_text(preview_id), self.import_id, self.import_id),
+            ).fetchone()
+            return dict(row) if row else None
 
     def bind_index_batch(self, rows):
         """Freeze resolved image IDs and new/existing provenance before material writes."""
