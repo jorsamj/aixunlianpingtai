@@ -12,6 +12,14 @@ from pathlib import Path
 STATES = {"unannotated", "annotated", "confirmed_empty"}
 
 
+def _normalize_scope(values) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    return sorted({str(value).strip() for value in values if str(value).strip()})
+
+
 class AnnotationRepository:
     def __init__(self, project_path: str | Path):
         self.project_path = Path(project_path)
@@ -24,11 +32,23 @@ class AnnotationRepository:
                     annotation_state TEXT NOT NULL CHECK(annotation_state IN
                         ('unannotated','annotated','confirmed_empty')),
                     version INTEGER NOT NULL, content_digest TEXT NOT NULL,
-                    boxes_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    boxes_json TEXT NOT NULL,
+                    scope_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS ix_annotations_state ON annotations(annotation_state, image_id);
                 CREATE INDEX IF NOT EXISTS ix_annotations_updated ON annotations(updated_at);
             """)
+            columns = {
+                str(row[1])
+                for row in db.execute("PRAGMA table_info(annotations)").fetchall()
+            }
+            if "scope_json" not in columns:
+                db.execute(
+                    "ALTER TABLE annotations "
+                    "ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'"
+                )
+                db.commit()
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=30)
@@ -50,17 +70,33 @@ class AnnotationRepository:
         if row:
             result = dict(row)
             result['boxes'] = json.loads(result.pop('boxes_json'))
+            result['annotation_scope'] = _normalize_scope(
+                json.loads(result.pop('scope_json', '[]') or '[]')
+            )
             return result
         path = self.project_path / 'annotations' / f'{image_id}.json'
         legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
         boxes = legacy.get('boxes') or []
         state = legacy.get('annotation_state') or ('annotated' if boxes else 'unannotated')
-        return {**legacy, 'image_id': image_id, 'boxes': boxes, 'annotation_state': state, 'version': 0}
+        scope = _normalize_scope(legacy.get('annotation_scope'))
+        if state == 'annotated' and not scope:
+            scope = _normalize_scope(box.get('label') or box.get('code') for box in boxes)
+        return {
+            **legacy,
+            'image_id': image_id,
+            'boxes': boxes,
+            'annotation_state': state,
+            'annotation_scope': scope,
+            'version': 0,
+        }
 
     def summary(self):
         """Count persisted states; legacy JSON remains a per-image lazy fallback."""
         with closing(self._connect()) as db:
-            rows = db.execute('SELECT annotation_state, COUNT(*) AS total FROM annotations GROUP BY annotation_state').fetchall()
+            rows = db.execute(
+                'SELECT annotation_state, COUNT(*) AS total '
+                'FROM annotations GROUP BY annotation_state'
+            ).fetchall()
         counts = {state: 0 for state in STATES}
         counts.update({row['annotation_state']: int(row['total']) for row in rows})
         return {**counts, 'total': sum(counts.values())}
@@ -75,22 +111,77 @@ class AnnotationRepository:
                 state = row.get('annotation_state') or ('annotated' if boxes else 'confirmed_empty')
                 if state not in STATES or bool(boxes) != (state == 'annotated'):
                     raise ValueError('annotation state does not agree with boxes')
-                payload = json.dumps(boxes, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
-                digest = hashlib.sha256((state + '\n' + payload).encode('utf-8')).hexdigest()
+                scope = _normalize_scope(row.get('annotation_scope'))
+                if state == 'annotated' and not scope:
+                    scope = _normalize_scope(
+                        box.get('label') or box.get('code') for box in boxes
+                    )
+                if state == 'unannotated':
+                    scope = []
+                boxes_payload = json.dumps(
+                    boxes,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(',', ':'),
+                    allow_nan=False,
+                )
+                scope_payload = json.dumps(
+                    scope,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(',', ':'),
+                )
+                digest_payload = json.dumps(
+                    {
+                        'annotation_state': state,
+                        'annotation_scope': scope,
+                        'boxes': json.loads(boxes_payload),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(',', ':'),
+                    allow_nan=False,
+                )
+                digest = hashlib.sha256(digest_payload.encode('utf-8')).hexdigest()
                 now = datetime.now(timezone.utc).isoformat()
-                db.execute("""INSERT INTO annotations VALUES (?, ?, 1, ?, ?, ?, ?)
-                    ON CONFLICT(image_id) DO UPDATE SET annotation_state=excluded.annotation_state,
-                    version=annotations.version+1, content_digest=excluded.content_digest,
-                    boxes_json=excluded.boxes_json, updated_at=excluded.updated_at
-                    WHERE annotations.content_digest != excluded.content_digest""",
-                    (image_id, state, digest, payload, now, now))
+                db.execute(
+                    """INSERT INTO annotations
+                       (image_id, annotation_state, version, content_digest,
+                        boxes_json, scope_json, created_at, updated_at)
+                       VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+                       ON CONFLICT(image_id) DO UPDATE SET
+                           annotation_state=excluded.annotation_state,
+                           version=annotations.version+1,
+                           content_digest=excluded.content_digest,
+                           boxes_json=excluded.boxes_json,
+                           scope_json=excluded.scope_json,
+                           updated_at=excluded.updated_at
+                       WHERE annotations.content_digest != excluded.content_digest""",
+                    (
+                        image_id,
+                        state,
+                        digest,
+                        boxes_payload,
+                        scope_payload,
+                        now,
+                        now,
+                    ),
+                )
                 written.append(image_id)
         return written
 
-    def upsert(self, image_id, boxes, annotation_state=None):
-        self.upsert_many([{'image_id': image_id, 'boxes': boxes, 'annotation_state': annotation_state}])
+    def upsert(self, image_id, boxes, annotation_state=None, annotation_scope=None):
+        self.upsert_many([{
+            'image_id': image_id,
+            'boxes': boxes,
+            'annotation_state': annotation_state,
+            'annotation_scope': annotation_scope,
+        }])
         return self.get(image_id)
 
     def remove(self, image_ids):
         with closing(self._connect()) as db, db:
-            db.executemany('DELETE FROM annotations WHERE image_id=?', ((self._id(i),) for i in image_ids))
+            db.executemany(
+                'DELETE FROM annotations WHERE image_id=?',
+                ((self._id(i),) for i in image_ids),
+            )
