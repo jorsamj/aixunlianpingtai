@@ -17,25 +17,14 @@ from pathlib import Path
 
 from .annotations import atomic_write_json
 from .gpu_resources import sample_gpus
+from .host_resources import protect_training_host, sample_host_resources
 
 GIB = 1024 ** 3
 
 
 def host_resources():
-    cores = os.cpu_count() or 1
-    try:
-        cores = len(os.sched_getaffinity(0))
-    except (AttributeError, OSError):
-        pass
-    available = None
-    try:
-        import psutil
-        available = int(psutil.virtual_memory().available)
-        affinity = psutil.Process().cpu_affinity()
-        cores = min(cores, len(affinity))
-    except (ImportError, AttributeError, OSError):
-        pass
-    return max(1, cores), available
+    sample = sample_host_resources()
+    return int(sample["cpu_affinity"]), sample.get("ram_available_bytes")
 
 
 def normalize_cache(value):
@@ -58,7 +47,8 @@ def resolve_resources(request, context, model, torch):
     strategy = str(request.get("resource_strategy") or "auto")
     if strategy not in {"auto", "manual"}:
         raise ValueError("RESOURCE_STRATEGY_INVALID")
-    cores, ram = host_resources()
+    host = sample_host_resources(Path(request["data"]).parent)
+    cores, ram = int(host["cpu_affinity"]), host.get("ram_available_bytes")
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
     cpu_budget = max(1, cores // concurrency)
     dataset_bytes = max(0, int(context.get("dataset_bytes") or 0))
@@ -103,6 +93,7 @@ def resolve_resources(request, context, model, torch):
         reasons.append(f"Loader workers use {cores} available cores / {concurrency} reservations; {os.name} and storage cap={cap}")
         batch = 1
     estimated = None
+    fixed = per_image = None
     free = total = None
     if str(request.get("device", "")).startswith("cuda:"):
         index = int(request["device"].split(":")[1])
@@ -133,12 +124,23 @@ def resolve_resources(request, context, model, torch):
         workers = min(workers, loader_limit)
     elif workers > loader_limit:
         raise ValueError(f"RESOURCE_MANUAL_INVALID: runtime loader limits workers to {loader_limit}")
+    protected, host_reasons, host_estimate = protect_training_host(
+        {**request, "batch": batch, "workers": workers, "cache": cache},
+        host,
+        strategy=strategy,
+        decoded_dataset_bytes=decoded,
+    )
+    batch, workers, cache = int(protected["batch"]), int(protected["workers"]), protected["cache"]
+    reasons.extend(host_reasons)
+    if fixed is not None and per_image is not None:
+        estimated = fixed + batch * per_image
     return dict(resource_strategy=strategy, resolved_batch=batch, resolved_workers=workers,
                 resolved_cache=cache, reasons=reasons, estimated_gpu_memory_bytes=estimated,
                 gpu_free_bytes_at_resolution=free, gpu_total_bytes=total,
                 available_cpu_cores=cores, concurrent_reservations=concurrency,
                 available_ram_bytes=ram, dataset_bytes=dataset_bytes,
-                decoded_dataset_bytes=decoded, sampled_at=datetime.now(timezone.utc).isoformat())
+                decoded_dataset_bytes=decoded, host_resources=host, host_memory_estimate=host_estimate,
+                sampled_at=datetime.now(timezone.utc).isoformat())
 
 
 def diagnose_window(samples, oom=False):
@@ -151,9 +153,12 @@ def diagnose_window(samples, oom=False):
         values = [row[key] for row in samples if row.get(key) is not None]
         return sum(values) / len(values) if len(values) == len(samples) else None
     gpu, cpu, io, memory = (mean(key) for key in ("gpu_utilization", "cpu_percent", "io_wait_percent", "gpu_memory_percent"))
+    ram_available, ram_total = mean("ram_available_bytes"), mean("ram_total_bytes")
     cpu_busy = cpu >= 85 if cpu is not None else None
     io_busy = io >= 15 if io is not None else None
-    if memory is not None and memory >= 90:
+    if ram_available is not None and ram_total and ram_available / ram_total < 0.1:
+        code = "host_memory_pressure"
+    elif memory is not None and memory >= 90:
         code = "memory_pressure"
     elif gpu is None:
         code = "telemetry_unavailable"
@@ -168,7 +173,9 @@ def diagnose_window(samples, oom=False):
     else:
         code = "data_pipeline_or_unknown"
     return dict(code=code, cpu_bottleneck=cpu_busy, io_bottleneck=io_busy,
-                gpu_utilization=gpu, gpu_memory_percent=memory, window_samples=len(samples))
+                gpu_utilization=gpu, gpu_memory_percent=memory,
+                ram_available_bytes=ram_available, ram_total_bytes=ram_total,
+                window_samples=len(samples))
 
 
 def read_metrics(path):
@@ -193,6 +200,8 @@ class TrainingMetrics:
         self.started = time.monotonic()
         self.epoch_started = self.started
         self.epoch_duration = self.images_per_second = None
+        self.ram_peak_bytes = 0
+        self.shm_peak_bytes = 0
         self.oom = False
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -227,10 +236,25 @@ class TrainingMetrics:
     def sample(self):
         sample = dict(sampled_at=datetime.now(timezone.utc).isoformat(), gpu_utilization=None,
                       gpu_memory_percent=None, gpu_used_bytes=None, gpu_total_bytes=None,
-                      cpu_percent=None, io_wait_percent=None)
-        if self.psutil:
-            sample["cpu_percent"] = self.psutil.cpu_percent()
-            sample["io_wait_percent"] = getattr(self.psutil.cpu_times_percent(), "iowait", None)
+                      cpu_percent=None, io_wait_percent=None, ram_current_bytes=None,
+                      ram_peak_bytes=None, ram_available_bytes=None, ram_total_bytes=None,
+                      shm_current_bytes=None, shm_peak_bytes=None, shm_free_bytes=None)
+        host = sample_host_resources(self.path.parent)
+        rss = host.get("process_rss_bytes")
+        if rss is not None:
+            self.ram_peak_bytes = max(self.ram_peak_bytes, int(rss))
+        shm = host.get("shm") or {}
+        shm_used = shm.get("used_bytes")
+        if shm_used is not None:
+            self.shm_peak_bytes = max(self.shm_peak_bytes, int(shm_used))
+        sample.update(
+            cpu_percent=host.get("cpu_percent"), io_wait_percent=host.get("io_wait_percent"),
+            disk_read_bytes=host.get("disk_read_bytes"), disk_write_bytes=host.get("disk_write_bytes"),
+            ram_current_bytes=rss, ram_peak_bytes=self.ram_peak_bytes or None,
+            ram_available_bytes=host.get("ram_available_bytes"), ram_total_bytes=host.get("ram_total_bytes"),
+            shm_current_bytes=shm_used, shm_peak_bytes=self.shm_peak_bytes or None,
+            shm_free_bytes=shm.get("free_bytes"),
+        )
         if self.gpu_uuid:
             gpu = next((row for row in sample_gpus() if row["uuid"] == self.gpu_uuid), None)
             if gpu and gpu.get("total_bytes") and gpu.get("free_bytes") is not None:

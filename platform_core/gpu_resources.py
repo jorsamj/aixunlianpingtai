@@ -167,7 +167,7 @@ def update_reservation_evidence(repository, lease, metrics):
     known = (diagnostic.get("window_samples", 0) >= 6 and estimated and observed and total)
     eligible = bool(known and diagnostic.get("cpu_bottleneck") is False and
                     diagnostic.get("io_bottleneck") is False and
-                    diagnostic.get("code") not in {"memory_pressure", "memory_pressure_oom"})
+                    diagnostic.get("code") not in {"memory_pressure", "memory_pressure_oom", "host_memory_pressure"})
     with repository._connect() as database:
         database.execute("BEGIN IMMEDIATE")
         row = database.execute("SELECT * FROM gpu_reservations WHERE task_id=? AND lease_token=? AND worker_id=?",
@@ -271,7 +271,7 @@ class GPUResourceManager:
                 reasons.append("GPU_MEMORY_INSUFFICIENT: free memory after reservations and safety reserve is insufficient")
                 continue
             eligible = bool(estimated and estimated <= total * self.config.small_job_ratio and self._sharing_evidence(payload, now))
-            if count and (policy == "auto" or any(row["policy"] == "auto" for row in active)):
+            if count:
                 samples = database.execute("SELECT utilization FROM gpu_samples WHERE uuid=? AND sampled_at>=? "
                                            "ORDER BY id DESC LIMIT 5", (gpu["uuid"], cutoff)).fetchall()
                 low_utilization = (len(samples) >= 2 and all(sample["utilization"] is not None and
