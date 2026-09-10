@@ -325,7 +325,11 @@ def materialize_portable_dataset(
     materialize: Callable[[Mapping[str, Any]], str | Path],
     *,
     safety_reserve_bytes: int | None = None,
+    roles: Sequence[str] = ("train", "validation", "test"),
 ) -> Path:
+    requested_roles = tuple(dict.fromkeys(str(role) for role in roles))
+    if not requested_roles or any(role not in {"train", "validation", "test"} for role in requested_roles):
+        raise ValueError("portable dataset roles must be train/validation/test")
     work, root = _prepare_bundle_root(task_root)
     _cleanup_orphan_bundle_copies(root, expected_work=work)
     manifest_path = root / "manifest.json"
@@ -349,7 +353,7 @@ def materialize_portable_dataset(
         raise ValueError("训练快照中的 YOLO names 为空或重复")
     snapshot_records = {str(row.get("image_id")): row for row in snapshot.get("images") or []}
     planned: list[dict[str, Any]] = []
-    for role in ("train", "validation", "test"):
+    for role in requested_roles:
         for image_id in (snapshot.get("ids") or {}).get(role, []):
             row = by_id.get(str(image_id))
             locked = snapshot_records.get(str(image_id))
@@ -431,13 +435,18 @@ def materialize_portable_dataset(
                 "label_sha256": _sha256(label_path),
             }
         )
-    data_yaml = {
-        "path": ".",
-        "train": "images/train",
-        "val": "images/validation",
-        "test": "images/test",
-        "names": names,
-    }
+    data_yaml: dict[str, Any] = {"path": ".", "names": names}
+    if "train" in requested_roles:
+        data_yaml["train"] = "images/train"
+    if "validation" in requested_roles:
+        data_yaml["val"] = "images/validation"
+    if "test" in requested_roles:
+        data_yaml["test"] = "images/test"
+        # Ultralytics dataset validation expects train/val keys even for an
+        # evaluation-only `split=test` run.  This YAML lives only in the
+        # sealed final-evaluation workspace and is never passed to training.
+        data_yaml.setdefault("train", "images/test")
+        data_yaml.setdefault("val", "images/test")
     _atomic_text(
         _bundle_output_path(root, "dataset/data.yaml"),
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
@@ -452,6 +461,7 @@ def materialize_portable_dataset(
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": total_size_bytes,
         "training_label_schema_snapshot": schema,
+        "materialized_roles": list(requested_roles),
         "excluded_images": dict(snapshot.get("excluded_images") or {}),
         "splits": splits,
     }
@@ -721,6 +731,84 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
     return job
 
 
+def _append_access_evidence(context, event: str, **details: Any) -> None:
+    reference = "access-evidence.json"
+    value = context.artifacts.read_json(context.task.task_id, reference, default={})
+    events = list(value.get("events") or []) if isinstance(value, dict) else []
+    events.append({"event": event, "at": datetime.now(timezone.utc).isoformat(), **details})
+    context.artifacts.atomic_write_json(
+        context.task.task_id,
+        reference,
+        {"schema_version": 1, "task_id": context.task.task_id, "events": events},
+    )
+
+
+def _final_evaluation_argv(
+    data_dir: Path,
+    python_executable: str,
+    data_yaml: Path,
+    model: Path,
+    assigned_device: str,
+    output: Path,
+) -> list[str]:
+    root = Path(__file__).resolve().parent.parent
+    # CUDA_VISIBLE_DEVICES binds the scheduler's physical device below, so the
+    # child must always address that single visible GPU as logical device 0.
+    device = "cpu" if assigned_device == "cpu" else "0"
+    return [
+        python_executable,
+        str(root / "train_worker.py"),
+        "--final-evaluate",
+        "--data", str(data_yaml),
+        "--model", str(model),
+        "--device", device,
+        "--output", str(output),
+    ]
+
+
+def _run_final_evaluation_process(
+    context,
+    argv: Sequence[str],
+    output: Path,
+    job_dir: Path,
+    *,
+    cuda_visible_devices: str,
+) -> dict[str, Any]:
+    log_path = job_dir / "final-evaluation.log"
+    root = Path(__file__).resolve().parent.parent
+    with log_path.open("a", encoding="utf-8", newline="") as log:
+        launched = launch_process(
+            argv,
+            cwd=root,
+            env={
+                **os.environ,
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "CUDA_VISIBLE_DEVICES": cuda_visible_devices,
+            },
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        context.repository.bind_process(context.task.task_id, context.lease.lease_token, launched.identity)
+        controller = ProcessController()
+        while launched.process.poll() is None:
+            if context.cancel_requested():
+                controller.terminate_tree(launched.identity)
+                raise InterruptedError("final evaluation cancelled")
+            context.repository.heartbeat(
+                context.task.task_id,
+                context.lease.lease_token,
+                progress=97,
+                stage="final_evaluation",
+            )
+            time.sleep(0.25)
+    result = _json(output, {})
+    if launched.process.returncode != 0 or result.get("status") != "succeeded":
+        raise RuntimeError(str(result.get("error") or f"final evaluation exited {launched.process.returncode}"))
+    return result
+
+
 class TrainingHandler:
     def __init__(
         self,
@@ -795,34 +883,79 @@ class TrainingHandler:
             materials=materials,
             credentials=credentials,
         )
-        for row in images:
-            resolved = storage.materialize(row)
-            row["content_sha256"] = resolved.content_sha256
-            row["size_bytes"] = resolved.size_bytes
-        split_request = SplitRequest(
-            mode=SplitMode(str(payload.get("split_mode"))),
-            train_image_ids=train_image_ids,
-            test_image_ids=test_image_ids,
-            experiment_percent=payload.get("experiment_percent"),
-            validation_percent=float(payload.get("validation_percent") or 20),
-        )
-        manifest = build_split_manifest(
-            images,
-            split_request,
-            seed=int(payload.get("seed") or 0),
-            training_label_ids=training_label_ids,
-        )
-        snapshot = build_snapshot(images, manifest, locked_labels)
-        context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
+        snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default=None)
+        if isinstance(snapshot, dict) and snapshot.get("snapshot_id"):
+            frozen_ids = {
+                str(image_id)
+                for role in ("train", "validation", "test")
+                for image_id in (snapshot.get("ids") or {}).get(role, [])
+            }
+            frozen_ids.update(str(image_id) for image_id in (snapshot.get("excluded_images") or {}))
+            requested_ids = set(train_image_ids) | set(test_image_ids)
+            frozen_schema = json.dumps(
+                list(snapshot.get("label_schema") or []),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            expected_schema = json.dumps(
+                [dict(row) for row in locked_labels],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if frozen_ids != requested_ids or frozen_schema != expected_schema:
+                raise ValueError("IMMUTABLE_SPLIT_CONTRACT_MISMATCH: persisted snapshot differs from task payload")
+            _append_access_evidence(
+                context,
+                "split_reused",
+                snapshot_id=snapshot["snapshot_id"],
+                test_access="sealed",
+            )
+        else:
+            split_request = SplitRequest(
+                mode=SplitMode(str(payload.get("split_mode"))),
+                train_image_ids=train_image_ids,
+                test_image_ids=test_image_ids,
+                experiment_percent=payload.get("experiment_percent"),
+                validation_percent=float(payload.get("validation_percent") or 20),
+            )
+            manifest = build_split_manifest(
+                images,
+                split_request,
+                seed=int(payload.get("seed") or 0),
+                training_label_ids=training_label_ids,
+            )
+            snapshot = build_snapshot(images, manifest, locked_labels)
+            context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
+            _append_access_evidence(
+                context,
+                "split_frozen",
+                snapshot_id=snapshot["snapshot_id"],
+                counts=snapshot.get("counts"),
+                test_access="sealed",
+            )
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 10, "materializing")
         bundle = materialize_portable_dataset(
-            context.artifacts.artifact_path(context.task.task_id, "work"),
+            context.artifacts.artifact_path(context.task.task_id, "work/training-runtime"),
             snapshot,
             images,
             lambda row: storage.materialize(row).path,
+            roles=("train", "validation"),
         )
         verification = verify_portable_dataset(bundle / "manifest.json")
+        training_yaml = resolve_dataset_yaml(bundle / "manifest.json")
+        training_yaml_value = yaml.safe_load(training_yaml.read_text(encoding="utf-8")) or {}
+        if "test" in training_yaml_value:
+            raise ValueError("TEST_DATA_LEAKAGE: training runtime YAML exposes the sealed test split")
+        _append_access_evidence(
+            context,
+            "training_runtime_materialized",
+            snapshot_id=snapshot["snapshot_id"],
+            roles=["train", "validation"],
+            test_access="sealed",
+        )
 
         algorithms_path = project / "algorithms.json"
         algorithms = list_algorithms(algorithms_path)
@@ -850,7 +983,7 @@ class TrainingHandler:
             "other_reserved_bytes": sum(row["reserved_bytes"] for row in reservations
                 if row["task_id"] != context.task.task_id and row["gpu_uuid"] == assignment.get("gpu_uuid")),
             "dataset_bytes": sum(int(row.get("size_bytes") or 0) for row in images),
-            "train_image_count": manifest.counts.get("train", 0),
+            "train_image_count": int((snapshot.get("counts") or {}).get("train", 0)),
             "decoded_dataset_bytes": (sum(max(int(row["width"]) * int(row["height"]), int(payload.get("imgsz") or 640) ** 2) * 3 for row in images)
                 if all(row.get("width") and row.get("height") for row in images) else None),
             "remote_cache_ready": True,  # All selected objects have been verified in the local portable bundle.
@@ -874,7 +1007,7 @@ class TrainingHandler:
             "base_version_name": base.get("base_version_name"),
             "base_selection_reason": base.get("base_selection_reason"),
             "snapshot_id": snapshot["snapshot_id"],
-            "dataset_counts": manifest.counts,
+            "dataset_counts": snapshot.get("counts") or {},
             "epochs": int(payload.get("epochs") or 50),
             "imgsz": int(payload.get("imgsz") or 640),
             "batch": int(payload.get("batch") or 8),
@@ -895,7 +1028,7 @@ class TrainingHandler:
             payload,
             materialize_runtime_yaml(
                 bundle / "manifest.json",
-                context.artifacts.artifact_path(context.task.task_id, "work/runtime-data.yaml"),
+                context.artifacts.artifact_path(context.task.task_id, "work/training-runtime-data.yaml"),
             ),
             model,
             python_executable=python_executable,
@@ -904,6 +1037,68 @@ class TrainingHandler:
         job = self.process_runner(context, argv, job_file)
         if not job.get("artifact_verified"):
             raise RuntimeError(str(job.get("message") or "training produced no verified model"))
+        _append_access_evidence(
+            context,
+            "best_model_selected",
+            best_path=str(job.get("best_path") or ""),
+            test_access="sealed",
+        )
+        training_report = dict(job.get("training_report") or {})
+        test_ids = list((snapshot.get("ids") or {}).get("test") or [])
+        if test_ids:
+            final_bundle = materialize_portable_dataset(
+                context.artifacts.artifact_path(context.task.task_id, "work/final-evaluation"),
+                snapshot,
+                images,
+                lambda row: storage.materialize(row).path,
+                roles=("test",),
+            )
+            final_manifest = final_bundle / "manifest.json"
+            final_yaml = materialize_runtime_yaml(
+                final_manifest,
+                context.artifacts.artifact_path(context.task.task_id, "work/final-evaluation-data.yaml"),
+            )
+            _append_access_evidence(
+                context,
+                "test_materialized_for_final_evaluation",
+                snapshot_id=snapshot["snapshot_id"],
+                roles=["test"],
+                model_finalized=True,
+            )
+            best_model = Path(str(job.get("best_path") or (job.get("verified_models") or [""])[0])).resolve()
+            if not best_model.is_file() or best_model.stat().st_size <= 0:
+                raise RuntimeError("final evaluation requires the verified best.pt artifact")
+            final_output = context.artifacts.artifact_path(context.task.task_id, "final-evaluation/result.json")
+            try:
+                final_result = _run_final_evaluation_process(
+                    context,
+                    _final_evaluation_argv(
+                        self.data_dir,
+                        python_executable,
+                        final_yaml,
+                        best_model,
+                        assigned_device,
+                        final_output,
+                    ),
+                    final_output,
+                    job_dir,
+                    cuda_visible_devices=(
+                        "-1"
+                        if assigned_device == "cpu"
+                        else str(assignment.get("gpu_uuid") or assigned_device.removeprefix("cuda:"))
+                    ),
+                )
+                training_report["test_metrics"] = final_result.get("metrics") or {}
+                training_report["test_result"] = final_result
+                _append_access_evidence(context, "final_evaluation_completed", status="succeeded")
+            except Exception as error:
+                training_report["test_metrics"] = {}
+                training_report["test_result"] = {"status": "failed", "metrics": {}, "error": str(error)}
+                _append_access_evidence(context, "final_evaluation_completed", status="failed", error=str(error))
+        else:
+            training_report["test_result"] = {"status": "not_requested", "metrics": {}}
+        job["training_report"] = training_report
+        atomic_write_json(job_file, job)
         verified_models = []
         for index, source_value in enumerate(job.get("verified_models") or []):
             source = Path(str(source_value)).resolve()
@@ -918,7 +1113,6 @@ class TrainingHandler:
             verified_models.append({"ref": ref, "sha256": digest, "size_bytes": destination.stat().st_size})
         if not verified_models:
             raise RuntimeError("training reported success without a verified model")
-        training_report = job.get("training_report") or {}
         partial = (training_report.get("test_result") or {}).get("status") == "failed"
         final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
         result = {
@@ -931,12 +1125,14 @@ class TrainingHandler:
             "actual_train_params": job.get("actual_train_params"),
             "snapshot_id": snapshot["snapshot_id"],
             "snapshot_ref": "snapshot.json",
-            "dataset_manifest_ref": "work/bundle/manifest.json",
-            "counts": manifest.counts,
-            "actual_ratios": manifest.actual_ratios,
-            "test_source": manifest.requested["test_source"],
-            "test_seed": manifest.test_seed,
-            "validation_seed": manifest.validation_seed,
+            "dataset_manifest_ref": "work/training-runtime/bundle/manifest.json",
+            "final_evaluation_manifest_ref": "work/final-evaluation/bundle/manifest.json" if test_ids else None,
+            "access_evidence_ref": "access-evidence.json",
+            "counts": snapshot.get("counts") or {},
+            "actual_ratios": snapshot.get("actual_ratios") or {},
+            "test_source": (snapshot.get("requested") or {}).get("test_source"),
+            "test_seed": snapshot.get("test_seed"),
+            "validation_seed": snapshot.get("validation_seed"),
             "base_version_id": base.get("base_version_id"),
             "base_version_name": base.get("base_version_name"),
             "base_selection_reason": base.get("base_selection_reason"),

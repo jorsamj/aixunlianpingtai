@@ -119,6 +119,37 @@ def build_report_from_metrics(metrics_obj, names=None):
     return report
 
 
+def final_evaluate_main():
+    """Evaluate a frozen best model in a process that only sees the sealed test bundle."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--final-evaluate", action="store_true")
+    parser.add_argument("--data", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--device", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+    output = Path(args.output).resolve()
+    result = {"status": "failed", "started_at": now_iso(), "metrics": {}}
+    try:
+        from ultralytics import YOLO
+        model = YOLO(args.model)
+        metrics = model.val(data=args.data, split="test", device=args.device, verbose=False)
+        report = build_report_from_metrics(metrics, getattr(model, "names", None))
+        result.update(
+            status="succeeded",
+            finished_at=now_iso(),
+            metrics=report.get("metrics") or {},
+            per_class=report.get("per_class") or [],
+            weak_labels=report.get("weak_labels") or [],
+        )
+        write_json(output, result)
+        return
+    except Exception as error:
+        result.update(finished_at=now_iso(), error=str(error))
+        write_json(output, result)
+        raise
+
+
 def _iou_xyxy(a, b):
     x1=max(a[0],b[0]); y1=max(a[1],b[1]); x2=min(a[2],b[2]); y2=min(a[3],b[3])
     inter=max(0.0,x2-x1)*max(0.0,y2-y1)
@@ -365,6 +396,9 @@ def stage_gate_random_eval(trainer, args, epoch):
 
 
 def main():
+    if "--final-evaluate" in sys.argv:
+        final_evaluate_main()
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--data", required=True)
@@ -670,22 +704,13 @@ def main():
         best_path = next((path for path in verified if Path(path).stem.endswith("_best")), "")
         last_path = next((path for path in verified if Path(path).stem.endswith("_last")), "")
 
-        training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"test_result":{"status":"not_requested","metrics":{}},"ai_intervention_events":ai_events}
+        training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"test_result":{"status":"sealed_pending_final_evaluation","metrics":{}},"ai_intervention_events":ai_events}
         try:
             best_model=YOLO(verified[0])
             val_metrics=best_model.val(data=args.data, split="val", verbose=False)
             training_report.update(build_report_from_metrics(val_metrics,getattr(best_model,"names",None)))
-            try:
-                test_metrics=best_model.val(data=args.data, split="test", verbose=False)
-                test_values=(build_report_from_metrics(test_metrics,getattr(best_model,"names",None)).get("metrics") or {})
-                training_report["test_metrics"]=test_values
-                training_report["test_result"]={"status":"succeeded","metrics":test_values}
-            except Exception as te:
-                training_report["test_note"]="评测集为空或无法评测："+str(te)
-                training_report["test_result"]={"status":"failed","metrics":{},"error":str(te)}
         except Exception as ve:
             training_report["validation_error"]=str(ve)
-            training_report["test_result"]={"status":"failed","metrics":{},"error":"验证阶段失败，未执行最终试验集评估："+str(ve)}
         try:
             analysis_limit=int(args.val_max_samples) if int(args.val_max_samples or 0)>0 else 200
             training_report["error_samples"]=analyze_detection_errors(best_model,args.data,args.device,max_images=min(500,analysis_limit))
