@@ -43,6 +43,9 @@ jobs:
           platform_core/annotation_repository.py
           platform_core/algorithms.py
           platform_core/training_tasks.py
+          platform_core/storage/local.py
+          platform_core/storage/yolo_import.py
+          platform_core/storage/import_tasks.py
           platform_core/deployment/conversion_tasks.py
           platform_core/deployment/inference_tasks.py
       - name: Run targeted P0 tests
@@ -60,6 +63,7 @@ jobs:
           tests/unit/test_annotation_repository.py
           tests/unit/test_algorithms.py
           tests/unit/test_algorithm_artifact_manifest.py
+          tests/unit/storage/test_yolo_import.py
           tests/unit/test_conversion_tasks.py
           tests/unit/test_deployment_inference_tasks.py
           -q
