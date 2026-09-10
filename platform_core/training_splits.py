@@ -120,12 +120,12 @@ def _canonical_box(box: Mapping[str, Any]) -> dict[str, Any]:
     label = str(box.get("label") or box.get("code") or "").strip()
     if label:
         result["label"] = label
-    if box.get("class_id") is not None:
+    elif box.get("class_id") is not None:
         try:
             result["class_id"] = int(box["class_id"])
         except (TypeError, ValueError):
             result["class_id"] = str(box["class_id"])
-    for key in ("x1", "y1", "x2", "y2"):
+    for key in ("x1", "y1", "x2", "y2", "cx", "cy", "w", "h"):
         if box.get(key) is not None:
             try:
                 result[key] = round(float(box[key]), 6)
