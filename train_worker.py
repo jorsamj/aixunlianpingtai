@@ -286,47 +286,20 @@ def _trainer_per_class(trainer):
     return out
 
 
-def _master_unused_counts(project_dir, labels):
-    images=read_json(Path(project_dir)/"images.json",[]); counts={str(x):0 for x in labels}
-    for img in images:
-        if str(img.get("split") or "unassigned")!="unassigned": continue
-        ann=read_json(Path(project_dir)/"annotations"/f"{img.get('id')}.json",{"boxes":[]})
-        found={str(b.get("label") or "") for b in ann.get("boxes",[]) if str(b.get("label") or "")}
-        for l in counts:
-            if l in found: counts[l]+=1
-    return counts
+AI_INTERVENTION_ACTIONS = {"continue", "extend_epochs", "recommend_supplement"}
 
 
-def _box_to_yolo_worker(b,w,h):
-    try:
-        xc=((float(b["x1"])+float(b["x2"]))/2)/w; yc=((float(b["y1"])+float(b["y2"]))/2)/h
-        bw=(float(b["x2"])-float(b["x1"]))/w; bh=(float(b["y2"])-float(b["y1"]))/h
-        return f"{int(b.get('class_id',0))} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}"
-    except:return ""
+def _normalize_ai_intervention_action(value):
+    """Map legacy mutable actions to a next-task recommendation.
 
-
-def _supplement_snapshot(project_dir, data_yaml, target_labels, limit, round_no):
-    import yaml
-    project_dir=Path(project_dir); base=Path(data_yaml).resolve().parent
-    new=base.parent/(base.name+f"_ai{round_no}")
-    if new.exists(): shutil.rmtree(new)
-    shutil.copytree(base,new)
-    dy=new/"data.yaml"; spec=yaml.safe_load(dy.read_text(encoding="utf-8")) or {}; spec["path"]=str(new).replace("\\","/"); dy.write_text(yaml.safe_dump(spec,allow_unicode=True,sort_keys=False),encoding="utf-8")
-    images=read_json(project_dir/"images.json",[]); selected=[]
-    for img in images:
-        if len(selected)>=max(0,int(limit)):break
-        if str(img.get("split") or "unassigned")!="unassigned":continue
-        ann=read_json(project_dir/"annotations"/f"{img.get('id')}.json",{"boxes":[]}); boxes=ann.get("boxes",[])
-        labs={str(b.get("label") or "") for b in boxes}
-        if target_labels and not labs.intersection(set(target_labels)):continue
-        src=project_dir/"uploads"/str(img.get("stored_name") or "")
-        if not src.is_file():continue
-        dst=new/"images"/"train"/src.name; dst.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,dst)
-        lines=[_box_to_yolo_worker(b,float(img.get("width") or 1),float(img.get("height") or 1)) for b in boxes]; lines=[x for x in lines if x]
-        lab=new/"labels"/"train"/(src.stem+".txt"); lab.parent.mkdir(parents=True,exist_ok=True); lab.write_text("\n".join(lines),encoding="utf-8")
-        img["split"]="train"; img["updated_at"]=now_iso(); selected.append(str(img.get("id")))
-    if selected: write_json(project_dir/"images.json",images)
-    return str(dy),selected
+    A running training task owns an immutable snapshot. AI may extend epochs on
+    that same snapshot or recommend what to add to a future task, but it may
+    never pull project-global images into the current task.
+    """
+    action = str(value or "continue").strip().lower()
+    if action == "supplement_and_retrain":
+        return "recommend_supplement"
+    return action if action in AI_INTERVENTION_ACTIONS else "continue"
 
 
 def _ai_eval_contact_sheet(data_yaml, count, seed, epoch, work_dir):
@@ -360,22 +333,50 @@ def _run_ai_intervention(cfg, trainer, args, epoch, project_dir):
     per_class=_trainer_per_class(trainer)
     weak=sorted(per_class,key=lambda x:(x.get("recall") if x.get("recall") is not None else 2,x.get("map50") if x.get("map50") is not None else 2))[:3]
     weak_labels=[x["label"] for x in weak if (x.get("recall") is not None and x["recall"]<.8) or (x.get("map50") is not None and x["map50"]<.8)]
-    metrics=dict(getattr(trainer,"metrics",{}) or {}); unused=_master_unused_counts(project_dir,weak_labels)
+    metrics=dict(getattr(trainer,"metrics",{}) or {})
     image,sampled_files=_ai_eval_contact_sheet(args.data,args.ai_eval_samples,args.seed,epoch,Path(project_dir)/"jobs"/args.job_id/"ai_intervention")
-    default_prompt=("你是算法训练决策助手。客观指标和人工Ground Truth是最终依据，你不能修改标准答案。\n"
-                    "请根据当前训练指标、逐标签表现和未使用训练数据数量，在以下动作中选择一个：continue、supplement_and_retrain、extend_epochs。\n"
-                    "若弱标签明显且存在未使用同标签数据，优先 supplement_and_retrain；若指标仍有提升空间但缺少合适补样，选择 extend_epochs；否则 continue。\n"
-                    "只返回JSON：{\"action\":\"continue|supplement_and_retrain|extend_epochs\",\"reason\":\"通俗原因\",\"target_labels\":[\"标签\"],\"extra_epochs\":20}。")
+    default_prompt=("你是算法训练决策助手。客观指标和人工 Ground Truth 是最终依据，你不能修改标准答案。\n"
+                    "当前训练任务的数据快照、Train/Validation/Test 划分和标签映射已经冻结。"
+                    "你只能选择 continue、extend_epochs、recommend_supplement 三种动作。\n"
+                    "continue：按原计划继续；extend_epochs：仅在当前冻结数据上追加训练轮次；"
+                    "recommend_supplement：指出下一次新训练任务建议补充的标签或素材方向，本次任务不会补料、不会改 split、不会改 Ground Truth。\n"
+                    "只返回 JSON：{\"action\":\"continue|extend_epochs|recommend_supplement\","
+                    "\"reason\":\"通俗原因\",\"target_labels\":[\"标签\"],\"extra_epochs\":20}。")
     tmpl=str(cfg.get("training_intervention_prompt") or "").strip() or default_prompt
-    summary={"epoch":epoch,"total_epochs":args.epochs,"eval_samples":len(sampled_files),"sampled_validation_files":sampled_files,"metrics":metrics,"per_class":per_class,"weak_labels":weak_labels,"unused_labeled_data":unused}
-    prompt=tmpl+"\n当前客观数据："+json.dumps(summary,ensure_ascii=False,default=str)
+    execution_policy=("\n平台强制执行约束：当前训练 snapshot 不可变。禁止在本任务中新增/删除图片、改变 Train/Validation/Test、"
+                      "修改标注或类别映射。若你认为应增加数据，只能返回 recommend_supplement；"
+                      "历史动作 supplement_and_retrain 会被平台强制转换为 recommend_supplement。")
+    summary={
+        "epoch":epoch,
+        "total_epochs":args.epochs,
+        "eval_samples":len(sampled_files),
+        "sampled_validation_files":sampled_files,
+        "metrics":metrics,
+        "per_class":per_class,
+        "weak_labels":weak_labels,
+        "snapshot_policy":{
+            "immutable":True,
+            "allowed_current_task_actions":["continue","extend_epochs"],
+            "supplement_requires_new_training_task":True,
+        },
+    }
+    prompt=tmpl+execution_policy+"\n当前客观数据："+json.dumps(summary,ensure_ascii=False,default=str)
     raw=_call_ai_model(cfg,image,prompt); dec=_json_from_ai_response(raw)
-    action=str(dec.get("action") or "continue").strip().lower()
-    if action not in {"continue","supplement_and_retrain","extend_epochs"}: action="continue"
+    action=_normalize_ai_intervention_action(dec.get("action"))
     targets=[str(x) for x in (dec.get("target_labels") or weak_labels) if str(x)]
     extra=max(1,min(200,int(dec.get("extra_epochs") or args.ai_extra_epochs or 20)))
-    if action=="supplement_and_retrain" and not any(unused.get(x,0)>0 for x in targets): action="extend_epochs"
-    return {"epoch":epoch,"action":action,"reason":str(dec.get("reason") or "AI未提供原因"),"target_labels":targets,"extra_epochs":extra,"model_name":cfg.get("name") or cfg.get("model_name") or "AI模型","summary":summary,"raw":dec}
+    return {
+        "epoch":epoch,
+        "action":action,
+        "reason":str(dec.get("reason") or "AI未提供原因"),
+        "target_labels":targets,
+        "extra_epochs":extra,
+        "model_name":cfg.get("name") or cfg.get("model_name") or "AI模型",
+        "summary":summary,
+        "raw":dec,
+        "snapshot_immutable":True,
+        "requires_new_training_task":action=="recommend_supplement",
+    }
 
 
 def stage_gate_random_eval(trainer, args, epoch):
@@ -485,6 +486,7 @@ def main():
     parser.add_argument("--eval-metric", default="map50")
     parser.add_argument("--continue-threshold", type=float, default=0.0)
     parser.add_argument("--stop-threshold", type=float, default=0.0)
+    # Deprecated compatibility flags. 42.25 never mutates a running task's snapshot.
     parser.add_argument("--auto-supplement", default="false")
     parser.add_argument("--supplement-count", type=int, default=0)
     parser.add_argument("--ai-intervention", default="false")
@@ -699,9 +701,10 @@ def main():
                     ai_events.append(decision); ai_rounds += 1
                     update_job(job_file, ai_intervention_events=ai_events, ai_intervention_last=decision)
                     print(f"[AI介入] Epoch {epoch}: {decision.get('action')} · {decision.get('reason')}",flush=True)
-                    if str(args.ai_action_mode).lower()=="auto" and decision.get("action")=="supplement_and_retrain":
-                        ai_plan=decision; trainer.stop=True; return
-                    if decision.get("action")=="extend_epochs": ai_plan=decision
+                    if decision.get("action")=="recommend_supplement":
+                        update_job(job_file, ai_next_task_recommendation=decision)
+                    elif str(args.ai_action_mode).lower()=="auto" and decision.get("action")=="extend_epochs":
+                        ai_plan=decision
                 except Exception as ex:
                     ev={"epoch":epoch,"action":"error","reason":str(ex),"model_name":ai_cfg.get("name") or "AI模型"}; ai_events.append(ev); update_job(job_file,ai_intervention_events=ai_events,ai_intervention_last=ev)
                     print(f"[AI介入失败] Epoch {epoch}: {ex}",flush=True)
@@ -783,23 +786,23 @@ def main():
             model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
             attach_resource_callbacks(model)
         first_run_dir=runs_dir/args.run_name
-        if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
+        if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action")=="extend_epochs":
             first_last=first_run_dir/"weights"/"last.pt"; first_best=first_run_dir/"weights"/"best.pt"
             resume_model=first_last if first_last.is_file() else first_best
             if resume_model.is_file():
-                next_data=args.data; supplemented=[]
-                if ai_plan.get("action")=="supplement_and_retrain":
-                    # The task-level image selection, split manifest and label schema are immutable.
-                    # Pulling project-global images into this directory would bypass scope checks,
-                    # leak across splits and reuse platform class IDs as YOLO IDs.  Keep the
-                    # already-materialized dataset and restrict the automated action to epochs.
-                    ai_plan={**ai_plan,"action":"extend_epochs","reason":
-                        str(ai_plan.get("reason") or "")+"；本次训练素材与标签已冻结，不在训练进程中追加项目全局素材"}
                 extra=max(1,int(ai_plan.get("extra_epochs") or args.ai_extra_epochs or 20))
-                phase={"action":ai_plan.get("action"),"reason":ai_plan.get("reason"),"target_labels":ai_plan.get("target_labels") or [],"supplemented_image_ids":supplemented,"extra_epochs":extra,"data_yaml":next_data,"started_at":now_iso()}
-                update_job(job_file,ai_continuation=phase,message="AI建议已执行，进入追加训练")
-                print(f"[AI执行] {phase['action']} · 追加 {extra} 轮 · 补充数据 {len(supplemented)} 张",flush=True)
-                cont_args=dict(train_args);cont_args.update({"data":next_data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
+                phase={
+                    "action":"extend_epochs",
+                    "reason":ai_plan.get("reason"),
+                    "target_labels":ai_plan.get("target_labels") or [],
+                    "extra_epochs":extra,
+                    "data_yaml":args.data,
+                    "snapshot_immutable":True,
+                    "started_at":now_iso(),
+                }
+                update_job(job_file,ai_continuation=phase,message="AI建议已执行：在冻结数据上追加训练")
+                print(f"[AI执行] extend_epochs · 追加 {extra} 轮 · 训练快照保持不变",flush=True)
+                cont_args=dict(train_args);cont_args.update({"data":args.data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
                 model=YOLO(str(resume_model)); train_result=model.train(**cont_args); phase["finished_at"]=now_iso(); update_job(job_file,ai_continuation=phase)
         run_dir = Path(getattr(model.trainer,"save_dir",runs_dir/args.run_name))
         best = run_dir / "weights" / "best.pt"
