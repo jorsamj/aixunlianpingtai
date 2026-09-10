@@ -23,8 +23,12 @@ def label_catalog(project):
         code = str((item.get("code") if isinstance(item, dict) else item) or "").strip().replace(" ", "_")
         meta = item if isinstance(item, dict) else metadata.get(code, {})
         if code and str(meta.get("status") or "active") == "active":
-            result.append({"code": code, "class_id": index,
-                           "display_name_zh": str(meta.get("display_name_zh") or meta.get("display_name") or code)})
+            result.append({
+                "code": code,
+                "label_id": str(meta.get("label_id") or "").strip(),
+                "class_id": index,
+                "display_name_zh": str(meta.get("display_name_zh") or meta.get("display_name") or code),
+            })
     return result
 
 
@@ -70,6 +74,15 @@ def prepare_request(data_dir, project_id, request, *, runtime=True):
     catalog = [item for item in label_catalog(project) if item["code"] in labels]
     if set(labels) != {item["code"] for item in catalog}:
         raise ValueError("AI_LABEL_UNAVAILABLE: task labels are unavailable or inactive")
+    missing_stable_ids = [item["code"] for item in catalog if not str(item.get("label_id") or "").strip()]
+    if missing_stable_ids:
+        raise ValueError(
+            "AI_STABLE_LABEL_ID_MISSING: project labels must have stable label_id before annotation: "
+            + ", ".join(missing_stable_ids)
+        )
+    stable_ids = [str(item["label_id"]) for item in catalog]
+    if len(set(stable_ids)) != len(stable_ids):
+        raise ValueError("AI_STABLE_LABEL_ID_DUPLICATE: selected annotation labels share a stable label_id")
     threshold = float(prepared.get("threshold", 0.45))
     if not math.isfinite(threshold) or not 0 <= threshold <= 1:
         raise ValueError("AI_THRESHOLD_INVALID: threshold must be between 0 and 1")
@@ -94,7 +107,8 @@ def prepare_request(data_dir, project_id, request, *, runtime=True):
                     now=str(template.get("updated_at") or template.get("created_at") or ""))
     prepared.update({"labels": labels, "threshold": threshold, "model_config_id": config["id"],
                      "prompt_template_snapshot": template,
-                     "prompt_template_version_id": template.get("version_id") or ""})
+                     "prompt_template_version_id": template.get("version_id") or "",
+                     "label_catalog": catalog})
     if not runtime:
         return prepared
     runtime_config = dict(config)
