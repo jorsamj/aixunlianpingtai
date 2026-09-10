@@ -109,6 +109,7 @@ from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_labels import aggregate_training_labels, freeze_training_labels
 from platform_core.training_preflight import preview_preflight
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
+from platform_core.training_config import requested_training_config
 from platform_core.gpu_resources import GPUResourceManager
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 
@@ -5361,10 +5362,15 @@ class TrainReq(BaseModel):
     # v42.8：训练任务队列与训练完成后的自动转换。
     queue_priority: StrictInt = 50
     auto_convert_targets: Optional[List[str]] = None
+    requested_config: Optional[Dict[str, Any]] = None
 
 
 def validate_train_request(payload: TrainReq):
     """Fail before spawning a training process, so invalid UI values never become opaque worker errors."""
+    try:
+        requested_training_config(payload.model_dump(mode="json", exclude_none=True))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if int(payload.epochs) < 1:
         raise HTTPException(status_code=400, detail="训练轮次 epochs 必须大于等于 1")
     if int(payload.imgsz) < 32:
@@ -5467,6 +5473,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         raise HTTPException(status_code=400, detail=str(error)) from error
     task_id = uuid.uuid4().hex[:12]
     request_payload = payload.model_dump(mode="json", exclude_none=True)
+    try:
+        request_payload["requested_config"] = requested_training_config(request_payload)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     request_payload.update(
         {
             "split_mode": split.mode.value,
@@ -5515,6 +5525,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "requested_device": payload.device,
             "assigned_device": None,
             "actual_device": None,
+            "requested_config": request_payload["requested_config"],
+            "effective_config": None,
+            "actual_config": None,
+            "adjustment_reasons": [],
             "split_mode": split.mode.value,
             "requested_train_images": len(split.train_image_ids),
             "requested_test_images": len(split.test_image_ids),

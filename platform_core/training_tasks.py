@@ -28,6 +28,7 @@ from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
+from .training_config import requested_training_config
 from .training_metrics import read_metrics
 from .training_labels import verify_frozen_training_contract
 from .training_preflight import authoritative_preflight, require_preflight
@@ -628,6 +629,7 @@ def _bool(value: Any) -> str:
 def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping[str, Any], data_yaml: Path, model: str,
                    *, python_executable: str | None = None) -> list[str]:
     root = Path(__file__).resolve().parent.parent
+    requested = requested_training_config(payload)
     device = normalize_training_device(payload.get("assigned_device"))
     if device == "auto":
         raise ValueError("GPU_ASSIGNMENT_REQUIRED: training argv requires an assigned concrete device")
@@ -637,12 +639,13 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--project-dir", str(project),
         "--data", str(data_yaml),
         "--model", str(model),
-        "--epochs", str(int(payload.get("epochs") or 50)),
-        "--imgsz", str(int(payload.get("imgsz") or 640)),
-        "--batch", str(int(payload.get("resolved_batch", payload.get("batch", 8)))),
+        "--requested-model", str(requested["model"]),
+        "--epochs", str(requested["epochs"]),
+        "--imgsz", str(requested["imgsz"]),
+        "--batch", str(requested["batch"]),
         "--device", device.removeprefix("cuda:"),
         "--assigned-device", device,
-        "--requested-device", normalize_training_device(payload.get("requested_device", payload.get("device"))),
+        "--requested-device", requested["device"],
         "--job-id", task_id,
         "--run-name", f"train_{task_id}",
         "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
@@ -650,7 +653,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     value_options = {
         "patience": 100, "workers": 0, "optimizer": "auto", "lr0": 0.01,
         "lrf": 0.01, "weight_decay": 0.0005, "close_mosaic": 10,
-        "mosaic": 1.0, "cache": "False", "freeze": 0, "momentum": 0.937,
+        "mosaic": 1.0, "cache": False, "freeze": 0, "momentum": 0.937,
         "warmup_epochs": 3.0, "save_period": -1, "seed": 0,
         "multi_scale": 0.0, "hsv_h": 0.015, "hsv_s": 0.7, "hsv_v": 0.4,
         "degrees": 0.0, "translate": 0.1, "scale": 0.5, "shear": 0.0,
@@ -659,7 +662,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "continue_threshold": 0.0, "stop_threshold": 0.0,
     }
     for key, default in value_options.items():
-        value = payload.get(f"resolved_{key}", payload.get(key, default)) if key in {"workers", "cache"} else payload.get(key, default)
+        value = requested[key] if key in requested else payload.get(key, default)
         argv.extend([f"--{key.replace('_', '-')}", str(value)])
     for key, default in {
         "single_cls": False, "pretrained": True, "rect": False, "amp": True,
@@ -667,9 +670,10 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "ai_intervention": False,
     }.items():
         payload_key = "ai_intervention_enabled" if key == "ai_intervention" else key
-        argv.extend([f"--{key.replace('_', '-')}", _bool(payload.get(payload_key, default))])
+        value = payload.get(payload_key, default) if payload_key not in requested else requested[payload_key]
+        argv.extend([f"--{key.replace('_', '-')}", _bool(value)])
     argv.extend(["--supplement-count", str(int(payload.get("supplement_count") or 0))])
-    for option in ("resource_context", "resource_resolution", "metrics_db"):
+    for option in ("resource_context", "resource_resolution", "metrics_db", "snapshot", "bundle_manifest", "preflight_report"):
         if payload.get(option):
             argv.extend(["--" + option.replace("_", "-"), str(payload[option])])
     return argv
@@ -837,7 +841,8 @@ class TrainingHandler:
             raise EnvironmentError("remote training requires a configured NVIDIA training worker")
         if str(payload.get("framework") or "ultralytics").lower() != "ultralytics":
             raise EnvironmentError("Paddle training worker is not configured in this environment")
-        requested_device = normalize_training_device(payload.get("requested_device", payload.get("device")))
+        requested_config = requested_training_config(payload)
+        requested_device = requested_config["device"]
         assignment = context.artifacts.read_json(context.task.task_id, "assignment.json", default={})
         assigned_device = assignment.get("assigned_device") if isinstance(assignment, dict) else None
         if not assigned_device:
@@ -865,7 +870,7 @@ class TrainingHandler:
                 raise EnvironmentError("GPU_IDENTITY_MISMATCH: trainer CUDA index differs from reserved physical GPU")
         context.artifacts.atomic_write_json(context.task.task_id, "device-validation.json", device_evidence)
         payload = {**payload, "requested_device": requested_device, "assigned_device": assigned_device,
-                   "device": assigned_device}
+                   "requested_config": requested_config}
         project = self.data_dir / "projects" / context.task.project_id
         if not (project / "meta.json").is_file():
             raise FileNotFoundError("training project does not exist")
@@ -1010,7 +1015,10 @@ class TrainingHandler:
         context.artifacts.atomic_write_json(context.task.task_id, "resource-context.json", resource_context)
         payload.update(resource_context=str(context.artifacts.artifact_path(context.task.task_id, "resource-context.json")),
                        resource_resolution=str(context.artifacts.artifact_path(context.task.task_id, "resolved-resources.json")),
-                       metrics_db=str(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")))
+                       metrics_db=str(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
+                       snapshot=str(context.artifacts.artifact_path(context.task.task_id, "snapshot.json")),
+                       bundle_manifest=str(bundle / "manifest.json"),
+                       preflight_report=str(context.artifacts.artifact_path(context.task.task_id, "preflight-report.json")))
         job_dir = project / "jobs" / context.task.task_id
         job_dir.mkdir(parents=True, exist_ok=True)
         job_file = job_dir / "job.json"
@@ -1038,6 +1046,10 @@ class TrainingHandler:
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
+            "requested_config": requested_config,
+            "effective_config": None,
+            "actual_config": None,
+            "adjustment_reasons": [],
         }
         atomic_write_json(job_file, job)
         preflight = authoritative_preflight(
@@ -1170,6 +1182,10 @@ class TrainingHandler:
             "device_evidence": job.get("device_evidence"),
             "device_validation": device_evidence,
             "actual_train_params": job.get("actual_train_params"),
+            "requested_config": job.get("requested_config") or requested_config,
+            "effective_config": job.get("effective_config"),
+            "actual_config": job.get("actual_config"),
+            "adjustment_reasons": list(job.get("adjustment_reasons") or []),
             "snapshot_id": snapshot["snapshot_id"],
             "snapshot_ref": "snapshot.json",
             "dataset_manifest_ref": "work/training-runtime/bundle/manifest.json",

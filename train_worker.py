@@ -7,6 +7,12 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from platform_core.training_config import (
+    effective_training_config,
+    normalize_training_config,
+    ultralytics_training_args,
+)
+
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -47,6 +53,28 @@ def parse_cache(v):
     if low in {"ram", "disk"}:
         return low
     raise ValueError("cache 只支持 False / True / ram / disk")
+
+
+def effective_host_preflight(config):
+    """Last host gate before model.train, based on resolved resource values."""
+    report = {"workers": int(config["workers"]), "batch": int(config["batch"]), "cache": config["cache"]}
+    try:
+        import psutil
+        available = int(psutil.virtual_memory().available)
+        report["available_ram_bytes"] = available
+        if available < 1024 * 1024 * 1024:
+            raise RuntimeError("HOST_RAM_INSUFFICIENT: less than 1 GiB remains after resource resolution")
+    except ImportError:
+        report["available_ram_bytes"] = None
+    shm = Path("/dev/shm")
+    if shm.is_dir():
+        free = int(shutil.disk_usage(shm).free)
+        report["shm_free_bytes"] = free
+        if config["workers"] > 0 and free < 256 * 1024 * 1024:
+            raise RuntimeError("SHM_INSUFFICIENT: effective workers require at least 256 MiB /dev/shm")
+    else:
+        report["shm_free_bytes"] = None
+    return report
 
 
 def resolve_training_model(model_arg: str, pretrained: bool) -> str:
@@ -403,6 +431,7 @@ def main():
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--data", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--requested-model", required=True)
     parser.add_argument("--epochs", type=int, required=True)
     parser.add_argument("--imgsz", type=int, required=True)
     parser.add_argument("--batch", type=int, required=True)
@@ -424,6 +453,9 @@ def main():
     parser.add_argument("--resource-context", default="")
     parser.add_argument("--resource-resolution", default="")
     parser.add_argument("--metrics-db", default="")
+    parser.add_argument("--snapshot", required=True)
+    parser.add_argument("--bundle-manifest", required=True)
+    parser.add_argument("--preflight-report", required=True)
     parser.add_argument("--single-cls", default="false")
     parser.add_argument("--pretrained", default="true")
     parser.add_argument("--rect", default="false")
@@ -504,7 +536,15 @@ def main():
     if args.freeze > 0:
         train_args["freeze"] = args.freeze
 
-    update_job(job_file, status="running", message="验证训练设备与资源", requested_train_params=train_args, actual_model=actual_model)
+    requested_config = normalize_training_config({
+        **{key: value for key, value in train_args.items() if key not in {"data", "project", "name", "exist_ok"}},
+        "model": args.requested_model,
+        "device": args.requested_device,
+        "freeze": args.freeze,
+    })
+    update_job(job_file, status="running", message="验证训练设备与资源",
+               requested_config=requested_config, requested_train_params=requested_config,
+               actual_model=actual_model)
     print(f"[{now_iso()}] 开始训练", flush=True)
     print(f"模型: {actual_model}", flush=True)
     print(f"数据集: {args.data}", flush=True)
@@ -551,18 +591,88 @@ def main():
                         runtime_device=str(allocation.device), gpu_index=gpu_index, gpu_uuid=gpu_uuid,
                         gpu_name=str(props.name) if props is not None else None, pid=os.getpid(),
                         python_executable=sys.executable, torch_version=str(torch.__version__),
-                        cuda_version=getattr(torch.version, "cuda", None), validated_at=now_iso())
+                        cuda_version=getattr(torch.version, "cuda", None),
+                        cuda_available=bool(torch.cuda.is_available()), validated_at=now_iso())
         del allocation
-        train_args["device"] = args.device
         update_job(job_file, requested_device=requested, assigned_device=assigned, actual_device=assigned,
                    device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         model = YOLO(actual_model)
-        resolved = resolve_resources({**train_args, "device": runtime_device, "resource_strategy": args.resource_strategy}, resource_context, model, torch)
+        resolved = resolve_resources({**requested_config, "data": args.data, "device": runtime_device,
+                                      "resource_strategy": args.resource_strategy}, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
-        train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
+        effective_config, adjustment_reasons = effective_training_config(
+            requested_config, assigned_device=assigned, actual_model=actual_model, resolved_resources=resolved,
+        )
+        try:
+            effective_preflight = effective_host_preflight(effective_config)
+        except Exception as error:
+            failed_report = {
+                "schema_version": 1,
+                "status": "BLOCKED",
+                "ok": False,
+                "stage": "effective_resources",
+                "requested_config": requested_config,
+                "effective_config": effective_config,
+                "adjustment_reasons": adjustment_reasons,
+                "blockers": [{"code": "EFFECTIVE_RESOURCE_BLOCKED", "message": str(error)}],
+                "warnings": [],
+            }
+            write_json(Path(args.preflight_report), failed_report)
+            update_job(
+                job_file,
+                effective_config=effective_config,
+                adjustment_reasons=adjustment_reasons,
+                effective_resource_preflight={"ok": False, "error": str(error)},
+                preflight={"ok": False, "blockers": [{"code": "EFFECTIVE_RESOURCE_BLOCKED", "message": str(error)}],
+                           "warnings": [], "counts": {}},
+            )
+            raise
+        from platform_core.material_repository import MaterialRepository
+        from platform_core.training_preflight import authoritative_preflight, require_preflight
+        from platform_core.training_tasks import _selected_project_images
+        snapshot = read_json(Path(args.snapshot), {})
+        selected_ids = [
+            str(image_id)
+            for role in ("train", "validation", "test")
+            for image_id in (snapshot.get("ids") or {}).get(role, [])
+        ]
+        current_images = _selected_project_images(MaterialRepository(project_dir), project_dir, selected_ids)
+        effective_report = authoritative_preflight(
+            snapshot,
+            current_images,
+            {**effective_config, "requested_device": requested, "assigned_device": assigned},
+            device_evidence=evidence,
+            resource_context=resource_context,
+            workspace=Path(args.bundle_manifest).parent,
+            bundle_manifest_path=Path(args.bundle_manifest),
+        )
+        effective_report.update(requested_config=requested_config, effective_config=effective_config,
+                                adjustment_reasons=adjustment_reasons, resource_resolution=resolved)
+        write_json(Path(args.preflight_report), effective_report)
+        update_job(
+            job_file,
+            effective_config=effective_config,
+            adjustment_reasons=adjustment_reasons,
+            effective_resource_preflight={"ok": True, **effective_preflight},
+            preflight={"ok": bool(effective_report.get("ok")),
+                       "blockers": effective_report.get("blockers") or [],
+                       "warnings": effective_report.get("warnings") or [],
+                       "counts": effective_report.get("counts") or {}},
+        )
+        require_preflight(effective_report)
+        train_args = {
+            **ultralytics_training_args(effective_config),
+            "data": args.data,
+            "project": str(runs_dir),
+            "name": args.run_name,
+            "exist_ok": True,
+        }
         persist_resolution(resolution_path, resolved)
         evidence["effective_args"] = dict(train_args)
-        update_job(job_file, resolved_resources=resolved, actual_train_params=train_args, device_evidence=evidence)
+        update_job(job_file, resolved_resources=resolved, effective_config=effective_config,
+                   adjustment_reasons=adjustment_reasons, actual_config=None,
+                   effective_resource_preflight={"ok": True, **effective_preflight},
+                   actual_train_params=train_args, device_evidence=evidence)
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
                                     gpu_uuid=resource_context.get("gpu_uuid"))
         telemetry.start()
@@ -620,8 +730,16 @@ def main():
                 telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
+                actual_config = dict(effective_config)
+                for key in actual_config:
+                    if key not in {"model", "device"} and hasattr(trainer.args, key):
+                        value = getattr(trainer.args, key)
+                        if isinstance(value, (str, int, float, bool)) or value is None:
+                            actual_config[key] = value
+                actual_config.update(model=actual_model, device=assigned)
                 evidence.update(runtime_device=str(trainer.device), effective_args=dict(train_args))
-                update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=train_args)
+                update_job(job_file, actual_device=assigned, device_evidence=evidence,
+                           actual_config=actual_config, actual_train_params=train_args)
             target.add_callback("on_train_start", verify_runtime)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
             target.add_callback("on_fit_epoch_end", telemetry.on_epoch_end)
@@ -644,12 +762,16 @@ def main():
                 retries += 1
                 train_args["batch"] = max(1, train_args["batch"] // 2)
                 train_args["workers"] = min(train_args["workers"], train_args["batch"])
+                effective_config.update(batch=train_args["batch"], workers=train_args["workers"])
                 resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)
                 resolved["reasons"].append(f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; same assigned GPU")
+                adjustment_reasons.append(resolved["reasons"][-1])
                 with telemetry.lock:
                     telemetry.resolved = dict(resolved)
                 persist_resolution(resolution_path, resolved)
-                update_job(job_file, resolved_resources=resolved, actual_train_params=train_args)
+                update_job(job_file, resolved_resources=resolved, effective_config=effective_config,
+                           adjustment_reasons=adjustment_reasons, actual_config=None,
+                           actual_train_params=train_args)
                 print(f"[资源调整] CUDA OOM；第 {retries}/6 次重试，batch={train_args['batch']}", flush=True)
             # Release traceback-held tensors before building the next bounded attempt.
             del model

@@ -31,6 +31,21 @@ function uniqueIds(values) {
   return [...new Set((values || []).map(value => String(value).trim()).filter(Boolean))];
 }
 
+export const TRAINING_CONFIG_KEYS = Object.freeze([
+  'model','epochs','imgsz','batch','workers','device','patience','optimizer','lr0','lrf','momentum',
+  'weight_decay','warmup_epochs','mosaic','close_mosaic','mixup','multi_scale','hsv_h','hsv_s','hsv_v',
+  'degrees','translate','scale','shear','perspective','flipud','fliplr','seed','save_period','freeze','cache',
+  'amp','pretrained','deterministic','cos_lr','single_cls','rect'
+]);
+
+export function requestedTrainingConfig(parameters = {}) {
+  const result = {};
+  TRAINING_CONFIG_KEYS.forEach(key => {
+    if (parameters[key] !== undefined && parameters[key] !== null) result[key] = parameters[key];
+  });
+  return result;
+}
+
 function isProcessedMaterial(row) {
   return Boolean(
     row?.processing_status === 'processed'
@@ -98,6 +113,7 @@ export function buildTrainingPayload({
   delete payload.test_dataset_ids;
   return {
     ...payload,
+    requested_config: requestedTrainingConfig(payload),
     split_mode: mode,
     train_image_ids: train,
     test_image_ids: independent,
