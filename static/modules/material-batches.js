@@ -32,7 +32,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
 
   function remember(task) {
     const items = saved();
-    if (ACTIVE.has(String(task.status || '').toUpperCase())) items[task.task_id] = {project_id: pid()};
+    if (ACTIVE.has(String(task.status || '').toUpperCase()) || task.review_required) items[task.task_id] = {project_id: pid()};
     else delete items[task.task_id];
     save(items);
   }
@@ -61,6 +61,9 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
         } else {
           timers.delete(taskId);
           await refresh?.();
+          if (task.review_required && typeof window.reviewAiLabel427 === 'function') {
+            await window.reviewAiLabel427(task.task_id);
+          }
         }
       } catch (error) {
         timers.delete(taskId);
@@ -80,6 +83,11 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     if (!pid()) throw new Error('请先选择项目');
     const chosen = scope || window.prompt('处理范围：CURRENT_PAGE 当前页 / FILTERED 全部筛选结果 / SELECTED 当前已选', 'CURRENT_PAGE');
     if (!['CURRENT_PAGE', 'FILTERED', 'SELECTED'].includes(chosen)) return null;
+    if (operation === 'AI_ANNOTATE' && !options.labels?.length && !options.labels_text && !options.reference_image_ids?.length) {
+      const labels = window.prompt('请输入标签库中的标签编码（逗号分隔）；使用默认 AI 模型生成待确认候选', '');
+      if (!labels?.trim()) return null;
+      options = {...options, labels_text: labels};
+    }
     const payload = {operation, selection_spec: selection(chosen), options};
     const estimate = await json(await fetch(`${base()}/estimate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
@@ -100,6 +108,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   }
 
   window.runMaterialBatch62 = (operation, config) => run(operation, config).catch(error => tell(error.message || String(error)));
+  window.reviewMaterialBatch62 = taskId => window.reviewAiLabel427?.(taskId);
   window.cancelMaterialBatch62 = async taskId => {
     const task = await json(await fetch(`${base()}/${encodeURIComponent(taskId)}/cancel`, {method: 'POST'}));
     remember(task); announce(task); return task;

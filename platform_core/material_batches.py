@@ -42,11 +42,7 @@ class BatchOperation(str, Enum):
     AI_ANNOTATE = "AI_ANNOTATE"
 
 
-NOT_READY = {BatchOperation.AI_ANNOTATE}
-AI_NOT_READY_REASON = (
-    "AI_ANNOTATE requires Worker-only provider/configuration, prompt/catalog and "
-    "bounded candidate review/commit services; existing AI services import app and load all materials"
-)
+NOT_READY = set()
 
 
 class BatchRequestError(ValueError):
@@ -70,6 +66,8 @@ def parse_request(payload):
     options = dict(options)
     if operation is BatchOperation.CLEAN:
         options = clean_options(options)
+    if operation is BatchOperation.AI_ANNOTATE and int(options.get("preview_count") or 0):
+        raise ValueError("AI batch processes the confirmed selection; use CURRENT_PAGE or SELECTED for a preview")
     if operation in {BatchOperation.ADD_LABELS, BatchOperation.REMOVE_LABELS}:
         labels = options.get("labels")
         if not isinstance(labels, list) or not labels or len(labels) > BATCH_SIZE:
@@ -105,9 +103,6 @@ def estimate_batch(project_id, materials, payload):
     result = {"operation": operation.value, "count": count, "total": count,
               "repository_revision": revision, "revision": revision,
               "selection_spec": confirmed_selection.as_dict(), "supported": operation not in NOT_READY}
-    if operation in NOT_READY:
-        result["error_code"] = "BATCH_OPERATION_NOT_READY"
-        result["message"] = AI_NOT_READY_REASON
     if operation is BatchOperation.DELETE_SOURCE:
         result["confirmation_token"] = _confirmation_token(project_id, operation, confirmed_selection, options)
     return result
@@ -115,8 +110,9 @@ def estimate_batch(project_id, materials, payload):
 
 def create_batch(project_id, materials, repository, artifacts, payload):
     operation, selection, options = parse_request(payload)
-    if operation in NOT_READY:
-        raise BatchRequestError("BATCH_OPERATION_NOT_READY", AI_NOT_READY_REASON)
+    if operation is BatchOperation.AI_ANNOTATE:
+        from .annotation_runtime import prepare_request
+        options = prepare_request(materials.project_path.parent.parent, project_id, options, runtime=False)
     if selection.repository_revision is None:
         raise BatchRequestError("BATCH_ESTIMATE_REQUIRED", "estimate and provide selection_spec.repository_revision first", 409)
     if operation is BatchOperation.DELETE_SOURCE and options.get("confirmation_token") != _confirmation_token(
@@ -307,8 +303,6 @@ class MaterialBatchHandler:
     def _run(self, context, manifest):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
         operation, selection, options = parse_request(payload)
-        if operation in NOT_READY:
-            raise BatchRequestError("BATCH_OPERATION_NOT_READY", AI_NOT_READY_REASON)
         project = context.artifacts._validate_task_id(context.task.project_id)
         materials = MaterialRepository(self.data_dir / "projects" / project)
         confirmed_revision = manifest.database.execute("SELECT value FROM meta WHERE key='repository_revision'").fetchone()
@@ -322,7 +316,10 @@ class MaterialBatchHandler:
         append_task_log(context, "processing", f"operation={operation.value} total={manifest.summary()['total']}")
         sources = StorageSourceRepository(self.data_dir / "storage" / "storage_sources.sqlite3") if operation is BatchOperation.DELETE_SOURCE else None
         source_cache, providers = {}, {}
-        manager = index = None
+        manager = index = annotation = None
+        if operation is BatchOperation.AI_ANNOTATE:
+            from .annotation_batches import AnnotationBatch
+            annotation = AnnotationBatch(self.data_dir, project, materials, context, manifest, options)
         if operation is BatchOperation.CLEAN:
             manager = StorageManager(data_dir=self.data_dir, project_id=project, materials=materials,
                 provider_resolver=lambda source, _secret: _provider(self.data_dir, project, source))
@@ -337,6 +334,8 @@ class MaterialBatchHandler:
                 self._delete_sources(context, manifest, materials, batch, sources, source_cache, providers)
             elif operation is BatchOperation.CLEAN:
                 clean_batch(context, manifest, materials, batch, options, manager, index, _check_active)
+            elif operation is BatchOperation.AI_ANNOTATE:
+                annotation.process(materials, batch, _check_active)
             else:
                 try:
                     existing = {row["id"] for row in materials.get_many(ids)}
@@ -374,6 +373,8 @@ class MaterialBatchHandler:
                             "scan_only": True})
         context.save_checkpoint(summary)
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, summary)
+        if annotation is not None:
+            return annotation.finish()
         status = (TaskStatus.PARTIAL_SUCCESS if summary["succeeded"] else TaskStatus.FAILED) if summary["failed"] else TaskStatus.SUCCEEDED
         append_task_log(context, "finished", status.value)
         return status, RESULT_REF
@@ -478,6 +479,9 @@ def public_batch(task, artifacts):
             "failed": checkpoint.get("failed", 0), "current_image_id": checkpoint.get("current_image_id"),
             "flagged": checkpoint.get("flagged", 0),
             "scan_only": request.get("operation") == BatchOperation.CLEAN.value,
+            "review_required": request.get("operation") == BatchOperation.AI_ANNOTATE.value and task.status is TaskStatus.AWAITING_CONFIRMATION,
+            "review_url": (f"/api/v60/projects/{task.project_id}/annotation-tasks/{task.task_id}"
+                           if request.get("operation") == BatchOperation.AI_ANNOTATE.value else None),
             "results_url": (f"/api/v62/projects/{task.project_id}/material-batches/{task.task_id}/results"
                             if request.get("operation") == BatchOperation.CLEAN.value else None),
             "error_examples": error_examples, "selection_frozen": frozen,

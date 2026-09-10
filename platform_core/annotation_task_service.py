@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import uuid
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -46,14 +47,14 @@ def load_task_images(project_id: str, image_ids: Iterable[str]) -> list[dict[str
 
 
 def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, Any]:
-    from app import _v47_build_annotation_prompt
+    from .annotation_runtime import build_annotation_prompt
 
     provider = request["_provider"]
     config = request["_provider_config"]
     path = Path(str(image.get("path") or ""))
     if not path.is_file():
         raise FileNotFoundError(f"annotation image file does not exist: {image.get('filename') or image.get('id')}")
-    prompt = _v47_build_annotation_prompt(
+    prompt = build_annotation_prompt(
         config,
         request["label_catalog"],
         width=int(image["width"]),
@@ -240,67 +241,50 @@ def commit_candidate_decisions(
     overwrite: bool,
 ) -> dict[str, Any]:
     journal_ref = "commit/result.json"
-    journal = store.artifacts.read_json(task_id, journal_ref, default={})
-    completed = {str(value) for value in (journal or {}).get("completed_image_ids") or []}
-    image_summaries = {
-        str(item.get("image_id")): dict(item)
-        for item in (journal or {}).get("image_summaries") or []
-        if item.get("image_id")
-    }
-    applied_images = []
-    boxes_added = 0
-    for item in store.all_items():
-        if item.get("accepted") is not True:
+    store._ready()
+    applied_images, image_summaries = [], []
+    applied_count = boxes_added = 0
+    for item in store.iter_items():
+        if item.get("accepted") is not True or item.get("status") not in {"success", "empty"}:
             continue
         image_id = str(item["image_id"])
-        applied_images.append(image_id)
-        if image_id in completed:
+        applied_count += 1
+        if len(applied_images) < 100:
+            applied_images.append(image_id)
+        with closing(store._connect()) as db:
+            committed = db.execute("SELECT summary_json FROM commits WHERE image_id=?", (image_id,)).fetchone()
+        if committed:
+            if len(image_summaries) < 100:
+                image_summaries.append(json.loads(committed[0]))
             continue
         previous = list(read_formal_annotation(project_id, image_id).get("boxes") or [])
-        existing = {
-            (str(box.get("source_task_id") or ""), str(box.get("candidate_id") or ""))
-            for box in previous
-        }
+        existing = {(str(box.get("source_task_id") or ""), str(box.get("candidate_id") or "")) for box in previous}
         incoming = []
         for box in item.get("boxes") or []:
             candidate_id = _candidate_id(image_id, dict(box))
             if (task_id, candidate_id) in existing:
                 continue
-            confirmed = dict(box)
-            confirmed.update({
-                "candidate_id": candidate_id,
-                "source_task_id": task_id,
-                "source": "ai_candidate_confirmed",
-            })
-            incoming.append(confirmed)
+            incoming.append({**box, "candidate_id": candidate_id, "source_task_id": task_id,
+                             "source": "ai_candidate_confirmed"})
         if overwrite and incoming:
             replaced_classes = {box.get("class_id") for box in incoming}
             previous = [box for box in previous if box.get("class_id") not in replaced_classes]
-        if incoming:
-            final_boxes = previous + incoming
+        final_boxes = previous + incoming
+        # Accepting an empty result explicitly confirms empty only if no formal boxes exist.
+        if incoming or not final_boxes:
             write_formal_annotation(project_id, image_id, final_boxes)
             boxes_added += len(incoming)
-        else:
-            final_boxes = previous
-        image_summaries[image_id] = {
-            "image_id": image_id,
-            "box_count": len(final_boxes),
-            "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
-        }
-        completed.add(image_id)
-        store.artifacts.atomic_write_json(task_id, journal_ref, {
-            "completed_image_ids": sorted(completed),
-            "last_image_id": image_id,
-            "image_summaries": list(image_summaries.values()),
-        })
-    result = {
-        "applied_images": len(applied_images),
-        "applied_image_ids": applied_images,
-        "boxes_added": boxes_added,
-        "review": store.summary(),
-        "completed_image_ids": sorted(completed),
-        "image_summaries": list(image_summaries.values()),
-    }
+        summary = {"image_id": image_id, "box_count": len(final_boxes),
+                   "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")})}
+        with closing(store._connect()) as db, db:
+            db.execute("INSERT OR REPLACE INTO commits VALUES (?,?)", (image_id, json.dumps(summary, ensure_ascii=False)))
+        if len(image_summaries) < 100:
+            image_summaries.append(summary)
+    result = {"applied_images": applied_count, "applied_image_ids": applied_images,
+              "boxes_added": boxes_added, "review": store.summary(),
+              "completed_image_ids": applied_images, "image_summaries": image_summaries,
+              "image_summaries_truncated": applied_count > len(image_summaries),
+              "commit_journal_ref": "candidates/items.sqlite3"}
     store.artifacts.atomic_write_json(task_id, journal_ref, result)
     return result
 

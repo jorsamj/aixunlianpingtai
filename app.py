@@ -13227,13 +13227,18 @@ def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) 
     progress_summary = summary or {}
     request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
     checkpoint = shared_task_artifacts().read_json(task.task_id, "checkpoints/worker.json", default={})
+    is_batch = task.kind is TaskKind.MATERIAL_BATCH and request.get("operation") == "AI_ANNOTATE"
+    if is_batch:
+        request = request.get("options") or {}
     requested_total = len((request or {}).get("image_ids") or []) if isinstance(request, dict) else 0
     preview_count = int((request or {}).get("preview_count") or 0) if isinstance(request, dict) else 0
     if preview_count:
         requested_total = min(requested_total, max(0, preview_count))
     total_count = max(requested_total, int(progress_summary.get("total") or 0))
+    if is_batch:
+        total_count = max(total_count, int(checkpoint.get("total") or 0))
     completed_count = max(
-        int((checkpoint or {}).get("next_index") or 0) if isinstance(checkpoint, dict) else 0,
+        int((checkpoint or {}).get("processed" if is_batch else "next_index") or 0) if isinstance(checkpoint, dict) else 0,
         int(progress_summary.get("total") or 0),
     )
     failed_count = max(
@@ -13347,15 +13352,28 @@ def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str
     return {"items": [public_annotation_task(task) for task in page.items], "next_cursor": page.next_cursor}
 
 
+def _require_annotation_review_task(project_id: str, task_id: str):
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task and task.project_id == project_id:
+        if task.kind is TaskKind.AI_ANNOTATION:
+            return task
+        if task.kind is TaskKind.MATERIAL_BATCH:
+            request = shared_task_artifacts().read_json(task_id, task.payload_ref, default={})
+            if request.get("operation") == "AI_ANNOTATE":
+                return task
+    raise HTTPException(status_code=404, detail="AI annotation task not found")
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}")
 def get_annotation_task(project_id: str, task_id: str):
-    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    task = _require_annotation_review_task(project_id, task_id)
     return public_annotation_task(task, summary=_annotation_summary(task))
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates")
 def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cursor: Optional[str] = None):
-    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    task = _require_annotation_review_task(project_id, task_id)
     if not task.result_ref:
         raise HTTPException(status_code=409, detail="任务尚未生成候选结果")
     try:
@@ -13370,37 +13388,38 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions")
 def decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):
-    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    from filelock import FileLock
+    _require_annotation_review_task(project_id, task_id)
+    with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=30):
+        return _decide_annotation_candidates(project_id, task_id, payload)
+
+
+def _decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):
+    task = _require_annotation_review_task(project_id, task_id)
     if task.status is not TaskStatus.AWAITING_CONFIRMATION:
         raise HTTPException(status_code=409, detail="任务尚未生成可审核候选结果")
     store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
-    all_items = store.all_items()
-    reviewable = {str(item["image_id"]) for item in all_items if item.get("status") in {"success", "empty"}}
     decisions = [
         CandidateDecision(str(item.image_id), bool(item.accepted), item.boxes)
         for item in payload.decisions
     ]
     decided_ids = {item.image_id for item in decisions}
-    if decided_ids - reviewable:
+    if any((store.get(image_id) or {}).get("status") not in {"success", "empty"} for image_id in decided_ids):
         raise HTTPException(status_code=400, detail="审核范围包含不存在或生成失败的素材")
     if payload.reject_unmentioned and payload.accept_unmentioned:
         raise HTTPException(status_code=400, detail="未明确选择的素材不能同时接受和拒绝")
     store.apply_decisions(decisions)
     if payload.accept_unmentioned:
-        store.apply_decisions(
-            CandidateDecision(image_id, True)
-            for image_id in sorted(reviewable - decided_ids)
-        )
+        store.decide_unmentioned(True, exclude=decided_ids)
     elif payload.reject_unmentioned:
-        store.apply_decisions(
-            CandidateDecision(image_id, False)
-            for image_id in sorted(reviewable - decided_ids)
-        )
+        store.decide_unmentioned(False, exclude=decided_ids)
     summary = store.summary()
-    if summary["unreviewed"]:
+    if summary["unreviewed"] or not payload.commit:
         return {"ok": True, "task": public_annotation_task(task, summary=summary), "review": summary}
     if payload.commit:
         request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+        if task.kind is TaskKind.MATERIAL_BATCH:
+            request = request.get("options") or {}
         result = commit_candidate_decisions(
             project_id,
             task.task_id,
@@ -13422,7 +13441,7 @@ def decide_annotation_candidates(project_id: str, task_id: str, payload: Annotat
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/cancel")
 def cancel_annotation_task(project_id: str, task_id: str):
-    _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    _require_annotation_review_task(project_id, task_id)
     return public_annotation_task(shared_task_repository().request_cancel(task_id))
 
 
@@ -13430,7 +13449,12 @@ def cancel_annotation_task(project_id: str, task_id: str):
 def retry_annotation_task(project_id: str, task_id: str):
     from dataclasses import replace
 
-    task = _require_shared_task(project_id, task_id, TaskKind.AI_ANNOTATION)
+    task = _require_annotation_review_task(project_id, task_id)
+    if task.kind is TaskKind.MATERIAL_BATCH:
+        if task.status not in {TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS,
+                               TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE}:
+            raise HTTPException(status_code=409, detail="只有未完成的批处理任务可以重试")
+        return public_annotation_task(shared_task_repository().retry(task_id))
     if task.status not in {
         TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT,
         TaskStatus.BLOCKED_BY_HARDWARE, TaskStatus.PARTIAL_SUCCESS, TaskStatus.SUCCEEDED,
