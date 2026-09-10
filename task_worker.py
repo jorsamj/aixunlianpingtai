@@ -4,7 +4,6 @@ import argparse
 import json
 import sqlite3
 import socket
-import subprocess
 import sys
 import time
 import uuid
@@ -15,9 +14,11 @@ from platform_core.runtime_paths import resolve_data_dir
 from platform_core.task_runtime import (
     ArtifactStore,
     DuplicateWorkerInstance,
+    ProcessController,
     Scheduler,
     TaskRepository,
     WorkerInstanceService,
+    launch_process,
 )
 from platform_core.gpu_resources import GPUResourceManager
 from platform_core.training_devices import training_python
@@ -67,34 +68,28 @@ def _serve_all_roles(args, data_dir: Path) -> int:
         return 2
 
     base_worker_id = args.worker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-    children: dict[str, subprocess.Popen] = {}
+    children = {}
     next_retry: dict[str, float] = {role: 0.0 for role in ROLE_MODULES}
+    controller = ProcessController()
 
     def start(role: str) -> None:
         child_id = f"{base_worker_id}-{role}"
         command = _role_worker_command(args, data_dir, role, child_id)
-        children[role] = subprocess.Popen(command)
-        print(f"[worker-supervisor] started role={role} pid={children[role].pid}", flush=True)
+        launched = launch_process(command, cwd=Path(__file__).resolve().parent)
+        children[role] = launched
+        print(f"[worker-supervisor] started role={role} pid={launched.process.pid}", flush=True)
 
     def stop_all() -> None:
-        for process in children.values():
-            if process.poll() is None:
-                try:
-                    process.terminate()
-                except OSError:
-                    pass
-        deadline = time.monotonic() + 8.0
-        for process in children.values():
-            if process.poll() is not None:
+        # Use the same PID birth-time/command/group/token fencing as task
+        # subprocesses. This also terminates grandchildren on Windows/Linux,
+        # preventing an abrupt supervisor exit from orphaning YOLO/conversion.
+        for launched in list(children.values()):
+            if launched.process.poll() is not None:
                 continue
-            timeout = max(0.0, deadline - time.monotonic())
             try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
+                controller.terminate_tree(launched.identity, timeout=8.0)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     try:
         for role in sorted(ROLE_MODULES):
@@ -102,12 +97,12 @@ def _serve_all_roles(args, data_dir: Path) -> int:
         while True:
             now = time.monotonic()
             for role in sorted(ROLE_MODULES):
-                process = children.get(role)
-                if process is None:
+                launched = children.get(role)
+                if launched is None:
                     if now >= next_retry[role]:
                         start(role)
                     continue
-                return_code = process.poll()
+                return_code = launched.process.poll()
                 if return_code is None:
                     continue
                 children.pop(role, None)
