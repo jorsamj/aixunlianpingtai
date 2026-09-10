@@ -30,6 +30,7 @@ jobs:
       - name: Compile changed P0 modules
         run: >-
           python -m py_compile
+          task_worker.py
           platform_core/training_splits.py
           platform_core/training_labels.py
           platform_core/training_preflight.py
@@ -42,6 +43,7 @@ jobs:
           python -m pytest
           tests/unit/test_training_splits.py
           tests/unit/test_training_labels.py
+          tests/unit/test_task_worker.py
           tests/unit/test_annotation_repository.py
           tests/unit/test_algorithms.py
           tests/unit/test_conversion_tasks.py
