@@ -98,6 +98,36 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     }
 
 
+def _freeze_review_scope(context, runtime_request: dict[str, Any]) -> list[str]:
+    """Freeze the exact stable-label scope a human review will confirm.
+
+    A reviewed AI result is Ground Truth only for the labels that were actually
+    requested from the model. Codes are not sufficient for this contract;
+    training consumes immutable stable label IDs.
+    """
+    catalog = [dict(item) for item in runtime_request.get("label_catalog") or []]
+    label_ids = list(dict.fromkeys(
+        str(item.get("label_id") or "").strip()
+        for item in catalog
+        if str(item.get("label_id") or "").strip()
+    ))
+    labels = [str(value) for value in runtime_request.get("labels") or [] if str(value)]
+    # Injected test annotators do not build a runtime catalog. They can still
+    # exercise generation, but cannot be committed as scoped GT without an
+    # explicit contract artifact.
+    if catalog and len(label_ids) != len(catalog):
+        raise ValueError("annotation label catalog is missing stable label_id")
+    if catalog and len(label_ids) != len(labels):
+        raise ValueError("annotation review scope does not match requested labels")
+    if label_ids:
+        context.artifacts.atomic_write_json(context.task.task_id, "review-scope.json", {
+            "schema_version": 1,
+            "labels": labels,
+            "label_ids": label_ids,
+        })
+    return label_ids
+
+
 def run_ai_annotation(
     context,
     *,
@@ -109,6 +139,7 @@ def run_ai_annotation(
     runtime_request = dict(request)
     if annotate is annotate_one:
         runtime_request = _prepare_runtime_request(context.task.project_id, runtime_request)
+    _freeze_review_scope(context, runtime_request)
     images = load_task_images(context.task.project_id, runtime_request.get("image_ids") or [])
     preview_count = max(0, int(runtime_request.get("preview_count") or 0))
     if preview_count:
@@ -219,10 +250,23 @@ def read_formal_annotation(project_id: str, image_id: str) -> dict[str, Any]:
     return read_annotation(project_id, image_id)
 
 
-def write_formal_annotation(project_id: str, image_id: str, boxes: list[dict[str, Any]]) -> None:
+def write_formal_annotation(
+    project_id: str,
+    image_id: str,
+    boxes: list[dict[str, Any]],
+    *,
+    annotation_state: str,
+    annotation_scope: list[str],
+) -> None:
     from app import write_annotation
 
-    write_annotation(project_id, image_id, boxes)
+    write_annotation(
+        project_id,
+        image_id,
+        boxes,
+        annotation_state=annotation_state,
+        annotation_scope=annotation_scope,
+    )
 
 
 def _candidate_id(image_id: str, box: dict[str, Any]) -> str:
@@ -231,6 +275,19 @@ def _candidate_id(image_id: str, box: dict[str, Any]) -> str:
         return supplied
     body = json.dumps([image_id, box], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
+def _review_scope(store: CandidateStore, task_id: str) -> list[str]:
+    contract = store.artifacts.read_json(task_id, "review-scope.json", default=None)
+    if not isinstance(contract, dict):
+        raise ValueError("review scope contract is missing; candidates cannot become Ground Truth")
+    label_ids = list(dict.fromkeys(
+        str(value).strip() for value in contract.get("label_ids") or [] if str(value).strip()
+    ))
+    labels = [str(value) for value in contract.get("labels") or [] if str(value)]
+    if not label_ids or len(label_ids) != len(labels):
+        raise ValueError("review scope contract is invalid; candidates cannot become Ground Truth")
+    return label_ids
 
 
 def commit_candidate_decisions(
@@ -242,6 +299,7 @@ def commit_candidate_decisions(
 ) -> dict[str, Any]:
     journal_ref = "commit/result.json"
     store._ready()
+    confirmed_scope = _review_scope(store, task_id)
     applied_images, image_summaries = [], []
     applied_count = boxes_added = 0
     for item in store.iter_items():
@@ -257,7 +315,8 @@ def commit_candidate_decisions(
             if len(image_summaries) < 100:
                 image_summaries.append(json.loads(committed[0]))
             continue
-        previous = list(read_formal_annotation(project_id, image_id).get("boxes") or [])
+        previous_annotation = read_formal_annotation(project_id, image_id)
+        previous = list(previous_annotation.get("boxes") or [])
         existing = {(str(box.get("source_task_id") or ""), str(box.get("candidate_id") or "")) for box in previous}
         incoming = []
         for box in item.get("boxes") or []:
@@ -270,12 +329,23 @@ def commit_candidate_decisions(
             replaced_classes = {box.get("class_id") for box in incoming}
             previous = [box for box in previous if box.get("class_id") not in replaced_classes]
         final_boxes = previous + incoming
-        # Accepting an empty result explicitly confirms empty only if no formal boxes exist.
-        if incoming or not final_boxes:
-            write_formal_annotation(project_id, image_id, final_boxes)
-            boxes_added += len(incoming)
+        previous_scope = [str(value) for value in previous_annotation.get("annotation_scope") or [] if str(value)]
+        final_scope = list(dict.fromkeys([*previous_scope, *confirmed_scope]))
+        final_state = "annotated" if final_boxes else "confirmed_empty"
+        # Human acceptance confirms the complete result for the frozen requested
+        # labels, even when boxes are unchanged/empty. Therefore scope must be
+        # persisted on every accepted item instead of only when boxes changed.
+        write_formal_annotation(
+            project_id,
+            image_id,
+            final_boxes,
+            annotation_state=final_state,
+            annotation_scope=final_scope,
+        )
+        boxes_added += len(incoming)
         summary = {"image_id": image_id, "box_count": len(final_boxes),
-                   "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")})}
+                   "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
+                   "annotation_state": final_state, "annotation_scope": final_scope}
         with closing(store._connect()) as db, db:
             db.execute("INSERT OR REPLACE INTO commits VALUES (?,?)", (image_id, json.dumps(summary, ensure_ascii=False)))
         if len(image_summaries) < 100:
@@ -284,6 +354,7 @@ def commit_candidate_decisions(
               "boxes_added": boxes_added, "review": store.summary(),
               "completed_image_ids": applied_images, "image_summaries": image_summaries,
               "image_summaries_truncated": applied_count > len(image_summaries),
+              "confirmed_scope": confirmed_scope,
               "commit_journal_ref": "candidates/items.sqlite3"}
     store.artifacts.atomic_write_json(task_id, journal_ref, result)
     return result
