@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -26,6 +27,8 @@ class ProcessIdentity:
     pid: int
     create_time: float
     command_hash: str
+    process_group_id: int | None = None
+    launch_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,10 +60,13 @@ def launch_process(
         )
     else:
         options["start_new_session"] = True
+    launch_token = uuid.uuid4().hex
+    process_env = dict(os.environ if env is None else env)
+    process_env["MC_PROCESS_LAUNCH_TOKEN"] = launch_token
     process = subprocess.Popen(
         command,
         cwd=None if cwd is None else str(Path(cwd)),
-        env=None if env is None else dict(env),
+        env=process_env,
         **options,
     )
     observed = psutil.Process(process.pid)
@@ -68,6 +74,8 @@ def launch_process(
         pid=process.pid,
         create_time=observed.create_time(),
         command_hash=hash_command(command),
+        process_group_id=process.pid if os.name == "nt" else os.getsid(process.pid),
+        launch_token=launch_token,
     )
     return LaunchedProcess(process, identity)
 
@@ -87,6 +95,16 @@ class ProcessController:
             or observed_hash != identity.command_hash
         ):
             raise PermissionError("process identity does not match")
+        if identity.process_group_id is not None:
+            observed_group = process.pid if os.name == "nt" else os.getsid(process.pid)
+            if int(observed_group) != int(identity.process_group_id):
+                raise PermissionError("process group identity does not match")
+        if identity.launch_token:
+            try:
+                if process.environ().get("MC_PROCESS_LAUNCH_TOKEN") != identity.launch_token:
+                    raise PermissionError("process launch token does not match")
+            except psutil.AccessDenied as error:
+                raise PermissionError("process launch token cannot be inspected") from error
         return process
 
     @staticmethod

@@ -25,7 +25,7 @@ from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import build_snapshot
 from .storage import StorageManager
-from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
+from .task_runtime import ProcessController, ProcessIdentity, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_config import requested_training_config
@@ -684,6 +684,8 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
     artifact_log.parent.mkdir(parents=True, exist_ok=True)
     log_path = job_file.parent / "train.log"
     root = Path(__file__).resolve().parent.parent
+    launched = None
+    controller = ProcessController()
     try:
         with log_path.open("a", encoding="utf-8", newline="") as log:
             launched = launch_process(
@@ -695,42 +697,75 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                 text=True,
             )
             context.repository.bind_process(context.task.task_id, context.lease.lease_token, launched.identity)
-            controller = ProcessController()
+            current_job = _json(job_file, {})
+            process_record = {
+                "task_id": context.task.task_id,
+                "worker_id": context.lease.worker_id,
+                "pid": launched.identity.pid,
+                "process_create_time": launched.identity.create_time,
+                "process_group_id": launched.identity.process_group_id,
+                "command_hash": launched.identity.command_hash,
+                "launch_token": launched.identity.launch_token,
+                "requested_device": current_job.get("requested_device"),
+                "assigned_device": current_job.get("assigned_device"),
+                "actual_device": current_job.get("actual_device"),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }
+            context.artifacts.atomic_write_json(context.task.task_id, "process-identity.json", process_record)
+            atomic_write_json(job_file, {**current_job, **process_record})
             next_metrics = 0.0
-            while launched.process.poll() is None:
-                if context.cancel_requested():
-                    controller.terminate_tree(launched.identity)
-                    raise InterruptedError("training cancelled")
-                current_task = context.repository.get(context.task.task_id)
-                if current_task is not None and current_task.stage == "paused":
+            try:
+                while launched.process.poll() is None:
+                    if context.cancel_requested():
+                        controller.terminate_tree(launched.identity)
+                        raise InterruptedError("training cancelled")
+                    current_task = context.repository.get(context.task.task_id)
+                    if current_task is not None and current_task.stage == "paused":
+                        context.repository.heartbeat(
+                            context.task.task_id,
+                            context.lease.lease_token,
+                            stage="paused",
+                        )
+                        time.sleep(0.25)
+                        continue
+                    job = _json(job_file, {})
+                    if time.monotonic() >= next_metrics:
+                        metrics = read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3"))
+                        from .gpu_resources import update_reservation_evidence
+                        update_reservation_evidence(context.repository, context.lease, metrics)
+                        next_metrics = time.monotonic() + 5
+                    progress = float(job.get("progress_percent") or 20)
+                    current = str(job.get("current_epoch") or "") or None
                     context.repository.heartbeat(
                         context.task.task_id,
                         context.lease.lease_token,
-                        stage="paused",
+                        progress=max(20, min(95, progress)),
+                        stage="training",
+                        current_item=current,
                     )
                     time.sleep(0.25)
-                    continue
-                job = _json(job_file, {})
-                if time.monotonic() >= next_metrics:
-                    metrics = read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3"))
-                    # Feed scheduler evidence with ownership fencing; never infer unknown CPU/IO pressure.
-                    from .gpu_resources import update_reservation_evidence
-                    update_reservation_evidence(context.repository, context.lease, metrics)
-                    next_metrics = time.monotonic() + 5
-                progress = float(job.get("progress_percent") or 20)
-                current = str(job.get("current_epoch") or "") or None
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
-                    progress=max(20, min(95, progress)),
-                    stage="training",
-                    current_item=current,
-                )
-                time.sleep(0.25)
+            except BaseException:
+                if launched.process.poll() is None:
+                    controller.terminate_tree(launched.identity)
+                raise
+    except BaseException:
+        # Binding the PID and writing its durable identity are part of process
+        # launch.  If either fails, keep ownership in memory long enough to
+        # stop the child instead of leaking an untracked training process.
+        if launched is not None and launched.process.poll() is None:
+            try:
+                controller.terminate_tree(launched.identity)
+            except (ProcessLookupError, PermissionError):
+                pass
+        raise
     finally:
         if log_path.is_file():
             shutil.copy2(log_path, artifact_log)
     job = _json(job_file, {})
+    process_record["actual_device"] = job.get("actual_device")
+    process_record["finished_at"] = datetime.now(timezone.utc).isoformat()
+    process_record["exit_code"] = launched.process.returncode
+    context.artifacts.atomic_write_json(context.task.task_id, "process-identity.json", process_record)
     if launched.process.returncode != 0:
         raise RuntimeError(str(job.get("message") or f"training process exited {launched.process.returncode}"))
     return job
@@ -1240,6 +1275,26 @@ class TrainingHandler:
             result = context.artifacts.read_json(context.task.task_id, committed, default={})
             partial = ((result.get("training_report") or {}).get("test_result") or {}).get("status") == "failed"
             return (TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED), committed
+        task = context.task
+        if task.process_pid and task.process_create_time is not None and task.process_command_hash:
+            identity = ProcessIdentity(
+                task.process_pid,
+                task.process_create_time,
+                task.process_command_hash,
+                task.process_group_id,
+                task.process_launch_token,
+            )
+            try:
+                ProcessController().inspect(identity)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                raise EnvironmentError(f"ORPHAN_PROCESS_IDENTITY_UNVERIFIED: {error}") from error
+            else:
+                ProcessController().terminate_tree(identity)
+                _append_access_evidence(context, "orphan_training_process_terminated", pid=task.process_pid)
+        if task.stage == "cancel_recovery":
+            return TaskStatus.CANCELLED, None
         return self.run(context)
 
 

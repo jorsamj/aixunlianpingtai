@@ -3,6 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+import os
+import shutil
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -37,6 +40,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     process_pid INTEGER,
     process_create_time REAL,
     process_command_hash TEXT,
+    process_group_id INTEGER,
+    process_launch_token TEXT,
     worker_id TEXT,
     lease_token TEXT,
     lease_expires_at TEXT,
@@ -119,6 +124,8 @@ def _from_row(row: sqlite3.Row) -> TaskRecord:
         process_pid=row["process_pid"],
         process_create_time=row["process_create_time"],
         process_command_hash=row["process_command_hash"],
+        process_group_id=row["process_group_id"],
+        process_launch_token=row["process_launch_token"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         finished_at=row["finished_at"],
@@ -143,9 +150,19 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
 
 
 class TaskRepository:
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, path: str | Path, *, allow_create: bool = True):
+        self.path = Path(path).resolve()
+        self._allow_create = bool(allow_create)
+        self._identity_marker = self.path.with_suffix(self.path.suffix + ".initialized")
+        database_existed = self.path.is_file()
+        if not database_existed and self._identity_marker.is_file():
+            raise sqlite3.OperationalError(
+                f"task database is missing but its initialization marker exists: {self.path}"
+            )
+        self._creation_authorized = self._allow_create and not database_existed
+        self._initialized = False
+        if self._creation_authorized:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as database:
             database.executescript(SCHEMA)
             columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
@@ -153,15 +170,92 @@ class TaskRepository:
                 database.execute("ALTER TABLE tasks ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0")
             if "resource_wait_reason" not in columns:
                 database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
+            if "process_group_id" not in columns:
+                database.execute("ALTER TABLE tasks ADD COLUMN process_group_id INTEGER")
+            if "process_launch_token" not in columns:
+                database.execute("ALTER TABLE tasks ADD COLUMN process_launch_token TEXT")
             database.executescript(GPU_SCHEMA)
+        marker_tmp = self._identity_marker.with_suffix(self._identity_marker.suffix + ".tmp")
+        try:
+            marker_tmp.write_text(str(self.path), encoding="utf-8")
+            marker_tmp.replace(self._identity_marker)
+        except OSError as error:
+            raise sqlite3.OperationalError(
+                f"cannot persist task database identity marker: {self._identity_marker}: {error}"
+            ) from error
+        self._initialized = True
+
+    def database_diagnostic(self, error: Exception | None = None) -> dict:
+        parent = self.path.parent
+        mount = None
+        try:
+            import psutil
+            matches = [row for row in psutil.disk_partitions(all=True)
+                       if str(parent).casefold().startswith(str(Path(row.mountpoint).resolve()).casefold())]
+            if matches:
+                row = max(matches, key=lambda value: len(str(value.mountpoint)))
+                mount = {"mountpoint": row.mountpoint, "filesystem": row.fstype, "options": row.opts}
+        except (ImportError, OSError):
+            pass
+        try:
+            usage = shutil.disk_usage(parent)
+            disk = {"free_bytes": int(usage.free), "total_bytes": int(usage.total)}
+        except OSError as disk_error:
+            disk = {"error": str(disk_error)}
+        return {
+            "status": "ERROR" if error else "AVAILABLE",
+            "database": str(self.path), "database_exists": self.path.is_file(),
+            "parent": str(parent), "parent_exists": parent.is_dir(),
+            "parent_readable": os.access(parent, os.R_OK), "parent_writable": os.access(parent, os.W_OK),
+            "disk": disk, "mount": mount,
+            "error": None if error is None else f"{type(error).__name__}: {error}",
+            "updated_at": utc_now(),
+        }
+
+    def _write_diagnostic(self, error: Exception | None = None) -> None:
+        target = self.path.with_suffix(self.path.suffix + ".health.json")
+        try:
+            temporary = target.with_suffix(target.suffix + ".tmp")
+            temporary.write_text(json.dumps(self.database_diagnostic(error), ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(target)
+        except OSError:
+            pass
 
     def _connect(self) -> sqlite3.Connection:
-        database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
-        database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA synchronous=FULL")
-        database.execute("PRAGMA busy_timeout=5000")
-        return database
+        may_create = self._creation_authorized and not self._initialized
+        if not may_create and not self.path.is_file():
+            error = sqlite3.OperationalError(f"task database disappeared: {self.path}")
+            self._write_diagnostic(error)
+            raise error
+        last_error = None
+        for delay in (0.0, 0.1, 0.4, 1.0):
+            if delay:
+                time.sleep(delay)
+            database = None
+            try:
+                # mode=rw closes the check/open race: once initialized (and for
+                # Worker processes) SQLite is forbidden from recreating a
+                # missing database at the configured path.
+                mode = "rwc" if may_create else "rw"
+                database = sqlite3.connect(f"{self.path.as_uri()}?mode={mode}", uri=True,
+                                           timeout=5, isolation_level=None)
+                database.row_factory = sqlite3.Row
+                database.execute("PRAGMA journal_mode=WAL")
+                database.execute("PRAGMA synchronous=FULL")
+                database.execute("PRAGMA busy_timeout=5000")
+                health = self.path.with_suffix(self.path.suffix + ".health.json")
+                if health.exists():
+                    try:
+                        health.unlink()
+                    except OSError:
+                        pass
+                return database
+            except sqlite3.OperationalError as error:
+                last_error = error
+                if database is not None:
+                    database.close()
+        self._write_diagnostic(last_error)
+        raise last_error or sqlite3.OperationalError(f"unable to open task database: {self.path}")
 
     def journal_mode(self) -> str:
         with self._connect() as database:
@@ -242,14 +336,16 @@ class TaskRepository:
         count = database.execute(
             """
             UPDATE tasks
-               SET status=CASE WHEN status='CANCEL_REQUESTED' THEN 'CANCELLED' ELSE 'QUEUED' END,
+               SET status=CASE WHEN status='CANCEL_REQUESTED' AND kind<>'TRAINING' THEN 'CANCELLED' ELSE 'QUEUED' END,
                    stage=CASE
+                       WHEN kind='TRAINING' AND (status='CANCEL_REQUESTED' OR stage='cancel_recovery')
+                           THEN 'cancel_recovery'
                        WHEN status='CANCEL_REQUESTED' THEN 'cancelled'
                        WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing'
                            THEN 'indexing_queued'
                        ELSE 'recovered'
                    END,
-                   finished_at=CASE WHEN status='CANCEL_REQUESTED' THEN ? ELSE finished_at END,
+                   finished_at=CASE WHEN status='CANCEL_REQUESTED' AND kind<>'TRAINING' THEN ? ELSE NULL END,
                    worker_id=NULL,
                    lease_token=NULL, lease_expires_at=NULL, updated_at=?
              WHERE status IN ('RUNNING','CANCEL_REQUESTED')
@@ -311,7 +407,11 @@ class TaskRepository:
             for candidate in rows:
                 if not set(json.loads(candidate["required_capabilities"] or "[]")) <= available:
                     continue
-                if admission is not None:
+                # A recovered cancellation only needs to verify/stop its bound
+                # process and finalize CANCELLED.  It must never wait for (or
+                # reserve) a GPU, otherwise resource_waiting would erase the
+                # durable cancellation intent and could restart training.
+                if admission is not None and candidate["stage"] != "cancel_recovery":
                     allowed, reason = admission(database, candidate, worker_id, token, expires_at, now_text)
                     if not allowed:
                         database.execute("UPDATE tasks SET stage='resource_waiting', resource_wait_reason=?, updated_at=? "
@@ -328,6 +428,7 @@ class TaskRepository:
                 UPDATE tasks
                    SET status='RUNNING',
                        stage=CASE
+                           WHEN stage='cancel_recovery' THEN 'cancel_recovery'
                            WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing_queued'
                                THEN 'indexing'
                            ELSE 'running'
@@ -394,7 +495,7 @@ class TaskRepository:
             changed = database.execute(
                 """
                 UPDATE tasks SET process_pid=?, process_create_time=?,
-                    process_command_hash=?, updated_at=?
+                    process_command_hash=?, process_group_id=?, process_launch_token=?, updated_at=?
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
                 """,
@@ -402,6 +503,8 @@ class TaskRepository:
                     int(identity.pid),
                     float(identity.create_time),
                     str(identity.command_hash),
+                    identity.process_group_id,
+                    identity.launch_token,
                     now,
                     str(task_id),
                     str(lease_token),
@@ -468,14 +571,21 @@ class TaskRepository:
         with self._connect() as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                "SELECT status FROM tasks WHERE task_id=?",
+                "SELECT status, kind, process_pid FROM tasks WHERE task_id=?",
                 (str(task_id),),
             ).fetchone()
             if row is None:
                 database.rollback()
                 raise KeyError(task_id)
             status = TaskStatus(row["status"])
-            if status is TaskStatus.QUEUED or status is TaskStatus.AWAITING_CONFIRMATION:
+            if (status is TaskStatus.QUEUED and row["kind"] == TaskKind.TRAINING.value
+                    and row["process_pid"] is not None):
+                database.execute(
+                    "UPDATE tasks SET stage='cancel_recovery', finished_at=NULL, updated_at=?, "
+                    "resource_wait_reason=NULL WHERE task_id=?",
+                    (now, str(task_id)),
+                )
+            elif status is TaskStatus.QUEUED or status is TaskStatus.AWAITING_CONFIRMATION:
                 database.execute(
                     """
                     UPDATE tasks SET status='CANCELLED', stage='cancelled', accepted=COALESCE(accepted,0),

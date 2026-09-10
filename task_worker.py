@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import socket
 import sys
+import time
 import uuid
+from datetime import datetime, timezone
 
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.task_runtime import (
@@ -38,7 +41,30 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     data_dir = resolve_data_dir(args.data_dir)
     runtime_dir = data_dir / "task_runtime"
-    repository = TaskRepository(runtime_dir / "tasks.sqlite3")
+    database_path = (runtime_dir / "tasks.sqlite3").resolve()
+    failures = 0
+    while True:
+        try:
+            # The API owns first-time schema creation.  A Worker must never
+            # turn a missing/unmounted production database into an empty one.
+            repository = TaskRepository(database_path, allow_create=False)
+            break
+        except sqlite3.Error as error:
+            failures += 1
+            try:
+                status_path = runtime_dir / "worker-status.json"
+                status_path.write_text(json.dumps({
+                    "status": "DATABASE_ERROR", "database": str(database_path),
+                    "parent": str(database_path.parent), "parent_exists": database_path.parent.is_dir(),
+                    "error": f"{type(error).__name__}: {error}", "attempt": failures,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+            print(f"任务数据库不可用（第 {failures} 次）：{database_path}；{error}", file=sys.stderr)
+            if args.once or args.check:
+                return 4
+            time.sleep(min(30.0, 0.5 * (2 ** min(failures, 6))))
     artifacts = ArtifactStore(runtime_dir / "artifacts")
     roles = set(args.roles)
     worker_slot = (args.worker_slot or "").strip()

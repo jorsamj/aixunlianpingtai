@@ -7489,6 +7489,8 @@ def _durable_process_identity(task: TaskRecord) -> ProcessIdentity:
         pid=task.process_pid,
         create_time=task.process_create_time,
         command_hash=task.process_command_hash,
+        process_group_id=task.process_group_id,
+        launch_token=task.process_launch_token,
     )
 
 

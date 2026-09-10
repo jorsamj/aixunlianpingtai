@@ -57,6 +57,8 @@ class TaskRecord:
     process_pid: int | None = None
     process_create_time: float | None = None
     process_command_hash: str | None = None
+    process_group_id: int | None = None
+    process_launch_token: str | None = None
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
     finished_at: str | None = None
