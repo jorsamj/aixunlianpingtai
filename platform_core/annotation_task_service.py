@@ -97,7 +97,6 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
 
 
 def _stable_scope_for_codes(project_id: str, labels: list[str]) -> list[str]:
-    """Resolve requested label codes to immutable project label IDs."""
     from app import get_project, project_label_items
 
     schema = {
@@ -119,14 +118,17 @@ def _freeze_review_scope(context, runtime_request: dict[str, Any]) -> list[str]:
     if not labels:
         raise ValueError("annotation review scope has no requested labels")
     catalog = [dict(item) for item in runtime_request.get("label_catalog") or []]
+    # Unit/injected generators intentionally bypass provider preparation. They
+    # may exercise generation, but without a frozen runtime catalog they are
+    # not allowed to create formal GT. commit_candidate_decisions will reject
+    # them because no review-scope.json exists.
+    if not catalog:
+        return []
     by_code = {
         str(item.get("code") or ""): str(item.get("label_id") or "").strip()
         for item in catalog
         if str(item.get("code") or "")
     }
-    # Older app catalog entries contain code/class_id but no stable label_id.
-    # Resolve from the authoritative project label schema rather than inventing
-    # an ID or storing transient class indices as Ground Truth scope.
     if any(not by_code.get(code) for code in labels):
         label_ids = _stable_scope_for_codes(context.task.project_id, labels)
     else:
