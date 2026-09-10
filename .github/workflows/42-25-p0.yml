@@ -26,7 +26,7 @@ jobs:
           python -m pip install
           pytest psutil pyyaml pillow
           fastapi httpx python-multipart requests
-          keyring filelock boto3 oss2
+          keyring filelock boto3 oss2 opencv-python-headless
       - name: Compile changed P0 modules
         run: >-
           python -m py_compile
