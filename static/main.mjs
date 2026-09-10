@@ -20,6 +20,7 @@ import {buildServerImportRequest, buildImportConfirmation, externalClassMappingH
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422400';
 import {createPageLifecycle} from './modules/page-lifecycle.js?v=422500';
+import {installPageStability} from './modules/page-stability.js?v=422500';
 
 
 const modalStack = createModalStack();
@@ -92,6 +93,8 @@ installMaterialBatchRuntime({
 });
 window.installServerMaterialImport61?.();
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
+FULL_MATERIAL_PAGES.delete('训练任务');
+installPageStability({lifecycle: pageLifecycle});
 
 const authoritativeSetPage = window.setPage;
 if (typeof authoritativeSetPage === 'function') {
