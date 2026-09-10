@@ -1,10 +1,47 @@
 import json
+import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .annotations import atomic_write_json
 from .errors import PlatformError
+
+
+_ALGORITHM_WRITE_LOCK = threading.RLock()
+
+
+def _version_sort_key(version: Mapping[str, Any]) -> str:
+    return str(version.get("finished_at") or version.get("created_at") or version.get("version_name") or "")
+
+
+def resolve_current_version(algorithm: Mapping[str, Any], framework: str = "") -> dict | None:
+    """Return the explicit current version, falling back to the newest usable legacy version."""
+    versions = [dict(row) for row in (algorithm.get("versions") or []) if isinstance(row, Mapping)]
+    current_id = str(algorithm.get("current_version_id") or "").strip()
+    if current_id:
+        current = next((row for row in versions if str(row.get("id")) == current_id), None)
+        if current is not None:
+            return current
+    ordered = sorted(versions, key=_version_sort_key, reverse=True)
+    if framework:
+        trainable = [row for row in ordered if is_trainable_version(row, framework)]
+        if trainable:
+            return trainable[0]
+    return next((row for row in ordered if str(row.get("stored_path") or row.get("path") or "").strip()), ordered[0] if ordered else None)
+
+
+def ensure_current_version(algorithm: dict, framework: str = "") -> bool:
+    """Backfill a legacy algorithm's current pointer without overriding a valid rollback."""
+    current_id = str(algorithm.get("current_version_id") or "").strip()
+    if current_id and any(str(row.get("id")) == current_id for row in (algorithm.get("versions") or [])):
+        return False
+    current = resolve_current_version(algorithm, framework)
+    if current is None:
+        return False
+    algorithm["current_version_id"] = str(current.get("id") or "")
+    return True
 
 
 def is_trainable_version(version: Mapping[str, Any], framework: str) -> bool:
@@ -32,6 +69,7 @@ def choose_iteration_base(
     *,
     strict_latest: bool = False,
     artifact_validator: Callable[[Path], bool] | None = None,
+    current_version_id: str | None = None,
 ) -> dict:
     """Choose the checkpoint used for an iterative training run.
 
@@ -46,6 +84,10 @@ def choose_iteration_base(
         key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""),
         reverse=True,
     )
+    if current_version_id:
+        current = next((row for row in ordered if str(row.get("id")) == str(current_version_id)), None)
+        if current is not None:
+            ordered = [current, *(row for row in ordered if str(row.get("id")) != str(current_version_id))]
     if strict_latest and ordered:
         eligible = [row for row in ordered if is_trainable_version(row, framework)]
         if not eligible:
@@ -59,6 +101,14 @@ def choose_iteration_base(
                 status_code=409,
             )
         latest = eligible[0]
+        if current_version_id and str(latest.get("id")) != str(current_version_id):
+            raise PlatformError(
+                code="CURRENT_VERSION_UNAVAILABLE",
+                message="当前算法版本不可用于继续训练",
+                detail="算法已明确选择当前版本，但该版本不是成功、已校验且可继续训练的模型产物。",
+                solution="请修复当前版本产物，或回退到一个有效版本后再开始训练。",
+                status_code=409,
+            )
         candidate = next(
             (
                 str(latest.get(field) or "").strip()
@@ -98,7 +148,7 @@ def choose_iteration_base(
             "base_version_name": latest.get("version_name") or "",
             "base_model_path": str(path.resolve()),
             "base_model_kind": "train_checkpoint",
-            "base_selection_reason": "latest_verified_version",
+            "base_selection_reason": "current_verified_version" if current_version_id else "latest_verified_version",
         }
     for version in ordered:
         candidate = next(
@@ -227,14 +277,46 @@ def delete_algorithm(path: Path, algorithm_id: str) -> None:
 
 
 def attach_version(path: Path, algorithm_id: str, version: Mapping[str, Any]) -> dict:
-    algorithms = list_algorithms(path)
-    item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
-    if item is None:
-        raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
-    versions = list(item.get("versions") or [])
-    versions.append(dict(version))
-    versions.sort(key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""), reverse=True)
-    item["versions"] = versions
-    item["updated_at"] = str(version.get("finished_at") or version.get("created_at") or item.get("updated_at") or "")
-    save_algorithms(path, algorithms)
-    return dict(version)
+    with _ALGORITHM_WRITE_LOCK:
+        algorithms = list_algorithms(path)
+        item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
+        if item is None:
+            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+        ensure_current_version(item, str(version.get("framework") or ""))
+        attached = dict(version)
+        attached.setdefault("parent_version_id", str(item.get("current_version_id") or ""))
+        versions = list(item.get("versions") or [])
+        versions.append(attached)
+        versions.sort(key=_version_sort_key, reverse=True)
+        item["versions"] = versions
+        item["current_version_id"] = str(attached.get("id") or "")
+        item["updated_at"] = str(attached.get("finished_at") or attached.get("created_at") or item.get("updated_at") or "")
+        save_algorithms(path, algorithms)
+        return attached
+
+
+def rollback_current_version(path: Path, algorithm_id: str, version_id: str, *, actor: str, now: str | None = None) -> dict:
+    """Atomically move only the current pointer; immutable version history is untouched."""
+    with _ALGORITHM_WRITE_LOCK:
+        algorithms = list_algorithms(path)
+        item = next((row for row in algorithms if str(row.get("id")) == str(algorithm_id)), None)
+        if item is None:
+            raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+        target = next((row for row in (item.get("versions") or []) if str(row.get("id")) == str(version_id)), None)
+        if target is None:
+            raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {version_id}。", "请刷新版本列表后重试。", 404)
+        previous = str(item.get("current_version_id") or "")
+        if previous == str(version_id):
+            return {"algorithm": item, "changed": False, "from_version_id": previous, "to_version_id": previous}
+        changed_at = now or datetime.now(timezone.utc).isoformat()
+        item["current_version_id"] = str(version_id)
+        item["updated_at"] = changed_at
+        item.setdefault("version_pointer_audit", []).append({
+            "action": "rollback",
+            "from_version_id": previous,
+            "to_version_id": str(version_id),
+            "user": str(actor or "unknown"),
+            "time": changed_at,
+        })
+        save_algorithms(path, algorithms)
+        return {"algorithm": item, "changed": True, "from_version_id": previous, "to_version_id": str(version_id)}

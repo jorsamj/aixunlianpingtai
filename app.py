@@ -35,7 +35,10 @@ from platform_core.annotation_repository import AnnotationRepository
 from platform_core.storage.import_confirmation import confirm_import, public_quality
 from platform_core.algorithms import (
     choose_iteration_base,
+    ensure_current_version,
     is_trainable_version,
+    resolve_current_version,
+    rollback_current_version,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
@@ -6228,6 +6231,11 @@ class VersionPatchReq(BaseModel):
     remark: Optional[str] = None
 
 
+class VersionRollbackReq(BaseModel):
+    version_id: str
+    user: str = "local-user"
+
+
 def algorithms_file(project_id: str) -> Path:
     return project_dir(project_id) / "algorithms.json"
 
@@ -6251,6 +6259,8 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
                     fresh=job_report(project_id,v.get("job_id",""),sp)
                     if fresh: v["report"]=fresh; v["report_updated_at"]=now_iso(); changed=True
                 except Exception: pass
+        if ensure_current_version(a, str(a.get("framework") or "")):
+            changed = True
     if changed: write_json(algorithms_file(project_id),data)
     return data
 
@@ -7754,6 +7764,16 @@ def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payl
                     save_algorithms_internal(project_id, algos)
                     return v
     raise HTTPException(status_code=404, detail="版本不存在")
+
+
+@app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/rollback")
+def v12_rollback_algorithm_version(project_id: str, algorithm_id: str, payload: VersionRollbackReq):
+    get_project(project_id)
+    result = rollback_current_version(
+        algorithms_file(project_id), algorithm_id, payload.version_id,
+        actor=payload.user, now=now_iso(),
+    )
+    return {"ok": True, **result}
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
