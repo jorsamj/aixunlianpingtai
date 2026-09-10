@@ -73,6 +73,12 @@ class AnnotationRepository:
             result['annotation_scope'] = _normalize_scope(
                 json.loads(result.pop('scope_json', '[]') or '[]')
             )
+            if result['annotation_state'] == 'annotated' and not result['annotation_scope']:
+                result['annotation_scope'] = _normalize_scope(
+                    box.get('label') or box.get('code') for box in result['boxes']
+                )
+            if result['annotation_state'] == 'confirmed_empty' and not result['annotation_scope']:
+                result['annotation_scope'] = ['*']
             return result
         path = self.project_path / 'annotations' / f'{image_id}.json'
         legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
