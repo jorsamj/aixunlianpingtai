@@ -141,7 +141,7 @@ def test_existing_annotation_database_is_migrated_without_rebuild(tmp_path):
 
     assert loaded["version"] == 4
     assert loaded["boxes"][0]["label"] == "fire"
-    assert loaded["annotation_scope"] == []
+    assert loaded["annotation_scope"] == ["fire"]
     with sqlite3.connect(path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(annotations)")}
     assert "scope_json" in columns
