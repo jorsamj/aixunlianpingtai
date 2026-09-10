@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository, TaskStatus
+from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
 def add(
@@ -59,15 +59,19 @@ def test_capability_cancel_retry_cursor_and_expired_lease(tmp_path):
     assert cancelled.status is TaskStatus.CANCELLED
     assert cancelled.finished_at is not None
 
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    artifacts.atomic_write_json("cpu-only", "payload.json", {"device": "cpu"})
     retried = repository.retry("cpu-only")
-    assert retried.task_id == "cpu-only"
+    assert retried.task_id != "cpu-only"
     assert retried.status is TaskStatus.QUEUED
     assert retried.retry_of == "cpu-only"
     assert retried.error is None
     assert retried.finished_at is None
+    assert repository.get("cpu-only") == cancelled
 
     lease = repository.claim_next("cpu", [TaskKind.TRAINING], {"opencv"}, lease_seconds=1)
     assert lease is not None
+    assert lease.task.task_id == retried.task_id
     future = datetime.now(timezone.utc) + timedelta(seconds=2)
     assert repository.release_expired(future) == 1
     recovered = repository.get(lease.task.task_id)
