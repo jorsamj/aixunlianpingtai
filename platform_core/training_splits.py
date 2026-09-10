@@ -113,10 +113,17 @@ def _annotation_scope(row: Mapping[str, Any]) -> tuple[str, ...]:
     if isinstance(raw, str):
         raw = (raw,)
     scope = tuple(sorted({str(value).strip() for value in raw if str(value).strip()}))
+    boxes = list(row.get("boxes") or [])
     state = str(
         row.get("annotation_state")
-        or ("annotated" if list(row.get("boxes") or []) else "unannotated")
+        or ("annotated" if boxes else "unannotated")
     )
+    if state == "annotated" and not scope:
+        scope = tuple(sorted({
+            str(box.get("label") or box.get("code") or "").strip()
+            for box in boxes
+            if str(box.get("label") or box.get("code") or "").strip()
+        }))
     if state == "confirmed_empty" and not scope:
         return ("*",)
     return scope
