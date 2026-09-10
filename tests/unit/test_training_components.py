@@ -121,6 +121,26 @@ def test_component_relations_are_transitive_across_source_fields():
     assert manifest.groups["a"] == manifest.groups["b"] == manifest.groups["c"]
 
 
+def test_camera_relation_is_scoped_to_same_capture_session():
+    rows = [
+        image("a", "ha", camera_id="cam-1", session_id="morning"),
+        image("b", "hb", camera_id="cam-1", session_id="morning"),
+        image("c", "hc", camera_id="cam-1", session_id="evening"),
+        image("d", "hd", camera_id="cam-2", session_id="morning"),
+        image("e", "he"),
+        image("f", "hf"),
+        image("g", "hg"),
+        image("h", "hh"),
+    ]
+    manifest = build_split_manifest(
+        rows, random_request("a", "b", "c", "d", "e", "f", "g", "h"), seed=15
+    )
+
+    assert manifest.groups["a"] == manifest.groups["b"]
+    assert manifest.groups["a"] != manifest.groups["c"]
+    assert manifest.groups["a"] != manifest.groups["d"]
+
+
 def test_file_identity_is_an_inseparable_component_relation():
     rows = [
         image("a", "ha", stored_name="shared.JPG"),
