@@ -112,7 +112,27 @@ def _annotation_scope(row: Mapping[str, Any]) -> tuple[str, ...]:
     raw = row.get("annotation_scope") or ()
     if isinstance(raw, str):
         raw = (raw,)
-    return tuple(sorted({str(value).strip() for value in raw if str(value).strip()}))
+    scope = tuple(sorted({str(value).strip() for value in raw if str(value).strip()}))
+    state = str(
+        row.get("annotation_state")
+        or ("annotated" if list(row.get("boxes") or []) else "unannotated")
+    )
+    if state == "confirmed_empty" and not scope:
+        return ("*",)
+    return scope
+
+
+def _valid_annotation(row: Mapping[str, Any]) -> bool:
+    boxes = list(row.get("boxes") or [])
+    state = str(
+        row.get("annotation_state")
+        or ("annotated" if boxes else "unannotated")
+    )
+    if state == "annotated":
+        return bool(boxes)
+    if state == "confirmed_empty":
+        return not boxes and bool(_annotation_scope(row))
+    return False
 
 
 def _annotation_digest(row: Mapping[str, Any]) -> str:
@@ -361,13 +381,16 @@ def build_split_manifest(
         if image_id in canonical_by_id
     ]
 
-    unannotated_ids = sorted(
+    invalid_annotation_ids = sorted(
         str(row.get("id"))
         for row in [*train_pool, *independent_test_rows]
-        if not list(row.get("boxes") or [])
+        if not _valid_annotation(row)
     )
-    if unannotated_ids:
-        raise ValueError(f"所选素材没有有效标注: {', '.join(unannotated_ids[:5])}")
+    if invalid_annotation_ids:
+        raise ValueError(
+            "所选素材没有有效正式标注或确认负样本: "
+            f"{', '.join(invalid_annotation_ids[:5])}"
+        )
 
     component_keys = _component_keys(canonical_rows)
     test_seed = int(seed)
