@@ -149,18 +149,69 @@ def test_random_test_split_preserves_two_source_groups_for_train_and_validation(
     assert manifest.counts == {"train": 1, "validation": 1, "test": 1, "total": 3}
 
 
-def test_processed_material_without_annotation_boxes_is_rejected():
+def test_unannotated_material_without_boxes_is_rejected():
     rows = [
         image("a", "unused", "ha", "ga"),
         image("b", "unused", "hb", "gb"),
         image("c", "unused", "hc", "gc"),
     ]
     rows[1]["boxes"] = []
+    rows[1]["annotation_state"] = "unannotated"
     request = SplitRequest(
         mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
         train_image_ids=("a", "b", "c"),
         experiment_percent=20,
         validation_percent=20,
     )
-    with pytest.raises(ValueError, match="有效标注"):
+    with pytest.raises(ValueError, match="确认负样本"):
         build_split_manifest(rows, request, seed=4)
+
+
+def test_confirmed_empty_material_is_a_valid_negative_sample():
+    rows = [
+        image("a", "unused", "ha", "ga"),
+        image("b", "unused", "hb", "gb"),
+        image("c", "unused", "hc", "gc"),
+        image("d", "unused", "hd", "gd"),
+        image("e", "unused", "he", "ge"),
+        image("negative", "unused", "hn", "gn"),
+    ]
+    rows[-1]["boxes"] = []
+    rows[-1]["annotation_state"] = "confirmed_empty"
+    rows[-1]["annotation_scope"] = ["fire"]
+    rows[-1]["annotated"] = True
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(row["id"] for row in rows),
+        experiment_percent=20,
+        validation_percent=20,
+    )
+
+    manifest = build_split_manifest(rows, request, seed=4)
+    assert "negative" in set().union(*(set(ids) for ids in manifest.ids.values()))
+
+
+def test_legacy_confirmed_empty_without_scope_uses_global_scope_compatibility():
+    rows = [
+        image("a", "unused", "ha", "ga"),
+        image("b", "unused", "hb", "gb"),
+        image("c", "unused", "hc", "gc"),
+        image("d", "unused", "hd", "gd"),
+        image("e", "unused", "he", "ge"),
+        image("negative", "unused", "hn", "gn"),
+    ]
+    rows[-1]["boxes"] = []
+    rows[-1]["annotation_state"] = "confirmed_empty"
+    rows[-1]["annotated"] = True
+
+    manifest = build_split_manifest(
+        rows,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in rows),
+            experiment_percent=20,
+            validation_percent=20,
+        ),
+        seed=5,
+    )
+    assert "negative" in set().union(*(set(ids) for ids in manifest.ids.values()))
