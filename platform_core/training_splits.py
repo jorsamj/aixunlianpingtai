@@ -285,7 +285,7 @@ def _select_grouped(
 
     The previous exact subset-sum DP stored a tuple for many reachable image
     counts and becomes quadratic or worse when tens of thousands of singleton
-    components are selected.  This deterministic seeded greedy selector is
+    components are selected. This deterministic seeded greedy selector is
     O(number_of_groups + number_of_rows) and keeps split ratios close to the
     requested target without ever splitting a leakage component.
     """
@@ -296,7 +296,7 @@ def _select_grouped(
         grouped.setdefault(key, []).append(row)
     minimum_remaining = max(1, int(min_remaining_groups))
     if len(grouped) <= minimum_remaining:
-        raise ValueError("按泄漏组件分组后不足两个组，无法避免数据泄漏")
+        raise ValueError("有效标注素材按泄漏组件分组后不足两个组，无法避免数据泄漏")
 
     keys = sorted(grouped)
     random.Random(int(seed)).shuffle(keys)
@@ -309,15 +309,9 @@ def _select_grouped(
         size = len(grouped[key])
         before_distance = abs(target - selected_total)
         after_distance = abs(target - (selected_total + size))
-        # Always select at least one group.  Afterwards stop once taking the
-        # next whole component would move farther away from the target and we
-        # have already reached/passed the target.
         if selected_keys and selected_total >= target and after_distance >= before_distance:
             break
         if selected_keys and selected_total < target and after_distance > before_distance:
-            # Oversized component: keeping the current selection is a closer
-            # ratio.  Continue scanning later components rather than ending so
-            # a smaller component can still improve the target.
             continue
         selected_keys.add(key)
         selected_total += size
@@ -325,8 +319,6 @@ def _select_grouped(
             break
 
     if not selected_keys:
-        # Deterministically choose the smallest available component when every
-        # candidate overshoots a tiny requested split.
         fallback = min(keys[:selectable_groups], key=lambda key: (len(grouped[key]), key))
         selected_keys.add(fallback)
 
@@ -339,12 +331,12 @@ def _select_grouped(
         if ((group_ids or {}).get(str(row.get("id") or "")) or _group_key(row)) not in selected_keys
     ]
     if not selected or not remaining:
-        raise ValueError("所选泄漏组件不足以划分训练、验证和试验数据")
+        raise ValueError("有效标注素材的泄漏组件不足以划分训练、验证和试验数据")
     return remaining, selected
 
 
 def _assert_no_leakage(role_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
-    for field, label, getter in (
+    for _field, label, getter in (
         ("content_sha256", "content hash", lambda row: str(row.get("content_sha256") or "").strip()),
         ("group", "source group", _group_key),
         ("file", "file identity", _identity),
