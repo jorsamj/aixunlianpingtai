@@ -145,3 +145,11 @@ class TaskRepository(_TaskRepository):
                 if created_root is not None:
                     shutil.rmtree(created_root, ignore_errors=True)
                 raise
+
+
+# Compatibility fence: importing ``platform_core.task_runtime.repository`` must
+# not silently restore the legacy same-row retry semantics. Python initializes
+# the package before exposing that submodule, so this assignment also protects
+# direct production imports while the audited implementation is being folded
+# back into the core repository module in a later cleanup.
+_TaskRepository.retry = TaskRepository.retry
