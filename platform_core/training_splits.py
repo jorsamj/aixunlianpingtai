@@ -281,35 +281,55 @@ def _select_grouped(
     min_remaining_groups: int = 1,
     group_ids: Mapping[str, str] | None = None,
 ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Select whole leakage components in bounded memory.
+
+    The previous exact subset-sum DP stored a tuple for many reachable image
+    counts and becomes quadratic or worse when tens of thousands of singleton
+    components are selected.  This deterministic seeded greedy selector is
+    O(number_of_groups + number_of_rows) and keeps split ratios close to the
+    requested target without ever splitting a leakage component.
+    """
     grouped: dict[str, list[Mapping[str, Any]]] = {}
     for row in rows:
         image_id = str(row.get("id") or "")
         key = (group_ids or {}).get(image_id) or _group_key(row)
         grouped.setdefault(key, []).append(row)
-    if len(grouped) <= int(min_remaining_groups):
+    minimum_remaining = max(1, int(min_remaining_groups))
+    if len(grouped) <= minimum_remaining:
         raise ValueError("按泄漏组件分组后不足两个组，无法避免数据泄漏")
+
     keys = sorted(grouped)
     random.Random(int(seed)).shuffle(keys)
-    sizes = [len(grouped[key]) for key in keys]
     target = max(1, min(len(rows) - 1, round(len(rows) * float(percent) / 100)))
+    selectable_groups = len(keys) - minimum_remaining
+    selected_keys: set[str] = set()
+    selected_total = 0
 
-    choices: dict[int, tuple[int, ...]] = {0: ()}
-    for index, size in enumerate(sizes):
-        for total, selected in list(choices.items())[::-1]:
-            candidate = total + size
-            if candidate < len(rows) and candidate not in choices:
-                choices[candidate] = (*selected, index)
-    allowed_totals = [
-        total for total, selected in choices.items()
-        if total > 0 and len(grouped) - len(selected) >= int(min_remaining_groups)
-    ]
-    if not allowed_totals:
-        raise ValueError("所选泄漏组件不足以划分训练、验证和试验数据")
-    selected_total = min(
-        allowed_totals,
-        key=lambda total: (abs(total - target), total > target, total),
-    )
-    selected_keys = {keys[index] for index in choices[selected_total]}
+    for key in keys[:selectable_groups]:
+        size = len(grouped[key])
+        before_distance = abs(target - selected_total)
+        after_distance = abs(target - (selected_total + size))
+        # Always select at least one group.  Afterwards stop once taking the
+        # next whole component would move farther away from the target and we
+        # have already reached/passed the target.
+        if selected_keys and selected_total >= target and after_distance >= before_distance:
+            break
+        if selected_keys and selected_total < target and after_distance > before_distance:
+            # Oversized component: keeping the current selection is a closer
+            # ratio.  Continue scanning later components rather than ending so
+            # a smaller component can still improve the target.
+            continue
+        selected_keys.add(key)
+        selected_total += size
+        if selected_total == target:
+            break
+
+    if not selected_keys:
+        # Deterministically choose the smallest available component when every
+        # candidate overshoots a tiny requested split.
+        fallback = min(keys[:selectable_groups], key=lambda key: (len(grouped[key]), key))
+        selected_keys.add(fallback)
+
     selected = [
         row for row in rows
         if ((group_ids or {}).get(str(row.get("id") or "")) or _group_key(row)) in selected_keys
@@ -318,6 +338,8 @@ def _select_grouped(
         row for row in rows
         if ((group_ids or {}).get(str(row.get("id") or "")) or _group_key(row)) not in selected_keys
     ]
+    if not selected or not remaining:
+        raise ValueError("所选泄漏组件不足以划分训练、验证和试验数据")
     return remaining, selected
 
 
