@@ -68,6 +68,7 @@ export function buildTrainingPayload({
   splitMode,
   trainImageIds,
   testImageIds = [],
+  trainingLabelIds = [],
   experimentPercent = null,
   validationPercent = 20,
   parameters = {},
@@ -78,6 +79,8 @@ export function buildTrainingPayload({
   }
   const train = uniqueIds(trainImageIds);
   if (!train.length) throw new Error('请选择训练素材');
+  const labels = uniqueIds(trainingLabelIds);
+  if (!labels.length) throw new Error('请至少选择一个本次训练标签');
   const validation = Number(validationPercent);
   if (!(validation > 0 && validation < 100)) throw new Error('验证集比例必须在 0 到 100 之间');
   const independent = mode === 'independent_test_set' ? uniqueIds(testImageIds) : [];
@@ -98,6 +101,7 @@ export function buildTrainingPayload({
     split_mode: mode,
     train_image_ids: train,
     test_image_ids: independent,
+    training_label_ids: labels,
     experiment_percent: randomPercent,
     validation_percent: validation,
   };

@@ -93,6 +93,9 @@ class AnnotationRepository:
                 list(result['annotation_scope']) if result['annotation_state'] == 'confirmed_empty' else []
             )
             return result
+        return self._legacy_annotation(image_id)
+
+    def _legacy_annotation(self, image_id):
         path = self.project_path / 'annotations' / f'{image_id}.json'
         legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
         boxes = self._boxes_with_stable_labels(legacy.get('boxes') or [])
@@ -103,6 +106,29 @@ class AnnotationRepository:
         return {**legacy, 'image_id': image_id, 'boxes': boxes, 'annotation_state': state,
                 'annotation_scope': scope,
                 'confirmed_empty_scope': scope if state == 'confirmed_empty' else [], 'version': 0}
+
+    def get_many(self, image_ids, *, batch_size=500):
+        """Read annotations in bounded SQL batches while preserving legacy fallback semantics."""
+        ids = list(dict.fromkeys(self._id(value) for value in image_ids))
+        stored = {}
+        with closing(self._connect()) as db:
+            for offset in range(0, len(ids), max(1, int(batch_size))):
+                batch = ids[offset:offset + max(1, int(batch_size))]
+                placeholders = ','.join('?' for _ in batch)
+                for row in db.execute(
+                    f'SELECT * FROM annotations WHERE image_id IN ({placeholders})', batch
+                ).fetchall():
+                    value = dict(row)
+                    value['boxes'] = self._boxes_with_stable_labels(json.loads(value.pop('boxes_json')))
+                    value['annotation_scope'] = json.loads(value.pop('annotation_scope_json', '[]') or '[]')
+                    value['confirmed_empty_scope'] = (
+                        list(value['annotation_scope']) if value['annotation_state'] == 'confirmed_empty' else []
+                    )
+                    stored[str(value['image_id'])] = value
+        for image_id in ids:
+            if image_id not in stored:
+                stored[image_id] = self._legacy_annotation(image_id)
+        return [stored[image_id] for image_id in ids]
 
     def summary(self):
         """Count persisted states; legacy JSON remains a per-image lazy fallback."""

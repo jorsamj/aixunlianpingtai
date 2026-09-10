@@ -106,6 +106,7 @@ from platform_core.task_runtime import (
     TaskStatus,
 )
 from platform_core.training_splits import SplitMode, SplitRequest
+from platform_core.training_labels import aggregate_training_labels, freeze_training_labels
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
 from platform_core.gpu_resources import GPUResourceManager
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
@@ -5259,8 +5260,9 @@ class TrainReq(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reject_dataset_group_contract(cls, value):
-        if isinstance(value, dict) and (value.get("train_dataset_ids") or value.get("test_dataset_ids")):
-            raise ValueError("训练任务只按素材 image_id 选择，不能提交数据集分组")
+        forbidden = {"train_dataset_ids", "test_dataset_ids", "selected_image_ids"}
+        if isinstance(value, dict) and forbidden.intersection(value):
+            raise ValueError("新版训练任务只接受 train_image_ids/test_image_ids，不能提交旧版数据集或候选池字段")
         if isinstance(value, dict):
             value = {**value, "device": normalize_training_device(value.get("device", "auto"))}
         return value
@@ -5329,6 +5331,7 @@ class TrainReq(BaseModel):
     train_image_ids: Optional[List[str]] = None
     val_image_ids: Optional[List[str]] = None
     test_image_ids: Optional[List[str]] = None
+    training_label_ids: List[str] = Field(min_length=1)
     # v42.15：训练页可从训练/试验候选素材中按比例随机留出本次试验集。
     # selected_image_ids 是本次候选池；为空时保持旧版显式 train/val 选择兼容。
     selected_image_ids: Optional[List[str]] = None
@@ -5453,6 +5456,14 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     else:
         device = normalize_training_device(payload.device)
         resource_key = f"training:{device}"
+    try:
+        label_report = aggregate_training_labels(
+            project_dir(project_id), split.train_image_ids, split.test_image_ids,
+            active_label_options(project_label_items(get_project(project_id))),
+        )
+        training_label_snapshot = freeze_training_labels(label_report, payload.training_label_ids)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     task_id = uuid.uuid4().hex[:12]
     request_payload = payload.model_dump(mode="json", exclude_none=True)
     request_payload.update(
@@ -5464,6 +5475,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "validation_percent": split.validation_percent,
             "schema_version": 3,
             "requested_device": payload.device,
+            "selection_manifest": label_report["selection_manifest"],
+            "training_label_ids": [row["label_id"] for row in training_label_snapshot["labels"]],
+            "training_label_schema_snapshot": training_label_snapshot,
+            "available_training_labels_snapshot": label_report["available_training_labels"],
         }
     )
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
@@ -5502,6 +5517,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "split_mode": split.mode.value,
             "requested_train_images": len(split.train_image_ids),
             "requested_test_images": len(split.test_image_ids),
+            "training_label_ids": request_payload["training_label_ids"],
+            "training_label_schema_snapshot": training_label_snapshot,
+            "selection_hash": label_report["selection_manifest"]["selection_hash"],
             "dataset_counts": {"train": 0, "validation": 0, "test": 0, "total": 0},
             "created_at": record.created_at,
             "updated_at": record.updated_at,
@@ -5513,6 +5531,23 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         status_code=202,
         content={"ok": True, "task": _public_task(record)},
     )
+
+
+class TrainingLabelQuery(BaseModel):
+    train_image_ids: List[str] = Field(min_length=1)
+    test_image_ids: List[str] = Field(default_factory=list)
+
+
+@app.post("/api/v63/projects/{project_id}/training-labels")
+def available_training_labels(project_id: str, payload: TrainingLabelQuery):
+    project = get_project(project_id)
+    try:
+        return aggregate_training_labels(
+            project_dir(project_id), payload.train_image_ids, payload.test_image_ids,
+            active_label_options(project_label_items(project)),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def check_ultralytics_train_runtime(python_path: str):

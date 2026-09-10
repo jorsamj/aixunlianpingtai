@@ -4057,6 +4057,7 @@ window.installUsability417?.();
   const num=(id,fallback)=>{const value=Number(document.getElementById(id)?.value);return Number.isFinite(value)?value:fallback};
   const freshState=()=>({mode:'random_test_from_training_pool',train:new Set(),test:new Set(),experiment:20,validation:20});
   const splitState=()=>state.trainSplitV3||(state.trainSplitV3=freshState());
+  const labelState=()=>state.trainLabelsV4||(state.trainLabelsV4={key:'',loading:false,loaded:false,labels:[],selected:new Set(),error:''});
   const allCandidates=()=>trainingApi()?.filterTrainingMaterials(state.images||[])||[];
   const imageId=row=>String(row?.id||'');
   const labelText=code=>(state.labels||[]).find(row=>String(row.code)===String(code))?.display_name||code;
@@ -4084,9 +4085,20 @@ window.installUsability417?.();
     }
     const s=splitState(),random=s.mode==='random_test_from_training_pool',labels=selectedLabels([...s.train]);state.train429Selected=s.train;
     panel.innerHTML=`<header><b>2. 本次训练素材</b><span>按图片选择，标签仅用于筛选</span></header><div class="train-v3-summary"><div><span>训练候选</span><b>${s.train.size} 张</b><em>${esc(labels.join('、')||'尚未选择')}</em></div><div><span>独立试验素材</span><b>${random?'随机抽取':s.test.size+' 张'}</b><em>${random?`${s.experiment}% / 每次重新抽取`:'与训练素材严格隔离'}</em></div><div><span>可选素材</span><b>${allCandidates().length} 张</b><em>已处理且已标注</em></div></div><div class="train-v3-mode"><label class="check"><input type="radio" name="trV3Mode" value="random_test_from_training_pool" ${random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 从本次训练素材随机抽取试验集</label><label class="check"><input type="radio" name="trV3Mode" value="independent_test_set" ${!random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 单独选择试验素材</label></div><div class="train-v3-actions"><button class="btn primary" onclick="openTrainMaterialPickerV3('train')">选择训练素材</button>${random?`<label class="field compact"><span>试验集比例</span><div class="input-suffix428"><input id="trV3Experiment" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.experiment}" oninput="state.trainSplitV3.experiment=Number(this.value)"><span>%</span></div></label>`:`<button class="btn" onclick="openTrainMaterialPickerV3('test')">选择独立试验素材</button>`}<label class="field compact"><span>验证集比例</span><div class="input-suffix428"><input id="trV3Validation" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.validation}" oninput="state.trainSplitV3.validation=Number(this.value)"><span>%</span></div></label><button class="btn" onclick="trainQuality429()" ${s.train.size?'':'disabled'}>查看数据质量</button></div><small class="train-v3-note">每次打开默认全部不选。训练、验证和试验的最终图片名单会写入任务快照，可追溯且不会按数据集自动扩展。</small>`;
+    const ls=labelState(),labelHtml=ls.loading?'<div class="empty">正在统计本次素材标签…</div>':ls.error?`<div class="empty">${esc(ls.error)}</div>`:(ls.labels.map(row=>`<label class="check train-v4-label"><input type="checkbox" ${ls.selected.has(String(row.label_id))?'checked':''} onchange="toggleTrainingLabelV4('${esc(String(row.label_id))}',this.checked)"><span><b>${esc(row.display_name||row.code)} · ${esc(row.code)}</b><em>有框图片 ${row.positive_images} · ${row.boxes} 框 · 合法负样本 ${row.legal_negative_images} · GT不完整 ${row.gt_incomplete_images}</em></span></label>`).join('')||'<div class="empty">所选素材没有可训练标签</div>');
+    panel.querySelector('.train-v3-note')?.insertAdjacentHTML('beforebegin',`<section class="train-v4-labels"><header><b>3. 本次素材可训练标签</b><span>只显示所选素材真实涉及的标签，任务创建后冻结</span></header>${labelHtml}</section>`);
     const algorithm=(state.algorithms||[]).find(row=>String(row.id)===String(state.train428AlgorithmId)),base=state.iteration414?.[state.train428AlgorithmId],start=root.querySelector('.train428-footer .btn.primary');
-    if(start)start.disabled=s.train.size<2||(!!algorithm?.versions?.length&&(!base?.version_name||!!base.error));
+    if(start)start.disabled=s.train.size<2||ls.loading||!ls.selected.size||(!!algorithm?.versions?.length&&(!base?.version_name||!!base.error));
+    refreshTrainingLabelsV4();
   }
+  async function refreshTrainingLabelsV4(){
+    const s=splitState(),train=[...s.train].sort(),test=s.mode==='independent_test_set'?[...s.test].sort():[],key=JSON.stringify([train,test]),ls=labelState();
+    if(!train.length){ls.key=key;ls.loading=false;ls.loaded=true;ls.labels=[];ls.selected.clear();ls.error='';return}
+    if(ls.key===key&&(ls.loading||ls.loaded))return;
+    ls.key=key;ls.loading=true;ls.loaded=false;ls.error='';ls.labels=[];ls.selected.clear();
+    try{const report=await api(`/api/v63/projects/${pid()}/training-labels`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({train_image_ids:train,test_image_ids:test})});if(ls.key!==key)return;ls.labels=report.available_training_labels||[];ls.selected=new Set(ls.labels.filter(row=>Number(row.positive_images)>0).map(row=>String(row.label_id)))}catch(error){if(ls.key===key)ls.error=String(error.message||error)}finally{if(ls.key===key){ls.loading=false;ls.loaded=true;renderSplit()}}
+  }
+  window.toggleTrainingLabelV4=(labelId,on)=>{const ls=labelState();on?ls.selected.add(String(labelId)):ls.selected.delete(String(labelId));renderSplit()};
   function pickerRows(){const p=state.trainMaterialPickerV3;if(!p)return[];const blocked=splitState().mode==='independent_test_set'?splitState()[otherRole(p.role)]:new Set();return(trainingApi()?.filterTrainingMaterials(state.images||[],{query:p.query,labelCodes:[...p.labels]})||[]).filter(row=>!blocked.has(imageId(row)))}
   function renderPicker(){
     const p=state.trainMaterialPickerV3,grid=document.getElementById('trV3Grid');if(!p||!grid)return;const rows=pickerRows(),pages=Math.max(1,Math.ceil(rows.length/p.pageSize));p.page=Math.min(Math.max(1,p.page),pages);const start=(p.page-1)*p.pageSize,current=rows.slice(start,start+p.pageSize);
@@ -4119,7 +4131,7 @@ window.installUsability417?.();
       state.targets=options?.targets||[];
     }
     try{state.trainingDevicesV3=await api('/api/v62/training-devices')}catch(error){state.trainingDevicesV3={options:[],error:String(error.message||error)}}
-    const result=await previousStart?.(aid);state.train428Config=state.train428Config||{};state.train428Config.device=state.trainingDevicesV3.recommended||'auto';state.trainSplitV3=freshState();state.train429Selected=state.trainSplitV3.train;[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
+    const result=await previousStart?.(aid);state.train428Config=state.train428Config||{};state.train428Config.device=state.trainingDevicesV3.recommended||'auto';state.trainSplitV3=freshState();state.trainLabelsV4={key:'',loading:false,loaded:false,labels:[],selected:new Set(),error:''};state.train429Selected=state.trainSplitV3.train;[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
   window.submitTrain429=async function(){
     const a=(state.algorithms||[]).find(row=>row.id===state.train428AlgorithmId),target=(state.targets||[]).find(row=>row.id===document.getElementById('tr429Target')?.value),algorithm=(target?.algorithms||[]).find(row=>row.key===document.getElementById('tr429Alg')?.value)||(target?.algorithms||[])[0],c=state.train428Config||{},s=splitState(),priority=readTrainingPriority428('tr429Priority');
@@ -4131,7 +4143,7 @@ window.installUsability417?.();
     parameters.gpu_policy=document.getElementById('trV3GpuPolicy')?.value||c.gpu_policy||'auto';
     if(!parameters.device||!(state.trainingDevicesV3?.options||[]).some(row=>row.id===parameters.device&&row.available!==false))return toast('请重新打开训练窗口并选择可用设备');
     parameters.batch=c.batch??8;
-    try{const payload=trainingApi().buildTrainingPayload({splitMode:s.mode,trainImageIds:[...s.train],testImageIds:[...s.test],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),response=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${response.task?.id||''}`)}catch(error){toast(error.message||error)}
+    try{const payload=trainingApi().buildTrainingPayload({splitMode:s.mode,trainImageIds:[...s.train],testImageIds:[...s.test],trainingLabelIds:[...labelState().selected],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),response=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${response.task?.id||''}`)}catch(error){toast(error.message||error)}
   };
   const historicalLog=window.showTrainLog423;
   window.showTrainLog423=async function(id){

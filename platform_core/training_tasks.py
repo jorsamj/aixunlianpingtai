@@ -29,6 +29,7 @@ from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_proces
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
+from .training_labels import verify_frozen_training_contract
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -746,8 +747,9 @@ class TrainingHandler:
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 2, "hashing")
         train_image_ids = tuple(payload.get("train_image_ids") or ())
         test_image_ids = tuple(payload.get("test_image_ids") or ())
-        if payload.get("train_dataset_ids") or payload.get("test_dataset_ids"):
-            raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止数据集分组回退")
+        if any(key in payload for key in ("train_dataset_ids", "test_dataset_ids", "selected_image_ids")):
+            raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止旧版选择合同回退")
+        training_label_ids, locked_labels = verify_frozen_training_contract(payload)
         materials = MaterialRepository(project)
         images = _selected_project_images(materials, project, (*train_image_ids, *test_image_ids))
         credentials = SecretCredentialStore(KeyringSecretStore())
@@ -769,7 +771,7 @@ class TrainingHandler:
             validation_percent=float(payload.get("validation_percent") or 20),
         )
         manifest = build_split_manifest(images, split_request, seed=int(payload.get("seed") or 0))
-        snapshot = build_snapshot(images, manifest, _label_schema(project))
+        snapshot = build_snapshot(images, manifest, locked_labels)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 10, "materializing")
