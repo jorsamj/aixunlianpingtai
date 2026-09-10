@@ -32,6 +32,7 @@ jobs:
           python -m py_compile
           task_worker.py
           train_worker.py
+          scripts/benchmark_yolo_zip_scale.py
           platform_core/task_runtime/repository.py
           platform_core/task_runtime/audited_repository.py
           platform_core/annotation_runtime.py
@@ -46,6 +47,7 @@ jobs:
           platform_core/storage/local.py
           platform_core/storage/yolo_import.py
           platform_core/storage/import_tasks.py
+          platform_core/storage/optimized_import_tasks.py
           platform_core/deployment/conversion_tasks.py
           platform_core/deployment/inference_tasks.py
       - name: Run targeted P0 tests
@@ -64,6 +66,7 @@ jobs:
           tests/unit/test_algorithms.py
           tests/unit/test_algorithm_artifact_manifest.py
           tests/unit/storage/test_yolo_import.py
+          tests/unit/storage/test_optimized_import_tasks.py
           tests/unit/test_conversion_tasks.py
           tests/unit/test_deployment_inference_tasks.py
           -q
