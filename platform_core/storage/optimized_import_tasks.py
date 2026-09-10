@@ -3,15 +3,15 @@ from __future__ import annotations
 """Scale-oriented MATERIAL_IMPORT worker registration.
 
 The base 42.25 import implementation already keeps YOLO discovery bounded to the
-new ZIP subtree and parallelizes local image verification.  This module fixes a
+new ZIP subtree and parallelizes local image verification. This module fixes a
 remaining small-file bottleneck: ZIP extraction emits progress for chunks and
 completed members, while WorkerContext.cancel_requested() and
-TaskRepository.heartbeat() both hit SQLite.  Calling both on every callback can
+TaskRepository.heartbeat() both hit SQLite. Calling both on every callback can
 turn a 20k/100k-member archive into tens or hundreds of thousands of task-DB
 round trips.
 
 Keep recovery checkpoints durable, but throttle lease/progress I/O and cancel
-polls to human-scale sub-second/one-second intervals.  The extractor itself
+polls to human-scale sub-second/one-second intervals. The extractor itself
 continues to stream every byte and validate every member.
 """
 
@@ -25,7 +25,6 @@ from platform_core.task_runtime import TaskKind, TaskStatus
 from .import_tasks import (
     DEFAULT_ZIP_CHECKPOINT_MEMBERS,
     DEFAULT_ZIP_CHECKPOINT_SECONDS,
-    StorageImportHandler,
     _positive_float_env,
     _positive_int_env,
 )
@@ -227,5 +226,9 @@ def worker_registration(data_dir: Path):
             TaskKind.MATERIAL_IMPORT: OptimizedStorageImportHandler(data_dir),
             TaskKind.LABEL_REMAP: LabelRemapHandler(data_dir),
         },
-        "capabilities": {"storage.import", "storage.rescan", "labels.remap"},
+        "capabilities": {
+            "storage.import",
+            "storage.rescan",
+            "storage.label_remap",
+        },
     }
