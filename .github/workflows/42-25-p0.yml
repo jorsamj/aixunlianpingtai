@@ -48,6 +48,7 @@ jobs:
           tests/unit/task_runtime/test_repository.py
           tests/unit/task_runtime/test_retry_audit.py
           tests/unit/test_annotation_task_service.py
+          tests/unit/test_annotation_review_scope.py
           tests/unit/test_training_splits.py
           tests/unit/test_training_labels.py
           tests/unit/test_task_worker.py
