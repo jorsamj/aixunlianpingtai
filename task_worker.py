@@ -4,10 +4,12 @@ import argparse
 import json
 import sqlite3
 import socket
+import subprocess
 import sys
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.task_runtime import (
@@ -37,21 +39,127 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _role_worker_command(args, data_dir: Path, role: str, worker_id: str) -> list[str]:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--data-dir", str(data_dir),
+        "--worker-id", worker_id,
+        "--roles", role,
+    ]
+    if role == "training" and args.training_slot:
+        command.extend(["--training-slot", str(args.training_slot)])
+    return command
+
+
+def _serve_all_roles(args, data_dir: Path) -> int:
+    """Supervise one OS process per role so long tasks cannot block unrelated work.
+
+    Historically ``--roles all`` put import, annotation, video, training and
+    conversion handlers behind one serial Scheduler. A 50k import could
+    therefore prevent a queued training/annotation task from starting for
+    hours. Role-isolated processes keep the same durable SQLite queue and
+    resource fencing while providing independent execution lanes.
+    """
+    if args.allow_parallel or args.worker_slot:
+        print("--roles all uses isolated role workers automatically; do not combine it with --allow-parallel/--worker-slot",
+              file=sys.stderr)
+        return 2
+
+    base_worker_id = args.worker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+    children: dict[str, subprocess.Popen] = {}
+    next_retry: dict[str, float] = {role: 0.0 for role in ROLE_MODULES}
+
+    def start(role: str) -> None:
+        child_id = f"{base_worker_id}-{role}"
+        command = _role_worker_command(args, data_dir, role, child_id)
+        children[role] = subprocess.Popen(command)
+        print(f"[worker-supervisor] started role={role} pid={children[role].pid}", flush=True)
+
+    def stop_all() -> None:
+        for process in children.values():
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+        deadline = time.monotonic() + 8.0
+        for process in children.values():
+            if process.poll() is not None:
+                continue
+            timeout = max(0.0, deadline - time.monotonic())
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+    try:
+        for role in sorted(ROLE_MODULES):
+            start(role)
+        while True:
+            now = time.monotonic()
+            for role in sorted(ROLE_MODULES):
+                process = children.get(role)
+                if process is None:
+                    if now >= next_retry[role]:
+                        start(role)
+                    continue
+                return_code = process.poll()
+                if return_code is None:
+                    continue
+                children.pop(role, None)
+                # Exit code 3 means another durable instance already owns this
+                # role. Do not spin; retry slowly so takeover can occur later.
+                delay = 30.0 if return_code == 3 else 2.0
+                next_retry[role] = now + delay
+                print(
+                    f"[worker-supervisor] role={role} exited code={return_code}; retry in {int(delay)}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        stop_all()
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     data_dir = resolve_data_dir(args.data_dir)
+    roles = set(args.roles)
+    if "all" in roles and len(roles) != 1:
+        print("--roles all cannot be combined with explicit roles", file=sys.stderr)
+        return 2
+    unknown_roles = roles - ({"all"} | set(ROLE_MODULES))
+    if unknown_roles:
+        print(f"unknown worker roles: {', '.join(sorted(unknown_roles))}", file=sys.stderr)
+        return 2
+
+    # Preserve the historical --once/--check semantics. Continuous all-role
+    # mode becomes a supervisor; each child owns one Scheduler and one role.
+    if roles == {"all"} and not args.once and not args.check:
+        if args.training_slot is not None and (not str(args.training_slot).strip() or args.training_slot == "default"):
+            print("--training-slot must be a non-default, non-empty slot name", file=sys.stderr)
+            return 2
+        return _serve_all_roles(args, data_dir)
+
     runtime_dir = data_dir / "task_runtime"
     database_path = (runtime_dir / "tasks.sqlite3").resolve()
     failures = 0
     while True:
         try:
-            # The API owns first-time schema creation.  A Worker must never
+            # The API owns first-time schema creation. A Worker must never
             # turn a missing/unmounted production database into an empty one.
             repository = TaskRepository(database_path, allow_create=False)
             break
         except sqlite3.Error as error:
             failures += 1
             try:
+                runtime_dir.mkdir(parents=True, exist_ok=True)
                 status_path = runtime_dir / "worker-status.json"
                 status_path.write_text(json.dumps({
                     "status": "DATABASE_ERROR", "database": str(database_path),
@@ -66,7 +174,6 @@ def main(argv=None) -> int:
                 return 4
             time.sleep(min(30.0, 0.5 * (2 ** min(failures, 6))))
     artifacts = ArtifactStore(runtime_dir / "artifacts")
-    roles = set(args.roles)
     worker_slot = (args.worker_slot or "").strip()
     if args.allow_parallel and (not worker_slot or worker_slot == "default"):
         print("--allow-parallel requires a non-default named --worker-slot", file=sys.stderr)
@@ -96,6 +203,7 @@ def main(argv=None) -> int:
                     "web_imported": "app" in sys.modules,
                     "training_slot": args.training_slot or "default",
                     "worker_slot": instance_slot,
+                    "role_isolation": "subprocess-per-role" if roles == {"all"} else "single-role-or-explicit-set",
                 },
                 ensure_ascii=False,
             )
