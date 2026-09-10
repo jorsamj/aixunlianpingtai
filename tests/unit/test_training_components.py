@@ -76,6 +76,53 @@ def test_duplicate_content_with_different_annotations_is_rejected_before_split()
         )
 
 
+def test_stable_label_code_wins_over_historical_class_id_for_duplicate_comparison():
+    rows = [
+        image("a", "same"),
+        image(
+            "b",
+            "same",
+            boxes=[
+                {"label": "fire", "class_id": 99, "x1": 1, "y1": 2, "x2": 10, "y2": 12}
+            ],
+        ),
+        image("c", "hc"),
+        image("d", "hd"),
+        image("e", "he"),
+        image("f", "hf"),
+        image("g", "hg"),
+    ]
+
+    manifest = build_split_manifest(
+        rows, random_request("a", "b", "c", "d", "e", "f", "g"), seed=5
+    )
+    assert manifest.excluded_duplicate_ids == ("b",)
+
+
+def test_normalized_box_coordinates_are_included_in_duplicate_conflict_detection():
+    rows = [
+        image(
+            "a",
+            "same",
+            boxes=[{"label": "fire", "cx": 0.4, "cy": 0.4, "w": 0.2, "h": 0.2}],
+        ),
+        image(
+            "b",
+            "same",
+            boxes=[{"label": "fire", "cx": 0.6, "cy": 0.4, "w": 0.2, "h": 0.2}],
+        ),
+        image("c", "hc"),
+        image("d", "hd"),
+        image("e", "he"),
+        image("f", "hf"),
+    ]
+
+    with pytest.raises(ValueError, match="duplicate_annotation_conflict"):
+        build_split_manifest(
+            rows, random_request("a", "b", "c", "d", "e", "f"), seed=6
+        )
+
+
 def test_legacy_missing_scope_matches_explicit_scope_when_boxes_are_identical():
     rows = [
         image("legacy", "same"),
