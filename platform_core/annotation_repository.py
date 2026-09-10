@@ -145,7 +145,10 @@ class AnnotationRepository:
             for row in rows:
                 image_id = self._id(row['image_id'])
                 boxes = self._boxes_with_stable_labels(row.get('boxes') or [])
-                default_state = row.get('annotation_state') or ('annotated' if boxes else 'confirmed_empty')
+                # Empty boxes are not evidence of a verified negative. Only an
+                # explicit caller contract (human confirmation or trusted import)
+                # may write confirmed_empty.
+                default_state = row.get('annotation_state') or ('annotated' if boxes else 'unannotated')
                 state, scope = normalize_annotation_contract(
                     boxes, default_state, row.get('annotation_scope'), row.get('confirmed_empty_scope'),
                 )
