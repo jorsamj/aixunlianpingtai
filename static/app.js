@@ -768,8 +768,8 @@ window.installUsability417=function(){
   const baseSetPage417=window.setPage;
   window.setPage=function(page){window.toggleMobileSidebarV37?.(false);return baseSetPage417?.(page)};try{setPage=window.setPage}catch(_){}
   const baseRender417=render;
-  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.23.0';if(footer)footer.textContent='v42.23.0';return result};
-  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.23.0';if(footer)footer.textContent='v42.23.0'},delay));
+  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0';return result};
+  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0'},delay));
   if(state.page==='数据集')renderDatasets424();
 };
 
@@ -1318,7 +1318,7 @@ window.installUsability417=function(){
 // v34 UI/UX + persistence patch
 // ============================================================
 (function(){
-  const APP_VERSION='42.23.0';
+  const APP_VERSION='42.24.0';
   const UI_STORE_KEY='mc_train_ui_state_v34';
   const lastState=(()=>{try{return JSON.parse(localStorage.getItem(UI_STORE_KEY)||'{}')}catch{return {}}})();
   state.versionInfo=null;
@@ -1495,7 +1495,7 @@ window.installUsability417=function(){
 // v35: usable config menu, model configs, prompt library, stable resource detection
 // ============================================================
 (function(){
-  const APP_VERSION_V35='42.23.0';
+  const APP_VERSION_V35='42.24.0';
   state.modelConfigs=[];
   state.promptTemplates=[];
   state.autoLabelTab='task';
@@ -1671,7 +1671,7 @@ window.installUsability417=function(){
   };
 
   // Render now if already loaded
-  setTimeout(()=>{ if(state?.project){ state.versionInfo={...(state.versionInfo||{}),version:'42.23.0'}; render(); }},80);
+  setTimeout(()=>{ if(state?.project){ state.versionInfo={...(state.versionInfo||{}),version:'42.24.0'}; render(); }},80);
 })();
 
 // ============================================================
@@ -1688,7 +1688,7 @@ window.installUsability417=function(){
   };
 
   const oldRenderTopV36 = renderTop;
-  renderTop = function(){ oldRenderTopV36(); if($('#versionBadge')) $('#versionBadge').textContent='v42.23.0'; };
+  renderTop = function(){ oldRenderTopV36(); if($('#versionBadge')) $('#versionBadge').textContent='v42.24.0'; };
 
   window.importData=function(){
     modal('导入素材 / 标注',`<div class="form">
@@ -1760,14 +1760,14 @@ window.installUsability417=function(){
   };
 
   // Keep the existing dataset page clean; the “导入标注” button now covers file upload and address reading.
-  setTimeout(()=>{ if(state?.project){ state.versionInfo={...(state.versionInfo||{}),version:'42.23.0'}; render(); }},100);
+  setTimeout(()=>{ if(state?.project){ state.versionInfo={...(state.versionInfo||{}),version:'42.24.0'}; render(); }},100);
 })();
 
 // ============================================================
 // v37: page hierarchy, compact dashboard, sidebar and modal polish
 // ============================================================
 (function(){
-  const V37_VERSION='42.23.0';
+  const V37_VERSION='42.24.0';
   const MENU_GROUPS=[
     {title:'资产中心',items:['工作台','算法列表']},
     {title:'数据中心',items:['数据集','视频切帧','自动标注']},
@@ -1873,7 +1873,7 @@ window.installUsability417=function(){
 // v39: 部署转换中心 - 真实 ONNX / TensorRT / BMODEL / OM 工具链
 // ============================================================
 (function(){
-  const V39='42.23.0';
+  const V39='42.24.0';
   state.deployResources=[];state.deploySources=[];state.deployJobs=[];state.deployArtifacts=[];
   state.deployTarget=state.deployTarget||'onnx';state.deployLoaded=false;state.deployPresetSourceId='';
   const TARGETS={
@@ -2088,14 +2088,14 @@ window.installUsability417=function(){
   window.openDeployResourceModal=()=>{oldOpen();addRockchipOption()};
   window.editDeployResource=id=>{oldEdit(id);addRockchipOption();const r=(state.deployResources||[]).find(x=>x.id===id);if(r?.kind==='rockchip'){const k=document.getElementById('drKind');if(k)k.value='rockchip';toggleDeployResourceFields()}};
 
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v42.23.0'},150);
+  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v42.24.0'},150);
 })();
 
 // ============================================================
 // v42: 简单操作 + 持续迭代闭环
 // ============================================================
 (function(){
-  const V42='42.23.0';
+  const V42='42.24.0';
   state.v42={templates:[],sources:[],policies:[],runs:[],quality:null,blueprints:[],loaded:false};
   const oldRender42=render, oldNav42=renderNav, oldTop42=renderTop;
   const CORE_MENUS=[
@@ -2254,7 +2254,7 @@ window.installUsability417=function(){
 // v42.1 final UI cleanup: brand + remove tutorial/helper copy.
 // ============================================================
 (function(){
-  const V='42.23.0';
+  const V='42.24.0';
   const baseTop=renderTop;
   renderTop=function(){
     baseTop();
@@ -2296,7 +2296,7 @@ window.installUsability417=function(){
 // v42.2 — information architecture + usable sources + auto-label jobs
 // ============================================================
 (function(){
-  const V422='42.23.0';
+  const V422='42.24.0';
   state.source422Filters={q:'',type:'all',status:'all',mode:'all'};
   state.auto422Filters={q:'',status:'all',model:'all',dataset:'all'};
   state.auto422Images=[];
@@ -2468,7 +2468,7 @@ window.installUsability417=function(){
 // v42.3 — algorithm asset hierarchy + version deployments + training task first
 // ============================================================
 (function(){
-  const V423='42.23.0';
+  const V423='42.24.0';
   state.alg423Expanded=state.alg423Expanded||{};
   state.train423AlgorithmId=state.train423AlgorithmId||'';
   state.train423Edit=false;
@@ -2585,7 +2585,7 @@ window.installUsability417=function(){
 // v42.4 — single data pool + quality center + usable task flows
 // ============================================================
 (function(){
-  const V424='42.23.0';
+  const V424='42.24.0';
   state.data424Tab=state.data424Tab||'unassigned';
   state.data424Label=state.data424Label||'all';
   state.data424Selected=state.data424Selected||new Set();
@@ -2786,7 +2786,7 @@ window.installUsability417=function(){
    v42.5 — mature training workflow + visual data picker + reports
    ============================================================ */
 (()=>{
-  const V425='42.23.0';
+  const V425='42.24.0';
   const prevLoad425=loadRelated;
   loadRelated=async function(){
     await prevLoad425();
@@ -2903,7 +2903,7 @@ var taskStatus424 = window.taskStatus424 = window.taskStatus424 || function(t){c
 var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){const e=Object.entries(scores||{});if(!e.length)return'';const cx=150,cy=142,R=96,n=e.length,pts=r=>e.map((_,i)=>{const a=-Math.PI/2+i*2*Math.PI/n;return`${cx+Math.cos(a)*r},${cy+Math.sin(a)*r}`}).join(' ');const value=e.map(([k,v],i)=>{const a=-Math.PI/2+i*2*Math.PI/n,r=R*Math.max(0,Math.min(100,Number(v||0)))/100;return`${cx+Math.cos(a)*r},${cy+Math.sin(a)*r}`}).join(' ');const labels=e.map(([k,v],i)=>{const a=-Math.PI/2+i*2*Math.PI/n,x=cx+Math.cos(a)*(R+25),y=cy+Math.sin(a)*(R+25);return`<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="middle">${esc(k)} ${Number(v||0).toFixed(0)}</text>`}).join('');return`<svg class="radar424 ${cls}" viewBox="0 0 300 285">${[.25,.5,.75,1].map(x=>`<polygon points="${pts(R*x)}" class="radar-grid424"/>`).join('')}<polygon points="${value}" class="radar-value424"/>${labels}</svg>`};
 
 (()=>{
-  const V426='42.23.0';
+  const V426='42.24.0';
   state.data426Labels=state.data426Labels||new Set();
   state.data426Page=state.data426Page||1; state.data426PageSize=48;
   state.data426DeleteMode=false; state.data426MoveMode=false;
@@ -3004,7 +3004,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    v42.7 — ordinary-user curation + AI-assisted training
    ============================================================ */
 (()=>{
-  const V427='42.23.0';
+  const V427='42.24.0';
   state.v427Advanced = localStorage.getItem('cl_v427_advanced')==='1';
   state.v427OpsTab = state.v427OpsTab || 'label';
   state.v427TaskMinimized = null;
@@ -3104,7 +3104,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
              timestamp versions and version-level conversions
    ============================================================ */
 (()=>{
-  const V428='42.23.0';
+  const V428='42.24.0';
   const DONE428=new Set(['done','finished','completed','failed','stopped']);
   const ACTIVE428=new Set(['queued','running','paused','waiting','pending']);
   const TARGET_NAMES428={ascend:'华为 Atlas / Ascend OM',rockchip:'瑞芯微 RKNN',sophon:'算能 Sophon / BModel',onnx:'ONNX',tensorrt:'NVIDIA TensorRT',paddle_inference:'Paddle Inference'};
@@ -3253,7 +3253,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    v42.9 — algorithm report + processed data pool + faster review
    ============================================================ */
 (()=>{
-  const V429='42.23.0';
+  const V429='42.24.0';
   state.data429Tab=state.data429Tab||'unprocessed';
   state.data429Labels=state.data429Labels||new Set();
   state.data429Page=state.data429Page||1;
@@ -3370,7 +3370,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    v42.10 — resilient ZIP import + staged progress
    ============================================================ */
 (()=>{
-  const V410='42.23.0';
+  const V410='42.24.0';
   const fmt410=s=>{s=Math.max(0,Number(s||0));if(s<60)return `${s.toFixed(s<10?1:0)}秒`;const m=Math.floor(s/60),r=Math.round(s%60);return `${m}分${r}秒`};
   const mb410=n=>(Number(n||0)/1024/1024).toFixed(1)+' MB';
   function errText410(xhr){let t=xhr?.responseText||'';try{const j=JSON.parse(t);t=j.detail||j.message||t}catch(e){}return String(t||`上传失败（HTTP ${xhr?.status||0}）`)}
@@ -3408,7 +3408,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    v42.11 — responsive startup + upload task dock + annotation overlays
    ============================================================ */
 (()=>{
-  const V411='42.23.0';
+  const V411='42.24.0';
   state.import411=state.import411||null;
   state.__extrasPromise=null;
 
@@ -3517,7 +3517,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    v42.12 — stability consolidation: fast core, import review, stable data/algorithm pages
    ============================================================ */
 (()=>{
-  const V412='42.23.0';
+  const V412='42.24.0';
   state.data412Tab=state.data412Tab||'processed';
   state.data412Labels=state.data412Labels||new Set();
   state.data412Page=state.data412Page||1;
@@ -3655,7 +3655,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
 /* v42.13 startup prepared snapshot */
 (()=>{
- const V413='42.23.0', sleep=ms=>new Promise(r=>setTimeout(r,ms));
+ const V413='42.24.0', sleep=ms=>new Promise(r=>setTimeout(r,ms));
  window.__v53BootstrapOwned=true;
  function savedProject(){try{return JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}').projectId||''}catch(e){return ''}}
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0)));return `<div class="boot413"><div class="boot413-card"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span>${esc(st?.stage||'正在启动')}</span><b>${Math.round(p)}%</b></div><i><em style="width:${p}%"></em></i><p>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
@@ -3676,7 +3676,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  * - charted training data-quality report
  * ============================================================ */
 (()=>{
-  const V414='42.23.0';
+  const V414='42.24.0';
   window.__v414UploadDecision=true;
   state.label414Usage=state.label414Usage||[];
   state.batch414Selected=state.batch414Selected||new Set();

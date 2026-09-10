@@ -5,8 +5,8 @@
 - 工作分支：`feat/windows-p0`
 - 稳定主分支：`main`
 - Codex WIP 接管起点：`f42313f`
-- 当前版本：`42.23.0`
-- 当前阶段：**功能代码已收口；按用户要求未运行本轮最终全量回归，等待最小人工验收**
+- 当前版本：`42.24.0`
+- 当前阶段：**功能代码与发布元数据已收口；本轮仅做 Windows 工作树差异核对，等待真实环境验收**
 - 合并要求：在 Windows 前端、后端回归、Playwright、真实对象存储验证完成前，不合并 `main`。
 
 ## 不得回退的产品约束
@@ -125,7 +125,18 @@
 - `ModelResolver` 按环境目录、Ultralytics `weights_dir`、扫描缓存、项目模型目录、平台缓存、当前目录解析；官方 YOLO 名称找不到时返回 missing/downloadable，不把环境标为 failed。
 - 前端已接入一键检测、深度检测、全机模型扫描、真实进度和显式环境选择；未自动选择第一条环境。
 
+## v42.24.0：标注导入、持久批处理与 GPU 资源合同
+
+- YOLO 导入支持 `import_format=yolo`、相对 `dataset_yaml`、`names` 类别解析和确认阶段 `label_mapping/create_labels/accept_quality_report`；正式标注写入 `annotated`，合法空标签写入 `confirmed_empty`，确认时冻结选择并在索引阶段复核内容哈希。
+- `/api/v62/projects/{project_id}/material-batches` 提供估算、创建、状态、取消、失败重试、日志和清洗结果分页。删除索引、删除源文件、无需清洗、`CLEAN` 与 `AI_ANNOTATE` 共用不可变 SQLite 选择 manifest；`CLEAN` 只扫描并待复核，AI Worker 持久化候选后进入现有审核接口。
+- 存储源重扫描接口为 `/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans` 与对应 status/confirm/cancel；先持久化 `NEW/MISSING/CHANGED/UNCHANGED` 清单，再按确认策略更新索引，仍不全量复制外部素材。
+- 训练工作包只含独立复制文件并拒绝链接/reparse point。任务、分配记录、Worker argv、job/result 贯穿 `requested_device / assigned_device / actual_device`；GPU Resource Manager 负责可见设备校验、显存 reservation、admission 和租约 fencing，自动策略记录最终 batch/workers/cache、原因、GPU/CPU/IO 样本、epoch 时长与吞吐。
+- 默认 Worker 对同一数据目录、主机、角色和 slot 实施单实例保护；有意并行必须显式命名 `--worker-slot`/`--training-slot`。启动 bootstrap 改为计数和当前页的有界读取，不再在刷新时加载完整素材池或阻塞等待资源全盘扫描。
+- 兼容边界：既有 v61 素材/存储导入 API、精确图片 ID 训练合同和旧任务读取保持不变；本轮没有改写历史 API 版本号，也不把 Paddle 或远程训练描述为已纳入本机 Ultralytics Worker。
+
 ## 当前未验证 / 不得误报完成
+
+v42.24.0 本轮未执行实际启动、浏览器 E2E 或自动化测试，只做 Windows 工作树发布差异核对。以下均为 **NOT VERIFIED**：真实 20k 数据集重跑、真实付费 AI、真实 OSS/S3/Remote 标注导入、A800 多 GPU 调度/共享/资源参数/吞吐。不得宣称百万规模端到端已验证；历史 Windows 测试证据也不能替代这些真实环境验收。
 
 ### 1. v42.23.0 最终回归与最新 UI 浏览器 E2E
 
@@ -186,8 +197,9 @@
 
 Codex 额度耗尽前报告过：`318 passed, 4 skipped`，但那是人工接管前的版本，不能覆盖 42.22.1~42.23.0。
 
-当前必须写成（历史证据与 v42.23.0 本轮验证范围分开）：
+历史 v42.23.0 证据与 v42.24.0 本轮验证范围必须分开：
 
+- v42.24.0：仅发布差异核对；未运行实际启动、自动化测试或浏览器 E2E
 - 代码提交到 `feat/windows-p0`：是
 - 静态审查：已做
 - NVIDIA Launcher 定向测试：`29 passed`（策略测试；非真机 CUDA）
@@ -205,7 +217,7 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 
 1. `git checkout feat/windows-p0`
 2. `git pull --ff-only origin feat/windows-p0`
-3. 确认 `VERSION.txt = 42.23.0`
+3. 确认 `VERSION.txt = 42.24.0`
 4. 先跑定向测试：
    - `tests/unit/test_material_repository.py`
    - `tests/unit/test_material_repository_batch.py`
