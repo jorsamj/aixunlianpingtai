@@ -23,8 +23,6 @@ class WorkerOutcome:
 
 
 def load_task_images(project_id: str, image_ids: Iterable[str]) -> list[dict[str, Any]]:
-    # Imported only while executing a claimed task. Worker registration and
-    # health checks stay independent from the web application module.
     from app import load_images, storage_manager
 
     ordered_ids = [str(value) for value in image_ids]
@@ -98,33 +96,48 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     }
 
 
-def _freeze_review_scope(context, runtime_request: dict[str, Any]) -> list[str]:
-    """Freeze the exact stable-label scope a human review will confirm.
+def _stable_scope_for_codes(project_id: str, labels: list[str]) -> list[str]:
+    """Resolve requested label codes to immutable project label IDs."""
+    from app import get_project, project_label_items
 
-    A reviewed AI result is Ground Truth only for the labels that were actually
-    requested from the model. Codes are not sufficient for this contract;
-    training consumes immutable stable label IDs.
-    """
-    catalog = [dict(item) for item in runtime_request.get("label_catalog") or []]
-    label_ids = list(dict.fromkeys(
-        str(item.get("label_id") or "").strip()
-        for item in catalog
-        if str(item.get("label_id") or "").strip()
+    schema = {
+        str(item.get("code") or ""): str(item.get("label_id") or "").strip()
+        for item in project_label_items(get_project(project_id))
+        if str(item.get("status") or "active") == "active"
+    }
+    missing = [code for code in labels if not schema.get(code)]
+    if missing:
+        raise ValueError("annotation review labels have no stable label_id: " + ", ".join(missing))
+    return [schema[code] for code in labels]
+
+
+def _freeze_review_scope(context, runtime_request: dict[str, Any]) -> list[str]:
+    """Freeze the exact stable-label scope a human review will confirm."""
+    labels = list(dict.fromkeys(
+        str(value).strip() for value in runtime_request.get("labels") or [] if str(value).strip()
     ))
-    labels = [str(value) for value in runtime_request.get("labels") or [] if str(value)]
-    # Injected test annotators do not build a runtime catalog. They can still
-    # exercise generation, but cannot be committed as scoped GT without an
-    # explicit contract artifact.
-    if catalog and len(label_ids) != len(catalog):
-        raise ValueError("annotation label catalog is missing stable label_id")
-    if catalog and len(label_ids) != len(labels):
-        raise ValueError("annotation review scope does not match requested labels")
-    if label_ids:
-        context.artifacts.atomic_write_json(context.task.task_id, "review-scope.json", {
-            "schema_version": 1,
-            "labels": labels,
-            "label_ids": label_ids,
-        })
+    if not labels:
+        raise ValueError("annotation review scope has no requested labels")
+    catalog = [dict(item) for item in runtime_request.get("label_catalog") or []]
+    by_code = {
+        str(item.get("code") or ""): str(item.get("label_id") or "").strip()
+        for item in catalog
+        if str(item.get("code") or "")
+    }
+    # Older app catalog entries contain code/class_id but no stable label_id.
+    # Resolve from the authoritative project label schema rather than inventing
+    # an ID or storing transient class indices as Ground Truth scope.
+    if any(not by_code.get(code) for code in labels):
+        label_ids = _stable_scope_for_codes(context.task.project_id, labels)
+    else:
+        label_ids = [by_code[code] for code in labels]
+    if len(set(label_ids)) != len(labels):
+        raise ValueError("annotation review scope contains duplicate stable label_id")
+    context.artifacts.atomic_write_json(context.task.task_id, "review-scope.json", {
+        "schema_version": 1,
+        "labels": labels,
+        "label_ids": label_ids,
+    })
     return label_ids
 
 
@@ -332,9 +345,6 @@ def commit_candidate_decisions(
         previous_scope = [str(value) for value in previous_annotation.get("annotation_scope") or [] if str(value)]
         final_scope = list(dict.fromkeys([*previous_scope, *confirmed_scope]))
         final_state = "annotated" if final_boxes else "confirmed_empty"
-        # Human acceptance confirms the complete result for the frozen requested
-        # labels, even when boxes are unchanged/empty. Therefore scope must be
-        # persisted on every accepted item instead of only when boxes changed.
         write_formal_annotation(
             project_id,
             image_id,
