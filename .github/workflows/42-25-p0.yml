@@ -31,6 +31,8 @@ jobs:
         run: >-
           python -m py_compile
           platform_core/training_splits.py
+          platform_core/training_labels.py
+          platform_core/training_preflight.py
           platform_core/annotation_repository.py
           platform_core/algorithms.py
           platform_core/training_tasks.py
@@ -39,6 +41,7 @@ jobs:
         run: >-
           python -m pytest
           tests/unit/test_training_splits.py
+          tests/unit/test_training_labels.py
           tests/unit/test_annotation_repository.py
           tests/unit/test_algorithms.py
           tests/unit/test_conversion_tasks.py
