@@ -4143,7 +4143,16 @@ window.installUsability417?.();
     parameters.gpu_policy=document.getElementById('trV3GpuPolicy')?.value||c.gpu_policy||'auto';
     if(!parameters.device||!(state.trainingDevicesV3?.options||[]).some(row=>row.id===parameters.device&&row.available!==false))return toast('请重新打开训练窗口并选择可用设备');
     parameters.batch=c.batch??8;
-    try{const payload=trainingApi().buildTrainingPayload({splitMode:s.mode,trainImageIds:[...s.train],testImageIds:[...s.test],trainingLabelIds:[...labelState().selected],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),response=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${response.task?.id||''}`)}catch(error){toast(error.message||error)}
+    try{
+      const payload=trainingApi().buildTrainingPayload({splitMode:s.mode,trainImageIds:[...s.train],testImageIds:[...s.test],trainingLabelIds:[...labelState().selected],experimentPercent:s.experiment,validationPercent:s.validation,parameters});
+      const preflight=await api(`/api/v63/projects/${pid()}/training-preflight`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      if(preflight.ok===false){toast((preflight.blockers||[]).map(row=>row.message).join('；')||'训练预检未通过');return}
+      const counts=preflight.counts||{},labelNames=(preflight.labels||[]).map(row=>row.display_name||row.code).join('、');
+      const accepted=window.confirm(`训练前预检\n\n素材：${preflight.selected_image_count||0} 张\n训练 / 验证 / 试验：${counts.train??'待固化'} / ${counts.validation??'待固化'} / ${counts.test??'待固化'}\n训练标签：${labelNames||'无'}\n\n确认后进入后台队列；Worker 启动前会再次执行文件、作用域、资源与设备权威检查。`);
+      if(!accepted)return;
+      const response=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${response.task?.id||''}`)
+    }catch(error){toast(error.message||error)}
   };
   const historicalLog=window.showTrainLog423;
   window.showTrainLog423=async function(id){
@@ -4152,7 +4161,8 @@ window.installUsability417?.();
       if(!job.task_id)return historicalLog?.(id);
       const e=job.device_evidence||{},r=job.resolved_resources||{},m=job.runtime_metrics||{},args=job.actual_train_params||{},diagnosis=m.diagnostic||{};
       const labels={memory_pressure_oom:'显存不足，已触发 OOM',cpu_bottleneck:'CPU 供给不足',io_bottleneck:'数据读取受限',gpu_saturated:'GPU 持续繁忙',insufficient_samples:'采样不足',unknown:'暂无足够证据'};
-      const rows=[['请求设备',job.requested_device],['分配设备',job.assigned_device],['实际设备',job.actual_device],['GPU 名称',e.gpu_name],['GPU UUID',e.gpu_uuid],['GPU 索引',e.gpu_index],['进程 PID',e.pid],['Torch / CUDA',`${e.torch_version||'—'} / ${e.cuda_version||'—'}`],['实际 batch',args.batch??r.resolved_batch],['实际 workers',args.workers??r.resolved_workers],['实际 cache',args.cache??r.resolved_cache],['运行诊断',labels[diagnosis.code]||diagnosis.code||'等待采样']];
+      const pf=job.preflight||{},pfText=pf.ok===true?'通过':pf.ok===false?`阻断：${(pf.blockers||[]).map(row=>row.message).join('；')}`:'等待执行';
+      const rows=[['训练预检',pfText],['请求设备',job.requested_device],['分配设备',job.assigned_device],['实际设备',job.actual_device],['GPU 名称',e.gpu_name],['GPU UUID',e.gpu_uuid],['GPU 索引',e.gpu_index],['进程 PID',e.pid],['Torch / CUDA',`${e.torch_version||'—'} / ${e.cuda_version||'—'}`],['实际 batch',args.batch??r.resolved_batch],['实际 workers',args.workers??r.resolved_workers],['实际 cache',args.cache??r.resolved_cache],['运行诊断',labels[diagnosis.code]||diagnosis.code||'等待采样']];
       const log=await safe(api(`/api/projects/${pid()}/jobs/${id}/log`))||'';
       modal('训练运行中心',`<div class="trainlog428"><h2>${esc(job.message||job.status||'等待执行')}</h2><p>Epoch ${esc(String(job.current_epoch||0))} / ${esc(String(job.total_epochs||job.epochs||'—'))}</p><table class="table"><tbody>${rows.map(([label,value])=>`<tr><th>${esc(label)}</th><td>${esc(value==null?'尚未产生':String(value))}</td></tr>`).join('')}</tbody></table><p>${esc((r.reasons||[]).join('；'))}</p><details><summary>工程师技术日志</summary><pre class="log">${esc(log)}</pre></details><div class="row end"><button class="btn" onclick="showTrainLog423('${id}')">刷新</button><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true);
     }catch(error){toast(error.message||error)}

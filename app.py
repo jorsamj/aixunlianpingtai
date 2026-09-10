@@ -107,6 +107,7 @@ from platform_core.task_runtime import (
 )
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_labels import aggregate_training_labels, freeze_training_labels
+from platform_core.training_preflight import preview_preflight
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
 from platform_core.gpu_resources import GPUResourceManager
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
@@ -5545,6 +5546,35 @@ def available_training_labels(project_id: str, payload: TrainingLabelQuery):
         return aggregate_training_labels(
             project_dir(project_id), payload.train_image_ids, payload.test_image_ids,
             active_label_options(project_label_items(project)),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/v63/projects/{project_id}/training-preflight")
+def training_preflight_preview(project_id: str, payload: TrainReq):
+    """Return a non-mutating preview; the Worker repeats authoritative checks before training."""
+    project = get_project(project_id)
+    validate_train_request(payload)
+    try:
+        split = _explicit_training_split(payload)
+        label_report = aggregate_training_labels(
+            project_dir(project_id),
+            split.train_image_ids,
+            split.test_image_ids,
+            active_label_options(project_label_items(project)),
+        )
+        frozen = freeze_training_labels(label_report, payload.training_label_ids)
+        return preview_preflight(
+            label_report,
+            frozen,
+            {
+                "mode": split.mode.value,
+                "train_image_ids": list(split.train_image_ids),
+                "test_image_ids": list(split.test_image_ids),
+                "experiment_percent": split.experiment_percent,
+                "validation_percent": split.validation_percent,
+            },
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

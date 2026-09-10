@@ -30,6 +30,7 @@ from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
 from .training_labels import verify_frozen_training_contract
+from .training_preflight import authoritative_preflight, require_preflight
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -937,18 +938,36 @@ class TrainingHandler:
             )
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 10, "materializing")
-        bundle = materialize_portable_dataset(
-            context.artifacts.artifact_path(context.task.task_id, "work/training-runtime"),
-            snapshot,
-            images,
-            lambda row: storage.materialize(row).path,
-            roles=("train", "validation"),
-        )
-        verification = verify_portable_dataset(bundle / "manifest.json")
-        training_yaml = resolve_dataset_yaml(bundle / "manifest.json")
-        training_yaml_value = yaml.safe_load(training_yaml.read_text(encoding="utf-8")) or {}
-        if "test" in training_yaml_value:
-            raise ValueError("TEST_DATA_LEAKAGE: training runtime YAML exposes the sealed test split")
+        try:
+            bundle = materialize_portable_dataset(
+                context.artifacts.artifact_path(context.task.task_id, "work/training-runtime"),
+                snapshot,
+                images,
+                lambda row: storage.materialize(row).path,
+                roles=("train", "validation"),
+            )
+            verification = verify_portable_dataset(bundle / "manifest.json")
+            training_yaml = resolve_dataset_yaml(bundle / "manifest.json")
+            training_yaml_value = yaml.safe_load(training_yaml.read_text(encoding="utf-8")) or {}
+            if "test" in training_yaml_value:
+                raise ValueError("TEST_DATA_LEAKAGE: training runtime YAML exposes the sealed test split")
+        except Exception as error:
+            failed_preflight = {
+                "schema_version": 1,
+                "status": "BLOCKED",
+                "ok": False,
+                "stage": "materializing",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "snapshot_id": snapshot.get("snapshot_id"),
+                "counts": snapshot.get("counts") or {},
+                "blockers": [{
+                    "code": "TRAINING_MATERIALIZATION_FAILED",
+                    "message": str(error),
+                }],
+                "warnings": [],
+            }
+            context.artifacts.atomic_write_json(context.task.task_id, "preflight-report.json", failed_preflight)
+            raise
         _append_access_evidence(
             context,
             "training_runtime_materialized",
@@ -1021,6 +1040,34 @@ class TrainingHandler:
             "resource_strategy": payload.get("resource_strategy", "auto"),
         }
         atomic_write_json(job_file, job)
+        preflight = authoritative_preflight(
+            snapshot,
+            images,
+            payload,
+            device_evidence=device_evidence,
+            resource_context=resource_context,
+            workspace=context.artifacts.artifact_path(context.task.task_id, "work"),
+            bundle_manifest_path=bundle / "manifest.json",
+        )
+        context.artifacts.atomic_write_json(context.task.task_id, "preflight-report.json", preflight)
+        job["preflight_ref"] = "preflight-report.json"
+        job["preflight"] = {
+            "ok": bool(preflight.get("ok")),
+            "blockers": list(preflight.get("blockers") or []),
+            "warnings": list(preflight.get("warnings") or []),
+            "counts": dict(preflight.get("counts") or {}),
+        }
+        if preflight.get("ok") is not True:
+            first_blocker = (preflight.get("blockers") or [{}])[0]
+            job.update(
+                status="failed",
+                stage="preflight_blocked",
+                message=str(first_blocker.get("message") or "训练预检未通过"),
+                artifact_verified=False,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+            )
+        atomic_write_json(job_file, job)
+        require_preflight(preflight)
         argv = _training_argv(
             self.data_dir,
             project,
