@@ -1,7 +1,7 @@
 # Frontend Legacy Runtime Audit
 
 > Branch: `refactor/frontend-runtime-stabilization`  
-> Purpose: cleanup map for the classic frontend before later Vue/TypeScript replacement.  
+> Purpose: cleanup map for the classic frontend before any later framework replacement.  
 > Current work order is **technical-debt closure first**, not A800 acceptance.  
 > For status precedence, read `docs/TECH_DEBT_CLOSURE_V42_25.md` first.
 
@@ -27,22 +27,15 @@ static/app.js historical shell
 
 No new numbered override generation (`train430`, etc.) is allowed.
 
-Removed compatibility shims already include:
-
-```text
-static/training-label-bootstrap.js
-static/training-label-v3-anchor.js
-```
-
-One-shot migration workflows/helpers used for exact `app.js` retirement must be deleted after migration + regression success.
+One-shot migration helpers/workflows must be removed after the guarded migration and regression pass. The canonical training migration helper/workflow has already been deleted.
 
 ## 2. Established owners
 
 ### Navigation
 `NavigationStability` owns navigation stabilization. Do not restore MutationObserver + global `window.render()` repair loops.
 
-### Page request scope
-`PageRequestScope` scopes same-origin `/api/*` GET/HEAD requests to the active page. New named runtimes should prefer explicit lifecycle/generation ownership over relying on quarantine behavior.
+### Page requests
+`PageRequestScope` scopes same-origin `/api/*` GET/HEAD work to the active page. Named runtimes should still prefer explicit lifecycle/generation ownership.
 
 ### Algorithms
 Owner: `static/modules/algorithm-list-runtime.js`.
@@ -63,7 +56,7 @@ manual refresh completion         → re-arm managed poll timer
 Real Chrome requires exactly one `/jobs` GET per manual refresh.
 
 ### Datasets/materials
-Owner: `static/modules/material-pagination-runtime.js`. Routine operations patch the material grid/counts/pager rather than rebuilding unrelated page state.
+Owner: `static/modules/material-pagination-runtime.js`. Routine operations patch only the relevant material UI rather than rebuilding unrelated page state.
 
 ## 3. Canonical training ownership
 
@@ -83,13 +76,17 @@ static/modules/training-submit.js
 static/modules/training-labels.js
 ```
 
-Current key runtime/cache identifiers:
+Current identifiers:
 
 ```text
-TrainingDraftRuntime import   422510
-TrainingSubmitRuntime         training-submit-422504
-TrainingLabelRuntime          module-422507
-TrainingTaskRuntime           training-task-runtime-422503
+app.js cache                      42.25.43
+main.mjs cache                    42.25.40
+training-draft import             422506
+TrainingDraftRuntime import       422511
+TrainingDraftRuntime build        training-draft-runtime-422511
+TrainingLabelRuntime import       422508
+TrainingSubmitRuntime             training-submit-422504
+TrainingTaskRuntime               training-task-runtime-422503
 ```
 
 Final submit chain:
@@ -104,21 +101,30 @@ train-v3 UI
 
 `TrainingSubmitRuntime` is the sole `/train/start` network owner. Permanent CI rejects direct `/train/start` ownership in `static/app.js`.
 
-## 4. Mirror retirement status
+## 4. Five training mirrors are retired
 
-Fully retired from active `static/app.js`:
+Fully retired from active `static/app.js` **and** the core training modules:
 
 ```text
 state.trainingLabelSelected
 state.trainSplitV3
 state.train429Selected
+state.train428AlgorithmId
+state.train428Config
 ```
 
-Permanent CI rejects reintroduction.
+Permanent CI rejects reintroduction in:
+
+```text
+static/app.js
+static/modules/training-draft.js
+static/modules/training-draft-runtime.js
+static/modules/training-labels.js
+```
+
+Tests may deliberately use old field names as stale/pollution fixtures. Product runtimes must ignore these fields and must not use, update, delete, or bootstrap from them.
 
 ### `train429Selected` replacement
-
-The active v3 picker is now canonical-only:
 
 ```text
 TrainingDraftRuntime.materialIds()
@@ -127,47 +133,76 @@ TrainingDraftRuntime.toggleMaterialId(id)
 → state.trainingDraft.materialIds
 ```
 
-This owns picker selected-state, toggle, select-all/invert, summary count, label aggregation, quality checks, projected split counts and wrapper reset behavior. Full acceptance: commit `f45f88f8f64a71a1adaa68e359b6f193297fb6a1`, Frontend Runtime run `34594071998`, Node + Real Chrome green.
+This owns picker selected state, toggle, select-all/invert, summary count, label aggregation, quality checks and projected split counts.
 
-Tests may still deliberately mention `train429Selected` as a stale compatibility fixture; such fixtures are not active UI owners.
-
-Still present as migration debt:
+### `train428AlgorithmId` / `train428Config` replacement
 
 ```text
-state.train428AlgorithmId
-state.train428Config
+algorithm → state.trainingDraft.algorithmId
+config    → state.trainingDraft.config
+resource  → state.trainingDraft.resource
 ```
 
-Important distinction: these may still support historical 428 settings/helpers, but **they are not allowed to own training submission**. Final 429 start/target/engine writers have already been migrated to canonical state.
+They no longer have an active fallback role in TrainingDraft/TrainingLabel modules.
 
-Retirement method:
+## 5. Legacy training bootstrap is retired
+
+`trainingDraftFromLegacyState` has been physically removed.
+
+Missing canonical state now follows:
 
 ```text
-find remaining active read/write
-→ classify compatibility fallback vs unreachable historical block
-→ migrate active fallback
-→ unit proof
-→ Real Chrome proof
-→ physical deletion of dead owner
+no state.trainingDraft
+→ createTrainingDraft()
+→ empty canonical draft
+→ live/current controls may update it
 ```
 
-Do not wholesale-delete all 428 code.
+It does **not** follow:
 
-## 5. TrainingDraft compatibility debt
+```text
+no state.trainingDraft
+→ recover train428AlgorithmId / train429Selected / train428Config
+```
 
-`TrainingDraftRuntime` is canonical-first and no longer mirrors canonical state back into the retired material mirror.
+Do not restore `trainingDraftFromLegacyState`, `bootstrapFromLegacy`, or equivalent compatibility recovery.
 
-It still has bounded compatibility behavior for final classic entrypoints and bootstrap when `trainingDraft` does not yet exist. These wrappers remain debt. Remove only after each underlying final UI action writes canonical state directly and browser parity is proven.
+## 6. TrainingDraft wrapper debt still exists
 
-## 6. TrainingLabel compatibility debt
+Mirror retirement does not mean `TrainingDraftRuntime` is wrapper-free.
 
-`TrainingLabelRuntime` is canonical-first:
+Current wrapper owner: `wrapLegacyMutation()` in `training-draft-runtime.js`.
 
-- current materials come from `trainingDraft.materialIds`;
+Wrapped classic functions:
+
+```text
+startAlgorithmTraining429
+confirmTrainMaterialPickerV3
+setTrainSplitModeV3
+saveTrainSettings428
+```
+
+Behavior today:
+
+```text
+classic action invoked
+→ wrapper derives canonical patch
+→ TrainingDraftRuntime.update()
+→ original classic callback runs
+→ TrainingDraftRuntime.sync()
+```
+
+`destroy()` restores originals. This is explicit technical debt. The next cleanup pass should prove each underlying final classic function writes canonical state directly, then remove the wrapper branch instead of adding another compatibility layer.
+
+## 7. TrainingLabel lifecycle debt still exists
+
+`TrainingLabelRuntime` is canonical for data selection:
+
+- current v3 materials come from `trainingDraft.materialIds`;
 - label selection writes `trainingDraft.newLabelCodes`;
-- polluted legacy values must not alter final label/request state.
+- it no longer falls back to `train429Selected` / `train428AlgorithmId`.
 
-Remaining compatibility machinery includes:
+Remaining lifecycle machinery:
 
 ```text
 wrapped entrypoints:
@@ -188,26 +223,27 @@ rebind timers:
 modal MutationObserver
 ```
 
-These are explicit cleanup targets, not final architecture.
+These are cleanup targets, not final architecture.
 
-## 7. Physically retired training owners
+## 8. Physically retired training owners
 
-Already removed from `static/app.js`:
+Already removed from active classic code:
 
-1. final `renderSplit()` submit-button legacy disabled writer;
-2. `refreshProjected417()` submit-button legacy disabled writer;
-3. all historical direct `/train/start` functions (3 × `submitTrain429` plus 9 earlier implementations);
-4. final v3 resource controls' `train428Config` double writers;
-5. final 429 start/target/engine active mirror writers;
-6. all active `train429Selected` readers/writers.
+1. historical submit-button disabled writers;
+2. all classic direct `/train/start` implementations;
+3. v3 resource controls' `train428Config` double writers;
+4. final 429 start/target/engine writes to `train428AlgorithmId/train428Config`;
+5. all active `train429Selected` readers/writers;
+6. old 428 unreachable training create block;
+7. `trainingDraftFromLegacyState` compatibility adapter.
 
 Do not restore them.
 
-## 8. Polling/timer debt
+## 9. Polling/timer debt
 
-Named `PollRegistry` paths cover principal managed polling, but classic timers still need retirement proof.
+Named `PollRegistry` paths cover principal managed polling, but classic timers still need physical retirement proof.
 
-High-value targets:
+Targets:
 
 ```text
 auto422Timer
@@ -218,11 +254,11 @@ AutoLabel rebind timers
 TrainingLabel rebind/refresh timers
 ```
 
-A legacy timer is not considered closed merely because another runtime later clears it. Obsolete timer creation must be physically removed.
+A timer is not closed merely because another runtime later clears it.
 
-## 9. Global render/override debt
+## 10. Global render/override debt
 
-`static/app.js` still contains multiple historical override layers such as:
+`static/app.js` still contains historical override layers such as:
 
 ```text
 render = ...
@@ -234,11 +270,11 @@ renderXXX428
 renderXXX429
 ```
 
-Create/maintain a final owner table before deletion. Delete a classic owner only after replacement has unit + real-browser parity. Do not add another override layer to hide an old override.
+Maintain a final-owner table before deletion. Delete only after replacement has unit + browser parity. Never add a newer override layer to hide an older one.
 
-## 10. Global reload/request debt
+## 11. Global reload/request debt
 
-Scan remaining paths for unnecessary cross-domain reloads:
+Scan remaining paths:
 
 ```text
 loadAll()
@@ -247,11 +283,11 @@ loadCore412()
 render()
 ```
 
-A local mutation should use the narrowest authoritative API/runtime refresh possible. Already-optimized algorithm list, training-task and material behavior must not regress.
+A local mutation should use the narrowest authoritative refresh possible. Algorithm-list, training-task and material optimizations must not regress.
 
-## 11. Observer/wrapper lifecycle audit
+## 12. Observer/wrapper lifecycle audit
 
-Perform a zero-point scan for:
+Zero-point scan targets:
 
 ```text
 MutationObserver
@@ -262,22 +298,24 @@ render =
 window.setPage =
 ```
 
-For every surviving instance document creator, final owner, creation condition, cleanup/destroy point, cross-page behavior, and whether it is still required.
+For every surviving instance record creator, final owner, creation condition, destroy point and cross-page behavior.
 
-## 12. Cache-busting debt
+## 13. Cache-busting debt
 
-Current resource versions are not unified:
+Current versions are intentionally documented:
 
 ```text
-styles.css / material-pagination bootstrap: 42.24.0-style cache versions
-app.js: 42.25.42
-main.mjs: 42.25.39
-TrainingDraftRuntime import: 422510
+styles.css / material-pagination bootstrap: 42.24.0-style versions
+app.js:                                  42.25.43
+main.mjs:                                42.25.40
+training-draft.js:                       422506
+training-draft-runtime.js:               422511
+training-labels.js:                      422508
 ```
 
-This can still produce mixed browser runtime versions. Design one cache/build version source and migrate all static entry resources to it.
+These are still not unified and can cause mixed runtime versions if future changes forget outer/nested bumps.
 
-## 13. Regression gates
+## 14. Regression gates
 
 Frontend workflow:
 
@@ -285,24 +323,25 @@ Frontend workflow:
 .github/workflows/frontend-runtime-stabilization.yml
 ```
 
-Latest full acceptance point:
+Latest full acceptance:
 
 ```text
-f45f88f8f64a71a1adaa68e359b6f193297fb6a1
-run 34594071998: frontend success + Real Chrome success
+commit f3bae76de68b14b0a2799119de62a9b8ac13acaa
+run    34595909062
+syntax + permanent guards + full frontend unit + Real Chrome: PASS
 ```
 
-Coverage includes syntax checks, permanent retired-mirror guard (`trainSplitV3`, `trainingLabelSelected`, `train429Selected`), canonical network-owner guard, frontend unit tests and Real Chrome runtime regressions.
+The Chrome training test verifies canonical UI state, stale mirror isolation, sole network ownership and actual submit payload.
 
 Release/backend gate remains `.github/workflows/v42.25-release-regression.yml`.
 
-## 14. Current cleanup order
+## 15. Current cleanup order
 
 ```text
-1. finish train428AlgorithmId / train428Config compatibility + old 428 settings/UI cleanup
-2. retire TrainingDraft/TrainingLabel compatibility wrappers where proven obsolete
+1. retire TrainingDraftRuntime classic wrappers one by one after direct-owner proof
+2. retire TrainingLabelRuntime wrappers/rebind timers/refresh timers/MutationObserver
 3. retire old timer/polling owners
-4. establish renderer/setPage owner table and remove obsolete override layers
+4. establish renderer/setPage final-owner table and remove obsolete overrides
 5. reduce app.js proven dead code
 6. eliminate global reload/duplicate-request debt
 7. unify cache-busting
@@ -313,17 +352,18 @@ Release/backend gate remains `.github/workflows/v42.25-release-regression.yml`.
 12. resume A800 RC
 ```
 
-## 15. Non-negotiable rules
+## 16. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. No global render-repair loop.
 3. No page polling that repaints unrelated pages.
 4. No local action that needlessly reloads unrelated domains.
-5. No training request built from project-wide labels.
+5. No project-wide label catalog as task label truth source.
 6. No mother-model class inheritance on first training.
-7. No legacy training mirror may regain submit ownership.
-8. No historical code deletion without replacement proof.
-9. Explicit `false` / `0` resource values must survive UI → draft → request.
-10. Do not weaken performance/ownership tests to hide races.
-11. Frontend/CI acceptance does not replace A800/CUDA acceptance.
-12. A800 remains deferred until the technical-debt ledger allows it.
+7. No retired training mirror may regain truth-source or bootstrap ownership.
+8. No `trainingDraftFromLegacyState` replacement under a new name.
+9. No historical deletion without final-owner proof.
+10. Explicit `false` / `0` resource values must survive UI → draft → request.
+11. Do not weaken performance/ownership tests to hide races.
+12. Frontend/CI acceptance does not replace A800/CUDA acceptance.
+13. A800 remains deferred until the technical-debt ledger permits it.
