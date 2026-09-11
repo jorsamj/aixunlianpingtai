@@ -20,6 +20,35 @@ def _normalize_scope(values) -> list[str]:
     return sorted({str(value).strip() for value in values if str(value).strip()})
 
 
+def _active_project_labels(project_path: Path) -> list[str]:
+    """Return the concrete active label codes known when an empty GT is confirmed.
+
+    Older call sites did not pass ``annotation_scope`` explicitly. Persisting the
+    active label set is safer than storing a timeless ``*`` because projects can
+    gain unrelated labels later. ``*`` remains only as a compatibility fallback
+    when a legacy project has no readable label catalog.
+    """
+    path = project_path / "meta.json"
+    if not path.is_file():
+        return []
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    labels = list(meta.get("labels") or [])
+    metadata = list(meta.get("label_meta") or [])
+    active = []
+    for index, value in enumerate(labels):
+        code = str(value or "").strip()
+        if not code:
+            continue
+        info = metadata[index] if index < len(metadata) and isinstance(metadata[index], dict) else {}
+        if str(info.get("status") or "active").strip().lower() in {"disabled", "inactive"}:
+            continue
+        active.append(code)
+    return _normalize_scope(active)
+
+
 class AnnotationRepository:
     def __init__(self, project_path: str | Path):
         self.project_path = Path(project_path)
@@ -63,6 +92,9 @@ class AnnotationRepository:
             raise ValueError("invalid annotation image_id")
         return image_id
 
+    def _default_negative_scope(self) -> list[str]:
+        return _active_project_labels(self.project_path) or ["*"]
+
     def get(self, image_id):
         image_id = self._id(image_id)
         with closing(self._connect()) as db:
@@ -78,7 +110,7 @@ class AnnotationRepository:
                     box.get('label') or box.get('code') for box in result['boxes']
                 )
             if result['annotation_state'] == 'confirmed_empty' and not result['annotation_scope']:
-                result['annotation_scope'] = ['*']
+                result['annotation_scope'] = self._default_negative_scope()
             return result
         path = self.project_path / 'annotations' / f'{image_id}.json'
         legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
@@ -88,7 +120,7 @@ class AnnotationRepository:
         if state == 'annotated' and not scope:
             scope = _normalize_scope(box.get('label') or box.get('code') for box in boxes)
         if state == 'confirmed_empty' and not scope:
-            scope = ['*']
+            scope = self._default_negative_scope()
         return {
             **legacy,
             'image_id': image_id,
@@ -126,11 +158,7 @@ class AnnotationRepository:
                         box.get('label') or box.get('code') for box in boxes
                     )
                 if state == 'confirmed_empty' and not scope:
-                    # Explicit confirmed-empty means the reviewer/importer verified
-                    # the image against the full active label set at that point.
-                    # '*' keeps this legacy/global scope distinguishable from
-                    # unannotated while allowing future partial scopes by code.
-                    scope = ['*']
+                    scope = self._default_negative_scope()
                 if state == 'unannotated':
                     scope = []
                 boxes_payload = json.dumps(
