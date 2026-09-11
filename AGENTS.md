@@ -11,7 +11,8 @@
 5. `docs/superpowers/specs/2026-09-11-training-resource-contract-fix.md` — 2026-09-11 真实 A800 训练暴露的 batch/cache 参数覆盖事故与修复合同。
 6. `docs/superpowers/specs/2026-09-11-negative-sample-contract.md` — `confirmed_empty`、负样本 scope、YOLO 空标签、前端确认动作与训练约束。
 7. `docs/superpowers/specs/2026-09-11-training-label-contract.md` — 训练任务标签选择、上一版本继承、母模型标签隔离、task-local class_id 合同。
-8. 对当前工作先执行 `git diff main...HEAD` / `git log main..HEAD`，不要假设 handoff 已覆盖最后一个 commit。
+8. `docs/superpowers/specs/2026-09-11-navigation-stability.md` — 页面 navigation epoch、过期异步渲染 fencing、页面轮询生命周期合同。
+9. 对当前工作先执行 `git diff main...HEAD` / `git log main..HEAD`，不要假设 handoff 已覆盖最后一个 commit。
 
 ## 当前开发状态
 
@@ -24,6 +25,7 @@
 - 训练资源参数覆盖修复已通过定向 Linux CI，但修复后的 A800 实际训练仍需重新验证。
 - 负样本合同已补齐并通过定向 Linux CI：`confirmed_empty` 可训练、scope 锁定、部分 scope 拒绝、空 YOLO label 落盘、0 框 UI 显式确认均已覆盖；A800 真实训练仍需回归。
 - 训练任务级 Label Contract 已实现并通过定向 Linux CI：前端 7/7、Python 61/61；项目全部 active labels 不再作为算法 schema，A800 真实训练仍需确认 Ultralytics 实际 `nc/names`。
+- 页面 Navigation Stability fencing 已实现并通过定向 Linux CI：页面切换采用 navigation epoch；旧页面异步任务返回后不得永久覆盖当前页面；离页时清理已知页面级轮询。
 - 未完成真实环境验证前不要合并 main，也不要把 v42.25 描述成生产已验收。
 
 ## 不得回退的核心合同
@@ -56,6 +58,10 @@
 - `batch=-1` 才表示用户明确委托平台自动选择 batch。
 - `cache=false` 是权威关闭，Auto 不得隐式改成 disk/ram。
 - Auto 不得增加用户指定的 DataLoader workers；`workers=0` 必须保持单进程加载。
+- `state.page` 是浏览器当前页面唯一权威；页面切换必须推进 navigation epoch。
+- 任一页面异步操作在 `await` 后如发现 navigation epoch 已变化，必须视为 stale；不得用旧页面结果永久覆盖当前 `#view`。
+- 页面级轮询必须随页面生命周期清理；后台状态刷新优先更新局部 DOM，不得周期性整页重绘造成表单、滚动位置和选择状态丢失。
+- 新页面不得继续通过“异步请求完成后无条件 `renderXxx()`”的方式抢占路由；需要遵守 navigation ownership。
 
 ## v42.25 主要实现位置
 
@@ -84,6 +90,12 @@
 - `tests/unit/test_training_label_contract.py`
 - `tests/frontend/training-labels.test.mjs`
 
+页面导航稳定性：
+
+- `static/modules/navigation-stability.js`
+- `static/main.mjs`
+- `tests/frontend/navigation-stability.test.mjs`
+
 Task Runtime fencing：
 
 - `platform_core/task_runtime/fenced_repository.py`
@@ -101,9 +113,10 @@ Task Runtime fencing：
 ## 当前后续优先级
 
 1. 用 A800 对当前训练链做真实重跑：确认 `batch=16/workers=4/cache=false` 最终仍是 `16/4/false`；选择 `fire/smoke` 时 Snapshot 和 `data.yaml` 只有 2 类、Ultralytics 日志为 `nc=2`；负样本生成真实空 `.txt`。
-2. 完成一个真实训练版本后再次创建迭代任务，确认上一版本 `fire=0/smoke=1` 自动继承；新增标签只有用户明确勾选才追加且旧 class_id 不重排。
-3. 若仍出现 `Pin memory thread exited unexpectedly`，再单独检查 kernel/cgroup OOM、`/dev/shm`、DataLoader worker/pinned memory，不得用全平台强制 `workers=0` 掩盖问题。
-4. 下一大批做生产安全：`/data` 静态暴露、CORS、SSRF、训练服务器 SecretStore。
+2. 在真实浏览器连续快速切换“训练任务 / 数据集 / 自动标注 / 素材接入”等页面，并在训练任务刷新、暂停、继续请求未返回时立即切页，确认旧请求不会再把页面盖回去；同时检查滚动位置、表单和选择状态没有被后台轮询周期性重置。
+3. 完成一个真实训练版本后再次创建迭代任务，确认上一版本 `fire=0/smoke=1` 自动继承；新增标签只有用户明确勾选才追加且旧 class_id 不重排。
+4. 若仍出现 `Pin memory thread exited unexpectedly`，再单独检查 kernel/cgroup OOM、`/dev/shm`、DataLoader worker/pinned memory，不得用全平台强制 `workers=0` 掩盖问题。
+5. 下一大批做生产安全：`/data` 静态暴露、CORS、SSRF、训练服务器 SecretStore。
 
 ## 修改与交接要求
 
