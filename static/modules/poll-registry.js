@@ -92,20 +92,11 @@ export function installPollRegistry({getState} = {}) {
 
   function state() { return getState?.() || {}; }
 
-  function retireLegacyVideoInterval() {
-    if (window.__videoFramePollTimer != null) {
-      try { clearInterval(window.__videoFramePollTimer); } catch (_) {}
-      window.__videoFramePollTimer = null;
-    }
-  }
-
   function adoptLegacy() {
     const s = state();
     registry.adopt('training-jobs', trainingOwners, s.jobPollTimer);
     registry.adopt('sources', sourceOwner, s.source422Timer);
-    registry.adopt('auto-label', ['自动标注', '自动标注及清洗'], s.auto422Timer);
     registry.adopt('video-frames', videoOwner, s.video424Timer, clearTimeout);
-    registry.adopt('prelabel', ['自动标注', '自动标注及清洗'], window.__prelabelPollTimer);
     return registry.snapshot();
   }
 
@@ -114,15 +105,12 @@ export function installPollRegistry({getState} = {}) {
     const page = String(nextPage || '');
     if (!trainingOwners.includes(page)) s.jobPollTimer = null;
     if (page !== sourceOwner) s.source422Timer = null;
-    if (!['自动标注', '自动标注及清洗'].includes(page)) s.auto422Timer = null;
     if (page !== videoOwner) {
       if (s.video424Timer != null) {
         try { clearTimeout(s.video424Timer); } catch (_) {}
       }
       s.video424Timer = null;
-      retireLegacyVideoInterval();
     }
-    if (!['自动标注', '自动标注及清洗'].includes(page)) window.__prelabelPollTimer = null;
   }
 
   function trainingPollDelay(s) {
@@ -171,7 +159,6 @@ export function installPollRegistry({getState} = {}) {
       s.video424Timer = null;
     }
     registry.clear('video-frames');
-    retireLegacyVideoInterval();
     if (String(s.page || '') !== videoOwner) return null;
     if (!(s.video424 || []).some(videoTaskActive)) return null;
 
@@ -220,7 +207,6 @@ export function installPollRegistry({getState} = {}) {
     wrappedSetupPagePolling = function (...args) {
       const result = current.apply(this, args);
       replaceTrainingJobTimer();
-      retireLegacyVideoInterval();
       adoptLegacy();
       return result;
     };
@@ -228,7 +214,6 @@ export function installPollRegistry({getState} = {}) {
     wrappedSetupPagePolling.__pollRegistryCreationOriginal = current;
     window.setupPagePolling = wrappedSetupPagePolling;
     replaceTrainingJobTimer();
-    retireLegacyVideoInterval();
     adoptLegacy();
     return true;
   }
@@ -342,7 +327,6 @@ export function installPollRegistry({getState} = {}) {
       s.jobPollTimer = null;
       s.source422Timer = null;
       s.video424Timer = null;
-      retireLegacyVideoInterval();
       if (window.PollRegistryRuntime === runtime) window.PollRegistryRuntime = null;
       window.__pollRegistryInstalled = false;
     },

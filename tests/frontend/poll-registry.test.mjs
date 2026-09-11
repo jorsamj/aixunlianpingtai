@@ -72,29 +72,22 @@ test('managed timeout unregisters itself before callback so recursive polling ca
   assert.deepEqual(cleared, []);
 });
 
-test('legacy page timers are adopted and references are cleared when navigating away', () => {
+test('remaining legacy page timers are adopted and references are cleared when navigating away', () => {
   const state = {
     jobPollTimer: 1,
     source422Timer: 2,
-    auto422Timer: 3,
   };
   const cleared = [];
   const originalClearInterval = globalThis.clearInterval;
   globalThis.clearInterval = id => cleared.push(id);
-  globalThis.window = {
-    __videoFramePollTimer: 4,
-    __prelabelPollTimer: 5,
-  };
+  globalThis.window = {};
 
   const runtime = installPollRegistry({getState: () => state});
   runtime.beforeNavigate('数据集');
 
-  assert.deepEqual(cleared.sort((a, b) => a - b), [1, 2, 3, 4, 5]);
+  assert.deepEqual(cleared.sort((a, b) => a - b), [1, 2]);
   assert.equal(state.jobPollTimer, null);
   assert.equal(state.source422Timer, null);
-  assert.equal(state.auto422Timer, null);
-  assert.equal(globalThis.window.__videoFramePollTimer, null);
-  assert.equal(globalThis.window.__prelabelPollTimer, null);
   assert.deepEqual(runtime.snapshot(), []);
 
   runtime.destroy();
@@ -109,7 +102,6 @@ test('final training polling creation is replaced by a PollRegistry-managed inte
     jobs: [{id: 'j1', status: 'running'}],
     jobPollTimer: null,
     source422Timer: null,
-    auto422Timer: null,
   };
   const callbacks = new Map();
   const cleared = [];
@@ -166,7 +158,6 @@ test('final v42.4 video polling uses a managed one-shot and re-arms only while a
     jobs: [],
     jobPollTimer: null,
     source422Timer: null,
-    auto422Timer: null,
     video424: [{id: 'v1', status: 'RUNNING'}],
     video424Timer: null,
   };
@@ -199,7 +190,6 @@ test('final v42.4 video polling uses a managed one-shot and re-arms only while a
     intervals.delete(id);
   };
   globalThis.window = {
-    __videoFramePollTimer: 199,
     PlatformCore: {video: {isActiveVideoTask: task => String(task?.status).toUpperCase() === 'RUNNING'}},
     renderVideo424: async () => {
       state.video424Timer = setTimeout(() => {}, 9999);
@@ -218,7 +208,6 @@ test('final v42.4 video polling uses a managed one-shot and re-arms only while a
   assert.deepEqual(runtime.snapshot().find(row => row.key === 'video-frames'), {
     key: 'video-frames', owners: ['视频切帧'], active: true, managed: true, delay: 2000,
   });
-  assert.ok(clearedIntervals.includes(199), 'legacy v33 video interval should be retired');
   assert.ok(clearedTimeouts.some(id => id !== firstManaged), 'legacy v42.4 timeout should be retired');
 
   await timeouts.get(firstManaged).callback();
@@ -252,7 +241,6 @@ test('source page polling creation is replaced by a PollRegistry-managed interva
     jobs: [],
     jobPollTimer: null,
     source422Timer: null,
-    auto422Timer: null,
   };
   const callbacks = new Map();
   const cleared = [];

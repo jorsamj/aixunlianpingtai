@@ -1287,16 +1287,6 @@ window.installUsability417=function(){
     }
   };
 
-  const _oldSetupPollV33 = typeof setupPagePolling==='function' ? setupPagePolling : function(){};
-  setupPagePolling=function(){
-    _oldSetupPollV33();
-    clearInterval(window.__videoFramePollTimer);
-    clearInterval(window.__prelabelPollTimer);
-    if(state.page==='视频切帧'){
-      window.__videoFramePollTimer=setInterval(()=>refreshVideoTasksOnly(),2500);
-    }
-  };
-
   render=function(){
     renderNav();renderTop();renderSummary();
     ({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,视频切帧:renderVideoFrameTasks,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();

@@ -34,12 +34,6 @@ function clearPageTimers(state, nextPage) {
     clearTimer(state.source422Timer);
     state.source422Timer = null;
   }
-  if (!['自动标注', '自动标注及清洗'].includes(nextPage)) {
-    clearTimer(state.auto422Timer);
-    state.auto422Timer = null;
-  }
-  if (nextPage !== '视频切帧') clearTimer(window.__videoFramePollTimer);
-  if (!['自动标注', '自动标注及清洗'].includes(nextPage)) clearTimer(window.__prelabelPollTimer);
 }
 
 const OWNER_FUNCTIONS = {
