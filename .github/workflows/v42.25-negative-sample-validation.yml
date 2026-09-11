@@ -16,7 +16,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install lightweight test dependencies
-        run: python -m pip install --upgrade pytest pillow pyyaml filelock psutil
+        run: python -m pip install --upgrade pytest pillow pyyaml filelock psutil requests
+      - name: Check negative sample UI modules
+        run: >-
+          node --check static/modules/negative-samples.js &&
+          node --check static/modules/annotation.js &&
+          node --check static/main.mjs
       - name: Run negative sample and split tests
         run: >-
           python -m pytest --noconftest
