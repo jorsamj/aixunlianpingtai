@@ -67,34 +67,4 @@ test('post-v42.7 readiness and sidebar owners remain after alias-owner cleanup',
 guard = replace_once(guard, old_test, new_test, 'advance permanent alias guard')
 guard_path.write_text(guard, encoding='utf-8')
 
-workflow_path = Path('.github/workflows/frontend-runtime-stabilization.yml')
-workflow = workflow_path.read_text(encoding='utf-8')
-old_required = """          required = [
-              \"window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}\",
-              'const setPageReady414=window.setPage;',
-              'const baseSetPage417=window.setPage;',
-          ]
-          for token in required:
-              if token not in app:
-                  raise SystemExit(f'required post-v42.7 navigation owner missing: {token}')
-"""
-new_required = """          retired_alias = \"window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}\"
-          if retired_alias in app:
-              raise SystemExit('v42.7 direct alias owner was reintroduced')
-          required = [
-              'const setPageReady414=window.setPage;',
-              'const baseSetPage417=window.setPage;',
-          ]
-          for token in required:
-              if token not in app:
-                  raise SystemExit(f'required post-v42.7 navigation owner missing: {token}')
-          navigation = Path('static/modules/navigation-stability.js').read_text(encoding='utf-8')
-          if 'export function normalizeNavigationPage(page)' not in navigation:
-              raise SystemExit('semantic navigation normalizer is missing')
-          if \"requested === '自动标注' ? '自动标注及清洗' : requested\" not in navigation:
-              raise SystemExit('legacy auto-label alias normalization is missing')
-"""
-workflow = replace_once(workflow, old_required, new_required, 'advance main workflow navigation guard')
-workflow_path.write_text(workflow, encoding='utf-8')
-
-print('retired v42.7 direct setPage alias owner and advanced permanent guards')
+print('retired v42.7 direct setPage alias owner and advanced test guard')
