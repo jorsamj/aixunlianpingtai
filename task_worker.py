@@ -10,8 +10,8 @@ from platform_core.runtime_paths import resolve_data_dir
 from platform_core.task_runtime import (
     ArtifactStore,
     DuplicateWorkerInstance,
+    FencedTaskRepository,
     Scheduler,
-    TaskRepository,
     WorkerInstanceService,
 )
 from platform_core.gpu_resources import GPUResourceManager
@@ -38,7 +38,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     data_dir = resolve_data_dir(args.data_dir)
     runtime_dir = data_dir / "task_runtime"
-    repository = TaskRepository(runtime_dir / "tasks.sqlite3")
+    repository = FencedTaskRepository(runtime_dir / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime_dir / "artifacts")
     roles = set(args.roles)
     worker_slot = (args.worker_slot or "").strip()
@@ -70,6 +70,7 @@ def main(argv=None) -> int:
                     "web_imported": "app" in sys.modules,
                     "training_slot": args.training_slot or "default",
                     "worker_slot": instance_slot,
+                    "execution_fencing": True,
                 },
                 ensure_ascii=False,
             )
