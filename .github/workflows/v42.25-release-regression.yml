@@ -1,0 +1,67 @@
+name: v42.25 Release Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/v42.25-release-regression.yml
+
+jobs:
+  runtime-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install contract-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Runtime, resource and conversion contracts
+        run: >-
+          python -m pytest -q
+          tests/unit/task_runtime/test_repository.py
+          tests/unit/task_runtime/test_scheduler.py
+          tests/unit/task_runtime/test_process_control.py
+          tests/unit/task_runtime/test_fencing.py
+          tests/unit/task_runtime/test_resource_fencing.py
+          tests/unit/task_runtime/test_gpu_recovery_fencing.py
+          tests/unit/task_runtime/test_artifact_fencing.py
+          tests/unit/test_conversion_tasks.py
+          tests/unit/test_conversion_process_fencing.py
+          tests/unit/test_training_resource_contract.py
+      - name: Worker execution-fencing smoke check
+        run: >-
+          python task_worker.py --check --data-dir "${RUNNER_TEMP}/platform-data"
+
+  training-data-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install contract-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Training data, labels and snapshot contracts
+        run: >-
+          python -m pytest --noconftest -q
+          tests/unit/test_training_label_contract.py
+          tests/unit/test_negative_sample_contract.py
+          tests/unit/test_annotation_repository_scope.py
+          tests/unit/test_training_splits.py
+          tests/unit/test_training_components.py
+          tests/unit/test_snapshots.py
+          tests/unit/test_portable_dataset.py
+          tests/unit/test_training_resource_contract.py
+          tests/unit/test_launcher_workers.py
+          tests/integration/test_task_worker_without_web.py
