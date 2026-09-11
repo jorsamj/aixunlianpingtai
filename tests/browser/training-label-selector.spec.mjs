@@ -102,7 +102,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422506');
+    .toBe('training-draft-runtime-422507');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftControlsRuntime?.build || null))
     .toBe('training-draft-controls-422501');
   await page.getByRole('button', {name: /算法列表/}).click();
@@ -112,6 +112,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   expect(await page.evaluate(() => window.TrainingDraftRuntime?.state?.().directWrites || 0)).toBeGreaterThanOrEqual(1);
+  expect(await page.evaluate(() => Object.hasOwn(state, 'trainSplitV3'))).toBe(false);
 
   const labels = dialog.locator('#trainingLabelContractPanel');
   await expect(labels).toBeVisible({timeout: 10_000});
@@ -128,11 +129,14 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(dialog).toBeVisible();
   expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites)).toBe(writesBeforeConfirm + 1);
   expect(await page.evaluate(() => state.trainingDraft?.materialIds || [])).toEqual(imageIds);
+  expect(await page.evaluate(() => Object.hasOwn(state, 'trainSplitV3'))).toBe(false);
 
   const writesBeforeSplit = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
   await page.evaluate(() => window.setTrainSplitModeV3('independent_test_set'));
-  expect(await page.evaluate(() => ({draft: state.trainingDraft?.splitMode, legacy: state.trainSplitV3?.mode})))
-    .toEqual({draft: 'independent_test_set', legacy: 'independent_test_set'});
+  expect(await page.evaluate(() => ({
+    draft: state.trainingDraft?.splitMode,
+    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
+  }))).toEqual({draft: 'independent_test_set', hasLegacySplitMirror: false});
   expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites)).toBe(writesBeforeSplit + 1);
   await page.evaluate(() => window.setTrainSplitModeV3('random_test_from_training_pool'));
 
@@ -150,7 +154,20 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect.poll(async () => page.evaluate(() => ({
     labels: state.trainingDraft?.newLabelCodes || [],
     hasLegacyMirror: Object.hasOwn(state, 'trainingLabelSelected'),
-  }))).toEqual({labels: ['fire'], hasLegacyMirror: false});
+    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
+  }))).toEqual({labels: ['fire'], hasLegacyMirror: false, hasLegacySplitMirror: false});
+
+  // Deliberately inject a stale historical split mirror. The next canonical control write
+  // must purge it rather than sample its wrong values back into TrainingDraft.
+  await page.evaluate(() => {
+    state.trainSplitV3 = {
+      mode: 'independent_test_set',
+      train: new Set(['stale-material']),
+      test: new Set(['stale-test']),
+      experiment: 99,
+      validation: 99,
+    };
+  });
 
   const controlWritesBefore = await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites);
   const genericSkipsBefore = await page.evaluate(() => window.TrainingDraftRuntime.state().directControlSkips);
@@ -162,6 +179,8 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
 
   expect(await page.evaluate(() => ({
     draft: {
+      materials: state.trainingDraft?.materialIds || [],
+      splitMode: state.trainingDraft?.splitMode,
       experiment: state.trainingDraft?.experimentPercent,
       validation: state.trainingDraft?.validationPercent,
       priority: state.trainingDraft?.priority,
@@ -174,9 +193,20 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
       device: state.train428Config?.device,
       gpuPolicy: state.train428Config?.gpu_policy,
     },
+    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
   }))).toEqual({
-    draft: {experiment: 35, validation: 18, priority: 7, strategy: 'manual', device: 'cpu', gpuPolicy: 'exclusive'},
+    draft: {
+      materials: imageIds,
+      splitMode: 'random_test_from_training_pool',
+      experiment: 35,
+      validation: 18,
+      priority: 7,
+      strategy: 'manual',
+      device: 'cpu',
+      gpuPolicy: 'exclusive',
+    },
     legacy: {strategy: 'manual', device: 'cpu', gpuPolicy: 'exclusive'},
+    hasLegacySplitMirror: false,
   });
   expect(await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites)).toBeGreaterThan(controlWritesBefore);
   expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directControlSkips)).toBeGreaterThan(genericSkipsBefore);
@@ -223,6 +253,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
     validation: state.trainingDraft?.validationPercent,
     priority: state.trainingDraft?.priority,
     hasLegacyLabelMirror: Object.hasOwn(state, 'trainingLabelSelected'),
+    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
   }))).toEqual({
     materials: imageIds,
     labels: ['fire'],
@@ -230,6 +261,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
     validation: 18,
     priority: 7,
     hasLegacyLabelMirror: false,
+    hasLegacySplitMirror: false,
   });
 
   await page.evaluate(async projectId => {
@@ -268,6 +300,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.batch).toBe(16);
   expect(submitted.workers).toBe(4);
   expect(submitted.cache).toBe(false);
+  expect(await page.evaluate(() => Object.hasOwn(state, 'trainSplitV3'))).toBe(false);
 
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   submitted = undefined;
@@ -291,6 +324,9 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.framework).toBe('ultralytics');
   expect(submitted.algorithm).toBe('yolo_detect');
   expect(submitted.ai_intervention_enabled).toBe(false);
-  expect(await page.evaluate(() => Object.hasOwn(state, 'trainingLabelSelected'))).toBe(false);
+  expect(await page.evaluate(() => ({
+    labelMirror: Object.hasOwn(state, 'trainingLabelSelected'),
+    splitMirror: Object.hasOwn(state, 'trainSplitV3'),
+  }))).toEqual({labelMirror: false, splitMirror: false});
   await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
 });
