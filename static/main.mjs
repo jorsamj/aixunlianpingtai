@@ -6,10 +6,11 @@ import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=4225
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422505';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422502';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
-import {installPollRegistry} from './modules/poll-registry.js?v=422502';
+import {installPollRegistry} from './modules/poll-registry.js?v=422503';
 import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422503';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422502';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, validateTrainingDevice} from './modules/training-submit.js?v=422501';
+import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422500';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
@@ -138,6 +139,14 @@ const trainingSubmitRuntime = installTrainingSubmitRuntime({
   notify,
 });
 window.PlatformCore.runtime.trainingSubmitRuntime = trainingSubmitRuntime;
+
+const autoLabelPollRuntime = installAutoLabelPollRuntime({
+  getState: () => state,
+  pollRegistry,
+  annotationTaskView,
+  notify,
+});
+window.PlatformCore.runtime.autoLabelPollRuntime = autoLabelPollRuntime;
 
 installMaterialPaginationRuntime();
 installMaterialBatchRuntime({
