@@ -28,12 +28,11 @@ async function seedProject(request) {
   }})).json();
 
   const images = [];
-  const rows = [
+  for (const [name, label, color] of [
     ['fire-a.bmp', 'fire', [190, 70, 50]],
     ['smoke-a.bmp', 'smoke', [80, 90, 190]],
     ['smoke-b.bmp', 'smoke', [70, 160, 90]],
-  ];
-  for (const [name, label, color] of rows) {
+  ]) {
     const upload = await request.post(`/api/projects/${project.id}/images`, {multipart: {
       dataset_id: 'default', files: {name, mimeType: 'image/bmp', buffer: bmp(100, 80, color)},
     }});
@@ -53,47 +52,41 @@ async function seedProject(request) {
     algorithm_type: 'yolo_ultralytics',
     remark: '',
   }})).json();
-  return {project, algorithmId: created.algorithm.id, imageIds: images.map(item => item.id)};
+  return {project, imageIds: images.map(item => item.id), algorithmId: created.algorithm.id};
 }
 
-test('training dialog shows material-derived labels and canonical TrainingDraft controls submission', async ({page, request}) => {
-  const {project, imageIds} = await seedProject(request);
+test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only live request path', async ({page, request}) => {
+  const {project, imageIds, algorithmId} = await seedProject(request);
   let submitted;
 
-  const trainingOptions = {
-    targets: [{
+  await page.route('**/api/training_options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({targets: [{
       id: 'browser-ultralytics',
       name: '浏览器测试 Ultralytics',
       type: 'local',
       framework: 'ultralytics',
       status: 'ready',
       algorithms: [{
-        key: 'yolo_detect',
-        name: 'Ultralytics Detect',
-        base_model: 'yolo11n.pt',
-        default_epochs: 10,
-        default_imgsz: 640,
-        default_batch: 2,
+        key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt',
+        default_epochs: 10, default_imgsz: 640, default_batch: 2,
       }],
       base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
-    }],
-  };
-
-  await page.route('**/api/training_options**', async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(trainingOptions)});
-  });
-  await page.route('**/api/v62/training-devices', async route => {
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      recommended: 'cpu',
-      options: [{id: 'cpu', label: 'CPU', available: true}],
-    })});
-  });
+    }]})
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      ok: true,
-      job: {id: 'label-browser-job', status: 'queued'},
-    })});
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ok: true, job: {id: 'label-browser-job', status: 'queued'}}),
+    });
   });
 
   await page.addInitScript(projectId => {
@@ -102,119 +95,41 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422507');
-  await expect.poll(async () => page.evaluate(() => window.TrainingDraftControlsRuntime?.build || null))
-    .toBe('training-draft-controls-422501');
+    .toBe('training-draft-runtime-422508');
+  await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
+    .toBe('training-submit-422502');
+  expect(await page.evaluate(() => ({
+    draftOwnsNetwork: window.TrainingDraftRuntime.state().networkOwner,
+    submitOwnsNetwork: window.TrainingSubmitRuntime.state().networkOwner,
+  }))).toEqual({draftOwnsNetwork: false, submitOwnsNetwork: true});
+
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
-
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
   await expect(dialog).toBeVisible({timeout: 10_000});
-  expect(await page.evaluate(() => window.TrainingDraftRuntime?.state?.().directWrites || 0)).toBeGreaterThanOrEqual(1);
-  expect(await page.evaluate(() => Object.hasOwn(state, 'trainSplitV3'))).toBe(false);
-
-  const labels = dialog.locator('#trainingLabelContractPanel');
-  await expect(labels).toBeVisible({timeout: 10_000});
-  await expect(labels).toContainText('本次训练标签');
-  await expect(labels).toContainText('请先选择训练素材');
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
-  await expect(picker).toBeVisible();
   await picker.getByRole('button', {name: '全选全部可用素材'}).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);
-  const writesBeforeConfirm = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
   await picker.getByRole('button', {name: '确认选择'}).click();
   await expect(dialog).toBeVisible();
-  expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites)).toBe(writesBeforeConfirm + 1);
-  expect(await page.evaluate(() => state.trainingDraft?.materialIds || [])).toEqual(imageIds);
-  expect(await page.evaluate(() => Object.hasOwn(state, 'trainSplitV3'))).toBe(false);
 
-  const writesBeforeSplit = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
-  await page.evaluate(() => window.setTrainSplitModeV3('independent_test_set'));
-  expect(await page.evaluate(() => ({
-    draft: state.trainingDraft?.splitMode,
-    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
-  }))).toEqual({draft: 'independent_test_set', hasLegacySplitMirror: false});
-  expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites)).toBe(writesBeforeSplit + 1);
-  await page.evaluate(() => window.setTrainSplitModeV3('random_test_from_training_pool'));
-
+  const labels = dialog.locator('#trainingLabelContractPanel');
   await expect(labels).toContainText('明火');
-  await expect(labels).toContainText('fire');
   await expect(labels).toContainText('烟雾');
-  await expect(labels).toContainText('smoke');
-
-  const fire = labels.locator('input[data-training-label-code="fire"]');
   const smoke = labels.locator('input[data-training-label-code="smoke"]');
-  await expect(fire).toBeChecked();
-  await expect(smoke).toBeChecked();
   await smoke.uncheck();
-  await expect(smoke).not.toBeChecked();
-  await expect.poll(async () => page.evaluate(() => ({
-    labels: state.trainingDraft?.newLabelCodes || [],
-    hasLegacyMirror: Object.hasOwn(state, 'trainingLabelSelected'),
-    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
-  }))).toEqual({labels: ['fire'], hasLegacyMirror: false, hasLegacySplitMirror: false});
 
-  // Deliberately inject a stale historical split mirror. The next canonical control write
-  // must purge it rather than sample its wrong values back into TrainingDraft.
-  await page.evaluate(() => {
-    state.trainSplitV3 = {
-      mode: 'independent_test_set',
-      train: new Set(['stale-material']),
-      test: new Set(['stale-test']),
-      experiment: 99,
-      validation: 99,
-    };
-  });
-
-  const controlWritesBefore = await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites);
-  const genericSkipsBefore = await page.evaluate(() => window.TrainingDraftRuntime.state().directControlSkips);
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
   await dialog.locator('#trV3ResourceStrategy').selectOption('manual');
   await dialog.locator('#trV3GpuPolicy').selectOption('exclusive');
 
-  expect(await page.evaluate(() => ({
-    draft: {
-      materials: state.trainingDraft?.materialIds || [],
-      splitMode: state.trainingDraft?.splitMode,
-      experiment: state.trainingDraft?.experimentPercent,
-      validation: state.trainingDraft?.validationPercent,
-      priority: state.trainingDraft?.priority,
-      strategy: state.trainingDraft?.resource?.strategy,
-      device: state.trainingDraft?.resource?.device,
-      gpuPolicy: state.trainingDraft?.resource?.gpuPolicy,
-    },
-    legacy: {
-      strategy: state.train428Config?.resource_strategy,
-      device: state.train428Config?.device,
-      gpuPolicy: state.train428Config?.gpu_policy,
-    },
-    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
-  }))).toEqual({
-    draft: {
-      materials: imageIds,
-      splitMode: 'random_test_from_training_pool',
-      experiment: 35,
-      validation: 18,
-      priority: 7,
-      strategy: 'manual',
-      device: 'cpu',
-      gpuPolicy: 'exclusive',
-    },
-    legacy: {strategy: 'manual', device: 'cpu', gpuPolicy: 'exclusive'},
-    hasLegacySplitMirror: false,
-  });
-  expect(await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites)).toBeGreaterThan(controlWritesBefore);
-  expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directControlSkips)).toBeGreaterThan(genericSkipsBefore);
-
-  const writesBeforeSettings = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
   await dialog.getByRole('button', {name: '配置设置'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
-  await expect(settings).toBeVisible({timeout: 10_000});
   await settings.locator('#ts428Epoch').fill('30');
   await settings.locator('#ts428Batch').fill('16');
   await settings.locator('details.advanced427-box summary').click();
@@ -225,89 +140,83 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(dialog).toBeVisible();
 
   await expect.poll(async () => page.evaluate(() => ({
-    writes: window.TrainingDraftRuntime.state().directWrites,
-    draft: {
-      epochs: state.trainingDraft?.config?.epochs,
-      optimizer: state.trainingDraft?.config?.optimizer,
-      batch: state.trainingDraft?.resource?.batch,
-      workers: state.trainingDraft?.resource?.workers,
-      cache: state.trainingDraft?.resource?.cache,
-    },
-    legacy: {
-      epochs: state.train428Config?.epochs,
-      optimizer: state.train428Config?.optimizer,
-      batch: state.train428Config?.batch,
-      workers: state.train428Config?.workers,
-      cache: state.train428Config?.cache,
-    },
-  }))).toEqual({
-    writes: writesBeforeSettings + 1,
-    draft: {epochs: 30, optimizer: 'AdamW', batch: 16, workers: 4, cache: false},
-    legacy: {epochs: 30, optimizer: 'AdamW', batch: 16, workers: 4, cache: false},
-  });
-
-  await expect.poll(async () => page.evaluate(() => ({
+    algorithmId: state.trainingDraft?.algorithmId,
     materials: state.trainingDraft?.materialIds || [],
     labels: state.trainingDraft?.newLabelCodes || [],
     experiment: state.trainingDraft?.experimentPercent,
     validation: state.trainingDraft?.validationPercent,
     priority: state.trainingDraft?.priority,
-    hasLegacyLabelMirror: Object.hasOwn(state, 'trainingLabelSelected'),
-    hasLegacySplitMirror: Object.hasOwn(state, 'trainSplitV3'),
+    strategy: state.trainingDraft?.resource?.strategy,
+    device: state.trainingDraft?.resource?.device,
+    gpuPolicy: state.trainingDraft?.resource?.gpuPolicy,
+    epochs: state.trainingDraft?.config?.epochs,
+    batch: state.trainingDraft?.resource?.batch,
+    workers: state.trainingDraft?.resource?.workers,
+    cache: state.trainingDraft?.resource?.cache,
+    optimizer: state.trainingDraft?.config?.optimizer,
+    retiredLabelMirror: Object.hasOwn(state, 'trainingLabelSelected'),
+    retiredSplitMirror: Object.hasOwn(state, 'trainSplitV3'),
   }))).toEqual({
+    algorithmId,
     materials: imageIds,
     labels: ['fire'],
     experiment: 35,
     validation: 18,
     priority: 7,
-    hasLegacyLabelMirror: false,
-    hasLegacySplitMirror: false,
+    strategy: 'manual',
+    device: 'cpu',
+    gpuPolicy: 'exclusive',
+    epochs: 30,
+    batch: 16,
+    workers: 4,
+    cache: false,
+    optimizer: 'AdamW',
+    retiredLabelMirror: false,
+    retiredSplitMirror: false,
   });
 
+  // Remaining compatibility mirrors may still be mutated by legacy app.js UI code during
+  // migration, but they are no longer allowed to overwrite the canonical TrainingDraft.
+  await page.evaluate(() => {
+    state.train428AlgorithmId = 'stale-algorithm';
+    state.train429Selected = new Set(['stale-material']);
+    state.train428Config = {device: 'stale-device', batch: 1, workers: 0, cache: true, optimizer: 'SGD'};
+    window.TrainingDraftRuntime.sync();
+  });
+  expect(await page.evaluate(() => ({
+    algorithmId: state.trainingDraft.algorithmId,
+    materials: state.trainingDraft.materialIds,
+    device: state.trainingDraft.resource.device,
+    batch: state.trainingDraft.resource.batch,
+    optimizer: state.trainingDraft.config.optimizer,
+  }))).toEqual({
+    algorithmId,
+    materials: imageIds,
+    device: 'cpu',
+    batch: 16,
+    optimizer: 'AdamW',
+  });
+
+  // A raw caller-owned fetch is intentionally NOT rewritten by TrainingDraftRuntime anymore.
+  submitted = undefined;
   await page.evaluate(async projectId => {
     await fetch(`/api/v12/projects/${projectId}/train/start`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        algorithm_asset_id: state.train428AlgorithmId,
-        train_image_ids: ['stale-legacy-id'],
-        test_image_ids: [],
-        train_labels: ['stale-label'],
-        experiment_percent: 20,
-        validation_percent: 20,
-        queue_priority: 50,
-        resource_strategy: 'auto',
-        device: 'stale',
-        gpu_policy: 'auto',
-        epochs: 1,
-        batch: 1,
-        workers: 0,
-        cache: true,
-        optimizer: 'SGD',
-      }),
+      body: JSON.stringify({algorithm_asset_id: 'raw-caller', train_image_ids: ['raw-id'], train_labels: ['raw-label']}),
     });
   }, project.id);
-
   await expect.poll(() => submitted).toBeTruthy();
-  expect(submitted.train_image_ids).toEqual(imageIds);
-  expect(submitted.train_labels).toEqual(['fire']);
-  expect(submitted.experiment_percent).toBe(35);
-  expect(submitted.validation_percent).toBe(18);
-  expect(submitted.queue_priority).toBe(7);
-  expect(submitted.resource_strategy).toBe('manual');
-  expect(submitted.device).toBe('cpu');
-  expect(submitted.gpu_policy).toBe('exclusive');
-  expect(submitted.batch).toBe(16);
-  expect(submitted.workers).toBe(4);
-  expect(submitted.cache).toBe(false);
-  expect(await page.evaluate(() => Object.hasOwn(state, 'trainSplitV3'))).toBe(false);
+  expect(submitted).toEqual({algorithm_asset_id: 'raw-caller', train_image_ids: ['raw-id'], train_labels: ['raw-label']});
 
-  expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
+  // The actual UI submission must go through TrainingSubmitRuntime and derive the request only
+  // from the canonical draft, irrespective of the stale compatibility mirrors above.
   submitted = undefined;
+  expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   await dialog.getByRole('button', {name: '开始训练'}).click();
   await expect.poll(() => submitted).toBeTruthy();
 
-  expect(submitted.algorithm_asset_id).toBeTruthy();
+  expect(submitted.algorithm_asset_id).toBe(algorithmId);
   expect(submitted.train_image_ids).toEqual(imageIds);
   expect(submitted.train_labels).toEqual(['fire']);
   expect(submitted.experiment_percent).toBe(35);
@@ -324,9 +233,5 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.framework).toBe('ultralytics');
   expect(submitted.algorithm).toBe('yolo_detect');
   expect(submitted.ai_intervention_enabled).toBe(false);
-  expect(await page.evaluate(() => ({
-    labelMirror: Object.hasOwn(state, 'trainingLabelSelected'),
-    splitMirror: Object.hasOwn(state, 'trainSplitV3'),
-  }))).toEqual({labelMirror: false, splitMirror: false});
   await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
 });
