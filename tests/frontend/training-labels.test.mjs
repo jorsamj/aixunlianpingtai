@@ -132,9 +132,16 @@ test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () =>
   }
   assert.match(source, /trainingDraftRuntime\?\.subscribe/);
   assert.match(source, /queueMicrotask/);
+  assert.match(source, /labelOnlyDraftUpdate/);
+  assert.match(source, /updateCount\(state\);\n\s*return;/);
+  const checkboxHandler = source.slice(
+    source.indexOf("panel.querySelectorAll('[data-training-label-code]')"),
+    source.indexOf('return true;', source.indexOf("panel.querySelectorAll('[data-training-label-code]')")),
+  );
+  assert.equal(checkboxHandler.includes('queueRefresh();'), false, 'label toggle must not replace its own DOM during click');
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422512'/);
+  assert.match(source, /build: 'module-422513'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
