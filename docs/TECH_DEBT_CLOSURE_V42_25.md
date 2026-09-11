@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`871b1c91d919760728fd74dc0e7abf7ac25b516f`**  
-> **Frontend Runtime Stabilization：run `34618276191`，frontend + Real Chrome 全绿。**  
+> **最近完整代码验收点：`f3eb6b360123dd688eea4dd0f29c05a9db5b4c05`**  
+> **Frontend Runtime Stabilization：run `34619698115`，frontend + Real Chrome 全绿。**  
 > **更新日期：2026-09-11**
 
 ## 0. 接手入口
@@ -48,6 +48,7 @@ registry.adopt('training-jobs', ...)
 adoptLegacy / rebindCreation
 set423Base
 setBase424
+baseSetPage (V37 duplicate mobile-sidebar wrapper)
 ```
 
 ## 2. 技术债状态
@@ -65,6 +66,7 @@ setBase424
 | training polling wrapper/state timer | direct `PollRegistry(training-jobs)` | **CLOSED** |
 | `setupPagePolling` shells | direct `replaceTrainingJobTimer()` call sites | **CLOSED** |
 | v42.3 pass-through `setPage` + unused v42.4 capture | later direct router | **CLOSED** |
+| duplicate V37 mobile-sidebar `setPage` wrapper | V417 `baseSetPage417` owner | **CLOSED** |
 | historical render/setPage overrides | semantic final router + bounded render owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | cache-busting | single strategy | **OPEN** |
@@ -97,6 +99,20 @@ classic render call site
 
 `jobPollTimer`、`setupPagePolling`、PollRegistry creation wrapper/adopt/rebind compatibility 均已物理删除。
 
+### Mobile navigation
+
+当前 classic sidebar-close owner：
+
+```text
+baseSetPage417 = window.setPage
+→ window.setPage(page)
+   → toggleMobileSidebarV37(false)
+   → baseSetPage417(page)
+→ NavigationStability outer wrapper
+```
+
+V37 更早的重复 wrapper 已物理删除。Real Chrome 已锁定合同：手动打开 `sidebar.mobile-open + sideBackdrop.show` 后调用最终 `window.setPage('数据集')`，两者必须关闭。
+
 ### AutoLabel / Video / Sources
 
 ```text
@@ -110,7 +126,7 @@ renderSources422 → replaceSourceTimer() → PollRegistry(sources)
 ## 4. Current cache/build facts
 
 ```text
-app.js cache                     42.25.50
+app.js cache                     42.25.51
 main.mjs cache                   42.25.53
 navigation-stability.js          422506
 poll-registry.js                 422511
@@ -125,7 +141,7 @@ Cache-busting 仍未统一。
 
 ## 5. Permanent guards
 
-当前主 CI 包含：
+主 CI 当前包含：
 
 ```text
 Retired training mirror guard
@@ -138,59 +154,75 @@ Video PollRegistry direct owner guard
 Source PollRegistry direct owner guard
 Training PollRegistry direct owner guard
 Retired pass-through setPage guard
+Frontend unit tests
 ```
 
-`Retired pass-through setPage guard` 要求：
+额外永久静态合同：
 
-- `set423Base` 为 0；
-- `setBase424` 为 0；
-- v42.4 直接 `window.setPage=function(p){state.page=p;render()}` owner 仍存在。
+```text
+tests/frontend/retired-sidebar-setpage-guard.test.mjs
+```
+
+它要求 V37 `baseSetPage` wrapper 为 0，同时 V417 `baseSetPage417` sidebar-close owner 必须保留。
+
+Real Chrome 合同位于：
+
+```text
+tests/browser/navigation-stability.spec.mjs
+→ final navigation owner closes the mobile sidebar and backdrop
+```
 
 ## 6. Latest acceptance
 
 ```text
-commit: 871b1c91d919760728fd74dc0e7abf7ac25b516f
-run:    34618276191
+commit: f3eb6b360123dd688eea4dd0f29c05a9db5b4c05
+run:    34619698115
 
 syntax                                      PASS
 all permanent owner guards                  PASS
-Retired pass-through setPage guard          PASS
-frontend unit                               PASS
+frontend unit incl. sidebar static guard    PASS
 Real Chrome                                 PASS
+mobile-sidebar navigation contract          PASS
 ```
 
-Real Chrome 同时覆盖 navigation、training submit/task、AutoLabel、algorithm list、materials 等既有回归。
+## 7. Current next task — pre-v42.4 dead setPage family
 
-## 7. Current next task
-
-当前 owner map 已证明：剩余 `setPage` wrapper 大多带真实语义，不允许按版本号机械删除。已观察到：
+只读审计发现以下历史 wrappers 都只在自身 IIFE 中“捕获 previous owner → 包一层 → 自己调用 previous owner”，而后续 v42.4 存在**不调用 previous owner 的直接重置**：
 
 ```text
-set422Base        → 页面别名：新建算法/自动迭代 → 算法列表
-baseSetPageV37    → 移动侧栏关闭
-baseSetPage417    → 再次关闭移动侧栏（疑似与 V37 重复）
-setPageReady414   → 等待启动 snapshot/uiReady
-later wrappers    → cache invalidation / page alias / persistence / NavigationStability
+oldSetV39
+  部署页面时 state.deployLoaded=false
+
+oldSet42
+  v42 页面时 state.v42.loaded=false
+
+set422Base
+  新建算法 / 自动迭代 → 算法列表
 ```
 
-下一候选：**证明并消除重复的 mobile-sidebar setPage wrapper**。当前 `baseSetPageV37` 与后来的 `baseSetPage417` 都关闭侧栏；若最终链上后者完全覆盖前者语义，则只删除更早的重复 wrapper，保留后者及所有其他路由行为。
+随后 v42.4：
 
-执行规则：
+```js
+window.setPage=function(p){state.page=p;render()};
+```
+
+该直接赋值会切断此前 wrapper chain。若没有其他函数保存这些 wrapper 引用，则它们在最终 app load 后属于 dead code，而不是 live semantics owner。
+
+下一批必须先证明：
 
 ```text
-精确引用计数
-→ 独立语义证明
-→ focused navigation regression
-→ bounded physical deletion
-→ permanent guard
-→ full frontend + Real Chrome
-→ 四份文档同步
+1. oldSetV39 / oldSet42 / set422Base 各自只存在声明+自身调用
+2. v42.4 direct reset 在它们之后同步执行
+3. 最终用户可见页面别名、deploy cache、navigation 行为由后续 router/render 或当前 runtime 覆盖
+4. 删除后现有 navigation/performance/Real Chrome 全绿
 ```
+
+**禁止把 `setPageReady414`、`baseSetPage417`、NavigationStability 或任何仍在最终链上的 later wrapper 一起删除。**
 
 ## 8. 后续顺序
 
 ```text
-A. duplicate sidebar setPage wrapper
+A. pre-v42.4 dead setPage family
 B. remaining render/setPage obsolete layers
 C. app.js dead code + global reload/request debt
 D. cache-busting unification
