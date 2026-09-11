@@ -1,7 +1,8 @@
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
-import {applyAnnotationResult} from './modules/annotation.js?v=421800';
+import {applyAnnotationResult} from './modules/annotation.js?v=422500';
+import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
@@ -69,6 +70,20 @@ window.PlatformCore = {
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView}
 };
 
+installNegativeSampleRuntime({
+  getState: () => state,
+  notify: message => {
+    if (typeof window.toast === 'function') window.toast(message);
+    else {
+      const toast = document.getElementById('toast');
+      if (toast) {
+        toast.textContent = message;
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 2600);
+      }
+    }
+  }
+});
 installMaterialPaginationRuntime();
 installMaterialBatchRuntime({
   projectId: () => state.project?.id,
