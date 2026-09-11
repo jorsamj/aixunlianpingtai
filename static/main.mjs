@@ -6,7 +6,7 @@ import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=4225
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422505';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422502';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
-import {installPollRegistry} from './modules/poll-registry.js?v=422504';
+import {installPollRegistry} from './modules/poll-registry.js?v=422505';
 import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422503';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422502';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, validateTrainingDevice} from './modules/training-submit.js?v=422501';
@@ -42,9 +42,6 @@ function fallbackToast(message) {
   window.__toastTimer = setTimeout(() => element.classList.add('hidden'), 2600);
 }
 
-// app.js historically declared `const toast` without exporting it to window, while
-// later compatibility layers call window.toast(). Expose one stable notification
-// surface so old and modular code use the same runtime contract during migration.
 if (typeof window.toast !== 'function') window.toast = fallbackToast;
 
 for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
