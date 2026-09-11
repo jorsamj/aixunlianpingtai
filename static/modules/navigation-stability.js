@@ -74,7 +74,7 @@ function ownersFor(page) {
   return [page];
 }
 
-export function installNavigationStability({getState, notify, requestScope} = {}) {
+export function installNavigationStability({getState, notify, requestScope, pollRegistry} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
   window.__navigationStabilityInstalled = true;
@@ -97,11 +97,13 @@ export function installNavigationStability({getState, notify, requestScope} = {}
       guard.navigate(requested);
       const s = currentState();
       s.__navigationEpoch = guard.epoch;
-      clearPageTimers(s, requested);
+      if (pollRegistry?.beforeNavigate) pollRegistry.beforeNavigate(requested);
+      else clearPageTimers(s, requested);
       const result = originalSetPage.call(this, page, ...args);
       const actualPage = String(s.page || requested);
       if (actualPage !== guard.page) guard.page = actualPage;
       requestScope?.alignPage?.(actualPage);
+      pollRegistry?.afterNavigate?.(actualPage);
       const currentView = document.getElementById('view');
       if (currentView) currentView.dataset.navigationPage = actualPage;
       return result;
