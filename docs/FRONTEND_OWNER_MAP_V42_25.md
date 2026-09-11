@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `774df651c3f278c782029e64bfa3315b12622a9f` / run `34616465336`  
+> Latest fully accepted code point: `4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386` / run `34617573070`  
 > Authority for debt status: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -35,23 +35,35 @@ view navigation-page marker
 
 These semantics must not be lost when classic setPage layers are removed.
 
-## 3. Static override counts at current app.js
+## 3. Override baseline and accepted Batch A
 
-Current audit of `static/app.js` found:
+Baseline audit before physical deletion:
 
 ```text
 window.setPage=function...   10 historical assignments
 render=function...           22 historical assignments
-setupPagePolling             2 historical one-line handoff definitions
+setupPagePolling             2 one-line shells
 ```
 
-The two `setupPagePolling` definitions no longer create or clear timers. Both are currently equivalent to:
+Batch A is now **CLOSED**:
+
+```text
+setupPagePolling active references = 0
+jobPollTimer active references      = 0
+app.js cache                        = 42.25.49
+acceptance commit                   = 4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386
+Frontend Runtime run                = 34617573070
+frontend                            = PASS
+Real Chrome                         = PASS
+```
+
+All historical polling call sites now hand off directly to:
 
 ```js
 window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
 ```
 
-They are therefore the first proven deletion family.
+Permanent CI forbids `setupPagePolling` from returning.
 
 ## 4. Final visible owner map
 
@@ -60,7 +72,7 @@ They are therefore the first proven deletion family.
 | Navigation | `NavigationStability` wrapping final classic `window.setPage` | multiple classic setPage wrappers | page aliasing, request epoch, polling leave/enter, sidebar close, cache invalidation, persisted UI state where still used | navigation-stability unit + Real Chrome navigation regression |
 | Training submit | `TrainingSubmitRuntime` | classic training UI renderers only for form presentation | sole `/train/start` owner, canonical draft, readiness | training submit unit + Chrome real submit |
 | Training jobs request | `TrainingTaskRuntime` | classic training renderer DOM | focused `/jobs`, 120ms poll/manual coalescing, force-fresh mutation | training-task unit + browser performance test |
-| Training jobs timer | `PollRegistry(training-jobs)` | two `setupPagePolling` handoff shells | 2000ms active / 5000ms idle, navigation cleanup | PollRegistry unit + Training PollRegistry CI guard + Chrome |
+| Training jobs timer | `PollRegistry(training-jobs)` | direct app render call sites only | 2000ms active / 5000ms idle, navigation cleanup | PollRegistry unit + Training PollRegistry CI guard + Chrome |
 | AutoLabel timer | `AutoLabelPollRuntime + PollRegistry` | `renderOps427` presentation | managed one-shot, explicit activate/deactivate | AutoLabel unit + Chrome |
 | Video timer | `PollRegistry(video-frames)` | `renderVideo424/refreshVideo424Delta` presentation | managed one-shot, row patch only | PollRegistry unit + Chrome |
 | Source timer | `PollRegistry(sources)` | `renderSources422` presentation | 2500ms managed interval | PollRegistry unit + Chrome |
@@ -71,7 +83,7 @@ They are therefore the first proven deletion family.
 
 ## 5. Observed setPage generations and semantics
 
-The 10 static assignments are not interchangeable. The audit has observed these semantic families:
+The baseline 10 static assignments are not interchangeable. Observed semantic families:
 
 ```text
 A. plain state.page = p; render()
@@ -90,12 +102,57 @@ After `app.js`, `NavigationStability` adds the runtime coordination wrapper.
 
 Deletion rule: preserve semantics, not wrapper count. If a wrapper only forwards with no independent state change, it is a candidate. If it aliases pages or invalidates cache, its behavior must first be moved to the final semantic router.
 
-## 6. Observed render generations and semantics
+## 6. Next safe deletion candidate — v42.3/v42.4 dead setPage base family
 
-The 22 static `render=function...` assignments include:
+Current read-only proof found:
 
 ```text
-base page map + training polling call
+set423Base   → exactly one search match; declaration + call only inside pure forwarding wrapper
+setBase424   → exactly one search match; declaration only; no call/use
+```
+
+Relevant code shape:
+
+```text
+v42.3:
+const set423Base=window.setPage;
+window.setPage=function(p){set423Base(p)};
+try{setPage=window.setPage}catch(e){}
+
+immediately followed by v42.4:
+const setBase424=window.setPage;
+window.setPage=function(p){state.page=p;render()};
+try{setPage=window.setPage}catch(e){}
+```
+
+The v42.4 assignment does not call `setBase424`; therefore the v42.3 forwarding wrapper has no surviving semantics once execution reaches v42.4, and `setBase424` is a dead capture. Before writing, repeat these exact searches against current HEAD.
+
+Target bounded deletion:
+
+```text
+remove v42.3 set423Base forwarding assignment
+remove unused setBase424 capture
+retain the v42.4 direct setPage assignment unchanged
+retain all later alias/cache/sidebar wrappers unchanged
+```
+
+Required acceptance:
+
+```text
+node --check static/app.js
+NavigationStability unit PASS
+PollRegistry unit PASS
+full frontend PASS
+Real Chrome navigation PASS
+no page-alias/cache/sidebar behavior regression
+```
+
+## 7. Observed render generations and semantics
+
+The 22 baseline `render=function...` assignments include:
+
+```text
+base page map + polling handoff
 v28/v31/v33 compatibility render maps
 v35/v37 dashboard/UI enhancement wrappers
 v39 deployment routing
@@ -118,54 +175,11 @@ else
   → previous final render chain
 ```
 
-This means deleting an inner renderer without proving callers can silently break unrelated pages. Physical deletion must proceed by owner family, not by version number.
+Deleting an inner renderer without proving callers can silently break unrelated pages. Physical deletion must proceed by owner family, not by version number.
 
-## 7. First safe physical-deletion batch
+## 8. High-risk wrappers that are not first candidates
 
-### Batch A — setupPagePolling shells
-
-Current state:
-
-```text
-2 function definitions
-0 local timer ownership
-0 jobPollTimer state compatibility
-both only call replaceTrainingJobTimer()
-```
-
-Target:
-
-```text
-remove setupPagePolling definitions
-replace live call sites with direct PollRegistryRuntime.replaceTrainingJobTimer()
-keep TrainingTaskRuntime as request owner
-keep PollRegistry as timer owner
-```
-
-Acceptance:
-
-```text
-jobPollTimer remains 0 in product runtime
-setupPagePolling becomes 0 in active app.js
-Training PollRegistry guard updated to reject reintroduction
-PollRegistry unit PASS
-TrainingTaskRuntime unit PASS
-Frontend Runtime Stabilization frontend PASS
-Real Chrome PASS
-```
-
-## 8. Second candidates after Batch A
-
-Do not delete until usage proof is complete:
-
-```text
-pure pass-through set423 wrapper
-version-badge-only render wrapper(s), after main.mjs build badge ownership is proven
-legacy render layers fully hidden by final page router
-legacy setPage wrappers whose only surviving behavior has been moved to a semantic router
-```
-
-High-risk wrappers that are not first candidates:
+Do not delete until semantics are relocated/proven:
 
 ```text
 page aliases
@@ -180,7 +194,7 @@ NavigationStability outer wrapper
 ```text
 1. identify final owner
 2. search all direct/indirect references
-3. state the independent semantics of the layer being removed
+3. state independent semantics of the layer being removed
 4. move semantics first if still needed
 5. add/reuse deterministic regression
 6. physically delete old owner
