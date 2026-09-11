@@ -11,7 +11,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422501');
+    .toBe('algorithm-list-runtime-422502');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412))
     .toBe(true);
 
