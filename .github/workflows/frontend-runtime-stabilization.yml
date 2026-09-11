@@ -1,0 +1,23 @@
+name: Frontend Runtime Stabilization
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Syntax check
+        run: node --check static/modules/navigation-stability.js
+      - name: Frontend unit tests
+        run: node --test tests/frontend/navigation-stability.test.mjs tests/frontend/training-labels.test.mjs
