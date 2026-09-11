@@ -7,8 +7,9 @@ import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422505
 import {installNavigationStability} from './modules/navigation-stability.js?v=422502';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422501';
-import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422502';
+import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422503';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422502';
+import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, validateTrainingDevice} from './modules/training-submit.js?v=422500';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
@@ -94,6 +95,7 @@ window.PlatformCore = {
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
   trainingDraft: {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm},
+  trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, validateTrainingDevice},
   quality: {qualityChartModel},
   reports: {reportPresentation},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
@@ -117,6 +119,26 @@ const trainingLabelRuntime = installTrainingLabelRuntime({
   trainingDraftRuntime,
 });
 window.PlatformCore.runtime.trainingLabelRuntime = trainingLabelRuntime;
+
+const trainingSubmitRuntime = installTrainingSubmitRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  trainingDraftRuntime,
+  trainingDraftToRequest,
+  reloadRelated: async () => {
+    if (typeof loadRelated === 'function') return loadRelated();
+    return window.loadRelated?.();
+  },
+  renderAlgorithms: () => {
+    if (typeof window.renderAlgorithms423 === 'function') return window.renderAlgorithms423();
+    if (typeof renderAlgorithms423 === 'function') return renderAlgorithms423();
+    return undefined;
+  },
+  closeModal: () => window.closeModal?.(),
+  notify,
+});
+window.PlatformCore.runtime.trainingSubmitRuntime = trainingSubmitRuntime;
+
 installMaterialPaginationRuntime();
 installMaterialBatchRuntime({
   projectId: () => state.project?.id,
