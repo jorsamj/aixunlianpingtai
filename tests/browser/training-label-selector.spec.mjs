@@ -113,9 +113,6 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(labels).toContainText('本次训练标签');
   await expect(labels).toContainText('请先选择训练素材');
 
-  // Use the real train-v3 material picker. It loads the authoritative full material pool
-  // into state.images before confirming exact ids; bypassing this flow would not represent
-  // the production path and would leave only the bounded page cache in memory.
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
   await expect(picker).toBeVisible();
@@ -124,7 +121,6 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await picker.getByRole('button', {name: '确认选择'}).click();
   await expect(dialog).toBeVisible();
 
-  await expect(labels).toBeVisible();
   await expect(labels).toContainText('明火');
   await expect(labels).toContainText('fire');
   await expect(labels).toContainText('烟雾');
@@ -134,12 +130,9 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   const smoke = labels.locator('input[data-training-label-code="smoke"]');
   await expect(fire).toBeChecked();
   await expect(smoke).toBeChecked();
-
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
 
-  // These controls historically lived only in the final train-v3 DOM until submit time.
-  // TrainingDraft must observe the values the user can currently see, not stale 428/429 state.
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
@@ -158,8 +151,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
     priority: 7,
   });
 
-  // Deliberately send stale legacy ids/labels/percentages. TrainingDraftRuntime must
-  // canonicalize the outgoing request before the existing server-side label contract sees it.
+  // Guard layer: even a manually-created stale request is canonicalized from TrainingDraft.
   await page.evaluate(async projectId => {
     await fetch(`/api/v12/projects/${projectId}/train/start`, {
       method: 'POST',
@@ -182,5 +174,21 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+
+  // Active button owner: the actual user-facing submit now belongs to TrainingSubmitRuntime.
+  expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
+  submitted = undefined;
+  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await expect.poll(() => submitted).toBeTruthy();
+
   expect(submitted.algorithm_asset_id).toBeTruthy();
+  expect(submitted.train_image_ids).toEqual(imageIds);
+  expect(submitted.train_labels).toEqual(['fire']);
+  expect(submitted.experiment_percent).toBe(35);
+  expect(submitted.validation_percent).toBe(18);
+  expect(submitted.queue_priority).toBe(7);
+  expect(submitted.framework).toBe('ultralytics');
+  expect(submitted.algorithm).toBe('yolo_detect');
+  expect(submitted.ai_intervention_enabled).toBe(false);
+  await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
 });
