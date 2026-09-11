@@ -56,3 +56,28 @@ test('delayed request from previous page cannot jump back over the current page'
   await expect(page.getByRole('button', {name: /数据集/})).toHaveClass(/active/);
   expect(pageErrors).toEqual([]);
 });
+
+test('video frame polling is PollRegistry-managed and is destroyed when leaving the page', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => window.setPage('视频切帧'));
+  await expect(page.locator('#title')).toContainText('视频切帧');
+  await expect(page.locator('#videoTaskRows')).toBeVisible({timeout: 10_000});
+
+  await expect.poll(async () => page.evaluate(() => {
+    const row = window.PollRegistryRuntime?.snapshot?.().find(item => item.key === 'video-frames');
+    return row ? {managed: row.managed, owners: row.owners, delay: row.delay} : null;
+  })).toEqual({managed: true, owners: ['视频切帧'], delay: 2500});
+
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toContainText('数据集');
+  await expect.poll(async () => page.evaluate(() => (
+    window.PollRegistryRuntime?.snapshot?.().some(item => item.key === 'video-frames') || false
+  ))).toBe(false);
+
+  expect(pageErrors).toEqual([]);
+});
