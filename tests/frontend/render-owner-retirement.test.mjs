@@ -19,3 +19,19 @@ test('later stable renderer remains the algorithm/data routing owner', () => {
     true,
   );
 });
+
+test('shadowed early storage render wrapper cannot return', () => {
+  assert.equal(app.includes('previousRender61'), false);
+  assert.equal(
+    app.includes("render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61();return}previousRender61()};"),
+    false,
+  );
+});
+
+test('final storage render owner remains the sole storage route wrapper', () => {
+  assert.equal(app.includes('const finalRender=render;'), true);
+  assert.equal(
+    app.includes("render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61();return}finalRender()};"),
+    true,
+  );
+});

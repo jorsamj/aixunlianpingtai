@@ -676,8 +676,6 @@ window.__resourceDiscoveryDependencies={
   window.__storageOpenUpload61=window.openDataUpload426;
   window.__storageDoUploadImages61=window.doUploadImages426;
 
-  const previousRender61=render;
-  render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61();return}previousRender61()};
 })();
 
 
