@@ -53,6 +53,14 @@ jobs:
             echo "classic app.js must not own /train/start; TrainingSubmitRuntime is the sole network owner" >&2
             exit 1
           fi
+      - name: TrainingDraft classic wrapper guard
+        run: |
+          for token in startAlgorithmTraining429 wrapLegacyMutation directMutationFor mutationWrappers __trainingDraftMutationWrapped; do
+            if grep -n "$token" static/modules/training-draft-runtime.js; then
+              echo "TrainingDraftRuntime must stay wrapper-free; found $token" >&2
+              exit 1
+            fi
+          done
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
