@@ -13,6 +13,11 @@ function deferred() {
   return {promise, resolve, reject};
 }
 
+function cleanup() {
+  delete globalThis.window;
+  delete globalThis.document;
+}
+
 test('navigation epoch invalidates work started on the previous page', () => {
   const guard = new NavigationEpochGuard('训练任务');
   const old = guard.token('训练任务');
@@ -25,29 +30,23 @@ test('navigation epoch invalidates work started on the previous page', () => {
   assert.equal(guard.isCurrent(current, '数据集'), true);
 });
 
-test('stale async training action repairs the current page after navigation', async () => {
+test('stale training renderer is blocked after navigation without global rerender repair', async () => {
   const state = {page: '训练任务'};
   const work = deferred();
-  let staleTrainingRender = 0;
-  let currentPageRepairs = 0;
-  let observerCallback = null;
-
+  let trainingRenders = 0;
+  let globalRenders = 0;
   const view = {dataset: {}};
+
   globalThis.document = {
     getElementById(id) { return id === 'view' ? view : null; },
   };
-  globalThis.MutationObserver = class {
-    constructor(callback) { observerCallback = callback; }
-    observe() {}
-    disconnect() {}
-  };
   globalThis.window = {
     setPage(page) { state.page = page; },
-    render() { currentPageRepairs += 1; },
+    render() { globalRenders += 1; },
+    renderTraining428() { trainingRenders += 1; },
     refreshTrainPage428: async function () {
       await work.promise;
-      staleTrainingRender += 1;
-      observerCallback?.();
+      globalThis.window.renderTraining428();
     },
   };
 
@@ -59,48 +58,67 @@ test('stale async training action repairs the current page after navigation', as
 
   work.resolve();
   await staleAction;
-  await Promise.resolve();
-  await Promise.resolve();
 
-  assert.equal(staleTrainingRender, 1);
-  assert.ok(currentPageRepairs >= 1, 'stale render should trigger current-page repair');
+  assert.equal(trainingRenders, 0, 'renderer owned by 训练任务 must not paint after leaving the page');
+  assert.equal(globalRenders, 0, 'stale completion must not trigger an expensive global repair render');
   assert.equal(state.page, '数据集');
   assert.equal(runtime.guard.page, '数据集');
 
   runtime.destroy();
-  delete globalThis.window;
-  delete globalThis.document;
-  delete globalThis.MutationObserver;
+  cleanup();
 });
 
-test('same-page async action is not treated as stale', async () => {
+test('same-page renderer is still allowed', async () => {
   const state = {page: '训练任务'};
-  let repairs = 0;
+  let trainingRenders = 0;
   const view = {dataset: {}};
 
   globalThis.document = {
     getElementById(id) { return id === 'view' ? view : null; },
   };
-  globalThis.MutationObserver = class {
-    constructor() {}
-    observe() {}
-    disconnect() {}
-  };
   globalThis.window = {
     setPage(page) { state.page = page; },
-    render() { repairs += 1; },
-    refreshTrainPage428: async function () { return 'ok'; },
+    renderTraining428() { trainingRenders += 1; },
+    refreshTrainPage428: async function () {
+      globalThis.window.renderTraining428();
+      return 'ok';
+    },
   };
 
   const runtime = installNavigationStability({getState: () => state});
   await globalThis.window.refreshTrainPage428();
-  await Promise.resolve();
 
-  assert.equal(repairs, 0);
+  assert.equal(trainingRenders, 1);
   assert.equal(state.page, '训练任务');
 
   runtime.destroy();
-  delete globalThis.window;
-  delete globalThis.document;
-  delete globalThis.MutationObserver;
+  cleanup();
+});
+
+test('navigation clears page-owned polling timers when leaving the page', () => {
+  const state = {page: '训练任务', jobPollTimer: 101, source422Timer: 202, auto422Timer: 303};
+  const cleared = [];
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.clearInterval = value => cleared.push(value);
+
+  globalThis.document = {
+    getElementById() { return {dataset: {}}; },
+  };
+  globalThis.window = {
+    setPage(page) { state.page = page; },
+    __videoFramePollTimer: 404,
+    __prelabelPollTimer: 505,
+  };
+
+  const runtime = installNavigationStability({getState: () => state});
+  globalThis.window.setPage('算法列表');
+
+  assert.deepEqual(new Set(cleared), new Set([101, 202, 303, 404, 505]));
+  assert.equal(state.jobPollTimer, null);
+  assert.equal(state.source422Timer, null);
+  assert.equal(state.auto422Timer, null);
+
+  runtime.destroy();
+  globalThis.clearInterval = originalClearInterval;
+  cleanup();
 });
