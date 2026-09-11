@@ -6,15 +6,14 @@
 
 ```text
 current cleanup branch:   refactor/frontend-runtime-stabilization
-current branch HEAD:       c831db74389fec2ed0b39e111de581cf6b2723e3 (docs-only handoff update)
-latest full frontend acceptance point: 4a86f4b497abb024daa9927c7be54e75fcea3692
-Frontend Runtime run:     34610390049
+latest full frontend acceptance point: 8f292860f7f1b8e238a0c9435d15e25eaa63a202
+Frontend Runtime run:     34613425419
 formal VERSION.txt:       42.24.0
 frontend badge:           v42.25.0-dev
-app.js cache:             42.25.45
-main.mjs cache:           42.25.50
+app.js cache:             42.25.46
+main.mjs cache:           42.25.51
 NavigationStability:      422504
-PollRegistry:             422508
+PollRegistry:             422509
 TrainingDraftRuntime:     422516 / training-draft-runtime-422516
 TrainingLabelRuntime:     422513 / module-422513
 TrainingSubmitRuntime:    training-submit-422504
@@ -22,7 +21,7 @@ TrainingTaskRuntime:      training-task-runtime-422503
 AutoLabelPollRuntime:     422501 / auto-label-poll-422501
 ```
 
-Run `34610390049` passed syntax, every permanent owner guard, all frontend unit tests and all Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag, or release without explicit user authorization.
+Run `34613425419` passed syntax, all permanent owner guards, all frontend unit tests and all Real Chrome runtime regressions. The branch may be ahead of the acceptance commit with documentation-only commits; verify HEAD before editing. Do not merge `main`, bump `VERSION.txt`, tag, or release without explicit user authorization.
 
 ## 2. Current priority
 
@@ -102,20 +101,16 @@ train428Config
 trainingDraftFromLegacyState
 ```
 
-Tests may create those names only as pollution fixtures. Runtime must ignore them.
-
-TrainingDraftRuntime is wrapper-free and excludes `.training-label-contract` events from generic sync. TrainingLabelRuntime is wrapper-free, timer-free and canonical-only. Pure label toggles update canonical state/count without replacing the checkbox DOM.
+TrainingDraftRuntime is wrapper-free and excludes `.training-label-contract` events from generic sync. TrainingLabelRuntime is wrapper-free, timer-free and canonical-only.
 
 ## 6. AutoLabel polling ownership: CLOSED
-
-Final lifecycle:
 
 ```text
 renderOps427 label tab complete
 → AutoLabelPollRuntime.activate(state.annotationTasks60)
-→ PollRegistry key auto-label-v60
+→ PollRegistry(auto-label-v60)
 → refreshRows()
-→ only active tasks re-arm
+→ active tasks only re-arm
 
 clean tab
 → AutoLabelPollRuntime.deactivate()
@@ -127,23 +122,14 @@ Physically retired:
 auto422Timer
 ai60ListTimer
 AutoLabelPollRuntime renderOps427 wrapper
-__autoLabelPollRuntimeWrapped
-originalRenderOps / wrappedRenderOps
 100/400/1000ms rebind timers
 ```
 
-Runtime diagnostics:
-
-```text
-classicWrapperOwner=false
-timerOwner=false
-```
-
-Permanent CI `AutoLabel PollRegistry owner guard` prevents those owners/timers from returning. Real Chrome verifies managed delay 1800, row-only refresh, stable `#view`, and immediate PollRegistry cleanup after navigation.
+Permanent CI prevents these owners from returning.
 
 ## 7. Legacy poll timer compatibility: CLOSED
 
-The following compatibility names are physically retired from product runtime code:
+Physically retired from product runtime code:
 
 ```text
 auto422Timer
@@ -152,86 +138,91 @@ __prelabelPollTimer
 _oldSetupPollV33
 ```
 
-Also removed:
+PollRegistry and NavigationStability no longer adopt/clear those names. The old v33 video/prelabel `setupPagePolling` wrapper is gone.
 
-- PollRegistry adopt/clear compatibility for those names;
-- NavigationStability fallback clearing for those names;
-- the v33 `setupPagePolling` override whose only purpose was video/prelabel interval ownership;
-- obsolete unit-test fixtures/expectations for those timers.
+## 8. Video polling ownership: CLOSED
 
-Permanent CI `Retired legacy poll timer compatibility guard` requires those tokens to remain absent from:
+Video no longer depends on PollRegistry wrapping classic render/refresh functions.
 
-```text
-static/app.js
-static/modules/poll-registry.js
-static/modules/navigation-stability.js
-```
-
-## 8. Current video polling owner: CLOSED for legacy interval
-
-Current live owner is the v42.4 video lifecycle, not the retired v33 interval:
+Final lifecycle:
 
 ```text
-renderVideo424 / refreshVideo424Delta
-→ state.video424Timer
-→ PollRegistry key video-frames
-→ managed one-shot 2000 ms
-→ active video task only re-arms
+renderVideo424
+→ loadVideo424 + render rows
+→ PollRegistryRuntime.replaceVideo424Timer()
+
+PollRegistry(video-frames, one-shot 2000ms)
+→ refreshVideo424Delta
+→ loadVideo424 + patch rows only
+→ PollRegistryRuntime.replaceVideo424Timer()
+→ active task ? re-arm : stop
 ```
+
+Physically retired:
+
+```text
+installVideo424CreationBridge
+__pollRegistryVideoWrapped
+originalRenderVideo424 / wrappedRenderVideo424
+originalRefreshVideo424 / wrappedRefreshVideo424
+registry.adopt('video-frames', ...)
+classic setTimeout(refreshVideo424Delta, 2000)
+classic clearTimeout(state.video424Timer)
+```
+
+Permanent CI `Video PollRegistry direct owner guard` requires exactly two explicit app handoffs and forbids wrapper/adoption compatibility.
 
 Real Chrome verifies:
 
-- `video-frames` is PollRegistry-managed;
-- only task rows are patched;
-- `#view` stays stable;
-- navigation away clears the key immediately;
-- `__videoFramePollTimer` remains absent/null.
+- managed `video-frames` one-shot;
+- row-only patching and stable `#view`;
+- navigation-away cleanup;
+- no legacy video interval owner;
+- no page errors.
 
-Do not reintroduce a second video interval owner.
+## 9. Remaining PollRegistry bridge debt
 
-## 9. Remaining polling/lifecycle debt
-
-The next target is **not** another video runtime. PollRegistry still contains historical creation bridges that wrap legacy functions after those functions create timers:
+Only two creation-bridge families remain:
 
 ```text
 installPollingCreationBridge()
-  → wraps setupPagePolling
-
-installVideo424CreationBridge()
-  → wraps renderVideo424
-  → wraps refreshVideo424Delta
+→ wraps setupPagePolling
+→ replaces training-jobs interval
 
 installSourceCreationBridge()
-  → wraps renderSources422
+→ wraps renderSources422
+→ replaces sources interval
 
 rebindCreation()
 ```
 
-Target architecture:
+Video bridge is CLOSED and must not return.
+
+Target pattern for both remaining owners:
 
 ```text
-page renderer/action
-→ explicit lifecycle handoff
-→ PollRegistry creates/clears managed timer
+classic renderer/action
+→ explicit PollRegistry lifecycle handoff
+→ PollRegistry owns timer creation/clear directly
 ```
 
 not:
 
 ```text
-legacy function creates timer
-→ PollRegistry wrapper observes/replaces it
+classic function creates timer
+→ PollRegistry wrapper clears/replaces it afterward
 ```
 
-The next cleanup must prove each owner separately before physical deletion. Do not blindly delete all bridges in one step.
+Next recommended order: source bridge first (narrow renderer and existing Chrome coverage), then training/setupPagePolling bridge.
 
 ## 10. Cache state
 
 ```text
 styles/bootstrap               42.24.0-style versions
-app.js                         42.25.45
-main.mjs                       42.25.50
+app.js                         42.25.46
+main.mjs                       42.25.51
 navigation-stability.js        422504
-poll-registry.js               422508
+poll-registry.js               422509
 training-draft-runtime.js      422516
 training-labels.js             422513
 auto-label-poll-runtime.js     422501
@@ -242,14 +233,15 @@ Cache-busting remains non-unified debt.
 ## 11. Current work order
 
 ```text
-1. retire PollRegistry creation bridges + old setupPagePolling layers through explicit lifecycle handoff
-2. establish renderer/setPage final-owner table and remove obsolete overrides
-3. reduce proven dead app.js and global reload/request debt
-4. unify cache-busting
-5. zero-point MutationObserver/timer/fetch/render/setPage scan
-6. semantic naming + deterministic-test cleanup + docs sync
-7. zero-point debt scan
-8. resume A800 RC
+1. retire renderSources422 / source creation bridge through explicit lifecycle handoff
+2. retire setupPagePolling / training creation bridge through explicit lifecycle handoff
+3. establish renderer/setPage final-owner table and remove obsolete overrides
+4. reduce proven dead app.js and global reload/request debt
+5. unify cache-busting
+6. zero-point MutationObserver/timer/fetch/render/setPage scan
+7. semantic naming + deterministic-test cleanup + docs sync
+8. zero-point debt scan
+9. resume A800 RC
 ```
 
 Every batch: prove owner → regression → physical deletion → syntax/unit → Real Chrome when behavior changes → update all three handoff docs.
@@ -277,8 +269,9 @@ Frontend CI is not CUDA/A800 acceptance.
 - do not bump `VERSION.txt`, tag or release;
 - do not restore retired training mirrors/adapter;
 - do not restore TrainingDraft/TrainingLabel classic wrappers or timer fan-out;
-- do not restore AutoLabel legacy timers, renderer wrapping, or rebind timers;
-- do not restore `auto422Timer`, `__videoFramePollTimer`, `__prelabelPollTimer`, or `_oldSetupPollV33` compatibility;
+- do not restore AutoLabel legacy timers/wrappers/rebind timers;
+- do not restore `auto422Timer`, `__videoFramePollTimer`, `__prelabelPollTimer`, `_oldSetupPollV33`;
+- do not restore PollRegistry video renderer wrappers/adoption;
 - do not let DraftRuntime generic sync own `.training-label-contract` controls;
 - do not add render-repair loops or a new numbered override generation;
 - do not weaken duplicate-request/race/performance/browser tests;
