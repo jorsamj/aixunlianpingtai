@@ -15,6 +15,17 @@ const catalog = [
   {code: 'cigarette', display_name: '香烟'},
 ];
 
+function successfulVersion(overrides = {}) {
+  return {
+    id: 'v1',
+    created_at: '2026-09-10T00:00:00Z',
+    training_status: 'SUCCEEDED',
+    artifact_verified: true,
+    trainable: true,
+    ...overrides,
+  };
+}
+
 test('available labels come only from selected materials', () => {
   const materials = [
     {id: 'a', labels: ['fire', 'person']},
@@ -40,16 +51,12 @@ test('confirmed empty scope contributes concrete labels and ignores legacy star'
 
 test('previous version labels are inherited and only material labels are selectable additions', () => {
   const algorithm = {
-    versions: [{
-      id: 'v1',
-      created_at: '2026-09-10T00:00:00Z',
-      artifact_verified: true,
-      trainable: true,
+    versions: [successfulVersion({
       label_schema: [
         {code: 'fire', class_id: 0},
         {code: 'smoke', class_id: 1},
       ],
-    }],
+    })],
   };
   const view = resolveClientTrainingLabels({
     materials: [{id: 'a', labels: ['fire', 'cigarette', 'person']}],
@@ -62,6 +69,43 @@ test('previous version labels are inherited and only material labels are selecta
   assert.deepEqual(view.selectable, ['person', 'cigarette']);
   assert.deepEqual(view.requested, ['cigarette']);
   assert.deepEqual(view.effectivePreview, ['fire', 'smoke', 'cigarette']);
+});
+
+test('failed newer version never overrides latest successful trainable label schema', () => {
+  const info = latestVersionLabelInfo({
+    versions: [
+      successfulVersion({
+        id: 'ok',
+        created_at: '2026-09-10T00:00:00Z',
+        label_schema: [{code: 'fire', class_id: 0}],
+      }),
+      {
+        id: 'failed-newer',
+        created_at: '2026-09-11T00:00:00Z',
+        training_status: 'FAILED',
+        artifact_verified: false,
+        trainable: false,
+        label_schema: [{code: 'person', class_id: 0}],
+      },
+    ],
+  });
+  assert.equal(info.version.id, 'ok');
+  assert.deepEqual(info.codes, ['fire']);
+});
+
+test('algorithm with versions but no successful trainable version is blocked instead of treated as first training', () => {
+  const info = latestVersionLabelInfo({
+    versions: [{
+      id: 'failed',
+      created_at: '2026-09-11T00:00:00Z',
+      training_status: 'FAILED',
+      artifact_verified: false,
+      trainable: false,
+    }],
+  });
+  assert.equal(info.hasAnyVersion, true);
+  assert.equal(info.hasVersion, false);
+  assert.equal(info.blocked, true);
 });
 
 test('first training never inherits mother-model classes', () => {
@@ -77,9 +121,9 @@ test('first training never inherits mother-model classes', () => {
   assert.deepEqual(view.effectivePreview, ['fire']);
 });
 
-test('legacy previous version is flagged for server-side snapshot recovery', () => {
+test('legacy successful previous version is flagged for server-side snapshot recovery', () => {
   const info = latestVersionLabelInfo({
-    versions: [{id: 'old', created_at: '2026-09-10T00:00:00Z', artifact_verified: true, trainable: true}],
+    versions: [successfulVersion({id: 'old'})],
   });
   assert.equal(info.hasVersion, true);
   assert.equal(info.legacyUnknown, true);
