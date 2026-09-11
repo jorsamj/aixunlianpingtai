@@ -40,19 +40,27 @@ function cleanup(runtime) {
   delete globalThis.document;
 }
 
-test('runtime maps legacy structural state while keeping labels canonical', () => {
+test('runtime preserves canonical split state and removes a stale retired split mirror', () => {
   setupDom({tr429Priority: '25'});
   const state = {
     train428AlgorithmId: 'alg-1',
+    train429Selected: new Set(['legacy-wrong']),
     trainSplitV3: {
-      mode: 'random_test_from_training_pool',
-      train: new Set(['img-1', 'img-2']),
-      test: new Set(),
-      experiment: 20,
-      validation: 15,
+      mode: 'independent_test_set',
+      train: new Set(['legacy-wrong']),
+      test: new Set(['legacy-test']),
+      experiment: 99,
+      validation: 88,
     },
     train428Config: {device: '0', batch: 16, workers: 4, cache: false},
-    trainingDraft: {newLabelCodes: ['person']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['img-1', 'img-2'],
+      splitMode: 'random_test_from_training_pool',
+      experimentPercent: 20,
+      validationPercent: 15,
+      newLabelCodes: ['person'],
+    }),
     algorithms: [{
       id: 'alg-1',
       versions: [{
@@ -71,16 +79,20 @@ test('runtime maps legacy structural state while keeping labels canonical', () =
   assert.equal(draft.algorithmId, 'alg-1');
   assert.equal(draft.baseVersionId, 'v1');
   assert.deepEqual(draft.materialIds, ['img-1', 'img-2']);
+  assert.equal(draft.splitMode, 'random_test_from_training_pool');
+  assert.equal(draft.experimentPercent, 20);
+  assert.equal(draft.validationPercent, 15);
   assert.deepEqual(draft.inheritedLabelCodes, ['fire', 'smoke']);
   assert.deepEqual(draft.newLabelCodes, ['person']);
   assert.deepEqual(draft.effectiveLabelCodes, ['fire', 'smoke', 'person']);
   assert.equal(draft.priority, 25);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
 
-test('live train-v3 controls override stale legacy state and are mirrored back', () => {
+test('live train-v3 controls override canonical values without recreating split mirror', () => {
   setupDom({
     tr429Priority: '7',
     trV3Experiment: '35',
@@ -91,18 +103,19 @@ test('live train-v3 controls override stale legacy state and are mirrored back',
   });
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {
-      mode: 'random_test_from_training_pool',
-      train: new Set(['img-1', 'img-2']),
-      test: new Set(),
-      experiment: 20,
-      validation: 20,
-    },
+    trainSplitV3: {mode: 'independent_test_set', train: new Set(['wrong']), test: new Set(['wrong-test']), validation: 99},
     train428Config: {
       resource_strategy: 'auto', device: 'cpu', gpu_policy: 'auto',
       batch: 16, workers: 4, cache: false, queue_priority: 50,
     },
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['img-1', 'img-2'],
+      splitMode: 'random_test_from_training_pool',
+      experimentPercent: 20,
+      validationPercent: 20,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{id: 'alg-1', versions: []}],
   };
   globalThis.window = {fetch: async () => ({ok: true})};
@@ -116,8 +129,7 @@ test('live train-v3 controls override stale legacy state and are mirrored back',
   assert.deepEqual(draft.resource, {
     strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false,
   });
-  assert.equal(state.trainSplitV3.experiment, 35);
-  assert.equal(state.trainSplitV3.validation, 18);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(state.train428Config.resource_strategy, 'manual');
   assert.equal(state.train428Config.device, '0');
   assert.equal(state.train428Config.gpu_policy, 'exclusive');
@@ -127,16 +139,20 @@ test('live train-v3 controls override stale legacy state and are mirrored back',
   cleanup(runtime);
 });
 
-test('runtime update writes canonical draft and structural compatibility mirrors without recreating label mirror', () => {
+test('runtime update writes canonical draft and remaining compatibility mirrors only', () => {
   setupDom();
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {
-      mode: 'random_test_from_training_pool', train: new Set(['a', 'b']), test: new Set(),
-      experiment: 20, validation: 20,
-    },
+    trainSplitV3: {mode: 'random_test_from_training_pool', train: new Set(['wrong']), test: new Set(), experiment: 99, validation: 99},
     train428Config: {device: 'cpu', batch: 8, workers: 0, cache: false},
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['a', 'b'],
+      splitMode: 'random_test_from_training_pool',
+      experimentPercent: 20,
+      validationPercent: 20,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{id: 'alg-1', versions: []}],
   };
   globalThis.window = {fetch: async () => ({ok: true})};
@@ -153,7 +169,7 @@ test('runtime update writes canonical draft and structural compatibility mirrors
   assert.deepEqual(draft.newLabelCodes, ['smoke']);
   assert.equal(draft.resource.device, '0');
   assert.equal(draft.resource.strategy, 'manual');
-  assert.deepEqual([...state.trainSplitV3.train], ['b', 'c']);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.deepEqual([...state.train429Selected], ['b', 'c']);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
   assert.equal(state.train428Config.device, '0');
@@ -172,17 +188,19 @@ test('train start POST is canonicalized from TrainingDraft before it reaches the
   });
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {
-      mode: 'independent_test_set',
-      train: new Set(['img-1', 'img-2']),
-      test: new Set(['img-3']),
-      validation: 20,
-    },
+    trainSplitV3: {mode: 'random_test_from_training_pool', train: new Set(['stale']), test: new Set(), experiment: 99, validation: 99},
     train428Config: {
       resource_strategy: 'auto', device: 'cpu', gpu_policy: 'auto',
       batch: 16, workers: 4, cache: false,
     },
-    trainingDraft: {newLabelCodes: ['person']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['img-1', 'img-2'],
+      testMaterialIds: ['img-3'],
+      splitMode: 'independent_test_set',
+      validationPercent: 20,
+      newLabelCodes: ['person'],
+    }),
     algorithms: [{id: 'alg-1', versions: []}],
   };
   let sent;
@@ -219,6 +237,7 @@ test('train start POST is canonicalized from TrainingDraft before it reaches the
   assert.equal(sent.cache, false);
   assert.equal(sent.queue_priority, 35);
   assert.equal(sent.framework, 'ultralytics');
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
@@ -228,8 +247,15 @@ test('runtime refuses iteration when versions exist but none is successful and t
   setupDom();
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {train: new Set(['a', 'b']), test: new Set(), mode: 'random_test_from_training_pool', experiment: 20, validation: 20},
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainSplitV3: {train: new Set(['stale']), test: new Set(), mode: 'random_test_from_training_pool', experiment: 99, validation: 99},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['a', 'b'],
+      splitMode: 'random_test_from_training_pool',
+      experimentPercent: 20,
+      validationPercent: 20,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{
       id: 'alg-1',
       versions: [{id: 'bad', training_status: 'FAILED', artifact_verified: false}],
@@ -244,6 +270,7 @@ test('runtime refuses iteration when versions exist but none is successful and t
     body: JSON.stringify({algorithm_asset_id: 'alg-1'}),
   }), /不会回退母算法/);
   assert.equal(called, false);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
