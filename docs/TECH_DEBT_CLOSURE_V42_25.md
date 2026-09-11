@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **工作分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整前端验收代码点：`f8040aecb316e16fd0f746db9cfb17e3a830e0ab`。**  
-> **Frontend Runtime Stabilization run `34596430563`：syntax + 永久 guards + 全量 frontend unit + Real Chrome 全绿。**  
+> **最近完整前端验收代码点：`462c7b736e8387bd23a3d5e5eab0e715cc4f2945`。**  
+> **Frontend Runtime Stabilization run `34596834911`：syntax + 永久 guards + 全量 frontend unit + Real Chrome 全绿。**  
 > **更新日期：2026-09-11**
 
 ## 0. 后续 AI / Codex 强制入口
@@ -49,15 +49,15 @@ trainingDraftFromLegacyState
 | TD-13 | `auto422Timer` / prelabel / `setupPagePolling` | named runtimes | **OPEN** | 需物理退役证明 |
 | TD-14 | historical render/setPage overrides | 每页面单 owner | **OPEN** | owner 表待建 |
 | TD-15 | `app.js` 历史死代码 | named runtimes + bounded shell | **IN PROGRESS** | 训练 owner/mirror 已大幅收口 |
-| TD-16 | 一次性 migration helper | 无长期 owner | **CLOSED** | 用完即删；当前 wrapper helper/workflow 已删除 |
-| TD-17 | cache-busting 不统一 | 单一策略 | **OPEN** | app `42.25.43`; main `42.25.41`; nested 仍独立 |
+| TD-16 | 一次性 migration helper | 无长期 owner | **CLOSED** | migration helper/workflow 用完即删 |
+| TD-17 | cache-busting 不统一 | 单一策略 | **OPEN** | app `42.25.43`; main `42.25.42`; nested 仍独立 |
 | TD-18 | 全局 reload/重复请求 | scoped refresh | **OPEN** | 扫 `loadAll/loadRelated/loadCore412` |
 | TD-19 | observer/timer/fetch/render 生命周期 | 明确 owner + destroy | **OPEN** | zero-point 扫描待做 |
 | TD-20 | 版本号业务命名 | semantic names | **OPEN** | owner 收口后迁移 |
 | TD-21 | 测试历史债 | deterministic tests | **IN PROGRESS** | canonical tests 已去 legacy adapter；继续清旧耦合 |
 | TD-22 | 文档漂移 | 三份权威文档 | **IN PROGRESS** | 每 runtime 批次同步 |
 | TD-23 | A800 RC | A800 acceptance runbook | **DEFERRED** | 技术债阶段后恢复 |
-| TD-24 | TrainingDraft/TrainingLabel classic wrappers | direct canonical UI lifecycle | **IN PROGRESS** | Draft 4 个 wrapper 已退役 3 个，仅 start429 保留；TrainingLabel 继续清 |
+| TD-24 | TrainingDraft/TrainingLabel classic wrappers | direct canonical UI lifecycle | **IN PROGRESS** | Draft 仅 start429 wrapper 保留；TrainingLabel 已清 428 stale binds，继续证明 423/425 可达性 |
 
 ## 2. 当前 canonical training owner
 
@@ -73,11 +73,12 @@ train-v3 UI
 
 ```text
 app.js cache                     42.25.43
-main.mjs cache                   42.25.41
+main.mjs cache                   42.25.42
 training-draft.js                422506
 training-draft-runtime.js        422512
 TrainingDraftRuntime build       training-draft-runtime-422512
-training-labels.js               422508
+training-labels.js               422509
+TrainingLabelRuntime build       module-422509
 TrainingSubmitRuntime            training-submit-422504
 TrainingTaskRuntime              training-task-runtime-422503
 ```
@@ -88,23 +89,15 @@ Missing draft 只创建空 canonical `createTrainingDraft()`，绝不从 428/429
 
 ### 已关闭的 TrainingDraft wrappers
 
-以下 final `app.js` 函数已经自己直接写 canonical，因此 Runtime wrapper 已物理删除：
-
 ```text
 confirmTrainMaterialPickerV3
 setTrainSplitModeV3
 saveTrainSettings428
 ```
 
-同时删除了仅为 settings wrapper 服务的：
+这些 final `app.js` 函数已直接写 canonical。wrapper-only settings helpers `settingsPatch / checkboxInput / normalizedCache` 也已删除。
 
-```text
-settingsPatch
-checkboxInput
-normalizedCache
-```
-
-### 仍保留的唯一 TrainingDraft wrapper
+### 唯一剩余 TrainingDraft wrapper
 
 ```text
 startAlgorithmTraining429
@@ -112,25 +105,26 @@ startAlgorithmTraining429
 
 原因：当前 start 路径仍叠有历史 414/415/417/v3 wrapper。TrainingDraftRuntime 仍在最外层先 reset/write canonical algorithm/material/split，再执行原 start 链并 `sync()`。
 
-**禁止直接删掉这个最后 wrapper。先收平/证明 final start owner chain。**
+**禁止直接删除。先收平/证明 final start owner chain。**
 
-### TrainingLabelRuntime 下一步
+### TrainingLabelRuntime 已清理
 
-当前仍会尝试 bind：
+以下 stale bind 在当前 `static/app.js` 无定义，现已从 TrainingLabelRuntime 物理删除并通过 Chrome：
+
+```text
+openTrain428
+refreshTrain428
+```
+
+当前真实剩余 bind 表：
 
 ```text
 startAlgorithmTraining429
 startAlgorithmTraining423
-openTrain428
 openTrain425
 refreshTrain429
-refreshTrain428
 trainCounts425
 ```
-
-代码审计已确认当前 `static/app.js` 中 **不存在** `window.openTrain428` 和 `window.refreshTrain428`；它们是 stale bind targets，可作为下一批最小安全删除项。
-
-其他 target 仍存在或可能通过历史页面链可达，需继续做 owner/call-site 证明。
 
 TrainingLabel 仍有：
 
@@ -140,24 +134,43 @@ rebind:              100 / 400 / 1000 / 2500 ms
 modal MutationObserver
 ```
 
+### start-owner 初步审计
+
+当前稳定算法列表 `renderAlg412` 的训练按钮直接调用 `startAlgorithmTraining429`。它不是 `startAlgorithmTraining423`。
+
+历史 `startAlgorithmTraining423` 曾在 423、425、初始 429 层多次赋值；早期 429 只做了当时函数对象的 alias。之后 414/415/417/v3 再覆盖 `startAlgorithmTraining429`，因此不能假设 423 始终跟随最终 429。
+
+当前 `startAlgorithmTraining429` 链：
+
+```text
+initial 429 canonical modal
+→ 414 iteration-base wrapper
+→ 415 experiment wrapper
+→ 417 iteration presentation wrapper
+→ durable v3 device/resource wrapper
+→ TrainingDraftRuntime outer start wrapper
+```
+
+下一步先证明旧 423/425 页面是否仍由当前最终 renderer/page owner 可达，再决定物理删除范围。
+
 ## 4. 最近完整验收
 
 ```text
-acceptance commit: f8040aecb316e16fd0f746db9cfb17e3a830e0ab
-Frontend Runtime Stabilization: 34596430563
+acceptance commit: 462c7b736e8387bd23a3d5e5eab0e715cc4f2945
+Frontend Runtime Stabilization: 34596834911
 frontend unit: PASS
 permanent guards: PASS
 Real Chrome runtime regressions: PASS
 ```
 
-这批验证了 3 个 Draft wrapper 退役后训练弹窗、素材、标签、设置、canonical payload、sole submit network owner 均保持正常。
+该验收包含：五个 mirror canonical-only、legacy bootstrap 退役、3 个 Draft 重复 wrapper 退役、TrainingLabel `openTrain428/refreshTrain428` stale bind 退役。
 
 ## 5. 当前清理顺序
 
 ```text
-A. 删除 TrainingLabel stale bind target: openTrain428 / refreshTrain428
-B. 审计并收平 startAlgorithmTraining429 历史 wrapper 链，最后退役 Draft start wrapper
-C. 继续减 TrainingLabel wrappers / refresh timers / rebind timers / MutationObserver
+A. 证明 startAlgorithmTraining423/openTrain425/trainCounts425 当前可达性
+B. 收平/证明 startAlgorithmTraining429 历史 wrapper 链，最后退役 Draft start wrapper
+C. 继续减少 TrainingLabel wrappers / refresh timers / rebind timers / MutationObserver
 D. 清 auto422Timer / __videoFramePollTimer / prelabel / setupPagePolling
 E. renderer/setPage owner table + old override physical deletion
 F. app.js dead code + global reload/request debt
