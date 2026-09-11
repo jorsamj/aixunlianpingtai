@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   hasActiveAutoLabelTask,
@@ -52,7 +53,7 @@ test('active detection follows annotation task view contract', () => {
   assert.equal(hasActiveAutoLabelTask([{status: 'SUCCEEDED'}], taskView), false);
 });
 
-test('runtime retires legacy timeout and refreshes only task rows through managed one-shot polling', async () => {
+test('runtime leaves renderer untouched and owns polling only through PollRegistry', async () => {
   const state = {
     page: '自动标注及清洗',
     project: {id: 'project-1'},
@@ -62,7 +63,6 @@ test('runtime retires legacy timeout and refreshes only task rows through manage
       id: 'running-1', status: 'RUNNING', requested_labels: ['fire'],
       summary: {total: 10, completed: 2, boxes: 3},
     }],
-    ai60ListTimer: 99,
   };
   const tbody = {innerHTML: '<tr><td>old</td></tr>'};
   const rootView = {marker: 'same-view'};
@@ -91,13 +91,9 @@ test('runtime retires legacy timeout and refreshes only task rows through manage
     },
   };
 
-  let legacyCalls = 0;
+  const originalRenderOps = async () => 'app-owned-render';
   globalThis.window = {
-    renderOps427: async () => {
-      legacyCalls += 1;
-      state.ai60ListTimer = 123;
-      return 'legacy-rendered';
-    },
+    renderOps427: originalRenderOps,
     fetch: async () => ({
       ok: true,
       async json() {
@@ -117,11 +113,12 @@ test('runtime retires legacy timeout and refreshes only task rows through manage
     pollDelay: 1800,
   });
 
-  await window.renderOps427();
-  assert.equal(legacyCalls, 1);
-  assert.equal(state.ai60ListTimer, null);
+  await Promise.resolve();
+  assert.equal(window.renderOps427, originalRenderOps, 'runtime must not wrap the page renderer');
   assert.equal(managed?.key, 'auto-label-v60');
   assert.equal(managed?.delay, 1800);
+  assert.equal(runtime.snapshot().classicWrapperOwner, false);
+  assert.equal(runtime.snapshot().timerOwner, false);
 
   const currentView = document.getElementById('view');
   await managed.callback();
@@ -133,7 +130,31 @@ test('runtime retires legacy timeout and refreshes only task rows through manage
   assert.equal(managed, null, 'completed task should not re-arm polling');
   assert.ok(cleared.includes('auto-label-v60'));
 
+  state.page = '数据集';
+  assert.equal(runtime.activate(), false);
+  assert.equal(managed, null);
+
   runtime.destroy();
+  assert.equal(window.renderOps427, originalRenderOps);
   delete globalThis.window;
   delete globalThis.document;
+});
+
+test('AutoLabelPollRuntime stays wrapper-free and timer-free', () => {
+  const source = readFileSync(new URL('../../static/modules/auto-label-poll-runtime.js', import.meta.url), 'utf8');
+  for (const token of [
+    'renderOps427',
+    '__autoLabelPollRuntimeWrapped',
+    'originalRenderOps',
+    'wrappedRenderOps',
+    'rebindTimers',
+    'ai60ListTimer',
+    'setTimeout(',
+    'clearTimeout(',
+  ]) {
+    assert.equal(source.includes(token), false, `retired AutoLabel lifecycle token remains: ${token}`);
+  }
+  assert.match(source, /classicWrapperOwner: false/);
+  assert.match(source, /timerOwner: false/);
+  assert.match(source, /build: 'auto-label-poll-422501'/);
 });
