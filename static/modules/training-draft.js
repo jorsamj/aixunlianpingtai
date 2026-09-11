@@ -96,6 +96,9 @@ export function trainingDraftFromLegacyState(state = {}, {
   const testSet = split.test instanceof Set ? [...split.test] : [];
   const config = state.train428Config || {};
   const iteration = state.iteration414?.[algorithmId] || {};
+  const canonicalLabels = Array.isArray(state.trainingDraft?.newLabelCodes)
+    ? state.trainingDraft.newLabelCodes
+    : [];
 
   return createTrainingDraft({
     algorithmId,
@@ -107,7 +110,7 @@ export function trainingDraftFromLegacyState(state = {}, {
     validationPercent: split.validation ?? 20,
     inheritedLabelCodes,
     inheritancePending,
-    newLabelCodes: state.trainingLabelSelected instanceof Set ? [...state.trainingLabelSelected] : [],
+    newLabelCodes: canonicalLabels,
     resource: {
       strategy: config.resource_strategy || 'auto',
       device: config.device || 'auto',
