@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: 1470bb9f0dd19e1be5d0695cd7f4de21173dd944
-run:    34652823778
+commit: f6e71c05d35b1a39b0b79e1b652cf901044c68bd
+run:    34653776200
 frontend:     PASS
 Real Chrome:  PASS (12/12)
 ```
@@ -16,9 +16,9 @@ Real Chrome:  PASS (12/12)
 Current caches/builds:
 
 ```text
-app.js                    42.25.55
-main.mjs                  42.25.56
-navigation-stability      422509
+app.js                    42.25.56
+main.mjs                  42.25.57
+navigation-stability      422510
 ui-state                  422500
 poll-registry             422511
 training-draft-runtime    422516
@@ -61,6 +61,7 @@ Batch E: navigation persistence moved to final runtime CLOSED
 Batch F: v34/v35/v42.4 direct setPage family           CLOSED
 Batch G: v42.7 direct auto-label alias owner           CLOSED
 Batch H: setPageReady414 startup-readiness owner       CLOSED
+Batch I: baseSetPage417 mobile-sidebar owner           CLOSED
 ```
 
 Batch H evidence:
@@ -71,16 +72,22 @@ double-owner equivalence      a618696e... / 34652478444 PASS
 classic owner physically gone 1470bb9f... / 34652823778 PASS
 ```
 
-`tests/browser/navigation-readiness.spec.mjs` deliberately delays `/api/v53/bootstrap/snapshot`. It proves navigation intent is registered while startup is pending, but `state.page`/render do not advance until `__v53InitPromise` resolves. After readiness, the requested page renders once and its canonical page is persisted.
+Batch I evidence:
+
+```text
+named hook + classic owner    d6b9e459... / 34653340984 PASS
+classic owner physically gone f6e71c05... / 34653776200 PASS
+```
+
+`beforeInvokeNavigation` now owns `toggleMobileSidebarV37(false)` at the same semantic point as V417: after readiness resolution and immediately before actual page mutation/render. Real Chrome still proves both `#sidebar.mobile-open` and `#sideBackdrop.show` are removed on navigation.
 
 ## 4. Current setPage topology
 
 The chain is now reduced to:
 
 ```text
-initial function setPage(...) → window.setPage=setPage
-baseSetPage417 sidebar-close wrapper
-NavigationStability final module wrapper
+initial function setPage(p){ state.page=p; render(); }
+→ NavigationStability final module owner
 ```
 
 ### Named semantic responsibility map
@@ -93,7 +100,10 @@ NavigationStability readiness hook
   request/poll navigation intent first
   waitForNavigationReady()
   startup __v53InitPromise fencing
-  predecessor invocation only after readiness
+
+NavigationStability pre-invoke hook
+  beforeInvokeNavigation()
+  close mobile sidebar/backdrop
 
 NavigationStability final lifecycle
   navigation epoch
@@ -106,17 +116,23 @@ ui-state.js
   serialize/persist page, project, dataset, imageFilter
 ```
 
-### Remaining classic semantic owner
+### Remaining classic setPage responsibility
 
-```text
-baseSetPage417
-  window.toggleMobileSidebarV37(false)
-  → predecessor setPage
+The initial bootstrap function is not another lifecycle wrapper. It is the actual page-application predecessor currently captured by `NavigationStability`:
+
+```js
+function setPage(p){state.page=p;render()}
+window.setPage=setPage;
 ```
 
-`toggleMobileSidebarV37(false)` removes `mobile-open` from `#sidebar` and `show` from `#sideBackdrop`. Real Chrome already asserts both are closed after navigation.
+Its live semantics are exactly:
 
-Runtime-order note: V417 wrapper is installed through `installUsability417()` later in script execution; source position alone must not be used to infer capture order.
+```text
+state.page = page
+render() using the final classic render chain
+```
+
+Startup `window.__clInit` does not use this function. It loads data and calls `render()` directly, so startup itself does not block retirement of the bootstrap binding.
 
 ## 5. Remaining render alias fallback
 
@@ -129,23 +145,25 @@ render=function(){
 }
 ```
 
-This is no longer a `setPage` owner. Treat it as render-chain debt later; do not mix it into the sidebar migration.
+This is no longer a `setPage` owner. Treat it as render-chain debt later; do not mix it into bootstrap setPage migration unless a contract proves it is safe to remove with the same batch.
 
-## 6. Next candidate — `baseSetPage417`
+## 6. Next candidate — initial bootstrap `setPage`
 
 Required migration sequence:
 
 ```text
-1. Add/strengthen unit contract for sidebar close before predecessor invocation.
-2. Keep existing Real Chrome sidebar/backdrop contract as baseline.
-3. Add a named before-navigation hook to NavigationStability.
-4. Double-owner equivalence: unit + Real Chrome.
-5. Physically remove baseSetPage417 only after equivalence.
-6. Upgrade permanent guard to forbid the numbered classic owner.
-7. Leave the initial bootstrap setPage binding untouched.
+1. Add named `performNavigation` / `applyPage` hook to NavigationStability.
+2. Hook owns exactly one state.page mutation + one final classic render call.
+3. NavigationStability must install window.setPage even when no predecessor exists.
+4. During equivalence, when named apply hook is configured, classic predecessor must not also mutate/render.
+5. Unit tests lock exact order and single-render behavior.
+6. Real Chrome covers menu navigation, programmatic window.setPage, readiness, sidebar and persistence.
+7. Physically delete bootstrap function/binding only after equivalence.
+8. Permanent guard flips from “bootstrap must remain” to “bootstrap must not return”.
+9. Remove one-shot migration artifacts and run final full suite.
 ```
 
-Do not replace this with a generic global render-repair mechanism; the semantic is just navigation-side UI cleanup.
+The migration must not scatter `state.page=...; render()` into another numbered classic block. The actual apply action must have one named owner.
 
 ## 7. Remaining audit targets
 
@@ -189,17 +207,17 @@ live HEAD
 9. Video/source/training polling direct ownership must not regress.
 10. Frontend CI is not A800/CUDA acceptance.
 11. Old setPage semantics may move into named runtimes only after behavior is locked.
+12. Initial bootstrap `setPage` cannot be deleted until named runtime owns the actual single page mutation/render action.
 
 ## 9. Work order
 
 ```text
-1. baseSetPage417 sidebar migration
-2. initial bootstrap setPage liveness audit
-3. remaining obsolete render/setPage layers
-4. app.js dead code + global reload/request debt
-5. cache-busting unification
-6. zero-point observer/timer/fetch/render/setPage scan
-7. semantic naming + deterministic tests + docs
-8. technical-debt zero-point scan
-9. A800 RC
+1. initial bootstrap setPage migration
+2. remaining obsolete render layers
+3. app.js dead code + global reload/request debt
+4. cache-busting unification
+5. zero-point observer/timer/fetch/render/setPage scan
+6. semantic naming + deterministic tests + docs
+7. technical-debt zero-point scan
+8. A800 RC
 ```
