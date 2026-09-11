@@ -1,0 +1,52 @@
+name: Prune Stale TrainingLabel Binds
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/prune_stale_training_label_binds.py
+      - .github/workflows/prune-stale-training-label-binds.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded stale-bind pruning
+        run: python tools/prune_stale_training_label_binds.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Syntax check
+        run: >-
+          node --check static/modules/training-labels.js &&
+          node --check static/main.mjs &&
+          node --check tests/frontend/training-labels.test.mjs
+      - name: Assert stale binds are gone
+        run: |
+          if grep -n "wrap('openTrain428'" static/modules/training-labels.js; then exit 1; fi
+          if grep -n "wrap('refreshTrain428'" static/modules/training-labels.js; then exit 1; fi
+      - name: Run focused label tests
+        run: node --test tests/frontend/training-labels.test.mjs tests/frontend/training-draft-runtime.test.mjs tests/frontend/training-submit.test.mjs
+      - name: Commit pruning
+        run: |
+          if git diff --quiet -- static/modules/training-labels.js static/main.mjs static/index.html tests/frontend/training-labels.test.mjs; then
+            echo 'No pruning change required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/modules/training-labels.js static/main.mjs static/index.html tests/frontend/training-labels.test.mjs
+          git commit -m 'refactor(ui): prune stale TrainingLabel 428 binds'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
