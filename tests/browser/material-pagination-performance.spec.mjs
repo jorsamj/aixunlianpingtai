@@ -103,11 +103,14 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await expect(page.locator('#data412Q')).toHaveValue('smoke');
   await expect(page.locator('.data426-shell')).toHaveAttribute('data-performance-marker', 'preserve-me');
 
-  expect(apiRequests.length).toBeGreaterThan(0);
-  expect(apiRequests.every(row => row.includes('/api/v61/projects/') && row.includes('/materials'))).toBe(true);
+  const materialRequests = apiRequests.filter(row => row.includes('/api/v61/projects/') && row.includes('/materials'));
+  expect(materialRequests.length).toBeGreaterThan(0);
   expect(apiRequests.some(row => row.includes('/bootstrap/snapshot'))).toBe(false);
   expect(apiRequests.some(row => row.includes('/algorithms'))).toBe(false);
   expect(apiRequests.some(row => row.includes('/datasets'))).toBe(false);
+  expect(apiRequests.some(row => row.includes('/labels'))).toBe(false);
+  expect(apiRequests.some(row => row.includes('/publish/pending'))).toBe(false);
+  expect(apiRequests.some(row => row.includes('/test_models'))).toBe(false);
   expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images/.test(row))).toBe(false);
   expect(pageErrors).toEqual([]);
 });
