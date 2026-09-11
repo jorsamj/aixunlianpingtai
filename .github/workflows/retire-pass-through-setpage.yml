@@ -1,0 +1,53 @@
+name: Retire Pass Through SetPage
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_pass_through_setpage.py
+      - .github/workflows/retire-pass-through-setpage.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded migration
+        run: python tools/retire_pass_through_setpage.py
+      - name: Verify focused navigation contracts
+        run: |
+          node --check static/app.js
+          node --check static/modules/navigation-stability.js
+          node --test tests/frontend/navigation-stability.test.mjs tests/frontend/poll-registry.test.mjs
+          for token in set423Base setBase424; do
+            if grep -F -n "$token" static/app.js; then
+              echo "dead setPage compatibility remains: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'window.setPage=function(p){state.page=p;render()};try{setPage=window.setPage}catch(e){}' static/app.js
+          grep -Fq '/static/app.js?v=42.25.50' static/index.html
+      - name: Commit migrated files
+        run: |
+          if git diff --quiet -- static/app.js static/index.html; then
+            echo 'no migration changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html
+          git commit -m 'refactor(ui): retire pass-through setPage wrapper'
+          git push
