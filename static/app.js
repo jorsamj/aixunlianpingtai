@@ -1801,9 +1801,6 @@ window.installUsability417=function(){
       <div class="dashboard-grid-v37"><section class="panel"><div class="panel-head"><div class="panel-title">最近训练</div><button class="btn small" onclick="setPage('训练任务')">全部任务</button></div><div class="panel-body"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th>操作</th></tr></thead><tbody>${taskRows}</tbody></table></div></section><section class="panel"><div class="panel-head"><div class="panel-title">训练资源</div><button class="btn small" onclick="setPage('训练资源')">配置</button></div><div class="panel-body">${resourceRows}</div></section></div>`;
   };
 
-  const baseSetPage=window.setPage;
-  window.setPage=function(page){toggleMobileSidebarV37(false);baseSetPage(page)};
-  try{setPage=window.setPage}catch(e){}
 
   function enhancePageV37(){
     const view=document.getElementById('view');if(!view)return;
