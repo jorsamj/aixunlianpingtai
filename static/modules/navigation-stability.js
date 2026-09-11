@@ -53,7 +53,7 @@ function ownersFor(page) {
   return [page];
 }
 
-export function installNavigationStability({getState, notify, requestScope, pollRegistry} = {}) {
+export function installNavigationStability({getState, notify, requestScope, pollRegistry, persistNavigationState} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
   window.__navigationStabilityInstalled = true;
@@ -72,23 +72,56 @@ export function installNavigationStability({getState, notify, requestScope, poll
     if (owners.has(page)) pollRegistry?.afterNavigate?.(page);
   }
 
+  function finalizeNavigation(requested, navigationEpoch) {
+    if (destroyed || guard.epoch !== navigationEpoch) return String(currentState().page || requested);
+    const s = currentState();
+    const actualPage = String(s.page || requested);
+    if (actualPage !== guard.page) guard.page = actualPage;
+    requestScope?.alignPage?.(actualPage);
+    pollRegistry?.afterNavigate?.(actualPage);
+    const currentView = document.getElementById('view');
+    if (currentView) currentView.dataset.navigationPage = actualPage;
+    try {
+      persistNavigationState?.(s, actualPage);
+    } catch (_) {
+      // UI persistence must never turn a successful navigation into a failure.
+    }
+    return actualPage;
+  }
+
   const originalSetPage = window.setPage;
   if (typeof originalSetPage === 'function') {
     window.setPage = function stableSetPage(page, ...args) {
       const requested = String(page || '');
       requestScope?.navigate?.(requested);
       pending.clear();
-      guard.navigate(requested);
+      const navigationEpoch = guard.navigate(requested);
       const s = currentState();
       s.__navigationEpoch = guard.epoch;
       pollRegistry?.beforeNavigate?.(requested);
-      const result = originalSetPage.call(this, page, ...args);
-      const actualPage = String(s.page || requested);
-      if (actualPage !== guard.page) guard.page = actualPage;
-      requestScope?.alignPage?.(actualPage);
-      pollRegistry?.afterNavigate?.(actualPage);
-      const currentView = document.getElementById('view');
-      if (currentView) currentView.dataset.navigationPage = actualPage;
+
+      let result;
+      try {
+        result = originalSetPage.call(this, page, ...args);
+      } catch (error) {
+        finalizeNavigation(requested, navigationEpoch);
+        throw error;
+      }
+
+      if (result && typeof result.then === 'function') {
+        return Promise.resolve(result).then(
+          value => {
+            finalizeNavigation(requested, navigationEpoch);
+            return value;
+          },
+          error => {
+            finalizeNavigation(requested, navigationEpoch);
+            throw error;
+          },
+        );
+      }
+
+      finalizeNavigation(requested, navigationEpoch);
       return result;
     };
   }
