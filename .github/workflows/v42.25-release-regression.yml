@@ -7,6 +7,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - .github/workflows/v42.25-release-regression.yml
+      - a800_rc_acceptance.py
+      - tests/unit/test_a800_rc_acceptance.py
 
 jobs:
   runtime-contracts:
