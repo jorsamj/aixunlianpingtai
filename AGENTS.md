@@ -1,110 +1,169 @@
 # Repository Agent Handoff
 
-本仓库由 Codex、ChatGPT 和人工开发共同维护。开始修改前，先确认当前分支并读取对应交接文档，不要只根据 README 的正式版本号推断开发状态。
+本仓库由 Codex、ChatGPT 和人工开发共同维护。开始修改前必须先读取实际分支/HEAD，不得只根据 README 或 `VERSION.txt` 推断开发状态。
 
 ## 必读顺序
 
-1. `docs/CODEX_CURRENT_STATE.md` — **当前状态第一入口**；记录最新 v42.25 已完成工作、当前训练标签 UI 热修、部署方式、已知风险和下一步验收。
-2. `docs/codex-handoff.md` — v42.24 及更早历史、产品约束、已知未验证事项。
-3. `docs/codex-handoff-v42.25.md` — v42.25 早期增量接管历史；若与 `docs/CODEX_CURRENT_STATE.md` 冲突，以当前状态文件和实际代码为准。
-4. `docs/superpowers/specs/2026-09-11-v42.25-training-data-contract-design.md` — v42.25 训练数据合同设计。
-5. `docs/superpowers/specs/2026-09-11-v42.25-task-runtime-fencing-design.md` — Task Runtime fencing 设计。
-6. `docs/superpowers/specs/2026-09-11-training-resource-contract-fix.md` — A800 真实训练暴露的 batch/cache 参数覆盖事故与修复合同。
-7. `docs/superpowers/specs/2026-09-11-negative-sample-contract.md` — `confirmed_empty`、负样本 scope、YOLO 空标签、前端确认动作与训练约束。
-8. `docs/superpowers/specs/2026-09-11-training-label-contract.md` — 训练任务标签选择、上一版本继承、母模型标签隔离、task-local class_id 合同。
-9. `docs/superpowers/specs/2026-09-11-navigation-stability.md` — 页面 navigation epoch、过期异步渲染 fencing、页面轮询生命周期合同。
-10. 对当前工作先执行 `git diff main...HEAD` / `git log main..HEAD`，不要假设 handoff 已覆盖最后一个 commit。
+1. `docs/TECH_DEBT_CLOSURE_V42_25.md` — **当前技术债关闭总账 / 第一权威来源**。
+2. `docs/CODEX_CURRENT_STATE.md` — 当前代码验收点、owner、下一批准确工作范围。
+3. `docs/frontend-legacy-audit.md` — classic `static/app.js` 的历史 override / owner 审计。
+4. `docs/FRONTEND_OWNER_MAP_V42_25.md` — 前端 owner map。
+5. `docs/codex-handoff.md`、`docs/codex-handoff-v42.25.md` — 历史上下文；与当前总账冲突时，以实际代码 + 上述当前文档为准。
+6. `docs/superpowers/specs/2026-09-11-v42.25-training-data-contract-design.md`
+7. `docs/superpowers/specs/2026-09-11-v42.25-task-runtime-fencing-design.md`
+8. `docs/superpowers/specs/2026-09-11-training-resource-contract-fix.md`
+9. `docs/superpowers/specs/2026-09-11-negative-sample-contract.md`
+10. `docs/superpowers/specs/2026-09-11-training-label-contract.md`
+11. `docs/superpowers/specs/2026-09-11-navigation-stability.md`
+
+修改前执行/确认 `git diff main...HEAD`、`git log main..HEAD` 或等价 GitHub API 检查；handoff 文档可能比分支 HEAD 少最后几个文档 commit。
 
 ## 当前开发状态
 
-- 稳定主分支：`main`
-- 当前 v42.25 开发分支：`refactor/v42.25-runtime`
-- v42.25 基线：`main@01636b61780361dde91c12ac2732f46d2289b6be`
-- README / VERSION 仍是 `42.24.0`，因为 v42.25 尚未正式发布；当前开发前端显示 `v42.25.0-dev`。
-- v42.25 第一批训练数据合同已实现。
-- v42.25 Task Runtime fencing 已实现，并通过定向 Linux GitHub Actions；**FULL REGRESSION NOT VERIFIED / A800 REAL TRAINING NOT VERIFIED**。
-- 训练资源参数覆盖修复已通过定向 Linux CI，但修复后的 A800 实际训练仍需重新验证。
-- 负样本合同已补齐并通过定向 Linux CI：`confirmed_empty` 可训练、scope 锁定、部分 scope 拒绝、空 YOLO label 落盘、0 框 UI 显式确认均已覆盖；A800 真实训练仍需回归。
-- 训练任务级 Label Contract 已实现并通过定向 Linux CI：前端 7/7、Python 61/61；项目全部 active labels 不再作为算法 schema，A800 真实训练仍需确认 Ultralytics 实际 `nc/names`。
-- 页面 Navigation Stability fencing 已实现并通过定向 Linux CI：页面切换采用 navigation epoch；旧页面异步任务返回后不得永久覆盖当前页面；离页时清理已知页面级轮询。
-- 训练标签前端当前通过 classic bootstrap + final train-v3 anchor 接入最终训练窗口；最近一次点击“训练”卡死根因是 MutationObserver 自激循环，已在 `ea4c08065d58ec24c233535ecb41c809b389f691` 热修。**该热修仍需真实浏览器复验，不得宣称完整 E2E 已通过。**
-- 最新、最完整的真实状态统一看 `docs/CODEX_CURRENT_STATE.md`。
-- 未完成真实环境验证前不要合并 main，也不要把 v42.25 描述成生产已验收。
+```text
+stable branch:               main
+active branch:               refactor/frontend-runtime-stabilization
+latest full code acceptance: ceab780b8f3d8314061d852bf2eccc8db9235f54
+Frontend Runtime run:        34644092284
+formal VERSION.txt:          42.24.0
+frontend badge:              v42.25.0-dev
+app.js cache:                42.25.53
+main.mjs cache:              42.25.54
+```
+
+`34644092284` 已通过：syntax、永久 owner guards、全量 frontend unit tests、Real Chrome runtime regressions。
+
+**当前仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
+
+## 当前前端 owner 状态
+
+### 训练
+
+```text
+train-v3 UI
+→ state.trainingDraft
+→ TrainingDraftRuntime
+→ TrainingSubmitRuntime
+→ /api/v12/projects/{project_id}/train/start
+```
+
+以下历史 mirror 已退休，不得恢复：
+
+```text
+trainingLabelSelected
+trainSplitV3
+train429Selected
+train428AlgorithmId
+train428Config
+trainingDraftFromLegacyState
+```
+
+### Polling
+
+```text
+training-jobs → PollRegistry + TrainingTaskRuntime
+AutoLabel      → AutoLabelPollRuntime + PollRegistry
+video          → PollRegistry(video-frames)
+sources        → PollRegistry(sources)
+```
+
+旧 timer、`setupPagePolling` shell、creation-wrapper/adoption compatibility 均已退休。
+
+### Navigation
+
+已物理退休：
+
+```text
+set423Base
+setBase424
+V37 duplicate baseSetPage wrapper
+oldSetV39
+oldSet42
+set422Base
+v34 persistence direct setPage
+v35 plain direct setPage
+v42.4 plain direct setPage
+```
+
+当前受保护语义链：
+
+```text
+initial bootstrap setPage binding
+→ v42.7 自动标注 alias owner
+→ setPageReady414 startup readiness
+→ baseSetPage417 mobile sidebar close
+→ NavigationStability final coordinator
+   → PageRequestScope
+   → PollRegistry
+   → ui-state.js persistence
+```
+
+Real Chrome 已锁定：
+- stale previous-page request 不得跳回旧页面；
+- 页面离开后 managed polling 停止；
+- 最终导航关闭 mobile sidebar/backdrop；
+- 导航到“数据集”后 localStorage 保存“数据集”，刷新后仍恢复“数据集”。
+
+下一批必须先审计 remaining setPage semantic chain，不能按版本号批量删除 alias/readiness/sidebar 真实语义。
 
 ## 不得回退的核心合同
 
-- 训练任务继续按精确 `train_image_ids / test_image_ids` 工作，不恢复“数据集分组”作为训练合同。
-- Windows 开发与 NVIDIA Linux 生产必须共用跨平台代码，禁止写死盘符、反斜杠路径或 Windows-only shell 流程。
+- Windows 开发与 NVIDIA Linux 生产必须共用跨平台代码；禁止写死盘符、反斜杠路径、Windows-only shell/process 流程。
 - 已有素材、标注、算法版本不得因升级被清空、移动或重新编号。
-- AnnotationRepository 是 Ground Truth authority；MaterialRepository 中标注字段只是 searchable projection。
-- `unannotated`、`annotated`、`confirmed_empty` 是不同语义；`confirmed_empty` 是合法负样本。
-- `annotation_scope` 属于 Ground Truth 与 Training Snapshot 合同，不得只保存 boxes。
-- 新 `confirmed_empty` 在没有显式 scope 时优先冻结确认当时的 active label codes；历史 `*` 只作为兼容语义，Snapshot 必须解析成当前 locked schema。
-- YOLO 空 `.txt` 表示“locked schema 中所有类别均不存在”；只确认了部分标签为空的样本不得作为整个多分类算法的空标签训练。
-- 普通 0 框保存不得静默创建负样本；前端必须通过“确认无目标”显式确认。
-- `confirmed_empty` 即使 `box_count=0` 仍属于正式已标注素材，训练素材池不得因此过滤掉。
-- 项目标签库只是可用业务标签目录，**绝不等于某一个算法的 label schema**。
-- 首次训练的算法标签只能来自本次精确已选素材，并由用户在创建训练任务时明确选择；母算法/预训练模型自身类别一律不继承。
-- 版本迭代必须继承上一成功、可训练算法版本的 `label_schema`；本次素材中新标签只有用户明确选择后才能追加。
-- 历史版本缺少 `label_schema` 时只允许从该版本训练任务的 `snapshot.json` 恢复；无法恢复必须 fail closed，禁止从项目全标签、当前素材或母模型猜测。
-- 算法 `class_id` 是 task/model-local 身份：首次训练必须连续 `0..N-1`；迭代时旧 class_id 不得重排，新类别只能追加。
-- 过滤掉未选择的其他类别框后，如果一张正样本没有任何本次有效框，不得静默当成负样本；必须拒绝并要求显式“确认无目标”。
-- Snapshot 与 Portable `data.yaml names` 必须只包含本次有效算法 schema；项目有 5 标签而本次只选 2 标签时，Ultralytics 应得到 `nc=2`。
+- AnnotationRepository 是 Ground Truth authority；MaterialRepository 标注字段只是 searchable projection。
+- `unannotated`、`annotated`、`confirmed_empty` 语义不同；`confirmed_empty` 是合法负样本。
+- `annotation_scope` 属于 Ground Truth / Training Snapshot 合同，不得只保存 boxes。
+- 普通 0 框保存不得静默创建负样本，必须显式“确认无目标”。
+- `confirmed_empty` 即使 `box_count=0` 仍属于正式已标注素材。
+- 项目标签库只是业务标签目录，不等于某算法 label schema。
+- 首次训练标签只能来自本次精确已选素材并由用户明确选择；不得继承母模型类别。
+- 版本迭代必须继承上一成功、可训练版本 `label_schema`；新标签只能明确追加。
+- 历史版本缺 `label_schema` 时只能从该版本训练任务 `snapshot.json` 恢复；无法恢复必须 fail closed。
+- 算法 `class_id` 是 task/model-local：首次连续 `0..N-1`，迭代旧 ID 不重排，新类别只能追加。
+- Train / Validation / Test 按不可拆分 Component 划分，并保留 leakage guard。
 - same SHA + same normalized GT：训练时 canonicalize，不删除素材记录。
-- same SHA + different normalized GT：必须 `duplicate_annotation_conflict`，不得 keep-first / keep-latest / 随机选择。
-- Train / Validation / Test 必须按不可拆分 Component 划分，并保留最终 leakage guard。
-- 有稳定 label/code 时，重复标注语义优先使用稳定 code，不把历史 class_id 当永久身份。
-- Training Snapshot v3 必须保留 annotation state/scope/hash 和 duplicate exclusion audit。
-- Task Runtime 的旧 execution 在 lease/generation 失效后不得继续 finish、发布正式 artifact 或与新 execution 并发占同一资源。
-- 进程恢复必须用 PID + create_time + command hash 证明身份；无法证明时 fail closed。
-- 显式正整数 `batch` 是 Auto 资源策略的硬上限：Auto 只可安全下调，不得上调。
-- `batch=-1` 才表示用户明确委托平台自动选择 batch。
-- `cache=false` 是权威关闭，Auto 不得隐式改成 disk/ram。
-- Auto 不得增加用户指定的 DataLoader workers；`workers=0` 必须保持单进程加载。
-- `state.page` 是浏览器当前页面唯一权威；页面切换必须推进 navigation epoch。
-- 任一页面异步操作在 `await` 后如发现 navigation epoch 已变化，必须视为 stale；不得用旧页面结果永久覆盖当前 `#view`。
-- 页面级轮询必须随页面生命周期清理；后台状态刷新优先更新局部 DOM，不得周期性整页重绘造成表单、滚动位置和选择状态丢失。
-- 新页面不得继续通过“异步请求完成后无条件 `renderXxx()`”的方式抢占路由；需要遵守 navigation ownership。
-- 训练标签 UI 不得使用“观察所有 DOM 变化 + 无条件 `innerHTML` 重绘”的自激模式；MutationObserver 必须过滤自身变化，并用状态 signature 避免重复刷新。
+- same SHA + different normalized GT：必须 `duplicate_annotation_conflict`。
+- Training Snapshot v3 保留 annotation state/scope/hash 和 duplicate exclusion audit。
+- 试验/评测图片送入模型时必须是不带 GT 的原图；任何 ground truth 不得泄漏给模型推理路径。
+- Task Runtime 旧 execution 在 lease/generation 失效后不得 finish、发布 artifact 或与新 execution 并发占同一资源。
+- 进程恢复必须 PID + create_time + command hash 证明身份；无法证明 fail closed。
+- 显式正整数 `batch` 是 Auto 资源策略硬上限；`batch=-1` 才是明确自动。
+- `cache=false` 是权威关闭；Auto 不得改成 disk/ram。
+- Auto 不得增加用户指定 workers；`workers=0` 必须保持单进程加载。
+- `state.page` 是当前页面唯一权威；页面切换推进 navigation epoch。
+- 异步操作在 `await` 后若 navigation epoch 已变化，必须视为 stale，不得覆盖当前 `#view`。
+- 页面级轮询必须随生命周期清理；后台刷新优先局部 DOM，不得周期性全页重绘破坏表单/滚动/选择状态。
+- 不得通过降低/删除 duplicate-request、race、performance、Real Chrome 测试来换绿灯。
 
 ## v42.25 主要实现位置
 
-训练数据合同：
-
+训练数据 / snapshot：
 - `platform_core/training_splits.py`
 - `platform_core/annotation_repository.py`
 - `platform_core/snapshots.py`
 
-负样本合同：
-
+负样本：
 - `platform_core/annotation_repository.py`
 - `platform_core/snapshots.py`
 - `platform_core/training_tasks.py`
 - `static/modules/annotation.js`
 - `static/modules/negative-samples.js`
-- `static/main.mjs`
-- `tests/unit/test_negative_sample_contract.py`
 
-训练任务标签合同：
-
+训练标签 / submit：
 - `platform_core/training_label_tasks.py`
-- `platform_core/worker_registry.py`
 - `static/modules/training-labels.js`
-- `static/training-label-bootstrap.js`
-- `static/training-label-v3-anchor.js`
-- `static/main.mjs`
-- `tests/unit/test_training_label_contract.py`
-- `tests/frontend/training-labels.test.mjs`
-- `tests/browser/training-label-selector.spec.mjs`
+- `static/modules/training-draft.js`
+- `static/modules/training-draft-runtime.js`
+- `static/modules/training-submit.js`
 
-页面导航稳定性：
-
+导航 / polling：
 - `static/modules/navigation-stability.js`
+- `static/modules/ui-state.js`
+- `static/modules/page-request-scope.js`
+- `static/modules/poll-registry.js`
 - `static/main.mjs`
-- `tests/frontend/navigation-stability.test.mjs`
 
 Task Runtime fencing：
-
 - `platform_core/task_runtime/fenced_repository.py`
 - `platform_core/task_runtime/process_control.py`
 - `platform_core/task_runtime/worker.py`
@@ -112,24 +171,37 @@ Task Runtime fencing：
 - `platform_core/deployment/conversion_tasks.py`
 - `task_worker.py`
 
-训练资源合同：
-
-- `platform_core/training_metrics.py`
-- `tests/unit/test_training_resource_contract.py`
-
 ## 当前后续优先级
 
-1. **先真实浏览器复验训练按钮热修**：点击算法“训练”不能再卡死；训练窗口必须出现“本次训练标签”；选材后标签列表正确；取消标签后 `/train/start` 的 `train_labels` 正确。
-2. 用 A800 对当前训练链做真实重跑：确认 `batch=16/workers=4/cache=false` 最终仍是 `16/4/false`；选择 `fire/smoke` 时 Snapshot 和 `data.yaml` 只有 2 类、Ultralytics 日志为 `nc=2`；负样本生成真实空 `.txt`。
-3. 在真实浏览器连续快速切换“训练任务 / 数据集 / 自动标注 / 素材接入”等页面，并在训练任务刷新、暂停、继续请求未返回时立即切页，确认旧请求不会再把页面盖回去；同时检查滚动位置、表单和选择状态没有被后台轮询周期性重置。
-4. 完成一个真实训练版本后再次创建迭代任务，确认上一版本 `fire=0/smoke=1` 自动继承；新增标签只有用户明确勾选才追加且旧 class_id 不重排。
-5. 若仍出现 `Pin memory thread exited unexpectedly`，再单独检查 kernel/cgroup OOM、`/dev/shm`、DataLoader worker/pinned memory，不得用全平台强制 `workers=0` 掩盖问题。
-6. 下一大批做生产安全：`/data` 静态暴露、CORS、SSRF、训练服务器 SecretStore。
+```text
+1. remaining setPage semantic-chain consolidation
+2. remaining renderer override owner audit / obsolete layer deletion
+3. proven dead app.js + global reload/request debt
+4. cache-busting unification
+5. MutationObserver/timer/fetch/render/setPage zero-point scan
+6. semantic naming + deterministic tests + docs
+7. technical-debt zero-point scan
+8. resume A800 RC
+```
+
+### 下一批 setPage 审计规则
+
+对以下 owner 分别建立 capture/liveness/semantic 表：
+
+```text
+initial bootstrap function setPage
+v42.7 alias owner
+setPageReady414 readiness wrapper
+baseSetPage417 sidebar wrapper
+NavigationStability final wrapper
+```
+
+alias/readiness/sidebar 是真实产品行为，不得因为它们位于 numbered classic block 中就直接删除。若要迁移到 named runtime，必须先有 unit/Real Chrome 合同，再物理删除对应 classic owner。
 
 ## 修改与交接要求
 
-- 每批修改保持边界清晰，不把无关重构混入同一批。
-- 代码修改同时补对应回归测试。
-- 测试没有真实执行时必须明确写 `NOT VERIFIED`，不能用“测试文件已新增”代替“测试已通过”。
-- **完成一批后优先更新 `docs/CODEX_CURRENT_STATE.md`**；稳定架构决策写入 `docs/superpowers/specs/`，实施步骤可写入 `docs/superpowers/plans/`。
-- 若旧测试锁定的是已经确认错误的旧语义，先更新测试合同，不要为了绿灯回退正确行为。
+- 每批修改保持边界清晰，不混入无关重构。
+- 代码修改必须补对应回归；旧测试如果锁定已确认错误的旧语义，应升级合同而不是回退正确代码。
+- 测试没有真实执行时必须写 `NOT VERIFIED`，不能把“新增测试文件”当作“测试通过”。
+- 一次性 AST audit / migration helper / workflow 在批次验收后必须物理删除，避免产生新的技术债。
+- 每批完成后同步：`TECH_DEBT_CLOSURE_V42_25.md`、`CODEX_CURRENT_STATE.md`、`frontend-legacy-audit.md`、`AGENTS.md`。
