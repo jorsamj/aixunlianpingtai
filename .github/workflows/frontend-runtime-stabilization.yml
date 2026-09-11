@@ -223,8 +223,8 @@ jobs:
               exit 1
             fi
           done
-          if grep -Fq 'window.setPage=function(p){state.page=p;render()};' static/app.js; then
-            echo 'plain pre-v42.7 direct setPage owner was reintroduced' >&2
+          if grep -Fq 'window.setPage=' static/app.js; then
+            echo 'classic app.js setPage owner was reintroduced' >&2
             exit 1
           fi
           python - <<'PY'
@@ -245,22 +245,27 @@ jobs:
           if 'baseSetPage417' in app:
               raise SystemExit('classic V417 sidebar setPage owner was reintroduced')
           bootstrap = 'function setPage(p){state.page=p;render()} window.setPage=setPage;'
-          if app.count(bootstrap) != 1:
-              raise SystemExit(f'initial bootstrap setPage binding must remain exactly once for separate liveness audit; found {app.count(bootstrap)}')
+          if bootstrap in app:
+              raise SystemExit('initial bootstrap setPage owner was reintroduced')
           navigation = Path('static/modules/navigation-stability.js').read_text(encoding='utf-8')
           if 'export function normalizeNavigationPage(page)' not in navigation:
               raise SystemExit('semantic navigation normalizer is missing')
           if "requested === '自动标注' ? '自动标注及清洗' : requested" not in navigation:
               raise SystemExit('legacy auto-label alias normalization is missing')
-          if 'waitForNavigationReady' not in navigation:
-              raise SystemExit('final navigation startup readiness owner is missing')
-          if 'beforeInvokeNavigation' not in navigation:
-              raise SystemExit('final navigation pre-invoke UI cleanup owner is missing')
+          for required in ('waitForNavigationReady', 'beforeInvokeNavigation', 'performNavigation'):
+              if required not in navigation:
+                  raise SystemExit(f'final navigation named owner is missing: {required}')
           main = Path('static/main.mjs').read_text(encoding='utf-8')
           if 'if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;' not in main:
               raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')
           if 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' not in main:
               raise SystemExit('mobile sidebar close semantic wiring is missing from final navigation runtime')
+          named_apply = """performNavigation: page => {
+              state.page = page;
+              render();
+            },"""
+          if named_apply not in main:
+              raise SystemExit('named actual page mutation/render owner is missing from final navigation runtime')
           PY
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
