@@ -278,6 +278,7 @@ jobs:
         run: >-
           npx playwright test
           tests/browser/navigation-stability.spec.mjs
+          tests/browser/navigation-readiness.spec.mjs
           tests/browser/training-label-selector.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
           tests/browser/algorithm-list-performance.spec.mjs
