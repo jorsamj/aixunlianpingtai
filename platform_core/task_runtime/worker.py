@@ -194,9 +194,31 @@ class WorkerContext:
             self._process_identity = identity
         return result
 
+    def _persisted_process_identity(self) -> ProcessIdentity | None:
+        try:
+            current = self.repository.get(self.task.task_id)
+        except Exception:
+            return None
+        if (
+            current is None
+            or current.process_pid is None
+            or current.process_create_time is None
+            or not str(current.process_command_hash or "").strip()
+        ):
+            return None
+        return ProcessIdentity(
+            int(current.process_pid),
+            float(current.process_create_time),
+            str(current.process_command_hash),
+        )
+
     def terminate_bound_process(self, timeout: float = 5.0) -> bool:
         with self._process_lock:
             identity = self._process_identity
+        if identity is None:
+            # Compatibility with handlers written before WorkerContext.bind_process:
+            # recover the exact persisted identity rather than leaving an orphan.
+            identity = self._persisted_process_identity()
         if identity is None:
             return False
         try:
