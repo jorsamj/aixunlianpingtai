@@ -151,7 +151,7 @@ test('final training polling creation is replaced by a PollRegistry-managed inte
   delete globalThis.window;
 });
 
-test('final v42.4 video polling uses a managed one-shot and re-arms only while a task is active', async () => {
+test('video polling is a direct PollRegistry-managed one-shot and re-arms only while a task is active', async () => {
   const state = {
     page: '视频切帧',
     project: {id: 'p1'},
@@ -163,14 +163,10 @@ test('final v42.4 video polling uses a managed one-shot and re-arms only while a
   };
   const timeouts = new Map();
   const clearedTimeouts = [];
-  const intervals = new Map();
-  const clearedIntervals = [];
   let nextTimer = 200;
   let refreshes = 0;
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
-  const originalSetInterval = globalThis.setInterval;
-  const originalClearInterval = globalThis.clearInterval;
   globalThis.setTimeout = (callback, delay) => {
     const id = ++nextTimer;
     timeouts.set(id, {callback, delay});
@@ -180,35 +176,23 @@ test('final v42.4 video polling uses a managed one-shot and re-arms only while a
     clearedTimeouts.push(id);
     timeouts.delete(id);
   };
-  globalThis.setInterval = (callback, delay) => {
-    const id = ++nextTimer;
-    intervals.set(id, {callback, delay});
-    return id;
-  };
-  globalThis.clearInterval = id => {
-    clearedIntervals.push(id);
-    intervals.delete(id);
-  };
+
+  let runtime;
   globalThis.window = {
     PlatformCore: {video: {isActiveVideoTask: task => String(task?.status).toUpperCase() === 'RUNNING'}},
-    renderVideo424: async () => {
-      state.video424Timer = setTimeout(() => {}, 9999);
-    },
     refreshVideo424Delta: async () => {
       refreshes += 1;
-      state.video424Timer = setTimeout(() => {}, 9999);
+      runtime.replaceVideo424Timer();
     },
   };
 
-  const runtime = installPollRegistry({getState: () => state});
-  await window.renderVideo424();
+  runtime = installPollRegistry({getState: () => state});
 
   const firstManaged = state.video424Timer;
   assert.equal(timeouts.get(firstManaged)?.delay, 2000);
   assert.deepEqual(runtime.snapshot().find(row => row.key === 'video-frames'), {
     key: 'video-frames', owners: ['视频切帧'], active: true, managed: true, delay: 2000,
   });
-  assert.ok(clearedTimeouts.some(id => id !== firstManaged), 'legacy v42.4 timeout should be retired');
 
   await timeouts.get(firstManaged).callback();
   assert.equal(refreshes, 1);
@@ -229,8 +213,6 @@ test('final v42.4 video polling uses a managed one-shot and re-arms only while a
   runtime.destroy();
   globalThis.setTimeout = originalSetTimeout;
   globalThis.clearTimeout = originalClearTimeout;
-  globalThis.setInterval = originalSetInterval;
-  globalThis.clearInterval = originalClearInterval;
   delete globalThis.window;
 });
 

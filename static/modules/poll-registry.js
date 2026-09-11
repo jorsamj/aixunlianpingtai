@@ -85,10 +85,6 @@ export function installPollRegistry({getState} = {}) {
   let wrappedSetupPagePolling = null;
   let originalRenderSources = null;
   let wrappedRenderSources = null;
-  let originalRenderVideo424 = null;
-  let wrappedRenderVideo424 = null;
-  let originalRefreshVideo424 = null;
-  let wrappedRefreshVideo424 = null;
 
   function state() { return getState?.() || {}; }
 
@@ -96,7 +92,6 @@ export function installPollRegistry({getState} = {}) {
     const s = state();
     registry.adopt('training-jobs', trainingOwners, s.jobPollTimer);
     registry.adopt('sources', sourceOwner, s.source422Timer);
-    registry.adopt('video-frames', videoOwner, s.video424Timer, clearTimeout);
     return registry.snapshot();
   }
 
@@ -218,47 +213,6 @@ export function installPollRegistry({getState} = {}) {
     return true;
   }
 
-  function installVideo424CreationBridge() {
-    const renderCurrent = window.renderVideo424;
-    if (typeof renderCurrent === 'function' && !renderCurrent.__pollRegistryVideoWrapped) {
-      originalRenderVideo424 = renderCurrent;
-      wrappedRenderVideo424 = async function (...args) {
-        try {
-          return await renderCurrent.apply(this, args);
-        } finally {
-          replaceVideo424Timer();
-          adoptLegacy();
-        }
-      };
-      wrappedRenderVideo424.__pollRegistryVideoWrapped = true;
-      wrappedRenderVideo424.__pollRegistryVideoOriginal = renderCurrent;
-      window.renderVideo424 = wrappedRenderVideo424;
-    }
-
-    const refreshCurrent = window.refreshVideo424Delta;
-    if (typeof refreshCurrent === 'function' && !refreshCurrent.__pollRegistryVideoWrapped) {
-      originalRefreshVideo424 = refreshCurrent;
-      wrappedRefreshVideo424 = async function (...args) {
-        try {
-          return await refreshCurrent.apply(this, args);
-        } finally {
-          replaceVideo424Timer();
-          adoptLegacy();
-        }
-      };
-      wrappedRefreshVideo424.__pollRegistryVideoWrapped = true;
-      wrappedRefreshVideo424.__pollRegistryVideoOriginal = refreshCurrent;
-      window.refreshVideo424Delta = wrappedRefreshVideo424;
-    }
-
-    if (String(state().page || '') === videoOwner
-        && typeof document !== 'undefined'
-        && document.getElementById?.('video424Rows')) {
-      replaceVideo424Timer();
-    }
-    return Boolean(wrappedRenderVideo424 || wrappedRefreshVideo424);
-  }
-
   function installSourceCreationBridge() {
     const current = window.renderSources422;
     if (typeof current !== 'function' || current.__pollRegistrySourceWrapped) return false;
@@ -281,9 +235,8 @@ export function installPollRegistry({getState} = {}) {
 
   function rebindCreation() {
     const page = installPollingCreationBridge();
-    const video = installVideo424CreationBridge();
     const source = installSourceCreationBridge();
-    return page || video || source;
+    return page || source;
   }
 
   const runtime = {
@@ -317,12 +270,6 @@ export function installPollRegistry({getState} = {}) {
       if (wrappedRenderSources && window.renderSources422 === wrappedRenderSources) {
         window.renderSources422 = originalRenderSources;
       }
-      if (wrappedRenderVideo424 && window.renderVideo424 === wrappedRenderVideo424) {
-        window.renderVideo424 = originalRenderVideo424;
-      }
-      if (wrappedRefreshVideo424 && window.refreshVideo424Delta === wrappedRefreshVideo424) {
-        window.refreshVideo424Delta = originalRefreshVideo424;
-      }
       const s = state();
       s.jobPollTimer = null;
       s.source422Timer = null;
@@ -336,5 +283,6 @@ export function installPollRegistry({getState} = {}) {
   window.__pollRegistryInstalled = true;
   adoptLegacy();
   rebindCreation();
+  replaceVideo424Timer();
   return runtime;
 }
