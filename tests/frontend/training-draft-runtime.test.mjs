@@ -40,7 +40,7 @@ function cleanup(runtime) {
   delete globalThis.document;
 }
 
-test('runtime mirrors legacy train-v3 state into one canonical draft', () => {
+test('runtime maps legacy structural state while keeping labels canonical', () => {
   setupDom({tr429Priority: '25'});
   const state = {
     train428AlgorithmId: 'alg-1',
@@ -52,7 +52,7 @@ test('runtime mirrors legacy train-v3 state into one canonical draft', () => {
       validation: 15,
     },
     train428Config: {device: '0', batch: 16, workers: 4, cache: false},
-    trainingLabelSelected: new Set(['person']),
+    trainingDraft: {newLabelCodes: ['person']},
     algorithms: [{
       id: 'alg-1',
       versions: [{
@@ -75,6 +75,7 @@ test('runtime mirrors legacy train-v3 state into one canonical draft', () => {
   assert.deepEqual(draft.newLabelCodes, ['person']);
   assert.deepEqual(draft.effectiveLabelCodes, ['fire', 'smoke', 'person']);
   assert.equal(draft.priority, 25);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
@@ -101,7 +102,7 @@ test('live train-v3 controls override stale legacy state and are mirrored back',
       resource_strategy: 'auto', device: 'cpu', gpu_policy: 'auto',
       batch: 16, workers: 4, cache: false, queue_priority: 50,
     },
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{id: 'alg-1', versions: []}],
   };
   globalThis.window = {fetch: async () => ({ok: true})};
@@ -121,11 +122,12 @@ test('live train-v3 controls override stale legacy state and are mirrored back',
   assert.equal(state.train428Config.device, '0');
   assert.equal(state.train428Config.gpu_policy, 'exclusive');
   assert.equal(state.train428Config.queue_priority, 7);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
 
-test('runtime update writes canonical draft and compatibility mirrors together', () => {
+test('runtime update writes canonical draft and structural compatibility mirrors without recreating label mirror', () => {
   setupDom();
   const state = {
     train428AlgorithmId: 'alg-1',
@@ -134,7 +136,7 @@ test('runtime update writes canonical draft and compatibility mirrors together',
       experiment: 20, validation: 20,
     },
     train428Config: {device: 'cpu', batch: 8, workers: 0, cache: false},
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{id: 'alg-1', versions: []}],
   };
   globalThis.window = {fetch: async () => ({ok: true})};
@@ -153,7 +155,7 @@ test('runtime update writes canonical draft and compatibility mirrors together',
   assert.equal(draft.resource.strategy, 'manual');
   assert.deepEqual([...state.trainSplitV3.train], ['b', 'c']);
   assert.deepEqual([...state.train429Selected], ['b', 'c']);
-  assert.deepEqual([...state.trainingLabelSelected], ['smoke']);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
   assert.equal(state.train428Config.device, '0');
   assert.equal(state.train428Config.resource_strategy, 'manual');
 
@@ -180,7 +182,7 @@ test('train start POST is canonicalized from TrainingDraft before it reaches the
       resource_strategy: 'auto', device: 'cpu', gpu_policy: 'auto',
       batch: 16, workers: 4, cache: false,
     },
-    trainingLabelSelected: new Set(['person']),
+    trainingDraft: {newLabelCodes: ['person']},
     algorithms: [{id: 'alg-1', versions: []}],
   };
   let sent;
@@ -217,6 +219,7 @@ test('train start POST is canonicalized from TrainingDraft before it reaches the
   assert.equal(sent.cache, false);
   assert.equal(sent.queue_priority, 35);
   assert.equal(sent.framework, 'ultralytics');
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
@@ -226,7 +229,7 @@ test('runtime refuses iteration when versions exist but none is successful and t
   const state = {
     train428AlgorithmId: 'alg-1',
     trainSplitV3: {train: new Set(['a', 'b']), test: new Set(), mode: 'random_test_from_training_pool', experiment: 20, validation: 20},
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{
       id: 'alg-1',
       versions: [{id: 'bad', training_status: 'FAILED', artifact_verified: false}],
@@ -241,6 +244,7 @@ test('runtime refuses iteration when versions exist but none is successful and t
     body: JSON.stringify({algorithm_asset_id: 'alg-1'}),
   }), /不会回退母算法/);
   assert.equal(called, false);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
