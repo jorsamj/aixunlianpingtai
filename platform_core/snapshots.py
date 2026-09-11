@@ -12,6 +12,13 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _stable_schema(label_schema: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        [dict(item) for item in label_schema if item.get("code")],
+        key=lambda item: (int(item.get("class_id", 10**9)), str(item.get("code"))),
+    )
+
+
 def _annotation_state(image: Mapping[str, Any], boxes: Sequence[Mapping[str, Any]]) -> str:
     return str(image.get("annotation_state") or ("annotated" if boxes else "unannotated"))
 
@@ -36,6 +43,42 @@ def _annotation_scope(
     if state == "unannotated":
         scope = []
     return scope
+
+
+def _lock_scope_to_schema(
+    image_id: str,
+    state: str,
+    raw_scope: Sequence[str],
+    boxes: Sequence[Mapping[str, Any]],
+    schema_codes: set[str],
+) -> list[str]:
+    labels = {
+        str(box.get("label") or box.get("code") or "").strip()
+        for box in boxes
+        if str(box.get("label") or box.get("code") or "").strip()
+    }
+    unknown_labels = sorted(labels - schema_codes)
+    if unknown_labels:
+        raise ValueError(
+            f"训练素材 {image_id} 的标注标签不在本次锁定标签结构中: "
+            + ", ".join(unknown_labels[:5])
+        )
+    if state != "confirmed_empty":
+        return sorted({str(value).strip() for value in raw_scope if str(value).strip()})
+
+    # A YOLO empty label file means that *none* of the locked classes is present.
+    # Partial negative scopes cannot be represented by an empty detection target;
+    # using them would silently teach unverified classes as background.
+    normalized = {str(value).strip() for value in raw_scope if str(value).strip()}
+    if "*" in normalized:
+        return sorted(schema_codes)
+    missing = sorted(schema_codes - normalized)
+    if missing:
+        raise ValueError(
+            f"负样本 {image_id} 未确认本次算法的全部标签: "
+            + ", ".join(missing[:5])
+        )
+    return sorted(schema_codes)
 
 
 def _annotation_hash(
@@ -68,6 +111,8 @@ def build_snapshot(
         return _build_snapshot_v2(images, train_image_ids, val_image_ids)  # type: ignore[arg-type]
     if label_schema is None or seed is None:
         raise TypeError("旧版 snapshot 需要 label_schema 和 seed")
+    stable_schema = _stable_schema(label_schema)
+    schema_codes = {str(item["code"]) for item in stable_schema}
     by_id = {str(image.get("id")): image for image in images if image.get("id") is not None}
     train_ids = sorted({str(image_id) for image_id in train_image_ids})
     val_ids = sorted({str(image_id) for image_id in val_image_ids})
@@ -89,8 +134,9 @@ def build_snapshot(
             raise ValueError(f"训练素材 {image_id} 仍是未处理状态")
         boxes = list(image.get("boxes") or [])
         state = _annotation_state(image, boxes)
-        scope = _annotation_scope(image, boxes)
-        annotation_hash = _annotation_hash(image, boxes, state, scope)
+        raw_scope = _annotation_scope(image, boxes)
+        scope = _lock_scope_to_schema(image_id, state, raw_scope, boxes, schema_codes)
+        annotation_hash = _annotation_hash(image, boxes, state, raw_scope)
         for box in boxes:
             label = str(box.get("label") or "").strip()
             if label:
@@ -107,10 +153,6 @@ def build_snapshot(
                 if str(box.get("label") or "").strip()
             }),
         })
-    stable_schema = sorted(
-        [dict(item) for item in label_schema if item.get("code")],
-        key=lambda item: (int(item.get("class_id", 10**9)), str(item.get("code"))),
-    )
     payload = {
         "seed": int(seed),
         "train_image_ids": train_ids,
@@ -132,6 +174,8 @@ def _build_snapshot_v2(
     manifest: SplitManifest,
     label_schema: Sequence[Mapping[str, Any]],
 ) -> dict:
+    stable_schema = _stable_schema(label_schema)
+    schema_codes = {str(item["code"]) for item in stable_schema}
     by_id = {str(image.get("id")): image for image in images if image.get("id") is not None}
     records: list[dict[str, Any]] = []
     label_counts: dict[str, int] = {}
@@ -154,8 +198,9 @@ def _build_snapshot_v2(
                 raise ValueError(f"训练素材 {image_id} content hash 已变化")
             boxes = list(image.get("boxes") or [])
             state = _annotation_state(image, boxes)
-            scope = _annotation_scope(image, boxes)
-            annotation_hash = _annotation_hash(image, boxes, state, scope)
+            raw_scope = _annotation_scope(image, boxes)
+            scope = _lock_scope_to_schema(image_id, state, raw_scope, boxes, schema_codes)
+            annotation_hash = _annotation_hash(image, boxes, state, raw_scope)
             labels = sorted(
                 {
                     str(box.get("label") or "").strip()
@@ -190,10 +235,6 @@ def _build_snapshot_v2(
                     "labels": labels,
                 }
             )
-    stable_schema = sorted(
-        [dict(item) for item in label_schema if item.get("code")],
-        key=lambda item: (int(item.get("class_id", 10**9)), str(item.get("code"))),
-    )
     ids = {role: list(manifest.ids[role]) for role in ("train", "validation", "test")}
     duplicate_groups = {
         content_hash: list(image_ids)
