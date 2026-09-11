@@ -68,7 +68,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
-    .toBe('material-pagination-runtime-422204');
+    .toBe('material-pagination-runtime-422205');
 
   await page.evaluate(() => {
     state.data412Tab = 'processed';
@@ -86,8 +86,24 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
     document.querySelector('.data426-shell').dataset.performanceMarker = 'preserve-me';
   });
 
-  await page.locator('#data412Pager button:last-child').click();
-  await expect(page.locator('#data412Grid')).toContainText('page-two.jpg');
+  // Once the first server page has committed, the install-time bootstrap timer must not
+  // issue another reset load that can race with a user clicking Next.
+  const stableSerial = await page.evaluate(() => window.MaterialPaginationRuntime61.state().requestSerial);
+  await page.waitForTimeout(320);
+  expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().requestSerial)).toBe(stableSerial);
+
+  const next = page.locator('#data412Pager button:last-child');
+  await expect(next).toBeEnabled();
+  const secondPageRequest = page.waitForRequest(request => {
+    const url = new URL(request.url());
+    return url.pathname.includes('/api/v61/projects/')
+      && url.pathname.endsWith('/materials')
+      && url.searchParams.get('cursor') === 'cursor-2';
+  });
+  await next.click();
+  await secondPageRequest;
+  await expect(page.locator('#data412Grid')).toContainText('page-two.jpg', {timeout: 10_000});
+  await expect(page.locator('#data412Pager')).toContainText('2 / 2');
   await expect(page.locator('.data426-shell')).toHaveAttribute('data-performance-marker', 'preserve-me');
 
   await page.locator('#data412Q').fill('smoke');
