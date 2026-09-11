@@ -27,6 +27,7 @@ async function seedProject(request) {
     ],
   }})).json();
 
+  const images = [];
   const rows = [
     ['fire-a.bmp', 'fire', [190, 70, 50]],
     ['smoke-a.bmp', 'smoke', [80, 90, 190]],
@@ -37,6 +38,7 @@ async function seedProject(request) {
       dataset_id: 'default', files: {name, mimeType: 'image/bmp', buffer: bmp(100, 80, color)},
     }});
     const image = (await upload.json()).uploaded[0];
+    images.push(image);
     const save = await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {data: {boxes: [{
       class_id: label === 'fire' ? 0 : 1,
       label,
@@ -51,20 +53,11 @@ async function seedProject(request) {
     algorithm_type: 'yolo_ultralytics',
     remark: '',
   }})).json();
-  return {project, algorithmId: created.algorithm.id};
-}
-
-async function selectAllMaterials(page, dialog) {
-  await dialog.getByRole('button', {name: '选择训练素材'}).click();
-  const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
-  await expect(picker).toBeVisible();
-  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
-  await picker.getByRole('button', {name: '确认选择'}).click();
-  await expect(dialog).toBeVisible();
+  return {project, algorithmId: created.algorithm.id, imageIds: images.map(item => item.id)};
 }
 
 test('training dialog shows material-derived label selector and submits train_labels', async ({page, request}) => {
-  const {project} = await seedProject(request);
+  const {project, imageIds} = await seedProject(request);
   let submitted;
 
   const trainingOptions = {
@@ -120,7 +113,15 @@ test('training dialog shows material-derived label selector and submits train_la
   await expect(labels).toContainText('本次训练标签');
   await expect(labels).toContainText('请先选择训练素材');
 
-  await selectAllMaterials(page, dialog);
+  // The repository already has separate browser coverage for the exact-material picker.
+  // Here we isolate the label-selector contract by applying the same authoritative
+  // selected-id state that the picker writes, then force the label runtime to refresh.
+  await page.evaluate(ids => {
+    state.train429Selected = new Set(ids);
+    if (state.trainSplitV3) state.trainSplitV3.train = state.train429Selected;
+    window.TrainingLabelRuntime.refresh();
+  }, imageIds);
+
   await expect(labels).toBeVisible();
   await expect(labels).toContainText('明火');
   await expect(labels).toContainText('fire');
