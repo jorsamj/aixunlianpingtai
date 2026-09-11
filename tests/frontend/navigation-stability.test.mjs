@@ -95,6 +95,44 @@ test('same-page renderer is still allowed', async () => {
   cleanup();
 });
 
+test('final dataset, auto-label and video renderers are page-owned', () => {
+  const state = {page: '数据集'};
+  const calls = [];
+  const view = {dataset: {}};
+
+  globalThis.document = {
+    getElementById(id) { return id === 'view' ? view : null; },
+  };
+  globalThis.window = {
+    setPage(page) { state.page = page; },
+    renderDatasets424() { calls.push('dataset'); },
+    renderOps427() { calls.push('auto'); },
+    renderVideo424() { calls.push('video'); },
+  };
+
+  const runtime = installNavigationStability({getState: () => state});
+
+  assert.equal(globalThis.window.renderDatasets424(), undefined);
+  assert.equal(globalThis.window.renderOps427(), false);
+  assert.equal(globalThis.window.renderVideo424(), false);
+  assert.deepEqual(calls, ['dataset']);
+
+  globalThis.window.setPage('自动标注及清洗');
+  assert.equal(globalThis.window.renderDatasets424(), false);
+  globalThis.window.renderOps427();
+  assert.equal(globalThis.window.renderVideo424(), false);
+  assert.deepEqual(calls, ['dataset', 'auto']);
+
+  globalThis.window.setPage('视频切帧');
+  assert.equal(globalThis.window.renderDatasets424(), false);
+  assert.equal(globalThis.window.renderOps427(), false);
+  globalThis.window.renderVideo424();
+  assert.deepEqual(calls, ['dataset', 'auto', 'video']);
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('navigation clears page-owned polling timers when leaving the page', () => {
   const state = {page: '训练任务', jobPollTimer: 101, source422Timer: 202, auto422Timer: 303};
   const cleared = [];
