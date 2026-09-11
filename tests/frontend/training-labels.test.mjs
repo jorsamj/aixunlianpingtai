@@ -51,44 +51,28 @@ test('confirmed empty scope contributes concrete labels and ignores legacy star'
   );
 });
 
-test('current training modal prefers canonical material ids over stale train429Selected', () => {
-  const state = {
-    train428AlgorithmId: 'alg-1',
-    trainingDraft: {algorithmId: 'alg-1', materialIds: ['img-new-1', 'img-new-2']},
-    train429Selected: new Set(['img-stale']),
-    train425Selected: {
-      train: new Set(['img-old-train']),
-      val: new Set(['img-old-val']),
-    },
-  };
-  assert.deepEqual(
-    selectedTrainingMaterialIds(state, {preferV429: true}),
-    ['img-new-1', 'img-new-2'],
-  );
-  assert.deepEqual(
-    selectedTrainingMaterialIds(state, {preferV429: false}),
-    ['img-old-train', 'img-old-val'],
-  );
-});
-
-test('canonical material ids stay authoritative when legacy algorithm and selection are stale', () => {
+test('training material ids come only from canonical draft even when historical state is polluted', () => {
   const state = {
     train428AlgorithmId: 'stale-algorithm',
     train429Selected: new Set(['stale-material']),
+    train425Selected: {
+      train: new Set(['stale-train']),
+      val: new Set(['stale-val']),
+    },
     trainingDraft: {
       algorithmId: 'canonical-algorithm',
       materialIds: ['canonical-1', 'canonical-2'],
     },
   };
-  assert.deepEqual(
-    selectedTrainingMaterialIds(state, {preferV429: true}),
-    ['canonical-1', 'canonical-2'],
-  );
+  assert.deepEqual(selectedTrainingMaterialIds(state), ['canonical-1', 'canonical-2']);
 });
 
-test('current training modal returns no materials before canonical draft exists', () => {
-  const state = {train429Selected: new Set(['retired-legacy-value'])};
-  assert.deepEqual(selectedTrainingMaterialIds(state, {preferV429: true}), []);
+test('training materials are empty before canonical draft exists', () => {
+  const state = {
+    train429Selected: new Set(['retired-value']),
+    train425Selected: {train: new Set(['retired-train'])},
+  };
+  assert.deepEqual(selectedTrainingMaterialIds(state), []);
 });
 
 test('previous version labels are inherited and only material labels are selectable additions', () => {
@@ -172,16 +156,30 @@ test('legacy successful previous version is flagged for server-side snapshot rec
   assert.deepEqual(info.codes, []);
 });
 
-
-test('TrainingLabel runtime does not rebind removed 428 entrypoints', () => {
+test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
-  assert.equal(source.includes("wrap('openTrain428'"), false);
-  assert.equal(source.includes("wrap('refreshTrain428'"), false);
-  assert.match(source, /build: 'module-422510'/);
+  for (const token of [
+    '__trainingLabelsWrapped',
+    'wrappedEntrypoints',
+    "wrap('startAlgorithmTraining429'",
+    "wrap('refreshTrain429'",
+    'train425Selected',
+    'tr425AssetAlg',
+    'train423Asset',
+    '.train425-data',
+    '.train428-data',
+    'setTimeout(',
+  ]) {
+    assert.equal(source.includes(token), false, `retired TrainingLabel lifecycle token remains: ${token}`);
+  }
+  assert.match(source, /trainingDraftRuntime\?\.subscribe/);
+  assert.match(source, /queueMicrotask/);
+  assert.match(source, /classicWrapperOwner: false/);
+  assert.match(source, /timerOwner: false/);
+  assert.match(source, /build: 'module-422511'/);
 });
 
-
-test('final stable renderers make historical 423/425 training entrypoints unreachable', () => {
+test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
   const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
@@ -203,10 +201,4 @@ test('final stable renderers make historical 423/425 training entrypoints unreac
   assert.ok(last423Call >= 0 && last423Call < stableCards);
   assert.ok(last425OpenCall >= 0 && last425OpenCall < finalTaskRenderer);
   assert.ok(last425CountCall >= 0 && last425CountCall < finalTaskRenderer);
-
-  const labels = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
-  assert.equal(labels.includes("wrap('startAlgorithmTraining423'"), false);
-  assert.equal(labels.includes("wrap('openTrain425'"), false);
-  assert.equal(labels.includes("wrap('trainCounts425'"), false);
-  assert.match(labels, /build: 'module-422510'/);
 });
