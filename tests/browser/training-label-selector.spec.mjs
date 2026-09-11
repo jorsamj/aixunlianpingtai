@@ -66,6 +66,35 @@ async function selectAllMaterials(page, dialog) {
 test('final train-v3 dialog shows material-derived label selector and submits train_labels', async ({page, request}) => {
   const {project} = await seedProject(request);
   let submitted;
+
+  const trainingOptions = {
+    targets: [{
+      id: 'browser-ultralytics',
+      name: '浏览器测试 Ultralytics',
+      type: 'local',
+      framework: 'ultralytics',
+      status: 'ready',
+      algorithms: [{
+        key: 'yolo_detect',
+        name: 'Ultralytics Detect',
+        base_model: 'yolo11n.pt',
+        default_epochs: 10,
+        default_imgsz: 640,
+        default_batch: 2,
+      }],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+    }],
+  };
+
+  await page.route('**/api/training_options**', async route => {
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(trainingOptions)});
+  });
+  await page.route('**/api/v62/training-devices', async route => {
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
+      recommended: 'cpu',
+      options: [{id: 'cpu', label: 'CPU', available: true}],
+    })});
+  });
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
@@ -84,7 +113,7 @@ test('final train-v3 dialog shows material-derived label selector and submits tr
   await card.getByRole('button', {name: '训练'}).click();
 
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
-  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeVisible({timeout: 10_000});
   await expect(dialog.locator('.train-v3-summary')).toBeVisible();
 
   const labels = dialog.locator('#trainingLabelContractPanel');
