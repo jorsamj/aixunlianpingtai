@@ -31,20 +31,34 @@ export function selectedMaterialLabelCodes(materials, selectedIds, labelCatalog 
   });
 }
 
+function trainableSuccessfulVersion(version) {
+  const status = String(version?.training_status || '').trim().toUpperCase();
+  return ['SUCCEEDED', 'PARTIAL_SUCCESS', 'DONE', 'FINISHED', 'COMPLETED'].includes(status)
+    && version?.artifact_verified === true
+    && version?.trainable !== false;
+}
+
 export function latestVersionLabelInfo(algorithm) {
-  const versions = [...(algorithm?.versions || [])].sort((left, right) => {
+  const allVersions = [...(algorithm?.versions || [])].sort((left, right) => {
     const a = String(left?.finished_at || left?.created_at || left?.version_name || '');
     const b = String(right?.finished_at || right?.created_at || right?.version_name || '');
     return b.localeCompare(a);
   });
-  if (!versions.length) return {hasVersion: false, codes: [], legacyUnknown: false, version: null};
-  const latest = versions.find(version => version?.trainable !== false && version?.artifact_verified !== false) || versions[0];
+  if (!allVersions.length) {
+    return {hasVersion: false, hasAnyVersion: false, codes: [], legacyUnknown: false, blocked: false, version: null};
+  }
+  const latest = allVersions.find(trainableSuccessfulVersion) || null;
+  if (!latest) {
+    return {hasVersion: false, hasAnyVersion: true, codes: [], legacyUnknown: false, blocked: true, version: null};
+  }
   const schema = [...(latest?.label_schema || [])].sort((a, b) => Number(a?.class_id ?? 1e9) - Number(b?.class_id ?? 1e9));
   const codes = unique(schema.map(item => item?.code));
   return {
     hasVersion: true,
+    hasAnyVersion: true,
     codes,
     legacyUnknown: !codes.length,
+    blocked: false,
     version: latest,
   };
 }
@@ -61,6 +75,8 @@ export function resolveClientTrainingLabels({materials, selectedIds, labelCatalo
     requested,
     inherited: inherited.codes,
     hasPreviousVersion: inherited.hasVersion,
+    hasAnyVersion: inherited.hasAnyVersion,
+    previousVersionBlocked: inherited.blocked,
     legacyPreviousVersion: inherited.legacyUnknown,
     effectivePreview: unique([...inherited.codes, ...requested]),
   };
@@ -141,9 +157,11 @@ export function installTrainingLabelRuntime({getState, notify}) {
 
     const inheritedHtml = view.inherited.length
       ? view.inherited.map(code => `<span class="pill ok" title="来自上一算法版本，迭代时不可移除">继承 · ${displayName(state, code)}</span>`).join('')
-      : (view.legacyPreviousVersion
-        ? '<span class="pill warn">上一历史版本标签将在启动时由服务器 Snapshot 恢复</span>'
-        : '<span class="item-sub">首次训练，不继承母模型自带类别</span>');
+      : (view.previousVersionBlocked
+        ? '<span class="pill err">已有版本但没有可用于迭代的成功模型，服务器将拒绝回退母模型</span>'
+        : view.legacyPreviousVersion
+          ? '<span class="pill warn">上一历史版本标签将在启动时由服务器 Snapshot 恢复</span>'
+          : '<span class="item-sub">首次训练，不继承母模型自带类别</span>');
 
     const selectableHtml = view.selectable.length
       ? view.selectable.map(code => {
@@ -220,6 +238,9 @@ export function installTrainingLabelRuntime({getState, notify}) {
           algorithm,
           requestedCodes: [...(state?.trainingLabelSelected || new Set())],
         });
+        if (view.previousVersionBlocked) {
+          throw new Error('该算法已有版本，但没有成功且可继续训练的版本；平台不会回退到母算法。');
+        }
         if (!view.hasPreviousVersion && !view.requested.length) {
           throw new Error('首次训练至少选择一个标签；母算法自带类别不会自动加入。');
         }
