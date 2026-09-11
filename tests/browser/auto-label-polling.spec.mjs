@@ -29,7 +29,12 @@ test('auto-label active task polling updates rows without replacing the page roo
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
-  await expect.poll(() => page.evaluate(() => Boolean(window.AutoLabelPollRuntime))).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.AutoLabelPollRuntime?.build || null))
+    .toBe('auto-label-poll-422501');
+  expect(await page.evaluate(() => ({
+    wrapper: window.AutoLabelPollRuntime?.snapshot?.().classicWrapperOwner,
+    timer: window.AutoLabelPollRuntime?.snapshot?.().timerOwner,
+  }))).toEqual({wrapper: false, timer: false});
 
   await page.evaluate(() => window.setPage('自动标注及清洗'));
   await expect(page.locator('#title')).toContainText('自动标注及清洗');
