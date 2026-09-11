@@ -4,6 +4,7 @@ import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422500';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422500';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
@@ -107,6 +108,14 @@ installMaterialBatchRuntime({
 installStorageImportProgressRuntime();
 window.installServerMaterialImport61?.();
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
+
+// Install last: legacy app.js contains multiple historical render/router layers.
+// This fence makes the current route authoritative and repairs stale async DOM writes
+// before they can leave the user on a visually different page.
+installNavigationStability({
+  getState: () => state,
+  notify,
+});
 
 for (const delay of [80, 500, 1800, 3600]) {
   setTimeout(() => {
