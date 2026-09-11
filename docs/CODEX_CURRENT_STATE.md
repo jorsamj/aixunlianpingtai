@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 1470bb9f0dd19e1be5d0695cd7f4de21173dd944
-Frontend Runtime run:        34652823778
+latest full code acceptance: f6e71c05d35b1a39b0b79e1b652cf901044c68bd
+Frontend Runtime run:        34653776200
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.55
-main.mjs cache:              42.25.56
-NavigationStability:         422509
+app.js cache:                42.25.56
+main.mjs cache:              42.25.57
+NavigationStability:         422510
 UI state runtime:            422500
 PollRegistry:                422511
 TrainingDraftRuntime:        422516
@@ -22,13 +22,12 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34652823778` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome 12/12. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34653776200` passed syntax, permanent navigation/owner guards, all frontend unit tests and Real Chrome 12/12. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-baseSetPage417 sidebar migration
-→ initial bootstrap setPage liveness audit
+initial bootstrap setPage capture/liveness migration
 → remaining renderer override owner audit
 → app.js/global reload/request debt
 → cache-busting unification
@@ -85,29 +84,28 @@ v35 plain direct setPage
 v42.4 plain direct setPage
 v42.7 direct auto-label alias setPage
 setPageReady414 startup-readiness wrapper
+baseSetPage417 mobile-sidebar wrapper
 ```
 
 Latest milestones:
 
 ```text
-pre-v42.7 direct family       ceab780b... / 34644092284
 v42.7 alias owner             bdfb7ae6... / 34645250462
-readiness baseline            0adc46fe... / 34652201043
-readiness double-owner        a618696e... / 34652478444
 readiness owner retired       1470bb9f... / 34652823778
+sidebar double-owner          d6b9e459... / 34653340984
+sidebar owner retired         f6e71c05... / 34653776200
 ```
 
 ## 4. Current setPage topology
 
-Current classic/runtime chain:
+Current chain is now only:
 
 ```text
-initial function setPage(...) → window.setPage=setPage
-baseSetPage417 mobile-sidebar wrapper
-NavigationStability final module wrapper
+initial function setPage(p){ state.page=p; render(); } → window.setPage=setPage
+→ NavigationStability final coordinator
 ```
 
-Named `NavigationStability` now owns:
+Named `NavigationStability` owns:
 
 ```text
 normalizeNavigationPage()
@@ -117,6 +115,10 @@ waitForNavigationReady()
   !state.uiReady && window.__v53InitPromise
   → wait before actual page mutation/render
 
+beforeInvokeNavigation()
+  window.toggleMobileSidebarV37(false)
+  → close #sidebar.mobile-open + #sideBackdrop.show
+
 navigation lifecycle
   PageRequestScope navigation intent
   navigation epoch
@@ -125,39 +127,47 @@ navigation lifecycle
   persistNavigationState()
 ```
 
-Important readiness ordering is permanently tested:
+Current tested order:
 
 ```text
 request:navigate
 → poll:before
 → readiness wait
-→ predecessor/classic page mutation
+→ beforeInvokeNavigation / sidebar cleanup
+→ predecessor actual state.page mutation + render
 → request:align
 → poll:after
 → persistence
 ```
 
-Real Chrome `tests/browser/navigation-readiness.spec.mjs` delays `/api/v53/bootstrap/snapshot`, proves `state.page` does not change early, then proves the requested page renders/persists only after startup resolves.
+Real Chrome verifies readiness, sidebar/backdrop close, legacy alias normalization, stale request fencing and persistence/reload restoration.
 
-## 5. Remaining classic setPage semantic owner
+## 5. Remaining classic setPage owner — initial bootstrap binding
 
-### `baseSetPage417`
-
-Current code semantics:
+Current code:
 
 ```js
-const baseSetPage417=window.setPage;
-window.setPage=function(page){
-  window.toggleMobileSidebarV37?.(false);
-  return baseSetPage417?.(page);
-};
+function setPage(p){state.page=p;render()}
+window.setPage=setPage;
 ```
 
-It closes `#sidebar.mobile-open` and `#sideBackdrop.show` before invoking the predecessor. Existing Real Chrome already checks navigation closes both.
+This binding is still live because `NavigationStability` captures `window.setPage` as its predecessor. Its remaining semantic responsibility is only:
 
-Do not delete it yet. First move this exact behavior into a named NavigationStability before-navigation hook, run a double-owner phase, then physically delete the classic wrapper.
+```text
+state.page = requestedPage
+render() using the final classic render chain
+```
 
-The initial bootstrap `function setPage(...) → window.setPage=setPage` remains out of scope until the sidebar wrapper is closed and its capture/liveness is audited separately.
+Important startup finding:
+
+```text
+window.__clInit does not call setPage().
+It loads startup data, sets state.uiReady and calls render() directly.
+```
+
+Therefore startup bootstrap is not a reason to keep the binding. The actual migration target is to let `NavigationStability` own `window.setPage` even when no predecessor exists, with a named `performNavigation/applyPage` hook supplied by `main.mjs` for `state.page = page; render()`.
+
+Do not physically delete the bootstrap function yet. First prove the named owner can perform the same single mutation/render without double-rendering.
 
 ## 6. Permanent tests / guards
 
@@ -171,6 +181,8 @@ tests/frontend/navigation-persistence.test.mjs
 tests/frontend/ui-state.test.mjs
 ```
 
+Current permanent guard requires bootstrap `setPage` to remain exactly until its own migration finishes. Once the named actual-navigation owner is proven and the bootstrap is deleted, this guard must flip to “bootstrap binding cannot return”.
+
 Browser contracts:
 
 ```text
@@ -180,7 +192,26 @@ tests/browser/navigation-readiness.spec.mjs
 
 Do not weaken them.
 
-## 7. Non-regression backend contracts
+## 7. Next exact migration: initial bootstrap setPage
+
+Required sequence:
+
+```text
+1. Extend NavigationStability with a named performNavigation/applyPage hook.
+2. If the hook is provided, it becomes the sole actual mutation/render owner; do not also call the classic predecessor.
+3. Keep current predecessor path temporarily as fallback only during equivalence testing.
+4. Make NavigationStability install window.setPage even when no classic predecessor exists.
+5. main.mjs supplies the actual state.page mutation + final render call.
+6. Unit tests lock one render only and exact lifecycle ordering.
+7. Real Chrome verifies menu/programmatic navigation, readiness, sidebar and persistence.
+8. After equivalence, physically delete `function setPage... window.setPage=setPage` from app.js.
+9. Flip permanent guard: bootstrap binding must be absent; named apply hook must exist.
+10. Remove any temporary migration helper/workflow and rerun full frontend + Chrome.
+```
+
+A failed experiment must leave the branch on the previously accepted owner topology; do not leave half-migrated navigation code.
+
+## 8. Non-regression backend contracts
 
 - snapshot schema v3 and duplicate/leakage protection;
 - `confirmed_empty` negative-sample semantics;
@@ -191,22 +222,21 @@ Do not weaken them.
 - iteration inherits only latest successful artifact-verified trainable version;
 - metrics SQLite connections close deterministically.
 
-## 8. Work order
+## 9. Work order
 
 ```text
-1. baseSetPage417 sidebar migration
-2. initial bootstrap setPage capture/liveness audit
-3. remaining renderer/setPage obsolete override closure
-4. proven dead app.js + global reload/request debt
-5. cache-busting unification
-6. zero-point MutationObserver/timer/fetch/render/setPage scan
-7. semantic naming + deterministic tests + docs
-8. technical-debt zero-point scan
-9. resume A800 RC
+1. initial bootstrap setPage migration
+2. remaining renderer/setPage obsolete override closure
+3. proven dead app.js + global reload/request debt
+4. cache-busting unification
+5. zero-point MutationObserver/timer/fetch/render/setPage scan
+6. semantic naming + deterministic tests + docs
+7. technical-debt zero-point scan
+8. resume A800 RC
 ```
 
 Every batch: live HEAD → liveness/semantic proof → deterministic regression → named semantic owner → double-owner proof → physical deletion → permanent guard → full frontend + Real Chrome → docs sync.
 
-## 9. A800 status
+## 10. A800 status
 
 **DEFERRED** until current P0/P1 technical debt is closed. Frontend CI is not CUDA/A800 acceptance.
