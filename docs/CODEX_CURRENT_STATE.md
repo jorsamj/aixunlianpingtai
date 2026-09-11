@@ -6,11 +6,11 @@
 
 ```text
 branch:                    refactor/frontend-runtime-stabilization
-latest full code acceptance: f3eb6b360123dd688eea4dd0f29c05a9db5b4c05
-Frontend Runtime run:      34619698115
+latest full code acceptance: eb76e48adaafe3c71556918d42efc98cca5d8f2f
+Frontend Runtime run:      34620286461
 formal VERSION.txt:        42.24.0
 frontend badge:            v42.25.0-dev
-app.js cache:              42.25.51
+app.js cache:              42.25.52
 main.mjs cache:            42.25.53
 NavigationStability:       422506
 PollRegistry:              422511
@@ -21,12 +21,12 @@ TrainingTaskRuntime:       training-task-runtime-422503
 AutoLabelPollRuntime:      422501
 ```
 
-Run `34619698115` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome. Branch HEAD may be newer because handoff docs are updated after accepted code points. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34620286461` passed syntax, permanent owner guards, all frontend unit tests and all Real Chrome runtime regressions. Branch HEAD may be newer because docs are synced after accepted code points. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-pre-v42.4 dead setPage family proof/removal
+pre-v42.7 dead direct setPage assignments
 → remaining renderer/setPage obsolete layers
 → app.js/global reload/request debt
 → cache-busting unification
@@ -43,18 +43,7 @@ docs/frontend-legacy-audit.md
 docs/FRONTEND_OWNER_MAP_V42_25.md
 ```
 
-## 3. Non-regression backend contracts
-
-- snapshot schema v3 and duplicate/leakage protection;
-- `confirmed_empty` negative-sample semantics;
-- task-runtime lease/generation/process fencing;
-- explicit `batch`, `workers`, `cache=false` end-to-end;
-- first training uses task-scoped labels only;
-- no mother-model class inheritance on first training;
-- iteration inherits only latest successful artifact-verified trainable version;
-- metrics SQLite connections close deterministically.
-
-## 4. Closed frontend ownership
+## 3. Closed frontend ownership
 
 ### Training submit
 
@@ -67,108 +56,116 @@ state.trainingDraft
 
 Retired mirrors: `trainingLabelSelected`, `trainSplitV3`, `train429Selected`, `train428AlgorithmId`, `train428Config`, `trainingDraftFromLegacyState`.
 
-### Training polling
+### Polling
 
 ```text
-classic render call site
-→ PollRegistryRuntime.replaceTrainingJobTimer()
-→ PollRegistry(training-jobs)
-→ TrainingTaskRuntime.refresh({render:true, source:'poll'})
-→ focused /jobs refresh
+training-jobs → PollRegistry + TrainingTaskRuntime
+AutoLabel      → AutoLabelPollRuntime + PollRegistry
+video          → PollRegistry(video-frames)
+sources        → PollRegistry(sources)
 ```
 
-Physically retired: `jobPollTimer`, `setupPagePolling`, PollRegistry training creation wrappers/adoption/rebind compatibility and NavigationStability timer fallback.
+Legacy polling timers/shells/wrappers/adoption compatibility are retired.
 
-### AutoLabel / Video / Sources
+### Navigation cleanup accepted
 
-```text
-renderOps427 → AutoLabelPollRuntime → PollRegistry(auto-label-v60)
-renderVideo424 / refreshVideo424Delta → PollRegistry(video-frames)
-renderSources422 → PollRegistry(sources)
-```
-
-Legacy timer/wrapper owners are retired.
-
-### Navigation wrapper cleanup
-
-Physically retired and guarded:
+Physically retired and permanently guarded:
 
 ```text
 set423Base
 setBase424
-V37 baseSetPage mobile-sidebar wrapper
+V37 baseSetPage duplicate sidebar wrapper
+oldSetV39
+oldSet42
+set422Base
 ```
 
-V417 is now the sole classic mobile-sidebar close owner:
+Accepted runs:
 
 ```text
-const baseSetPage417=window.setPage;
-window.setPage=function(page){
-  window.toggleMobileSidebarV37?.(false);
-  return baseSetPage417?.(page)
-};
+setupPagePolling shells       4cabbe84... / 34617573070
+set423Base/setBase424         871b1c91... / 34618276191
+V37 duplicate sidebar owner   f3eb6b36... / 34619698115
+pre-v42.4 dead family         eb76e48a... / 34620286461
 ```
 
-`NavigationStability` remains the outer live navigation coordinator after `app.js`.
+Current protected classic owners include:
 
-Real Chrome now explicitly proves final navigation closes `#sidebar.mobile-open` and `#sideBackdrop.show`.
+```text
+v42.7 direct route owner
+setPageReady414     startup snapshot readiness
+baseSetPage417      mobile sidebar close
+NavigationStability outer runtime coordinator
+```
 
-## 5. Permanent guards / tests
+## 4. Current setPage topology
 
-Main frontend workflow includes all owner guards through `Retired pass-through setPage guard`, then runs all `tests/frontend/*.test.mjs`.
+Current static scan after `eb76e48a...` shows 7 `window.setPage=` assignments/bindings total:
 
-Sidebar debt is permanently guarded by:
+```text
+1. initial function setPage(...) → window.setPage=setPage
+2. UI-state persistence direct assignment
+3. v35 direct state.page/render assignment
+4. v42.4 direct state.page/render assignment
+5. v42.7 direct auto-label alias assignment
+6. setPageReady414 async wrapper
+7. baseSetPage417 sidebar-close wrapper
+```
+
+The final live predecessor chain begins at v42.7 because it directly overwrites `window.setPage` without calling the prior owner, then `setPageReady414` wraps that owner, then V417 wraps readiness, then `NavigationStability` wraps final classic routing.
+
+Next candidate therefore is the direct-assignment family before v42.7. Do not delete it until initialization-time calls and persistence semantics are audited.
+
+## 5. Permanent tests / guards
+
+Main workflow owner guards + all `tests/frontend/*.test.mjs`.
+
+SetPage static guards:
 
 ```text
 tests/frontend/retired-sidebar-setpage-guard.test.mjs
+tests/frontend/retired-pre-v424-setpage-guard.test.mjs
 ```
 
-Browser behavior is guarded by:
+Browser contract:
 
 ```text
 tests/browser/navigation-stability.spec.mjs
 → final navigation owner closes the mobile sidebar and backdrop
 ```
 
-Do not restore early V37 navigation ownership.
+Do not weaken these tests.
 
-## 6. Current setPage audit
+## 6. Next exact audit
 
-Current static read after accepted sidebar cleanup shows **8 remaining historical `window.setPage=function...` assignments** (baseline was 10, then set423 removed, then V37 duplicate removed).
-
-Do not infer liveness from version number alone. The key control-flow fact is that later direct assignments sever earlier wrapper chains.
-
-Confirmed pre-v42.4 candidate family:
+For the pre-v42.7 direct assignments, prove all of:
 
 ```text
-oldSetV39
-oldSet42
-set422Base
+A. source order: persistence → v35 → v42.4 → v42.7
+B. no synchronous initialization path requires an earlier assignment before v42.7 executes
+C. no closure stores an earlier direct assignment for later invocation
+D. current UI persistence is still handled by render/saveUiState lifecycle where required
+E. current aliases/routes are defined by v42.7 or later
+F. setPageReady414 and baseSetPage417 remain untouched
 ```
 
-Each currently appears only as a local base capture plus its own wrapper call. Later v42.4 performs:
+Only after that proof should the three earlier direct assignments be physically deleted in one bounded family.
 
-```js
-window.setPage=function(p){state.page=p;render()};
-```
+## 7. Non-regression backend contracts
 
-without calling the prior owner, so earlier wrappers are likely unreachable after full synchronous script load.
-
-Before deletion, re-check exact references against live HEAD and prove any visible behavior needed today is owned later. Do not “restore” old semantics merely because the old wrapper contained them.
-
-## 7. Wrappers that must NOT be swept into the next batch
-
-```text
-setPageReady414       startup snapshot/uiReady gate
-baseSetPage417        current classic sidebar-close owner
-NavigationStability   request epoch + PollRegistry navigation lifecycle
-later live aliases / cache / persistence wrappers unless separately proven dead
-```
+- snapshot schema v3 and duplicate/leakage protection;
+- `confirmed_empty` negative-sample semantics;
+- task-runtime lease/generation/process fencing;
+- explicit `batch`, `workers`, `cache=false` end-to-end;
+- first training uses task-scoped labels only;
+- no mother-model class inheritance on first training;
+- iteration inherits only latest successful artifact-verified trainable version;
+- metrics SQLite connections close deterministically.
 
 ## 8. Work order
 
 ```text
-1. pre-v42.4 dead setPage family bounded deletion
+1. pre-v42.7 dead direct setPage family
 2. remaining renderer/setPage obsolete override closure
 3. proven dead app.js + global reload/request debt
 4. cache-busting unification
@@ -178,7 +175,7 @@ later live aliases / cache / persistence wrappers unless separately proven dead
 8. resume A800 RC
 ```
 
-Every batch: current HEAD → reference/liveness proof → regression → physical deletion → permanent guard → full frontend + Real Chrome → update all four handoff docs.
+Every batch: live HEAD → liveness proof → deterministic regression → physical deletion → permanent guard → full frontend + Real Chrome → update all four handoff docs.
 
 ## 9. A800 status
 
