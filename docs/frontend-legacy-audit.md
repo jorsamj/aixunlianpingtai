@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: ceab780b8f3d8314061d852bf2eccc8db9235f54
-run:    34644092284
+commit: bdfb7ae692a197486dc61ed9919c5e18ae1bf9f4
+run:    34645250462
 frontend:     PASS
 Real Chrome:  PASS
 ```
@@ -16,10 +16,10 @@ Real Chrome:  PASS
 Current caches/builds:
 
 ```text
-app.js                    42.25.53
-main.mjs                  42.25.54
-navigation-stability      422507
-ui-state                   422500
+app.js                    42.25.54
+main.mjs                  42.25.55
+navigation-stability      422508
+ui-state                  422500
 poll-registry             422511
 training-draft-runtime    422516
 training-labels           422513
@@ -59,24 +59,23 @@ Batch C: duplicate V37 baseSetPage sidebar wrapper     CLOSED
 Batch D: oldSetV39 + oldSet42 + set422Base             CLOSED
 Batch E: navigation persistence moved to final runtime CLOSED
 Batch F: v34/v35/v42.4 direct setPage family           CLOSED
+Batch G: v42.7 direct auto-label alias owner           CLOSED
 ```
 
-Batch F had explicit AST liveness proof before deletion:
+Batch G migrated the real alias behavior first:
 
 ```text
-v34 persist → v35 plain       load-time immediate setPage calls = 0
-v35 plain   → v42.4 plain     load-time immediate setPage calls = 0
-v42.4 plain → v42.7 alias     load-time immediate setPage calls = 0
+自动标注 → 自动标注及清洗
 ```
 
-After physical deletion, `ceab780b... / run 34644092284` passed full frontend guards/unit and Real Chrome.
+Final semantic owner is now `normalizeNavigationPage()` inside `NavigationStability`. A double-owner phase passed before physical deletion; after removal, `bdfb7ae6... / run 34645250462` passed permanent guards, all frontend unit tests and Real Chrome.
 
 Permanent navigation guards/tests:
 
 ```text
 tests/frontend/retired-sidebar-setpage-guard.test.mjs
 tests/frontend/retired-pre-v424-setpage-guard.test.mjs
-  # filename is historical; semantics now guard all pre-v42.7 direct owners
+  # historical filename; semantics now also forbid v42.7 direct alias owner
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
 tests/frontend/ui-state.test.mjs
@@ -84,23 +83,23 @@ tests/frontend/ui-state.test.mjs
 
 ## 4. Current setPage topology
 
-The current classic/runtime chain is now bounded to:
+The current classic/runtime chain is now:
 
 ```text
 initial function setPage(...) → window.setPage=setPage
-v42.7 direct auto-label alias
 setPageReady414 async readiness wrapper
 baseSetPage417 sidebar-close wrapper
 NavigationStability final module wrapper
 ```
 
-The three earlier direct assignments are gone. Do not reintroduce them.
+The v42.7 direct `window.setPage` route owner is gone. Do not reintroduce it.
 
 ### Semantic responsibility map
 
 ```text
-v42.7 alias owner
+normalizeNavigationPage
   自动标注 → 自动标注及清洗
+  canonical page before request/poll/guard/predecessor/persistence
 
 setPageReady414
   startup snapshot / uiReady fencing
@@ -109,6 +108,7 @@ baseSetPage417
   close mobile sidebar + backdrop
 
 NavigationStability
+  canonical route normalization
   navigation epoch
   request-scope cancellation/alignment
   PollRegistry before/after navigation
@@ -121,60 +121,53 @@ ui-state.js
   preserve unrelated historical localStorage keys
 ```
 
-Real Chrome explicitly verifies both sidebar close and selected-page persistence/reload restoration.
+Real Chrome explicitly verifies legacy route normalization, sidebar close and selected-page persistence/reload restoration.
 
-## 5. Navigation persistence incident fixed during cleanup
+Runtime-order note: V417 wrapper source is inside `installUsability417`, and that installer is invoked later. Therefore live capture order remains `setPageReady414 → baseSetPage417 → NavigationStability`, despite the function definition appearing earlier in the file.
 
-While preparing Batch F, a new Real Chrome contract found a real bug:
+## 5. Remaining classic render alias fallback
 
-```text
-visual page = 数据集
-localStorage page = 算法列表
-reload => wrong restored page
+v42.7 still contains a render-level normalization:
+
+```js
+render=function(){
+  if(state.page==='自动标注') state.page='自动标注及清洗';
+  ...
+}
 ```
 
-Root cause: the old v34 `saveUiState()` semantics lived under a historical render/setPage chain that later final renderers bypassed.
+This is no longer a `setPage` owner. Treat it as **render-chain debt** and audit it later with the renderer family. Do not mix its removal into the readiness batch.
 
-Final fix:
+## 6. Next candidate — `setPageReady414`
 
-```text
-NavigationStability finalizes actual page
-→ persistNavigationState(currentState)
-→ persistUiState() in static/modules/ui-state.js
-```
-
-For Promise-based readiness navigation, final align / PollRegistry afterNavigate / persistence happen only after the navigation Promise resolves.
-
-## 6. Next candidate — remaining semantic setPage chain
-
-Do **not** delete by version number. Audit these individually:
+Current behavior:
 
 ```text
-initial bootstrap function setPage / window.setPage binding
-v42.7 alias owner
-setPageReady414 readiness wrapper
-baseSetPage417 sidebar wrapper
-NavigationStability final wrapper
+if uiReady=false and __v53InitPromise exists
+→ await startup initialization
+→ invoke previous setPage exactly once
 ```
 
-Required questions before deletion/migration:
+The existing module unit test proves generic asynchronous predecessor finalization ordering, but there is not yet a Real Chrome contract that specifically gates a user navigation request against the startup promise.
+
+Required before deletion:
 
 ```text
-1. Which closures captured the initial bootstrap function before v42.7?
-2. Are any such closures still reachable after full script/module initialization?
-3. Can alias normalization move into a named route-normalization function/runtime?
-4. Can readiness move into NavigationStability without changing __v53InitPromise timing?
-5. Can sidebar close move into final navigation runtime while preserving mobile behavior?
-6. Is each semantic migration protected by focused unit + Real Chrome before classic code is deleted?
+1. Add browser startup-before-ready navigation contract.
+2. Requested page must not render while startup gate is pending.
+3. Resolve startup gate and prove one navigation to the requested page.
+4. Prove canonical page persistence after completion.
+5. Move readiness to named runtime/hook.
+6. Double-owner equivalence: unit + Real Chrome.
+7. Physically delete setPageReady414 only after equivalence.
+8. Leave baseSetPage417 unchanged.
 ```
-
-Treat alias/readiness/sidebar as real behavior, not dead code.
 
 ## 7. Remaining audit targets
 
 ```text
+baseSetPage417
 render = ...
-window.setPage = ...
 renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
 loadAll()
 loadRelated()
@@ -215,12 +208,13 @@ live HEAD
 ## 9. Work order
 
 ```text
-1. remaining setPage semantic-chain consolidation
-2. remaining obsolete render/setPage layers
-3. app.js dead code + global reload/request debt
-4. cache-busting unification
-5. zero-point observer/timer/fetch/render/setPage scan
-6. semantic naming + deterministic tests + docs
-7. technical-debt zero-point scan
-8. A800 RC
+1. setPageReady414 readiness migration
+2. baseSetPage417 sidebar migration
+3. remaining obsolete render/setPage layers
+4. app.js dead code + global reload/request debt
+5. cache-busting unification
+6. zero-point observer/timer/fetch/render/setPage scan
+7. semantic naming + deterministic tests + docs
+8. technical-debt zero-point scan
+9. A800 RC
 ```
