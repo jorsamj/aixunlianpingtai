@@ -47,6 +47,7 @@ export function installTrainingDraftRuntime({
   const originalFetch = window.fetch.bind(window);
   let destroyed = false;
   let syncQueued = false;
+  let directWrites = 0;
   const delayedSyncTimers = new Set();
   const mutationWrappers = [];
 
@@ -194,8 +195,6 @@ export function installTrainingDraftRuntime({
   const onClick = event => {
     if (!relevantTrainingEvent(event)) return;
     scheduleSync();
-    // Opening/closing pickers and async training-dialog initialization mutate legacy state
-    // after the click handler returns; re-sample briefly without observing DOM mutations.
     scheduleDelayedSyncs();
   };
 
@@ -205,22 +204,68 @@ export function installTrainingDraftRuntime({
     document.addEventListener?.('click', onClick);
   }
 
+  function directPatchFor(name, args, s) {
+    if (name === 'startAlgorithmTraining429') {
+      const algorithmId = String(args?.[0] || '').trim();
+      if (!algorithmId) return null;
+      return {
+        algorithmId,
+        materialIds: [],
+        testMaterialIds: [],
+        splitMode: 'random_test_from_training_pool',
+        experimentPercent: 20,
+        validationPercent: 20,
+        newLabelCodes: [],
+      };
+    }
+
+    if (name === 'setTrainSplitModeV3') {
+      const splitMode = String(args?.[0] || '').trim();
+      return splitMode ? {splitMode} : null;
+    }
+
+    if (name === 'confirmTrainMaterialPickerV3') {
+      const picker = s.trainMaterialPickerV3;
+      if (!picker || !(picker.selected instanceof Set)) return null;
+      const selected = [...picker.selected].map(String);
+      const current = s.trainingDraft || fromLegacy(s).draft;
+      const selectedSet = new Set(selected);
+      if (picker.role === 'test') {
+        return {
+          materialIds: (current.materialIds || []).filter(id => !selectedSet.has(String(id))),
+          testMaterialIds: selected,
+        };
+      }
+      if (picker.role === 'train') {
+        return {
+          materialIds: selected,
+          testMaterialIds: (current.testMaterialIds || []).filter(id => !selectedSet.has(String(id))),
+        };
+      }
+    }
+    return null;
+  }
+
   function wrapLegacyMutation(name) {
     const original = window[name];
     if (typeof original !== 'function' || original.__trainingDraftMutationWrapped) return;
     const wrapped = function (...args) {
-      const result = original.apply(this, args);
-      if (result && typeof result.then === 'function') {
-        return Promise.resolve(result).finally(() => {
-          sync();
-          scheduleDelayedSyncs();
-        });
+      const directPatch = directPatchFor(name, args, state());
+      if (directPatch) {
+        update(directPatch);
+        directWrites += 1;
       }
-      sync();
-      scheduleDelayedSyncs();
+      const result = original.apply(this, args);
+      const settle = () => {
+        sync();
+        scheduleDelayedSyncs();
+      };
+      if (result && typeof result.then === 'function') return Promise.resolve(result).finally(settle);
+      settle();
       return result;
     };
     wrapped.__trainingDraftMutationWrapped = true;
+    wrapped.__trainingDraftDirectWrite = true;
     wrapped.__trainingDraftMutationOriginal = original;
     window[name] = wrapped;
     mutationWrappers.push({name, original, wrapped});
@@ -261,10 +306,12 @@ export function installTrainingDraftRuntime({
   scheduleDelayedSyncs();
 
   const runtime = {
+    build: 'training-draft-runtime-422503',
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
     inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
+    state() { return {directWrites}; },
     destroy() {
       destroyed = true;
       for (const timer of delayedSyncTimers) clearTimeout(timer);
