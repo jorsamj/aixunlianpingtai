@@ -265,6 +265,25 @@ class FencedTaskRepository(TaskRepository):
             str(row["process_command_hash"]),
         )
 
+    @staticmethod
+    def _hold_gpu_reservation(database, task_id: str, now: str) -> None:
+        try:
+            now_dt = datetime.fromisoformat(str(now))
+        except ValueError:
+            now_dt = datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        hold_until = (now_dt.astimezone(timezone.utc) + timedelta(seconds=30)).isoformat()
+        database.execute(
+            """
+            UPDATE gpu_reservations
+               SET policy='exclusive', share_eligible=0, sharing_evidence_at=NULL,
+                   heartbeat_at=?, expires_at=?
+             WHERE task_id=?
+            """,
+            (now, hold_until, str(task_id)),
+        )
+
     def _process_recovery_state(self, row) -> str:
         identity = self._identity_from_row(row)
         if identity is None:
@@ -299,12 +318,14 @@ class FencedTaskRepository(TaskRepository):
                     "UPDATE tasks SET stage='lease_expired_process_alive', updated_at=? WHERE task_id=?",
                     (now, row["task_id"]),
                 )
+                self._hold_gpu_reservation(database, row["task_id"], now)
                 continue
             if process_state == "unknown":
                 database.execute(
                     "UPDATE tasks SET stage='recovery_blocked_process_inspection', updated_at=? WHERE task_id=?",
                     (now, row["task_id"]),
                 )
+                self._hold_gpu_reservation(database, row["task_id"], now)
                 continue
             status = str(row["status"])
             kind = str(row["kind"])
