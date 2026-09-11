@@ -8,7 +8,7 @@
 2. `docs/CODEX_CURRENT_STATE.md` — 当前代码验收点、owner、下一批准确工作范围。
 3. `docs/frontend-legacy-audit.md` — classic `static/app.js` 的历史 override / owner 审计。
 4. `docs/FRONTEND_OWNER_MAP_V42_25.md` — 前端 owner map。
-5. `docs/codex-handoff.md`、`docs/codex-handoff-v42.25.md` — 历史上下文；与当前总账冲突时，以实际代码 + 上述当前文档为准。
+5. `docs/codex-handoff.md`、`docs/codex-handoff-v42.25.md` — 历史上下文；冲突时以实际代码 + 当前总账为准。
 6. `docs/superpowers/specs/2026-09-11-v42.25-training-data-contract-design.md`
 7. `docs/superpowers/specs/2026-09-11-v42.25-task-runtime-fencing-design.md`
 8. `docs/superpowers/specs/2026-09-11-training-resource-contract-fix.md`
@@ -16,22 +16,23 @@
 10. `docs/superpowers/specs/2026-09-11-training-label-contract.md`
 11. `docs/superpowers/specs/2026-09-11-navigation-stability.md`
 
-修改前执行/确认 `git diff main...HEAD`、`git log main..HEAD` 或等价 GitHub API 检查；handoff 文档可能比分支 HEAD 少最后几个文档 commit。
+修改前确认 live branch/HEAD、`git diff main...HEAD` / `git log main..HEAD` 或等价 GitHub API。handoff 文档可能比分支 HEAD 少最后几个文档 commit。
 
 ## 当前开发状态
 
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: ceab780b8f3d8314061d852bf2eccc8db9235f54
-Frontend Runtime run:        34644092284
+latest full code acceptance: 1470bb9f0dd19e1be5d0695cd7f4de21173dd944
+Frontend Runtime run:        34652823778
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.53
-main.mjs cache:              42.25.54
+app.js cache:                42.25.55
+main.mjs cache:              42.25.56
+NavigationStability:         422509
 ```
 
-`34644092284` 已通过：syntax、永久 owner guards、全量 frontend unit tests、Real Chrome runtime regressions。
+`34652823778` 已通过：syntax、永久 owner guards、全量 frontend unit tests、Real Chrome 12/12。
 
 **当前仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -83,28 +84,45 @@ set422Base
 v34 persistence direct setPage
 v35 plain direct setPage
 v42.4 plain direct setPage
+v42.7 direct auto-label alias setPage
+setPageReady414 startup-readiness wrapper
 ```
 
-当前受保护语义链：
+当前 live chain：
 
 ```text
 initial bootstrap setPage binding
-→ v42.7 自动标注 alias owner
-→ setPageReady414 startup readiness
 → baseSetPage417 mobile sidebar close
 → NavigationStability final coordinator
-   → PageRequestScope
-   → PollRegistry
-   → ui-state.js persistence
+   ├─ normalizeNavigationPage()
+   ├─ PageRequestScope / navigation epoch
+   ├─ PollRegistry before/after
+   ├─ waitForNavigationReady() / __v53InitPromise
+   └─ ui-state.js persistence
 ```
 
 Real Chrome 已锁定：
 - stale previous-page request 不得跳回旧页面；
 - 页面离开后 managed polling 停止；
 - 最终导航关闭 mobile sidebar/backdrop；
-- 导航到“数据集”后 localStorage 保存“数据集”，刷新后仍恢复“数据集”。
+- 页面选择持久化并在 reload 后恢复；
+- legacy `自动标注` canonicalize 为 `自动标注及清洗`；
+- 启动 snapshot pending 时，导航意图可建立但页面不得提前切换；
+- snapshot ready 后只完成实际导航并持久化请求页。
 
-下一批必须先审计 remaining setPage semantic chain，不能按版本号批量删除 alias/readiness/sidebar 真实语义。
+### 下一批准确范围
+
+只处理 `baseSetPage417`：
+
+```js
+const baseSetPage417=window.setPage;
+window.setPage=function(page){
+  window.toggleMobileSidebarV37?.(false);
+  return baseSetPage417?.(page);
+};
+```
+
+迁移规则：先用 unit + 已有 Real Chrome 合同锁定 sidebar close 的时序；再把行为迁入 `NavigationStability` 命名 hook；双 owner 全绿后才能物理删除 `baseSetPage417`。初始 bootstrap `setPage` 本批不动。
 
 ## 不得回退的核心合同
 
@@ -174,34 +192,21 @@ Task Runtime fencing：
 ## 当前后续优先级
 
 ```text
-1. remaining setPage semantic-chain consolidation
-2. remaining renderer override owner audit / obsolete layer deletion
-3. proven dead app.js + global reload/request debt
-4. cache-busting unification
-5. MutationObserver/timer/fetch/render/setPage zero-point scan
-6. semantic naming + deterministic tests + docs
-7. technical-debt zero-point scan
-8. resume A800 RC
+1. baseSetPage417 sidebar migration
+2. initial bootstrap setPage capture/liveness audit
+3. remaining renderer override owner audit / obsolete layer deletion
+4. proven dead app.js + global reload/request debt
+5. cache-busting unification
+6. MutationObserver/timer/fetch/render/setPage zero-point scan
+7. semantic naming + deterministic tests + docs
+8. technical-debt zero-point scan
+9. resume A800 RC
 ```
-
-### 下一批 setPage 审计规则
-
-对以下 owner 分别建立 capture/liveness/semantic 表：
-
-```text
-initial bootstrap function setPage
-v42.7 alias owner
-setPageReady414 readiness wrapper
-baseSetPage417 sidebar wrapper
-NavigationStability final wrapper
-```
-
-alias/readiness/sidebar 是真实产品行为，不得因为它们位于 numbered classic block 中就直接删除。若要迁移到 named runtime，必须先有 unit/Real Chrome 合同，再物理删除对应 classic owner。
 
 ## 修改与交接要求
 
 - 每批修改保持边界清晰，不混入无关重构。
-- 代码修改必须补对应回归；旧测试如果锁定已确认错误的旧语义，应升级合同而不是回退正确代码。
+- 代码修改必须补对应回归；旧测试锁定已确认错误的旧语义时，应升级合同而不是回退正确代码。
 - 测试没有真实执行时必须写 `NOT VERIFIED`，不能把“新增测试文件”当作“测试通过”。
-- 一次性 AST audit / migration helper / workflow 在批次验收后必须物理删除，避免产生新的技术债。
+- 一次性 audit / migration helper / workflow 在批次验收后必须物理删除。
 - 每批完成后同步：`TECH_DEBT_CLOSURE_V42_25.md`、`CODEX_CURRENT_STATE.md`、`frontend-legacy-audit.md`、`AGENTS.md`。
