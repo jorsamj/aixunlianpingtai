@@ -464,6 +464,7 @@ export function installMaterialPaginationRuntime() {
           try {
             if (state.page !== target) return;
             await window.refreshCurrentPage413?.();
+            if (state.page !== target || target === '训练任务') return;
             if (typeof window.render === 'function') window.render();
             else if (typeof render === 'function') render();
           } catch (error) {
