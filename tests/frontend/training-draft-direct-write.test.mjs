@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   createTrainingDraft,
-  trainingDraftFromLegacyState,
-  trainingDraftToRequest,
   trainingInheritanceFromAlgorithm,
 } from '../../static/modules/training-draft.js';
 import {installTrainingDraftRuntime} from '../../static/modules/training-draft-runtime.js';
@@ -12,8 +10,6 @@ import {installTrainingDraftRuntime} from '../../static/modules/training-draft-r
 function dependencies() {
   return {
     createTrainingDraft,
-    trainingDraftFromLegacyState,
-    trainingDraftToRequest,
     trainingInheritanceFromAlgorithm,
   };
 }
@@ -63,10 +59,9 @@ test('train-v3 material confirmation updates canonical draft before legacy callb
   assert.deepEqual(observedInsideLegacy.testMaterialIds, ['old-test']);
   assert.deepEqual(state.trainingDraft.materialIds, ['new-a', 'shared']);
   assert.deepEqual(state.trainingDraft.testMaterialIds, ['old-test']);
-  assert.equal(Object.hasOwn(state, 'train429Selected'), false);
-  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
+  assert.deepEqual([...state.trainSplitV3.train], ['stale']);
+  assert.equal(state.trainSplitV3.experiment, 99);
   assert.equal(runtime.state().directWrites, 1);
-  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
@@ -94,7 +89,8 @@ test('split mode writes canonical draft before legacy callback runs', () => {
 
   assert.equal(observedMode, 'independent_test_set');
   assert.equal(state.trainingDraft.splitMode, 'independent_test_set');
-  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
+  assert.equal(state.trainSplitV3.mode, 'independent_test_set');
+  assert.deepEqual([...state.trainSplitV3.train], ['wrong']);
   assert.equal(runtime.state().directWrites, 1);
 
   cleanup(runtime);
@@ -133,9 +129,9 @@ test('opening a different algorithm resets canonical training selection before l
   });
   assert.equal(state.trainingDraft.algorithmId, 'alg-new');
   assert.equal(state.train428AlgorithmId, 'alg-old');
-  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
+  assert.deepEqual([...state.trainSplitV3.train], ['stale']);
+  assert.equal(state.trainSplitV3.experiment, 99);
   assert.equal(runtime.state().directWrites, 1);
-  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
@@ -184,9 +180,9 @@ test('training settings write canonical resource values before legacy save and a
   assert.equal(state.trainingDraft.resource.cache, false);
   assert.equal(state.trainingDraft.config.epochs, 30);
   assert.equal(state.train428Config.batch, 99);
-  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
+  assert.deepEqual([...state.trainSplitV3.train], ['wrong']);
+  assert.equal(state.trainSplitV3.validation, 99);
   assert.equal(runtime.state().directWrites, 1);
-  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
