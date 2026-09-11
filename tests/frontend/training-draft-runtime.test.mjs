@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   createTrainingDraft,
-  trainingDraftFromLegacyState,
   trainingInheritanceFromAlgorithm,
 } from '../../static/modules/training-draft.js';
 import {installTrainingDraftRuntime} from '../../static/modules/training-draft-runtime.js';
@@ -21,7 +20,7 @@ function setupDom(values = {}) {
 }
 
 function dependencies() {
-  return {createTrainingDraft, trainingDraftFromLegacyState, trainingInheritanceFromAlgorithm};
+  return {createTrainingDraft, trainingInheritanceFromAlgorithm};
 }
 
 function cleanup(runtime) {
@@ -30,7 +29,7 @@ function cleanup(runtime) {
   delete globalThis.document;
 }
 
-test('canonical draft wins over stale legacy mirrors and retired mirrors stay deleted', () => {
+test('canonical draft ignores stale retired mirror-shaped fields without mutating them', () => {
   setupDom({tr429Priority: '25'});
   const state = {
     train428AlgorithmId: 'legacy-alg',
@@ -62,14 +61,14 @@ test('canonical draft wins over stale legacy mirrors and retired mirrors stay de
   assert.deepEqual(draft.inheritedLabelCodes, ['fire', 'smoke']);
   assert.deepEqual(draft.effectiveLabelCodes, ['fire', 'smoke', 'person']);
   assert.equal(draft.priority, 25);
-  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
-  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
+  assert.deepEqual([...state.trainSplitV3.train], ['legacy-wrong']);
+  assert.deepEqual([...state.trainingLabelSelected], ['legacy-label']);
   assert.equal(state.train428AlgorithmId, 'legacy-alg');
   assert.deepEqual([...state.train429Selected], ['legacy-wrong']);
   assert.equal(state.train428Config.device, 'cpu');
   assert.equal(window.fetch, originalFetch);
   assert.equal(runtime.state().networkOwner, false);
-  assert.equal(runtime.state().legacyBootstrapCount, 0);
+  assert.equal(runtime.state().initializationCount, 0);
 
   cleanup(runtime);
 });
@@ -169,29 +168,32 @@ test('material selection helpers mutate only canonical materialIds', () => {
   cleanup(runtime);
 });
 
-test('legacy state is consumed once only when canonical draft is absent', () => {
+test('missing draft initializes empty canonical state and ignores retired mirror-shaped fields', () => {
   setupDom({tr429Priority: '40'});
   const state = {
-    train428AlgorithmId: 'alg-1',
+    train428AlgorithmId: 'legacy-alg',
     train429Selected: new Set(['legacy-a', 'legacy-b']),
-    train428Config: {device: 'cpu', batch: 8, workers: 0, cache: false},
-    algorithms: [{id: 'alg-1', versions: []}],
+    train428Config: {device: 'cpu', batch: 8},
+    algorithms: [{id: 'legacy-alg', versions: []}],
   };
   globalThis.window = {fetch: async () => ({ok: true})};
 
   const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
-  assert.deepEqual(state.trainingDraft.materialIds, ['legacy-a', 'legacy-b']);
-  assert.equal(runtime.state().legacyBootstrapCount, 1);
+  assert.equal(state.trainingDraft.algorithmId, '');
+  assert.deepEqual(state.trainingDraft.materialIds, []);
+  assert.equal(state.trainingDraft.priority, 40);
+  assert.equal(state.trainingDraft.resource.device, 'auto');
+  assert.equal(runtime.state().initializationCount, 1);
 
-  state.train429Selected = new Set(['stale-after-bootstrap']);
-  state.train428AlgorithmId = 'stale-alg';
-  state.train428Config = {device: 'stale-device', batch: 99};
+  state.train429Selected = new Set(['changed-legacy']);
+  state.train428AlgorithmId = 'changed-legacy-alg';
+  state.train428Config = {device: 'changed-legacy-device'};
   runtime.sync();
 
-  assert.equal(state.trainingDraft.algorithmId, 'alg-1');
-  assert.deepEqual(state.trainingDraft.materialIds, ['legacy-a', 'legacy-b']);
-  assert.notEqual(state.trainingDraft.resource.device, 'stale-device');
-  assert.equal(runtime.state().legacyBootstrapCount, 1);
+  assert.equal(state.trainingDraft.algorithmId, '');
+  assert.deepEqual(state.trainingDraft.materialIds, []);
+  assert.equal(state.trainingDraft.resource.device, 'auto');
+  assert.equal(runtime.state().initializationCount, 1);
 
   cleanup(runtime);
 });

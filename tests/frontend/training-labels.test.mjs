@@ -85,14 +85,9 @@ test('canonical material ids stay authoritative when legacy algorithm and select
   );
 });
 
-test('current training modal falls back to legacy selected materials before canonical draft exists', () => {
-  const state = {
-    train429Selected: new Set(['img-new-1', 'img-new-2']),
-  };
-  assert.deepEqual(
-    selectedTrainingMaterialIds(state, {preferV429: true}),
-    ['img-new-1', 'img-new-2'],
-  );
+test('current training modal returns no materials before canonical draft exists', () => {
+  const state = {train429Selected: new Set(['retired-legacy-value'])};
+  assert.deepEqual(selectedTrainingMaterialIds(state, {preferV429: true}), []);
 });
 
 test('previous version labels are inherited and only material labels are selectable additions', () => {

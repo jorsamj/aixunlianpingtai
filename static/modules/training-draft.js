@@ -81,47 +81,6 @@ export function createTrainingDraft(values = {}) {
   };
 }
 
-export function trainingDraftFromLegacyState(state = {}, {
-  inheritedLabelCodes = [],
-  inheritancePending = false,
-  baseVersionId = '',
-} = {}) {
-  const canonical = state.trainingDraft || {};
-  const algorithmId = String(canonical.algorithmId || state.train428AlgorithmId || '').trim();
-  const trainSet = Array.isArray(canonical.materialIds)
-    ? canonical.materialIds
-    : state.train429Selected instanceof Set
-      ? [...state.train429Selected]
-      : [];
-  const testSet = Array.isArray(canonical.testMaterialIds) ? canonical.testMaterialIds : [];
-  const config = state.train428Config || {};
-  const iteration = state.iteration414?.[algorithmId] || {};
-  const canonicalLabels = Array.isArray(canonical.newLabelCodes) ? canonical.newLabelCodes : [];
-
-  return createTrainingDraft({
-    algorithmId,
-    baseVersionId: baseVersionId || canonical.baseVersionId || iteration.version_id || iteration.id || '',
-    materialIds: trainSet,
-    testMaterialIds: testSet,
-    splitMode: canonical.splitMode || 'random_test_from_training_pool',
-    experimentPercent: canonical.experimentPercent ?? 20,
-    validationPercent: canonical.validationPercent ?? 20,
-    inheritedLabelCodes,
-    inheritancePending,
-    newLabelCodes: canonicalLabels,
-    resource: {
-      strategy: config.resource_strategy || canonical.resource?.strategy || 'auto',
-      device: config.device || canonical.resource?.device || 'auto',
-      gpuPolicy: config.gpu_policy || canonical.resource?.gpuPolicy || 'auto',
-      batch: config.batch ?? canonical.resource?.batch ?? null,
-      workers: config.workers ?? canonical.resource?.workers ?? null,
-      cache: config.cache ?? canonical.resource?.cache ?? null,
-    },
-    config: {...(canonical.config || {}), ...config},
-    priority: config.queue_priority ?? config.priority ?? canonical.priority ?? state.trainPriority ?? 50,
-  });
-}
-
 export function trainingDraftToRequest(draft, parameters = {}) {
   const normalized = createTrainingDraft(draft);
   if (!normalized.algorithmId) throw new Error('请选择训练算法');

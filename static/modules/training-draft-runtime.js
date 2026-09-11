@@ -29,13 +29,12 @@ function normalizedCache(value) {
 export function installTrainingDraftRuntime({
   getState,
   createTrainingDraft,
-  trainingDraftFromLegacyState,
   trainingInheritanceFromAlgorithm,
   directControlIds = [],
 } = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__trainingDraftRuntimeInstalled) return window.TrainingDraftRuntime;
-  if (![createTrainingDraft, trainingDraftFromLegacyState, trainingInheritanceFromAlgorithm].every(fn => typeof fn === 'function')) {
+  if (![createTrainingDraft, trainingInheritanceFromAlgorithm].every(fn => typeof fn === 'function')) {
     throw new Error('TrainingDraftRuntime missing training draft dependencies');
   }
 
@@ -45,10 +44,10 @@ export function installTrainingDraftRuntime({
   let syncQueued = false;
   let directWrites = 0;
   let directControlSkips = 0;
-  let legacyBootstrapCount = 0;
+  let initializationCount = 0;
   const mutationWrappers = [];
 
-  function inheritanceFor(s, algorithmId = s.trainingDraft?.algorithmId || s.train428AlgorithmId) {
+  function inheritanceFor(s, algorithmId = s.trainingDraft?.algorithmId) {
     const id = String(algorithmId || '').trim();
     const algorithm = (s.algorithms || []).find(item => String(item?.id || '') === id) || null;
     return algorithm ? trainingInheritanceFromAlgorithm(algorithm) : {
@@ -79,27 +78,17 @@ export function installTrainingDraftRuntime({
     });
   }
 
-  function retireOldMirrors(s) {
-    delete s.trainSplitV3;
-    delete s.trainingLabelSelected;
-  }
-
   function commitDraft(s, draft, inheritance) {
     s.trainingDraft = draft;
     s.trainingDraftInheritance = inheritance;
-    retireOldMirrors(s);
     window.TrainingSubmitRuntime?.updateReadiness?.();
     return draft;
   }
 
-  function bootstrapFromLegacy(s) {
-    const inheritance = inheritanceFor(s);
-    const draft = withLiveControls(trainingDraftFromLegacyState(s, {
-      inheritedLabelCodes: inheritance.codes,
-      inheritancePending: inheritance.legacy,
-      baseVersionId: inheritance.versionId,
-    }));
-    legacyBootstrapCount += 1;
+  function initializeCanonical(s) {
+    const draft = withLiveControls(createTrainingDraft());
+    const inheritance = inheritanceFor(s, draft.algorithmId);
+    initializationCount += 1;
     return {draft, inheritance};
   }
 
@@ -119,14 +108,14 @@ export function installTrainingDraftRuntime({
     const s = state();
     const result = s.trainingDraft
       ? normalizeCanonical(s, s.trainingDraft)
-      : bootstrapFromLegacy(s);
+      : initializeCanonical(s);
     return commitDraft(s, result.draft, result.inheritance);
   }
 
   function update(patch = {}) {
     if (destroyed) return null;
     const s = state();
-    const base = s.trainingDraft || bootstrapFromLegacy(s).draft;
+    const base = s.trainingDraft || initializeCanonical(s).draft;
     const next = createTrainingDraft({
       ...base,
       ...patch,
@@ -184,7 +173,7 @@ export function installTrainingDraftRuntime({
 
   function settingsPatch(s) {
     if (typeof document === 'undefined' || !document.getElementById('ts428Epoch')) return null;
-    const current = s.trainingDraft || bootstrapFromLegacy(s).draft;
+    const current = s.trainingDraft || initializeCanonical(s).draft;
     const base = {
       ...(current.config || {}),
       batch: current.resource?.batch ?? current.config?.batch,
@@ -281,7 +270,7 @@ export function installTrainingDraftRuntime({
       const picker = s.trainMaterialPickerV3;
       if (!picker || !(picker.selected instanceof Set)) return null;
       const selected = [...picker.selected].map(String);
-      const current = s.trainingDraft || bootstrapFromLegacy(s).draft;
+      const current = s.trainingDraft || initializeCanonical(s).draft;
       const selectedSet = new Set(selected);
       if (picker.role === 'test') {
         return {
@@ -333,7 +322,7 @@ export function installTrainingDraftRuntime({
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422509',
+    build: 'training-draft-runtime-422511',
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
@@ -354,7 +343,7 @@ export function installTrainingDraftRuntime({
       return runtime.setMaterialIds([...selected]);
     },
     inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
-    state() { return {directWrites, directControlSkips, legacyBootstrapCount, networkOwner: false}; },
+    state() { return {directWrites, directControlSkips, initializationCount, networkOwner: false}; },
     destroy() {
       destroyed = true;
       if (typeof document !== 'undefined') {

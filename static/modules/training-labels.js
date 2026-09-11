@@ -91,11 +91,7 @@ export function resolveClientTrainingLabels({materials, selectedIds, labelCatalo
 
 export function selectedTrainingMaterialIds(state, {preferV429 = false} = {}) {
   if (preferV429) {
-    const draft = state?.trainingDraft;
-    if (draft && String(draft?.algorithmId || '').trim()) {
-      return unique(draft?.materialIds || []);
-    }
-    return unique([...(state?.train429Selected || new Set())]);
+    return unique(state?.trainingDraft?.materialIds || []);
   }
   const train = [...(state?.train425Selected?.train || new Set())];
   const val = [...(state?.train425Selected?.val || new Set())];
@@ -113,11 +109,10 @@ function selectedIds(state) {
 
 function currentAlgorithm(state) {
   const canonical = String(state?.trainingDraft?.algorithmId || '').trim();
-  const fixed = canonical || String(state?.train428AlgorithmId || '').trim();
   const fallback = document.getElementById('tr425AssetAlg')?.value
     || document.getElementById('train423Asset')?.value
     || '';
-  const id = fixed || String(fallback || '').trim();
+  const id = canonical || String(fallback || '').trim();
   return (state?.algorithms || []).find(item => String(item?.id || '') === id) || null;
 }
 

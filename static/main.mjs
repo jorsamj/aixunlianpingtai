@@ -3,14 +3,14 @@ import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422507';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422508';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422503';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422507';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422503';
-import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422505';
-import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422510';
+import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422506';
+import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422511';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422504';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422500';
@@ -76,7 +76,6 @@ const pollRegistry = installPollRegistry({
 const trainingDraftRuntime = installTrainingDraftRuntime({
   getState: () => state,
   createTrainingDraft,
-  trainingDraftFromLegacyState,
   trainingInheritanceFromAlgorithm,
   directControlIds: TRAINING_DRAFT_CONTROL_IDS,
 });
@@ -96,7 +95,7 @@ window.PlatformCore = {
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
-  trainingDraft: {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm},
+  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm},
   trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, trainingSubmitReadiness, validateTrainingDevice},
   quality: {qualityChartModel},
   reports: {reportPresentation},

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   createTrainingDraft,
-  trainingDraftFromLegacyState,
   trainingDraftToRequest,
   trainingInheritanceFromAlgorithm,
 } from '../../static/modules/training-draft.js';
@@ -54,66 +53,20 @@ test('successful historical version without stored schema is marked pending inst
   assert.deepEqual(inheritance.codes, []);
 });
 
-test('legacy adapter keeps split ownership canonical and ignores retired split mirror values', () => {
-  const state = {
-    train428AlgorithmId: 'alg-1',
-    train429Selected: new Set(['legacy-train']),
-    trainSplitV3: {
-      mode: 'random_test_from_training_pool',
-      train: new Set(['legacy-wrong']),
-      test: new Set(),
-      experiment: 99,
-      validation: 88,
-    },
-    trainingDraft: createTrainingDraft({
-      algorithmId: 'alg-1',
-      baseVersionId: 'v-prev',
-      materialIds: ['a', 'b'],
-      testMaterialIds: ['c'],
-      splitMode: 'independent_test_set',
-      validationPercent: 20,
-      newLabelCodes: ['person'],
-    }),
-    train428Config: {
-      resource_strategy: 'manual',
-      device: '0',
-      gpu_policy: 'exclusive',
-      batch: 16,
-      workers: 4,
-      cache: false,
-      queue_priority: 30,
-    },
-    iteration414: {'alg-1': {version_id: 'legacy-iteration'}},
-  };
-
-  const draft = trainingDraftFromLegacyState(state, {inheritedLabelCodes: ['fire', 'smoke']});
-
-  assert.equal(draft.baseVersionId, 'v-prev');
-  assert.equal(draft.splitMode, 'independent_test_set');
-  assert.deepEqual(draft.materialIds, ['a', 'b']);
-  assert.deepEqual(draft.testMaterialIds, ['c']);
-  assert.equal(draft.validationPercent, 20);
-  assert.deepEqual(draft.effectiveLabelCodes, ['fire', 'smoke', 'person']);
-  assert.deepEqual(draft.resource, {
-    strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false,
-  });
-  assert.equal(draft.priority, 30);
-  assert.deepEqual([...state.trainSplitV3.train], ['legacy-wrong']);
-  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
-});
-
-test('legacy adapter can still bootstrap material ids from train429Selected when canonical draft is absent', () => {
-  const state = {
-    train428AlgorithmId: 'alg-1',
-    train429Selected: new Set(['a', 'b']),
-    train428Config: {},
-  };
-
-  const draft = trainingDraftFromLegacyState(state);
-  assert.deepEqual(draft.materialIds, ['a', 'b']);
+test('empty canonical draft has safe defaults and no hidden legacy state dependency', () => {
+  const draft = createTrainingDraft();
+  assert.equal(draft.algorithmId, '');
+  assert.deepEqual(draft.materialIds, []);
+  assert.deepEqual(draft.testMaterialIds, []);
+  assert.deepEqual(draft.newLabelCodes, []);
+  assert.deepEqual(draft.inheritedLabelCodes, []);
   assert.equal(draft.splitMode, 'random_test_from_training_pool');
   assert.equal(draft.experimentPercent, 20);
   assert.equal(draft.validationPercent, 20);
+  assert.deepEqual(draft.resource, {
+    strategy: 'auto', device: 'auto', gpuPolicy: 'auto', batch: null, workers: null, cache: null,
+  });
+  assert.equal(draft.priority, 50);
 });
 
 test('request uses new labels for the task while inherited labels remain in effective schema', () => {
