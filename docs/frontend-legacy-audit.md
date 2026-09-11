@@ -7,18 +7,18 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: f6e71c05d35b1a39b0b79e1b652cf901044c68bd
-run:    34653776200
+commit: 05abf71d067d4b1e08a2bdeeb9d7787e9fc06dd4
+run:    34655960701
 frontend:     PASS
-Real Chrome:  PASS (12/12)
+Real Chrome:  PASS
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.56
-main.mjs                  42.25.57
-navigation-stability      422510
+app.js                    42.25.57
+main.mjs                  42.25.59
+navigation-stability      422511
 ui-state                  422500
 poll-registry             422511
 training-draft-runtime    422516
@@ -50,93 +50,72 @@ sources        → PollRegistry(sources)
 
 No classic timer or creation-wrapper ownership may return.
 
-## 3. Accepted navigation-debt batches
+### Navigation — classic owner family zero-point CLOSED
+
+Accepted batches:
 
 ```text
-Batch A: setupPagePolling/jobPollTimer                  CLOSED
-Batch B: set423Base + setBase424                       CLOSED
-Batch C: duplicate V37 baseSetPage sidebar wrapper     CLOSED
-Batch D: oldSetV39 + oldSet42 + set422Base             CLOSED
-Batch E: navigation persistence moved to final runtime CLOSED
-Batch F: v34/v35/v42.4 direct setPage family           CLOSED
-Batch G: v42.7 direct auto-label alias owner           CLOSED
-Batch H: setPageReady414 startup-readiness owner       CLOSED
-Batch I: baseSetPage417 mobile-sidebar owner           CLOSED
+setupPagePolling/jobPollTimer                              CLOSED
+set423Base + setBase424                                   CLOSED
+duplicate V37 baseSetPage sidebar wrapper                 CLOSED
+oldSetV39 + oldSet42 + set422Base                         CLOSED
+navigation persistence → named runtime                    CLOSED
+v34/v35/v42.4 direct setPage family                       CLOSED
+v42.7 direct auto-label alias owner                       CLOSED
+setPageReady414 startup readiness                         CLOSED
+baseSetPage417 sidebar close                              CLOSED
+initial bootstrap setPage mutation/render owner           CLOSED
 ```
 
-Batch H evidence:
+Latest evidence:
 
 ```text
-old-owner browser baseline    0adc46fe... / 34652201043 PASS
-double-owner equivalence      a618696e... / 34652478444 PASS
-classic owner physically gone 1470bb9f... / 34652823778 PASS
+sidebar final                 f6e71c05... / 34653776200 PASS
+named actual-owner equivalence 04b6982e... / 34655575856 PASS
+bootstrap final               05abf71d... / 34655960701 PASS
 ```
 
-Batch I evidence:
+`static/app.js` must now contain **zero** classic `window.setPage=` assignments. Permanent CI enforces this.
+
+## 3. Final navigation topology
 
 ```text
-named hook + classic owner    d6b9e459... / 34653340984 PASS
-classic owner physically gone f6e71c05... / 34653776200 PASS
+NavigationStability.stableSetPage
+  → normalizeNavigationPage
+  → PageRequestScope / navigation epoch
+  → PollRegistry.beforeNavigate
+  → waitForNavigationReady
+  → beforeInvokeNavigation
+  → performNavigation(page)
+       state.page = page
+       render()
+  → PageRequestScope.alignPage
+  → PollRegistry.afterNavigate
+  → persistNavigationState
 ```
 
-`beforeInvokeNavigation` now owns `toggleMobileSidebarV37(false)` at the same semantic point as V417: after readiness resolution and immediately before actual page mutation/render. Real Chrome still proves both `#sidebar.mobile-open` and `#sideBackdrop.show` are removed on navigation.
+`NavigationStability` installs global `window.setPage` even without a predecessor. When `performNavigation` is configured, no classic predecessor is invoked. Unit tests explicitly prove one named apply / one render / zero classic calls.
 
-## 4. Current setPage topology
+The following remain permanent browser contracts: menu navigation, programmatic `window.setPage`, startup readiness, sidebar/backdrop close, stale request fencing, PollRegistry stop-on-leave, alias canonicalization and persistence/reload.
 
-The chain is now reduced to:
+## 4. Current target — classic render override family
+
+The next debt is the historical `render` capture/override chain, not navigation.
+
+Known live/debt areas:
 
 ```text
-initial function setPage(p){ state.page=p; render(); }
-→ NavigationStability final module owner
+base/global render() shell
+render = function(...) historical overrides
+const old/finalRender = render capture layers
+v42.7 render-level 自动标注 → 自动标注及清洗 fallback
+renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
+NavigationStability PAGE_RENDERERS ownership guards
+startup __clInit direct render()
+refresh handlers that call render() directly
 ```
 
-### Named semantic responsibility map
-
-```text
-normalizeNavigationPage
-  自动标注 → 自动标注及清洗
-
-NavigationStability readiness hook
-  request/poll navigation intent first
-  waitForNavigationReady()
-  startup __v53InitPromise fencing
-
-NavigationStability pre-invoke hook
-  beforeInvokeNavigation()
-  close mobile sidebar/backdrop
-
-NavigationStability final lifecycle
-  navigation epoch
-  request-scope cancellation/alignment
-  PollRegistry before/after navigation
-  stale async fencing
-  UI-state persistence
-
-ui-state.js
-  serialize/persist page, project, dataset, imageFilter
-```
-
-### Remaining classic setPage responsibility
-
-The initial bootstrap function is not another lifecycle wrapper. It is the actual page-application predecessor currently captured by `NavigationStability`:
-
-```js
-function setPage(p){state.page=p;render()}
-window.setPage=setPage;
-```
-
-Its live semantics are exactly:
-
-```text
-state.page = page
-render() using the final classic render chain
-```
-
-Startup `window.__clInit` does not use this function. It loads data and calls `render()` directly, so startup itself does not block retirement of the bootstrap binding.
-
-## 5. Remaining render alias fallback
-
-v42.7 still contains a render-level normalization:
+Known render-level alias fallback:
 
 ```js
 render=function(){
@@ -145,79 +124,62 @@ render=function(){
 }
 ```
 
-This is no longer a `setPage` owner. Treat it as render-chain debt later; do not mix it into bootstrap setPage migration unless a contract proves it is safe to remove with the same batch.
+Navigation already canonicalizes aliases before `performNavigation`, so this fallback is a candidate for retirement. However startup and refresh paths can call `render()` directly; its liveness must be proven before deletion.
 
-## 6. Next candidate — initial bootstrap `setPage`
+## 5. Audit method for render family
 
-Required migration sequence:
-
-```text
-1. Add named `performNavigation` / `applyPage` hook to NavigationStability.
-2. Hook owns exactly one state.page mutation + one final classic render call.
-3. NavigationStability must install window.setPage even when no predecessor exists.
-4. During equivalence, when named apply hook is configured, classic predecessor must not also mutate/render.
-5. Unit tests lock exact order and single-render behavior.
-6. Real Chrome covers menu navigation, programmatic window.setPage, readiness, sidebar and persistence.
-7. Physically delete bootstrap function/binding only after equivalence.
-8. Permanent guard flips from “bootstrap must remain” to “bootstrap must not return”.
-9. Remove one-shot migration artifacts and run final full suite.
-```
-
-The migration must not scatter `state.page=...; render()` into another numbered classic block. The actual apply action must have one named owner.
-
-## 7. Remaining audit targets
-
-```text
-initial bootstrap setPage binding
-render = ...
-renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
-loadAll()
-loadRelated()
-loadCore412()
-MutationObserver
-setInterval
-setTimeout
-window.fetch =
-```
-
-Each family must follow:
+For every candidate generation:
 
 ```text
 live HEAD
-→ exact liveness/reference proof
-→ behavior contract
-→ named semantic owner
-→ double-owner proof
+→ enumerate exact assignment/capture/reference topology
+→ identify final live owner vs fully shadowed generation
+→ lock real semantic behavior
+→ migrate semantic ownership if needed
+→ double-owner equivalence where semantics move
 → bounded physical deletion
 → permanent guard
-→ full Real Chrome where relevant
+→ frontend + Real Chrome
 → docs sync
 ```
 
-## 8. Non-negotiable rules
+Do not delete by version suffix alone. Do not add a global render-repair loop. Prefer page-scoped/semantic render owners and local DOM refreshes over periodic whole-page repaint.
 
-1. No new numbered compatibility generation.
-2. No global render-repair loop.
-3. Retired training mirrors/fallbacks stay retired.
-4. No mother-model class inheritance on first training.
-5. Explicit false/zero training settings survive end-to-end.
-6. Do not weaken duplicate-request/race/performance/browser tests.
-7. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
-8. AutoLabel remains PollRegistry-only.
-9. Video/source/training polling direct ownership must not regress.
-10. Frontend CI is not A800/CUDA acceptance.
-11. Old setPage semantics may move into named runtimes only after behavior is locked.
-12. Initial bootstrap `setPage` cannot be deleted until named runtime owns the actual single page mutation/render action.
-
-## 9. Work order
+## 6. Remaining technical-debt targets
 
 ```text
-1. initial bootstrap setPage migration
-2. remaining obsolete render layers
-3. app.js dead code + global reload/request debt
-4. cache-busting unification
-5. zero-point observer/timer/fetch/render/setPage scan
-6. semantic naming + deterministic tests + docs
-7. technical-debt zero-point scan
-8. A800 RC
+render override generations
+loadAll / loadRelated / loadCore412 ownership
+proven dead app.js code
+global reload / duplicate requests
+cache-busting heterogeneity
+MutationObserver / setInterval / setTimeout / fetch lifecycle
+version-number business naming
+final zero-point scan
+```
+
+## 7. Non-negotiable rules
+
+1. No new numbered compatibility generation.
+2. Retired training mirrors/fallbacks stay retired.
+3. Classic `setPage` ownership must remain zero in `app.js`.
+4. No mother-model class inheritance on first training.
+5. Explicit false/zero training settings survive end-to-end.
+6. Trial/test inference must never receive GT labels.
+7. Do not weaken duplicate-request/race/performance/Real Chrome tests.
+8. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
+9. AutoLabel remains PollRegistry-only.
+10. Video/source/training polling direct ownership must not regress.
+11. Frontend CI is not A800/CUDA acceptance.
+
+## 8. Work order
+
+```text
+1. render override owner audit / obsolete generation deletion
+2. app.js dead code + global reload/request debt
+3. cache-busting unification
+4. zero-point observer/timer/fetch/render/setPage scan
+5. semantic naming + deterministic tests + docs
+6. technical-debt zero-point scan
+7. A800 RC
 ```
