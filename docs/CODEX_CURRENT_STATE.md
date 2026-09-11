@@ -7,10 +7,10 @@
 ```text
 stable main baseline:              6683edeb5d8391acbd96909ff22f72022105026b
 current cleanup branch:            refactor/frontend-runtime-stabilization
-current recorded cleanup HEAD:     512f5a59a9f35bbeba5339a12eee0ce2f0b5a360
+current recorded cleanup HEAD:     e38b72a4d93e1f56db633f540d68a160b83aa9d3
 formal VERSION.txt:                42.24.0 until v42.25 acceptance
 frontend badge:                    v42.25.0-dev
-frontend module entry cache:       main.mjs?v=42.25.25
+frontend module entry cache:       main.mjs?v=42.25.26
 ```
 
 Do not merge the cleanup branch into `main` unless explicitly authorized.
@@ -38,6 +38,7 @@ static/app.js historical runtime
        ├── PollRegistry
        ├── AlgorithmListRuntime
        ├── TrainingTaskRuntime
+       ├── MaterialPaginationRuntime61
        ├── TrainingDraftRuntime
        ├── TrainingSubmitRuntime
        ├── training-labels
@@ -80,70 +81,74 @@ The final v42.4 video implementation is the accepted path. Old v33 video timers 
 
 The old `auto422Timer` path belongs to a legacy page and should disappear with that page rather than receive new architecture work.
 
-## 6. Algorithm list performance owner
+## 6. Incremental high-frequency pages — P0-C complete
 
-Current owner:
+### Algorithm list
+
+Owner:
 
 ```text
 static/modules/algorithm-list-runtime.js
 ```
 
-Contracts now enforced:
+Contracts:
 
 ```text
-expand/collapse algorithm card
--> local state only
--> 0 algorithm/bootstrap requests
-
-algorithm-page top refresh
--> GET algorithms
--> GET jobs
--> no bootstrap snapshot
--> preserve page shell and patch cards
+expand/collapse -> local state only -> 0 algorithm/bootstrap requests
+page refresh    -> GET algorithms + GET jobs -> patch cards
+training create -> focused algorithms/jobs refresh
 ```
 
-Training task creation from the algorithm page also uses this focused algorithm/jobs refresh instead of `loadRelated()`.
+The algorithm page shell is preserved.
 
-Real Chrome request-count regression exists in:
+### Training tasks
 
-```text
-tests/browser/algorithm-list-performance.spec.mjs
-```
-
-## 7. Training task performance owner
-
-Current owner:
+Owner:
 
 ```text
 static/modules/training-task-runtime.js
 ```
 
-It replaces legacy refresh ownership for the final `.train428-page`.
-
-Current behavior:
+Contracts:
 
 ```text
-top Refresh / page Refresh / refreshJobsOnly
--> GET jobs only
--> patch final train428 tab counts + tbody
--> do not replace .train428-page
--> do not load datasets/materials/labels/algorithms/bootstrap
+top/page refresh -> GET jobs only -> patch final train428 counts + tbody
+promote/pause/resume/stop/delete -> mutation endpoint -> GET jobs -> patch
 ```
 
-The following final task mutations are also focused:
+No normal training-task action uses `loadRelated()` + whole-page render.
+
+Material-pool hydration may still happen in the background for training creation, but `MaterialPaginationRuntime61` is explicitly forbidden from globally repainting `.train428-page` after that hydration finishes.
+
+### Datasets / materials
+
+Owner:
 
 ```text
-promote / pause / resume / stop / delete
--> mutation endpoint only
--> GET jobs
--> patch train428 table
+static/modules/material-pagination-runtime.js
+window.MaterialPaginationRuntime61
 ```
 
-No `loadRelated()` + whole-page render is required for these normal task operations.
+The v61 server-paged data model remains authoritative.
 
-Real Chrome regression verifies the DOM shell survives refresh and a real Pause action produces only `POST pause + GET jobs`.
+Contracts:
 
-## 8. Canonical training creation state
+```text
+first dataset entry or structural toolbar change
+-> build .data426-shell
+
+page / search / label filter / source filter / top refresh
+-> fetch /api/v61/.../materials
+-> update current state/images/totals
+-> patch #data412Grid + counts + pager + filter/source decorations
+-> preserve .data426-shell
+```
+
+Structural changes such as switching processed/unprocessed tabs or entering/leaving delete mode may rebuild the shell because the toolbar itself changes.
+
+Real Chrome regression verifies natural next-page navigation, search and top refresh all preserve the same `.data426-shell`, while top refresh does not request bootstrap, algorithms, datasets or legacy `/images`.
+
+## 7. Canonical training creation state
 
 Canonical frontend draft:
 
@@ -173,7 +178,9 @@ state.trainSplitV3
 state.trainingLabelSelected
 ```
 
-## 9. Training labels
+Current remaining P0-B work is to make final train-v3 controls write through `TrainingDraftRuntime.update()` directly, then remove compatibility mirrors only after browser parity.
+
+## 8. Training labels
 
 Active owner:
 
@@ -190,7 +197,7 @@ static/training-label-v3-anchor.js
 
 Labels come only from the exact selected materials plus inherited prior-version schema. The module does not own `/train/start`.
 
-## 10. Current frontend gates
+## 9. Current frontend gates
 
 Workflow:
 
@@ -198,7 +205,7 @@ Workflow:
 .github/workflows/frontend-runtime-stabilization.yml
 ```
 
-At recorded HEAD `512f5a59...`, Node/syntax and real Chrome were green.
+At recorded HEAD `e38b72a4...`, Node/syntax and real Chrome were green.
 
 Current browser set includes:
 
@@ -208,20 +215,21 @@ training-label-selector.spec.mjs
 auto-label-polling.spec.mjs
 algorithm-list-performance.spec.mjs
 training-task-performance.spec.mjs
+material-pagination-performance.spec.mjs
 ```
 
 Always verify the latest HEAD checks again before claiming green.
 
-## 11. Next work order
+## 10. Next work order
 
-1. Dataset/material page performance: keep server paging but stop top refresh/current-page refresh from rebuilding the whole dataset shell when a card/grid patch is enough.
-2. Continue deleting global render ownership only after named replacement modules have browser parity.
-3. Finish direct train-v3 -> `TrainingDraftRuntime.update()` writes and eventually remove old training mirror variables.
+1. Finish direct train-v3 -> `TrainingDraftRuntime.update()` writes; reduce dependence on `train428/train429/trainSplitV3` compatibility state.
+2. Remove old training mirror variables only after unit + real Chrome parity proves the named owner is complete.
+3. Continue deleting global render ownership only after named replacement modules have browser parity.
 4. Broad repository regression.
 5. Real A800 short training acceptance (`device=0`, `batch=16`, `workers=4`, `cache=false`, fire+smoke -> `nc=2`).
 6. Security hardening after functional acceptance.
 
-## 12. Do not do yet
+## 11. Do not do yet
 
 - do not rewrite the whole frontend to Vue before current P0 migration is stable;
 - do not split Git repositories;
