@@ -56,7 +56,7 @@ async function seedProject(request) {
   return {project, algorithmId: created.algorithm.id, imageIds: images.map(item => item.id)};
 }
 
-test('training dialog shows material-derived label selector and submits train_labels', async ({page, request}) => {
+test('training dialog shows material-derived labels and canonical TrainingDraft controls submission', async ({page, request}) => {
   const {project, imageIds} = await seedProject(request);
   let submitted;
 
@@ -113,12 +113,13 @@ test('training dialog shows material-derived label selector and submits train_la
   await expect(labels).toContainText('本次训练标签');
   await expect(labels).toContainText('请先选择训练素材');
 
-  // The exact-material picker has its own browser regression suite. This test isolates
-  // the label-selector contract by applying the same authoritative selected-id state.
+  // The exact-material picker has its own browser regression suite. Apply the same
+  // authoritative selected-id state so this test isolates label + TrainingDraft behavior.
   await page.evaluate(ids => {
     state.train429Selected = new Set(ids);
     if (state.trainSplitV3) state.trainSplitV3.train = state.train429Selected;
     window.TrainingLabelRuntime.refresh();
+    window.TrainingDraftRuntime?.sync();
   }, imageIds);
 
   await expect(labels).toBeVisible();
@@ -135,19 +136,28 @@ test('training dialog shows material-derived label selector and submits train_la
   // Prove that task labels, not the project label library, control the outgoing request.
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
+
+  await expect.poll(async () => page.evaluate(() => ({
+    materials: state.trainingDraft?.materialIds || [],
+    labels: state.trainingDraft?.newLabelCodes || [],
+  }))).toEqual({materials: imageIds, labels: ['fire']});
+
   await page.evaluate(async projectId => {
     await fetch(`/api/v12/projects/${projectId}/train/start`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         algorithm_asset_id: state.train428AlgorithmId,
-        train_image_ids: [...state.train429Selected],
+        train_image_ids: ['stale-legacy-id'],
         val_image_ids: [],
         test_image_ids: [],
+        queue_priority: 50,
       }),
     });
   }, project.id);
 
   await expect.poll(() => submitted).toBeTruthy();
+  expect(submitted.train_image_ids).toEqual(imageIds);
   expect(submitted.train_labels).toEqual(['fire']);
+  expect(submitted.algorithm_asset_id).toBeTruthy();
 });
