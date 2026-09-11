@@ -27,12 +27,16 @@ def migrate_runtime() -> None:
 def migrate_app() -> None:
     text = APP.read_text(encoding="utf-8")
 
+    select_all_old = "window.trainSelectAll412=function(mode){const q=(document.getElementById('tr429Q')?.value||'').toLowerCase(),labs=[...(state.train429PickerLabels||new Set())],rows=(state.images||[]).filter(x=>isProcessed412(x)&&x.annotated&&(!q||String(x.filename).toLowerCase().includes(q))&&(!labs.length||labs.some(l=>(x.labels||[]).includes(l))));rows.forEach(x=>mode==='invert'?(state.train429Selected.has(x.id)?state.train429Selected.delete(x.id):state.train429Selected.add(x.id)):state.train429Selected.add(x.id));renderTrainPicker429()};"
+    select_all_new = "window.trainSelectAll412=function(mode){const q=(document.getElementById('tr429Q')?.value||'').toLowerCase(),labs=[...(state.train429PickerLabels||new Set())],rows=(state.images||[]).filter(x=>isProcessed412(x)&&x.annotated&&(!q||String(x.filename).toLowerCase().includes(q))&&(!labs.length||labs.some(l=>(x.labels||[]).includes(l)))),selected=new Set(window.TrainingDraftRuntime?.materialIds?.()||[]);rows.forEach(x=>{const id=String(x.id);if(mode==='invert'){selected.has(id)?selected.delete(id):selected.add(id)}else selected.add(id)});window.TrainingDraftRuntime?.setMaterialIds?.([...selected]);renderTrainPicker429()};"
+    text = replace_exact(text, select_all_old, select_all_new, 1, "picker select-all/invert")
+
     replacements = [
         ("state init", "  state.train429Selected=state.train429Selected||new Set();\n", "", 1),
         ("final 429 start reset", "});state.train429Selected=new Set();modal(`训练 · ${a.name}`", "});modal(`训练 · ${a.name}`", 1),
         ("summary/count reads", "${state.train429Selected.size} 张", "${window.TrainingDraftRuntime?.materialIds?.().length||0} 张", 2),
         ("selected label source", "function selectedLabels429(){const ids=state.train429Selected,l=new Set();", "function selectedLabels429(){const ids=new Set(window.TrainingDraftRuntime?.materialIds?.()||[]),l=new Set();", 1),
-        ("picker selected state", "state.train429Selected.has(x.id)", "(window.TrainingDraftRuntime?.materialIds?.()||[]).includes(String(x.id))", 3),
+        ("picker selected state", "state.train429Selected.has(x.id)", "(window.TrainingDraftRuntime?.materialIds?.()||[]).includes(String(x.id))", 2),
         ("picker toggle", "window.toggleTrainImage429=function(id){state.train429Selected.has(id)?state.train429Selected.delete(id):state.train429Selected.add(id);renderTrainPicker429()};", "window.toggleTrainImage429=function(id){window.TrainingDraftRuntime?.toggleMaterialId?.(id);renderTrainPicker429()};", 1),
         ("quality direct ids", "const ids=[...state.train429Selected];", "const ids=window.TrainingDraftRuntime?.materialIds?.()||[];", 1),
         ("quality fallback ids", "const ids=[...(state.train429Selected||new Set())];", "const ids=window.TrainingDraftRuntime?.materialIds?.()||[];", 2),
@@ -41,10 +45,6 @@ def migrate_app() -> None:
     ]
     for label, old, new, expected in replacements:
         text = replace_exact(text, old, new, expected, label)
-
-    select_all_old = "window.trainSelectAll412=function(mode){const q=(document.getElementById('tr429Q')?.value||'').toLowerCase(),labs=[...(state.train429PickerLabels||new Set())],rows=(state.images||[]).filter(x=>isProcessed412(x)&&x.annotated&&(!q||String(x.filename).toLowerCase().includes(q))&&(!labs.length||labs.some(l=>(x.labels||[]).includes(l))));rows.forEach(x=>mode==='invert'?(state.train429Selected.has(x.id)?state.train429Selected.delete(x.id):state.train429Selected.add(x.id)):state.train429Selected.add(x.id));renderTrainPicker429()};"
-    select_all_new = "window.trainSelectAll412=function(mode){const q=(document.getElementById('tr429Q')?.value||'').toLowerCase(),labs=[...(state.train429PickerLabels||new Set())],rows=(state.images||[]).filter(x=>isProcessed412(x)&&x.annotated&&(!q||String(x.filename).toLowerCase().includes(q))&&(!labs.length||labs.some(l=>(x.labels||[]).includes(l)))),selected=new Set(window.TrainingDraftRuntime?.materialIds?.()||[]);rows.forEach(x=>{const id=String(x.id);if(mode==='invert'){selected.has(id)?selected.delete(id):selected.add(id)}else selected.add(id)});window.TrainingDraftRuntime?.setMaterialIds?.([...selected]);renderTrainPicker429()};"
-    text = replace_exact(text, select_all_old, select_all_new, 1, "picker select-all/invert")
 
     if "train429Selected" in text:
         lines = [line.strip() for line in text.splitlines() if "train429Selected" in line]
