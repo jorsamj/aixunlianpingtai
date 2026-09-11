@@ -1,0 +1,55 @@
+name: Retire v42.7 setPage Alias Owner
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_v427_setpage_alias.py
+      - .github/workflows/retire-v427-setpage-alias.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded alias retirement
+        run: python tools/retire_v427_setpage_alias.py
+      - name: Verify focused navigation contracts
+        run: |
+          node --check static/app.js
+          node --check static/modules/navigation-stability.js
+          node --check static/main.mjs
+          node --test tests/frontend/navigation-stability.test.mjs tests/frontend/navigation-persistence.test.mjs tests/frontend/ui-state.test.mjs tests/frontend/retired-sidebar-setpage-guard.test.mjs tests/frontend/retired-pre-v424-setpage-guard.test.mjs
+          grep -Fq "export function normalizeNavigationPage(page)" static/modules/navigation-stability.js
+          grep -Fq "const setPageReady414=window.setPage;" static/app.js
+          grep -Fq "const baseSetPage417=window.setPage;" static/app.js
+          if grep -Fq "window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}" static/app.js; then
+            echo 'v42.7 direct alias owner remains' >&2
+            exit 1
+          fi
+          grep -Fq '/static/app.js?v=42.25.54' static/index.html
+          grep -Fq '/static/main.mjs?v=42.25.55' static/index.html
+      - name: Commit retired alias owner
+        run: |
+          if git diff --quiet -- static/app.js static/index.html tests/frontend/retired-pre-v424-setpage-guard.test.mjs .github/workflows/frontend-runtime-stabilization.yml; then
+            echo 'no alias retirement changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/retired-pre-v424-setpage-guard.test.mjs .github/workflows/frontend-runtime-stabilization.yml
+          git commit -m 'refactor(ui): retire v42.7 direct setPage alias owner'
+          git push
