@@ -35,6 +35,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
 
   function renderCards() {
     if (String(state().page || '') !== ALGORITHM_PAGE) return false;
+    if (doc && !doc.getElementById('alg412List')) return false;
     if (typeof window.renderAlg412 !== 'function') return false;
     window.renderAlg412();
     return true;
@@ -118,7 +119,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422502',
+    build: 'algorithm-list-runtime-422503',
     toggle,
     refresh,
     renderCards,
