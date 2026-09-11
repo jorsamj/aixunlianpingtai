@@ -193,11 +193,9 @@ jobs:
               exit 1
             fi
           done
-          if grep -Fq 'setupPagePolling' static/app.js; then
-            if ! grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.();' static/app.js; then
-              echo 'remaining setupPagePolling entrypoints must hand lifecycle explicitly to PollRegistry' >&2
-              exit 1
-            fi
+          if grep -F -n 'setupPagePolling' static/app.js; then
+            echo 'retired setupPagePolling shell was reintroduced into active app.js' >&2
+            exit 1
           fi
           file=static/modules/poll-registry.js
           for token in \
@@ -215,6 +213,7 @@ jobs:
           done
           grep -Fq 'replaceTrainingJobTimer,' "$file"
           grep -Fq 'replaceTrainingJobTimer();' "$file"
+          grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
