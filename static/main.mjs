@@ -8,6 +8,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=42
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422506';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422501';
 import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422503';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422502';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, validateTrainingDevice} from './modules/training-submit.js?v=422501';
@@ -125,6 +126,13 @@ const algorithmListRuntime = installAlgorithmListRuntime({
   notify,
 });
 window.PlatformCore.runtime.algorithmListRuntime = algorithmListRuntime;
+
+const trainingTaskRuntime = installTrainingTaskRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+});
+window.PlatformCore.runtime.trainingTaskRuntime = trainingTaskRuntime;
 
 const trainingSubmitRuntime = installTrainingSubmitRuntime({
   getState: () => state,
