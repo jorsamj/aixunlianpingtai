@@ -127,21 +127,24 @@ test('TrainingDraftRuntime is wrapper-free and leaves classic entrypoints untouc
   cleanup(runtime);
 });
 
-test('app.js final start chain owns canonical training reset before rendering the training modal', () => {
+test('app.js visible training entrypoint owns canonical reset before rendering the modal', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  const initialStart = app.indexOf('window.startAlgorithmTraining429=function(aid){const a=');
-  const earlyAlias = app.indexOf('window.startAlgorithmTraining423=window.startAlgorithmTraining429;', initialStart);
-  assert.ok(initialStart >= 0 && earlyAlias > initialStart);
-  const initialSource = app.slice(initialStart, earlyAlias);
-  const canonicalWrite = initialSource.indexOf('window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:\'random_test_from_training_pool\',experimentPercent:20,validationPercent:20,newLabelCodes:[]})');
-  const modalOpen = initialSource.indexOf('modal(`训练 · ${a.name}`');
+  const canonicalOwner = app.indexOf('window.startAlgorithmTraining429=function(aid){const a=');
+  const earlyAlias = app.indexOf('window.startAlgorithmTraining423=window.startAlgorithmTraining429;', canonicalOwner);
+  assert.ok(canonicalOwner >= 0 && earlyAlias > canonicalOwner);
+  const ownerSource = app.slice(canonicalOwner, earlyAlias);
+  const canonicalWrite = ownerSource.indexOf('window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:\'random_test_from_training_pool\',experimentPercent:20,validationPercent:20,newLabelCodes:[]})');
+  const modalOpen = ownerSource.indexOf('modal(`训练 · ${a.name}`');
   assert.ok(canonicalWrite >= 0 && modalOpen > canonicalWrite);
 
-  const finalV3 = app.lastIndexOf('window.startAlgorithmTraining429=async function(aid){if(!state.uiReady&&window.__v53InitPromise)');
-  assert.ok(finalV3 > initialStart);
-  const finalSource = app.slice(finalV3, finalV3 + 2600);
-  assert.match(finalSource, /await previousStart\?\.\(aid\)/);
-  assert.match(finalSource, /TrainingDraftRuntime\?\.update\?\.\(\{resource:\{device:recommendedDevice\}\}\)/);
+  // The current stable algorithm renderer is the user-visible training entrypoint.
+  // It must call startAlgorithmTraining429, never the retired 423/425 chain.
+  const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
+  const stablePage = app.lastIndexOf('window.renderAlgorithms423=function(){');
+  assert.ok(stableCards >= 0 && stablePage > stableCards);
+  const cardSource = app.slice(stableCards, stablePage);
+  assert.match(cardSource, /startAlgorithmTraining429\('\$\{a\.id\}'\)/);
+  assert.equal(cardSource.includes("startAlgorithmTraining423('${a.id}')"), false);
 });
 
 test('final classic picker split and settings actions own their canonical writes directly', () => {
