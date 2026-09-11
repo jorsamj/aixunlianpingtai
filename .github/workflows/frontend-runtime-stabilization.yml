@@ -39,6 +39,12 @@ jobs:
             echo "retired trainSplitV3 mirror was reintroduced into active app.js" >&2
             exit 1
           fi
+      - name: Canonical training network owner guard
+        run: |
+          if grep -n '/train/start' static/app.js; then
+            echo "classic app.js must not own /train/start; TrainingSubmitRuntime is the sole network owner" >&2
+            exit 1
+          fi
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
