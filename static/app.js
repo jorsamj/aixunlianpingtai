@@ -3597,12 +3597,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const unwrapAlgorithm414=r=>window.PlatformCore?.algorithms?.unwrapAlgorithmResponse(r)||(r?.algorithm||r);
   const iterationPresentation414=b=>window.PlatformCore?.training?.iterationBasePresentation(b)||(b==null?{title:'正在读取最新版本…',detail:'',status:'loading'}:b.error?{title:'读取失败',detail:String(b.error),status:'error'}:b.version_name?{title:`从最新可训练版本继续：${b.version_name}`,detail:b.model_name||'模型权重',status:'version'}:{title:'首次训练：使用所选母模型',detail:'后续版本会自动以上一个可用版本继续训练',status:'mother'});
 
-  // Navigation may be clicked while the startup snapshot is still loading.
-  // Wait for that snapshot so actions never run with an undefined project id.
-  const setPageReady414=window.setPage;
-  window.setPage=async function(page){if(!state.uiReady&&window.__v53InitPromise)await window.__v53InitPromise;return setPageReady414(page)};
-  try{setPage=window.setPage}catch(_){}
-
   async function refreshLabels414(withUsage=false){
     const r=await api(withUsage?`/api/v54/projects/${pid()}/label-schema`:`/api/v12/projects/${pid()}/labels`);
     state.labels=(r.items||[]);

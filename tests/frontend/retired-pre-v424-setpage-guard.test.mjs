@@ -34,7 +34,11 @@ test('v42.7 direct route owner cannot return after alias normalization moved to 
   assert.equal(navigation.includes("requested === '自动标注' ? '自动标注及清洗' : requested"), true, 'legacy auto-label alias must remain canonicalized');
 });
 
-test('post-v42.7 readiness and sidebar owners remain after alias-owner cleanup', () => {
-  assert.equal(app.includes('const setPageReady414=window.setPage;'), true, 'startup readiness owner must remain');
+test('classic startup readiness owner cannot return after readiness moved to final navigation', () => {
+  assert.equal(app.includes('setPageReady414'), false, 'classic startup readiness owner must remain retired');
+  assert.equal(navigation.includes('waitForNavigationReady'), true, 'final navigation must own startup readiness');
+});
+
+test('V417 sidebar owner remains after readiness cleanup', () => {
   assert.equal(app.includes('const baseSetPage417=window.setPage;'), true, 'V417 sidebar owner must remain');
 });
