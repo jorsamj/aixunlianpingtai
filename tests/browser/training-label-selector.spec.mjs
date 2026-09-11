@@ -97,7 +97,7 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
     .toBe('training-draft-runtime-422509');
   await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
-    .toBe('training-submit-422503');
+    .toBe('training-submit-422504');
   expect(await page.evaluate(() => ({
     draftOwnsNetwork: window.TrainingDraftRuntime.state().networkOwner,
     submitOwnsNetwork: window.TrainingSubmitRuntime.state().networkOwner,
@@ -212,11 +212,13 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   await dialog.getByRole('button', {name: '开始训练'}).click();
-  await expect.poll(async () => ({
-    submitted: Boolean(submitted),
-    runtime: await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null),
-    toast: await page.locator('#toast').textContent(),
-  })).toMatchObject({submitted: true});
+  await expect.poll(async () => {
+    if (submitted) return 'submitted';
+    const runtime = await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null);
+    const toast = await page.locator('#toast').textContent();
+    if (runtime?.lastError) return `${runtime.lastStage}: ${runtime.lastError} | toast=${toast || ''}`;
+    return `waiting:${runtime?.lastStage || 'none'} | toast=${toast || ''}`;
+  }).toBe('submitted');
 
   expect(submitted.algorithm_asset_id).toBe(algorithmId);
   expect(submitted.train_image_ids).toEqual(imageIds);
