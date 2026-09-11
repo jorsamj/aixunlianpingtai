@@ -109,7 +109,7 @@ jobs:
             'setTimeout(' \
             'clearTimeout('; do
             if grep -F -n "$token" "$file"; then
-              echo "AutoLabelPollRuntime must stay wrapper-free and timer-free; found $token" >&2
+              echo "AutoLabelPollRuntime must stay wrapper-free, timer-free and canonical-only; found $token" >&2
               exit 1
             fi
           done
@@ -160,6 +160,31 @@ jobs:
             fi
           done
           grep -Fq 'replaceVideo424Timer();' "$file"
+      - name: Source PollRegistry direct owner guard
+        run: |
+          for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
+            if grep -F -n 'source422Timer' "$file"; then
+              echo "retired source timer compatibility was reintroduced into $file" >&2
+              exit 1
+            fi
+          done
+          if [ "$(grep -F -o 'window.PollRegistryRuntime?.replaceSourceTimer?.()' static/app.js | wc -l)" -ne 1 ]; then
+            echo 'renderSources422 must hand polling lifecycle explicitly to PollRegistry exactly once' >&2
+            exit 1
+          fi
+          file=static/modules/poll-registry.js
+          for token in \
+            installSourceCreationBridge \
+            __pollRegistrySourceWrapped \
+            originalRenderSources \
+            wrappedRenderSources \
+            "registry.adopt('sources'"; do
+            if grep -F -n "$token" "$file"; then
+              echo "source wrapper/adoption compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'replaceSourceTimer();' "$file"
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
