@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: 774df651c3f278c782029e64bfa3315b12622a9f
-run:    34616465336
+commit: 4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386
+run:    34617573070
 
 frontend:     PASS
 Real Chrome:  PASS
@@ -17,7 +17,7 @@ Real Chrome:  PASS
 Current caches:
 
 ```text
-app.js                    42.25.48
+app.js                    42.25.49
 main.mjs                  42.25.53
 navigation-stability      422506
 poll-registry             422511
@@ -53,7 +53,7 @@ trainingDraftFromLegacyState
 ### Training polling
 
 ```text
-page lifecycle / remaining historical setupPagePolling handoff
+classic render call site
 → replaceTrainingJobTimer()
 → PollRegistry(training-jobs)
 → TrainingTaskRuntime.refresh({source:'poll'})
@@ -64,6 +64,7 @@ Physical retirement completed:
 
 ```text
 jobPollTimer
+setupPagePolling
 classic setupPagePolling interval creation/clear
 installPollingCreationBridge
 __pollRegistryCreationWrapped
@@ -73,7 +74,7 @@ adoptLegacy / rebindCreation
 NavigationStability jobPollTimer fallback
 ```
 
-`setupPagePolling` remains only as two historical one-line handoff shells and is no longer a timer owner.
+Permanent CI now rejects `setupPagePolling` and `jobPollTimer` in active product runtime.
 
 ### AutoLabel
 
@@ -116,6 +117,7 @@ __prelabelPollTimer
 _oldSetupPollV33
 source422Timer
 jobPollTimer
+setupPagePolling
 installVideo424CreationBridge
 installSourceCreationBridge
 installPollingCreationBridge
@@ -136,31 +138,47 @@ Do not recreate compatibility shims for these names.
 - page navigation clears `training-jobs`;
 - no `loadAll()`-style full refresh may replace focused polling.
 
-Permanent CI `Training PollRegistry direct owner guard` protects the timer ownership boundary.
+Permanent CI `Training PollRegistry direct owner guard` protects this boundary.
 
-## 5. Renderer / setPage override audit: NEXT
+## 5. Renderer / setPage override audit: ACTIVE
 
-Initial zero-point read found **10 `window.setPage=function...` historical layers** in `static/app.js`. They are not equivalent; examples already observed include:
+The owner map is now maintained in `docs/FRONTEND_OWNER_MAP_V42_25.md`.
+
+Baseline audit before the first deletion batch found:
 
 ```text
-plain state.page=p; render()
-mobile-sidebar close wrapper
-v39 deployment-cache invalidation
-v42 page-family cache invalidation
-v42.2 aliases: 新建算法/自动迭代 → 算法列表
-v42.3 pure pass-through setPage wrapper
-v42.4 direct state.page=p; render()
-v42.7 自动标注 alias → 自动标注及清洗
-later mobile-sidebar/version-era wrapper
+10 historical window.setPage=function... assignments
+22 historical render=function... assignments
+2 setupPagePolling shells
 ```
 
-The current app also has multiple `render=function...` generations and version-era `renderXXX` owners. Therefore no blanket deletion is allowed.
+After Batch A:
 
-### Current confirmed deletion candidates
+```text
+setupPagePolling active references = 0
+jobPollTimer active references      = 0
+training polling handoff            = direct replaceTrainingJobTimer()
+```
 
-1. `setupPagePolling` two one-line shells: now only call `replaceTrainingJobTimer()` and contain no independent business semantics.
-2. pure pass-through `window.setPage=function(p){set423Base(p)}`-style wrapper, after confirming no identity/metadata dependency.
-3. historical render layers completely superseded by a later renderer and not referenced by another wrapper/action.
+### Current next proven candidate
+
+v42.3 contains a pure forwarding layer:
+
+```text
+const set423Base=window.setPage;
+window.setPage=function(p){set423Base(p)};
+try{setPage=window.setPage}catch(e){}
+```
+
+Current search found `set423Base` only in that declaration+forwarding wrapper. The immediately following v42.4 generation resets `window.setPage` directly:
+
+```text
+const setBase424=window.setPage;
+window.setPage=function(p){state.page=p;render()};
+try{setPage=window.setPage}catch(e){}
+```
+
+`setBase424` currently has no use beyond its declaration. Before removal, re-run those reference checks against current HEAD. If still true, this is a bounded dead-wrapper family suitable for the next guarded deletion.
 
 ### Wrappers that may still carry real semantics
 
@@ -175,29 +193,28 @@ page-specific cache invalidation
 localStorage UI-state persistence
 ```
 
-`NavigationStability` currently wraps the final `window.setPage` and is part of the live navigation contract.
+`NavigationStability` wraps the final classic `window.setPage` and remains part of the live navigation contract.
 
-## 6. Required final-owner table
+## 6. Required final-owner proof per deletion
 
-Before physical deletion, build a table with at least these columns:
+For every wrapper family:
 
 ```text
-surface/page
-current visible renderer
-current action owner
-current setPage/router dependency
-historical wrappers in chain
-independent semantics still required?
-regression test proving owner
-safe-to-delete layer
+current final owner
+all references to wrapper/base variable
+independent semantics of the layer
+regression that proves surviving behavior
+physical deletion
+syntax + focused unit
+Real Chrome if behavior/navigation changes
+docs sync
 ```
 
-Minimum audit targets:
+Minimum audit targets remain:
 
 ```text
 render = ...
 window.setPage = ...
-setupPagePolling
 renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
 loadAll()
 loadRelated()
@@ -206,17 +223,6 @@ MutationObserver
 setInterval
 setTimeout
 window.fetch =
-```
-
-Deletion sequence:
-
-```text
-prove final owner
-→ deterministic regression
-→ physical deletion
-→ syntax/unit
-→ Real Chrome where behavior changes
-→ update all 3 handoff docs
 ```
 
 ## 7. Current permanent guards
@@ -236,15 +242,14 @@ Training PollRegistry direct owner guard
 ## 8. Work order
 
 ```text
-1. build renderer/setPage final-owner table
-2. delete setupPagePolling shells + first proven obsolete wrapper family
-3. continue obsolete render/setPage physical deletion in bounded batches
-4. remove proven dead app.js / global reload-request debt
-5. unify cache-busting
-6. zero-point observer/timer/fetch/render/setPage scan
-7. semantic naming + deterministic tests + docs sync
-8. technical-debt zero-point scan
-9. resume A800 RC
+1. remove first proven pure-pass-through setPage family
+2. continue obsolete render/setPage physical deletion in bounded batches
+3. remove proven dead app.js / global reload-request debt
+4. unify cache-busting
+5. zero-point observer/timer/fetch/render/setPage scan
+6. semantic naming + deterministic tests + docs sync
+7. technical-debt zero-point scan
+8. resume A800 RC
 ```
 
 ## 9. Non-negotiable rules
