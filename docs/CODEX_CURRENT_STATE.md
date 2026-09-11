@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 05abf71d067d4b1e08a2bdeeb9d7787e9fc06dd4
-Frontend Runtime run:        34655960701
+latest full code acceptance: 58ece59e95722437069c7e03277363197e564136
+Frontend Runtime run:        34659775870
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.57
-main.mjs cache:              42.25.59
+app.js cache:                42.25.61
+main.mjs cache:              42.25.64
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -22,12 +22,12 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34655960701` passed syntax, permanent navigation/owner guards, all frontend unit tests and Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34659775870` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-render override owner audit / obsolete generation deletion
+remaining render override owner audit / obsolete generation deletion
 → app.js/global reload/request debt
 → cache-busting unification
 → zero-point lifecycle scan
@@ -69,20 +69,7 @@ Legacy timers/shells/wrappers/adoption compatibility are retired.
 
 ### Navigation
 
-All classic `setPage` owners are physically retired and permanently guarded, including:
-
-```text
-set423Base / setBase424
-V37 duplicate baseSetPage
-oldSetV39 / oldSet42 / set422Base
-v34/v35/v42.4 direct setPage owners
-v42.7 direct auto-label alias owner
-setPageReady414
-baseSetPage417
-initial bootstrap function setPage(p){state.page=p;render()} / window.setPage=setPage
-```
-
-Final owner:
+All classic `setPage` owners are physically retired. Final owner:
 
 ```text
 NavigationStability
@@ -95,7 +82,7 @@ NavigationStability
   persistNavigationState()
 ```
 
-`main.mjs` provides:
+`main.mjs` provides exactly one actual page mutation/render owner:
 
 ```js
 performNavigation: page => {
@@ -104,71 +91,126 @@ performNavigation: page => {
 }
 ```
 
-When `performNavigation` exists, classic predecessor is bypassed. Unit tests prove classic call count 0 / named apply 1 / render 1. Runtime also installs `window.setPage` when no predecessor exists.
+Permanent CI forbids any `window.setPage=` assignment in `static/app.js`.
 
-Accepted evidence:
+## 4. Render debt already closed
+
+### Route alias state mutation
+
+Historical render code used to mutate:
 
 ```text
-sidebar owner retired         f6e71c05... / 34653776200
-named actual-owner equivalence 04b6982e... / 34655575856
-bootstrap owner retired       05abf71d... / 34655960701
+自动标注 → 自动标注及清洗
 ```
 
-## 4. Current navigation contracts
+That behavior is now split correctly:
+- navigation request alias → `NavigationStability.normalizeNavigationPage()`;
+- historical localStorage restore → v34 restore-boundary canonicalization + canonical writeback;
+- render itself no longer mutates route state.
 
-Permanent CI forbids any `window.setPage=` assignment in `static/app.js` and requires named alias/readiness/sidebar/apply owners.
+A new cold-start Chrome contract exposed the old persistence bug first (`582b913e... / 34656484008`: 12 pass, 1 fail), then the fix passed at `e35a29b0... / 34656747269`.
+
+### Fully shadowed render layers physically retired
+
+```text
+oldRender429
+  algorithm/data branches fully shadowed by oldRender412
+
+previousRender61
+  素材存储配置 branch fully shadowed by finalRender
+
+render423Base
+  算法列表 branch fully shadowed by oldRender412
+  训练任务 branch fully shadowed by renderBase428
+```
+
+Accepted points:
+
+```text
+oldRender429      0455eeef696f19457b0f1a2b79e229a7e381b3db / 34659041402 PASS
+previousRender61  69732d9ed659a62a3a1e92b36d07b912e141b8c9 / 34659543452 PASS
+render423Base     58ece59e95722437069c7e03277363197e564136 / 34659775870 PASS
+```
+
+Storage route has a permanent Real Chrome contract; algorithm/training remain covered by existing browser performance suites.
+
+## 5. Current live render owners — do not delete without proof
+
+```text
+oldRender412
+  algorithm list + data-set stable routing
+
+renderBase428
+  training-task routing remains live
+  its algorithm branch is shadowed, but the wrapper as a whole is NOT dead
+
+renderTraining423
+  current training renderer
+  directly calls PollRegistryRuntime.replaceTrainingJobTimer()
+
+finalRender
+  final 素材存储配置 route owner
+```
+
+Other wrappers still require independent liveness analysis:
+
+```text
+baseRenderV37
+oldRenderV39
+renderBase424
+render426base
+renderBase427
+render414Base
+baseRender417
+post-render cleanup / MutationObserver layer
+```
+
+Do not remove a whole wrapper merely because one branch is shadowed.
+
+## 6. Permanent frontend/browser contracts
+
+Frontend includes:
+
+```text
+render-alias-restore.test.mjs
+render-owner-retirement.test.mjs
+navigation-stability.test.mjs
+navigation-persistence.test.mjs
+retired-sidebar-setpage-guard.test.mjs
+retired-pre-v424-setpage-guard.test.mjs
+```
 
 Real Chrome verifies:
-- inline menu navigation;
-- programmatic `window.setPage`;
-- startup readiness;
-- stale request fencing;
+- inline/programmatic navigation;
+- startup readiness and stale-request fencing;
 - PollRegistry stop-on-leave;
-- sidebar/backdrop close;
-- alias canonicalization;
-- page persistence/reload restoration.
+- sidebar close;
+- current and historical auto-label alias canonicalization;
+- page persistence/reload;
+- storage configuration final render route;
+- algorithm-list/training-task/material performance paths.
 
 Do not weaken these tests.
 
-## 5. Current exact target: render owner family
+## 7. Required deletion sequence
 
-`render()` is still a classic global shell and has multiple historical capture/override generations. Known debt includes the v42.7 render-level alias fallback:
-
-```js
-render=function(){
-  if(state.page==='自动标注') state.page='自动标注及清洗';
-  ...
-}
-```
-
-This fallback no longer owns navigation alias semantics because `NavigationStability` canonicalizes before `performNavigation`, but it may still be reached by direct startup/refresh `render()` calls. Therefore do not delete it until liveness and semantic equivalence are proven.
-
-Audit targets:
-
-```text
-render = ... / const oldRender = render capture chain
-renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
-NavigationStability PAGE_RENDERERS wrapping
-startup __clInit direct render()
-refresh handlers that call render() directly
-```
-
-Required sequence for each deletion batch:
+For every remaining render candidate:
 
 ```text
 live HEAD
-→ enumerate exact assignment/capture topology
-→ identify final live owner and dead generations
-→ behavior contract
-→ named/bounded semantic owner where needed
-→ double-owner proof if semantics move
-→ physical deletion
+→ exact assignment/capture/source-order proof
+→ page coverage/liveness proof
+→ browser/unit behavior contract where needed
+→ semantic migration if the layer is live
+→ double-owner equivalence if semantics move
+→ physical deletion only when shadowed/dead
 → permanent guard
 → full frontend + Real Chrome
+→ delete one-shot migration helper/workflow
 → docs sync
 ```
 
-## 6. Non-regression backend contracts
+## 8. Non-regression backend contracts
 
 - snapshot schema v3 and duplicate/leakage protection;
 - `confirmed_empty` negative-sample semantics;
@@ -180,10 +222,10 @@ live HEAD
 - metrics SQLite connections close deterministically;
 - trial/test images sent to model without GT leakage.
 
-## 7. Work order
+## 9. Work order
 
 ```text
-1. render override owner audit / obsolete generation deletion
+1. remaining render override owner audit / obsolete generation deletion
 2. proven dead app.js + global reload/request debt
 3. cache-busting unification
 4. zero-point MutationObserver/timer/fetch/render/setPage scan
@@ -192,6 +234,6 @@ live HEAD
 7. resume A800 RC
 ```
 
-## 8. A800 status
+## 10. A800 status
 
 **DEFERRED** until current P0/P1 technical debt is closed. Frontend CI is not CUDA/A800 acceptance.
