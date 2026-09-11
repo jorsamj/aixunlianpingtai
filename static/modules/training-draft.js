@@ -86,41 +86,39 @@ export function trainingDraftFromLegacyState(state = {}, {
   inheritancePending = false,
   baseVersionId = '',
 } = {}) {
-  const algorithmId = String(state.train428AlgorithmId || '').trim();
-  const split = state.trainSplitV3 || {};
-  const trainSet = split.train instanceof Set
-    ? [...split.train]
+  const canonical = state.trainingDraft || {};
+  const algorithmId = String(canonical.algorithmId || state.train428AlgorithmId || '').trim();
+  const trainSet = Array.isArray(canonical.materialIds)
+    ? canonical.materialIds
     : state.train429Selected instanceof Set
       ? [...state.train429Selected]
       : [];
-  const testSet = split.test instanceof Set ? [...split.test] : [];
+  const testSet = Array.isArray(canonical.testMaterialIds) ? canonical.testMaterialIds : [];
   const config = state.train428Config || {};
   const iteration = state.iteration414?.[algorithmId] || {};
-  const canonicalLabels = Array.isArray(state.trainingDraft?.newLabelCodes)
-    ? state.trainingDraft.newLabelCodes
-    : [];
+  const canonicalLabels = Array.isArray(canonical.newLabelCodes) ? canonical.newLabelCodes : [];
 
   return createTrainingDraft({
     algorithmId,
-    baseVersionId: baseVersionId || iteration.version_id || iteration.id || '',
+    baseVersionId: baseVersionId || canonical.baseVersionId || iteration.version_id || iteration.id || '',
     materialIds: trainSet,
     testMaterialIds: testSet,
-    splitMode: split.mode || 'random_test_from_training_pool',
-    experimentPercent: split.experiment ?? 20,
-    validationPercent: split.validation ?? 20,
+    splitMode: canonical.splitMode || 'random_test_from_training_pool',
+    experimentPercent: canonical.experimentPercent ?? 20,
+    validationPercent: canonical.validationPercent ?? 20,
     inheritedLabelCodes,
     inheritancePending,
     newLabelCodes: canonicalLabels,
     resource: {
-      strategy: config.resource_strategy || 'auto',
-      device: config.device || 'auto',
-      gpuPolicy: config.gpu_policy || 'auto',
-      batch: config.batch ?? null,
-      workers: config.workers ?? null,
-      cache: config.cache ?? null,
+      strategy: config.resource_strategy || canonical.resource?.strategy || 'auto',
+      device: config.device || canonical.resource?.device || 'auto',
+      gpuPolicy: config.gpu_policy || canonical.resource?.gpuPolicy || 'auto',
+      batch: config.batch ?? canonical.resource?.batch ?? null,
+      workers: config.workers ?? canonical.resource?.workers ?? null,
+      cache: config.cache ?? canonical.resource?.cache ?? null,
     },
-    config,
-    priority: config.queue_priority ?? config.priority ?? state.trainPriority ?? 50,
+    config: {...(canonical.config || {}), ...config},
+    priority: config.queue_priority ?? config.priority ?? canonical.priority ?? state.trainPriority ?? 50,
   });
 }
 
