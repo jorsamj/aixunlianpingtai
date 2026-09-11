@@ -129,7 +129,6 @@ test('final training polling creation is replaced by a PollRegistry-managed inte
   globalThis.window = {
     refreshJobsOnly: async () => { refreshes += 1; },
     setupPagePolling() {
-      // Represents the final legacy creator. The runtime must immediately retire this timer.
       state.jobPollTimer = setInterval(() => {}, 9999);
     },
   };
@@ -212,6 +211,63 @@ test('video frame polling creation is replaced by a PollRegistry-managed interva
   runtime.beforeNavigate('数据集');
   assert.equal(window.__videoFramePollTimer, null);
   assert.equal(callbacks.has(replacement), false);
+
+  runtime.destroy();
+  globalThis.setInterval = originalSetInterval;
+  globalThis.clearInterval = originalClearInterval;
+  delete globalThis.window;
+});
+
+test('source page polling creation is replaced by a PollRegistry-managed interval after first render', async () => {
+  const state = {
+    page: '素材接入',
+    project: {id: 'p1'},
+    jobs: [],
+    jobPollTimer: null,
+    source422Timer: null,
+    auto422Timer: null,
+  };
+  const callbacks = new Map();
+  const cleared = [];
+  let nextTimer = 300;
+  let refreshes = 0;
+  let renders = 0;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.setInterval = (callback, delay) => {
+    const id = ++nextTimer;
+    callbacks.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearInterval = id => {
+    cleared.push(id);
+    callbacks.delete(id);
+  };
+  globalThis.window = {
+    refreshSources422: async () => { refreshes += 1; },
+    renderSources422: async () => {
+      renders += 1;
+      state.source422Timer = setInterval(() => {}, 9999);
+    },
+  };
+
+  const runtime = installPollRegistry({getState: () => state});
+  await window.renderSources422();
+
+  assert.equal(renders, 1);
+  const managed = state.source422Timer;
+  assert.equal(callbacks.get(managed)?.delay, 2500);
+  assert.deepEqual(runtime.snapshot().find(row => row.key === 'sources'), {
+    key: 'sources', owners: ['素材接入'], active: true, managed: true, delay: 2500,
+  });
+  assert.ok(cleared.some(id => id !== managed), 'legacy source timer should be cleared');
+
+  await callbacks.get(managed).callback();
+  assert.equal(refreshes, 1);
+
+  runtime.beforeNavigate('数据集');
+  assert.equal(state.source422Timer, null);
+  assert.equal(callbacks.has(managed), false);
 
   runtime.destroy();
   globalThis.setInterval = originalSetInterval;
