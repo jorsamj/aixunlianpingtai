@@ -91,10 +91,13 @@ export function resolveClientTrainingLabels({materials, selectedIds, labelCatalo
 
 export function selectedTrainingMaterialIds(state, {preferV429 = false} = {}) {
   if (preferV429) {
-    const legacy = unique([...(state?.train429Selected || new Set())]);
     const draft = state?.trainingDraft;
-    const sameAlgorithm = String(draft?.algorithmId || '') === String(state?.train428AlgorithmId || '');
-    return legacy.length || !sameAlgorithm ? legacy : unique(draft?.materialIds || []);
+    const canonicalAlgorithm = String(draft?.algorithmId || '').trim();
+    const legacyAlgorithm = String(state?.train428AlgorithmId || '').trim();
+    if (draft && (!legacyAlgorithm || canonicalAlgorithm === legacyAlgorithm)) {
+      return unique(draft?.materialIds || []);
+    }
+    return unique([...(state?.train429Selected || new Set())]);
   }
   const train = [...(state?.train425Selected?.train || new Set())];
   const val = [...(state?.train425Selected?.val || new Set())];
@@ -111,7 +114,8 @@ function selectedIds(state) {
 }
 
 function currentAlgorithm(state) {
-  const fixed = String(state?.train428AlgorithmId || '').trim();
+  const canonical = String(state?.trainingDraft?.algorithmId || '').trim();
+  const fixed = canonical || String(state?.train428AlgorithmId || '').trim();
   const fallback = document.getElementById('tr425AssetAlg')?.value
     || document.getElementById('train423Asset')?.value
     || '';
@@ -124,27 +128,27 @@ function displayName(state, code) {
   return item?.display_name || item?.display_name_zh || item?.name || code;
 }
 
-function ensureState(state, algorithmId, hasPreviousVersion, selectable) {
+function canonicalSelectedCodes(state) {
+  return unique(state?.trainingDraft?.newLabelCodes || []);
+}
+
+function selectionForState(state, algorithmId, hasPreviousVersion, selectable) {
+  const available = new Set(selectable);
   if (state.trainingLabelAlgorithmId !== algorithmId) {
     state.trainingLabelAlgorithmId = algorithmId;
     state.trainingLabelSelectionTouched = false;
-    state.trainingLabelSelected = new Set(hasPreviousVersion ? [] : selectable);
-    return;
+    return hasPreviousVersion ? [] : unique(selectable);
   }
-  const available = new Set(selectable);
-  const existing = [...(state.trainingLabelSelected || new Set())].filter(code => available.has(code));
-  if (!state.trainingLabelSelectionTouched && !hasPreviousVersion) {
-    state.trainingLabelSelected = new Set(selectable);
-  } else {
-    state.trainingLabelSelected = new Set(existing);
-  }
+  const existing = canonicalSelectedCodes(state).filter(code => available.has(code));
+  if (!state.trainingLabelSelectionTouched && !hasPreviousVersion) return unique(selectable);
+  return existing;
 }
 
-function resetTaskLabelSelection(state) {
+function resetTaskLabelSelection(state, trainingDraftRuntime) {
   if (!state) return;
   state.trainingLabelAlgorithmId = '';
   state.trainingLabelSelectionTouched = false;
-  state.trainingLabelSelected = new Set();
+  trainingDraftRuntime?.update?.({newLabelCodes: []});
 }
 
 function currentHost() {
@@ -233,22 +237,28 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     if (!algorithm || !placement?.host) return false;
 
     const ids = selectedIds(state);
+    const draftRequested = canonicalSelectedCodes(state);
     const initial = resolveClientTrainingLabels({
       materials: state.images || [],
       selectedIds: ids,
       labelCatalog: state.labels || [],
       algorithm,
-      requestedCodes: [...(state.trainingLabelSelected || new Set())],
+      requestedCodes: draftRequested,
     });
-    ensureState(state, String(algorithm.id || ''), initial.hasPreviousVersion, initial.selectable);
+    const selectedCodes = selectionForState(
+      state,
+      String(algorithm.id || ''),
+      initial.hasPreviousVersion,
+      initial.selectable,
+    );
+    if (selectedCodes.join('\u0000') !== draftRequested.join('\u0000')) syncDraftLabels(state, selectedCodes);
     const view = resolveClientTrainingLabels({
       materials: state.images || [],
       selectedIds: ids,
       labelCatalog: state.labels || [],
       algorithm,
-      requestedCodes: [...(state.trainingLabelSelected || new Set())],
+      requestedCodes: selectedCodes,
     });
-    syncDraftLabels(state, view.requested);
 
     let panel = document.getElementById('trainingLabelContractPanel');
     if (!panel) {
@@ -267,9 +277,10 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
           ? '<span class="pill warn">上一历史版本标签将在启动时由服务器 Snapshot 恢复</span>'
           : '<span class="training-label-empty">首次训练：不继承母算法自带类别</span>');
 
+    const selectedSet = new Set(view.requested);
     const selectableHtml = view.selectable.length
       ? view.selectable.map(code => {
-          const checked = state.trainingLabelSelected?.has(code) ? 'checked' : '';
+          const checked = selectedSet.has(code) ? 'checked' : '';
           return `<label class="training-label-choice"><input type="checkbox" data-training-label-code="${esc(code)}" ${checked}><span><b>${esc(displayName(state, code))}</b><small>${esc(code)}</small></span></label>`;
         }).join('')
       : (ids.length
@@ -288,10 +299,10 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
       input.addEventListener('change', event => {
         const code = String(event.currentTarget.dataset.trainingLabelCode || '');
         state.trainingLabelSelectionTouched = true;
-        state.trainingLabelSelected = state.trainingLabelSelected || new Set();
-        if (event.currentTarget.checked) state.trainingLabelSelected.add(code);
-        else state.trainingLabelSelected.delete(code);
-        syncDraftLabels(state, [...state.trainingLabelSelected]);
+        const next = new Set(canonicalSelectedCodes(state));
+        if (event.currentTarget.checked) next.add(code);
+        else next.delete(code);
+        syncDraftLabels(state, [...next]);
         refresh();
       });
     });
@@ -302,7 +313,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     const original = window[name];
     if (typeof original !== 'function' || original.__trainingLabelsWrapped) return;
     const wrapped = function (...args) {
-      if (reset) resetTaskLabelSelection(getState?.());
+      if (reset) resetTaskLabelSelection(getState?.(), trainingDraftRuntime);
       const result = original.apply(this, args);
       const after = () => {
         trainingDraftRuntime?.sync?.();
@@ -350,7 +361,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   document.addEventListener('change', onChange);
 
   const runtime = {
-    build: 'module-422505',
+    build: 'module-422506',
     refresh,
     rebind: bindCurrentEntrypoints,
     selectedIds: () => selectedIds(getState?.()),
