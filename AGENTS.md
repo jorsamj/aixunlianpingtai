@@ -23,16 +23,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 1470bb9f0dd19e1be5d0695cd7f4de21173dd944
-Frontend Runtime run:        34652823778
+latest full code acceptance: f6e71c05d35b1a39b0b79e1b652cf901044c68bd
+Frontend Runtime run:        34653776200
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.55
-main.mjs cache:              42.25.56
-NavigationStability:         422509
+app.js cache:                42.25.56
+main.mjs cache:              42.25.57
+NavigationStability:         422510
 ```
 
-`34652823778` 已通过：syntax、永久 owner guards、全量 frontend unit tests、Real Chrome 12/12。
+`34653776200` 已通过：syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome 12/12。
 
 **当前仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -86,18 +86,19 @@ v35 plain direct setPage
 v42.4 plain direct setPage
 v42.7 direct auto-label alias setPage
 setPageReady414 startup-readiness wrapper
+baseSetPage417 mobile-sidebar wrapper
 ```
 
 当前 live chain：
 
 ```text
 initial bootstrap setPage binding
-→ baseSetPage417 mobile sidebar close
 → NavigationStability final coordinator
    ├─ normalizeNavigationPage()
    ├─ PageRequestScope / navigation epoch
    ├─ PollRegistry before/after
    ├─ waitForNavigationReady() / __v53InitPromise
+   ├─ beforeInvokeNavigation() / mobile sidebar close
    └─ ui-state.js persistence
 ```
 
@@ -112,17 +113,25 @@ Real Chrome 已锁定：
 
 ### 下一批准确范围
 
-只处理 `baseSetPage417`：
+只处理初始 bootstrap `setPage`：
 
 ```js
-const baseSetPage417=window.setPage;
-window.setPage=function(page){
-  window.toggleMobileSidebarV37?.(false);
-  return baseSetPage417?.(page);
-};
+function setPage(p){state.page=p;render()}
+window.setPage=setPage;
 ```
 
-迁移规则：先用 unit + 已有 Real Chrome 合同锁定 sidebar close 的时序；再把行为迁入 `NavigationStability` 命名 hook；双 owner 全绿后才能物理删除 `baseSetPage417`。初始 bootstrap `setPage` 本批不动。
+已确认：`NavigationStability` 当前仍 capture 它作为 actual page mutation/render predecessor；`window.__clInit` 启动流程不依赖它，而是直接 `render()`。
+
+迁移规则：
+
+```text
+1. NavigationStability 新增 named performNavigation/applyPage hook。
+2. main.mjs 通过 hook 明确执行 state.page=page + final render()。
+3. configured named hook 与 classic predecessor 不得同时 mutate/render，必须保持一次 render。
+4. runtime 在没有 classic predecessor 时仍必须安装 window.setPage。
+5. unit + Real Chrome 双 owner 等价后才能删除 bootstrap function/binding。
+6. 删除后永久 guard 必须反转为 bootstrap binding 不得回归。
+```
 
 ## 不得回退的核心合同
 
@@ -192,15 +201,14 @@ Task Runtime fencing：
 ## 当前后续优先级
 
 ```text
-1. baseSetPage417 sidebar migration
-2. initial bootstrap setPage capture/liveness audit
-3. remaining renderer override owner audit / obsolete layer deletion
-4. proven dead app.js + global reload/request debt
-5. cache-busting unification
-6. MutationObserver/timer/fetch/render/setPage zero-point scan
-7. semantic naming + deterministic tests + docs
-8. technical-debt zero-point scan
-9. resume A800 RC
+1. initial bootstrap setPage migration
+2. remaining renderer override owner audit / obsolete layer deletion
+3. proven dead app.js + global reload/request debt
+4. cache-busting unification
+5. MutationObserver/timer/fetch/render/setPage zero-point scan
+6. semantic naming + deterministic tests + docs
+7. technical-debt zero-point scan
+8. resume A800 RC
 ```
 
 ## 修改与交接要求
