@@ -100,6 +100,11 @@ export function installAutoLabelPollRuntime({
     pollRegistry.clear(POLL_KEY);
   }
 
+  function deactivate() {
+    clearManaged();
+    return true;
+  }
+
   function schedule(tasks, delay = pollDelay) {
     clearManaged();
     if (destroyed || !ownsCurrentView()) return null;
@@ -167,6 +172,7 @@ export function installAutoLabelPollRuntime({
   const runtime = {
     build: 'auto-label-poll-422501',
     activate,
+    deactivate,
     refreshRows,
     schedule,
     snapshot() {
@@ -180,7 +186,7 @@ export function installAutoLabelPollRuntime({
     },
     destroy() {
       destroyed = true;
-      clearManaged();
+      deactivate();
       if (window.AutoLabelPollRuntime === runtime) window.AutoLabelPollRuntime = null;
       window.__autoLabelPollRuntimeInstalled = false;
     },
