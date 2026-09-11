@@ -6,19 +6,19 @@
 
 ```text
 current cleanup branch:   refactor/frontend-runtime-stabilization
-latest full frontend acceptance point: 462c7b736e8387bd23a3d5e5eab0e715cc4f2945
-Frontend Runtime run:     34596834911
+latest full frontend acceptance point: 52fe8f7ff822ef9d39a993d8f62edb5269b863a3
+Frontend Runtime run:     34598219623
 formal VERSION.txt:       42.24.0
 frontend badge:           v42.25.0-dev
 app.js cache:             42.25.43
-main.mjs cache:           42.25.42
+main.mjs cache:           42.25.44
 training-draft import:    422506
-TrainingDraftRuntime import/build: 422512 / training-draft-runtime-422512
-TrainingLabelRuntime import/build: 422509 / module-422509
+TrainingDraftRuntime import/build: 422513 / training-draft-runtime-422513
+TrainingLabelRuntime import/build: 422510 / module-422510
 TrainingSubmitRuntime:    training-submit-422504
 ```
 
-Run `34596834911` passed syntax, permanent owner/mirror guards, all frontend unit tests and Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag, or release without explicit user authorization.
+Run `34598219623` passed syntax, retired-mirror guard, canonical network-owner guard, permanent TrainingDraft wrapper-free guard, all frontend unit tests and Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag, or release without explicit user authorization.
 
 ## 2. Current priority
 
@@ -90,11 +90,11 @@ train-v3 UI
 → POST /api/v12/projects/{project_id}/train/start
 ```
 
-- DraftRuntime `networkOwner=false`.
+- DraftRuntime `networkOwner=false`, `classicWrapperOwner=false`.
 - SubmitRuntime `networkOwner=true` and is the sole `/train/start` owner.
 - classic `static/app.js` direct `/train/start` paths are physically removed and CI-guarded.
 
-## 6. Five training mirrors + legacy bootstrap are CLOSED
+## 6. Training mirrors + legacy bootstrap are CLOSED
 
 Retired from active `static/app.js` and core training modules:
 
@@ -104,106 +104,81 @@ trainSplitV3
 train429Selected
 train428AlgorithmId
 train428Config
+trainingDraftFromLegacyState
 ```
 
-Guarded files:
+Tests may deliberately create old names as pollution fixtures. Runtime must ignore them and must not read/write/delete them. A test reference is not a compatibility contract.
 
-```text
-static/app.js
-static/modules/training-draft.js
-static/modules/training-draft-runtime.js
-static/modules/training-labels.js
-```
+## 7. TrainingDraftRuntime is now wrapper-free
 
-Tests may deliberately create these old names as pollution fixtures. Runtime must ignore them and must not read/write/delete them. A test reference is not a compatibility contract.
+Current build: `training-draft-runtime-422513`.
 
-`trainingDraftFromLegacyState` is physically removed. Missing canonical state initializes `createTrainingDraft()`; never restore 428/429 fallback bootstrap.
-
-## 7. TrainingDraftRuntime wrapper status
-
-Current build: `training-draft-runtime-422512`.
-
-Physically retired wrappers:
+All classic mutation wrappers are physically retired:
 
 ```text
 confirmTrainMaterialPickerV3   CLOSED
 setTrainSplitModeV3            CLOSED
 saveTrainSettings428           CLOSED
+startAlgorithmTraining429      CLOSED as Runtime wrapper
 ```
 
-The wrapper-only settings sampler (`settingsPatch`, `checkboxInput`, `normalizedCache`) was removed with them.
-
-Only one TrainingDraft classic wrapper remains:
+Also removed:
 
 ```text
-startAlgorithmTraining429
+settingsPatch
+checkboxInput
+normalizedCache
+directMutationFor
+wrapLegacyMutation
+mutationWrappers
+directWrites
+wrapper restoration in destroy()
 ```
 
-It remains intentionally because the start path is still layered through historical 414/415/417/v3 overrides. Do not remove it until the final start owner chain is flattened/proven.
+The visible stable algorithm renderer calls `startAlgorithmTraining429`; the app-owned 429 start path performs the canonical draft reset before opening the training modal. TrainingDraftRuntime no longer rewrites any classic function.
+
+Permanent CI guard forbids reintroducing `startAlgorithmTraining429`, `wrapLegacyMutation`, `directMutationFor`, `mutationWrappers`, or `__trainingDraftMutationWrapped` into `training-draft-runtime.js`.
 
 ## 8. TrainingLabelRuntime status
 
-Current import/build: `422509 / module-422509`.
+Current import/build: `422510 / module-422510`.
 
-Canonical data ownership:
+Canonical data ownership is correct for the current v3 path:
 
-- v3 materials: `trainingDraft.materialIds`;
-- selected labels: `trainingDraft.newLabelCodes`;
-- no fallback to `train429Selected` / `train428AlgorithmId`.
+- current training materials: `trainingDraft.materialIds`;
+- selected task labels: `trainingDraft.newLabelCodes`.
 
-Stale bind targets physically removed and Chrome-verified:
-
-```text
-openTrain428      CLOSED
-refreshTrain428   CLOSED
-```
-
-Remaining bind targets:
+Retired bind targets:
 
 ```text
-startAlgorithmTraining429
+openTrain428
+refreshTrain428
 startAlgorithmTraining423
 openTrain425
-refreshTrain429
 trainCounts425
 ```
 
-Remaining lifecycle machinery:
+The 423/425 targets were removed only after source tests proved the final stable algorithm renderer uses start429 and the final training task renderer no longer exposes 425 create UI.
+
+Only two TrainingLabel wrappers remain:
 
 ```text
-post-entrypoint timers: 0 / 40 / 120 / 350 / 700 ms
-rebind timers:          100 / 400 / 1000 / 2500 ms
+startAlgorithmTraining429
+refreshTrain429
+```
+
+Remaining lifecycle debt:
+
+```text
+post-entrypoint refresh timers: 0 / 40 / 120 / 350 / 700 ms
+rebind timers:                  100 / 400 / 1000 / 2500 ms
 modal MutationObserver
+legacy 425 fallback reads in TrainingLabel helper paths
 ```
 
-Do not remove the remaining five targets without current call-site/final-owner proof.
+Next target is to make TrainingLabelRuntime wrapper-free and canonical-only, removing 425 fallback state/DOM lookup and the timer fan-out without regressing label refresh in Real Chrome.
 
-## 9. Start-owner audit currently in progress
-
-Current stable algorithm renderer is `window.renderAlg412`. Its current training button calls:
-
-```text
-startAlgorithmTraining429(algorithmId)
-```
-
-It does **not** call `startAlgorithmTraining423`.
-
-Historical `startAlgorithmTraining423` assignments still exist in old 423/425 layers, and an early 429 assignment aliases it to the then-current 429 function. Later 414/415/417/v3 assignments overwrite `startAlgorithmTraining429`, so the 423 alias does not automatically follow the final chain.
-
-Current `startAlgorithmTraining429` itself is layered:
-
-```text
-initial 429 canonical modal
-→ 414 iteration-base wrapper
-→ 415 experiment UI wrapper
-→ 417 iteration presentation wrapper
-→ durable v3 resource/device wrapper
-→ TrainingDraftRuntime outer start wrapper
-```
-
-Next work must prove which old 423/425 paths are still reachable before deleting wrappers or old blocks.
-
-## 10. Polling / request ownership
+## 9. Polling / request ownership
 
 Training task behavior is closed and must not regress:
 
@@ -224,38 +199,37 @@ AutoLabel rebind timers
 TrainingLabel rebind/refresh timers
 ```
 
-## 11. Cache state
+## 10. Cache state
 
 ```text
 styles/bootstrap               42.24.0-style versions
 app.js                         42.25.43
-main.mjs                       42.25.42
+main.mjs                       42.25.44
 training-draft.js              422506
-training-draft-runtime.js      422512
-training-labels.js             422509
+training-draft-runtime.js      422513
+training-labels.js             422510
 ```
 
 Cache-busting remains non-unified debt.
 
-## 12. Current work order
+## 11. Current work order
 
 ```text
-1. prove whether historical startAlgorithmTraining423/openTrain425/trainCounts425 are still reachable
-2. flatten/prove the final startAlgorithmTraining429 owner chain; then retire the final TrainingDraft wrapper
-3. reduce remaining TrainingLabel wrappers/rebind timers/refresh timers/MutationObserver
-4. retire auto422Timer / __videoFramePollTimer / prelabel / setupPagePolling
-5. establish renderer/setPage owner table and remove obsolete override layers
-6. reduce proven dead app.js code and global reload/request debt
-7. unify cache-busting
-8. zero-point observer/timer/fetch/render/setPage scan
-9. semantic naming + deterministic-test cleanup + docs sync
-10. zero-point debt scan
-11. resume A800 RC
+1. make TrainingLabelRuntime wrapper-free + canonical-only; remove 425 fallbacks and timer fan-out
+2. reduce/replace remaining TrainingLabel MutationObserver lifecycle if proven unnecessary
+3. retire auto422Timer / __videoFramePollTimer / prelabel / setupPagePolling
+4. establish renderer/setPage owner table and remove obsolete override layers
+5. reduce proven dead app.js code and global reload/request debt
+6. unify cache-busting
+7. zero-point observer/timer/fetch/render/setPage scan
+8. semantic naming + deterministic-test cleanup + docs sync
+9. zero-point debt scan
+10. resume A800 RC
 ```
 
 Every runtime batch: prove owner → test → physical deletion → syntax/unit → Real Chrome when behavior changes → update docs.
 
-## 13. A800 status
+## 12. A800 status
 
 A800 acceptance is **DEFERRED** until current P0/P1 debt is closed.
 
@@ -272,13 +246,12 @@ preflight
 
 Frontend CI is not CUDA/A800 acceptance.
 
-## 14. Do not do
+## 13. Do not do
 
 - do not merge `main` without explicit authorization;
-- do not restore the five retired mirrors or `trainingDraftFromLegacyState`;
-- do not restore retired Draft wrappers for picker/split/settings;
-- do not restore removed TrainingLabel `openTrain428/refreshTrain428` binds;
-- do not remove the remaining start wrapper without flattening/proving its historical chain;
+- do not restore retired mirrors or `trainingDraftFromLegacyState`;
+- do not restore any TrainingDraft classic mutation wrapper;
+- do not restore removed TrainingLabel 428/423/425 binds;
 - do not add render-repair loops or new numbered overrides;
 - do not weaken owner/race/performance/browser tests;
 - do not claim A800/CUDA acceptance from CI.
