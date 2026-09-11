@@ -68,7 +68,7 @@ export function installTrainingDraftRuntime({
   const delayedSyncTimers = new Set();
   const mutationWrappers = [];
 
-  function inheritanceFor(s, algorithmId = s.train428AlgorithmId) {
+  function inheritanceFor(s, algorithmId = s.trainingDraft?.algorithmId || s.train428AlgorithmId) {
     const id = String(algorithmId || '').trim();
     const algorithm = (s.algorithms || []).find(item => String(item?.id || '') === id) || null;
     return algorithm ? trainingInheritanceFromAlgorithm(algorithm) : {
@@ -103,18 +103,8 @@ export function installTrainingDraftRuntime({
     if (!draft) return;
     if (draft.algorithmId) s.train428AlgorithmId = draft.algorithmId;
 
-    const previousSplit = s.trainSplitV3 || {};
-    const train = new Set(draft.materialIds || []);
-    const test = new Set(draft.testMaterialIds || []);
-    s.trainSplitV3 = {
-      ...previousSplit,
-      mode: draft.splitMode,
-      train,
-      test,
-      experiment: draft.experimentPercent ?? previousSplit.experiment ?? 20,
-      validation: draft.validationPercent,
-    };
-    s.train429Selected = train;
+    delete s.trainSplitV3;
+    s.train429Selected = new Set(draft.materialIds || []);
 
     const previousConfig = s.train428Config || {};
     const nextConfig = {
@@ -422,7 +412,7 @@ export function installTrainingDraftRuntime({
   scheduleDelayedSyncs();
 
   const runtime = {
-    build: 'training-draft-runtime-422506',
+    build: 'training-draft-runtime-422507',
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
