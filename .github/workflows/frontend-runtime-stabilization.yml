@@ -61,6 +61,25 @@ jobs:
               exit 1
             fi
           done
+      - name: TrainingLabel canonical lifecycle guard
+        run: |
+          file=static/modules/training-labels.js
+          for token in \
+            "__trainingLabelsWrapped" \
+            "wrappedEntrypoints" \
+            "wrap('startAlgorithmTraining429'" \
+            "wrap('refreshTrain429'" \
+            "train425Selected" \
+            "tr425AssetAlg" \
+            "train423Asset" \
+            ".train425-data" \
+            ".train428-data" \
+            "setTimeout("; do
+            if grep -F -n "$token" "$file"; then
+              echo "TrainingLabelRuntime must stay wrapper-free, timer-free and canonical-only; found $token" >&2
+              exit 1
+            fi
+          done
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
