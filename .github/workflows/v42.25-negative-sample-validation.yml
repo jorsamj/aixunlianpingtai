@@ -1,0 +1,29 @@
+name: v42.25 negative sample validation
+
+on:
+  push:
+    branches:
+      - refactor/v42.25-runtime
+  workflow_dispatch:
+
+jobs:
+  negative-samples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight test dependencies
+        run: python -m pip install --upgrade pytest pillow pyyaml filelock psutil
+      - name: Run negative sample and split tests
+        run: >-
+          python -m pytest --noconftest
+          tests/unit/test_negative_sample_contract.py
+          tests/unit/test_annotation_repository_scope.py
+          tests/unit/test_training_splits.py
+          tests/unit/test_training_components.py
+          tests/unit/test_snapshots.py
+          tests/unit/test_portable_dataset.py
+          -q
