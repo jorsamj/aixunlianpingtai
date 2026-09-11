@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import platform_core.training_metrics as training_metrics
 
 
@@ -122,6 +124,32 @@ def test_auto_can_downscale_batch_for_safety_but_never_upscale(monkeypatch):
 
     assert 1 <= result["resolved_batch"] < 64
     assert any("batch downscaled 64->" in item for item in result["adjustments"])
+
+
+def test_auto_batch_minus_one_explicitly_delegates_batch_selection(monkeypatch):
+    _patch_host(monkeypatch)
+    result = training_metrics.resolve_resources(
+        _request(batch=-1),
+        _context(),
+        _Model(),
+        _Torch(_Cuda()),
+    )
+
+    assert result["requested_batch"] == -1
+    assert result["resolved_batch"] > 0
+    assert result["resolved_batch"] <= 64
+    assert "delegated selection" in " ".join(result["reasons"])
+
+
+def test_manual_batch_minus_one_is_rejected(monkeypatch):
+    _patch_host(monkeypatch)
+    with pytest.raises(ValueError, match="RESOURCE_MANUAL_INVALID"):
+        training_metrics.resolve_resources(
+            _request(resource_strategy="manual", batch=-1),
+            _context(),
+            _Model(),
+            _Torch(_Cuda()),
+        )
 
 
 def test_auto_does_not_turn_false_cache_into_disk_even_when_disk_is_available(monkeypatch):
