@@ -30,6 +30,20 @@ import {installMaterialBatchRuntime} from './modules/material-batches.js?v=42240
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
 
+function fallbackToast(message) {
+  const element = document.getElementById('toast');
+  if (!element) return;
+  element.textContent = String(message ?? '');
+  element.classList.remove('hidden');
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => element.classList.add('hidden'), 2600);
+}
+
+// app.js historically declared `const toast` without exporting it to window, while
+// later compatibility layers call window.toast(). Expose one stable notification
+// surface so old and modular code use the same runtime contract during migration.
+if (typeof window.toast !== 'function') window.toast = fallbackToast;
+
 for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
 
 registerAction('algorithm.create', () => {
@@ -46,9 +60,7 @@ document.addEventListener('click', async event => {
   try {
     await invokeAction(target.dataset.action, {event, target});
   } catch (error) {
-    const message = messageFromApiError(error);
-    if (typeof window.toast === 'function') window.toast(message);
-    else console.error(message);
+    window.toast(messageFromApiError(error));
   }
 });
 
@@ -85,17 +97,7 @@ window.PlatformCore = {
   uiBuildVersion: UI_BUILD_VERSION,
 };
 
-const notify = message => {
-  if (typeof window.toast === 'function') window.toast(message);
-  else {
-    const toast = document.getElementById('toast');
-    if (toast) {
-      toast.textContent = message;
-      toast.classList.remove('hidden');
-      setTimeout(() => toast.classList.add('hidden'), 2600);
-    }
-  }
-};
+const notify = message => window.toast(message);
 
 installNegativeSampleRuntime({
   getState: () => state,
@@ -111,7 +113,7 @@ installMaterialBatchRuntime({
   currentPageIds: () => window.materialCurrentPageIds61?.() || [],
   selectedIds: () => window.materialSelectedIds61?.() || [],
   filteredSpec: () => window.materialBatchFilters61?.() || {},
-  notify: message => window.toast?.(message),
+  notify,
   refresh: async () => {
     state.data412Selected?.clear?.();
     state.data412DeleteMode = false;
