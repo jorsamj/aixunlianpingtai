@@ -215,7 +215,7 @@ jobs:
           grep -Fq 'replaceTrainingJobTimer,' "$file"
           grep -Fq 'replaceTrainingJobTimer();' "$file"
           grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js
-      - name: Retired pre-v42.7 setPage guard
+      - name: Retired v42.7 setPage guard
         run: |
           for token in set423Base setBase424 oldSetV39 oldSet42 set422Base; do
             if grep -F -n "$token" static/app.js; then
@@ -237,14 +237,21 @@ jobs:
             };"""
           if retired in app:
               raise SystemExit('v34 persistence setPage owner was reintroduced')
+          retired_alias = "window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}"
+          if retired_alias in app:
+              raise SystemExit('v42.7 direct alias owner was reintroduced')
           required = [
-              "window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}",
               'const setPageReady414=window.setPage;',
               'const baseSetPage417=window.setPage;',
           ]
           for token in required:
               if token not in app:
                   raise SystemExit(f'required post-v42.7 navigation owner missing: {token}')
+          navigation = Path('static/modules/navigation-stability.js').read_text(encoding='utf-8')
+          if 'export function normalizeNavigationPage(page)' not in navigation:
+              raise SystemExit('semantic navigation normalizer is missing')
+          if "requested === '自动标注' ? '自动标注及清洗' : requested" not in navigation:
+              raise SystemExit('legacy auto-label alias normalization is missing')
           PY
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
