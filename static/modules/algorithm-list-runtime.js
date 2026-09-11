@@ -21,6 +21,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   if (window.__algorithmListRuntimeInstalled) return window.AlgorithmListRuntime;
 
   const state = () => getState?.() || {};
+  const doc = typeof document !== 'undefined' ? document : null;
   let destroyed = false;
   let inflight = null;
   let lastRefreshAt = 0;
@@ -93,10 +94,10 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
 
   window.toggleAlgorithm412 = toggle;
   window.toggleAlgorithm428 = toggle;
-  document?.addEventListener?.('click', onRefreshCapture, true);
+  doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422500',
+    build: 'algorithm-list-runtime-422501',
     toggle,
     refresh,
     renderCards,
@@ -105,7 +106,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     },
     destroy() {
       destroyed = true;
-      document?.removeEventListener?.('click', onRefreshCapture, true);
+      doc?.removeEventListener?.('click', onRefreshCapture, true);
       if (window.toggleAlgorithm412 === toggle) window.toggleAlgorithm412 = originalToggle412;
       if (window.toggleAlgorithm428 === toggle) window.toggleAlgorithm428 = originalToggle428;
       if (window.AlgorithmListRuntime === runtime) window.AlgorithmListRuntime = null;
