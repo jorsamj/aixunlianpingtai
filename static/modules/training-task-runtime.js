@@ -1,6 +1,7 @@
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'pending', 'paused']);
 const DONE_STATUSES = new Set(['done', 'finished', 'completed', 'failed', 'stopped', 'cancelled', 'canceled']);
+const REFRESH_DEDUP_WINDOW_MS = 120;
 
 function rowsFrom(body) {
   if (Array.isArray(body)) return body;
@@ -126,6 +127,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   let inflight = null;
   let destroyed = false;
   let lastRefreshAt = 0;
+  let lastRefreshSource = '';
 
   function isCurrent(startPage, startEpoch) {
     const s = state();
@@ -158,7 +160,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     return true;
   }
 
-  async function refresh({render = true} = {}) {
+  async function refresh({render = true, force = false, source = 'direct'} = {}) {
     if (destroyed) throw new Error('训练任务模块已销毁');
     if (inflight) return inflight;
     const pid = projectId?.();
@@ -166,6 +168,18 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
 
     const startPage = String(state().page || '');
     const startEpoch = Number(state().__navigationEpoch || 0);
+    const age = Date.now() - lastRefreshAt;
+    const crossSourceDuplicate = (source === 'manual' && lastRefreshSource === 'poll')
+      || (source === 'poll' && lastRefreshSource === 'manual');
+    if (!force
+        && startPage === TRAINING_PAGE
+        && lastRefreshAt > 0
+        && age >= 0
+        && age <= REFRESH_DEDUP_WINDOW_MS
+        && crossSourceDuplicate) {
+      if (render) patchFinalTrainingTable();
+      return {stale: false, jobs: state().jobs || [], reused: true};
+    }
     const encoded = encodeURIComponent(pid);
 
     inflight = (async () => {
@@ -179,6 +193,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       const jobs = rowsFrom(body);
       state().jobs = jobs;
       lastRefreshAt = Date.now();
+      lastRefreshSource = String(source || 'direct');
       if (render) patchFinalTrainingTable();
       return {stale: false, jobs};
     })();
@@ -195,7 +210,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       try { await inflight; } catch (_) {}
     }
     if (String(state().page || '') !== TRAINING_PAGE) return {stale: true, jobs: state().jobs || []};
-    return refresh({render: true});
+    return refresh({render: true, force: true, source: 'mutation'});
   }
 
   async function mutate(key, path, {method = 'POST', successMessage = '操作成功'} = {}) {
@@ -217,7 +232,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     }
   }
 
-  const focusedRefresh = () => refresh({render: true});
+  const focusedRefresh = () => refresh({render: true, source: 'poll'});
   focusedRefresh.__trainingTaskRuntime = true;
   window.refreshJobsOnly = focusedRefresh;
   window.refreshTrainPage428 = focusedRefresh;
@@ -294,21 +309,22 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     event.stopImmediatePropagation();
     if (button.disabled || inflight) return;
     button.disabled = true;
-    void refresh({render: true}).then(
+    void refresh({render: true, source: 'manual'}).then(
       result => { if (!result?.stale) notify?.('训练任务已刷新'); },
       error => notify?.(error?.message || error),
     ).finally(() => {
       if (button?.isConnected !== false) button.disabled = false;
+      window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
     });
   };
   doc?.addEventListener?.('click', onClickCapture, true);
 
   const runtime = {
-    build: 'training-task-runtime-422502',
+    build: 'training-task-runtime-422503',
     refresh,
     patch: patchFinalTrainingTable,
     state() {
-      return {inflight: Boolean(inflight), lastRefreshAt, mutations: mutationLocks.size};
+      return {inflight: Boolean(inflight), lastRefreshAt, lastRefreshSource, mutations: mutationLocks.size};
     },
     destroy() {
       destroyed = true;

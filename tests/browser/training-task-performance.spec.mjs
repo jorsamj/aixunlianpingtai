@@ -22,6 +22,9 @@ test('training task refresh and actions patch the final table without rebuilding
     const shell = document.querySelector('.train428-page');
     shell.dataset.performanceMarker = 'preserve-me';
   });
+  // Drain callbacks that were already queued before the managed poll was cleared.
+  // The assertions below still require exactly one jobs GET for each manual refresh.
+  await page.waitForTimeout(160);
 
   const apiRequests = [];
   page.on('request', request => {

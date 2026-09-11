@@ -72,6 +72,69 @@ test('concurrent training refreshes share one jobs request', async () => {
   cleanup();
 });
 
+test('manual refresh reuses a poll result that completed in the same interaction window', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
+  let requests = 0;
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  globalThis.window = {
+    async fetch() { requests += 1; return response([{id: 'j1', status: 'running'}]); },
+    updateTrainingJobTable() {},
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  await runtime.refresh({source: 'poll'});
+  now += 60;
+  const result = await runtime.refresh({source: 'manual'});
+
+  assert.equal(requests, 1);
+  assert.equal(result.reused, true);
+  assert.equal(runtime.state().lastRefreshSource, 'poll');
+
+  runtime.destroy();
+  Date.now = originalNow;
+  cleanup();
+});
+
+test('task mutation forces a fresh jobs request even after a very recent poll', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [{id: 'j1', status: 'running'}], __navigationEpoch: 1};
+  const calls = [];
+  const originalNow = Date.now;
+  let now = 2_000;
+  Date.now = () => now;
+  globalThis.window = {
+    async fetch(url, init = {}) {
+      calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
+      if (url.endsWith('/pause')) return response({ok: true});
+      if (url.endsWith('/jobs')) return response([{id: 'j1', status: calls.some(row => row.includes('/pause')) ? 'paused' : 'running'}]);
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  await runtime.refresh({source: 'poll'});
+  now += 20;
+  await window.pauseTrain428('j1');
+
+  assert.deepEqual(calls, [
+    'GET /api/projects/p1/jobs',
+    'POST /api/v48/projects/p1/jobs/j1/pause',
+    'GET /api/projects/p1/jobs',
+  ]);
+  assert.equal(state.jobs[0].status, 'paused');
+
+  runtime.destroy();
+  Date.now = originalNow;
+  cleanup();
+});
+
 test('training refresh discards response after navigation and always releases inflight lock', async () => {
   const state = {page: '训练任务', project: {id: 'p1'}, jobs: [{id: 'old'}], __navigationEpoch: 8};
   let release;

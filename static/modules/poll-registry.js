@@ -143,7 +143,11 @@ export function installPollRegistry({getState} = {}) {
       const current = state();
       if (!trainingOwners.includes(String(current.page || ''))) return;
       if (!current.project?.id) return;
-      if (typeof window.refreshJobsOnly === 'function') await window.refreshJobsOnly();
+      if (typeof window.TrainingTaskRuntime?.refresh === 'function') {
+        await window.TrainingTaskRuntime.refresh({render: true, source: 'poll'});
+      } else if (typeof window.refreshJobsOnly === 'function') {
+        await window.refreshJobsOnly();
+      }
     };
     s.jobPollTimer = registry.startInterval(
       'training-jobs',
