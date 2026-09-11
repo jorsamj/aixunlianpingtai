@@ -1,5 +1,7 @@
 from pathlib import Path
 
+# Trigger marker: guarded migration for the active frontend-runtime-stabilization branch.
+
 
 def replace_once(path: str, old: str, new: str) -> None:
     target = Path(path)
