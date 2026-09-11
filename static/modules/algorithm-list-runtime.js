@@ -1,7 +1,12 @@
 const ALGORITHM_PAGE = '算法列表';
 
-async function fetchJson(url) {
-  const response = await window.fetch(url, {headers: {'Accept': 'application/json'}});
+function rawFetch() {
+  const scoped = window.fetch;
+  return scoped?.__pageRequestScopeOriginal || scoped;
+}
+
+async function fetchJson(url, fetchImpl = rawFetch()) {
+  const response = await fetchImpl(url, {headers: {'Accept': 'application/json'}});
   if (!response.ok) {
     const raw = await response.text();
     let body = {};
@@ -58,18 +63,32 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
+    const navigationGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
+    const fetchImpl = rawFetch();
+    if (typeof fetchImpl !== 'function') throw new Error('浏览器请求能力不可用');
+
     inflight = (async () => {
       const encoded = encodeURIComponent(pid);
       const [algorithmBody, jobBody] = await Promise.all([
-        fetchJson(`/api/v12/projects/${encoded}/algorithms`),
-        fetchJson(`/api/projects/${encoded}/jobs`),
+        fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl),
+        fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl),
       ]);
+
+      const latestGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
+      const navigationChanged = navigationGeneration != null
+        && latestGeneration != null
+        && latestGeneration !== navigationGeneration;
+      const sameProject = String(projectId?.() || '') === String(pid);
       const s = state();
+      if (destroyed || navigationChanged || !sameProject) {
+        return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
+      }
+
       s.algorithms = listFrom(algorithmBody);
       s.jobs = listFrom(jobBody);
       lastRefreshAt = Date.now();
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderCards();
-      return {algorithms: s.algorithms, jobs: s.jobs, cached: false};
+      return {algorithms: s.algorithms, jobs: s.jobs, cached: false, stale: false};
     })();
 
     try {
@@ -87,7 +106,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     if (target.disabled || inflight) return;
     target.disabled = true;
     void refresh({render: true}).then(
-      () => notify?.('算法列表已刷新'),
+      result => {
+        if (!result?.stale) notify?.('算法列表已刷新');
+      },
       error => notify?.(error?.message || error),
     ).finally(() => { target.disabled = false; });
   };
@@ -97,7 +118,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422501',
+    build: 'algorithm-list-runtime-422502',
     toggle,
     refresh,
     renderCards,
