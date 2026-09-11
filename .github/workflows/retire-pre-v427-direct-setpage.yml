@@ -40,10 +40,17 @@ jobs:
             echo 'plain pre-v42.7 direct setPage owner remains' >&2
             exit 1
           fi
-          if grep -Fq $'window.setPage=function(p){\n    state.page=p;\n    saveUiState();\n    render();\n  };' static/app.js; then
-            echo 'v34 persistence setPage owner remains' >&2
-            exit 1
-          fi
+          python - <<'PY'
+          from pathlib import Path
+          app = Path('static/app.js').read_text(encoding='utf-8')
+          retired = """window.setPage=function(p){
+              state.page=p;
+              saveUiState();
+              render();
+            };"""
+          if retired in app:
+              raise SystemExit('v34 persistence setPage owner remains')
+          PY
           grep -Fq '/static/app.js?v=42.25.53' static/index.html
       - name: Commit retired owners
         run: |
