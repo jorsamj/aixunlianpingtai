@@ -750,8 +750,6 @@ window.installUsability417=function(){
   window.openTrainSettings428=window.openTrainSettings429;
   const baseOpenConvert417=window.openNewConvert428;
   window.openNewConvert428=async function(...args){const result=await baseOpenConvert417?.(...args);setTimeout(()=>{const root=document.querySelector('.convert428-create'),footer=root?.querySelector('.row.end'),primary=footer?.querySelector('.btn.primary');if(footer&&primary&&!footer.querySelector('.configure417-resource'))primary.insertAdjacentHTML('beforebegin',`<button class="btn configure417-resource" onclick="closeModal();closeModal();setPage('部署资源')">配置部署资源</button>`)},20);return result};
-  const baseSetPage417=window.setPage;
-  window.setPage=function(page){window.toggleMobileSidebarV37?.(false);return baseSetPage417?.(page)};try{setPage=window.setPage}catch(_){}
   const baseRender417=render;
   render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0';return result};
   [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0'},delay));
