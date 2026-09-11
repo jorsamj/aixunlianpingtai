@@ -2497,13 +2497,7 @@ window.installUsability417=function(){
   window.stopJob423=async id=>{await safe(api(`/api/projects/${pid()}/jobs/${id}/stop`,{method:'POST'}));await refreshTrain423();toast('已请求停止')};
   window.deleteJob423=async id=>{if(!confirm('确认删除训练任务？'))return;await safe(api(`/api/v12/projects/${pid()}/jobs/${id}`,{method:'DELETE'}));await refreshTrain423();toast('已删除')};
 
-  // Final render override
-  const render423Base=render;
-  render=function(){
-    if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}
-    if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();return}
-    render423Base();
-  };
+  // Algorithm/training routing is owned by the later stable render layers.
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V423},100);
 })();
 

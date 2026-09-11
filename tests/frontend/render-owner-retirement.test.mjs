@@ -35,3 +35,18 @@ test('final storage render owner remains the sole storage route wrapper', () => 
     true,
   );
 });
+
+test('fully shadowed render423 route wrapper cannot return', () => {
+  assert.equal(app.includes('render423Base'), false);
+  assert.equal(
+    app.includes("if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();return}"),
+    false,
+  );
+});
+
+test('later algorithm/training owners and direct training polling remain', () => {
+  assert.equal(app.includes('const renderBase428=render;'), true);
+  assert.equal(app.includes('const oldRender412=render;'), true);
+  assert.equal(app.includes('window.renderTraining425=window.renderTraining424=window.renderTraining423=function()'), true);
+  assert.equal(app.includes('window.PollRegistryRuntime?.replaceTrainingJobTimer?.()};'), true);
+});
