@@ -25,3 +25,24 @@ jobs:
           node --check static/main.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
+
+  browser-navigation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome stale-navigation regression
+        run: npx playwright test tests/browser/navigation-stability.spec.mjs
