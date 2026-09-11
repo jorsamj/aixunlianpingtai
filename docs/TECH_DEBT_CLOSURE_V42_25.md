@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **工作分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整验证代码点：`495721171832aa06b99785b37d32996e5cd26bf5`，Frontend Runtime run `34592149034`：Node + Real Chrome 全绿。**  
-> **当前在验代码点：`e062ea354dc8d21b0e0d47d76d55f0a28b4b8cf3`，用于 canonical config reader 跨历史 scope 修复；未绿前不得标本批 CLOSED。**  
+> **最近完整前端验收代码点：`f45f88f8f64a71a1adaa68e359b6f193297fb6a1`。**  
+> **Frontend Runtime Stabilization run `34594071998`：Node + 永久 owner/mirror guards + Real Chrome 全绿。**  
 > **更新日期：2026-09-11**
 
 ## 0. 给后续 AI / Codex 的强制入口
@@ -21,8 +21,8 @@
 - 未标记 `CLOSED` 的项目不得自行宣称完成。
 - 不得仅因为 legacy 代码“当前没被调用”就标记 CLOSED；必须有明确最终 owner、物理退场或严格隔离，以及自动化证据。
 - 不得为了让 CI 变绿而放宽重复请求、竞态、sleep、timer 或 owner 冲突断言。
-- 不得重新引入 `trainingLabelSelected` / `trainSplitV3`。
-- `train428AlgorithmId` / `train428Config` / `train429Selected` 不得重新成为训练提交 truth source。
+- 不得重新引入 `trainingLabelSelected` / `trainSplitV3` / `train429Selected` 到 `static/app.js`；Frontend CI 有永久 guard。
+- `train428AlgorithmId` / `train428Config` 不得重新成为训练提交 truth source。
 - 训练 canonical state 是 `state.trainingDraft`。
 - `/train/start` 唯一网络 owner 是 `TrainingSubmitRuntime`；`static/app.js` 中出现 `/train/start` 即视为回归，永久 CI guard 会失败。
 - A800 RC 在本文件 P0/P1 技术债关闭前保持 `DEFERRED`。
@@ -36,11 +36,11 @@
 |---|---|---|---|---|
 | TD-01 | `trainingLabelSelected` | `state.trainingDraft.newLabelCodes` | **CLOSED** | Runtime 强制退休；CI + Chrome 防回归 |
 | TD-02 | `trainSplitV3` | `state.trainingDraft` split/material fields | **CLOSED** | Runtime 强制退休；CI + Chrome 防回归 |
-| TD-03 | `train429Selected` 作为训练素材 truth source | `state.trainingDraft.materialIds` | **IN PROGRESS** | Label/Submit 已 canonical-first；`app.js` 仍有历史 picker/helper 读写，继续迁移真实 owner |
-| TD-04 | `train428AlgorithmId` 作为训练算法 truth source | `state.trainingDraft.algorithmId` | **IN PROGRESS** | Chrome 会主动污染 legacy algorithm 并验证提交不受影响；最终 429 启动与迭代设置仍有历史读写待迁 |
-| TD-05 | `train428Config` 作为训练配置 truth source | `state.trainingDraft.config/resource` | **IN PROGRESS** | v3 device/GPU/resource strategy 双写已物理退出并经 run `34592149034` Chrome 验证；428/429/415 配置读取正迁为 canonical-first；历史 settings writer 仍待迁 |
-| TD-06 | `/train/start` 多 owner / 旧 payload builder | `TrainingSubmitRuntime` | **CLOSED** | 所有 classic `app.js` 直发 `/train/start` owner 已物理清零：3 个 `submitTrain429` + 9 个更早 `startTrain/startTrain423/submitTrain424/425/428`；run `34591792092` Node + Chrome 全绿；永久 CI guard 禁止 `app.js` 再出现 `/train/start` |
-| TD-07 | “开始训练”按钮 readiness 多 owner | `TrainingSubmitRuntime.trainingSubmitReadiness()` | **CLOSED** | `renderSplit()` 与 `refreshProjected417()` legacy DOM writer 已物理删除；Real Chrome 真点击提交通过 |
+| TD-03 | `train429Selected` 作为训练素材 truth source | `TrainingDraftRuntime` → `state.trainingDraft.materialIds` | **CLOSED** | `static/app.js` 零残留；picker/全选反选/质量/计数/标签汇总全部改读写 canonical materialIds；永久 CI guard；run `34594071998` Node + Real Chrome 全绿 |
+| TD-04 | `train428AlgorithmId` 作为训练算法 truth source | `state.trainingDraft.algorithmId` | **IN PROGRESS** | 最终 429 活跃启动/迭代路径已不再主动写/读取该 mirror；继续清旧 428 settings/UI fallback 与不可达块 |
+| TD-05 | `train428Config` 作为训练配置 truth source | `state.trainingDraft.config/resource` | **IN PROGRESS** | v3 resource 双写、最终 429 start/target/engine writer 已退出；配置读取 canonical-first；继续迁旧 settings writer/fallback 并删除死块 |
+| TD-06 | `/train/start` 多 owner / 旧 payload builder | `TrainingSubmitRuntime` | **CLOSED** | 所有 classic `app.js` 直发 owner 已物理清零；永久 CI guard |
+| TD-07 | “开始训练”按钮 readiness 多 owner | `TrainingSubmitRuntime.trainingSubmitReadiness()` | **CLOSED** | legacy DOM writer 已物理删除；Real Chrome 真点击提交通过 |
 | TD-08 | `/jobs` poll + manual 双请求 | `TrainingTaskRuntime` | **CLOSED** | 120ms cross-source coalescing；mutation 强制 fresh；Chrome 要求每次手动刷新仅 1 GET |
 | TD-09 | `training-metrics.sqlite3` FD 泄漏 | deterministic SQLite close | **CLOSED** | 单测含连接开关 + Linux `/proc/self/fd`；Release Regression 通过；A800 后续实机再观测 |
 | TD-10 | 训练任务 polling 生命周期 | `TrainingTaskRuntime + PollRegistry` | **CLOSED** | 单 owner + 页面生命周期 + request coalescing |
@@ -48,14 +48,14 @@
 | TD-12 | 视频切帧 legacy polling | VideoTasks / PollRegistry | **OPEN** | 已识别 `__videoFramePollTimer`，需 owner 判定后物理退役 |
 | TD-13 | `auto422Timer` / prelabel / 老 `setupPagePolling` | 各页面 Runtime + PollRegistry | **OPEN** | 做死代码证明，不能只 clear/null |
 | TD-14 | 历史 `render=` / `window.setPage=` override | 每页面单 owner | **OPEN** | 建 owner 表，逐层删 412/417/423/428/429 失效层 |
-| TD-15 | `app.js` 过大 / 历史死代码 | named Runtime + 有界 legacy shell | **IN PROGRESS** | 已物理删除旧 submit/button/network owner；继续按“证明无引用→测试→删除” |
-| TD-16 | 临时 shim / migration helper | 无长期 owner | **IN PROGRESS** | 已完成的 submit/network/resource migration helper 均已删除；当前 config-read migration helper 仅在本批验收期间保留，Chrome 全绿后必须删除 |
-| TD-17 | 静态资源 cache-busting 不统一 | 单一 cache/build version | **OPEN** | 当前 `styles.css/bootstrap=42.24.0`，`app.js` 已到 `42.25.40`，`main.mjs=42.25.38`，仍不统一 |
+| TD-15 | `app.js` 过大 / 历史死代码 | named Runtime + 有界 legacy shell | **IN PROGRESS** | 已物理删除 submit/button/network owner 和 active material mirror；继续“证明无引用→测试→删除” |
+| TD-16 | 临时 shim / migration helper | 无长期 owner | **CLOSED** | 本轮已完成 migration helper/workflow 均在验收后物理删除；不得恢复 |
+| TD-17 | 静态资源 cache-busting 不统一 | 单一 cache/build version | **OPEN** | 当前 `styles.css/bootstrap=42.24.0`，外层 `app.js=42.25.42`、`main.mjs=42.25.39`；TrainingDraftRuntime import 已显式 bump 到 `422510`；仍需统一策略 |
 | TD-18 | 剩余页面重复请求 / 全量 reload | scoped refresh | **OPEN** | 扫描 `loadAll/loadRelated/loadCore412/render` |
 | TD-19 | observer/timer/fetch/render/setPage 生命周期 | 明确 owner + destroy | **OPEN** | 全仓扫描，记录创建者/owner/销毁点/跨页行为 |
 | TD-20 | 版本号命名进入业务语义 | `TrainingDialog/DatasetPage/VideoTasks/...` | **OPEN** | owner 收口后逐步语义化，不做盲目全局重命名 |
-| TD-21 | 测试历史债 / flaky sleep | deterministic tests | **IN PROGRESS** | `/jobs` 已从产品竞态根治；训练 owner 测试主动污染 legacy mirrors；本轮还暴露了跨 IIFE helper scope 的真实浏览器错误，说明 Chrome 门禁必须保留 |
-| TD-22 | 文档与代码漂移 | 本总账 + CURRENT_STATE + legacy audit | **IN PROGRESS** | 三份文档保持持续同步；本总账记录当前在验批次，不以迁移脚本单测替代 Chrome 结果 |
+| TD-21 | 测试历史债 / flaky sleep | deterministic tests | **IN PROGRESS** | `/jobs` 已从产品竞态根治；训练测试主动污染 legacy mirrors；继续清 sleep 型测试 |
+| TD-22 | 文档与代码漂移 | 本总账 + CURRENT_STATE + legacy audit | **IN PROGRESS** | 三份文档持续同步；每个 runtime 批次必须更新 |
 | TD-23 | A800 v42.25 RC | A800 acceptance runbook | **DEFERRED** | P0/P1 技术债关闭后恢复 preflight → 首训 → 迭代 → Worker lifecycle |
 
 ## 2. 当前训练 canonical owner（不得回退）
@@ -74,9 +74,9 @@ POST /api/v12/projects/{project_id}/train/start
 
 ### `TrainingDraftRuntime`
 
-- canonical draft 创建/同步/更新 owner；build `training-draft-runtime-422509`。
-- `networkOwner=false`。
-- 不拦截 `/train/start`。
+- canonical draft 创建/同步/更新 owner；当前模块 import cache `training-draft-runtime.js?v=422510`。
+- `networkOwner=false`，不拦截 `/train/start`。
+- 素材选择 API：`materialIds()` / `setMaterialIds(ids)` / `toggleMaterialId(id)`。
 - 不允许把 canonical draft 反向写回 `train428AlgorithmId/train428Config/train429Selected` 作为 truth source。
 
 ### `TrainingSubmitRuntime`
@@ -84,93 +84,103 @@ POST /api/v12/projects/{project_id}/train/start
 - `/train/start` 唯一网络 owner；build `training-submit-422504`。
 - 拥有 submit readiness、迭代起点安全校验、设备校验、payload 构建与 POST。
 - 保留 `lastStage / lastError` 诊断字段。
-- `static/app.js` 现在不得包含 `/train/start`；`.github/workflows/frontend-runtime-stabilization.yml` 有永久 guard。
+- `static/app.js` 不得包含 `/train/start`。
 
 ### `TrainingLabelRuntime`
 
 - build `module-422507`。
-- canonical draft 已有 algorithm 时，素材必须读取 `trainingDraft.materialIds`。
-- legacy `train429Selected / train428AlgorithmId` 即使被污染，也不得改变当前标签集合与最终请求。
-- 仍有 legacy entrypoint wrappers、rebind timers、MutationObserver，属于后续清理对象，不得被误判为最终架构。
+- 当前素材来自 canonical `trainingDraft.materialIds`。
+- label selection 写 `trainingDraft.newLabelCodes`。
+- 仍有 legacy entrypoint wrappers、rebind timers、MutationObserver，属于后续清理对象。
 
-## 3. 已完成的训练资源 mirror 收口
+## 3. TD-03：`train429Selected` 已关闭
 
-v3 最终资源控件：
-
-```text
-trV3ResourceStrategy
-trV3Device
-trV3GpuPolicy
-```
-
-当前 owner：`TrainingDraftControlsRuntime` → `TrainingDraftRuntime.update()`。
-
-已删除 `app.js` 中对以下 legacy 字段的重复 change writer：
+当前 v3 素材链：
 
 ```text
-train428Config.resource_strategy
-train428Config.device
-train428Config.gpu_policy
+训练素材 picker / 全选 / 反选 / 单项 toggle
+  ↓
+TrainingDraftRuntime.materialIds / setMaterialIds / toggleMaterialId
+  ↓
+state.trainingDraft.materialIds
 ```
 
-推荐设备也改为直接写 `trainingDraft.resource.device`。该批在 `495721171832aa06b99785b37d32996e5cd26bf5` / run `34592149034` 经 Node + Real Chrome 全绿验证。
+已迁移并验证：
 
-## 4. 当前 canonical config read 迁移
+- picker 选中态与回显；
+- 单项 toggle；
+- 全选/反选；
+- 训练素材数量；
+- 标签汇总；
+- 数据质量；
+- 随机试验集预计数量；
+- 后续 417 wrapper 的 reset 行为。
 
-目标：配置展示和历史 settings helper 先改为 canonical-first，解除后续删除 `train428Config` writer 的读取依赖。
+永久 CI：`static/app.js` 出现 `train429Selected` 即失败。单元测试还会故意保留污染过的 legacy fixture，验证 canonical materialIds 不受影响；测试 fixture/兼容 bootstrap 中的历史词不等于 active UI owner。
 
-已建立过渡 reader：
+完整验收：commit `f45f88f8f64a71a1adaa68e359b6f193297fb6a1`，Frontend Runtime run `34594071998`，Node + Real Chrome 全绿。
+
+## 4. 当前 `train428AlgorithmId / train428Config` 清理边界
+
+最终 429 活跃训练入口已经完成：
+
+- 启动训练不再以 `train428AlgorithmId` 建立 truth source；
+- target/engine 切换不再主动写 `train428Config`；
+- v3 resource controls 只写 `TrainingDraftRuntime`；
+- 迭代 settings 读取 canonical algorithmId；
+- settings/config 展示已 canonical-first。
+
+剩余工作必须先分类：
 
 ```text
-trainingDraft.config/resource
-  优先
-legacy train428Config
-  仅作为尚未迁完历史设置 UI 的 fallback
+A. 仍被当前 UI wrapper 间接调用的旧 428 settings/helper
+B. 仅作 bootstrap fallback 的兼容读取
+C. 已不可达的 428/425 历史 UI 整块
 ```
 
-第一次实现把 reader 留在 428 局部 scope，却让后续 429/415 直接调用，Real Chrome 在“点击训练→弹窗出现”处失败；这不是测试抖动，而是多代 IIFE/override 造成的真实 scope bug。当前修复将该 closure reader 显式导出供后续 scope 调用。**此批只有 run `34592853161` Real Chrome 通过后才能标完成。**
+A/B 先迁；C 证明无引用后物理删除。不得用“大范围字符串删除”代替 owner 证明。
 
 ## 5. Chrome 关键门禁
 
-`tests/browser/training-label-selector.spec.mjs` 会主动污染：
+`tests/browser/training-label-selector.spec.mjs` 会主动污染 legacy mirrors，并验证：
 
-```text
-train428AlgorithmId
-train429Selected
-train428Config
-```
+- `state.trainingDraft` 不受污染；
+- raw `/train/start` 不被 DraftRuntime 偷改；
+- 真点击“开始训练”仍由 `TrainingSubmitRuntime` 发 canonical payload；
+- 素材选择通过 canonical materialIds；
+- readiness 不再由 legacy renderer 抢写。
 
-并验证 canonical draft、raw fetch、真实点击提交均不受污染。禁止通过放宽断言、增加 sleep、恢复 fetch wrapper、DOM 抢写轮询来“修复”该测试。
+禁止通过放宽断言、增加 sleep、恢复 fetch wrapper 或 DOM 抢写轮询来“修复”测试。
 
 ## 6. 已物理退役的训练 legacy owner
 
 已从 `static/app.js` 物理退役：
 
-1. final v3 `renderSplit()` 对开始训练按钮 `.disabled` 的 legacy 写入；
-2. `refreshProjected417()` 对同一按钮 `.disabled` 的 legacy 写入；
-3. 三套历史 `window.submitTrain429=async function...`；
-4. 九套更早 classic 直发 `/train/start` 的实现：`startTrain` ×4、`startTrain423` ×1、`submitTrain424` ×1、`submitTrain425` ×2、`submitTrain428` ×1；
-5. final v3 resource strategy/device/GPU policy 对 `train428Config` 的重复 writer。
+1. final v3 `renderSplit()` 的 submit-button legacy disabled writer；
+2. `refreshProjected417()` 的 submit-button legacy writer；
+3. 三套历史 `submitTrain429`；
+4. 九套更早 classic 直发 `/train/start` 实现；
+5. final v3 resource strategy/device/GPU policy 对 `train428Config` 的重复 writer；
+6. final 429 start/target/engine 对 `train428AlgorithmId/train428Config` 的活跃 writer；
+7. `train429Selected` active UI 全部读写。
 
-对应一次性 migration workflow/helper 在各自完整回归通过后均删除；不得恢复。
+对应一次性 migration workflow/helper 均在成功后删除。
 
 ## 7. 当前工作顺序
 
 ```text
-A. 完成 canonical config reader Chrome 验证
-B. 删除 startAlgorithmTraining429 / trainTarget429 / trainAlg429 对 train428Config 的主动 writer
-C. 迁移 train428AlgorithmId / train429Selected 的最终活跃 owner
-D. 清 TrainingLabel / TrainingDraft compatibility wrappers 与 rebind timers
-E. 清 auto422Timer / __videoFramePollTimer / prelabel / setupPagePolling
-F. 建 renderer / setPage 最终 owner 表并物理退役旧 override
-G. app.js 可证明死代码削减
-H. 重复请求 / 全量 reload 扫描
-I. cache-busting 统一
-J. observer/timer/fetch wrapper 零点扫描
-K. 版本号业务命名迁移
-L. 测试去抖动 + 文档持续同步
-M. 技术债零点扫描
-N. A800 RC
+A. 清 train428AlgorithmId / train428Config 剩余兼容层与旧 428 settings/UI
+B. 清 TrainingLabel / TrainingDraft compatibility wrappers 与 rebind timers
+C. 清 auto422Timer / __videoFramePollTimer / prelabel / setupPagePolling
+D. 建 renderer / setPage 最终 owner 表并物理退役旧 override
+E. app.js 可证明死代码削减
+F. 重复请求 / 全量 reload 扫描
+G. cache-busting 统一
+H. observer/timer/fetch wrapper 零点扫描
+I. 版本号业务命名迁移
+J. 测试去抖动 + 文档持续同步
+K. 技术债零点扫描
+L. A800 RC
 ```
 
 每个批次必须：`syntax/Node → Real Chrome（涉及 runtime 时）→ 更新本总账 → 下一批`。
