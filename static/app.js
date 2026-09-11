@@ -3020,8 +3020,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // route + page alias
   const renderBase427=render;
   render=function(){if(state.page==='自动标注')state.page='自动标注及清洗';renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()};
-  window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V427},120);
+    setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V427},120);
 })();
 
 /* ============================================================
