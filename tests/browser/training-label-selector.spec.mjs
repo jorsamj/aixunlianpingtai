@@ -101,12 +101,15 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   }, project.id);
 
   await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
+    .toBe('training-draft-runtime-422503');
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
 
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  expect(await page.evaluate(() => window.TrainingDraftRuntime?.state?.().directWrites || 0)).toBeGreaterThanOrEqual(1);
 
   const labels = dialog.locator('#trainingLabelContractPanel');
   await expect(labels).toBeVisible({timeout: 10_000});
@@ -118,8 +121,18 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(picker).toBeVisible();
   await picker.getByRole('button', {name: '全选全部可用素材'}).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);
+  const writesBeforeConfirm = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
   await picker.getByRole('button', {name: '确认选择'}).click();
   await expect(dialog).toBeVisible();
+  expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites)).toBe(writesBeforeConfirm + 1);
+  expect(await page.evaluate(() => state.trainingDraft?.materialIds || [])).toEqual(imageIds);
+
+  const writesBeforeSplit = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
+  await page.evaluate(() => window.setTrainSplitModeV3('independent_test_set'));
+  expect(await page.evaluate(() => ({draft: state.trainingDraft?.splitMode, legacy: state.trainSplitV3?.mode})))
+    .toEqual({draft: 'independent_test_set', legacy: 'independent_test_set'});
+  expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites)).toBe(writesBeforeSplit + 1);
+  await page.evaluate(() => window.setTrainSplitModeV3('random_test_from_training_pool'));
 
   await expect(labels).toContainText('明火');
   await expect(labels).toContainText('fire');
@@ -151,7 +164,6 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
     priority: 7,
   });
 
-  // Guard layer: even a manually-created stale request is canonicalized from TrainingDraft.
   await page.evaluate(async projectId => {
     await fetch(`/api/v12/projects/${projectId}/train/start`, {
       method: 'POST',
@@ -175,7 +187,6 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
 
-  // Active button owner: the actual user-facing submit now belongs to TrainingSubmitRuntime.
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   submitted = undefined;
   await dialog.getByRole('button', {name: '开始训练'}).click();
