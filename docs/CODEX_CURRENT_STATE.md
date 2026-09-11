@@ -1,36 +1,49 @@
 # Codex Current State
 
-> First-entry handoff for `jorsamj/aixunlianpingtai`. Always verify the live branch/HEAD/diff before changing code. This file describes the intended current state, not a substitute for inspecting the repository.
+> First-entry handoff for `jorsamj/aixunlianpingtai`. Always verify live branch/HEAD/diff before editing. This file records intended current state; repository code remains the final authority.
 
 ## 1. Branch and release state
 
 ```text
-stable main baseline:                 6683edeb5d8391acbd96909ff22f72022105026b
-current cleanup branch:               refactor/frontend-runtime-stabilization
-latest validated functional milestone: d3a5f61cc0262f6add97e6d18f3042476ad372c6
-formal VERSION.txt:                   42.24.0 until v42.25 acceptance
-frontend badge:                       v42.25.0-dev
-frontend module entry cache:          main.mjs?v=42.25.30
+current cleanup branch:                refactor/frontend-runtime-stabilization
+current HEAD when this handoff updated: 035edf9399c8567656b48e5283229e599ab85aea
+formal VERSION.txt:                    42.24.0 until v42.25 acceptance
+frontend badge:                        v42.25.0-dev
+frontend module entry cache:           main.mjs?v=42.25.32
 ```
 
-Later documentation/CI-only commits may exist after the recorded functional milestone. Verify the branch HEAD before editing.
+Do not merge this branch into `main` unless explicitly authorized.
 
-Do not merge the cleanup branch into `main` unless explicitly authorized.
+## 2. Non-regression backend contracts
 
-## 2. Backend/runtime contracts already in main
-
-Do not regress these contracts while cleaning the UI:
+Do not regress these while cleaning the frontend:
 
 - SHA duplicate/leakage protection and Snapshot schema v3;
-- `confirmed_empty` formal negatives; unannotated zero-box material is not a valid negative;
-- task runtime lease/generation/process fencing and fenced artifacts;
+- `confirmed_empty` is the formal negative-sample contract; unannotated zero-box material is not a valid negative;
+- task-runtime lease/generation/process fencing and fenced artifacts;
 - explicit training resources cannot be silently increased (`batch`, `workers`, `cache=false` semantics);
-- task-scoped model label schema, first training never inherits mother-model classes;
-- iteration inherits only the latest successful artifact-verified trainable version schema.
+- task-scoped label schema; first training never inherits mother-model classes;
+- iteration inherits only the latest successful, artifact-verified, trainable version schema.
 
-## 3. Current frontend migration shape
+A dedicated release gate now exists:
 
-The browser is still a classic `static/app.js` application with a module stabilization layer. Do not pretend it is already a clean Vue application.
+```text
+.github/workflows/v42.25-release-regression.yml
+```
+
+At HEAD `035edf93...` both groups are green:
+
+```text
+runtime-contracts         ✅
+training-data-contracts   ✅
+```
+
+The runtime group covers repository/scheduler/process/fencing/GPU recovery/artifact fencing/conversion/training-resource contracts plus `task_worker.py --check`.
+The training-data group covers label/negative/scope/split/component/Snapshot/portable-dataset/resource/launcher/worker-integration contracts.
+
+## 3. Current frontend architecture
+
+The browser is still a classic `static/app.js` application with a named module stabilization layer. Do not describe it as already migrated to Vue.
 
 ```text
 static/app.js historical runtime
@@ -48,120 +61,40 @@ static/app.js historical runtime
        └── AutoLabelPollRuntime
 ```
 
-New work must go into named modules. Do not create another `train430`, `train431`, etc.
+New work must go into named modules. Do not create `train430`, `train431`, or another numbered override layer.
 
 ## 4. Navigation / async ownership
 
-`static/modules/navigation-stability.js` no longer uses a MutationObserver to call global `window.render()` as a repair mechanism.
+`static/modules/navigation-stability.js` no longer uses a MutationObserver to trigger global `window.render()` as a repair mechanism.
 
-Final owners currently guarded include final implementations such as:
+`PageRequestScope` scopes same-origin `/api/*` GET/HEAD requests to the current page. POST/PUT/DELETE are not automatically cancelled.
 
-```text
-算法列表:          renderAlgorithms423 / renderAlg412
-数据集:            renderDatasets424
-训练任务:          renderTraining423 / renderTraining428 family
-自动标注及清洗:    renderOps427
-视频切帧:          renderVideo424 / refreshVideo424Delta
-素材接入:          renderSources422 / refreshSources422
-```
+Real Chrome regression proves delayed old-page GET responses cannot repaint after navigation.
 
-`PageRequestScope` scopes legacy same-origin `/api/*` GET/HEAD calls to the current page. POST/PUT/DELETE are not automatically cancelled.
+## 5. Polling / incremental page ownership
 
-Real Chrome regression proves a delayed old-page GET cannot repaint after navigating away.
-
-## 5. Polling ownership
-
-`static/modules/poll-registry.js` owns creation/lifecycle for the important current high-frequency paths:
+Important current managed paths:
 
 ```text
-training-jobs     managed interval, 2s active / 5s idle
-video-frames      v42.4 managed one-shot, 2s while active
-sources           managed interval, 2.5s
-auto-label-v60    managed one-shot, 1.8s while active
+training-jobs     2s active / 5s idle
+video-frames      2s one-shot while active
+sources           2.5s interval
+auto-label-v60    1.8s one-shot while active
 ```
 
-The final v42.4 video implementation is the accepted path. Old v33 video timers are compatibility cleanup only.
-
-The old `auto422Timer` path belongs to a legacy page and should disappear with that page rather than receive new architecture work.
-
-## 6. Incremental high-frequency pages — P0-C complete
-
-### Algorithm list
-
-Owner:
+Named page owners already in place:
 
 ```text
-static/modules/algorithm-list-runtime.js
+Algorithms        static/modules/algorithm-list-runtime.js
+Training tasks    static/modules/training-task-runtime.js
+Datasets          static/modules/material-pagination-runtime.js
 ```
 
-Contracts:
+Routine refreshes patch local page regions and preserve page shells; they must not fall back to unrelated `loadRelated()` + whole-page repaint behavior.
 
-```text
-expand/collapse -> local state only -> 0 algorithm/bootstrap requests
-page refresh    -> GET algorithms + GET jobs -> patch cards
-training create -> focused algorithms/jobs refresh
-```
+## 6. Canonical training creation state
 
-The algorithm page shell is preserved.
-
-### Training tasks
-
-Owner:
-
-```text
-static/modules/training-task-runtime.js
-```
-
-Contracts:
-
-```text
-top/page refresh -> GET jobs only -> patch final train428 counts + tbody
-promote/pause/resume/stop/delete -> mutation endpoint -> GET jobs -> patch
-```
-
-No normal training-task action uses `loadRelated()` + whole-page render.
-
-Material-pool hydration may still happen in the background for training creation, but `MaterialPaginationRuntime61` is explicitly forbidden from globally repainting `.train428-page` after that hydration finishes.
-
-### Datasets / materials
-
-Owner:
-
-```text
-static/modules/material-pagination-runtime.js
-window.MaterialPaginationRuntime61
-```
-
-Current build:
-
-```text
-material-pagination-runtime-422205
-```
-
-The v61 server-paged data model remains authoritative.
-
-Contracts:
-
-```text
-first dataset entry or structural toolbar change
--> build .data426-shell
-
-page / search / label filter / source filter / top refresh
--> fetch /api/v61/.../materials
--> update current state/images/totals
--> patch #data412Grid + counts + pager + filter/source decorations
--> preserve .data426-shell
-```
-
-Structural changes such as switching processed/unprocessed tabs or entering/leaving delete mode may rebuild the shell because the toolbar itself changes.
-
-The old install-time 250ms material bootstrap is now conditional: once the dataset shell + current filter signature have committed, the delayed bootstrap must not reset the cursor. This fixes the real race where a user could click Next and then be pushed back to page 1 by a late bootstrap request.
-
-Real Chrome regression verifies natural next-page navigation, the delayed-bootstrap window, search and top refresh while preserving the same `.data426-shell`. Top refresh does not request bootstrap, algorithms, datasets or legacy `/images`.
-
-## 7. Canonical training creation state — P0-B canonical-first milestone
-
-Canonical frontend draft:
+Single canonical frontend source of truth:
 
 ```text
 state.trainingDraft
@@ -174,84 +107,73 @@ static/modules/training-draft.js
 static/modules/training-draft-runtime.js
 static/modules/training-draft-controls.js
 static/modules/training-submit.js
+static/modules/training-labels.js
 ```
 
-Current runtime builds:
+Current builds/entries:
 
 ```text
-training-draft-runtime-422504
-training-draft-controls-422500
+training-draft-runtime-422506
+training-draft-controls-422501
+training-labels module-422506
+main.mjs?v=42.25.32
 ```
 
-The canonical draft owns exact material ids, independent test ids, split mode, experiment/validation percentages, inherited/new/effective labels, resource strategy/device/GPU/batch/workers/cache, config and queue priority.
-
-The principal final train-v3 interactions are now canonical-first:
+The canonical draft owns:
 
 ```text
-open/switch training algorithm
-confirm training/independent-test materials
-switch split mode
-label selection
-experiment percentage
-validation percentage
-queue priority
-resource strategy
-training device
-GPU policy
-training settings apply/save
+algorithmId
+baseVersionId
+materialIds
+testMaterialIds
+splitMode
+experimentPercent
+validationPercent
+inheritedLabelCodes
+newLabelCodes
+effectiveLabelCodes
+resource
+config
+priority
 ```
 
-These write `TrainingDraftRuntime.update(...)` before or directly from the active control path. Historical state is mirrored for legacy rendering instead of being authoritative.
+Principal train-v3 interactions are canonical-first: algorithm start/switch, material confirmation, independent test material confirmation, split mode, label selection, experiment/validation percentage, priority, resource strategy/device/GPU policy, and training settings save/apply.
 
-Training settings direct-write includes advanced values and protects explicit resource semantics. Real Chrome currently covers:
+Final `/train/start` frontend owner is `TrainingSubmitRuntime`; stale request values are canonicalized before POST. Explicit `false`/`0` values must survive UI -> draft -> request unchanged.
+
+## 7. First compatibility mirror has been removed
+
+`state.trainingLabelSelected` is no longer a compatibility mirror.
+
+Current behavior:
 
 ```text
-epochs=30
-batch=16
-workers=4
-cache=false
-optimizer=AdamW
-resource_strategy=manual
-device=cpu in browser fixture
-gpu_policy=exclusive
+label UI reads state.trainingDraft.newLabelCodes
+label change -> TrainingDraftRuntime.update({newLabelCodes})
+TrainingDraftRuntime no longer mirrors labels back to state.trainingLabelSelected
+trainingDraftFromLegacyState no longer imports task labels from state.trainingLabelSelected
 ```
 
-The browser test verifies canonical draft, compatibility mirror, stale-manual-POST canonicalization and the final user-facing submit all carry the same values.
+Real Chrome `training-label-selector.spec.mjs` explicitly asserts throughout the creation/submission flow:
 
-Final `/train/start` frontend owner is `TrainingSubmitRuntime`. Duplicate submit is locked. Explicit false/zero values are preserved.
+```text
+Object.hasOwn(state, 'trainingLabelSelected') === false
+```
 
-Legacy fields still exist only as compatibility mirrors:
+It also validates material selection, label deselection, settings, stale-manual-POST canonicalization, and the final user-facing submit.
+
+Remaining training compatibility mirrors:
 
 ```text
 state.train428AlgorithmId
 state.train428Config
 state.train429Selected
 state.trainSplitV3
-state.trainingLabelSelected
 ```
 
-Do not delete them wholesale yet. The next P0-B step is reducing generic legacy event sampling/sync and removing individual mirrors only after unit + real Chrome parity proves no current renderer still depends on them.
+Do not delete these wholesale. `app.js` still has active/final renderer reads for parts of this state.
 
-## 8. Training labels
-
-Active owner:
-
-```text
-static/modules/training-labels.js
-```
-
-Removed classic shims:
-
-```text
-static/training-label-bootstrap.js
-static/training-label-v3-anchor.js
-```
-
-Labels come only from the exact selected materials plus inherited prior-version schema. Label changes already write canonical `newLabelCodes` through `TrainingDraftRuntime.update()`.
-
-The module does not own `/train/start`.
-
-## 9. Current frontend gates
+## 8. Frontend gates
 
 Workflow:
 
@@ -259,9 +181,14 @@ Workflow:
 .github/workflows/frontend-runtime-stabilization.yml
 ```
 
-At functional milestone `d3a5f61c...`, Node/syntax and real Chrome were green. A following CI-only commit adds explicit `node --check` for `training-draft-controls.js`; verify the latest branch HEAD checks before claiming green.
+At HEAD `035edf93...` both are green:
 
-Current browser set includes:
+```text
+frontend             ✅
+browser-navigation   ✅
+```
+
+Current real-Chrome suite includes:
 
 ```text
 navigation-stability.spec.mjs
@@ -272,21 +199,45 @@ training-task-performance.spec.mjs
 material-pagination-performance.spec.mjs
 ```
 
-## 10. Next work order
+## 9. Next work order
 
-1. Reduce generic `TrainingDraftRuntime.sync()` event sampling for train-v3 controls already owned by `TrainingDraftControlsRuntime`; keep sync only as a migration/final guard where legacy async initialization still requires it.
-2. Remove individual training compatibility mirrors only after renderer/browser parity proves they are no longer read by the active UI.
-3. Continue deleting global render ownership only after named replacement modules have browser parity.
-4. Broad repository regression.
-5. Real A800 short training acceptance (`device=0`, `batch=16`, `workers=4`, `cache=false`, fire+smoke -> `nc=2`).
-6. Security hardening after functional acceptance.
+1. Continue P0-B mirror retirement one field/read-path at a time. Prefer migrating final train-v3 reads to `state.trainingDraft` before deleting any mirror.
+2. Highest-priority candidates are `train429Selected` / `trainSplitV3`, but only after identifying the exact final renderer reads and proving browser parity.
+3. Do not spend unlimited time on frontend debt: after another bounded mirror cleanup batch, prepare A800 RC acceptance.
+4. A800 short training target: `device=0`, `batch=16`, `workers=4`, `cache=false`, 3–5 epochs, fire+smoke only, expected `nc=2`.
+5. Verify Snapshot/data.yaml only contain intended task classes and `confirmed_empty` produces zero-byte YOLO label files.
+6. Run one iteration-training acceptance and restart/lifecycle acceptance for Web + Worker.
+7. Security hardening follows functional acceptance.
 
-## 11. Do not do yet
+## 10. Standard architecture target
 
-- do not rewrite the whole frontend to Vue before current P0 migration is stable;
-- do not split Git repositories;
-- do not add another numbered override layer;
-- do not remove legacy code before replacement browser coverage exists;
-- do not claim CUDA/production acceptance from frontend CI.
+Do not immediately split repositories or rewrite everything. Incremental target remains:
 
-Read `docs/frontend-legacy-audit.md` for the remaining debt map and `docs/superpowers/specs/` for backend/data/runtime contracts.
+```text
+Monorepo
+  frontend/  -> Vue 3 + TypeScript + Vite + Pinia + Vue Router
+  backend/   -> FastAPI API-only
+  platform_core/
+  workers/
+  tests/
+  docs/
+
+Nginx
+  /       -> frontend dist
+  /api/*  -> FastAPI
+```
+
+API versions should eventually represent public API compatibility (for example `/api/v1`) rather than historical implementation generation numbers.
+
+## 11. Do not do
+
+- do not merge to `main` without explicit authorization;
+- do not add another numbered frontend override generation;
+- do not restore global `window.render()` repair loops;
+- do not let polling repaint unrelated pages;
+- do not rebuild train requests from project-wide labels;
+- do not inherit mother-model classes on first training;
+- do not remove multiple compatibility mirrors without unit + real Chrome proof;
+- do not claim CUDA/A800 acceptance from browser/CI tests.
+
+Read `docs/frontend-legacy-audit.md` for the remaining cleanup map and `docs/superpowers/specs/` for backend/data/runtime contracts.
