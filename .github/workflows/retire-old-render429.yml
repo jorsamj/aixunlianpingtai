@@ -1,0 +1,50 @@
+name: Retire oldRender429
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_old_render429.py
+      - .github/workflows/retire-old-render429.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded oldRender429 retirement
+        run: python tools/retire_old_render429.py
+      - name: Verify focused render contracts
+        run: |
+          node --check static/app.js
+          node --test tests/frontend/render-owner-retirement.test.mjs tests/frontend/render-alias-restore.test.mjs tests/frontend/navigation-stability.test.mjs
+          if grep -Fq 'oldRender429' static/app.js; then
+            echo 'oldRender429 remains after retirement' >&2
+            exit 1
+          fi
+          grep -Fq 'const oldRender412=render;' static/app.js
+          grep -Fq '/static/app.js?v=42.25.59' static/index.html
+      - name: Commit retired render wrapper
+        run: |
+          if git diff --quiet -- static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs; then
+            echo 'no oldRender429 retirement changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs
+          git commit -m 'refactor(ui): retire fully shadowed oldRender429 wrapper'
+          git push
