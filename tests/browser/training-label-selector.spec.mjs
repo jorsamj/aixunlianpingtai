@@ -113,14 +113,16 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(labels).toContainText('本次训练标签');
   await expect(labels).toContainText('请先选择训练素材');
 
-  // The exact-material picker has its own browser regression suite. Apply the same
-  // authoritative selected-id state so this test isolates label + TrainingDraft behavior.
-  await page.evaluate(ids => {
-    state.train429Selected = new Set(ids);
-    if (state.trainSplitV3) state.trainSplitV3.train = state.train429Selected;
-    window.TrainingLabelRuntime.refresh();
-    window.TrainingDraftRuntime?.sync();
-  }, imageIds);
+  // Use the real train-v3 material picker. It loads the authoritative full material pool
+  // into state.images before confirming exact ids; bypassing this flow would not represent
+  // the production path and would leave only the bounded page cache in memory.
+  await dialog.getByRole('button', {name: '选择训练素材'}).click();
+  const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
+  await expect(picker).toBeVisible();
+  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await expect(picker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);
+  await picker.getByRole('button', {name: '确认选择'}).click();
+  await expect(dialog).toBeVisible();
 
   await expect(labels).toBeVisible();
   await expect(labels).toContainText('明火');
@@ -133,7 +135,6 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(fire).toBeChecked();
   await expect(smoke).toBeChecked();
 
-  // Prove that task labels, not the project label library, control the outgoing request.
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
 
@@ -142,6 +143,8 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
     labels: state.trainingDraft?.newLabelCodes || [],
   }))).toEqual({materials: imageIds, labels: ['fire']});
 
+  // Deliberately send stale legacy ids/labels. TrainingDraftRuntime must canonicalize the
+  // outgoing request before the existing server-side label-contract bootstrap sees it.
   await page.evaluate(async projectId => {
     await fetch(`/api/v12/projects/${projectId}/train/start`, {
       method: 'POST',
@@ -149,8 +152,8 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
       body: JSON.stringify({
         algorithm_asset_id: state.train428AlgorithmId,
         train_image_ids: ['stale-legacy-id'],
-        val_image_ids: [],
         test_image_ids: [],
+        train_labels: ['stale-label'],
         queue_priority: 50,
       }),
     });
