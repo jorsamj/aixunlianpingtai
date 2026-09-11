@@ -90,20 +90,10 @@ export function installAutoLabelPollRuntime({
   const state = () => getState?.() || {};
   let destroyed = false;
   let refreshing = false;
-  let originalRenderOps = null;
-  let wrappedRenderOps = null;
-  const rebindTimers = [];
 
   function ownsCurrentView(s = state()) {
     return String(s.page || '') === AUTO_LABEL_PAGE
       && String(s.v427OpsTab || ACTIVE_TAB) === ACTIVE_TAB;
-  }
-
-  function retireLegacyTimer(s = state()) {
-    if (s.ai60ListTimer != null) {
-      try { clearTimeout(s.ai60ListTimer); } catch (_) {}
-      s.ai60ListTimer = null;
-    }
   }
 
   function clearManaged() {
@@ -120,6 +110,13 @@ export function installAutoLabelPollRuntime({
       () => refreshRows(),
       delay,
     );
+  }
+
+  function activate(tasks = state().annotationTasks60 || []) {
+    clearManaged();
+    if (destroyed || !ownsCurrentView()) return false;
+    schedule(tasks, pollDelay);
+    return true;
   }
 
   async function refreshRows() {
@@ -167,59 +164,23 @@ export function installAutoLabelPollRuntime({
     }
   }
 
-  function afterLegacyRender() {
-    const s = state();
-    retireLegacyTimer(s);
-    if (!ownsCurrentView(s)) {
-      clearManaged();
-      return;
-    }
-    schedule(s.annotationTasks60 || [], pollDelay);
-  }
-
-  function bindRenderer() {
-    const current = window.renderOps427;
-    if (typeof current !== 'function') return false;
-    if (current.__autoLabelPollRuntimeWrapped) return true;
-    originalRenderOps = current;
-    wrappedRenderOps = async function (...args) {
-      try {
-        return await current.apply(this, args);
-      } finally {
-        afterLegacyRender();
-      }
-    };
-    wrappedRenderOps.__autoLabelPollRuntimeWrapped = true;
-    wrappedRenderOps.__autoLabelPollRuntimeOriginal = current;
-    window.renderOps427 = wrappedRenderOps;
-    if (ownsCurrentView()) queueMicrotask(afterLegacyRender);
-    return true;
-  }
-
-  bindRenderer();
-  for (const delay of [100, 400, 1000]) {
-    rebindTimers.push(setTimeout(bindRenderer, delay));
-  }
-
   const runtime = {
-    build: 'auto-label-poll-422500',
+    build: 'auto-label-poll-422501',
+    activate,
     refreshRows,
     schedule,
-    rebind: bindRenderer,
     snapshot() {
       return {
         pageOwned: ownsCurrentView(),
         refreshing,
         managed: pollRegistry.snapshot?.().find(row => row.key === POLL_KEY) || null,
+        classicWrapperOwner: false,
+        timerOwner: false,
       };
     },
     destroy() {
       destroyed = true;
-      for (const timer of rebindTimers) clearTimeout(timer);
-      rebindTimers.length = 0;
-      retireLegacyTimer();
       clearManaged();
-      if (wrappedRenderOps && window.renderOps427 === wrappedRenderOps) window.renderOps427 = originalRenderOps;
       if (window.AutoLabelPollRuntime === runtime) window.AutoLabelPollRuntime = null;
       window.__autoLabelPollRuntimeInstalled = false;
     },
@@ -227,5 +188,6 @@ export function installAutoLabelPollRuntime({
 
   window.AutoLabelPollRuntime = runtime;
   window.__autoLabelPollRuntimeInstalled = true;
+  if (ownsCurrentView()) queueMicrotask(() => activate());
   return runtime;
 }
