@@ -20,7 +20,7 @@ jobs:
       - name: Install contract-test dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest fastapi uvicorn python-multipart pillow pyyaml requests
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Runtime, resource and conversion contracts
         run: >-
@@ -50,7 +50,7 @@ jobs:
       - name: Install contract-test dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest fastapi uvicorn python-multipart pillow pyyaml requests
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Training data, labels and snapshot contracts
         run: >-
