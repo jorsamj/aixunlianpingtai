@@ -1321,7 +1321,8 @@ window.installUsability417=function(){
     state.projects=projects;
     const saved=lastState.projectId || '';
     state.project=projects.find(p=>p.id===saved) || projects[0] || null;
-    if(lastState.page && RENDER_MAP()[lastState.page]) state.page=lastState.page;
+    const restoredPage=lastState.page==='自动标注'?'自动标注及清洗':lastState.page;
+    if(restoredPage && (RENDER_MAP()[restoredPage]||restoredPage==='自动标注及清洗')) state.page=restoredPage;
     if(lastState.datasetId) state.datasetId=lastState.datasetId;
     if(lastState.imageFilter) state.imageFilter=lastState.imageFilter;
     saveUiState();
@@ -3016,7 +3017,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   // route + page alias
   const renderBase427=render;
-  render=function(){if(state.page==='自动标注')state.page='自动标注及清洗';renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()};
+  render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()};
     setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V427},120);
 })();
 
