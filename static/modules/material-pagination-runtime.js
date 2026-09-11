@@ -42,6 +42,12 @@ async function responseJson(response) {
   throw new Error(body.message || body.detail || `HTTP ${response.status}`);
 }
 
+function escHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
+}
+
 export function installMaterialPaginationRuntime() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return false;
   if (window.__materialPaginationRuntime61Installed) return true;
@@ -49,12 +55,16 @@ export function installMaterialPaginationRuntime() {
 
   window.__materialPaginationRuntime61Installed = true;
   const transport = window.__materialPaging61;
+  const materialFetch = typeof transport.originalFetch === 'function'
+    ? transport.originalFetch
+    : window.fetch.bind(window);
   const baseSetPage = window.setPage;
   const baseRenderDatasets = window.renderDatasets424;
   const baseRenderCards = window.renderData412Cards;
   let requestSerial = 0;
   let searchTimer = null;
   let suppressCardReload = false;
+  let refreshBusy = false;
 
   state.materialQuery61 = state.materialQuery61 || '';
   state.materialAnnotated61 = state.materialAnnotated61 || 'all';
@@ -62,6 +72,7 @@ export function installMaterialPaginationRuntime() {
     cursor: '', nextCursor: '', cursorStack: [], page: 1, total: 0,
     unprocessedTotal: 0, processedTotal: 0,
   };
+  state.materialShellSignature61 = state.materialShellSignature61 || '';
 
   const projectId = () => String(state.project?.id || '');
   const isPagedDataset = () => state.page === '数据集' && transport.mode === 'paged';
@@ -85,12 +96,31 @@ export function installMaterialPaginationRuntime() {
     ]);
   }
 
+  function shellSignature61() {
+    return JSON.stringify([
+      state.data412Tab || 'unprocessed',
+      Boolean(state.data412DeleteMode),
+    ]);
+  }
+
+  function hasDatasetShell61() {
+    return Boolean(
+      isPagedDataset()
+      && document.querySelector('.data426-shell')
+      && document.getElementById('data412Grid')
+      && document.getElementById('data412Pager')
+    );
+  }
+
   async function fetchMaterialPage61(cursor = '') {
     const pid = projectId();
     if (!pid) return {items: [], total: 0, next_cursor: null};
     const f = filters61();
     const params = buildMaterialQuery({...f, cursor, limit: transport.pageSize || 48});
-    return responseJson(await fetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`));
+    return responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`, {
+      headers: {Accept: 'application/json'},
+      credentials: 'same-origin',
+    }));
   }
 
   async function fetchStatusTotal61(processingStatus) {
@@ -101,7 +131,10 @@ export function installMaterialPaginationRuntime() {
       sourceId: String(state.materialSourceFilter61 || 'all'),
       processingStatus,
     });
-    const page = await responseJson(await fetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`));
+    const page = await responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`, {
+      headers: {Accept: 'application/json'},
+      credentials: 'same-origin',
+    }));
     return Number(page.total || 0);
   }
 
@@ -112,9 +145,10 @@ export function installMaterialPaginationRuntime() {
       const totalParams = buildMaterialQuery({limit: 1});
       const annotatedParams = buildMaterialQuery({limit: 1, annotated: 'marked'});
       const [totalPage, annotatedPage] = await Promise.all([
-        responseJson(await fetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${totalParams}`)),
-        responseJson(await fetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${annotatedParams}`)),
+        responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${totalParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
+        responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${annotatedParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
       ]);
+      if (transport.mode !== 'paged') return;
       state.materialSummary61 = {
         total: Number(totalPage.total || 0),
         annotated: Number(annotatedPage.total || 0),
@@ -171,6 +205,34 @@ export function installMaterialPaginationRuntime() {
     }
   }
 
+  function decorateStorage61() {
+    const storageApi = window.PlatformCore?.storage;
+    const toolbar = document.querySelector('.data426-toolbar');
+    if (toolbar && !document.getElementById('materialSource61')) {
+      const enabled = storageApi?.enabledStorageSources?.(state.storageSources61 || []) || [];
+      const selected = String(state.materialSourceFilter61 || 'all');
+      toolbar.insertAdjacentHTML('afterbegin', `<select id="materialSource61" class="select storage61-filter"><option value="all">全部来源</option>${enabled.map(source => `<option value="${escHtml(source.id)}" ${String(source.id) === selected ? 'selected' : ''}>${escHtml(source.name)}</option>`).join('')}</select>`);
+    }
+    const sourceSelect = document.getElementById('materialSource61');
+    if (sourceSelect) sourceSelect.value = String(state.materialSourceFilter61 || 'all');
+
+    const cards = [...document.querySelectorAll('.data426-card')];
+    cards.forEach((card, index) => {
+      const row = (state.images || [])[index];
+      const meta = card.querySelector('.data426-meta');
+      if (!row || !meta || meta.querySelector('.storage61-badge')) return;
+      const source = (state.storageSources61 || []).find(item => item.id === (row.storage_source_id || 'default_local'));
+      const label = storageApi?.storageSourceLabel?.(source) || row.storage_type || '本地';
+      meta.insertAdjacentHTML('beforeend', `<span class="storage61-badge">${escHtml(label)}</span>`);
+    });
+  }
+
+  function syncLabelChipState61() {
+    const selected = state.data412Labels || new Set();
+    const clear = document.querySelector('.data426-chip.clear');
+    if (clear) clear.classList.toggle('on', selected.size === 0);
+  }
+
   function decorateDataset61() {
     const info = state.materialPage61;
     const tabs = [...document.querySelectorAll('.data424-tabs button')];
@@ -178,12 +240,16 @@ export function installMaterialPaginationRuntime() {
     if (tabs[1]?.querySelector('b')) tabs[1].querySelector('b').textContent = String(info.processedTotal || 0);
     const count = document.getElementById('data412Count');
     if (count) count.textContent = `${info.total || 0} 张`;
+    const selectedCount = document.getElementById('data412SelCount');
+    if (selectedCount) selectedCount.textContent = `已选 ${(state.data412Selected || new Set()).size} 张`;
     const pager = document.getElementById('data412Pager');
     if (pager) {
       const pages = Math.max(1, Math.ceil(Number(info.total || 0) / Number(transport.pageSize || 48)));
       pager.innerHTML = `<button class="btn mini" ${info.page <= 1 ? 'disabled' : ''} onclick="materialPrev61()">上一页</button><span>${info.page} / ${pages}</span><button class="btn mini" ${!info.nextCursor ? 'disabled' : ''} onclick="materialNext61()">下一页</button>`;
     }
+    decorateStorage61();
     restoreControls61();
+    syncLabelChipState61();
     decorateSummary61();
 
     const buttons = [...document.querySelectorAll('.data426-head button')];
@@ -193,16 +259,33 @@ export function installMaterialPaginationRuntime() {
     if (ready) ready.onclick = () => window.runMaterialBatch62?.('MARK_CLEAN_SKIPPED');
   }
 
-  function renderPagedDataset61() {
-    if (!isPagedDataset() || typeof baseRenderDatasets !== 'function') return;
+  function patchPagedDataset61() {
+    if (!hasDatasetShell61() || typeof baseRenderCards !== 'function') return false;
     suppressCardReload = true;
     state.data412Page = 1;
-    try { baseRenderDatasets(); } finally { suppressCardReload = false; }
+    try { baseRenderCards(); } finally { suppressCardReload = false; }
     decorateDataset61();
+    return true;
+  }
+
+  function renderPagedDataset61({forceShell = false} = {}) {
+    if (!isPagedDataset() || typeof baseRenderDatasets !== 'function') return false;
+    const structure = shellSignature61();
+    const needsShell = forceShell || !hasDatasetShell61() || state.materialShellSignature61 !== structure;
+    if (needsShell) {
+      suppressCardReload = true;
+      state.data412Page = 1;
+      try { baseRenderDatasets(); } finally { suppressCardReload = false; }
+      state.materialShellSignature61 = structure;
+      decorateDataset61();
+      return 'shell';
+    }
+    patchPagedDataset61();
+    return 'patch';
   }
 
   async function loadMaterialPage61({reset = false, cursor = undefined, page = undefined} = {}) {
-    if (!isPagedDataset()) return;
+    if (!isPagedDataset()) return {stale: true};
     const serial = ++requestSerial;
     const info = state.materialPage61;
     if (reset) {
@@ -212,13 +295,14 @@ export function installMaterialPaginationRuntime() {
       info.page = 1;
     }
     const requestedCursor = cursor === undefined ? info.cursor : (cursor || '');
+    const expectedPage = state.page;
     try {
       const [materialPage, unprocessedTotal, processedTotal] = await Promise.all([
         fetchMaterialPage61(requestedCursor),
         fetchStatusTotal61('unprocessed'),
         fetchStatusTotal61('processed'),
       ]);
-      if (serial !== requestSerial || !isPagedDataset()) return;
+      if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
       state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
       info.cursor = requestedCursor;
       info.nextCursor = materialPage.next_cursor || '';
@@ -228,10 +312,22 @@ export function installMaterialPaginationRuntime() {
       if (page !== undefined) info.page = Math.max(1, Number(page) || 1);
       transport.lastPage = materialPage;
       state.materialFilterSignature61 = filterSignature61();
-      renderPagedDataset61();
+      const mode = renderPagedDataset61();
+      return {stale: false, mode, items: state.images, total: info.total};
     } catch (error) {
-      window.toast?.(error.message || String(error));
+      if (serial === requestSerial && isPagedDataset()) window.toast?.(error.message || String(error));
+      return {stale: serial !== requestSerial, error};
     }
+  }
+
+  async function focusedRefresh61() {
+    if (!isPagedDataset()) return false;
+    const info = state.materialPage61;
+    await Promise.all([
+      loadMaterialPage61({cursor: info.cursor || '', page: info.page || 1}),
+      refreshSummary61(),
+    ]);
+    return true;
   }
 
   window.materialNext61 = async () => {
@@ -256,7 +352,7 @@ export function installMaterialPaginationRuntime() {
     let cursor = '';
     do {
       const params = buildMaterialQuery({...f, cursor, limit: 1000});
-      const page = await responseJson(await fetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials/ids?${params}`));
+      const page = await responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials/ids?${params}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'}));
       ids.push(...(page.items || []).map(String));
       cursor = page.next_cursor || '';
     } while (cursor);
@@ -272,7 +368,9 @@ export function installMaterialPaginationRuntime() {
     state.data412DeleteMode = false;
     state.data412Page = 1;
     state.materialAnnotated61 = 'all';
-    loadMaterialPage61({reset: true});
+    state.materialShellSignature61 = '';
+    renderPagedDataset61({forceShell: true});
+    void loadMaterialPage61({reset: true});
   };
 
   const baseToggleLabel = window.toggleLabel412;
@@ -280,14 +378,20 @@ export function installMaterialPaginationRuntime() {
     if (!isPagedDataset()) return baseToggleLabel?.(label);
     if (state.data412Labels.has(label)) state.data412Labels.delete(label);
     else state.data412Labels.add(label);
-    loadMaterialPage61({reset: true});
+    const active = document.activeElement;
+    if (active?.classList?.contains('data426-chip') && !active.classList.contains('clear')) {
+      active.classList.toggle('on', state.data412Labels.has(label));
+    }
+    syncLabelChipState61();
+    void loadMaterialPage61({reset: true});
   };
 
   const baseClearLabels = window.clearLabels412;
   window.clearLabels412 = function clearPagedMaterialLabels() {
     if (!isPagedDataset()) return baseClearLabels?.();
     state.data412Labels.clear();
-    loadMaterialPage61({reset: true});
+    document.querySelectorAll('.data426-chip').forEach(button => button.classList.toggle('on', button.classList.contains('clear')));
+    void loadMaterialPage61({reset: true});
   };
 
   window.materialBatchFilters61 = () => {
@@ -328,22 +432,21 @@ export function installMaterialPaginationRuntime() {
     state.materialQuery61 = nextQuery;
     state.materialAnnotated61 = nextAnn;
     state.data412Page = 1;
-    baseRenderCards?.();
-    decorateDataset61();
     if (changed) {
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => loadMaterialPage61({reset: true}), 220);
+      return;
     }
+    patchPagedDataset61();
   };
 
   window.renderDatasets424 = function serverPagedDatasets() {
     if (!isPagedDataset()) return baseRenderDatasets?.();
     const signature = filterSignature61();
-    if (signature !== state.materialFilterSignature61) {
-      loadMaterialPage61({reset: true});
-      return renderPagedDataset61();
-    }
-    return renderPagedDataset61();
+    const needsLoad = !hasDatasetShell61() || signature !== state.materialFilterSignature61;
+    const mode = renderPagedDataset61();
+    if (needsLoad) void loadMaterialPage61({reset: true});
+    return mode;
   };
 
   if (typeof baseSetPage === 'function') {
@@ -351,10 +454,12 @@ export function installMaterialPaginationRuntime() {
       const target = page === '自动标注' ? '自动标注及清洗' : String(page || '');
       const full = requiresFullMaterialPool(target);
       transport.mode = full ? 'full' : 'paged';
-      const result = baseSetPage(page);
       if (target === '数据集') {
-        setTimeout(() => loadMaterialPage61({reset: true}), 0);
-      } else if (full) {
+        state.materialFilterSignature61 = '';
+        state.materialShellSignature61 = '';
+      }
+      const result = baseSetPage(page);
+      if (full) {
         setTimeout(async () => {
           try {
             if (state.page !== target) return;
@@ -365,12 +470,47 @@ export function installMaterialPaginationRuntime() {
             window.toast?.(error.message || String(error));
           }
         }, 0);
-      } else {
+      } else if (target !== '数据集') {
         setTimeout(refreshSummary61, 0);
       }
       return result;
     };
   }
+
+  const onRefreshCapture = event => {
+    const button = event?.target?.closest?.('#refreshBtn');
+    if (!button || !isPagedDataset()) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (button.disabled || refreshBusy) return;
+    refreshBusy = true;
+    button.disabled = true;
+    void focusedRefresh61().then(
+      () => window.toast?.('素材已刷新'),
+      error => window.toast?.(error?.message || error),
+    ).finally(() => {
+      refreshBusy = false;
+      if (button?.isConnected !== false) button.disabled = false;
+    });
+  };
+  document.addEventListener('click', onRefreshCapture, true);
+
+  const runtime = {
+    build: 'material-pagination-runtime-422204',
+    load: loadMaterialPage61,
+    refresh: focusedRefresh61,
+    patch: patchPagedDataset61,
+    render: renderPagedDataset61,
+    state() {
+      return {
+        requestSerial,
+        refreshBusy,
+        filterSignature: state.materialFilterSignature61 || '',
+        shellSignature: state.materialShellSignature61 || '',
+      };
+    },
+  };
+  window.MaterialPaginationRuntime61 = runtime;
 
   setTimeout(() => {
     refreshSummary61();
