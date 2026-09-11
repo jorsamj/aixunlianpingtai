@@ -83,7 +83,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422515');
+    .toBe('training-draft-runtime-422516');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
     .toBe('module-422513');
   await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
