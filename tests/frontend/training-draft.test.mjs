@@ -133,3 +133,19 @@ test('draft request rejects overlapping independent test materials', () => {
     inheritedLabelCodes: ['fire'],
   })), /不能重复/);
 });
+
+test('draft request preserves legacy 1-999 integer priority contract', () => {
+  const base = {
+    algorithmId: 'alg-1',
+    materialIds: ['a', 'b'],
+    newLabelCodes: ['fire'],
+  };
+  for (const priority of [0, 1000, 1.5]) {
+    assert.throws(
+      () => trainingDraftToRequest(createTrainingDraft({...base, priority})),
+      /1~999 的整数/,
+    );
+  }
+  assert.equal(trainingDraftToRequest(createTrainingDraft({...base, priority: 1})).queue_priority, 1);
+  assert.equal(trainingDraftToRequest(createTrainingDraft({...base, priority: 999})).queue_priority, 999);
+});
