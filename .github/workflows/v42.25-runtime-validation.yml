@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install lightweight test dependencies
-        run: python -m pip install --upgrade pytest psutil
+        run: python -m pip install --upgrade pytest psutil filelock
       - name: Run Task Runtime fencing tests
         run: >-
           python -m pytest --noconftest
