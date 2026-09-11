@@ -185,6 +185,36 @@ jobs:
             fi
           done
           grep -Fq 'replaceSourceTimer();' "$file"
+      - name: Training PollRegistry direct owner guard
+        run: |
+          for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
+            if grep -F -n 'jobPollTimer' "$file"; then
+              echo "retired training polling state timer was reintroduced into $file" >&2
+              exit 1
+            fi
+          done
+          if grep -Fq 'setupPagePolling' static/app.js; then
+            if ! grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.();' static/app.js; then
+              echo 'remaining setupPagePolling entrypoints must hand lifecycle explicitly to PollRegistry' >&2
+              exit 1
+            fi
+          fi
+          file=static/modules/poll-registry.js
+          for token in \
+            installPollingCreationBridge \
+            __pollRegistryCreationWrapped \
+            originalSetupPagePolling \
+            wrappedSetupPagePolling \
+            "registry.adopt('training-jobs'" \
+            adoptLegacy \
+            rebindCreation; do
+            if grep -F -n "$token" "$file"; then
+              echo "training polling wrapper/adoption compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'replaceTrainingJobTimer,' "$file"
+          grep -Fq 'replaceTrainingJobTimer();' "$file"
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
