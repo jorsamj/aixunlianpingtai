@@ -5,13 +5,15 @@
 ## 1. Branch and release state
 
 ```text
-stable main baseline:              6683edeb5d8391acbd96909ff22f72022105026b
-current cleanup branch:            refactor/frontend-runtime-stabilization
-current recorded cleanup HEAD:     e38b72a4d93e1f56db633f540d68a160b83aa9d3
-formal VERSION.txt:                42.24.0 until v42.25 acceptance
-frontend badge:                    v42.25.0-dev
-frontend module entry cache:       main.mjs?v=42.25.26
+stable main baseline:                 6683edeb5d8391acbd96909ff22f72022105026b
+current cleanup branch:               refactor/frontend-runtime-stabilization
+latest validated functional milestone: d3a5f61cc0262f6add97e6d18f3042476ad372c6
+formal VERSION.txt:                   42.24.0 until v42.25 acceptance
+frontend badge:                       v42.25.0-dev
+frontend module entry cache:          main.mjs?v=42.25.30
 ```
+
+Later documentation/CI-only commits may exist after the recorded functional milestone. Verify the branch HEAD before editing.
 
 Do not merge the cleanup branch into `main` unless explicitly authorized.
 
@@ -40,6 +42,7 @@ static/app.js historical runtime
        ├── TrainingTaskRuntime
        ├── MaterialPaginationRuntime61
        ├── TrainingDraftRuntime
+       ├── TrainingDraftControlsRuntime
        ├── TrainingSubmitRuntime
        ├── training-labels
        └── AutoLabelPollRuntime
@@ -68,7 +71,7 @@ Real Chrome regression proves a delayed old-page GET cannot repaint after naviga
 
 ## 5. Polling ownership
 
-`static/modules/poll-registry.js` now owns creation/lifecycle for the important current high-frequency paths, not only cleanup:
+`static/modules/poll-registry.js` owns creation/lifecycle for the important current high-frequency paths:
 
 ```text
 training-jobs     managed interval, 2s active / 5s idle
@@ -129,6 +132,12 @@ static/modules/material-pagination-runtime.js
 window.MaterialPaginationRuntime61
 ```
 
+Current build:
+
+```text
+material-pagination-runtime-422205
+```
+
 The v61 server-paged data model remains authoritative.
 
 Contracts:
@@ -146,9 +155,11 @@ page / search / label filter / source filter / top refresh
 
 Structural changes such as switching processed/unprocessed tabs or entering/leaving delete mode may rebuild the shell because the toolbar itself changes.
 
-Real Chrome regression verifies natural next-page navigation, search and top refresh all preserve the same `.data426-shell`, while top refresh does not request bootstrap, algorithms, datasets or legacy `/images`.
+The old install-time 250ms material bootstrap is now conditional: once the dataset shell + current filter signature have committed, the delayed bootstrap must not reset the cursor. This fixes the real race where a user could click Next and then be pushed back to page 1 by a late bootstrap request.
 
-## 7. Canonical training creation state
+Real Chrome regression verifies natural next-page navigation, the delayed-bootstrap window, search and top refresh while preserving the same `.data426-shell`. Top refresh does not request bootstrap, algorithms, datasets or legacy `/images`.
+
+## 7. Canonical training creation state — P0-B canonical-first milestone
 
 Canonical frontend draft:
 
@@ -161,14 +172,55 @@ Owned by:
 ```text
 static/modules/training-draft.js
 static/modules/training-draft-runtime.js
+static/modules/training-draft-controls.js
 static/modules/training-submit.js
+```
+
+Current runtime builds:
+
+```text
+training-draft-runtime-422504
+training-draft-controls-422500
 ```
 
 The canonical draft owns exact material ids, independent test ids, split mode, experiment/validation percentages, inherited/new/effective labels, resource strategy/device/GPU/batch/workers/cache, config and queue priority.
 
+The principal final train-v3 interactions are now canonical-first:
+
+```text
+open/switch training algorithm
+confirm training/independent-test materials
+switch split mode
+label selection
+experiment percentage
+validation percentage
+queue priority
+resource strategy
+training device
+GPU policy
+training settings apply/save
+```
+
+These write `TrainingDraftRuntime.update(...)` before or directly from the active control path. Historical state is mirrored for legacy rendering instead of being authoritative.
+
+Training settings direct-write includes advanced values and protects explicit resource semantics. Real Chrome currently covers:
+
+```text
+epochs=30
+batch=16
+workers=4
+cache=false
+optimizer=AdamW
+resource_strategy=manual
+device=cpu in browser fixture
+gpu_policy=exclusive
+```
+
+The browser test verifies canonical draft, compatibility mirror, stale-manual-POST canonicalization and the final user-facing submit all carry the same values.
+
 Final `/train/start` frontend owner is `TrainingSubmitRuntime`. Duplicate submit is locked. Explicit false/zero values are preserved.
 
-Legacy fields are compatibility mirrors only:
+Legacy fields still exist only as compatibility mirrors:
 
 ```text
 state.train428AlgorithmId
@@ -178,7 +230,7 @@ state.trainSplitV3
 state.trainingLabelSelected
 ```
 
-Current remaining P0-B work is to make final train-v3 controls write through `TrainingDraftRuntime.update()` directly, then remove compatibility mirrors only after browser parity.
+Do not delete them wholesale yet. The next P0-B step is reducing generic legacy event sampling/sync and removing individual mirrors only after unit + real Chrome parity proves no current renderer still depends on them.
 
 ## 8. Training labels
 
@@ -195,7 +247,9 @@ static/training-label-bootstrap.js
 static/training-label-v3-anchor.js
 ```
 
-Labels come only from the exact selected materials plus inherited prior-version schema. The module does not own `/train/start`.
+Labels come only from the exact selected materials plus inherited prior-version schema. Label changes already write canonical `newLabelCodes` through `TrainingDraftRuntime.update()`.
+
+The module does not own `/train/start`.
 
 ## 9. Current frontend gates
 
@@ -205,7 +259,7 @@ Workflow:
 .github/workflows/frontend-runtime-stabilization.yml
 ```
 
-At recorded HEAD `e38b72a4...`, Node/syntax and real Chrome were green.
+At functional milestone `d3a5f61c...`, Node/syntax and real Chrome were green. A following CI-only commit adds explicit `node --check` for `training-draft-controls.js`; verify the latest branch HEAD checks before claiming green.
 
 Current browser set includes:
 
@@ -218,12 +272,10 @@ training-task-performance.spec.mjs
 material-pagination-performance.spec.mjs
 ```
 
-Always verify the latest HEAD checks again before claiming green.
-
 ## 10. Next work order
 
-1. Finish direct train-v3 -> `TrainingDraftRuntime.update()` writes; reduce dependence on `train428/train429/trainSplitV3` compatibility state.
-2. Remove old training mirror variables only after unit + real Chrome parity proves the named owner is complete.
+1. Reduce generic `TrainingDraftRuntime.sync()` event sampling for train-v3 controls already owned by `TrainingDraftControlsRuntime`; keep sync only as a migration/final guard where legacy async initialization still requires it.
+2. Remove individual training compatibility mirrors only after renderer/browser parity proves they are no longer read by the active UI.
 3. Continue deleting global render ownership only after named replacement modules have browser parity.
 4. Broad repository regression.
 5. Real A800 short training acceptance (`device=0`, `batch=16`, `workers=4`, `cache=false`, fire+smoke -> `nc=2`).
