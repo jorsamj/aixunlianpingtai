@@ -3,7 +3,7 @@ import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422511';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422512';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422503';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422507';
@@ -67,12 +67,8 @@ document.addEventListener('click', async event => {
   }
 });
 
-const pageRequestScope = installPageRequestScope({
-  getPage: () => state.page,
-});
-const pollRegistry = installPollRegistry({
-  getState: () => state,
-});
+const pageRequestScope = installPageRequestScope({getPage: () => state.page});
+const pollRegistry = installPollRegistry({getState: () => state});
 const trainingDraftRuntime = installTrainingDraftRuntime({
   getState: () => state,
   createTrainingDraft,
@@ -109,16 +105,8 @@ window.PlatformCore = {
 };
 
 const notify = message => window.toast(message);
-
-installNegativeSampleRuntime({
-  getState: () => state,
-  notify,
-});
-const trainingLabelRuntime = installTrainingLabelRuntime({
-  getState: () => state,
-  notify,
-  trainingDraftRuntime,
-});
+installNegativeSampleRuntime({getState: () => state, notify});
+const trainingLabelRuntime = installTrainingLabelRuntime({getState: () => state, notify, trainingDraftRuntime});
 window.PlatformCore.runtime.trainingLabelRuntime = trainingLabelRuntime;
 
 const algorithmListRuntime = installAlgorithmListRuntime({
@@ -141,9 +129,7 @@ const trainingSubmitRuntime = installTrainingSubmitRuntime({
   trainingDraftRuntime,
   trainingDraftToRequest,
   reloadRelated: async () => {
-    if (state.page === '算法列表' && algorithmListRuntime) {
-      return algorithmListRuntime.refresh({render: false});
-    }
+    if (state.page === '算法列表' && algorithmListRuntime) return algorithmListRuntime.refresh({render: false});
     if (typeof loadRelated === 'function') return loadRelated();
     return window.loadRelated?.();
   },
