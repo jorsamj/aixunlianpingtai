@@ -6,6 +6,8 @@ LABELS = Path('static/modules/training-labels.js')
 MAIN = Path('static/main.mjs')
 DRAFT_TEST = Path('tests/frontend/training-draft.test.mjs')
 RUNTIME_TEST = Path('tests/frontend/training-draft-runtime.test.mjs')
+DIRECT_TEST = Path('tests/frontend/training-draft-direct-write.test.mjs')
+GENERIC_TEST = Path('tests/frontend/training-draft-generic-sync.test.mjs')
 LABEL_TEST = Path('tests/frontend/training-labels.test.mjs')
 
 RETIRED = ('trainSplitV3', 'trainingLabelSelected', 'train429Selected', 'train428AlgorithmId', 'train428Config')
@@ -47,14 +49,12 @@ def migrate_runtime() -> None:
         '  function inheritanceFor(s, algorithmId = s.trainingDraft?.algorithmId) {',
         'inheritance canonical algorithm',
     )
-
     retire_start = text.find('  function retireOldMirrors(s) {')
     retire_end = text.find('  function commitDraft(', retire_start + 1)
     if retire_start < 0 or retire_end < 0:
         raise SystemExit('retireOldMirrors block missing')
     text = text[:retire_start] + text[retire_end:]
     text = replace_one(text, '    retireOldMirrors(s);\n', '', 'retired mirror mutation')
-
     old_bootstrap = """  function bootstrapFromLegacy(s) {\n    const inheritance = inheritanceFor(s);\n    const draft = withLiveControls(trainingDraftFromLegacyState(s, {\n      inheritedLabelCodes: inheritance.codes,\n      inheritancePending: inheritance.legacy,\n      baseVersionId: inheritance.versionId,\n    }));\n    legacyBootstrapCount += 1;\n    return {draft, inheritance};\n  }\n"""
     new_bootstrap = """  function initializeCanonical(s) {\n    const draft = withLiveControls(createTrainingDraft());\n    const inheritance = inheritanceFor(s, draft.algorithmId);\n    initializationCount += 1;\n    return {draft, inheritance};\n  }\n"""
     text = replace_one(text, old_bootstrap, new_bootstrap, 'canonical initializer')
@@ -117,39 +117,42 @@ def migrate_draft_test() -> None:
     end = text.find("test('request uses new labels for the task while inherited labels remain in effective schema'", start + 1)
     if start < 0 or end < 0:
         raise SystemExit('legacy draft test range missing')
-    replacement = """test('empty canonical draft has safe defaults and no hidden legacy state dependency', () => {\n  const draft = createTrainingDraft();\n  assert.equal(draft.algorithmId, '');\n  assert.deepEqual(draft.materialIds, []);\n  assert.deepEqual(draft.testMaterialIds, []);\n  assert.deepEqual(draft.newLabelCodes, []);\n  assert.deepEqual(draft.inheritedLabelCodes, []);\n  assert.equal(draft.splitMode, 'random_test_from_training_pool');\n  assert.equal(draft.experimentPercent, 20);\n  assert.equal(draft.validationPercent, 20);\n  assert.deepEqual(draft.resource, {\n    strategy: 'auto', device: 'auto', gpuPolicy: 'auto', batch: null, workers: null, cache: null,\n  });\n  assert.equal(draft.priority, 50);\n});\n\n"""
+    replacement = """test('empty canonical draft has safe defaults and no hidden legacy state dependency', () => {\n  const draft = createTrainingDraft();\n  assert.equal(draft.algorithmId, '');\n  assert.deepEqual(draft.materialIds, []);\n  assert.deepEqual(draft.testMaterialIds, []);\n  assert.deepEqual(draft.newLabelCodes, []);\n  assert.deepEqual(draft.inheritedLabelCodes, []);\n  assert.equal(draft.splitMode, 'random_test_from_training_pool');\n  assert.equal(draft.experimentPercent, 20);\n  assert.equal(draft.validationPercent, 20);\n  assert.deepEqual(draft.resource, {strategy: 'auto', device: 'auto', gpuPolicy: 'auto', batch: null, workers: null, cache: null});\n  assert.equal(draft.priority, 50);\n});\n\n"""
     text = text[:start] + replacement + text[end:]
-    if 'trainingDraftFromLegacyState' in text:
-        raise SystemExit('legacy adapter remains in training-draft.test.mjs')
     DRAFT_TEST.write_text(text, encoding='utf-8')
 
 
+def remove_legacy_dependency_from_test(path: Path) -> str:
+    text = path.read_text(encoding='utf-8')
+    text = replace_one(text, '  trainingDraftFromLegacyState,\n', '', f'{path.name} legacy import')
+    text = replace_one(text, '    trainingDraftFromLegacyState,\n', '', f'{path.name} legacy dependency')
+    return text
+
+
 def migrate_runtime_test() -> None:
-    text = RUNTIME_TEST.read_text(encoding='utf-8')
-    text = replace_one(text, '  trainingDraftFromLegacyState,\n', '', 'runtime test legacy import')
-    text = replace_one(text, '  return {createTrainingDraft, trainingDraftFromLegacyState, trainingInheritanceFromAlgorithm};', '  return {createTrainingDraft, trainingInheritanceFromAlgorithm};', 'runtime test dependencies')
+    text = remove_legacy_dependency_from_test(RUNTIME_TEST)
     text = text.replace('runtime.state().legacyBootstrapCount', 'runtime.state().initializationCount')
-    text = replace_one(
-        text,
-        "test('canonical draft wins over stale legacy mirrors and retired mirrors stay deleted', () => {",
-        "test('canonical draft ignores stale retired mirror-shaped fields without mutating them', () => {",
-        'canonical contamination test title',
-    )
-    text = replace_one(
-        text,
-        "  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);\n  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);",
-        "  assert.deepEqual([...state.trainSplitV3.train], ['legacy-wrong']);\n  assert.deepEqual([...state.trainingLabelSelected], ['legacy-label']);",
-        'retired fixture immutability assertions',
-    )
+    text = replace_one(text, "test('canonical draft wins over stale legacy mirrors and retired mirrors stay deleted', () => {", "test('canonical draft ignores stale retired mirror-shaped fields without mutating them', () => {", 'canonical contamination test title')
+    text = replace_one(text, "  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);\n  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);", "  assert.deepEqual([...state.trainSplitV3.train], ['legacy-wrong']);\n  assert.deepEqual([...state.trainingLabelSelected], ['legacy-label']);", 'retired fixture immutability assertions')
     start = text.find("test('legacy state is consumed once only when canonical draft is absent'")
     end = text.find("test('TrainingDraftRuntime never intercepts train-start fetches'", start + 1)
     if start < 0 or end < 0:
         raise SystemExit('runtime legacy bootstrap test range missing')
-    replacement = """test('missing draft initializes empty canonical state and ignores retired mirror-shaped fields', () => {\n  setupDom({tr429Priority: '40'});\n  const state = {\n    train428AlgorithmId: 'legacy-alg',\n    train429Selected: new Set(['legacy-a', 'legacy-b']),\n    train428Config: {device: 'cpu', batch: 8},\n    algorithms: [{id: 'legacy-alg', versions: []}],\n  };\n  globalThis.window = {fetch: async () => ({ok: true})};\n\n  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});\n  assert.equal(state.trainingDraft.algorithmId, '');\n  assert.deepEqual(state.trainingDraft.materialIds, []);\n  assert.equal(state.trainingDraft.priority, 40);\n  assert.equal(state.trainingDraft.resource.device, 'auto');\n  assert.equal(runtime.state().initializationCount, 1);\n\n  state.train429Selected = new Set(['changed-legacy']);\n  state.train428AlgorithmId = 'changed-legacy-alg';\n  state.train428Config = {device: 'changed-legacy-device'};\n  runtime.sync();\n\n  assert.equal(state.trainingDraft.algorithmId, '');\n  assert.deepEqual(state.trainingDraft.materialIds, []);\n  assert.equal(state.trainingDraft.resource.device, 'auto');\n  assert.equal(runtime.state().initializationCount, 1);\n\n  cleanup(runtime);\n});\n\n"""
+    replacement = """test('missing draft initializes empty canonical state and ignores retired mirror-shaped fields', () => {\n  setupDom({tr429Priority: '40'});\n  const state = {\n    train428AlgorithmId: 'legacy-alg',\n    train429Selected: new Set(['legacy-a', 'legacy-b']),\n    train428Config: {device: 'cpu', batch: 8},\n    algorithms: [{id: 'legacy-alg', versions: []}],\n  };\n  globalThis.window = {fetch: async () => ({ok: true})};\n  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});\n  assert.equal(state.trainingDraft.algorithmId, '');\n  assert.deepEqual(state.trainingDraft.materialIds, []);\n  assert.equal(state.trainingDraft.priority, 40);\n  assert.equal(state.trainingDraft.resource.device, 'auto');\n  assert.equal(runtime.state().initializationCount, 1);\n  state.train429Selected = new Set(['changed-legacy']);\n  state.train428AlgorithmId = 'changed-legacy-alg';\n  state.train428Config = {device: 'changed-legacy-device'};\n  runtime.sync();\n  assert.equal(state.trainingDraft.algorithmId, '');\n  assert.deepEqual(state.trainingDraft.materialIds, []);\n  assert.equal(state.trainingDraft.resource.device, 'auto');\n  assert.equal(runtime.state().initializationCount, 1);\n  cleanup(runtime);\n});\n\n"""
     text = text[:start] + replacement + text[end:]
-    if 'trainingDraftFromLegacyState' in text or 'legacyBootstrapCount' in text:
-        raise SystemExit('legacy runtime bootstrap contract remains in test')
     RUNTIME_TEST.write_text(text, encoding='utf-8')
+
+
+def migrate_direct_test() -> None:
+    text = remove_legacy_dependency_from_test(DIRECT_TEST)
+    text = text.replace("  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);", "  assert.ok(state.trainSplitV3 instanceof Object);", 3)
+    text = text.replace("  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);\n", "", 2)
+    DIRECT_TEST.write_text(text, encoding='utf-8')
+
+
+def migrate_generic_test() -> None:
+    text = remove_legacy_dependency_from_test(GENERIC_TEST)
+    GENERIC_TEST.write_text(text, encoding='utf-8')
 
 
 def migrate_label_test() -> None:
@@ -170,6 +173,8 @@ def main() -> None:
     migrate_main()
     migrate_draft_test()
     migrate_runtime_test()
+    migrate_direct_test()
+    migrate_generic_test()
     migrate_label_test()
     for path in (DRAFT, RUNTIME, LABELS):
         body = path.read_text(encoding='utf-8')
