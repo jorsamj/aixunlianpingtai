@@ -22,6 +22,7 @@ jobs:
           node --check static/modules/navigation-stability.js &&
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
+          node --check static/modules/training-labels.js &&
           node --check static/modules/training-draft.js &&
           node --check static/modules/training-draft-runtime.js &&
           node --check static/main.mjs
