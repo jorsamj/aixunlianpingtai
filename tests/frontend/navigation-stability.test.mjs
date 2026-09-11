@@ -79,6 +79,76 @@ test('final navigation coordinates legacy alias lifecycle with the canonical pag
   cleanup();
 });
 
+test('named performNavigation is the sole actual page owner when configured', () => {
+  const state = {page: '算法列表'};
+  const calls = [];
+  const view = {dataset: {}};
+  let classicCalls = 0;
+  let applyCalls = 0;
+  let renders = 0;
+
+  globalThis.document = {
+    getElementById(id) { return id === 'view' ? view : null; },
+  };
+  globalThis.window = {
+    setPage(page) {
+      classicCalls += 1;
+      calls.push(`classic:${page}`);
+      state.page = page;
+    },
+  };
+
+  const runtime = installNavigationStability({
+    getState: () => state,
+    beforeInvokeNavigation(page) { calls.push(`ui:close:${page}`); },
+    performNavigation(page) {
+      applyCalls += 1;
+      calls.push(`apply:${page}`);
+      state.page = page;
+      renders += 1;
+    },
+  });
+
+  globalThis.window.setPage('数据集');
+
+  assert.equal(classicCalls, 0, 'classic predecessor must be bypassed when named owner is configured');
+  assert.equal(applyCalls, 1);
+  assert.equal(renders, 1, 'actual navigation must render exactly once');
+  assert.equal(state.page, '数据集');
+  assert.deepEqual(calls, ['ui:close:数据集', 'apply:数据集']);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('named performNavigation installs global setPage without a classic predecessor', () => {
+  const state = {page: '算法列表'};
+  let renders = 0;
+  const view = {dataset: {}};
+
+  globalThis.document = {
+    getElementById(id) { return id === 'view' ? view : null; },
+  };
+  globalThis.window = {};
+
+  const runtime = installNavigationStability({
+    getState: () => state,
+    performNavigation(page) {
+      state.page = page;
+      renders += 1;
+    },
+  });
+
+  assert.equal(typeof globalThis.window.setPage, 'function');
+  globalThis.window.setPage('数据集');
+  assert.equal(state.page, '数据集');
+  assert.equal(renders, 1);
+  assert.equal(view.dataset.navigationPage, '数据集');
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('readiness gate runs before UI cleanup and predecessor page mutation', async () => {
   const state = {page: '算法列表'};
   const calls = [];

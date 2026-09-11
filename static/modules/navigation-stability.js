@@ -66,6 +66,7 @@ export function installNavigationStability({
   persistNavigationState,
   waitForNavigationReady,
   beforeInvokeNavigation,
+  performNavigation,
 } = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
@@ -104,7 +105,9 @@ export function installNavigationStability({
   }
 
   const originalSetPage = window.setPage;
-  if (typeof originalSetPage === 'function') {
+  const hasClassicPredecessor = typeof originalSetPage === 'function';
+  const hasNamedNavigationOwner = typeof performNavigation === 'function';
+  if (hasClassicPredecessor || hasNamedNavigationOwner) {
     window.setPage = function stableSetPage(page, ...args) {
       const requested = normalizeNavigationPage(page);
       requestScope?.navigate?.(requested);
@@ -131,9 +134,12 @@ export function installNavigationStability({
         return result;
       };
 
-      const invokeOriginal = () => {
+      const invokeNavigationOwner = () => {
         try {
           beforeInvokeNavigation?.(requested);
+          if (hasNamedNavigationOwner) {
+            return settleResult(performNavigation.call(this, requested, ...args));
+          }
           return settleResult(originalSetPage.call(this, requested, ...args));
         } catch (error) {
           finalizeNavigation(requested, navigationEpoch);
@@ -151,14 +157,14 @@ export function installNavigationStability({
 
       if (readiness && typeof readiness.then === 'function') {
         return Promise.resolve(readiness).then(
-          () => invokeOriginal(),
+          () => invokeNavigationOwner(),
           error => {
             finalizeNavigation(requested, navigationEpoch);
             throw error;
           },
         );
       }
-      return invokeOriginal();
+      return invokeNavigationOwner();
     };
   }
 
