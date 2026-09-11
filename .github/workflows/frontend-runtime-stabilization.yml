@@ -23,13 +23,14 @@ jobs:
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
           node --check static/modules/training-draft.js &&
+          node --check static/modules/training-draft-runtime.js &&
           node --check static/main.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
   browser-navigation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,5 +46,8 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Install frontend dependencies
         run: npm ci
-      - name: Real Chrome stale-navigation regression
-        run: npx playwright test tests/browser/navigation-stability.spec.mjs
+      - name: Real Chrome runtime regressions
+        run: >-
+          npx playwright test
+          tests/browser/navigation-stability.spec.mjs
+          tests/browser/training-label-selector.spec.mjs
