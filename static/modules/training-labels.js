@@ -138,6 +138,12 @@ function startsTrainingSession(patch) {
     && Array.isArray(patch.newLabelCodes) && patch.newLabelCodes.length === 0;
 }
 
+function labelOnlyDraftUpdate(event) {
+  if (event?.type !== 'update' || !event.patch || typeof event.patch !== 'object') return false;
+  const keys = Object.keys(event.patch);
+  return keys.length === 1 && keys[0] === 'newLabelCodes';
+}
+
 function currentHost() {
   const v3Summary = document.querySelector('.train429-create .train-v3-summary')
     || document.querySelector('.train-v3-summary');
@@ -201,6 +207,20 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     } catch (error) {
       notify?.(error?.message || error);
     }
+  };
+
+  const updateCount = state => {
+    const count = document.querySelector('#trainingLabelContractPanel .training-label-contract-count');
+    const algorithm = currentAlgorithm(state);
+    if (!count || !algorithm) return;
+    const view = resolveClientTrainingLabels({
+      materials: state.images || [],
+      selectedIds: selectedIds(state),
+      labelCatalog: state.labels || [],
+      algorithm,
+      requestedCodes: canonicalSelectedCodes(state),
+    });
+    count.textContent = `${view.effectivePreview.length || (view.legacyPreviousVersion ? '?' : 0)} 类`;
   };
 
   const refresh = () => {
@@ -277,7 +297,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
         if (event.currentTarget.checked) next.add(code);
         else next.delete(code);
         syncDraftLabels(state, [...next]);
-        queueRefresh();
+        updateCount(state);
       });
     });
     return true;
@@ -296,6 +316,10 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     const state = getState?.();
     if (event?.type === 'update' && startsTrainingSession(event.patch)) {
       resetTaskLabelInteraction(state);
+    }
+    if (labelOnlyDraftUpdate(event)) {
+      updateCount(state);
+      return;
     }
     queueRefresh();
   }) || (() => {});
@@ -317,7 +341,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   queueRefresh();
 
   const runtime = {
-    build: 'module-422512',
+    build: 'module-422513',
     refresh,
     queueRefresh,
     selectedIds: () => selectedIds(getState?.()),
