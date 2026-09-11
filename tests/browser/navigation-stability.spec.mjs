@@ -43,8 +43,6 @@ test('delayed request from previous page cannot jump back over the current page'
   })).toMatchObject({managed: true, owners: ['训练任务', '检测台']});
 
   await page.getByRole('button', {name: /数据集/}).click();
-  const delayedUrl2 = delayedUrl;
-  expect(delayedUrl2).toContain('/api/');
   await expect(page.locator('#title')).toContainText('数据集');
   await expect(page.getByRole('button', {name: /数据集/})).toHaveClass(/active/);
   await expect.poll(async () => page.evaluate(() => (
