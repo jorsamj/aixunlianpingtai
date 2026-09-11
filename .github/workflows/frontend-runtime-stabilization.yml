@@ -116,6 +116,21 @@ jobs:
           grep -Fq 'classicWrapperOwner: false' "$file"
           grep -Fq 'timerOwner: false' "$file"
           grep -Fq "build: 'auto-label-poll-422501'" "$file"
+      - name: Retired legacy poll timer compatibility guard
+        run: |
+          for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
+            for token in auto422Timer __videoFramePollTimer __prelabelPollTimer; do
+              if grep -F -n "$token" "$file"; then
+                echo "retired legacy timer compatibility $token was reintroduced into $file" >&2
+                exit 1
+              fi
+            done
+          done
+          if grep -F -n '_oldSetupPollV33' static/app.js; then
+            echo 'retired v33 setupPagePolling timer wrapper was reintroduced' >&2
+            exit 1
+          fi
+          grep -Fq 'replaceVideo424Timer' static/modules/poll-registry.js
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
