@@ -54,7 +54,7 @@ test('successful historical version without stored schema is marked pending inst
   assert.deepEqual(inheritance.codes, []);
 });
 
-test('legacy training state is mapped into one canonical draft without changing old state', () => {
+test('legacy structural training state keeps task labels from the existing canonical draft', () => {
   const state = {
     train428AlgorithmId: 'alg-1',
     trainSplitV3: {
@@ -64,7 +64,7 @@ test('legacy training state is mapped into one canonical draft without changing 
       experiment: 15,
       validation: 20,
     },
-    trainingLabelSelected: new Set(['person']),
+    trainingDraft: {newLabelCodes: ['person']},
     train428Config: {
       resource_strategy: 'manual',
       device: '0',
@@ -88,6 +88,7 @@ test('legacy training state is mapped into one canonical draft without changing 
   });
   assert.equal(draft.priority, 30);
   assert.deepEqual([...state.trainSplitV3.train], ['a', 'b']);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 });
 
 test('request uses new labels for the task while inherited labels remain in effective schema', () => {
