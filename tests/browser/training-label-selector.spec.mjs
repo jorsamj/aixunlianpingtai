@@ -26,7 +26,6 @@ async function seedProject(request) {
       {code: 'smoke', display_name: '烟雾'},
     ],
   }})).json();
-
   const images = [];
   for (const [name, label, color] of [
     ['fire-a.bmp', 'fire', [190, 70, 50]],
@@ -45,12 +44,8 @@ async function seedProject(request) {
     }]}});
     expect(save.ok()).toBeTruthy();
   }
-
   const created = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
-    name: '烟火标签算法',
-    industry: '工业安全',
-    algorithm_type: 'yolo_ultralytics',
-    remark: '',
+    name: '烟火标签算法', industry: '工业安全', algorithm_type: 'yolo_ultralytics', remark: '',
   }})).json();
   return {project, imageIds: images.map(item => item.id), algorithmId: created.algorithm.id};
 }
@@ -63,15 +58,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({targets: [{
-      id: 'browser-ultralytics',
-      name: '浏览器测试 Ultralytics',
-      type: 'local',
-      framework: 'ultralytics',
-      status: 'ready',
-      algorithms: [{
-        key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt',
-        default_epochs: 10, default_imgsz: 640, default_batch: 2,
-      }],
+      id: 'browser-ultralytics', name: '浏览器测试 Ultralytics', type: 'local', framework: 'ultralytics', status: 'ready',
+      algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt', default_epochs: 10, default_imgsz: 640, default_batch: 2}],
       base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
     }]})
   }));
@@ -97,7 +85,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
     .toBe('training-draft-runtime-422514');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
-    .toBe('module-422511');
+    .toBe('module-422512');
   await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
     .toBe('training-submit-422504');
   expect(await page.evaluate(() => ({
@@ -198,16 +186,9 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     device: state.trainingDraft.resource.device,
     batch: state.trainingDraft.resource.batch,
     optimizer: state.trainingDraft.config.optimizer,
-  }))).toEqual({
-    algorithmId,
-    materials: imageIds,
-    device: 'cpu',
-    batch: 16,
-    optimizer: 'AdamW',
-  });
+  }))).toEqual({algorithmId, materials: imageIds, device: 'cpu', batch: 16, optimizer: 'AdamW'});
   await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
-  expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner'))
-    .toBe('TrainingSubmitRuntime');
+  expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
 
   submitted = undefined;
   await page.evaluate(async projectId => {
@@ -250,8 +231,6 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.ai_intervention_enabled).toBe(false);
   await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
 
-  // Start the same algorithm again. The previous task deliberately deselected smoke.
-  // A new canonical start session must reset the label interaction state without a classic wrapper.
   await page.getByRole('button', {name: /算法列表/}).click();
   const secondCard = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await secondCard.getByRole('button', {name: '训练'}).click();
@@ -265,6 +244,5 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   const secondLabels = secondDialog.locator('#trainingLabelContractPanel');
   await expect(secondLabels.locator('input[data-training-label-code="fire"]')).toBeChecked();
   await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).toBeChecked();
-  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || []))
-    .toEqual(['fire', 'smoke']);
+  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual(['fire', 'smoke']);
 });
