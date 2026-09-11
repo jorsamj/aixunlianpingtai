@@ -19,6 +19,11 @@ export class NavigationEpochGuard {
   }
 }
 
+export function normalizeNavigationPage(page) {
+  const requested = String(page || '');
+  return requested === '自动标注' ? '自动标注及清洗' : requested;
+}
+
 const OWNER_FUNCTIONS = {
   '训练任务': [
     'refreshTrainPage428', 'promoteTrain428', 'pauseTrain428', 'resumeTrain428',
@@ -59,7 +64,7 @@ export function installNavigationStability({getState, notify, requestScope, poll
   window.__navigationStabilityInstalled = true;
 
   const state = getState?.();
-  const guard = new NavigationEpochGuard(state?.page || '');
+  const guard = new NavigationEpochGuard(normalizeNavigationPage(state?.page || ''));
   const pending = new Map();
   const rebindTimers = [];
   let tokenSeq = 0;
@@ -67,15 +72,16 @@ export function installNavigationStability({getState, notify, requestScope, poll
 
   function currentState() { return getState?.() || state || {}; }
   function adoptCurrentPageTimers(ownerPages) {
-    const page = String(currentState().page || '');
+    const page = normalizeNavigationPage(currentState().page || '');
     const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
     if (owners.has(page)) pollRegistry?.afterNavigate?.(page);
   }
 
   function finalizeNavigation(requested, navigationEpoch) {
-    if (destroyed || guard.epoch !== navigationEpoch) return String(currentState().page || requested);
+    if (destroyed || guard.epoch !== navigationEpoch) return normalizeNavigationPage(currentState().page || requested);
     const s = currentState();
-    const actualPage = String(s.page || requested);
+    const actualPage = normalizeNavigationPage(s.page || requested);
+    if (String(s.page || '') !== actualPage) s.page = actualPage;
     if (actualPage !== guard.page) guard.page = actualPage;
     requestScope?.alignPage?.(actualPage);
     pollRegistry?.afterNavigate?.(actualPage);
@@ -92,7 +98,7 @@ export function installNavigationStability({getState, notify, requestScope, poll
   const originalSetPage = window.setPage;
   if (typeof originalSetPage === 'function') {
     window.setPage = function stableSetPage(page, ...args) {
-      const requested = String(page || '');
+      const requested = normalizeNavigationPage(page);
       requestScope?.navigate?.(requested);
       pending.clear();
       const navigationEpoch = guard.navigate(requested);
@@ -102,7 +108,7 @@ export function installNavigationStability({getState, notify, requestScope, poll
 
       let result;
       try {
-        result = originalSetPage.call(this, page, ...args);
+        result = originalSetPage.call(this, requested, ...args);
       } catch (error) {
         finalizeNavigation(requested, navigationEpoch);
         throw error;
@@ -133,7 +139,7 @@ export function installNavigationStability({getState, notify, requestScope, poll
     const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
     const wrapped = function (...args) {
       const s = currentState();
-      const currentPage = String(s.page || '');
+      const currentPage = normalizeNavigationPage(s.page || '');
       const owner = owners.has(currentPage) ? currentPage : [...owners][0];
       const itemId = `${name}:${++tokenSeq}`;
       const item = {token: guard.token(owner), name};
@@ -166,7 +172,7 @@ export function installNavigationStability({getState, notify, requestScope, poll
     if (typeof original !== 'function' || original.__navigationOwnerWrapped) return;
     const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
     const wrapped = function (...args) {
-      const currentPage = String(currentState().page || '');
+      const currentPage = normalizeNavigationPage(currentState().page || '');
       if (!owners.has(currentPage)) return false;
       const result = original.apply(this, args);
       if (result && typeof result.then === 'function') {
@@ -202,11 +208,12 @@ export function installNavigationStability({getState, notify, requestScope, poll
   const api = {
     guard,
     pending,
+    normalizePage: normalizeNavigationPage,
     isCurrent(token) {
-      return guard.isCurrent(token, currentState().page);
+      return guard.isCurrent(token, normalizeNavigationPage(currentState().page));
     },
     token(ownerPage) {
-      return guard.token(ownerPage || currentState().page);
+      return guard.token(normalizeNavigationPage(ownerPage || currentState().page));
     },
     wrapKnownFunctions,
     repairCurrentPage() {
