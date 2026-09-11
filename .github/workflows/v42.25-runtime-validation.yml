@@ -17,7 +17,7 @@ jobs:
           python-version: "3.12"
       - name: Install lightweight test dependencies
         run: python -m pip install --upgrade pytest psutil filelock
-      - name: Run Task Runtime fencing tests
+      - name: Run Task Runtime and training contract tests
         run: >-
           python -m pytest --noconftest
           tests/unit/task_runtime/test_repository.py
@@ -29,4 +29,5 @@ jobs:
           tests/unit/task_runtime/test_artifact_fencing.py
           tests/unit/test_conversion_tasks.py
           tests/unit/test_conversion_process_fencing.py
+          tests/unit/test_training_resource_contract.py
           -q
