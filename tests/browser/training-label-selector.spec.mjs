@@ -138,13 +138,28 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
 
+  // These controls historically lived only in the final train-v3 DOM until submit time.
+  // TrainingDraft must observe the values the user can currently see, not stale 428/429 state.
+  await dialog.locator('#trV3Experiment').fill('35');
+  await dialog.locator('#trV3Validation').fill('18');
+  await dialog.locator('#tr429Priority').fill('7');
+
   await expect.poll(async () => page.evaluate(() => ({
     materials: state.trainingDraft?.materialIds || [],
     labels: state.trainingDraft?.newLabelCodes || [],
-  }))).toEqual({materials: imageIds, labels: ['fire']});
+    experiment: state.trainingDraft?.experimentPercent,
+    validation: state.trainingDraft?.validationPercent,
+    priority: state.trainingDraft?.priority,
+  }))).toEqual({
+    materials: imageIds,
+    labels: ['fire'],
+    experiment: 35,
+    validation: 18,
+    priority: 7,
+  });
 
-  // Deliberately send stale legacy ids/labels. TrainingDraftRuntime must canonicalize the
-  // outgoing request before the existing server-side label-contract bootstrap sees it.
+  // Deliberately send stale legacy ids/labels/percentages. TrainingDraftRuntime must
+  // canonicalize the outgoing request before the existing server-side label contract sees it.
   await page.evaluate(async projectId => {
     await fetch(`/api/v12/projects/${projectId}/train/start`, {
       method: 'POST',
@@ -154,6 +169,8 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
         train_image_ids: ['stale-legacy-id'],
         test_image_ids: [],
         train_labels: ['stale-label'],
+        experiment_percent: 20,
+        validation_percent: 20,
         queue_priority: 50,
       }),
     });
@@ -162,5 +179,8 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect.poll(() => submitted).toBeTruthy();
   expect(submitted.train_image_ids).toEqual(imageIds);
   expect(submitted.train_labels).toEqual(['fire']);
+  expect(submitted.experiment_percent).toBe(35);
+  expect(submitted.validation_percent).toBe(18);
+  expect(submitted.queue_priority).toBe(7);
   expect(submitted.algorithm_asset_id).toBeTruthy();
 });
