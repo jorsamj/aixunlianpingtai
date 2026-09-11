@@ -21,6 +21,11 @@ test('focused training refresh fetches jobs only and patches the task table', as
   const state = {page: '训练任务', project: {id: 'p 1'}, jobs: [], __navigationEpoch: 4};
   const urls = [];
   let patches = 0;
+  globalThis.document = {
+    querySelector() { return null; },
+    addEventListener() {},
+    removeEventListener() {},
+  };
   globalThis.window = {
     async fetch(url) { urls.push(url); return response([{id: 'j1', status: 'running'}]); },
     updateTrainingJobTable() { patches += 1; },
