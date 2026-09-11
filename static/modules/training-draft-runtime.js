@@ -337,6 +337,22 @@ export function installTrainingDraftRuntime({
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
+    materialIds() {
+      const draft = state().trainingDraft || sync();
+      return [...(draft?.materialIds || [])];
+    },
+    setMaterialIds(ids = []) {
+      const normalized = [...new Set((ids || []).map(value => String(value || '').trim()).filter(Boolean))];
+      return update({materialIds: normalized});
+    },
+    toggleMaterialId(id) {
+      const value = String(id || '').trim();
+      if (!value) return state().trainingDraft || sync();
+      const selected = new Set(runtime.materialIds());
+      if (selected.has(value)) selected.delete(value);
+      else selected.add(value);
+      return runtime.setMaterialIds([...selected]);
+    },
     inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
     state() { return {directWrites, directControlSkips, legacyBootstrapCount, networkOwner: false}; },
     destroy() {

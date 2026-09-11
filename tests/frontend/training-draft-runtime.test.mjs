@@ -143,6 +143,32 @@ test('runtime update changes canonical draft without writing remaining compatibi
   cleanup(runtime);
 });
 
+test('material selection helpers mutate only canonical materialIds', () => {
+  setupDom();
+  const state = {
+    train429Selected: new Set(['legacy-only']),
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1', materialIds: ['a', 'b'],
+      splitMode: 'random_test_from_training_pool', experimentPercent: 20,
+      validationPercent: 20, newLabelCodes: ['fire'],
+    }),
+    algorithms: [{id: 'alg-1', versions: []}],
+  };
+  globalThis.window = {fetch: async () => ({ok: true})};
+
+  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
+  assert.deepEqual(runtime.materialIds(), ['a', 'b']);
+  runtime.toggleMaterialId('b');
+  assert.deepEqual(runtime.materialIds(), ['a']);
+  runtime.toggleMaterialId('c');
+  assert.deepEqual(runtime.materialIds(), ['a', 'c']);
+  runtime.setMaterialIds(['x', 'x', 'y']);
+  assert.deepEqual(state.trainingDraft.materialIds, ['x', 'y']);
+  assert.deepEqual([...state.train429Selected], ['legacy-only']);
+
+  cleanup(runtime);
+});
+
 test('legacy state is consumed once only when canonical draft is absent', () => {
   setupDom({tr429Priority: '40'});
   const state = {
