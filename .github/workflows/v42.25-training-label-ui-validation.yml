@@ -1,0 +1,19 @@
+name: v42.25 training label UI validation
+
+on:
+  push:
+    branches:
+      - refactor/v42.25-runtime
+  workflow_dispatch:
+
+jobs:
+  training-label-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check training label UI modules
+        run: >-
+          node --check static/modules/training-labels.js &&
+          node --check static/main.mjs &&
+          node --test tests/frontend/training-labels.test.mjs tests/frontend/navigation-stability.test.mjs
