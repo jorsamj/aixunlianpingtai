@@ -9,10 +9,7 @@ import {
 import {installTrainingDraftRuntime} from '../../static/modules/training-draft-runtime.js';
 
 function dependencies() {
-  return {
-    createTrainingDraft,
-    trainingInheritanceFromAlgorithm,
-  };
+  return {createTrainingDraft, trainingInheritanceFromAlgorithm};
 }
 
 function setupDom() {
@@ -29,26 +26,59 @@ function cleanup(runtime) {
   delete globalThis.document;
 }
 
-test('redundant classic callbacks are no longer wrapped by TrainingDraftRuntime because app.js owns canonical writes', () => {
+test('TrainingDraftRuntime is wrapper-free and leaves classic entrypoints untouched', () => {
   setupDom();
   const state = {
     trainingDraft: createTrainingDraft({algorithmId: 'alg-1', materialIds: ['a'], newLabelCodes: ['fire']}),
     algorithms: [{id: 'alg-1', versions: []}],
   };
-  const original = {
-    startAlgorithmTraining429() {},
-    confirmTrainMaterialPickerV3() {},
-    setTrainSplitModeV3() {},
-    saveTrainSettings428() {},
+  const originalStart = function startAlgorithmTraining429() {};
+  const originalConfirm = function confirmTrainMaterialPickerV3() {};
+  const originalSplit = function setTrainSplitModeV3() {};
+  const originalSave = function saveTrainSettings428() {};
+  globalThis.window = {
+    fetch: async () => ({ok: true}),
+    startAlgorithmTraining429: originalStart,
+    confirmTrainMaterialPickerV3: originalConfirm,
+    setTrainSplitModeV3: originalSplit,
+    saveTrainSettings428: originalSave,
   };
-  globalThis.window = {fetch: async () => ({ok: true}), ...original};
 
   const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
-  assert.notEqual(window.startAlgorithmTraining429, original.startAlgorithmTraining429);
-  assert.equal(window.confirmTrainMaterialPickerV3, original.confirmTrainMaterialPickerV3);
-  assert.equal(window.setTrainSplitModeV3, original.setTrainSplitModeV3);
-  assert.equal(window.saveTrainSettings428, original.saveTrainSettings428);
+  assert.equal(window.startAlgorithmTraining429, originalStart);
+  assert.equal(window.confirmTrainMaterialPickerV3, originalConfirm);
+  assert.equal(window.setTrainSplitModeV3, originalSplit);
+  assert.equal(window.saveTrainSettings428, originalSave);
+  assert.equal(runtime.state().classicWrapperOwner, false);
+  assert.equal(runtime.state().networkOwner, false);
 
+  const source = readFileSync(new URL('../../static/modules/training-draft-runtime.js', import.meta.url), 'utf8');
+  for (const token of ['wrapLegacyMutation', 'directMutationFor', 'mutationWrappers', 'startAlgorithmTraining429']) {
+    assert.equal(source.includes(token), false);
+  }
+
+  cleanup(runtime);
+});
+
+test('app.js visible training entrypoint owns canonical reset before rendering the modal', () => {
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const canonicalOwner = app.indexOf('window.startAlgorithmTraining429=function(aid){const a=');
+  const earlyAlias = app.indexOf('window.startAlgorithmTraining423=window.startAlgorithmTraining429;', canonicalOwner);
+  assert.ok(canonicalOwner >= 0 && earlyAlias > canonicalOwner);
+  const ownerSource = app.slice(canonicalOwner, earlyAlias);
+  const canonicalWrite = ownerSource.indexOf('window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),materialIds:[],testMaterialIds:[],splitMode:\'random_test_from_training_pool\',experimentPercent:20,validationPercent:20,newLabelCodes:[]})');
+  const modalOpen = ownerSource.indexOf('modal(`训练 · ${a.name}`');
+  assert.ok(canonicalWrite >= 0 && modalOpen > canonicalWrite);
+
+  const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
+  const stablePage = app.lastIndexOf('window.renderAlgorithms423=function(){');
+  assert.ok(stableCards >= 0 && stablePage > stableCards);
+  const cardSource = app.slice(stableCards, stablePage);
+  assert.match(cardSource, /startAlgorithmTraining429\('\$\{a\.id\}'\)/);
+  assert.equal(cardSource.includes("startAlgorithmTraining423('${a.id}')"), false);
+});
+
+test('final classic picker split and settings actions own their canonical writes directly', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const confirmAt = app.lastIndexOf('window.confirmTrainMaterialPickerV3=function(){');
   const splitAt = app.lastIndexOf('window.setTrainSplitModeV3=mode=>{');
@@ -56,47 +86,4 @@ test('redundant classic callbacks are no longer wrapped by TrainingDraftRuntime 
   assert.ok(confirmAt >= 0 && app.slice(confirmAt, confirmAt + 1400).includes('TrainingDraftRuntime.update(patch)'));
   assert.ok(splitAt >= 0 && app.slice(splitAt, splitAt + 800).includes('TrainingDraftRuntime.update({splitMode'));
   assert.ok(saveAt >= 0 && app.slice(saveAt, saveAt + 1800).includes('TrainingDraftRuntime?.update?.({config:c})'));
-
-  cleanup(runtime);
 });
-
-test('opening a different algorithm resets canonical training selection before legacy start runs', async () => {
-  setupDom();
-  const state = {
-    train428AlgorithmId: 'alg-old',
-    trainSplitV3: {mode: 'random_test_from_training_pool', train: new Set(['stale']), test: new Set(), experiment: 99, validation: 99},
-    train428Config: {},
-    trainingDraft: createTrainingDraft({
-      algorithmId: 'alg-old', materialIds: ['old-a'], testMaterialIds: ['old-test'],
-      splitMode: 'independent_test_set', validationPercent: 25, newLabelCodes: ['fire'],
-    }),
-    algorithms: [{id: 'alg-old', versions: []}, {id: 'alg-new', versions: []}],
-  };
-  let observedInsideLegacy;
-  globalThis.window = {
-    fetch: async () => ({ok: true}),
-    async startAlgorithmTraining429() {
-      observedInsideLegacy = {
-        algorithmId: state.trainingDraft.algorithmId,
-        materials: [...state.trainingDraft.materialIds],
-        tests: [...state.trainingDraft.testMaterialIds],
-        mode: state.trainingDraft.splitMode,
-      };
-    },
-  };
-
-  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
-  await window.startAlgorithmTraining429('alg-new');
-
-  assert.deepEqual(observedInsideLegacy, {
-    algorithmId: 'alg-new', materials: [], tests: [], mode: 'random_test_from_training_pool',
-  });
-  assert.equal(state.trainingDraft.algorithmId, 'alg-new');
-  assert.equal(state.train428AlgorithmId, 'alg-old');
-  assert.deepEqual([...state.trainSplitV3.train], ['stale']);
-  assert.equal(state.trainSplitV3.experiment, 99);
-  assert.equal(runtime.state().directWrites, 1);
-
-  cleanup(runtime);
-});
-
