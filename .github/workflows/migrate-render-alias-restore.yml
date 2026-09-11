@@ -1,0 +1,50 @@
+name: Migrate Render Alias Restore
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/migrate_render_alias_restore.py
+      - .github/workflows/migrate-render-alias-restore.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded render alias migration
+        run: python tools/migrate_render_alias_restore.py
+      - name: Verify focused contracts
+        run: |
+          node --check static/app.js
+          node --test tests/frontend/render-alias-restore.test.mjs tests/frontend/navigation-stability.test.mjs tests/frontend/ui-state.test.mjs
+          if grep -Fq "if(state.page==='自动标注')state.page='自动标注及清洗'" static/app.js; then
+            echo 'render-level auto-label alias mutation remains' >&2
+            exit 1
+          fi
+          grep -Fq "const restoredPage=lastState.page==='自动标注'?'自动标注及清洗':lastState.page;" static/app.js
+          grep -Fq '/static/app.js?v=42.25.58' static/index.html
+      - name: Commit render alias migration
+        run: |
+          if git diff --quiet -- static/app.js static/index.html tests/frontend/render-alias-restore.test.mjs; then
+            echo 'no render alias migration changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/render-alias-restore.test.mjs
+          git commit -m 'refactor(ui): move legacy route alias to restore boundary'
+          git push
