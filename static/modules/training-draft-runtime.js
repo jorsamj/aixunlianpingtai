@@ -145,7 +145,6 @@ export function installTrainingDraftRuntime({
     return Boolean(
       target.closest('.train429-create')
       || target.closest('.train-v3-picker')
-      || target.closest('#trainingLabelContractPanel')
     );
   }
 
@@ -178,7 +177,7 @@ export function installTrainingDraftRuntime({
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422514',
+    build: 'training-draft-runtime-422515',
     sync,
     update,
     subscribe,
