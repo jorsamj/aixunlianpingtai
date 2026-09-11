@@ -6,11 +6,11 @@
 
 ```text
 branch:                    refactor/frontend-runtime-stabilization
-latest full code acceptance: 4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386
-Frontend Runtime run:      34617573070
+latest full code acceptance: f3eb6b360123dd688eea4dd0f29c05a9db5b4c05
+Frontend Runtime run:      34619698115
 formal VERSION.txt:        42.24.0
 frontend badge:            v42.25.0-dev
-app.js cache:              42.25.49
+app.js cache:              42.25.51
 main.mjs cache:            42.25.53
 NavigationStability:       422506
 PollRegistry:              422511
@@ -21,19 +21,20 @@ TrainingTaskRuntime:       training-task-runtime-422503
 AutoLabelPollRuntime:      422501
 ```
 
-Run `34617573070` passed syntax, every permanent owner guard, all frontend unit tests and all Real Chrome runtime regressions. `setupPagePolling` is now physically absent from active `static/app.js`. Branch HEAD may be newer because handoff docs are updated after the accepted code point. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34619698115` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome. Branch HEAD may be newer because handoff docs are updated after accepted code points. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-pure pass-through setPage wrapper proof/removal
+pre-v42.4 dead setPage family proof/removal
 → remaining renderer/setPage obsolete layers
-→ remaining frontend/runtime debt
-→ zero-point debt scan
-→ resume A800 RC
+→ app.js/global reload/request debt
+→ cache-busting unification
+→ zero-point lifecycle scan
+→ A800 RC
 ```
 
-Read:
+Read in order:
 
 ```text
 docs/TECH_DEBT_CLOSURE_V42_25.md
@@ -66,7 +67,7 @@ state.trainingDraft
 
 Retired mirrors: `trainingLabelSelected`, `trainSplitV3`, `train429Selected`, `train428AlgorithmId`, `train428Config`, `trainingDraftFromLegacyState`.
 
-### Training task polling
+### Training polling
 
 ```text
 classic render call site
@@ -76,123 +77,99 @@ classic render call site
 → focused /jobs refresh
 ```
 
-Physically retired:
+Physically retired: `jobPollTimer`, `setupPagePolling`, PollRegistry training creation wrappers/adoption/rebind compatibility and NavigationStability timer fallback.
+
+### AutoLabel / Video / Sources
 
 ```text
-jobPollTimer
-setupPagePolling
-installPollingCreationBridge
-__pollRegistryCreationWrapped
-originalSetupPagePolling / wrappedSetupPagePolling
-registry.adopt('training-jobs', ...)
-adoptLegacy / rebindCreation
-NavigationStability training timer fallback
-classic training polling setInterval/clearInterval owner
+renderOps427 → AutoLabelPollRuntime → PollRegistry(auto-label-v60)
+renderVideo424 / refreshVideo424Delta → PollRegistry(video-frames)
+renderSources422 → PollRegistry(sources)
 ```
 
-Permanent `Training PollRegistry direct owner guard` now rejects any `setupPagePolling` or `jobPollTimer` reintroduction.
+Legacy timer/wrapper owners are retired.
 
-### AutoLabel
+### Navigation wrapper cleanup
+
+Physically retired and guarded:
 
 ```text
-renderOps427
-→ AutoLabelPollRuntime.activate/deactivate
-→ PollRegistry(auto-label-v60)
+set423Base
+setBase424
+V37 baseSetPage mobile-sidebar wrapper
 ```
 
-Legacy AutoLabel timers/wrappers/rebind timers are gone.
-
-### Video
+V417 is now the sole classic mobile-sidebar close owner:
 
 ```text
-renderVideo424 / refreshVideo424Delta
-→ explicit replaceVideo424Timer()
-→ PollRegistry(video-frames)
+const baseSetPage417=window.setPage;
+window.setPage=function(page){
+  window.toggleMobileSidebarV37?.(false);
+  return baseSetPage417?.(page)
+};
 ```
 
-PollRegistry no longer wraps/adopts video renderer timers.
+`NavigationStability` remains the outer live navigation coordinator after `app.js`.
 
-### Sources
+Real Chrome now explicitly proves final navigation closes `#sidebar.mobile-open` and `#sideBackdrop.show`.
+
+## 5. Permanent guards / tests
+
+Main frontend workflow includes all owner guards through `Retired pass-through setPage guard`, then runs all `tests/frontend/*.test.mjs`.
+
+Sidebar debt is permanently guarded by:
 
 ```text
-renderSources422
-→ renderSourceRows422
-→ explicit replaceSourceTimer()
-→ PollRegistry(sources, 2500ms)
-→ refreshSources422
+tests/frontend/retired-sidebar-setpage-guard.test.mjs
 ```
 
-`source422Timer` and all source wrapper/adoption compatibility are retired.
-
-## 5. Permanently retired timer / wrapper compatibility
+Browser behavior is guarded by:
 
 ```text
-auto422Timer
-ai60ListTimer
-__videoFramePollTimer
-__prelabelPollTimer
-_oldSetupPollV33
-source422Timer
-jobPollTimer
-setupPagePolling
-installVideo424CreationBridge
-installSourceCreationBridge
-installPollingCreationBridge
-__pollRegistryVideoWrapped
-__pollRegistrySourceWrapped
-__pollRegistryCreationWrapped
+tests/browser/navigation-stability.spec.mjs
+→ final navigation owner closes the mobile sidebar and backdrop
 ```
 
-Do not restore compatibility code for these names.
+Do not restore early V37 navigation ownership.
 
-## 6. Permanent CI guards currently active
+## 6. Current setPage audit
+
+Current static read after accepted sidebar cleanup shows **8 remaining historical `window.setPage=function...` assignments** (baseline was 10, then set423 removed, then V37 duplicate removed).
+
+Do not infer liveness from version number alone. The key control-flow fact is that later direct assignments sever earlier wrapper chains.
+
+Confirmed pre-v42.4 candidate family:
 
 ```text
-Retired training mirror guard
-Canonical training network owner guard
-TrainingDraft classic wrapper guard
-TrainingLabel canonical lifecycle guard
-AutoLabel PollRegistry owner guard
-Retired legacy poll timer compatibility guard
-Video PollRegistry direct owner guard
-Source PollRegistry direct owner guard
-Training PollRegistry direct owner guard
+oldSetV39
+oldSet42
+set422Base
 ```
 
-## 7. Renderer / setPage owner-map state
+Each currently appears only as a local base capture plus its own wrapper call. Later v42.4 performs:
 
-`docs/FRONTEND_OWNER_MAP_V42_25.md` records the current routing chain. Audit baseline before Batch A found:
+```js
+window.setPage=function(p){state.page=p;render()};
+```
+
+without calling the prior owner, so earlier wrappers are likely unreachable after full synchronous script load.
+
+Before deletion, re-check exact references against live HEAD and prove any visible behavior needed today is owned later. Do not “restore” old semantics merely because the old wrapper contained them.
+
+## 7. Wrappers that must NOT be swept into the next batch
 
 ```text
-window.setPage=function...   10 historical assignments
-render=function...           22 historical assignments
-setupPagePolling             2 shells / 9 search excerpts
+setPageReady414       startup snapshot/uiReady gate
+baseSetPage417        current classic sidebar-close owner
+NavigationStability   request epoch + PollRegistry navigation lifecycle
+later live aliases / cache / persistence wrappers unless separately proven dead
 ```
-
-After Batch A:
-
-```text
-setupPagePolling             0 active references
-training polling handoff     direct replaceTrainingJobTimer() calls
-```
-
-First next deletion candidate is the v42.3 pure pass-through wrapper:
-
-```text
-const set423Base=window.setPage;
-window.setPage=function(p){set423Base(p)};
-try{setPage=window.setPage}catch(e){}
-```
-
-Current search shows `set423Base` has exactly one match (declaration + use in the same wrapper). The immediately following v42.4 code resets `window.setPage` directly. `setBase424` itself also currently has exactly one declaration match and no business use. Prove this against the current HEAD before editing; then delete only this bounded family and run navigation regressions.
-
-Do not blindly collapse wrappers that still own page aliases, deployment cache invalidation, mobile sidebar behavior, UI persistence or NavigationStability semantics.
 
 ## 8. Work order
 
 ```text
-1. remove first proven pure-pass-through setPage family
-2. continue renderer/setPage obsolete override closure in bounded batches
+1. pre-v42.4 dead setPage family bounded deletion
+2. remaining renderer/setPage obsolete override closure
 3. proven dead app.js + global reload/request debt
 4. cache-busting unification
 5. zero-point MutationObserver/timer/fetch/render/setPage scan
@@ -201,21 +178,8 @@ Do not blindly collapse wrappers that still own page aliases, deployment cache i
 8. resume A800 RC
 ```
 
-Every batch: verify current HEAD → prove owner → regression → physical deletion → syntax/unit → Real Chrome where behavior changes → update all four handoff docs.
+Every batch: current HEAD → reference/liveness proof → regression → physical deletion → permanent guard → full frontend + Real Chrome → update all four handoff docs.
 
 ## 9. A800 status
 
-**DEFERRED** until current P0/P1 technical debt is closed.
-
-When resumed:
-
-```text
-preflight
-→ first short A800 train
-→ verify-job
-→ iteration + verify
-→ worker lifecycle/fencing
-→ only then formal release consideration
-```
-
-Frontend CI is not CUDA/A800 acceptance.
+**DEFERRED** until current P0/P1 technical debt is closed. Frontend CI is not CUDA/A800 acceptance.
