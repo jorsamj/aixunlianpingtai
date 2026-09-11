@@ -120,3 +120,67 @@ test('runtime replaces legacy refreshJobsOnly and restores it on destroy', async
   assert.equal(window.refreshJobsOnly, legacy);
   cleanup();
 });
+
+test('pause action mutates only the task endpoint then performs one focused jobs refresh', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [{id: 'j1', status: 'running'}], __navigationEpoch: 2};
+  const calls = [];
+  const notices = [];
+  globalThis.window = {
+    async fetch(url, init = {}) {
+      calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
+      if (url.endsWith('/pause')) return response({ok: true});
+      if (url.endsWith('/jobs')) return response([{id: 'j1', status: 'paused'}]);
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+    notify: message => notices.push(String(message)),
+  });
+  const ok = await window.pauseTrain428('j1');
+
+  assert.equal(ok, true);
+  assert.deepEqual(calls, [
+    'POST /api/v48/projects/p1/jobs/j1/pause',
+    'GET /api/projects/p1/jobs',
+  ]);
+  assert.equal(state.jobs[0].status, 'paused');
+  assert.deepEqual(notices, ['训练已暂停']);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('deleting an active task stops it, deletes it, then refreshes only jobs', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [{id: 'j1', status: 'running'}], __navigationEpoch: 2};
+  const calls = [];
+  globalThis.window = {
+    confirm: () => true,
+    async fetch(url, init = {}) {
+      calls.push(`${String(init.method || 'GET').toUpperCase()} ${url}`);
+      if (url.endsWith('/stop')) return response({ok: true});
+      if (String(init.method || '').toUpperCase() === 'DELETE') return response({ok: true});
+      if (url.endsWith('/jobs')) return response([]);
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  const ok = await window.deleteTrain428('j1');
+
+  assert.equal(ok, true);
+  assert.deepEqual(calls, [
+    'POST /api/v48/projects/p1/jobs/j1/stop',
+    'DELETE /api/v12/projects/p1/jobs/j1',
+    'GET /api/projects/p1/jobs',
+  ]);
+  assert.deepEqual(state.jobs, []);
+
+  runtime.destroy();
+  cleanup();
+});
