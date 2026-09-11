@@ -107,6 +107,8 @@ export function installTrainingSubmitRuntime({
   const originalSubmit = window.submitTrain429;
   let destroyed = false;
   let submitting = false;
+  let lastStage = 'idle';
+  let lastError = '';
 
   function submitButton() {
     if (typeof document === 'undefined') return null;
@@ -137,34 +139,43 @@ export function installTrainingSubmitRuntime({
       return null;
     }
     submitting = true;
+    lastError = '';
+    lastStage = 'sync-draft';
     updateReadiness();
     try {
       const state = getState?.() || {};
       const draft = trainingDraftRuntime.sync();
       if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
 
+      lastStage = 'validate-inheritance';
       const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
       if (inheritance.blocked) {
         throw new Error('该算法已有版本，但没有成功且可继续训练的版本；平台不会回退母算法。');
       }
 
+      lastStage = 'resolve-algorithm';
       const asset = (state.algorithms || []).find(row => String(row?.id || '') === String(draft.algorithmId || ''));
       if (!asset) throw new Error('当前训练算法不存在，请刷新算法列表后重试');
 
+      lastStage = 'resolve-target';
       const targetId = document.getElementById('tr429Target')?.value || '';
       const target = (state.targets || []).find(row => String(row?.id || '') === String(targetId));
       if (!target) throw new Error('训练资源不可用，请重新打开训练窗口');
 
+      lastStage = 'resolve-engine';
       const algorithmKey = document.getElementById('tr429Alg')?.value || '';
       const algorithm = (target.algorithms || []).find(row => String(row?.key || '') === String(algorithmKey))
         || (target.algorithms || [])[0];
       if (!algorithm) throw new Error('训练算法不可用，请重新选择训练资源');
 
+      lastStage = 'validate-device';
       validateTrainingDevice(draft, state.trainingDevicesV3?.options || []);
+      lastStage = 'build-payload';
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
       const pid = projectId?.();
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
+      lastStage = 'posting';
       const response = await window.fetch(`/api/v12/projects/${pid}/train/start`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -178,6 +189,7 @@ export function installTrainingSubmitRuntime({
         throw new Error(String(message));
       }
       const body = await response.json();
+      lastStage = 'created';
 
       closeModal?.();
       state.alg428Expanded = state.alg428Expanded || {};
@@ -193,7 +205,8 @@ export function installTrainingSubmitRuntime({
       }
       return body;
     } catch (error) {
-      notify?.(error?.message || error);
+      lastError = String(error?.message || error || '未知训练提交错误');
+      notify?.(lastError);
       return null;
     } finally {
       submitting = false;
@@ -205,11 +218,11 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422503',
+    build: 'training-submit-422504',
     submit,
     updateReadiness,
     isSubmitting: () => submitting,
-    state: () => ({submitting, networkOwner: true, readiness: updateReadiness()}),
+    state: () => ({submitting, networkOwner: true, readiness: updateReadiness(), lastStage, lastError}),
     destroy() {
       destroyed = true;
       if (window.submitTrain429 === submit) window.submitTrain429 = originalSubmit;
