@@ -159,3 +159,62 @@ test('final training polling creation is replaced by a PollRegistry-managed inte
   globalThis.clearInterval = originalClearInterval;
   delete globalThis.window;
 });
+
+test('video frame polling creation is replaced by a PollRegistry-managed interval and cleared on leave', async () => {
+  const state = {
+    page: '视频切帧',
+    project: {id: 'p1'},
+    jobs: [],
+    jobPollTimer: null,
+    source422Timer: null,
+    auto422Timer: null,
+  };
+  const callbacks = new Map();
+  const cleared = [];
+  let nextTimer = 200;
+  let refreshes = 0;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.setInterval = (callback, delay) => {
+    const id = ++nextTimer;
+    callbacks.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearInterval = id => {
+    cleared.push(id);
+    callbacks.delete(id);
+  };
+  globalThis.window = {
+    __videoFramePollTimer: null,
+    refreshVideoTasksOnly: async () => { refreshes += 1; },
+    setupPagePolling() {
+      window.__videoFramePollTimer = setInterval(() => {}, 9999);
+    },
+  };
+
+  const runtime = installPollRegistry({getState: () => state});
+  const managed = window.__videoFramePollTimer;
+  assert.equal(callbacks.get(managed)?.delay, 2500);
+  assert.deepEqual(runtime.snapshot().find(row => row.key === 'video-frames'), {
+    key: 'video-frames', owners: ['视频切帧'], active: true, managed: true, delay: 2500,
+  });
+
+  window.setupPagePolling();
+  const replacement = window.__videoFramePollTimer;
+  assert.notEqual(replacement, managed);
+  assert.equal(callbacks.get(replacement)?.delay, 2500);
+  assert.ok(cleared.includes(managed));
+  assert.ok(cleared.some(id => id !== managed && id !== replacement), 'legacy video timer should be cleared');
+
+  await callbacks.get(replacement).callback();
+  assert.equal(refreshes, 1);
+
+  runtime.beforeNavigate('数据集');
+  assert.equal(window.__videoFramePollTimer, null);
+  assert.equal(callbacks.has(replacement), false);
+
+  runtime.destroy();
+  globalThis.setInterval = originalSetInterval;
+  globalThis.clearInterval = originalClearInterval;
+  delete globalThis.window;
+});
