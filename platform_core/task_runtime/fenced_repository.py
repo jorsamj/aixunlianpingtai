@@ -264,7 +264,24 @@ class FencedTaskRepository(TaskRepository):
                 (next_status, stage, finished_at, now, row["task_id"], now),
             )
             released += 1
-        database.execute("DELETE FROM gpu_reservations WHERE expires_at<=?", (now,))
+        # An expired lease with a still-live/uninspectable process remains an
+        # active resource owner. Keep its GPU reservation so another task cannot
+        # be admitted onto the same memory while the orphan may still execute.
+        database.execute(
+            """
+            DELETE FROM gpu_reservations
+             WHERE expires_at<=?
+               AND task_id NOT IN (
+                    SELECT task_id FROM tasks
+                     WHERE status IN ('RUNNING','CANCEL_REQUESTED')
+                       AND stage IN (
+                            'lease_expired_process_alive',
+                            'recovery_blocked_process_inspection'
+                       )
+               )
+            """,
+            (now,),
+        )
         return released
 
     def reap_expired_processes(self, now=None, *, timeout: float = 5.0) -> int:
