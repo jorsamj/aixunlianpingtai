@@ -79,6 +79,65 @@ test('final navigation coordinates legacy alias lifecycle with the canonical pag
   cleanup();
 });
 
+test('readiness gate runs after navigation intent but before classic page mutation', async () => {
+  const state = {page: '算法列表'};
+  const calls = [];
+  const ready = deferred();
+  const view = {dataset: {}};
+  const requestScope = {
+    navigate(page) { calls.push(`request:navigate:${page}`); },
+    alignPage(page) { calls.push(`request:align:${page}`); },
+  };
+  const pollRegistry = {
+    beforeNavigate(page) { calls.push(`poll:before:${page}`); },
+    afterNavigate(page) { calls.push(`poll:after:${page}`); },
+  };
+
+  globalThis.document = {
+    getElementById(id) { return id === 'view' ? view : null; },
+  };
+  globalThis.window = {
+    setPage(page) {
+      calls.push(`classic:${page}`);
+      state.page = page;
+      return 'navigated';
+    },
+  };
+
+  const runtime = installNavigationStability({
+    getState: () => state,
+    requestScope,
+    pollRegistry,
+    waitForNavigationReady(page) {
+      calls.push(`ready:${page}`);
+      return ready.promise;
+    },
+  });
+
+  const navigation = globalThis.window.setPage('数据集');
+  assert.equal(state.page, '算法列表');
+  assert.deepEqual(calls, [
+    'request:navigate:数据集',
+    'poll:before:数据集',
+    'ready:数据集',
+  ]);
+
+  ready.resolve();
+  assert.equal(await navigation, 'navigated');
+  assert.equal(state.page, '数据集');
+  assert.deepEqual(calls, [
+    'request:navigate:数据集',
+    'poll:before:数据集',
+    'ready:数据集',
+    'classic:数据集',
+    'request:align:数据集',
+    'poll:after:数据集',
+  ]);
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('stale training renderer is blocked after navigation without global rerender repair', async () => {
   const state = {page: '训练任务'};
   const work = deferred();

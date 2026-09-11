@@ -58,7 +58,14 @@ function ownersFor(page) {
   return [page];
 }
 
-export function installNavigationStability({getState, notify, requestScope, pollRegistry, persistNavigationState} = {}) {
+export function installNavigationStability({
+  getState,
+  notify,
+  requestScope,
+  pollRegistry,
+  persistNavigationState,
+  waitForNavigationReady,
+} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
   window.__navigationStabilityInstalled = true;
@@ -106,29 +113,50 @@ export function installNavigationStability({getState, notify, requestScope, poll
       s.__navigationEpoch = guard.epoch;
       pollRegistry?.beforeNavigate?.(requested);
 
-      let result;
+      const settleResult = result => {
+        if (result && typeof result.then === 'function') {
+          return Promise.resolve(result).then(
+            value => {
+              finalizeNavigation(requested, navigationEpoch);
+              return value;
+            },
+            error => {
+              finalizeNavigation(requested, navigationEpoch);
+              throw error;
+            },
+          );
+        }
+        finalizeNavigation(requested, navigationEpoch);
+        return result;
+      };
+
+      const invokeOriginal = () => {
+        try {
+          return settleResult(originalSetPage.call(this, requested, ...args));
+        } catch (error) {
+          finalizeNavigation(requested, navigationEpoch);
+          throw error;
+        }
+      };
+
+      let readiness;
       try {
-        result = originalSetPage.call(this, requested, ...args);
+        readiness = waitForNavigationReady?.(requested);
       } catch (error) {
         finalizeNavigation(requested, navigationEpoch);
         throw error;
       }
 
-      if (result && typeof result.then === 'function') {
-        return Promise.resolve(result).then(
-          value => {
-            finalizeNavigation(requested, navigationEpoch);
-            return value;
-          },
+      if (readiness && typeof readiness.then === 'function') {
+        return Promise.resolve(readiness).then(
+          () => invokeOriginal(),
           error => {
             finalizeNavigation(requested, navigationEpoch);
             throw error;
           },
         );
       }
-
-      finalizeNavigation(requested, navigationEpoch);
-      return result;
+      return invokeOriginal();
     };
   }
 
