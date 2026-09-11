@@ -16,10 +16,16 @@ function parseBody(init) {
   try { return JSON.parse(init.body); } catch (_) { return null; }
 }
 
-function numericInput(id) {
+function inputValue(id) {
   if (typeof document === 'undefined') return null;
   const raw = document.getElementById(id)?.value;
   if (raw == null || raw === '') return null;
+  return String(raw);
+}
+
+function numericInput(id) {
+  const raw = inputValue(id);
+  if (raw == null) return null;
   const value = Number(raw);
   return Number.isFinite(value) ? value : null;
 }
@@ -41,36 +47,113 @@ export function installTrainingDraftRuntime({
   const originalFetch = window.fetch.bind(window);
   let destroyed = false;
   let syncQueued = false;
-  const delayedSyncTimers = [];
+  const delayedSyncTimers = new Set();
+  const mutationWrappers = [];
 
-  function inheritanceFor(s) {
-    const algorithmId = String(s.train428AlgorithmId || '').trim();
-    const algorithm = (s.algorithms || []).find(item => String(item?.id || '') === algorithmId) || null;
+  function inheritanceFor(s, algorithmId = s.train428AlgorithmId) {
+    const id = String(algorithmId || '').trim();
+    const algorithm = (s.algorithms || []).find(item => String(item?.id || '') === id) || null;
     return algorithm ? trainingInheritanceFromAlgorithm(algorithm) : {
       hasAny: false, hasPrevious: false, blocked: false, legacy: false, codes: [], versionId: '',
     };
   }
 
-  function sync() {
-    if (destroyed) return null;
-    const s = state();
+  function withLiveControls(draft) {
+    if (!draft) return draft;
+    const experiment = numericInput('trV3Experiment');
+    const validation = numericInput('trV3Validation');
+    const priority = numericInput('tr429Priority');
+    const strategy = inputValue('trV3ResourceStrategy');
+    const device = inputValue('trV3Device');
+    const gpuPolicy = inputValue('trV3GpuPolicy');
+
+    return createTrainingDraft({
+      ...draft,
+      experimentPercent: experiment ?? draft.experimentPercent,
+      validationPercent: validation ?? draft.validationPercent,
+      priority: priority ?? draft.priority,
+      resource: {
+        ...draft.resource,
+        strategy: strategy ?? draft.resource?.strategy,
+        device: device ?? draft.resource?.device,
+        gpuPolicy: gpuPolicy ?? draft.resource?.gpuPolicy,
+      },
+    });
+  }
+
+  function mirrorDraftToLegacy(s, draft) {
+    if (!draft) return;
+    if (draft.algorithmId) s.train428AlgorithmId = draft.algorithmId;
+
+    const previousSplit = s.trainSplitV3 || {};
+    const train = new Set(draft.materialIds || []);
+    const test = new Set(draft.testMaterialIds || []);
+    s.trainSplitV3 = {
+      ...previousSplit,
+      mode: draft.splitMode,
+      train,
+      test,
+      experiment: draft.experimentPercent ?? previousSplit.experiment ?? 20,
+      validation: draft.validationPercent,
+    };
+    s.train429Selected = train;
+    s.trainingLabelSelected = new Set(draft.newLabelCodes || []);
+
+    const previousConfig = s.train428Config || {};
+    const nextConfig = {
+      ...previousConfig,
+      resource_strategy: draft.resource?.strategy || previousConfig.resource_strategy || 'auto',
+      device: draft.resource?.device || previousConfig.device || 'auto',
+      gpu_policy: draft.resource?.gpuPolicy || previousConfig.gpu_policy || 'auto',
+      queue_priority: draft.priority,
+    };
+    if (draft.resource?.batch != null) nextConfig.batch = draft.resource.batch;
+    if (draft.resource?.workers != null) nextConfig.workers = draft.resource.workers;
+    if (draft.resource?.cache != null) nextConfig.cache = draft.resource.cache;
+    s.train428Config = nextConfig;
+  }
+
+  function commitDraft(s, draft, inheritance) {
+    s.trainingDraft = draft;
+    s.trainingDraftInheritance = inheritance;
+    mirrorDraftToLegacy(s, draft);
+    return draft;
+  }
+
+  function fromLegacy(s) {
     const inheritance = inheritanceFor(s);
-    let draft = trainingDraftFromLegacyState(s, {
+    const draft = withLiveControls(trainingDraftFromLegacyState(s, {
       inheritedLabelCodes: inheritance.codes,
       inheritancePending: inheritance.legacy,
       baseVersionId: inheritance.versionId,
-    });
+    }));
+    return {draft, inheritance};
+  }
 
-    // Priority is still owned by the legacy train-v3 DOM in this migration phase.
-    // Read it into the canonical draft so submit and display state cannot diverge.
-    const priority = numericInput('tr429Priority');
-    if (priority != null && priority !== draft.priority) {
-      draft = createTrainingDraft({...draft, priority});
-    }
+  function sync() {
+    if (destroyed) return null;
+    const s = state();
+    const {draft, inheritance} = fromLegacy(s);
+    return commitDraft(s, draft, inheritance);
+  }
 
-    s.trainingDraft = draft;
-    s.trainingDraftInheritance = inheritance;
-    return draft;
+  function update(patch = {}) {
+    if (destroyed) return null;
+    const s = state();
+    const base = s.trainingDraft || fromLegacy(s).draft;
+    const next = withLiveControls(createTrainingDraft({
+      ...base,
+      ...patch,
+      resource: {...(base?.resource || {}), ...(patch.resource || {})},
+      config: {...(base?.config || {}), ...(patch.config || {})},
+    }));
+    const inheritance = inheritanceFor(s, next.algorithmId);
+    return commitDraft(s, createTrainingDraft({
+      ...next,
+      baseVersionId: inheritance.versionId || next.baseVersionId,
+      inheritedLabelCodes: inheritance.codes,
+      inheritancePending: inheritance.legacy,
+    }), inheritance);
   }
 
   function scheduleSync() {
@@ -84,7 +167,11 @@ export function installTrainingDraftRuntime({
 
   function scheduleDelayedSyncs() {
     for (const delay of [0, 80, 220, 500]) {
-      delayedSyncTimers.push(setTimeout(() => sync(), delay));
+      const timer = setTimeout(() => {
+        delayedSyncTimers.delete(timer);
+        sync();
+      }, delay);
+      delayedSyncTimers.add(timer);
     }
   }
 
@@ -112,9 +199,39 @@ export function installTrainingDraftRuntime({
     scheduleDelayedSyncs();
   };
 
-  document?.addEventListener?.('change', onChange);
-  document?.addEventListener?.('input', onInput);
-  document?.addEventListener?.('click', onClick);
+  if (typeof document !== 'undefined') {
+    document.addEventListener?.('change', onChange);
+    document.addEventListener?.('input', onInput);
+    document.addEventListener?.('click', onClick);
+  }
+
+  function wrapLegacyMutation(name) {
+    const original = window[name];
+    if (typeof original !== 'function' || original.__trainingDraftMutationWrapped) return;
+    const wrapped = function (...args) {
+      const result = original.apply(this, args);
+      if (result && typeof result.then === 'function') {
+        return Promise.resolve(result).finally(() => {
+          sync();
+          scheduleDelayedSyncs();
+        });
+      }
+      sync();
+      scheduleDelayedSyncs();
+      return result;
+    };
+    wrapped.__trainingDraftMutationWrapped = true;
+    wrapped.__trainingDraftMutationOriginal = original;
+    window[name] = wrapped;
+    mutationWrappers.push({name, original, wrapped});
+  }
+
+  for (const name of [
+    'startAlgorithmTraining429',
+    'confirmTrainMaterialPickerV3',
+    'setTrainSplitModeV3',
+    'saveTrainSettings428',
+  ]) wrapLegacyMutation(name);
 
   const wrappedFetch = async function (input, init = {}) {
     const url = requestUrl(input);
@@ -145,15 +262,22 @@ export function installTrainingDraftRuntime({
 
   const runtime = {
     sync,
+    update,
     current() { return state().trainingDraft || sync(); },
     inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
     destroy() {
       destroyed = true;
       for (const timer of delayedSyncTimers) clearTimeout(timer);
-      delayedSyncTimers.length = 0;
-      document?.removeEventListener?.('change', onChange);
-      document?.removeEventListener?.('input', onInput);
-      document?.removeEventListener?.('click', onClick);
+      delayedSyncTimers.clear();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener?.('change', onChange);
+        document.removeEventListener?.('input', onInput);
+        document.removeEventListener?.('click', onClick);
+      }
+      for (const {name, original, wrapped} of mutationWrappers) {
+        if (window[name] === wrapped) window[name] = original;
+      }
+      mutationWrappers.length = 0;
       if (window.fetch === wrappedFetch) window.fetch = originalFetch;
       if (window.TrainingDraftRuntime === runtime) window.TrainingDraftRuntime = null;
       window.__trainingDraftRuntimeInstalled = false;
