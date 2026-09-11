@@ -8,7 +8,9 @@ on:
     paths:
       - .github/workflows/v42.25-release-regression.yml
       - a800_rc_acceptance.py
+      - platform_core/training_metrics.py
       - tests/unit/test_a800_rc_acceptance.py
+      - tests/unit/test_training_metrics_fd.py
 
 jobs:
   runtime-contracts:
@@ -37,6 +39,7 @@ jobs:
           tests/unit/test_conversion_tasks.py
           tests/unit/test_conversion_process_fencing.py
           tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_metrics_fd.py
       - name: Worker execution-fencing smoke check
         run: >-
           python task_worker.py --check --data-dir "${RUNNER_TEMP}/platform-data"
