@@ -50,9 +50,11 @@ test('confirmed empty scope contributes concrete labels and ignores legacy star'
   );
 });
 
-test('current v42.9 training modal reads train429Selected instead of legacy train425Selected', () => {
+test('current training modal prefers canonical material ids over stale train429Selected', () => {
   const state = {
-    train429Selected: new Set(['img-new-1', 'img-new-2']),
+    train428AlgorithmId: 'alg-1',
+    trainingDraft: {algorithmId: 'alg-1', materialIds: ['img-new-1', 'img-new-2']},
+    train429Selected: new Set(['img-stale']),
     train425Selected: {
       train: new Set(['img-old-train']),
       val: new Set(['img-old-val']),
@@ -65,6 +67,16 @@ test('current v42.9 training modal reads train429Selected instead of legacy trai
   assert.deepEqual(
     selectedTrainingMaterialIds(state, {preferV429: false}),
     ['img-old-train', 'img-old-val'],
+  );
+});
+
+test('current training modal falls back to legacy selected materials before canonical draft exists', () => {
+  const state = {
+    train429Selected: new Set(['img-new-1', 'img-new-2']),
+  };
+  assert.deepEqual(
+    selectedTrainingMaterialIds(state, {preferV429: true}),
+    ['img-new-1', 'img-new-2'],
   );
 });
 
