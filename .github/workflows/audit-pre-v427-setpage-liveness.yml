@@ -1,0 +1,26 @@
+name: Audit Pre-v42.7 setPage Liveness
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/audit_pre_v427_setpage_liveness.mjs
+      - .github/workflows/audit-pre-v427-setpage-liveness.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install temporary AST parser
+        run: npm install --no-save --package-lock=false acorn@8
+      - name: Audit pre-v42.7 setPage liveness
+        run: node tools/audit_pre_v427_setpage_liveness.mjs
