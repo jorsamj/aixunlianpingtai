@@ -10,7 +10,7 @@ test('training task refresh and actions patch the final table without rebuilding
   await expect(page.locator('#title')).toContainText('训练任务');
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
-    .toBe('training-task-runtime-422502');
+    .toBe('training-task-runtime-422503');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
