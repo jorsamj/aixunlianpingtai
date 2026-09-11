@@ -1,0 +1,45 @@
+name: Migrate train-v3 split state
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/migrate-train-split-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded app.js migration
+        run: python scripts/migrate_train_split_v3.py
+      - name: Verify active app no longer references split mirror
+        run: |
+          ! grep -n "trainSplitV3" static/app.js
+          test "$(git diff --name-only)" = "static/app.js"
+      - name: Syntax and focused frontend tests
+        run: |
+          node --check static/app.js
+          node --test tests/frontend/training-draft.test.mjs tests/frontend/training-draft-runtime.test.mjs tests/frontend/training-draft-direct-write.test.mjs tests/frontend/training-draft-generic-sync.test.mjs tests/frontend/training-labels.test.mjs
+      - name: Commit migrated app.js
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/app.js
+          git commit -m "refactor(ui): read final train-v3 split from TrainingDraft"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
