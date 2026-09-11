@@ -28,6 +28,22 @@ export class PollRegistry {
     return timer;
   }
 
+  startTimeout(key, ownerPages, callback, delay, {setFn = setTimeout, clearFn = clearTimeout} = {}) {
+    if (typeof callback !== 'function') throw new Error('poll callback must be a function');
+    const ms = Number(delay);
+    if (!Number.isFinite(ms) || ms <= 0) throw new Error('poll delay must be positive');
+    this.clear(key);
+    let timer = null;
+    const wrapped = async (...args) => {
+      const current = this.entries.get(key);
+      if (current?.timer === timer) this.entries.delete(key);
+      return callback(...args);
+    };
+    timer = setFn(wrapped, ms);
+    this.entries.set(key, {timer, owners: ownerSet(ownerPages), clearFn, managed: true, delay: ms});
+    return timer;
+  }
+
   clear(key) {
     const entry = this.entries.get(key);
     if (!entry) return false;
@@ -141,6 +157,10 @@ export function installPollRegistry({getState} = {}) {
     startInterval(key, ownerPages, callback, delay, options) {
       return registry.startInterval(key, ownerPages, callback, delay, options);
     },
+    startTimeout(key, ownerPages, callback, delay, options) {
+      return registry.startTimeout(key, ownerPages, callback, delay, options);
+    },
+    clear(key) { return registry.clear(key); },
     replaceTrainingJobTimer,
     rebindCreation: installTrainingJobCreationBridge,
     beforeNavigate(nextPage) {
