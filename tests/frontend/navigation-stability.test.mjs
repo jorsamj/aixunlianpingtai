@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   NavigationEpochGuard,
   installNavigationStability,
+  normalizeNavigationPage,
 } from '../../static/modules/navigation-stability.js';
 
 function deferred() {
@@ -28,6 +29,54 @@ test('navigation epoch invalidates work started on the previous page', () => {
   assert.equal(guard.isCurrent(old, '数据集'), false);
   const current = guard.token('数据集');
   assert.equal(guard.isCurrent(current, '数据集'), true);
+});
+
+test('legacy navigation aliases normalize to canonical pages', () => {
+  assert.equal(normalizeNavigationPage('自动标注'), '自动标注及清洗');
+  assert.equal(normalizeNavigationPage('自动标注及清洗'), '自动标注及清洗');
+  assert.equal(normalizeNavigationPage('数据集'), '数据集');
+  assert.equal(normalizeNavigationPage(''), '');
+});
+
+test('final navigation coordinates legacy alias lifecycle with the canonical page only', () => {
+  const state = {page: '算法列表'};
+  const calls = [];
+  const view = {dataset: {}};
+  const requestScope = {
+    navigate(page) { calls.push(`request:navigate:${page}`); },
+    alignPage(page) { calls.push(`request:align:${page}`); },
+  };
+  const pollRegistry = {
+    beforeNavigate(page) { calls.push(`poll:before:${page}`); },
+    afterNavigate(page) { calls.push(`poll:after:${page}`); },
+  };
+
+  globalThis.document = {
+    getElementById(id) { return id === 'view' ? view : null; },
+  };
+  globalThis.window = {
+    setPage(page) {
+      calls.push(`classic:${page}`);
+      state.page = page;
+    },
+  };
+
+  const runtime = installNavigationStability({getState: () => state, requestScope, pollRegistry});
+  globalThis.window.setPage('自动标注');
+
+  assert.equal(state.page, '自动标注及清洗');
+  assert.equal(runtime.guard.page, '自动标注及清洗');
+  assert.equal(view.dataset.navigationPage, '自动标注及清洗');
+  assert.deepEqual(calls, [
+    'request:navigate:自动标注及清洗',
+    'poll:before:自动标注及清洗',
+    'classic:自动标注及清洗',
+    'request:align:自动标注及清洗',
+    'poll:after:自动标注及清洗',
+  ]);
+
+  runtime.destroy();
+  cleanup();
 });
 
 test('stale training renderer is blocked after navigation without global rerender repair', async () => {
