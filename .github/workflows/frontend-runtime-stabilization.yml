@@ -21,6 +21,7 @@ jobs:
         run: >-
           node --check static/modules/navigation-stability.js &&
           node --check static/modules/page-request-scope.js &&
+          node --check static/modules/poll-registry.js &&
           node --check static/main.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
