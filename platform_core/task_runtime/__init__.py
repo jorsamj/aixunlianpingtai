@@ -1,15 +1,17 @@
 from .artifacts import ArtifactStore
+from .fenced_repository import FencedTaskRepository
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus
 from .process_control import (
     LaunchedProcess,
     ProcessController,
     ProcessIdentity,
+    ProcessIdentityMismatchError,
     hash_command,
     launch_process,
 )
 from .repository import TaskRepository
 from .scheduler import HardwareUnavailableError, Scheduler
-from .worker import TaskHandler, WorkerContext
+from .worker import ExecutionFencedError, TaskHandler, WorkerContext
 from .worker_instances import (
     DuplicateWorkerInstance,
     WorkerInstanceLease,
@@ -19,10 +21,13 @@ from .worker_instances import (
 
 __all__ = [
     "ArtifactStore",
+    "ExecutionFencedError",
+    "FencedTaskRepository",
     "LaunchedProcess",
     "HardwareUnavailableError",
     "ProcessController",
     "ProcessIdentity",
+    "ProcessIdentityMismatchError",
     "Scheduler",
     "TaskHandler",
     "TaskKind",

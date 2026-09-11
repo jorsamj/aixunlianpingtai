@@ -1,7 +1,10 @@
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
-import {applyAnnotationResult} from './modules/annotation.js?v=421800';
+import {applyAnnotationResult} from './modules/annotation.js?v=422500';
+import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422503';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422500';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
@@ -21,7 +24,7 @@ import {buildServerImportRequest, buildImportConfirmation, pollServerImport, ser
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422400';
 
-
+const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
 
 for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
@@ -66,9 +69,30 @@ window.PlatformCore = {
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   storageImport: {storageImportProgressText},
-  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView}
+  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView},
+  uiBuildVersion: UI_BUILD_VERSION,
 };
 
+const notify = message => {
+  if (typeof window.toast === 'function') window.toast(message);
+  else {
+    const toast = document.getElementById('toast');
+    if (toast) {
+      toast.textContent = message;
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 2600);
+    }
+  }
+};
+
+installNegativeSampleRuntime({
+  getState: () => state,
+  notify,
+});
+installTrainingLabelRuntime({
+  getState: () => state,
+  notify,
+});
 installMaterialPaginationRuntime();
 installMaterialBatchRuntime({
   projectId: () => state.project?.id,
@@ -86,11 +110,18 @@ installStorageImportProgressRuntime();
 window.installServerMaterialImport61?.();
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 
-for (const delay of [80, 500, 1800, 3600]) {
-  setTimeout(() => {
-    const badge = document.getElementById('versionBadge');
-    if (badge) badge.textContent = 'v42.24.0';
-    const footer = document.querySelector('.nav-footer b');
-    if (footer) footer.textContent = 'v42.24.0';
-  }, delay);
+installNavigationStability({
+  getState: () => state,
+  notify,
+});
+
+function applyBuildVersion() {
+  const badge = document.getElementById('versionBadge');
+  if (badge) badge.textContent = `v${UI_BUILD_VERSION}`;
+  const footer = document.querySelector('.nav-footer b');
+  if (footer) footer.textContent = `v${UI_BUILD_VERSION}`;
+  document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;
 }
+
+applyBuildVersion();
+for (const delay of [80, 500, 1800, 3600, 8000]) setTimeout(applyBuildVersion, delay);
