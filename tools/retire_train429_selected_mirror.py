@@ -30,9 +30,8 @@ def migrate_app() -> None:
     replacements = [
         ("state init", "  state.train429Selected=state.train429Selected||new Set();\n", "", 1),
         ("final 429 start reset", "});state.train429Selected=new Set();modal(`训练 · ${a.name}`", "});modal(`训练 · ${a.name}`", 1),
-        ("summary count", "${state.train429Selected.size} 张", "${window.TrainingDraftRuntime?.materialIds?.().length||0} 张", 1),
+        ("summary/count reads", "${state.train429Selected.size} 张", "${window.TrainingDraftRuntime?.materialIds?.().length||0} 张", 2),
         ("selected label source", "function selectedLabels429(){const ids=state.train429Selected,l=new Set();", "function selectedLabels429(){const ids=new Set(window.TrainingDraftRuntime?.materialIds?.()||[]),l=new Set();", 1),
-        ("refresh count", "set('tr429Count',`${state.train429Selected.size} 张`);", "set('tr429Count',`${window.TrainingDraftRuntime?.materialIds?.().length||0} 张`);", 1),
         ("picker selected state", "state.train429Selected.has(x.id)", "(window.TrainingDraftRuntime?.materialIds?.()||[]).includes(String(x.id))", 2),
         ("picker toggle", "window.toggleTrainImage429=function(id){state.train429Selected.has(id)?state.train429Selected.delete(id):state.train429Selected.add(id);renderTrainPicker429()};", "window.toggleTrainImage429=function(id){window.TrainingDraftRuntime?.toggleMaterialId?.(id);renderTrainPicker429()};", 1),
         ("quality direct ids", "const ids=[...state.train429Selected];", "const ids=window.TrainingDraftRuntime?.materialIds?.()||[];", 1),
