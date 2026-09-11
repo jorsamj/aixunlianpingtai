@@ -89,30 +89,17 @@ export function resolveClientTrainingLabels({materials, selectedIds, labelCatalo
   };
 }
 
-export function selectedTrainingMaterialIds(state, {preferV429 = false} = {}) {
-  if (preferV429) {
-    return unique(state?.trainingDraft?.materialIds || []);
-  }
-  const train = [...(state?.train425Selected?.train || new Set())];
-  const val = [...(state?.train425Selected?.val || new Set())];
-  return unique([...train, ...val]);
+export function selectedTrainingMaterialIds(state) {
+  return unique(state?.trainingDraft?.materialIds || []);
 }
 
 function selectedIds(state) {
-  const currentModal = Boolean(
-    document.querySelector('.train429-create')
-    || document.querySelector('.train-v3-summary')
-    || document.getElementById('tr429Count')
-  );
-  return selectedTrainingMaterialIds(state, {preferV429: currentModal});
+  return selectedTrainingMaterialIds(state);
 }
 
 function currentAlgorithm(state) {
-  const canonical = String(state?.trainingDraft?.algorithmId || '').trim();
-  const fallback = document.getElementById('tr425AssetAlg')?.value
-    || document.getElementById('train423Asset')?.value
-    || '';
-  const id = canonical || String(fallback || '').trim();
+  const id = String(state?.trainingDraft?.algorithmId || '').trim();
+  if (!id) return null;
   return (state?.algorithms || []).find(item => String(item?.id || '') === id) || null;
 }
 
@@ -137,11 +124,18 @@ function selectionForState(state, algorithmId, hasPreviousVersion, selectable) {
   return existing;
 }
 
-function resetTaskLabelSelection(state, trainingDraftRuntime) {
+function resetTaskLabelInteraction(state) {
   if (!state) return;
   state.trainingLabelAlgorithmId = '';
   state.trainingLabelSelectionTouched = false;
-  trainingDraftRuntime?.update?.({newLabelCodes: []});
+}
+
+function startsTrainingSession(patch) {
+  if (!patch || typeof patch !== 'object') return false;
+  return Object.hasOwn(patch, 'algorithmId')
+    && Array.isArray(patch.materialIds) && patch.materialIds.length === 0
+    && Array.isArray(patch.testMaterialIds) && patch.testMaterialIds.length === 0
+    && Array.isArray(patch.newLabelCodes) && patch.newLabelCodes.length === 0;
 }
 
 function currentHost() {
@@ -163,9 +157,7 @@ function currentHost() {
       mode: 'v429',
     };
   }
-
-  const legacy = document.querySelector('.train428-data') || document.querySelector('.train425-data');
-  return legacy ? {host: legacy, anchor: null, mode: 'legacy'} : null;
+  return null;
 }
 
 function ensurePanelStyle() {
@@ -199,18 +191,8 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   window.__trainingLabelRuntimeInstalled = true;
   ensurePanelStyle();
 
-  const timers = new Set();
-  const wrappedEntrypoints = [];
   let destroyed = false;
-
-  const later = (fn, delay) => {
-    const timer = setTimeout(() => {
-      timers.delete(timer);
-      if (!destroyed) fn();
-    }, delay);
-    timers.add(timer);
-    return timer;
-  };
+  let refreshQueued = false;
 
   const syncDraftLabels = (state, codes) => {
     if (!trainingDraftRuntime?.update) return;
@@ -225,9 +207,9 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     if (destroyed) return false;
     const state = getState?.();
     if (!state) return false;
-    const algorithm = currentAlgorithm(state);
     const placement = currentHost();
-    if (!algorithm || !placement?.host) return false;
+    const algorithm = currentAlgorithm(state);
+    if (!placement?.host || !algorithm) return false;
 
     const ids = selectedIds(state);
     const draftRequested = canonicalSelectedCodes(state);
@@ -258,8 +240,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
       panel = document.createElement('div');
       panel.id = 'trainingLabelContractPanel';
       panel.className = 'training-label-contract';
-      if (placement.anchor) placement.anchor.insertAdjacentElement('afterend', panel);
-      else placement.host.appendChild(panel);
+      placement.anchor.insertAdjacentElement('afterend', panel);
     }
 
     const inheritedHtml = view.inherited.length
@@ -302,67 +283,56 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     return true;
   };
 
-  const wrap = (name, {reset = false} = {}) => {
-    const original = window[name];
-    if (typeof original !== 'function' || original.__trainingLabelsWrapped) return;
-    const wrapped = function (...args) {
-      if (reset) resetTaskLabelSelection(getState?.(), trainingDraftRuntime);
-      const result = original.apply(this, args);
-      const after = () => {
-        trainingDraftRuntime?.sync?.();
-        for (const delay of [0, 40, 120, 350, 700]) later(refresh, delay);
-      };
-      if (result && typeof result.then === 'function') Promise.resolve(result).finally(after);
-      else after();
-      return result;
-    };
-    wrapped.__trainingLabelsWrapped = true;
-    wrapped.__trainingLabelsOriginal = original;
-    window[name] = wrapped;
-    wrappedEntrypoints.push({name, original, wrapped});
+  const queueRefresh = () => {
+    if (destroyed || refreshQueued) return;
+    refreshQueued = true;
+    queueMicrotask(() => {
+      refreshQueued = false;
+      if (!destroyed) refresh();
+    });
   };
 
-  const bindCurrentEntrypoints = () => {
-    wrap('startAlgorithmTraining429', {reset: true});
-    wrap('refreshTrain429');
-  };
-
-  bindCurrentEntrypoints();
-  for (const delay of [100, 400, 1000, 2500]) later(bindCurrentEntrypoints, delay);
+  const unsubscribeDraft = trainingDraftRuntime?.subscribe?.(event => {
+    const state = getState?.();
+    if (event?.type === 'update' && startsTrainingSession(event.patch)) {
+      resetTaskLabelInteraction(state);
+    }
+    queueRefresh();
+  }) || (() => {});
 
   const modalObserver = typeof MutationObserver !== 'undefined'
     ? new MutationObserver(records => {
-        if (!document.querySelector('.train429-create') && !document.querySelector('.train-v3-summary')) return;
-        if (document.getElementById('trainingLabelContractPanel')) return;
+        if (destroyed || !currentHost()) return;
         if (records?.length && records.every(record => {
           const target = record?.target;
-          return target instanceof Element && target.closest?.('#trainingLabelContractPanel');
+          return typeof Element !== 'undefined'
+            && target instanceof Element
+            && target.closest?.('#trainingLabelContractPanel');
         })) return;
-        queueMicrotask(refresh);
+        queueRefresh();
       })
     : null;
-  modalObserver?.observe(document.getElementById('modalBody') || document.body, {childList: true, subtree: true});
+  modalObserver?.observe(document.body, {childList: true, subtree: true});
 
-  const onChange = event => {
-    if (['tr425AssetAlg', 'tr429Target', 'tr429Alg'].includes(event.target?.id)) later(refresh, 0);
-  };
-  document.addEventListener('change', onChange);
+  queueRefresh();
 
   const runtime = {
-    build: 'module-422510',
+    build: 'module-422511',
     refresh,
-    rebind: bindCurrentEntrypoints,
+    queueRefresh,
     selectedIds: () => selectedIds(getState?.()),
+    state() {
+      return {
+        refreshQueued,
+        draftSubscriptionOwner: Boolean(trainingDraftRuntime?.subscribe),
+        classicWrapperOwner: false,
+        timerOwner: false,
+      };
+    },
     destroy() {
       destroyed = true;
+      unsubscribeDraft();
       modalObserver?.disconnect();
-      document.removeEventListener('change', onChange);
-      for (const timer of timers) clearTimeout(timer);
-      timers.clear();
-      for (const {name, original, wrapped} of wrappedEntrypoints) {
-        if (window[name] === wrapped) window[name] = original;
-      }
-      wrappedEntrypoints.length = 0;
       if (window.TrainingLabelRuntime === runtime) window.TrainingLabelRuntime = null;
       window.__trainingLabelRuntimeInstalled = false;
     },
