@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   createTrainingDraft,
@@ -28,70 +29,33 @@ function cleanup(runtime) {
   delete globalThis.document;
 }
 
-test('train-v3 material confirmation updates canonical draft before legacy callback runs', () => {
+test('redundant classic callbacks are no longer wrapped by TrainingDraftRuntime because app.js owns canonical writes', () => {
   setupDom();
   const state = {
-    train428AlgorithmId: 'alg-1',
-    trainSplitV3: {mode: 'random_test_from_training_pool', train: new Set(['stale']), test: new Set(), experiment: 99, validation: 99},
-    train428Config: {},
-    trainingDraft: createTrainingDraft({
-      algorithmId: 'alg-1', materialIds: ['old-train'], testMaterialIds: ['shared', 'old-test'],
-      splitMode: 'independent_test_set', validationPercent: 20, newLabelCodes: ['fire'],
-    }),
-    algorithms: [{id: 'alg-1', versions: []}],
-    trainMaterialPickerV3: {role: 'train', selected: new Set(['new-a', 'shared'])},
-  };
-  let observedInsideLegacy;
-  globalThis.window = {
-    fetch: async () => ({ok: true}),
-    confirmTrainMaterialPickerV3() {
-      observedInsideLegacy = {
-        materialIds: [...state.trainingDraft.materialIds],
-        testMaterialIds: [...state.trainingDraft.testMaterialIds],
-      };
-    },
-  };
-
-  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
-  window.confirmTrainMaterialPickerV3();
-
-  assert.deepEqual(observedInsideLegacy.materialIds, ['new-a', 'shared']);
-  assert.deepEqual(observedInsideLegacy.testMaterialIds, ['old-test']);
-  assert.deepEqual(state.trainingDraft.materialIds, ['new-a', 'shared']);
-  assert.deepEqual(state.trainingDraft.testMaterialIds, ['old-test']);
-  assert.deepEqual([...state.trainSplitV3.train], ['stale']);
-  assert.equal(state.trainSplitV3.experiment, 99);
-  assert.equal(runtime.state().directWrites, 1);
-
-  cleanup(runtime);
-});
-
-test('split mode writes canonical draft before legacy callback runs', () => {
-  setupDom();
-  const state = {
-    train428AlgorithmId: 'alg-1',
-    trainSplitV3: {mode: 'independent_test_set', train: new Set(['wrong']), test: new Set(['wrong-test']), validation: 99},
-    train428Config: {},
-    trainingDraft: createTrainingDraft({
-      algorithmId: 'alg-1', materialIds: ['a'], splitMode: 'random_test_from_training_pool',
-      experimentPercent: 20, validationPercent: 20, newLabelCodes: ['fire'],
-    }),
+    trainingDraft: createTrainingDraft({algorithmId: 'alg-1', materialIds: ['a'], newLabelCodes: ['fire']}),
     algorithms: [{id: 'alg-1', versions: []}],
   };
-  let observedMode;
-  globalThis.window = {
-    fetch: async () => ({ok: true}),
-    setTrainSplitModeV3() { observedMode = state.trainingDraft.splitMode; },
+  const original = {
+    startAlgorithmTraining429() {},
+    confirmTrainMaterialPickerV3() {},
+    setTrainSplitModeV3() {},
+    saveTrainSettings428() {},
   };
+  globalThis.window = {fetch: async () => ({ok: true}), ...original};
 
   const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
-  window.setTrainSplitModeV3('independent_test_set');
+  assert.notEqual(window.startAlgorithmTraining429, original.startAlgorithmTraining429);
+  assert.equal(window.confirmTrainMaterialPickerV3, original.confirmTrainMaterialPickerV3);
+  assert.equal(window.setTrainSplitModeV3, original.setTrainSplitModeV3);
+  assert.equal(window.saveTrainSettings428, original.saveTrainSettings428);
 
-  assert.equal(observedMode, 'independent_test_set');
-  assert.equal(state.trainingDraft.splitMode, 'independent_test_set');
-  assert.equal(state.trainSplitV3.mode, 'independent_test_set');
-  assert.deepEqual([...state.trainSplitV3.train], ['wrong']);
-  assert.equal(runtime.state().directWrites, 1);
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const confirmAt = app.lastIndexOf('window.confirmTrainMaterialPickerV3=function(){');
+  const splitAt = app.lastIndexOf('window.setTrainSplitModeV3=mode=>{');
+  const saveAt = app.lastIndexOf('window.saveTrainSettings428=function(){');
+  assert.ok(confirmAt >= 0 && app.slice(confirmAt, confirmAt + 1400).includes('TrainingDraftRuntime.update(patch)'));
+  assert.ok(splitAt >= 0 && app.slice(splitAt, splitAt + 800).includes('TrainingDraftRuntime.update({splitMode'));
+  assert.ok(saveAt >= 0 && app.slice(saveAt, saveAt + 1800).includes('TrainingDraftRuntime?.update?.({config:c})'));
 
   cleanup(runtime);
 });
@@ -136,53 +100,3 @@ test('opening a different algorithm resets canonical training selection before l
   cleanup(runtime);
 });
 
-test('training settings write canonical resource values before legacy save and are not overwritten afterward', () => {
-  const controls = {
-    ts428Model: {value: 'yolo11n.pt'}, ts428Epoch: {value: '30'}, ts428Size: {value: '640'},
-    ts428Batch: {value: '16'}, ts428Workers: {value: '4'}, ts428Cache: {value: 'False'},
-    ts428EvalInt: {value: '5'}, ts428ValN: {value: '0'}, ts428Metric: {value: 'map50'},
-    ts428Low: {value: '20'}, ts428Goal: {value: '90'}, ts428Opt: {value: 'AdamW'},
-    ts428Pretrained: {checked: true}, ts428Amp: {checked: true}, ts428Det: {checked: true}, ts428Cos: {checked: false},
-  };
-  globalThis.document = {
-    addEventListener() {}, removeEventListener() {},
-    getElementById(id) { return controls[id] || null; }, querySelectorAll() { return []; },
-  };
-  const state = {
-    train428AlgorithmId: 'alg-1',
-    trainSplitV3: {mode: 'independent_test_set', train: new Set(['wrong']), test: new Set(['wrong-test']), validation: 99},
-    train428Config: {batch: 8, workers: 0, cache: 'False', epochs: 100, imgsz: 640},
-    trainingDraft: createTrainingDraft({
-      algorithmId: 'alg-1', materialIds: ['a'], splitMode: 'random_test_from_training_pool',
-      experimentPercent: 20, validationPercent: 20, newLabelCodes: ['fire'],
-    }),
-    algorithms: [{id: 'alg-1', versions: []}],
-  };
-  let observedInsideLegacy;
-  globalThis.window = {
-    fetch: async () => ({ok: true}),
-    saveTrainSettings428() {
-      observedInsideLegacy = {
-        batch: state.trainingDraft.resource.batch, workers: state.trainingDraft.resource.workers,
-        cache: state.trainingDraft.resource.cache, epochs: state.trainingDraft.config.epochs,
-        optimizer: state.trainingDraft.config.optimizer,
-      };
-      state.train428Config = {batch: 99, workers: 99, cache: 'ram'};
-    },
-  };
-
-  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
-  window.saveTrainSettings428();
-
-  assert.deepEqual(observedInsideLegacy, {batch: 16, workers: 4, cache: false, epochs: 30, optimizer: 'AdamW'});
-  assert.equal(state.trainingDraft.resource.batch, 16);
-  assert.equal(state.trainingDraft.resource.workers, 4);
-  assert.equal(state.trainingDraft.resource.cache, false);
-  assert.equal(state.trainingDraft.config.epochs, 30);
-  assert.equal(state.train428Config.batch, 99);
-  assert.deepEqual([...state.trainSplitV3.train], ['wrong']);
-  assert.equal(state.trainSplitV3.validation, 99);
-  assert.equal(runtime.state().directWrites, 1);
-
-  cleanup(runtime);
-});
