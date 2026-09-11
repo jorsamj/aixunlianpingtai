@@ -35,10 +35,12 @@ jobs:
           node --check static/main.mjs
       - name: Retired training mirror guard
         run: |
-          if grep -n "trainSplitV3" static/app.js; then
-            echo "retired trainSplitV3 mirror was reintroduced into active app.js" >&2
-            exit 1
-          fi
+          for token in trainSplitV3 trainingLabelSelected train429Selected; do
+            if grep -n "$token" static/app.js; then
+              echo "retired training mirror $token was reintroduced into active app.js" >&2
+              exit 1
+            fi
+          done
       - name: Canonical training network owner guard
         run: |
           if grep -n '/train/start' static/app.js; then
