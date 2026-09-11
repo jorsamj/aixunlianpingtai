@@ -61,6 +61,10 @@ jobs:
               exit 1
             fi
           done
+          if grep -F -n "target.closest('#trainingLabelContractPanel')" static/modules/training-draft-runtime.js; then
+            echo "TrainingDraftRuntime must not resync from TrainingLabel-owned controls" >&2
+            exit 1
+          fi
       - name: TrainingLabel canonical lifecycle guard
         run: |
           file=static/modules/training-labels.js
