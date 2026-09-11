@@ -56,6 +56,8 @@ auto-label-v60    1.8s one-shot while active
 
 Remaining old timer fields are cleanup debt, not a reason to add more wrappers.
 
+Training jobs now use the named `TrainingTaskRuntime.refresh({source: 'poll'})` path when available. Manual refresh and periodic poll requests are source-aware so adjacent cross-source refreshes can be coalesced without weakening mutation freshness.
+
 ## 3. Incremental page owners already established
 
 ### Algorithms
@@ -72,11 +74,29 @@ training create -> focused algorithms/jobs refresh
 
 Owner: `static/modules/training-task-runtime.js`
 
+Current build:
+
+```text
+training-task-runtime-422503
+```
+
 ```text
 refresh/action -> jobs-focused API -> patch counts + tbody
 ```
 
 The final `.train428-page` node is preserved during routine refresh/actions.
+
+The runtime now handles the historical manual-refresh/poll race explicitly:
+
+```text
+concurrent refresh                -> share inflight request
+poll -> manual within 120 ms      -> reuse fresh jobs result
+manual -> poll within 120 ms      -> reuse fresh jobs result
+mutation -> refresh               -> force fresh GET
+manual refresh completion         -> re-arm managed poll timer
+```
+
+Real Chrome continues to require exactly one `/api/projects/{id}/jobs` GET per manual refresh. This was fixed in runtime behavior rather than by relaxing the test.
 
 ### Datasets / materials
 
@@ -109,10 +129,12 @@ static/modules/training-labels.js
 Current builds:
 
 ```text
-training-draft-runtime-422506
+training-draft-runtime-422507
 training-draft-controls-422501
 training-labels module-422506
-main.mjs?v=42.25.32
+training-task-runtime-422503
+poll-registry import cache 422507
+main.mjs?v=42.25.34
 ```
 
 Principal train-v3 mutations already write canonical state first/directly:
@@ -136,9 +158,7 @@ training configuration save/apply
 
 ## 5. Mirror removal progress
 
-### Removed: `state.trainingLabelSelected`
-
-This is the first compatibility mirror fully retired.
+### Removed #1: `state.trainingLabelSelected`
 
 Current label contract:
 
@@ -155,16 +175,38 @@ Real Chrome explicitly verifies the property is absent during label selection an
 Object.hasOwn(state, 'trainingLabelSelected') === false
 ```
 
+### Removed #2: `state.trainSplitV3`
+
+Final train-v3 split presentation and mutations now derive from canonical draft fields:
+
+```text
+trainingDraft.materialIds
+trainingDraft.testMaterialIds
+trainingDraft.splitMode
+trainingDraft.experimentPercent
+trainingDraft.validationPercent
+```
+
+Current contract:
+
+```text
+no trainSplitV3 read/write in final static/app.js train-v3 path
+TrainingDraftRuntime does not recreate the mirror
+stale trainSplitV3 property is deleted by TrainingDraftRuntime
+CI rejects reintroduction of trainSplitV3 into static/app.js
+```
+
+Real Chrome injects a deliberately incorrect stale `trainSplitV3` and verifies it cannot alter current split UI or final training request.
+
 ### Remaining compatibility mirrors
 
 ```text
 state.train428AlgorithmId
 state.train428Config
 state.train429Selected
-state.trainSplitV3
 ```
 
-These remain because active/final `app.js` render paths still read them. Do not delete them in one patch.
+`train429Selected` still has broad reads across historical v412/v414/v415/v417/v429 helper/render paths. It is not safe to delete wholesale and is no longer a P0 blocker for the next A800 RC acceptance pass.
 
 ## 6. Generic TrainingDraft sync debt
 
@@ -187,7 +229,7 @@ trV3Device
 trV3GpuPolicy
 ```
 
-Next cleanup rule:
+Future cleanup rule remains:
 
 ```text
 active final renderer read
@@ -200,6 +242,8 @@ active final renderer read
 
 Do not create another override module just to hide an old read.
 
+For now this cleanup is intentionally bounded: do not continue mirror retirement merely because debt exists. Resume only for a concrete defect or as a separately scoped frontend migration phase.
+
 ## 7. Regression gates
 
 Frontend workflow:
@@ -208,11 +252,26 @@ Frontend workflow:
 .github/workflows/frontend-runtime-stabilization.yml
 ```
 
-Latest validated result after label-mirror removal:
+Validated code HEAD before documentation-only sync:
+
+```text
+d81f19552839210046cad53d6d201fd104c85987
+```
+
+Latest validated result:
 
 ```text
 frontend             ✅
 browser-navigation   ✅
+```
+
+Permanent frontend coverage now includes:
+
+```text
+static/app.js syntax check
+trainSplitV3 retired-mirror guard
+all tests/frontend/*.test.mjs
+real Chrome runtime suite
 ```
 
 Real Chrome suite includes:
@@ -225,6 +284,8 @@ algorithm-list-performance.spec.mjs
 training-task-performance.spec.mjs
 material-pagination-performance.spec.mjs
 ```
+
+The current Chrome gate validates both canonical training split behavior and single-request training-task manual refresh behavior.
 
 Release/backend regression workflow:
 
@@ -239,30 +300,27 @@ runtime-contracts         ✅
 training-data-contracts   ✅
 ```
 
-The first workflow attempt failed before pytest because the CI image's FastAPI/Starlette TestClient required `httpx2`; the workflow dependency was corrected. The subsequent real contract run is green.
-
 ## 8. Remaining high-value debt
 
-### P0-B training mirror retirement
+### Deferred training mirrors
 
-Highest-value next candidates:
+Remaining:
 
 ```text
 train429Selected
-trainSplitV3
+train428Config
+train428AlgorithmId
 ```
 
-But they are not safe for direct deletion yet. First identify final train-v3 reads in `app.js`, migrate those reads to canonical draft, and add browser assertions proving stale mirror mutation cannot change the current UI/request.
+`train429Selected` is the most visible remaining material mirror, but its dependency surface is broad. Do not remove it as a drive-by cleanup before RC acceptance.
 
-`train428Config` and `train428AlgorithmId` have broader historical dependency surfaces and should be later unless a narrow read path is isolated.
-
-### P0-C global render chain cleanup
+### Global render chain cleanup
 
 `app.js` still contains historical `render=function(){...}` / `window.setPage` override layers. Delete a classic owner only after a named replacement module has unit + real-browser parity.
 
-### P1 standard frontend project
+### Standard frontend project
 
-After P0 stabilization, migrate page-by-page toward:
+After v42.25 functional acceptance, migrate page-by-page toward:
 
 ```text
 frontend/
@@ -275,9 +333,9 @@ frontend/
 
 This should be replacement, not a permanent classic+Vue dual runtime.
 
-## 9. A800 acceptance after bounded frontend cleanup
+## 9. Next priority: A800 RC acceptance
 
-Do not let mirror cleanup become open-ended. After another bounded migration batch, move to real A800 RC acceptance:
+The bounded frontend runtime/mirror cleanup batch is complete. Move to real A800 acceptance:
 
 ```text
 device=0
@@ -289,7 +347,15 @@ labels=fire+smoke
 expected nc=2
 ```
 
-Verify Snapshot/data.yaml label schema, zero-byte YOLO labels for `confirmed_empty`, one successful iteration training, and Web/Worker restart lifecycle.
+Acceptance must verify:
+
+1. requested/effective/actual resources all preserve `16 / 4 / false`;
+2. task Snapshot and generated `data.yaml` contain only intended task classes;
+3. `confirmed_empty` generates zero-byte YOLO label files;
+4. one iteration training starts from the latest successful trainable version/schema only;
+5. Web/Worker restart lifecycle preserves queue/process fencing behavior.
+
+Frontend/CI success does not count as CUDA/A800 acceptance.
 
 ## 10. Non-negotiable rules
 
@@ -302,4 +368,5 @@ Verify Snapshot/data.yaml label schema, zero-byte YOLO labels for `confirmed_emp
 7. No independent mutation of legacy training state without canonical synchronization.
 8. Do not delete historical code until replacement behavior has unit and real-browser coverage.
 9. Explicit `false` / `0` resource values must survive UI -> draft -> request unchanged.
-10. Frontend/CI acceptance does not replace A800/CUDA acceptance.
+10. Do not weaken performance tests to conceal duplicate polling/request behavior.
+11. Frontend/CI acceptance does not replace A800/CUDA acceptance.
