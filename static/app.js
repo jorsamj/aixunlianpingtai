@@ -3999,12 +3999,10 @@ window.installUsability417?.();
   function selectedLabels(ids){const chosen=new Set(ids),labels=new Set();(state.images||[]).forEach(row=>{if(chosen.has(imageId(row)))(row.labels||[]).forEach(code=>labels.add(labelText(code)))});return[...labels]}
   function renderResources(root,panel){
     if(root.querySelector('#trV3Device'))return;
-    const c=state.train428Config||(state.train428Config={}),report=state.trainingDevicesV3||{},options=report.options||[],field=document.createElement('section');
+    const resource=state.trainingDraft?.resource||{},report=state.trainingDevicesV3||{},options=report.options||[],field=document.createElement('section');
     field.className='train-v3-resources';
     field.innerHTML=`<header><b>执行设备与资源</b></header><div class="form two"><label class="field"><span>训练设备</span><select id="trV3Device" class="select">${options.map(row=>`<option value="${esc(row.id)}" ${row.available===false?'disabled':''}>${esc(row.label||row.id)}${row.available===false?'（不可用）':''}</option>`).join('')||'<option value="" disabled>设备读取失败</option>'}</select></label><label class="field"><span>GPU 使用策略</span><select id="trV3GpuPolicy" class="select"><option value="auto">自动</option><option value="exclusive">独占</option><option value="shared">共享</option></select></label></div><small>${esc(report.error||report.auto?.meaning||'按所选训练环境的可用设备执行')}</small>`;
-    panel.before(field);field.querySelector('#trV3Device').value=c.device||report.recommended||'auto';field.querySelector('#trV3GpuPolicy').value=c.gpu_policy||'auto';
-    field.querySelector('#trV3Device').addEventListener('change',event=>{c.device=event.target.value});
-    field.querySelector('#trV3GpuPolicy').addEventListener('change',event=>{c.gpu_policy=event.target.value});
+    panel.before(field);field.querySelector('#trV3Device').value=resource.device||report.recommended||'auto';field.querySelector('#trV3GpuPolicy').value=resource.gpuPolicy||'auto';
   }
   function renderSplit(){
     const root=document.querySelector('.train429-create'),panel=root?.querySelectorAll('.train428-panel')?.[1];if(!panel)return;
@@ -4013,8 +4011,7 @@ window.installUsability417?.();
       const field=document.createElement('label');field.className='field';
       field.innerHTML='<span>训练资源策略</span><select id="trV3ResourceStrategy" class="select"><option value="auto">自动调优（推荐）</option><option value="manual">手动：使用高级参数中的 batch / workers / cache</option></select><small>自动策略在后台按可用显存、CPU 和缓存空间解析参数；实际值与原因可在任务详情查看。</small>';
       panel.before(field);
-      field.querySelector('select').value=state.train428Config?.resource_strategy||'auto';
-      field.querySelector('select').addEventListener('change',event=>{state.train428Config=state.train428Config||{};state.train428Config.resource_strategy=event.target.value});
+      field.querySelector('select').value=state.trainingDraft?.resource?.strategy||'auto';
     }
     const s=splitState(),random=s.mode==='random_test_from_training_pool',labels=selectedLabels([...s.train]);
     panel.innerHTML=`<header><b>2. 本次训练素材</b><span>按图片选择，标签仅用于筛选</span></header><div class="train-v3-summary"><div><span>训练候选</span><b>${s.train.size} 张</b><em>${esc(labels.join('、')||'尚未选择')}</em></div><div><span>独立试验素材</span><b>${random?'随机抽取':s.test.size+' 张'}</b><em>${random?`${s.experiment}% / 每次重新抽取`:'与训练素材严格隔离'}</em></div><div><span>可选素材</span><b>${allCandidates().length} 张</b><em>已处理且已标注</em></div></div><div class="train-v3-mode"><label class="check"><input type="radio" name="trV3Mode" value="random_test_from_training_pool" ${random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 从本次训练素材随机抽取试验集</label><label class="check"><input type="radio" name="trV3Mode" value="independent_test_set" ${!random?'checked':''} onchange="setTrainSplitModeV3(this.value)"> 单独选择试验素材</label></div><div class="train-v3-actions"><button class="btn primary" onclick="openTrainMaterialPickerV3('train')">选择训练素材</button>${random?`<label class="field compact"><span>试验集比例</span><div class="input-suffix428"><input id="trV3Experiment" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.experiment}"><span>%</span></div></label>`:`<button class="btn" onclick="openTrainMaterialPickerV3('test')">选择独立试验素材</button>`}<label class="field compact"><span>验证集比例</span><div class="input-suffix428"><input id="trV3Validation" class="input" type="number" min="0.1" max="99.9" step="0.1" value="${s.validation}"><span>%</span></div></label><button class="btn" onclick="trainQuality429()" ${s.train.size?'':'disabled'}>查看数据质量</button></div><small class="train-v3-note">每次打开默认全部不选。训练、验证和试验的最终图片名单会写入任务快照，可追溯且不会按数据集自动扩展。</small>`;
@@ -4063,7 +4060,7 @@ window.installUsability417?.();
       state.targets=options?.targets||[];
     }
     try{state.trainingDevicesV3=await api('/api/v62/training-devices')}catch(error){state.trainingDevicesV3={options:[],error:String(error.message||error)}}
-    const result=await previousStart?.(aid);state.train428Config=state.train428Config||{};state.train428Config.device=state.trainingDevicesV3.recommended||'auto';[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
+    const result=await previousStart?.(aid);const recommendedDevice=state.trainingDevicesV3.recommended||'auto';window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
     const historicalLog=window.showTrainLog423;
   window.showTrainLog423=async function(id){
