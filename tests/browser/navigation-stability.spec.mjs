@@ -200,3 +200,23 @@ test('legacy auto-label route alias resolves to 自动标注及清洗 through fi
 
   expect(pageErrors).toEqual([]);
 });
+
+test('historical persisted 自动标注 page is restored as canonical 自动标注及清洗', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '自动标注'}));
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toContainText('自动标注及清洗', {timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem('mc_train_ui_state_v34') || '{}').page || '';
+    } catch (_) {
+      return '';
+    }
+  })).toBe('自动标注及清洗');
+
+  expect(pageErrors).toEqual([]);
+});
