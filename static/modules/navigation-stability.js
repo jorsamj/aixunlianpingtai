@@ -50,23 +50,25 @@ export function installNavigationStability({getState, notify} = {}) {
   const state = getState?.();
   const guard = new NavigationEpochGuard(state?.page || '');
   const pending = new Map();
+  const rebindTimers = [];
   let repairing = false;
   let repairQueued = false;
   let tokenSeq = 0;
+  let destroyed = false;
 
   function currentState() { return getState?.() || state || {}; }
 
   function repairCurrentPage(reason = 'stale-render') {
-    if (repairing || repairQueued) return;
+    if (destroyed || repairing || repairQueued) return;
     const s = currentState();
     if (!s.page) return;
     repairQueued = true;
     queueMicrotask(() => {
       repairQueued = false;
-      if (repairing) return;
+      if (destroyed || repairing) return;
       repairing = true;
       try {
-        if (typeof window.render === 'function') window.render();
+        if (typeof window !== 'undefined' && typeof window.render === 'function') window.render();
         else if (typeof globalThis.render === 'function') globalThis.render();
       } catch (error) {
         notify?.(`页面状态恢复失败：${error?.message || error}`);
@@ -77,6 +79,7 @@ export function installNavigationStability({getState, notify} = {}) {
   }
 
   function hasStalePending() {
+    if (destroyed) return false;
     const s = currentState();
     for (const item of pending.values()) {
       if (!guard.isCurrent(item.token, s.page)) return true;
@@ -111,6 +114,7 @@ export function installNavigationStability({getState, notify} = {}) {
   }
 
   function wrapAsyncOwner(name, ownerPages) {
+    if (destroyed || typeof window === 'undefined') return;
     const original = window[name];
     if (typeof original !== 'function' || original.__navigationStabilityWrapped) return;
     const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
@@ -160,6 +164,7 @@ export function installNavigationStability({getState, notify} = {}) {
   };
 
   function wrapKnownFunctions() {
+    if (destroyed || typeof window === 'undefined') return;
     Object.entries(ownerFunctions).forEach(([page, names]) => {
       for (const name of names) {
         const owners = page === '自动标注及清洗' ? ['自动标注', '自动标注及清洗'] : [page];
@@ -171,7 +176,9 @@ export function installNavigationStability({getState, notify} = {}) {
   // app.js contains historical override layers; some functions are assigned late.
   // Re-check briefly after module installation so the final implementation is fenced.
   wrapKnownFunctions();
-  for (const delay of [50, 250, 800, 1800]) setTimeout(wrapKnownFunctions, delay);
+  for (const delay of [50, 250, 800, 1800]) {
+    rebindTimers.push(setTimeout(() => wrapKnownFunctions(), delay));
+  }
 
   const api = {
     guard,
@@ -179,8 +186,15 @@ export function installNavigationStability({getState, notify} = {}) {
     repairCurrentPage,
     wrapKnownFunctions,
     destroy() {
+      destroyed = true;
       observer?.disconnect();
+      for (const timer of rebindTimers) clearTimeout(timer);
+      rebindTimers.length = 0;
       pending.clear();
+      if (typeof window !== 'undefined') {
+        window.__navigationStabilityInstalled = false;
+        if (window.NavigationStability === api) window.NavigationStability = null;
+      }
     },
   };
   window.NavigationStability = api;
