@@ -1,6 +1,21 @@
+export const TRAINING_DRAFT_CONTROL_IDS = Object.freeze([
+  'trV3Experiment',
+  'trV3Validation',
+  'tr429Priority',
+  'trV3ResourceStrategy',
+  'trV3Device',
+  'trV3GpuPolicy',
+]);
+
+const CONTROL_ID_SET = new Set(TRAINING_DRAFT_CONTROL_IDS);
+
 function numberValue(target) {
   const value = Number(target?.value);
   return Number.isFinite(value) ? value : null;
+}
+
+export function isTrainingDraftDirectControl(target) {
+  return CONTROL_ID_SET.has(String(target?.id || ''));
 }
 
 export function trainingDraftControlPatch(target) {
@@ -42,7 +57,7 @@ export function installTrainingDraftControls({trainingDraftRuntime} = {}) {
   const apply = event => {
     if (destroyed) return;
     const target = event?.target;
-    if (!target?.id) return;
+    if (!isTrainingDraftDirectControl(target)) return;
     const patch = trainingDraftControlPatch(target);
     if (!patch) return;
     trainingDraftRuntime.update(patch);
@@ -53,7 +68,7 @@ export function installTrainingDraftControls({trainingDraftRuntime} = {}) {
   document.addEventListener('change', apply);
 
   const runtime = {
-    build: 'training-draft-controls-422500',
+    build: 'training-draft-controls-422501',
     state: () => ({directWrites}),
     destroy() {
       destroyed = true;
