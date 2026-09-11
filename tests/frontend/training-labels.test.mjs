@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   latestVersionLabelInfo,
@@ -169,4 +170,12 @@ test('legacy successful previous version is flagged for server-side snapshot rec
   assert.equal(info.hasVersion, true);
   assert.equal(info.legacyUnknown, true);
   assert.deepEqual(info.codes, []);
+});
+
+
+test('TrainingLabel runtime does not rebind removed 428 entrypoints', () => {
+  const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
+  assert.equal(source.includes("wrap('openTrain428'"), false);
+  assert.equal(source.includes("wrap('refreshTrain428'"), false);
+  assert.match(source, /build: 'module-422509'/);
 });
