@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`
 >
-> Purpose: establish the authoritative cleanup map for the current browser runtime before Vue/TypeScript migration. This document is intentionally implementation-oriented. Update it as each legacy layer is retired.
+> Purpose: establish the authoritative cleanup map for the current browser runtime before Vue/TypeScript migration. Update it as each legacy layer is retired.
 
 ## 1. Current diagnosis
 
@@ -124,6 +124,8 @@ material pagination
 material batch runtime
 resource discovery
 navigation stability
+page request scope
+poll registry
 ```
 
 The migration target is to move authority from global classic functions to explicit modules, but during migration **a feature must not have two active owners**.
@@ -132,15 +134,41 @@ The migration target is to move authority from global classic functions to expli
 
 The first v42.25 `navigation-stability.js` observed the entire `#view`. If stale async work existed, any DOM mutation could trigger a global `window.render()` repair.
 
-That behavior has now been removed on this branch. The current first-stage replacement:
+That behavior has been removed on this branch. Current behavior:
 
-- keeps navigation epoch tracking;
-- clears known page-owned timers on navigation;
-- guards known page renderers by page ownership;
-- does not use MutationObserver to globally repaint `#view`;
-- does not call global `window.render()` when stale work finishes.
+- navigation epoch is still tracked;
+- known page renderers are guarded by page ownership;
+- stale page DOM is no longer repaired by a global `window.render()`;
+- known page polling is removed from the old page lifecycle;
+- current page navigation coordinates RequestScope and PollRegistry.
 
-This is only Phase 1. Direct DOM writes after `await` still need RequestScope/AbortController migration.
+### 2.7 Page RequestScope is now active
+
+`static/modules/page-request-scope.js` is installed by `static/main.mjs` and wraps the existing final `window.fetch` chain.
+
+Current migration contract:
+
+- same-origin `/api/*` GET/HEAD requests are attached to the active page AbortController;
+- navigation aborts the previous page controller;
+- a GET invalidated by navigation is quarantined so legacy `safe()`/catch blocks do not display a false request-failure toast and the stale continuation cannot mutate DOM/state;
+- POST/PUT/DELETE are not automatically cancelled by page navigation;
+- explicit caller-provided `signal` remains authoritative.
+
+The quarantine of legacy stale GET continuations is a migration bridge, not the final API-client design. Once page modules use an explicit ApiClient, aborted calls should return typed cancellation rather than relying on legacy suspension.
+
+### 2.8 PollRegistry has started absorbing legacy page timers
+
+`static/modules/poll-registry.js` now owns lifecycle cleanup for known page polling slots:
+
+```text
+state.jobPollTimer
+state.source422Timer
+state.auto422Timer
+window.__videoFramePollTimer
+window.__prelabelPollTimer
+```
+
+Current phase adopts timers created by legacy code and guarantees they are cleared when their owner page is left. Next phase will move timer creation itself into PollRegistry so page modules stop calling `setInterval` directly.
 
 ## 3. Target runtime architecture
 
@@ -159,7 +187,7 @@ BrowserRuntime
 Rules:
 
 1. `state.page` may only change through Router.
-2. Leaving a page aborts its outstanding requests.
+2. Leaving a page aborts its outstanding read requests.
 3. Leaving a page destroys its polling registrations.
 4. A page renderer may only write while that page owns the active scope.
 5. Polling updates local rows/cards only; no periodic whole-page render.
@@ -170,11 +198,16 @@ Rules:
 
 ### P0-A — Runtime stabilization
 
-- remove global repair rerenders;
-- introduce page ownership guards;
-- introduce RequestScope with AbortController;
-- introduce centralized PollRegistry;
-- instrument page navigation and long tasks in browser tests.
+Status:
+
+```text
+DONE      remove MutationObserver/global-render repair
+DONE      page renderer ownership guards
+DONE      page GET RequestScope / AbortController migration bridge
+DONE      centralized legacy PollRegistry adoption/leave cleanup
+NEXT      migrate timer creation into PollRegistry
+NEXT      browser stress test with delayed API responses
+```
 
 ### P0-B — Training consolidation
 
@@ -249,22 +282,34 @@ Do not keep inactive 425/428/429 compatibility layers forever. Deprecation witho
 
 ## 6. Current branch status
 
-The first stabilization change on this branch replaces MutationObserver/global-render repair with renderer ownership guards in:
+Current stabilization implementation lives in:
 
 ```text
 static/modules/navigation-stability.js
+static/modules/page-request-scope.js
+static/modules/poll-registry.js
+static/main.mjs
 ```
 
-Corresponding frontend tests are being updated in:
+Tests:
 
 ```text
 tests/frontend/navigation-stability.test.mjs
+tests/frontend/page-request-scope.test.mjs
+tests/frontend/poll-registry.test.mjs
 ```
 
-Next implementation step after this test is green:
+CI workflow:
 
 ```text
-RequestScope + AbortController
+.github/workflows/frontend-runtime-stabilization.yml
 ```
 
-integrated first into Training Tasks, Algorithms, and Datasets.
+The full frontend Node suite is intentionally run here, not only the newly-added tests, so stale historical test contracts are exposed during stabilization.
+
+Next implementation target:
+
+```text
+move high-frequency polling creation and row updates into PollRegistry/page-local renderers,
+then start TrainingDialog state consolidation.
+```
