@@ -2,20 +2,17 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `f3eb6b360123dd688eea4dd0f29c05a9db5b4c05` / run `34619698115`  
+> Latest fully accepted code point: `eb76e48adaafe3c71556918d42efc98cca5d8f2f` / run `34620286461`  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
 
-This is the handoff map for physically deleting historical frontend overrides without changing current behavior. Preserve semantic ownership, not version-era wrapper count.
+This map exists to delete historical frontend overrides without changing current behavior. Preserve live semantics, not version-era wrapper count. `static/app.js` is append-only historical code; a later direct assignment can sever earlier wrappers even if those wrappers contain meaningful old logic.
 
-`static/app.js` is append-only historical code: later direct assignments can sever earlier wrapper chains, while later wrappers can also retain earlier render owners. Every deletion therefore requires liveness proof.
-
-## 2. Current top-level runtime chain
+## 2. Runtime ownership
 
 ```text
-static/app.js historical shell
-→ current classic render/setPage owner chain
+static/app.js current classic owner chain
 → static/main.mjs
    → PageRequestScope
    → PollRegistry
@@ -23,178 +20,100 @@ static/app.js historical shell
    → named runtimes
 ```
 
-`NavigationStability` is the outer live navigation coordinator and owns request/navigation epoch alignment, PollRegistry leave/enter cleanup and stale async-owner protection.
+`NavigationStability` is the outer navigation coordinator. Current classic navigation semantics that must survive include startup readiness and mobile-sidebar close.
 
 ## 3. Accepted deletion batches
 
-### Batch A — `setupPagePolling`
+| Batch | Physically retired | Accepted code / run |
+|---|---|---|
+| A | `setupPagePolling`, `jobPollTimer` compatibility | `4cabbe84...` / `34617573070` |
+| B | `set423Base`, `setBase424` | `871b1c91...` / `34618276191` |
+| C | V37 duplicate `baseSetPage` sidebar wrapper | `f3eb6b36...` / `34619698115` |
+| D | `oldSetV39`, `oldSet42`, `set422Base` | `eb76e48a...` / `34620286461` |
 
-```text
-setupPagePolling = 0
-jobPollTimer      = 0
-acceptance        4cabbe84... / run 34617573070
-```
-
-Training timer owner is `PollRegistry(training-jobs)`.
-
-### Batch B — v42.3/v42.4 pass-through family
-
-Physically removed:
-
-```text
-set423Base
-setBase424
-```
-
-Acceptance:
-
-```text
-871b1c91d919760728fd74dc0e7abf7ac25b516f
-run 34618276191
-frontend + Real Chrome PASS
-```
-
-### Batch C — duplicate V37 mobile-sidebar wrapper
-
-Physically removed:
-
-```text
-const baseSetPage=window.setPage;
-window.setPage=function(page){toggleMobileSidebarV37(false);baseSetPage(page)};
-```
-
-Retained live classic owner:
-
-```text
-const baseSetPage417=window.setPage;
-window.setPage=function(page){
-  window.toggleMobileSidebarV37?.(false);
-  return baseSetPage417?.(page)
-};
-```
-
-Permanent proof:
-
-```text
-tests/frontend/retired-sidebar-setpage-guard.test.mjs
-tests/browser/navigation-stability.spec.mjs
-  final navigation owner closes the mobile sidebar and backdrop
-```
-
-Acceptance:
-
-```text
-f3eb6b360123dd688eea4dd0f29c05a9db5b4c05
-run 34619698115
-frontend + Real Chrome PASS
-app.js cache 42.25.51
-```
+Each batch passed frontend unit + Real Chrome; temporary migration helpers/workflows were deleted after success.
 
 ## 4. Current visible owner map
 
-| Surface | Current live owner | Semantics that must survive | Regression proof |
+| Surface | Current live owner | Required semantics | Proof |
 |---|---|---|---|
-| Navigation coordination | `NavigationStability` wrapping final classic `window.setPage` | request epoch, request-scope alignment, PollRegistry leave/enter, stale async protection | navigation unit + Real Chrome |
-| Mobile sidebar close | V417 `baseSetPage417` wrapper | close sidebar/backdrop on navigation | static guard + explicit Chrome sidebar test |
-| Startup navigation readiness | `setPageReady414` where retained in final predecessor chain | wait for startup snapshot when `uiReady` is false | startup/navigation regressions before deletion |
-| Training submit | `TrainingSubmitRuntime` | sole `/train/start`, canonical draft/readiness | unit + Chrome submit |
-| Training jobs request | `TrainingTaskRuntime` | focused `/jobs`, coalescing, force-fresh mutation | unit + browser perf |
-| Training jobs timer | `PollRegistry(training-jobs)` | managed active/idle cadence + navigation cleanup | PollRegistry + Chrome |
-| AutoLabel timer | `AutoLabelPollRuntime + PollRegistry` | explicit activate/deactivate | unit + Chrome |
-| Video timer | `PollRegistry(video-frames)` | one-shot row patch | unit + Chrome |
-| Source timer | `PollRegistry(sources)` | managed interval | unit + Chrome |
-| Data/material page | `MaterialPaginationRuntime61` + current render chain | pagination/card patch/annotation stability | material browser perf |
-| Algorithm list | `AlgorithmListRuntime` + current algorithm renderer | fast expand/refresh/version rows | algorithm browser perf |
-| Storage config | final storage render wrapper | route storage page, delegate others | navigation/browser coverage |
+| Navigation coordination | `NavigationStability` | request epoch, request-scope alignment, PollRegistry leave/enter, stale async protection | unit + Real Chrome |
+| Startup readiness | `setPageReady414` | wait for startup snapshot when UI not ready | protected in static guards; future dedicated test if changed |
+| Mobile sidebar close | V417 `baseSetPage417` | close sidebar/backdrop on navigation | static guard + explicit Real Chrome |
+| Training submit | `TrainingSubmitRuntime` | sole `/train/start`, canonical draft/readiness | unit + Chrome |
+| Training jobs request | `TrainingTaskRuntime` | focused `/jobs`, coalescing, force-fresh mutation | unit + browser performance |
+| Training jobs timer | `PollRegistry(training-jobs)` | managed cadence + navigation cleanup | PollRegistry + Chrome |
+| AutoLabel | `AutoLabelPollRuntime + PollRegistry` | explicit activate/deactivate | unit + Chrome |
+| Video | `PollRegistry(video-frames)` | one-shot row patch | unit + Chrome |
+| Sources | `PollRegistry(sources)` | managed interval | unit + Chrome |
+| Data/material | `MaterialPaginationRuntime61` + current renderer | pagination/card patch/annotation stability | browser performance |
+| Algorithm list | `AlgorithmListRuntime` + current renderer | expand/refresh/version rows | browser performance |
 
 ## 5. Current setPage topology
 
-Baseline before cleanup: 10 historical `window.setPage=function...` assignments.
-After Batch B and C: current read shows 8.
-
-Observed families include:
+Current static scan after Batch D shows 7 `window.setPage=` assignments/bindings:
 
 ```text
-plain state.page/render owners
-UI-state persistence
-V39 deploy cache invalidation
-V42 page-family cache invalidation
-V42.2 aliases
-v42.4 direct reset
-v42.7 auto-label alias/direct reset
-startup readiness wrapper
-V417 sidebar-close wrapper
-NavigationStability outer wrapper (module)
+A. initial function setPage → window.setPage=setPage
+B. UI-state persistence direct assignment
+C. v35 direct state.page/render assignment
+D. v42.4 direct state.page/render assignment
+E. v42.7 direct auto-label alias assignment
+F. setPageReady414 async wrapper
+G. baseSetPage417 sidebar-close wrapper
 ```
 
-The crucial distinction is **live chain vs historical source**. A direct reset that does not call the previous owner makes prior wrappers unreachable unless another reference retained them.
-
-## 6. Next bounded candidate — pre-v42.4 dead setPage family
-
-Current reference audit:
+Current final classic chain after complete script load is expected to be:
 
 ```text
-oldSetV39  → local declaration + call inside its own wrapper only
-oldSet42   → local declaration + call inside its own wrapper only
-set422Base → local declaration + call inside its own wrapper only
+E v42.7 direct route owner
+→ F setPageReady414
+→ G baseSetPage417
+→ NavigationStability module wrapper
 ```
 
-Historical semantics:
+because E directly overwrites `window.setPage` without invoking D.
+
+## 6. Next bounded candidate — pre-v42.7 direct-assignment family
+
+Potential dead source layers:
 
 ```text
-V39: deployment page → state.deployLoaded=false
-V42: selected v42 page → state.v42.loaded=false
-V42.2: 新建算法/自动迭代 alias → 算法列表
+B UI-state persistence direct assignment
+C v35 direct state.page/render
+D v42.4 direct state.page/render
 ```
 
-Later v42.4 performs a direct reset:
+Unlike Batch D, these are direct assignments rather than wrappers, so the write-before-delete proof must additionally check initialization-time behavior.
 
-```js
-window.setPage=function(p){state.page=p;render()};
-```
-
-and does not call the previous owner. If source-order/reference proof remains true at write time, the V39/V42/V42.2 wrappers are dead after script initialization.
-
-### Required proof before deletion
+Required proof:
 
 ```text
-1. exact reference count for oldSetV39 / oldSet42 / set422Base
-2. source order confirms v42.4 reset executes later
-3. no exported callback holds those local wrappers
-4. current final page navigation remains covered by existing Chrome tests
-5. delete only this bounded pre-v42.4 family
-6. retain v42.4 direct owner, later aliases, setPageReady414, V417 sidebar owner and NavigationStability
-7. permanent static guard
-8. full frontend + Real Chrome
+1. source order B < C < D < E
+2. no synchronous setPage(...) invocation between B/C/D/E requires the temporary assigned function
+3. no callback/closure stores B/C/D for later use
+4. any required saveUiState persistence occurs in current render/lifecycle code
+5. E alias behavior remains correct
+6. F/G and NavigationStability remain intact
+7. deletion only removes the three dead assignments, not surrounding render/load logic
+8. permanent static guard + full frontend + Real Chrome
 ```
 
-Do not resurrect old cache invalidation or aliases merely because dead historical code contained them. Only current product contracts determine required behavior.
+If #2 or #3 fails, split the family and keep whichever temporary assignment participates in initialization.
 
 ## 7. Render-chain caution
 
-Historical `render=function...` assignments are still numerous and unlike the dead setPage wrappers may be retained through `const previousRender=render` chains. Do not delete render generations based on version number or setPage findings.
+Historical `render=function...` layers are not automatically dead when setPage layers are. Many later renderers capture prior render functions and delegate to them. Render cleanup must be audited independently by reference chain and page coverage.
 
-Future render cleanup must independently prove:
-
-```text
-current visible page renderer
-all previous-render references
-page-specific independent semantics
-named runtime ownership
-browser regression
-```
-
-## 8. Protected live owners
-
-Do not include in the next batch:
+## 8. Permanent navigation proof currently active
 
 ```text
-setPageReady414
-baseSetPage417
-NavigationStability
-v42.4 direct setPage owner
-later live alias/router wrappers
+tests/frontend/retired-sidebar-setpage-guard.test.mjs
+tests/frontend/retired-pre-v424-setpage-guard.test.mjs
+tests/browser/navigation-stability.spec.mjs
 ```
+
+The browser suite explicitly proves final navigation closes `sidebar.mobile-open` and `sideBackdrop.show`.
 
 ## 9. Per-batch checklist
 
@@ -212,4 +131,4 @@ live HEAD
 
 ## 10. Release boundary
 
-This work does not authorize `main` merge, `VERSION.txt` bump, tag/release or A800 acceptance claims. A800 RC remains deferred until current P0/P1 technical debt and zero-point scan are complete.
+No `main` merge, `VERSION.txt` bump, tag/release or A800 acceptance claim is authorized by this cleanup. A800 RC remains deferred until current P0/P1 debt and zero-point scan are complete.
