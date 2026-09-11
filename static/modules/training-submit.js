@@ -112,6 +112,11 @@ export function installTrainingSubmitRuntime({
       const draft = trainingDraftRuntime.sync();
       if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
 
+      const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
+      if (inheritance.blocked) {
+        throw new Error('该算法已有版本，但没有成功且可继续训练的版本；平台不会回退母算法。');
+      }
+
       const asset = (state.algorithms || []).find(row => String(row?.id || '') === String(draft.algorithmId || ''));
       if (!asset) throw new Error('当前训练算法不存在，请刷新算法列表后重试');
 
@@ -170,9 +175,10 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422501',
+    build: 'training-submit-422502',
     submit,
     isSubmitting: () => submitting,
+    state: () => ({submitting, networkOwner: true}),
     destroy() {
       destroyed = true;
       if (window.submitTrain429 === submit) window.submitTrain429 = originalSubmit;
