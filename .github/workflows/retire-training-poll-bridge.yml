@@ -1,0 +1,63 @@
+name: Retire Training Poll Bridge
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_training_poll_bridge.py
+      - .github/workflows/retire-training-poll-bridge.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded migration
+        run: python tools/retire_training_poll_bridge.py
+      - name: Verify focused training lifecycle contracts
+        run: |
+          node --check static/app.js
+          node --check static/modules/poll-registry.js
+          node --check static/modules/navigation-stability.js
+          node --test tests/frontend/poll-registry.test.mjs tests/frontend/navigation-stability.test.mjs tests/frontend/training-task-runtime.test.mjs
+          for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
+            if grep -F -n 'jobPollTimer' "$file"; then
+              echo "jobPollTimer compatibility remains in $file" >&2
+              exit 1
+            fi
+          done
+          if [ "$(grep -F -o 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js | wc -l)" -ne 2 ]; then
+            echo 'both historical setupPagePolling definitions must be direct PollRegistry handoffs' >&2
+            exit 1
+          fi
+          for token in installPollingCreationBridge __pollRegistryCreationWrapped originalSetupPagePolling wrappedSetupPagePolling "registry.adopt('training-jobs'" adoptLegacy rebindCreation; do
+            if grep -F -n "$token" static/modules/poll-registry.js; then
+              echo "PollRegistry training wrapper/adoption compatibility remains: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'replaceTrainingJobTimer();' static/modules/poll-registry.js
+      - name: Commit migrated files
+        run: |
+          if git diff --quiet -- static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js tests/frontend/poll-registry.test.mjs tests/frontend/navigation-stability.test.mjs; then
+            echo 'no migration changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js tests/frontend/poll-registry.test.mjs tests/frontend/navigation-stability.test.mjs
+          git commit -m 'refactor(ui): retire training polling wrapper bridge'
+          git push
