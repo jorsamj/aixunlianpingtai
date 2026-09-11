@@ -5,18 +5,20 @@
 ## 1. Branch and release state
 
 ```text
-current cleanup branch:                refactor/frontend-runtime-stabilization
-current HEAD when this handoff updated: 035edf9399c8567656b48e5283229e599ab85aea
-formal VERSION.txt:                    42.24.0 until v42.25 acceptance
-frontend badge:                        v42.25.0-dev
-frontend module entry cache:           main.mjs?v=42.25.32
+current cleanup branch:                  refactor/frontend-runtime-stabilization
+validated code HEAD before doc-only sync: d81f19552839210046cad53d6d201fd104c85987
+formal VERSION.txt:                      42.24.0 until v42.25 acceptance
+frontend badge:                          v42.25.0-dev
+frontend module entry cache:             main.mjs?v=42.25.34
 ```
+
+The handoff/documentation commits after the validated code HEAD are documentation-only; always inspect the live branch HEAD before editing.
 
 Do not merge this branch into `main` unless explicitly authorized.
 
 ## 2. Non-regression backend contracts
 
-Do not regress these while cleaning the frontend:
+Do not regress these while cleaning or preparing RC acceptance:
 
 - SHA duplicate/leakage protection and Snapshot schema v3;
 - `confirmed_empty` is the formal negative-sample contract; unannotated zero-box material is not a valid negative;
@@ -25,13 +27,13 @@ Do not regress these while cleaning the frontend:
 - task-scoped label schema; first training never inherits mother-model classes;
 - iteration inherits only the latest successful, artifact-verified, trainable version schema.
 
-A dedicated release gate now exists:
+A dedicated release gate exists:
 
 ```text
 .github/workflows/v42.25-release-regression.yml
 ```
 
-At HEAD `035edf93...` both groups are green:
+Latest validated backend contract state:
 
 ```text
 runtime-contracts         ✅
@@ -92,6 +94,24 @@ Datasets          static/modules/material-pagination-runtime.js
 
 Routine refreshes patch local page regions and preserve page shells; they must not fall back to unrelated `loadRelated()` + whole-page repaint behavior.
 
+### Training-task refresh race fix
+
+`TrainingTaskRuntime` build is now:
+
+```text
+training-task-runtime-422503
+```
+
+Training-task polling/manual refresh behavior now has explicit request ownership:
+
+- concurrent refreshes still share one in-flight request;
+- a manual refresh immediately adjacent to a completed poll, or vice versa, is coalesced within a 120 ms cross-source dedupe window;
+- mutation flows (`pause/resume/stop/delete/promote`) force a fresh `/jobs` GET after the mutation and never reuse the dedupe result;
+- after manual refresh, the managed `PollRegistry` training timer is re-armed so the next periodic poll is not immediately stacked onto the click;
+- the real Chrome performance gate still requires exactly one `/api/projects/{id}/jobs` GET per manual refresh; the test was not relaxed to permit duplicates.
+
+`PollRegistry` training polling now calls the named `TrainingTaskRuntime.refresh({source: 'poll'})` path when available.
+
 ## 6. Canonical training creation state
 
 Single canonical frontend source of truth:
@@ -113,10 +133,12 @@ static/modules/training-labels.js
 Current builds/entries:
 
 ```text
-training-draft-runtime-422506
+training-draft-runtime-422507
 training-draft-controls-422501
 training-labels module-422506
-main.mjs?v=42.25.32
+training-task-runtime-422503
+poll-registry import cache 422507
+main.mjs?v=42.25.34
 ```
 
 The canonical draft owns:
@@ -141,26 +163,44 @@ Principal train-v3 interactions are canonical-first: algorithm start/switch, mat
 
 Final `/train/start` frontend owner is `TrainingSubmitRuntime`; stale request values are canonicalized before POST. Explicit `false`/`0` values must survive UI -> draft -> request unchanged.
 
-## 7. First compatibility mirror has been removed
+## 7. Compatibility mirror retirement status
 
-`state.trainingLabelSelected` is no longer a compatibility mirror.
+### Removed #1: `state.trainingLabelSelected`
 
 Current behavior:
 
 ```text
 label UI reads state.trainingDraft.newLabelCodes
 label change -> TrainingDraftRuntime.update({newLabelCodes})
-TrainingDraftRuntime no longer mirrors labels back to state.trainingLabelSelected
-trainingDraftFromLegacyState no longer imports task labels from state.trainingLabelSelected
+TrainingDraftRuntime does not mirror labels back to state.trainingLabelSelected
+trainingDraftFromLegacyState does not import task labels from state.trainingLabelSelected
 ```
 
-Real Chrome `training-label-selector.spec.mjs` explicitly asserts throughout the creation/submission flow:
+Real Chrome explicitly asserts throughout the creation/submission flow:
 
 ```text
 Object.hasOwn(state, 'trainingLabelSelected') === false
 ```
 
-It also validates material selection, label deselection, settings, stale-manual-POST canonicalization, and the final user-facing submit.
+### Removed #2: `state.trainSplitV3`
+
+The final train-v3 split UI now derives its view directly from `state.trainingDraft`:
+
+```text
+trainingDraft.materialIds
+trainingDraft.testMaterialIds
+trainingDraft.splitMode
+trainingDraft.experimentPercent
+trainingDraft.validationPercent
+```
+
+Current behavior:
+
+- final `static/app.js` train-v3 code has no `trainSplitV3` read/write;
+- `TrainingDraftRuntime` no longer creates or mirrors `trainSplitV3`;
+- the runtime deletes a stale `trainSplitV3` property if an already-loaded/legacy page still has one;
+- the permanent frontend CI guard fails if `trainSplitV3` is reintroduced into `static/app.js`;
+- real Chrome deliberately injects a stale/wrong `trainSplitV3` and proves the canonical UI and final `/train/start` request remain unchanged.
 
 Remaining training compatibility mirrors:
 
@@ -168,10 +208,9 @@ Remaining training compatibility mirrors:
 state.train428AlgorithmId
 state.train428Config
 state.train429Selected
-state.trainSplitV3
 ```
 
-Do not delete these wholesale. `app.js` still has active/final renderer reads for parts of this state.
+Do not delete these wholesale. `train429Selected` in particular still has broad historical renderer/helper reads in `app.js`; treat it as later migration debt, not the next mandatory task.
 
 ## 8. Frontend gates
 
@@ -181,12 +220,19 @@ Workflow:
 .github/workflows/frontend-runtime-stabilization.yml
 ```
 
-At HEAD `035edf93...` both are green:
+Validated at code HEAD `d81f19552839210046cad53d6d201fd104c85987`:
 
 ```text
 frontend             ✅
 browser-navigation   ✅
 ```
+
+Current permanent frontend checks include:
+
+- syntax check for named modules and `static/app.js`;
+- retired-mirror guard preventing `trainSplitV3` from returning to active `app.js`;
+- complete Node frontend unit suite;
+- real Chrome runtime regressions.
 
 Current real-Chrome suite includes:
 
@@ -199,15 +245,40 @@ training-task-performance.spec.mjs
 material-pagination-performance.spec.mjs
 ```
 
-## 9. Next work order
+The latest Chrome gate covers both the second mirror retirement and the training `/jobs` refresh/poll race fix.
 
-1. Continue P0-B mirror retirement one field/read-path at a time. Prefer migrating final train-v3 reads to `state.trainingDraft` before deleting any mirror.
-2. Highest-priority candidates are `train429Selected` / `trainSplitV3`, but only after identifying the exact final renderer reads and proving browser parity.
-3. Do not spend unlimited time on frontend debt: after another bounded mirror cleanup batch, prepare A800 RC acceptance.
-4. A800 short training target: `device=0`, `batch=16`, `workers=4`, `cache=false`, 3–5 epochs, fire+smoke only, expected `nc=2`.
-5. Verify Snapshot/data.yaml only contain intended task classes and `confirmed_empty` produces zero-byte YOLO label files.
-6. Run one iteration-training acceptance and restart/lifecycle acceptance for Web + Worker.
-7. Security hardening follows functional acceptance.
+## 9. Next work order: move to A800 RC acceptance
+
+The bounded frontend stabilization batch is complete enough to stop open-ended mirror cleanup. The next priority is real A800/CUDA RC acceptance, not another speculative frontend mirror deletion.
+
+1. Deploy this branch to the existing A800 environment without merging `main`.
+2. Run a short real training task with:
+
+```text
+device=0
+batch=16
+workers=4
+cache=false
+epochs=3-5
+selected task labels=fire+smoke only
+expected nc=2
+```
+
+3. Verify three layers agree on resources:
+
+```text
+requested batch=16 workers=4 cache=False
+effective batch=16 workers=4 cache=False
+Ultralytics actual batch=16 workers=4 cache=False
+```
+
+4. Inspect the task Snapshot and generated `data.yaml`; only intended task classes may appear.
+5. Confirm `confirmed_empty` negatives generate zero-byte YOLO `.txt` files.
+6. Run one iteration-training acceptance and prove it inherits only the latest successful trainable version/schema, not the mother model or a failed newer version.
+7. Run Web + Worker stop/restart/lifecycle acceptance and verify queued/running task fencing remains correct.
+8. Only after these pass, decide whether v42.25 is ready for formal release/security-hardening work.
+
+`state.train429Selected` and the remaining classic render chain are still debt, but are no longer P0 blockers for this RC pass unless A800 acceptance exposes a concrete frontend defect.
 
 ## 10. Standard architecture target
 
@@ -235,6 +306,7 @@ API versions should eventually represent public API compatibility (for example `
 - do not add another numbered frontend override generation;
 - do not restore global `window.render()` repair loops;
 - do not let polling repaint unrelated pages;
+- do not weaken duplicate-request tests merely to hide polling races;
 - do not rebuild train requests from project-wide labels;
 - do not inherit mother-model classes on first training;
 - do not remove multiple compatibility mirrors without unit + real Chrome proof;
