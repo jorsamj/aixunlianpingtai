@@ -1338,11 +1338,6 @@ window.installUsability417=function(){
     saveUiState();
   };
 
-  window.setPage=function(p){
-    state.page=p;
-    saveUiState();
-    render();
-  };
   const oldSelectDataset=window.selectDataset;
   window.selectDataset=async function(id){
     state.datasetId=id;
@@ -1512,7 +1507,6 @@ window.installUsability417=function(){
     window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
     try{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:state.page,projectId:state.project?.id||'',datasetId:state.datasetId||'',imageFilter:state.imageFilter||'all',ts:Date.now()}))}catch(e){}
   };
-  window.setPage=function(p){state.page=p;render()};
 
   function setBtnBusy(btn, busy, text){
     if(!btn)return;
@@ -2712,7 +2706,6 @@ window.installUsability417=function(){
     // call previous render for deploy/test/config pages, but it will redraw nav/top; acceptable
     renderBase424();
   };
-  window.setPage=function(p){state.page=p;render()};try{setPage=window.setPage}catch(e){}
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V424},100);
 })();
 
