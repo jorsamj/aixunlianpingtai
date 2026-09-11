@@ -388,8 +388,7 @@ function renderJobProgress(j){
 }
 function hasLiveJob(){return (state.jobs||[]).some(j=>['queued','running','waiting','pending'].includes(j.status));}
 async function pollActiveLog(){if(!state.activeLogJob)return;const el=$('#log');if(!el)return;const txt=await safe(api(`/api/projects/${pid()}/jobs/${state.activeLogJob}/log`));if(txt!=null)el.textContent=txt||'暂无日志';el.scrollTop=el.scrollHeight;}
-function setupPagePolling(){window.PollRegistryRuntime?.replaceTrainingJobTimer?.();}
-render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();setupPagePolling();}
+render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();}
 
 function renderTraining(){
   const rec=state.rec?.recommendation||{};
@@ -829,9 +828,8 @@ window.installUsability417=function(){
   };
 
   
-  setupPagePolling=function(){window.PollRegistryRuntime?.replaceTrainingJobTimer?.();};
 
-  render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();setupPagePolling();};
+  render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();};
 })();
 
 // ===== v28 overrides: 检测台/测试发布空DOM防崩溃 + 友好错误提示 =====
@@ -980,7 +978,7 @@ window.installUsability417=function(){
   render = function(){
     renderNav();renderTop();renderSummary();
     ({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();
-    if(typeof setupPagePolling==='function') setupPagePolling();
+    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
   };
 })();
 
@@ -1033,7 +1031,7 @@ window.installUsability417=function(){
     const cards=state.algorithms.map(a=>`<div class="item"><div><div class="item-title">${esc(a.name)}</div><div class="item-sub">${esc(a.remark||'无备注')} · ${(a.versions||[]).length} 个版本</div></div><div class="row"><button class="btn small" onclick="editAlgorithm('${a.id}')">编辑</button><button class="btn small soft" onclick="viewAlgorithm('${a.id}')">版本</button><button class="btn small danger" onclick="delAlgorithm('${a.id}')">删除</button></div></div>`).join('');
     $('#view').innerHTML=`<section class="panel"><div class="panel-head"><div class="panel-title">算法列表</div><button class="btn primary small" onclick="newAlgorithm()">创建算法</button></div><div class="panel-body"><div class="card-list">${cards||'<div class="empty">先创建算法，例如：安全帽检测、明火烟雾检测</div>'}</div></div></section><section class="panel"><div class="panel-head"><div><div class="panel-title">待发布/可导出模型</div><div class="subline">模型可先归属算法，也可直接导出部署包。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>模型</th><th>大小</th><th>操作</th></tr></thead><tbody>${(state.pending||[]).map(pendingRow).join('')||'<tr><td colspan="3">暂无待发布模型</td></tr>'}</tbody></table></div></section>`;
   };
-  render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();if(typeof setupPagePolling==='function') setupPagePolling();};
+  render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();};
 })();
 
 // ===== v31: PaddleDetection 结构化结果解析与低置信度调试提示 =====
@@ -1266,7 +1264,7 @@ window.installUsability417=function(){
   render=function(){
     renderNav();renderTop();renderSummary();
     ({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,视频切帧:renderVideoFrameTasks,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();
-    if(typeof setupPagePolling==='function') setupPagePolling();
+    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
   };
 })();
 
@@ -1439,7 +1437,7 @@ window.installUsability417=function(){
     renderNav();renderTop();renderSummary();
     const map=RENDER_MAP();
     (map[state.page]||renderHomeDashboard)();
-    if(typeof setupPagePolling==='function') setupPagePolling();
+    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
     saveUiState();
   };
 
@@ -1511,7 +1509,7 @@ window.installUsability417=function(){
     renderNav();renderTop();renderSummary();
     const map=v35RenderMap();
     (map[state.page]||map['工作台'])();
-    if(typeof setupPagePolling==='function') setupPagePolling();
+    window.PollRegistryRuntime?.replaceTrainingJobTimer?.();
     try{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:state.page,projectId:state.project?.id||'',datasetId:state.datasetId||'',imageFilter:state.imageFilter||'all',ts:Date.now()}))}catch(e){}
   };
   window.setPage=function(p){state.page=p;render()};
@@ -2523,7 +2521,7 @@ window.installUsability417=function(){
   const render423Base=render;
   render=function(){
     if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}
-    if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();setupPagePolling();return}
+    if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();return}
     render423Base();
   };
   const set423Base=window.setPage;
@@ -3156,7 +3154,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function queuePosition428(j){if(j.status!=='queued')return'';const same=(state.jobs||[]).filter(x=>x.status==='queued'&&(x.resource_key||'')===(j.resource_key||'')).sort(queueOrder428);const i=same.findIndex(x=>x.id===j.id);return i>=0?`队列第 ${i+1} 位`:''}
   function trainActions428(j){if(j.status==='queued')return`<button class="btn mini" onclick="promoteTrain428('${j.id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${j.id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`;if(j.status==='running')return`<button class="btn mini" onclick="showTrainLog423('${j.id}')">日志</button><button class="btn mini" onclick="pauseTrain428('${j.id}')">暂停</button><button class="btn mini danger" onclick="stopTrain428('${j.id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`;if(j.status==='paused')return`<button class="btn mini" onclick="showTrainLog423('${j.id}')">日志</button><button class="btn mini primary" onclick="resumeTrain428('${j.id}')">继续</button><button class="btn mini danger" onclick="stopTrain428('${j.id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`;return`<button class="btn mini" onclick="showTrainLog423('${j.id}')">日志</button>${j.auto_version_id?`<button class="btn mini primary" onclick="trainingReport425('${j.id}')">训练报告</button>`:''}<button class="btn mini danger" onclick="deleteTrain428('${j.id}')">删除</button>`}
   function trainRows428(rows){const ordered=[...rows].sort((a,b)=>{const ar=a.status==='running'?0:a.status==='paused'?1:a.status==='queued'?2:3,br=b.status==='running'?0:b.status==='paused'?1:b.status==='queued'?2:3;return ar-br||(ar===2?queueOrder428(a,b):String(b.started_at||b.created_at||'').localeCompare(String(a.started_at||a.created_at||'')))});return ordered.map(j=>`<tr><td><div class="train428-taskname"><b>${esc(j.asset_algorithm_name||j.algorithm_name||j.id)}</b><span>${esc(j.id)}</span>${j.auto_version_name?`<em>版本 ${esc(j.auto_version_name)}</em>`:''}</div></td><td>${statusPill428(j.status)}<small class="queuepriority428">优先级 ${priorityValue428(j)}</small>${queuePosition428(j)?`<small class="queuepos428">${queuePosition428(j)}</small>`:''}</td><td><div class="train428-resource"><b>${esc(resourceName428(j))}</b><span>${esc(j.framework==='paddle'?'PaddleDetection':'Ultralytics / YOLO')}</span></div></td><td><div class="progress424"><i style="width:${Math.max(0,Math.min(100,Number(j.progress_percent||0)))}%"></i></div><span class="train428-progress-txt">${j.current_epoch||0}/${j.total_epochs||j.epochs||'-'} · ${Number(j.progress_percent||0).toFixed(0)}%</span></td><td>${fmtTime424(j.elapsed_seconds)}</td><td>${fmtTime424(j.eta_seconds)}</td><td>${dt428(j.started_at||j.created_at)}</td><td><div class="row wrap">${trainActions428(j)}</div></td></tr>`).join('')||'<tr><td colspan="8" class="empty-row">暂无记录</td></tr>'}
-  window.renderTraining425=window.renderTraining424=window.renderTraining423=function(){const active=(state.jobs||[]).filter(j=>ACTIVE428.has(j.status)),history=(state.jobs||[]).filter(j=>DONE428.has(j.status));const rows=state.train428Tab==='active'?active:history;document.getElementById('view').innerHTML=`<section class="train428-page"><div class="train428-tabs"><button class="${state.train428Tab==='active'?'on':''}" onclick="setTrainTab428('active')">进行中 <span>${active.length}</span></button><button class="${state.train428Tab==='history'?'on':''}" onclick="setTrainTab428('history')">历史记录 <span>${history.length}</span></button><button class="train428-refresh" onclick="refreshTrainPage428()">刷新</button></div><section class="panel"><div class="table-wrap"><table class="table train428-table"><thead><tr><th>训练任务</th><th>状态</th><th>执行机器 / 框架</th><th>进度</th><th>已用时间</th><th>预计剩余</th><th>开始时间</th><th>操作</th></tr></thead><tbody>${trainRows428(rows)}</tbody></table></div></section></section>`;setupPagePolling()};
+  window.renderTraining425=window.renderTraining424=window.renderTraining423=function(){const active=(state.jobs||[]).filter(j=>ACTIVE428.has(j.status)),history=(state.jobs||[]).filter(j=>DONE428.has(j.status));const rows=state.train428Tab==='active'?active:history;document.getElementById('view').innerHTML=`<section class="train428-page"><div class="train428-tabs"><button class="${state.train428Tab==='active'?'on':''}" onclick="setTrainTab428('active')">进行中 <span>${active.length}</span></button><button class="${state.train428Tab==='history'?'on':''}" onclick="setTrainTab428('history')">历史记录 <span>${history.length}</span></button><button class="train428-refresh" onclick="refreshTrainPage428()">刷新</button></div><section class="panel"><div class="table-wrap"><table class="table train428-table"><thead><tr><th>训练任务</th><th>状态</th><th>执行机器 / 框架</th><th>进度</th><th>已用时间</th><th>预计剩余</th><th>开始时间</th><th>操作</th></tr></thead><tbody>${trainRows428(rows)}</tbody></table></div></section></section>`;window.PollRegistryRuntime?.replaceTrainingJobTimer?.()};
   window.setTrainTab428=function(t){state.train428Tab=t;renderTraining423()};
   window.refreshTrainPage428=async function(){await loadRelated();renderTraining423();toast('训练任务已刷新')};
   window.promoteTrain428=async function(id){try{await api(`/api/v48/projects/${pid()}/jobs/${id}/promote`,{method:'POST'});await loadRelated();renderTraining423();toast('任务已插到当前资源队列最前')}catch(e){toast(e.message||e)}};
