@@ -18,6 +18,7 @@ static/app.js historical/versioned overrides
        ├── TrainingTaskRuntime
        ├── MaterialPaginationRuntime61
        ├── TrainingDraftRuntime
+       ├── TrainingDraftControlsRuntime
        ├── TrainingSubmitRuntime
        ├── training-labels
        └── AutoLabelPollRuntime
@@ -59,7 +60,7 @@ New named runtimes should prefer their own finite lifecycle/generation fencing i
 
 ### PollRegistry
 
-Timer creation is now directly managed for the principal current paths:
+Timer creation is directly managed for the principal current paths:
 
 ```text
 training-jobs     interval, 2s active / 5s idle
@@ -121,6 +122,8 @@ static/modules/material-pagination-runtime.js
 window.MaterialPaginationRuntime61
 ```
 
+Current build is `material-pagination-runtime-422205`.
+
 The v61 server-paged material API remains the correct data shape.
 
 Current contract:
@@ -138,7 +141,9 @@ page / search / label filter / source filter / top refresh
 
 Switching processed/unprocessed tabs or toggling delete mode may rebuild the shell because the toolbar/filters structurally change. Routine data refreshes must not.
 
-Real Chrome verifies natural pagination, search and top refresh preserve the shell and do not request bootstrap, algorithms, datasets, or legacy `/api/projects/{id}/images`.
+The install-time 250ms bootstrap is now guarded. If the current shell and filter signature have already committed, that delayed callback may refresh summary data but must not issue another `reset:true` material load. This closes the real cursor race where a late bootstrap could return the user from page 2 to page 1.
+
+Real Chrome verifies natural pagination, the delayed-bootstrap window, search and top refresh preserve the shell and do not request bootstrap, algorithms, datasets, or legacy `/api/projects/{id}/images`.
 
 ## 4. Auto-label / video / source polling status
 
@@ -154,7 +159,7 @@ Final owner path is v42.4 `renderVideo424 / refreshVideo424Delta`, not old v33. 
 
 `source422Timer` creation is replaced by a PollRegistry-managed 2.5 second interval. Refresh remains table-local.
 
-## 5. Canonical training state
+## 5. Canonical training state — canonical-first milestone reached
 
 Canonical source of truth:
 
@@ -165,9 +170,17 @@ state.trainingDraft
 Owned by:
 
 ```text
-training-draft.js
-training-draft-runtime.js
-training-submit.js
+static/modules/training-draft.js
+static/modules/training-draft-runtime.js
+static/modules/training-draft-controls.js
+static/modules/training-submit.js
+```
+
+Current builds:
+
+```text
+training-draft-runtime-422504
+training-draft-controls-422500
 ```
 
 Compatibility mirrors still present in `app.js`:
@@ -182,35 +195,67 @@ state.train428AlgorithmId
 
 They must not regain authority. Do not add `train430`, `train431`, etc.
 
-Training label owner is `static/modules/training-labels.js`. Training POST owner is `TrainingSubmitRuntime`.
+Principal final train-v3 mutations now write canonical state first/directly:
+
+```text
+start/switch algorithm
+confirm exact training materials
+confirm independent test materials
+switch split mode
+select/unselect task labels
+experiment percentage
+validation percentage
+queue priority
+resource strategy
+device
+GPU policy
+training configuration save/apply
+```
+
+`training-draft-controls.js` owns the active DOM control writes for the percentages/priority/resource selectors. `training-labels.js` owns canonical label selection. `training-draft-runtime.js` owns canonical mutation/wrapping for historical functions that still render the current dialog. `TrainingSubmitRuntime` owns the final POST.
+
+Training settings are normalized before they enter canonical state. In particular, legacy select value `"False"` is normalized to boolean `false`, and canonical values are mirrored back after the legacy save callback so old code cannot overwrite explicit resource semantics.
+
+Real Chrome currently covers canonical + compatibility + final request parity for:
+
+```text
+epochs=30
+batch=16
+workers=4
+cache=false
+optimizer=AdamW
+resource_strategy=manual
+device=cpu browser fixture
+gpu_policy=exclusive
+```
 
 ## 6. Remaining high-value debt
 
-### P0-B Training mirror removal
+### P0-B Training mirror removal — next phase
 
-This is now the principal frontend P0 item.
+The active user interactions are now canonical-first. The remaining debt is no longer “make train-v3 write canonical state”; it is to retire the migration scaffolding safely.
 
-Final train-v3 still writes several controls into historical state first and relies on `TrainingDraftRuntime.sync()` / event sampling / compatibility wrappers to reconstruct the canonical draft.
+Current residual compatibility:
+
+```text
+TrainingDraftRuntime still has generic input/change/click sync sampling.
+Some async legacy start/render paths still require a settling sync because they initialize recommended device/resource data after opening.
+Classic app.js renderers still read train428/train429/trainSplitV3 mirrors.
+```
 
 Next target:
 
 ```text
-train-v3 user action
--> TrainingDraftRuntime.update(...)
--> state.trainingDraft
--> temporary mirror to old fields only for legacy rendering
+owned train-v3 control
+-> direct named runtime update only
+-> no generic sync sampling for that control
+
+legacy renderer read
+-> migrate to trainingDraft where practical
+-> remove one compatibility mirror at a time
 ```
 
-Priority direct-write actions:
-
-```text
-confirmTrainMaterialPickerV3
-setTrainSplitModeV3
-training config apply/save
-algorithm selection / resource controls where still legacy-first
-```
-
-Remove old state fields only after browser parity proves the canonical draft is the direct owner.
+Do not delete all mirrors in one patch. Remove each only after unit + real Chrome coverage proves the active renderer no longer reads it.
 
 ### P0-C Global render chain cleanup
 
@@ -242,7 +287,7 @@ Workflow:
 Current gates cover:
 
 ```text
-node --check named runtime modules
+node --check named runtime modules, including training-draft-controls.js
 node --test tests/frontend/*.test.mjs
 Playwright Chrome:
   navigation-stability.spec.mjs
@@ -253,7 +298,7 @@ Playwright Chrome:
   material-pagination-performance.spec.mjs
 ```
 
-The recorded milestone `e38b72a4...` passed Node and real Chrome. Always confirm latest HEAD checks before claiming green.
+Functional milestone `d3a5f61c...` passed Node and real Chrome after both the direct-control migration and the material bootstrap race fix. Always confirm latest HEAD checks again before claiming green.
 
 ## 8. Non-negotiable rules
 
@@ -265,4 +310,5 @@ The recorded milestone `e38b72a4...` passed Node and real Chrome. Always confirm
 6. No mother-model class inheritance on first training.
 7. No independent mutation of legacy training state without canonical draft synchronization.
 8. Do not delete historical code until replacement behavior has unit and real-browser coverage.
-9. Frontend CI does not replace A800/CUDA acceptance.
+9. Explicit `false` / `0` training resource values must survive UI -> draft -> request unchanged.
+10. Frontend CI does not replace A800/CUDA acceptance.
