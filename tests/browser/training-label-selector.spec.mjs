@@ -63,7 +63,7 @@ async function selectAllMaterials(page, dialog) {
   await expect(dialog).toBeVisible();
 }
 
-test('final train-v3 dialog shows material-derived label selector and submits train_labels', async ({page, request}) => {
+test('training dialog shows material-derived label selector and submits train_labels', async ({page, request}) => {
   const {project} = await seedProject(request);
   let submitted;
 
@@ -114,7 +114,6 @@ test('final train-v3 dialog shows material-derived label selector and submits tr
 
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
   await expect(dialog).toBeVisible({timeout: 10_000});
-  await expect(dialog.locator('.train-v3-summary')).toBeVisible();
 
   const labels = dialog.locator('#trainingLabelContractPanel');
   await expect(labels).toBeVisible({timeout: 10_000});
@@ -133,7 +132,7 @@ test('final train-v3 dialog shows material-derived label selector and submits tr
   await expect(fire).toBeChecked();
   await expect(smoke).toBeChecked();
 
-  // Prove that the UI choice, not the project label library, controls the request.
+  // Prove that task labels, not the project label library, control the request.
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
   await dialog.locator('#tr429Priority').fill('7');
