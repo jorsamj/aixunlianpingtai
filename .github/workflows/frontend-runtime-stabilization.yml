@@ -19,6 +19,7 @@ jobs:
         run: npm ci
       - name: Syntax check
         run: >-
+          node --check static/app.js &&
           node --check static/modules/navigation-stability.js &&
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
@@ -32,6 +33,12 @@ jobs:
           node --check static/modules/training-submit.js &&
           node --check static/modules/auto-label-poll-runtime.js &&
           node --check static/main.mjs
+      - name: Retired training mirror guard
+        run: |
+          if grep -n "trainSplitV3" static/app.js; then
+            echo "retired trainSplitV3 mirror was reintroduced into active app.js" >&2
+            exit 1
+          fi
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
