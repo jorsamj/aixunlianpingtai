@@ -39,6 +39,7 @@ test('classic startup readiness owner cannot return after readiness moved to fin
   assert.equal(navigation.includes('waitForNavigationReady'), true, 'final navigation must own startup readiness');
 });
 
-test('V417 sidebar owner remains after readiness cleanup', () => {
-  assert.equal(app.includes('const baseSetPage417=window.setPage;'), true, 'V417 sidebar owner must remain');
+test('V417 sidebar owner cannot return after sidebar cleanup moved to final navigation', () => {
+  assert.equal(app.includes('baseSetPage417'), false, 'classic V417 sidebar owner must remain retired');
+  assert.equal(navigation.includes('beforeInvokeNavigation'), true, 'final navigation must retain the sidebar cleanup hook');
 });
