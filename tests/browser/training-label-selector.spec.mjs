@@ -102,9 +102,9 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422504');
+    .toBe('training-draft-runtime-422505');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftControlsRuntime?.build || null))
-    .toBe('training-draft-controls-422500');
+    .toBe('training-draft-controls-422501');
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
@@ -149,6 +149,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(smoke).not.toBeChecked();
 
   const controlWritesBefore = await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites);
+  const genericSkipsBefore = await page.evaluate(() => window.TrainingDraftRuntime.state().directControlSkips);
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
@@ -174,6 +175,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
     legacy: {strategy: 'manual', device: 'cpu', gpuPolicy: 'exclusive'},
   });
   expect(await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites)).toBeGreaterThan(controlWritesBefore);
+  expect(await page.evaluate(() => window.TrainingDraftRuntime.state().directControlSkips)).toBeGreaterThan(genericSkipsBefore);
 
   const writesBeforeSettings = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
   await dialog.getByRole('button', {name: '配置设置'}).click();
