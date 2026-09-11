@@ -6,16 +6,21 @@ import {
   serverImportView,
 } from '../../static/modules/server-material-import.js';
 
-test('server material import requests contain only source-relative fields', () => {
+test('server material import requests contain source-relative fields and explicit format', () => {
   assert.deepEqual(buildServerImportRequest({
     mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'fire/2026', recursive: true,
   }), {
-    mode: 'directory_scan', storage_source_id: 'local-a', prefix: 'fire/2026', recursive: true,
+    mode: 'directory_scan', import_format: 'auto', storage_source_id: 'local-a', prefix: 'fire/2026', recursive: true,
   });
   assert.deepEqual(buildServerImportRequest({
     mode: 'server_zip', storageSourceId: 'local-a', zipPath: 'fire.zip', targetPrefix: 'fire',
   }), {
-    mode: 'server_zip', storage_source_id: 'local-a', zip_path: 'fire.zip', target_prefix: 'fire', recursive: true,
+    mode: 'server_zip', import_format: 'auto', storage_source_id: 'local-a', zip_path: 'fire.zip', target_prefix: 'fire', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'dataset', importFormat: 'yolo', datasetYaml: 'data.yaml',
+  }), {
+    mode: 'directory_scan', import_format: 'yolo', dataset_yaml: 'data.yaml', storage_source_id: 'local-a', prefix: 'dataset', recursive: true,
   });
 });
 
