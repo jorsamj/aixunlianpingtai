@@ -2,9 +2,9 @@
 
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
-> **正式版本：`VERSION.txt` 仍为 `42.24.0`，不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386`**  
-> **Frontend Runtime Stabilization：run `34617573070`，frontend + Real Chrome 全绿。**  
+> **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
+> **最近完整代码验收点：`871b1c91d919760728fd74dc0e7abf7ac25b516f`**  
+> **Frontend Runtime Stabilization：run `34618276191`，frontend + Real Chrome 全绿。**  
 > **更新日期：2026-09-11**
 
 ## 0. 接手入口
@@ -38,43 +38,42 @@ source422Timer
 jobPollTimer
 setupPagePolling
 installVideo424CreationBridge
-__pollRegistryVideoWrapped
 installSourceCreationBridge
-__pollRegistrySourceWrapped
 installPollingCreationBridge
+__pollRegistryVideoWrapped
+__pollRegistrySourceWrapped
 __pollRegistryCreationWrapped
 originalSetupPagePolling / wrappedSetupPagePolling
 registry.adopt('training-jobs', ...)
 adoptLegacy / rebindCreation
+set423Base
+setBase424
 ```
 
 ## 2. 技术债状态
 
-| ID | 技术债 | 最终 owner / 目标 | 状态 |
-|---|---|---|---|
-| TD-01~05 | training 历史 mirror | `state.trainingDraft` | **CLOSED** |
-| TD-06~07 | `/train/start` / readiness 多 owner | `TrainingSubmitRuntime` | **CLOSED** |
-| TD-08 | `/jobs` 重复请求 race | `TrainingTaskRuntime` | **CLOSED** |
-| TD-09 | metrics SQLite FD | deterministic close | **CLOSED** |
-| TD-10 | training task polling | `TrainingTaskRuntime + PollRegistry` | **CLOSED** |
-| TD-11 | AutoLabel polling | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
-| TD-12 | video polling | direct `PollRegistry(video-frames)` | **CLOSED** |
-| TD-13 | legacy auto/video/prelabel timer compatibility | named runtimes | **CLOSED** |
-| TD-14A | source polling wrapper/state timer | direct `PollRegistry(sources)` | **CLOSED** |
-| TD-14B | training polling wrapper/state timer | direct `PollRegistry(training-jobs)` | **CLOSED** |
-| TD-14C1 | `setupPagePolling` historical shells | direct `replaceTrainingJobTimer()` call sites | **CLOSED** |
-| TD-14C2 | historical render/setPage overrides | final owner table + physical deletion | **IN PROGRESS** |
-| TD-15 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
-| TD-17 | cache-busting | single strategy | **OPEN** |
-| TD-18 | global reload / duplicate request | scoped refresh | **OPEN** |
-| TD-19 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
-| TD-20 | version-number business naming | semantic names | **OPEN** |
-| TD-21 | flaky/historical tests | deterministic tests | **IN PROGRESS** |
-| TD-22 | docs drift | 4 handoff docs | **IN PROGRESS** |
-| TD-23 | A800 RC | acceptance runbook | **DEFERRED** |
-| TD-24 | TrainingDraft/TrainingLabel wrappers | direct canonical lifecycle | **CLOSED** |
+| 技术债 | 最终 owner / 目标 | 状态 |
+|---|---|---|
+| training 历史 mirror | `state.trainingDraft` | **CLOSED** |
+| `/train/start` 多 owner / readiness | `TrainingSubmitRuntime` | **CLOSED** |
+| `/jobs` 重复请求 race | `TrainingTaskRuntime` | **CLOSED** |
+| metrics SQLite FD | deterministic close | **CLOSED** |
+| training task polling | `TrainingTaskRuntime + PollRegistry` | **CLOSED** |
+| AutoLabel polling | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
+| video polling | direct `PollRegistry(video-frames)` | **CLOSED** |
+| source polling | direct `PollRegistry(sources)` | **CLOSED** |
+| training polling wrapper/state timer | direct `PollRegistry(training-jobs)` | **CLOSED** |
+| `setupPagePolling` shells | direct `replaceTrainingJobTimer()` call sites | **CLOSED** |
+| v42.3 pass-through `setPage` + unused v42.4 capture | later direct router | **CLOSED** |
+| historical render/setPage overrides | semantic final router + bounded render owners | **IN PROGRESS** |
+| `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
+| cache-busting | single strategy | **OPEN** |
+| global reload / duplicate request | scoped refresh | **OPEN** |
+| observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
+| version-number business naming | semantic names | **OPEN** |
+| A800 RC | acceptance runbook | **DEFERRED** |
 
-## 3. Current canonical owners
+## 3. Current owner contracts
 
 ### Training submit
 
@@ -88,8 +87,6 @@ train-v3 UI
 
 ### Training task polling
 
-Training polling is wrapper-free, state-timer-free and shell-free：
-
 ```text
 classic render call site
 → PollRegistryRuntime.replaceTrainingJobTimer()
@@ -98,56 +95,22 @@ classic render call site
 → focused /jobs update
 ```
 
-Physically removed：
+`jobPollTimer`、`setupPagePolling`、PollRegistry creation wrapper/adopt/rebind compatibility 均已物理删除。
+
+### AutoLabel / Video / Sources
 
 ```text
-state.jobPollTimer
-classic setupPagePolling setInterval/clearInterval owner
-setupPagePolling function/assignment shells
-PollRegistry registry.adopt('training-jobs', ...)
-installPollingCreationBridge
-originalSetupPagePolling / wrappedSetupPagePolling
-__pollRegistryCreationWrapped
-adoptLegacy / rebindCreation
-NavigationStability jobPollTimer fallback
+renderOps427 → AutoLabelPollRuntime → PollRegistry(auto-label-v60)
+renderVideo424 / refreshVideo424Delta → replaceVideo424Timer() → PollRegistry(video-frames)
+renderSources422 → replaceSourceTimer() → PollRegistry(sources)
 ```
 
-永久 CI 现在要求 `setupPagePolling` 和 `jobPollTimer` 在 active product runtime 中均为 0。
+均禁止恢复 classic timer/wrapper owner。
 
-### AutoLabel
-
-```text
-renderOps427
-→ AutoLabelPollRuntime.activate()/deactivate()
-→ PollRegistry(auto-label-v60)
-→ managed one-shot refresh
-```
-
-### Video
+## 4. Current cache/build facts
 
 ```text
-renderVideo424
-→ PollRegistryRuntime.replaceVideo424Timer()
-→ PollRegistry(video-frames, 2000ms one-shot)
-→ refreshVideo424Delta
-→ row patch
-→ replaceVideo424Timer()
-```
-
-### Sources
-
-```text
-renderSources422
-→ renderSourceRows422()
-→ PollRegistryRuntime.replaceSourceTimer()
-→ PollRegistry(sources, 2500ms managed interval)
-→ refreshSources422()
-```
-
-## 4. Current version/cache facts
-
-```text
-app.js cache                     42.25.49
+app.js cache                     42.25.50
 main.mjs cache                   42.25.53
 navigation-stability.js          422506
 poll-registry.js                 422511
@@ -158,9 +121,11 @@ TrainingSubmitRuntime            training-submit-422504
 TrainingTaskRuntime              training-task-runtime-422503
 ```
 
-Cache-busting is still heterogeneous and remains debt.
+Cache-busting 仍未统一。
 
-## 5. Permanent frontend guards now active
+## 5. Permanent guards
+
+当前主 CI 包含：
 
 ```text
 Retired training mirror guard
@@ -172,68 +137,61 @@ Retired legacy poll timer compatibility guard
 Video PollRegistry direct owner guard
 Source PollRegistry direct owner guard
 Training PollRegistry direct owner guard
+Retired pass-through setPage guard
 ```
 
-Training guard requires：
+`Retired pass-through setPage guard` 要求：
 
-- `jobPollTimer` 在 `static/app.js`、`poll-registry.js`、`navigation-stability.js` 为 0；
-- `setupPagePolling` 在 active `static/app.js` 为 0；
-- PollRegistry 不得恢复 training creation wrapper/adoption/rebind compatibility；
-- `replaceTrainingJobTimer()` direct managed owner 和 app 直接 handoff 必须存在。
+- `set423Base` 为 0；
+- `setBase424` 为 0；
+- v42.4 直接 `window.setPage=function(p){state.page=p;render()}` owner 仍存在。
 
 ## 6. Latest acceptance
 
 ```text
-commit: 4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386
-run:    34617573070
+commit: 871b1c91d919760728fd74dc0e7abf7ac25b516f
+run:    34618276191
 
 syntax                                      PASS
 all permanent owner guards                  PASS
-Training PollRegistry direct owner guard    PASS
+Retired pass-through setPage guard          PASS
 frontend unit                               PASS
 Real Chrome                                 PASS
 ```
 
-该 Real Chrome run 同时覆盖 training label/submit、training task performance/manual refresh、navigation stability、AutoLabel、algorithm list、materials 等现有回归。
+Real Chrome 同时覆盖 navigation、training submit/task、AutoLabel、algorithm list、materials 等既有回归。
 
-## 7. Current next exact task: setPage/render obsolete override closure
+## 7. Current next task
 
-`docs/FRONTEND_OWNER_MAP_V42_25.md` 已建立最终 owner 图。当前静态审计确认：
+当前 owner map 已证明：剩余 `setPage` wrapper 大多带真实语义，不允许按版本号机械删除。已观察到：
 
 ```text
-window.setPage=function...   10 个历史 assignment（Batch A 前统计）
-render=function...           22 个历史 assignment
-setupPagePolling             0 active 引用
+set422Base        → 页面别名：新建算法/自动迭代 → 算法列表
+baseSetPageV37    → 移动侧栏关闭
+baseSetPage417    → 再次关闭移动侧栏（疑似与 V37 重复）
+setPageReady414   → 等待启动 snapshot/uiReady
+later wrappers    → cache invalidation / page alias / persistence / NavigationStability
 ```
 
-第一个已证明的 setPage 删除候选：
+下一候选：**证明并消除重复的 mobile-sidebar setPage wrapper**。当前 `baseSetPageV37` 与后来的 `baseSetPage417` 都关闭侧栏；若最终链上后者完全覆盖前者语义，则只删除更早的重复 wrapper，保留后者及所有其他路由行为。
+
+执行规则：
 
 ```text
-const set423Base=window.setPage;
-window.setPage=function(p){set423Base(p)};
-try{setPage=window.setPage}catch(e){}
+精确引用计数
+→ 独立语义证明
+→ focused navigation regression
+→ bounded physical deletion
+→ permanent guard
+→ full frontend + Real Chrome
+→ 四份文档同步
 ```
 
-理由：`set423Base` 仅在该纯透传 wrapper 内出现；紧接着 v42.4 又直接重置 `window.setPage=function(p){state.page=p;render()}`。同时 `setBase424` 当前也仅有声明、没有业务使用，需要在同一批中证明后决定是否一并清除。
-
-下一批仍遵守：
+## 8. 后续顺序
 
 ```text
-prove final owner
-→ focused regression
-→ physical deletion
-→ syntax/unit
-→ Real Chrome
-→ 更新四份交接文档
-```
-
-禁止一次性盲删全部 `setPage/render`；仍承载页面 alias、缓存失效、侧栏关闭、持久化、NavigationStability 协调的层必须保留或先迁移语义。
-
-## 8. Work order after owner table
-
-```text
-A. pure pass-through setPage wrapper physical deletion
-B. remaining renderer/setPage obsolete override batches
+A. duplicate sidebar setPage wrapper
+B. remaining render/setPage obsolete layers
 C. app.js dead code + global reload/request debt
 D. cache-busting unification
 E. MutationObserver/timer/fetch/render/setPage zero-point scan
@@ -242,15 +200,6 @@ G. technical-debt zero-point scan
 H. A800 RC
 ```
 
-## 9. Release prohibition
+## 9. 发布禁令
 
-Formal `v42.25.0` requires all of:
-
-- no unresolved P0/P1 debt;
-- Frontend Runtime Stabilization green;
-- Release Regression green;
-- A800 preflight green;
-- first A800 train + verify green;
-- A800 iteration + verify green;
-- worker lifecycle/fencing real-machine green;
-- explicit user approval for merge/version/tag/release.
+正式 `v42.25.0` 前必须：技术债无未解决 P0/P1、Frontend Runtime 与 Release Regression 全绿、A800 preflight/首训/迭代/worker fencing 实机全绿，并取得用户明确 merge/version/tag/release 授权。
