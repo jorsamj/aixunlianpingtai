@@ -262,7 +262,9 @@ export function installPollRegistry({getState} = {}) {
       window.refreshVideo424Delta = wrappedRefreshVideo424;
     }
 
-    if (String(state().page || '') === videoOwner && document?.getElementById?.('video424Rows')) {
+    if (String(state().page || '') === videoOwner
+        && typeof document !== 'undefined'
+        && document.getElementById?.('video424Rows')) {
       replaceVideo424Timer();
     }
     return Boolean(wrappedRenderVideo424 || wrappedRefreshVideo424);
