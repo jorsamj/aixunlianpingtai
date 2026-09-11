@@ -28,10 +28,8 @@ export function installTrainingDraftRuntime({
   const directControlIdSet = new Set((directControlIds || []).map(value => String(value || '')).filter(Boolean));
   let destroyed = false;
   let syncQueued = false;
-  let directWrites = 0;
   let directControlSkips = 0;
   let initializationCount = 0;
-  const mutationWrappers = [];
 
   function inheritanceFor(s, algorithmId = s.trainingDraft?.algorithmId) {
     const id = String(algorithmId || '').trim();
@@ -157,49 +155,10 @@ export function installTrainingDraftRuntime({
     document.addEventListener?.('click', onClick);
   }
 
-  function directMutationFor(name, args) {
-    if (name !== 'startAlgorithmTraining429') return null;
-    const algorithmId = String(args?.[0] || '').trim();
-    if (!algorithmId) return null;
-    return {
-      algorithmId,
-      materialIds: [],
-      testMaterialIds: [],
-      splitMode: 'random_test_from_training_pool',
-      experimentPercent: 20,
-      validationPercent: 20,
-      newLabelCodes: [],
-    };
-  }
-
-  function wrapLegacyMutation(name) {
-    const original = window[name];
-    if (typeof original !== 'function' || original.__trainingDraftMutationWrapped) return;
-    const wrapped = function (...args) {
-      const patch = directMutationFor(name, args);
-      if (patch) {
-        update(patch);
-        directWrites += 1;
-      }
-      const result = original.apply(this, args);
-      const settle = () => sync();
-      if (result && typeof result.then === 'function') return Promise.resolve(result).finally(settle);
-      settle();
-      return result;
-    };
-    wrapped.__trainingDraftMutationWrapped = true;
-    wrapped.__trainingDraftDirectWrite = true;
-    wrapped.__trainingDraftMutationOriginal = original;
-    window[name] = wrapped;
-    mutationWrappers.push({name, original, wrapped});
-  }
-
-  for (const name of ['startAlgorithmTraining429']) wrapLegacyMutation(name);
-
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422512',
+    build: 'training-draft-runtime-422513',
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
@@ -220,7 +179,7 @@ export function installTrainingDraftRuntime({
       return runtime.setMaterialIds([...selected]);
     },
     inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
-    state() { return {directWrites, directControlSkips, initializationCount, networkOwner: false}; },
+    state() { return {directControlSkips, initializationCount, networkOwner: false, classicWrapperOwner: false}; },
     destroy() {
       destroyed = true;
       if (typeof document !== 'undefined') {
@@ -228,10 +187,6 @@ export function installTrainingDraftRuntime({
         document.removeEventListener?.('input', onInput);
         document.removeEventListener?.('click', onClick);
       }
-      for (const {name, original, wrapped} of mutationWrappers) {
-        if (window[name] === wrapped) window[name] = original;
-      }
-      mutationWrappers.length = 0;
       if (window.TrainingDraftRuntime === runtime) window.TrainingDraftRuntime = null;
       window.__trainingDraftRuntimeInstalled = false;
     },
