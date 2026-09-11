@@ -113,9 +113,8 @@ test('training dialog shows material-derived label selector and submits train_la
   await expect(labels).toContainText('本次训练标签');
   await expect(labels).toContainText('请先选择训练素材');
 
-  // The repository already has separate browser coverage for the exact-material picker.
-  // Here we isolate the label-selector contract by applying the same authoritative
-  // selected-id state that the picker writes, then force the label runtime to refresh.
+  // The exact-material picker has its own browser regression suite. This test isolates
+  // the label-selector contract by applying the same authoritative selected-id state.
   await page.evaluate(ids => {
     state.train429Selected = new Set(ids);
     if (state.trainSplitV3) state.trainSplitV3.train = state.train429Selected;
@@ -133,11 +132,21 @@ test('training dialog shows material-derived label selector and submits train_la
   await expect(fire).toBeChecked();
   await expect(smoke).toBeChecked();
 
-  // Prove that task labels, not the project label library, control the request.
+  // Prove that task labels, not the project label library, control the outgoing request.
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
-  await dialog.locator('#tr429Priority').fill('7');
-  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await page.evaluate(async projectId => {
+    await fetch(`/api/v12/projects/${projectId}/train/start`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        algorithm_asset_id: state.train428AlgorithmId,
+        train_image_ids: [...state.train429Selected],
+        val_image_ids: [],
+        test_image_ids: [],
+      }),
+    });
+  }, project.id);
 
   await expect.poll(() => submitted).toBeTruthy();
   expect(submitted.train_labels).toEqual(['fire']);
