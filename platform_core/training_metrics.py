@@ -6,7 +6,6 @@ telemetry is retained as null and never treated as evidence for GPU sharing.
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
 import sqlite3
@@ -52,12 +51,25 @@ def normalize_cache(value):
 def resolve_resources(request, context, model, torch):
     """Resolve after GPU assignment, in the trainer process, before model.train.
 
-    Parameter count captures the actual loaded model scale, including custom
-    checkpoints. This bounded estimate avoids an unbounded autobatch probe.
+    ``manual`` means exact user values or an explicit validation failure.
+
+    ``auto`` is intentionally *bounded by the user's request*: it may reduce
+    batch/workers/cache for safety, but it must never silently increase a batch,
+    add DataLoader workers, or enable caching that the user disabled. This keeps
+    the training contract truthful while retaining automatic safety downgrades.
     """
     strategy = str(request.get("resource_strategy") or "auto")
     if strategy not in {"auto", "manual"}:
         raise ValueError("RESOURCE_STRATEGY_INVALID")
+
+    requested_batch = int(request["batch"])
+    requested_workers = int(request["workers"])
+    requested_cache = normalize_cache(request["cache"])
+    if not 1 <= requested_batch <= 4096:
+        raise ValueError("RESOURCE_REQUEST_INVALID: batch must be 1..4096")
+    if requested_workers < 0:
+        raise ValueError("RESOURCE_REQUEST_INVALID: workers must be >= 0")
+
     cores, ram = host_resources()
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
     cpu_budget = max(1, cores // concurrency)
@@ -68,12 +80,16 @@ def resolve_resources(request, context, model, torch):
     # Include decoded buffers, augmentation copies, and competing workers.
     cache_budget = max(0, int((ram or 0) * 0.25 / concurrency) - GIB)
     disk_need = max(dataset_bytes * 8, (decoded or 0) * 2)
+    local_ready = context.get("remote_cache_ready") is True
     reasons = []
+    adjustments = []
+
     if strategy == "manual":
-        batch, workers = int(request["batch"]), int(request["workers"])
-        cache = normalize_cache(request["cache"])
-        if not 1 <= batch <= 4096 or not 0 <= workers <= cpu_budget:
-            raise ValueError(f"RESOURCE_MANUAL_INVALID: batch must be 1..4096; workers must be 0..{cpu_budget}")
+        batch, workers, cache = requested_batch, requested_workers, requested_cache
+        if workers > cpu_budget:
+            raise ValueError(
+                f"RESOURCE_MANUAL_INVALID: workers must be 0..{cpu_budget}"
+            )
         if os.name == "nt" and workers > 4:
             raise ValueError("RESOURCE_MANUAL_INVALID: Windows supports at most 4 loader workers")
         if request.get("device") == "cpu" and workers != 0:
@@ -84,24 +100,48 @@ def resolve_resources(request, context, model, torch):
             raise ValueError("RESOURCE_DISK_UNSAFE: insufficient known disk headroom for requested cache")
         reasons.append("Validated manual values; incompatible runtime changes fail explicitly")
     else:
-        cache = False
-        local_ready = context.get("remote_cache_ready") is True
-        if local_ready and decoded and decoded * 3 <= cache_budget:
-            cache = "ram"
-            reasons.append("RAM cache fits decoded dataset plus 3x buffer allowance within shared RAM budget")
-        elif local_ready and decoded and dataset_bytes and disk_need + 2 * GIB <= disk:
-            cache = "disk"
-            reasons.append("Disk cache fits decoded data estimate and 2 GiB reserve")
-        else:
-            reasons.append("Cache disabled: dataset size, local materialization, RAM or disk headroom is insufficient/unknown")
+        batch = requested_batch
+
+        # AUTO may reduce workers, but must never add workers the user did not
+        # request. workers=0 is an explicit single-process DataLoader choice.
         cap = 2 if os.name == "nt" else 8
-        if cache != "ram":
-            cap = min(cap, 4)  # Bound simultaneous reads when storage speed is unknown.
-        workers = min(cap, max(1, cpu_budget - 1))
+        if requested_cache != "ram":
+            cap = min(cap, 4)
+        cpu_loader_budget = max(0, cpu_budget - 1)
+        workers = min(requested_workers, cap, cpu_loader_budget)
         if request.get("device") == "cpu":
             workers = 0
-        reasons.append(f"Loader workers use {cores} available cores / {concurrency} reservations; {os.name} and storage cap={cap}")
-        batch = 1
+        if workers != requested_workers:
+            adjustments.append(
+                f"workers downscaled {requested_workers}->{workers} for CPU/runtime safety"
+            )
+        reasons.append(
+            f"Loader workers bounded by request={requested_workers}, cores={cores}, "
+            f"reservations={concurrency}, platform cap={cap}"
+        )
+
+        # AUTO may downgrade an explicitly requested cache mode when unsafe, but
+        # cache=False is authoritative and must never become RAM/Disk implicitly.
+        cache = requested_cache
+        if requested_cache is False:
+            cache = False
+            reasons.append("Cache remains disabled because the user requested cache=false")
+        elif requested_cache == "ram":
+            if local_ready and decoded and decoded * 3 <= cache_budget:
+                cache = "ram"
+            elif local_ready and decoded and disk_need + 2 * GIB <= disk:
+                cache = "disk"
+                adjustments.append("cache downscaled ram->disk for memory safety")
+            else:
+                cache = False
+                adjustments.append("cache downscaled ram->false because safe cache headroom is unavailable")
+        elif requested_cache == "disk":
+            if local_ready and decoded is not None and disk_need + 2 * GIB <= disk:
+                cache = "disk"
+            else:
+                cache = False
+                adjustments.append("cache downscaled disk->false because safe disk headroom is unavailable")
+
     estimated = None
     free = total = None
     if str(request.get("device", "")).startswith("cuda:"):
@@ -111,8 +151,12 @@ def resolve_resources(request, context, model, torch):
         params = sum(int(value.numel()) for value in model.model.parameters())
         # Training state plus activations at the requested image area/model scale.
         fixed = max(GIB, params * 24)
-        per_image = int(256 * 1024 ** 2 * max(1.0, (params / 3_000_000) ** 0.55)
-                        * (int(request["imgsz"]) / 640) ** 2 * (1 + float(request.get("multi_scale") or 0)) ** 2)
+        per_image = int(
+            256 * 1024 ** 2
+            * max(1.0, (params / 3_000_000) ** 0.55)
+            * (int(request["imgsz"]) / 640) ** 2
+            * (1 + float(request.get("multi_scale") or 0)) ** 2
+        )
         other = max(0, int(context.get("other_reserved_bytes") or 0))
         budget = max(0, int((free - other - GIB) * 0.65))
         reserved = context.get("reserved_bytes")
@@ -121,24 +165,67 @@ def resolve_resources(request, context, model, torch):
         if strategy == "auto":
             maximum = min(64, (budget - fixed) // max(1, per_image))
             if maximum < 1:
-                raise RuntimeError("GPU_MEMORY_INSUFFICIENT: batch=1 exceeds conservative budget; no CPU fallback")
-            batch = 2 ** int(math.log2(maximum))
-            reasons.append(f"Bounded estimate: actual free={free}, safety=1 GiB + 35%, parameters={params}, imgsz={request['imgsz']}; batch cap=64")
+                raise RuntimeError(
+                    "GPU_MEMORY_INSUFFICIENT: batch=1 exceeds conservative budget; no CPU fallback"
+                )
+            # Crucial contract: safety automation may only reduce an explicit
+            # positive batch request. It must never turn batch=16 into 32/64.
+            safe_batch = min(requested_batch, int(maximum))
+            if safe_batch < requested_batch:
+                adjustments.append(
+                    f"batch downscaled {requested_batch}->{safe_batch} for GPU memory safety"
+                )
+            batch = safe_batch
+            reasons.append(
+                f"GPU bounded estimate permits at most batch={maximum}; "
+                f"requested batch={requested_batch}; effective batch={batch}"
+            )
         estimated = fixed + batch * per_image
     elif strategy == "auto":
-        reasons.append("Explicit CPU assignment uses conservative batch=1")
-    loader_limit = min(batch, int(context.get("train_image_count") or batch),
-                       max(1, cores // max(1, torch.cuda.device_count())))
+        # Without a GPU memory model, keep the conservative CPU safety behavior,
+        # but still describe it as a downscale from the user's explicit request.
+        if batch > 1:
+            adjustments.append(f"batch downscaled {batch}->1 for CPU safety")
+            batch = 1
+        reasons.append("Explicit CPU assignment uses conservative batch<=1")
+
+    loader_limit = min(
+        batch,
+        int(context.get("train_image_count") or batch),
+        max(1, cores // max(1, torch.cuda.device_count())),
+    )
     if strategy == "auto":
-        workers = min(workers, loader_limit)
+        limited_workers = min(workers, loader_limit)
+        if limited_workers != workers:
+            adjustments.append(
+                f"workers downscaled {workers}->{limited_workers} for loader capacity"
+            )
+        workers = limited_workers
     elif workers > loader_limit:
-        raise ValueError(f"RESOURCE_MANUAL_INVALID: runtime loader limits workers to {loader_limit}")
-    return dict(resource_strategy=strategy, resolved_batch=batch, resolved_workers=workers,
-                resolved_cache=cache, reasons=reasons, estimated_gpu_memory_bytes=estimated,
-                gpu_free_bytes_at_resolution=free, gpu_total_bytes=total,
-                available_cpu_cores=cores, concurrent_reservations=concurrency,
-                available_ram_bytes=ram, dataset_bytes=dataset_bytes,
-                decoded_dataset_bytes=decoded, sampled_at=datetime.now(timezone.utc).isoformat())
+        raise ValueError(
+            f"RESOURCE_MANUAL_INVALID: runtime loader limits workers to {loader_limit}"
+        )
+
+    return dict(
+        resource_strategy=strategy,
+        requested_batch=requested_batch,
+        requested_workers=requested_workers,
+        requested_cache=requested_cache,
+        resolved_batch=batch,
+        resolved_workers=workers,
+        resolved_cache=cache,
+        adjustments=adjustments,
+        reasons=reasons,
+        estimated_gpu_memory_bytes=estimated,
+        gpu_free_bytes_at_resolution=free,
+        gpu_total_bytes=total,
+        available_cpu_cores=cores,
+        concurrent_reservations=concurrency,
+        available_ram_bytes=ram,
+        dataset_bytes=dataset_bytes,
+        decoded_dataset_bytes=decoded,
+        sampled_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 def diagnose_window(samples, oom=False):
