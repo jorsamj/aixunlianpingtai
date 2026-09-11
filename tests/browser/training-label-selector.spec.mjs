@@ -102,7 +102,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422505');
+    .toBe('training-draft-runtime-422506');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftControlsRuntime?.build || null))
     .toBe('training-draft-controls-422501');
   await page.getByRole('button', {name: /算法列表/}).click();
@@ -147,6 +147,10 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await expect(smoke).toBeChecked();
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
+  await expect.poll(async () => page.evaluate(() => ({
+    labels: state.trainingDraft?.newLabelCodes || [],
+    hasLegacyMirror: Object.hasOwn(state, 'trainingLabelSelected'),
+  }))).toEqual({labels: ['fire'], hasLegacyMirror: false});
 
   const controlWritesBefore = await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites);
   const genericSkipsBefore = await page.evaluate(() => window.TrainingDraftRuntime.state().directControlSkips);
@@ -218,12 +222,14 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
     experiment: state.trainingDraft?.experimentPercent,
     validation: state.trainingDraft?.validationPercent,
     priority: state.trainingDraft?.priority,
+    hasLegacyLabelMirror: Object.hasOwn(state, 'trainingLabelSelected'),
   }))).toEqual({
     materials: imageIds,
     labels: ['fire'],
     experiment: 35,
     validation: 18,
     priority: 7,
+    hasLegacyLabelMirror: false,
   });
 
   await page.evaluate(async projectId => {
@@ -285,5 +291,6 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.framework).toBe('ultralytics');
   expect(submitted.algorithm).toBe('yolo_detect');
   expect(submitted.ai_intervention_enabled).toBe(false);
+  expect(await page.evaluate(() => Object.hasOwn(state, 'trainingLabelSelected'))).toBe(false);
   await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
 });
