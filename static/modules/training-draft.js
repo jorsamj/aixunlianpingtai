@@ -140,6 +140,9 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   }
   const overlap = normalized.testMaterialIds.filter(id => normalized.materialIds.includes(id));
   if (overlap.length) throw new Error('训练素材与独立试验素材不能重复');
+  if (!Number.isInteger(normalized.priority) || normalized.priority < 1 || normalized.priority > 999) {
+    throw new Error('任务优先级必须是 1~999 的整数');
+  }
 
   const request = {
     ...parameters,
