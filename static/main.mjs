@@ -10,8 +10,8 @@ import {installPollRegistry} from './modules/poll-registry.js?v=422506';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422502';
 import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422503';
-import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422504';
-import {installTrainingDraftControls} from './modules/training-draft-controls.js?v=422500';
+import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422505';
+import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, validateTrainingDevice} from './modules/training-submit.js?v=422501';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422500';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
@@ -79,6 +79,7 @@ const trainingDraftRuntime = installTrainingDraftRuntime({
   trainingDraftFromLegacyState,
   trainingDraftToRequest,
   trainingInheritanceFromAlgorithm,
+  directControlIds: TRAINING_DRAFT_CONTROL_IDS,
 });
 const trainingDraftControlsRuntime = installTrainingDraftControls({trainingDraftRuntime});
 
