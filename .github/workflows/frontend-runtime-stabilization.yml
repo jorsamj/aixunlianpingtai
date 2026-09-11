@@ -84,6 +84,38 @@ jobs:
               exit 1
             fi
           done
+      - name: AutoLabel PollRegistry owner guard
+        run: |
+          if grep -n -E 'auto422Timer|ai60ListTimer' static/app.js; then
+            echo "legacy AutoLabel timer owner was reintroduced into app.js" >&2
+            exit 1
+          fi
+          if ! grep -Fq 'window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);' static/app.js; then
+            echo "v60 AutoLabel renderer must explicitly activate managed polling" >&2
+            exit 1
+          fi
+          if ! grep -Fq 'window.AutoLabelPollRuntime?.deactivate?.();' static/app.js; then
+            echo "AutoLabel clean tab must explicitly deactivate managed polling" >&2
+            exit 1
+          fi
+          file=static/modules/auto-label-poll-runtime.js
+          for token in \
+            'renderOps427' \
+            '__autoLabelPollRuntimeWrapped' \
+            'originalRenderOps' \
+            'wrappedRenderOps' \
+            'rebindTimers' \
+            'ai60ListTimer' \
+            'setTimeout(' \
+            'clearTimeout('; do
+            if grep -F -n "$token" "$file"; then
+              echo "AutoLabelPollRuntime must stay wrapper-free and timer-free; found $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'classicWrapperOwner: false' "$file"
+          grep -Fq 'timerOwner: false' "$file"
+          grep -Fq "build: 'auto-label-poll-422501'" "$file"
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
