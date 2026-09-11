@@ -1,0 +1,64 @@
+name: Retire Redundant TrainingDraft Wrappers
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_redundant_training_draft_wrappers.py
+      - .github/workflows/retire-redundant-training-draft-wrappers.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded wrapper retirement
+        run: python tools/retire_redundant_training_draft_wrappers.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Syntax check changed runtime
+        run: >-
+          node --check static/modules/training-draft-runtime.js &&
+          node --check static/main.mjs &&
+          node --check tests/frontend/training-draft-direct-write.test.mjs &&
+          node --check tests/browser/training-label-selector.spec.mjs
+      - name: Assert only start wrapper remains
+        run: |
+          for token in confirmTrainMaterialPickerV3 setTrainSplitModeV3 saveTrainSettings428; do
+            if grep -n "$token" static/modules/training-draft-runtime.js; then
+              echo "$token still wrapped by TrainingDraftRuntime" >&2
+              exit 1
+            fi
+          done
+          grep -n "startAlgorithmTraining429" static/modules/training-draft-runtime.js
+      - name: Run focused training tests
+        run: >-
+          node --test
+          tests/frontend/training-draft-runtime.test.mjs
+          tests/frontend/training-draft-direct-write.test.mjs
+          tests/frontend/training-draft-generic-sync.test.mjs
+          tests/frontend/training-draft-controls.test.mjs
+          tests/frontend/training-submit.test.mjs
+      - name: Commit wrapper retirement
+        run: |
+          if git diff --quiet -- static/modules/training-draft-runtime.js static/main.mjs static/index.html tests/frontend/training-draft-direct-write.test.mjs tests/browser/training-label-selector.spec.mjs; then
+            echo 'No migration change required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/modules/training-draft-runtime.js static/main.mjs static/index.html tests/frontend/training-draft-direct-write.test.mjs tests/browser/training-label-selector.spec.mjs
+          git commit -m 'refactor(ui): retire redundant TrainingDraft wrappers'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
