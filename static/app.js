@@ -3346,8 +3346,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.trainQuality429=async function(){const ids=[...state.train429Selected];if(!ids.length)return toast('尚未选择素材');try{const r=await api(`/api/v44/projects/${pid()}/data-quality`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids})}),q=r.quality||{};modal('本次训练素材质量',`<div class="report429-kpis"><div><span>图片</span><b>${q.total_images??q.image_count??ids.length}</b></div><div><span>已标注</span><b>${q.annotated_images??'-'}</b></div><div><span>标签</span><b>${q.label_count??Object.keys(q.label_counts||{}).length}</b></div><div><span>标注框</span><b>${q.box_count??'-'}</b></div></div><div class="report429-card"><pre>${esc(JSON.stringify(q,null,2))}</pre></div>`,true)}catch(e){toast(e.message||e)}};
   window.openTrainSettings429=window.openTrainSettings428;
   function splitIds429(ids,seed=0){const arr=[...ids].sort((a,b)=>{const ha=[...String(a+seed)].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7),hb=[...String(b+seed)].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7);return ha-hb});const vn=Math.max(1,Math.min(arr.length-1,Math.round(arr.length*.2)));return{train:arr.slice(vn),val:arr.slice(0,vn)}}
-  window.submitTrain429=async function(){const a=(state.algorithms||[]).find(x=>x.id===state.train428AlgorithmId),t=selectedTarget429(),ta=selectedTrainAlg429(),c=cfg429(),ids=[...state.train429Selected],priority=readTrainingPriority428('tr429Priority');if(!a||!t||!ta)return toast('训练资源或训练算法不可用');if(ids.length<2)return toast('至少选择2张素材');if(priority==null)return;const sp=splitIds429(ids,c.seed||0),payload={framework:t.framework==='paddle'?'paddle':'ultralytics',target:t.type==='server'?'remote':'local',server_id:t.server_id,algorithm:ta.key||'',algorithm_asset_id:a.id,model:c.model||ta.base_model||'',epochs:c.epochs,imgsz:c.imgsz,batch:c.batch,device:c.device||'cpu',dataset_id:'__all__',include_empty:false,patience:c.patience,workers:c.workers,optimizer:c.optimizer,lr0:c.lr0,lrf:c.lrf,momentum:c.momentum,weight_decay:c.weight_decay,warmup_epochs:c.warmup_epochs,close_mosaic:c.close_mosaic,mosaic:c.mosaic,mixup:c.mixup,hsv_h:c.hsv_h,hsv_s:c.hsv_s,hsv_v:c.hsv_v,degrees:c.degrees,translate:c.translate,scale:c.scale,shear:c.shear,perspective:c.perspective,flipud:c.flipud,fliplr:c.fliplr,cache:c.cache,pretrained:c.pretrained,amp:c.amp,rect:c.rect,cos_lr:c.cos_lr,freeze:c.freeze,multi_scale:c.multi_scale,save_period:c.save_period,seed:c.seed,deterministic:c.deterministic,train_image_ids:sp.train,val_image_ids:sp.val,val_max_samples:c.val_max_samples,eval_interval:c.eval_interval,eval_metric:c.eval_metric,continue_threshold:c.continue_threshold,stop_threshold:c.stop_threshold,queue_priority:priority,auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};try{const r=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(r.job?.status==='running'?'训练已开始':'训练已进入队列')}catch(e){toast(e.message||e)}};
-
+  
   // final routing/version
   const oldRender429=render;
   render=function(){if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}if(state.page==='数据集'){renderNav();renderTop();renderSummary();renderDatasets424();return}oldRender429()};
@@ -3366,6 +3365,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
 })();
 
+/* Legacy submitTrain429 implementations retired: TrainingSubmitRuntime is the sole /train/start owner. */
 /* ============================================================
    v42.10 — resilient ZIP import + staged progress
    ============================================================ */
@@ -3937,13 +3937,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     g.innerHTML=rows.slice(0,300).map(x=>`<button class="${state.train429Selected.has(x.id)?'on':''}" onclick="toggleTrainImage429('${x.id}')"><img src="${x.url}" loading="lazy"><b>${esc(x.filename)}</b><span>${label(x)} · ${esc((x.labels||[]).join('、'))}</span></button>`).join('')||'<div class="empty">没有符合筛选条件的已处理标注图片</div>';
   };
 
-  window.submitTrain429=async function(){
-    const a=(state.algorithms||[]).find(x=>x.id===state.train428AlgorithmId),target=(state.targets||[]).find(x=>x.id===document.getElementById('tr429Target')?.value),alg=(target?.algorithms||[]).find(x=>x.key===document.getElementById('tr429Alg')?.value),c=cfg415(),ids=[...(state.train429Selected||new Set())],percent=Math.max(1,Math.min(99,num415('tr429ExperimentPercent',Number(state.train429ExperimentPercent||20)))),priority=readTrainingPriority428('tr429Priority');
-    if(!a||!target||!alg)return toast('训练资源或训练算法不可用');if(ids.length<2)return toast('至少选择2张素材');if(priority==null)return;state.train429ExperimentPercent=percent;
-    const payload={framework:target.framework==='paddle'?'paddle':'ultralytics',target:target.type==='server'?'remote':'local',server_id:target.server_id,algorithm:alg.key||'',algorithm_asset_id:a.id,model:c.model||alg.base_model||'',epochs:c.epochs,imgsz:c.imgsz,batch:c.batch,device:c.device||'cpu',dataset_id:'__all__',include_empty:false,patience:c.patience,workers:c.workers,optimizer:c.optimizer,lr0:c.lr0,lrf:c.lrf,momentum:c.momentum,weight_decay:c.weight_decay,warmup_epochs:c.warmup_epochs,close_mosaic:c.close_mosaic,mosaic:c.mosaic,mixup:c.mixup,hsv_h:c.hsv_h,hsv_s:c.hsv_s,hsv_v:c.hsv_v,degrees:c.degrees,translate:c.translate,scale:c.scale,shear:c.shear,perspective:c.perspective,flipud:c.flipud,fliplr:c.fliplr,cache:c.cache,pretrained:c.pretrained,amp:c.amp,single_cls:c.single_cls,rect:c.rect,cos_lr:c.cos_lr,freeze:c.freeze,multi_scale:c.multi_scale,save_period:c.save_period,seed:c.seed,deterministic:c.deterministic,selected_image_ids:ids,random_experiment_split:true,experiment_percent:percent,val_max_samples:c.val_max_samples,eval_interval:c.eval_interval,eval_metric:c.eval_metric,continue_threshold:c.continue_threshold,stop_threshold:c.stop_threshold,queue_priority:priority,auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};
-    try{const r=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(r.job?.status==='running'?'训练已开始':'训练已进入队列')}catch(e){toast(e.message||e)}
-  };
-})();
+  })();
 
 /* v42.16 conversion resource readiness and non-blocking version conversion. */
 (()=>{
@@ -4090,19 +4084,7 @@ window.installUsability417?.();
     try{state.trainingDevicesV3=await api('/api/v62/training-devices')}catch(error){state.trainingDevicesV3={options:[],error:String(error.message||error)}}
     const result=await previousStart?.(aid);state.train428Config=state.train428Config||{};state.train428Config.device=state.trainingDevicesV3.recommended||'auto';[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
-  window.submitTrain429=async function(){
-    const a=(state.algorithms||[]).find(row=>row.id===state.train428AlgorithmId),target=(state.targets||[]).find(row=>row.id===document.getElementById('tr429Target')?.value),algorithm=(target?.algorithms||[]).find(row=>row.key===document.getElementById('tr429Alg')?.value)||(target?.algorithms||[])[0],c=state.train428Config||{},s=splitState(),priority=readTrainingPriority428('tr429Priority');
-    if(!a||!target||!algorithm)return toast('训练资源或训练算法不可用');if(priority==null)return;
-    s.experiment=num('trV3Experiment',s.experiment);s.validation=num('trV3Validation',s.validation);
-    const parameters={framework:target.framework==='paddle'?'paddle':'ultralytics',target:target.type==='server'?'remote':'local',server_id:target.server_id,algorithm:algorithm.key||'',algorithm_asset_id:a.id,model:c.model||algorithm.base_model||'',epochs:c.epochs||100,imgsz:c.imgsz||640,batch:c.batch||8,device:c.device||'cpu',include_empty:false,patience:c.patience??100,workers:c.workers??0,optimizer:c.optimizer||'auto',lr0:c.lr0??.01,lrf:c.lrf??.01,momentum:c.momentum??.937,weight_decay:c.weight_decay??.0005,warmup_epochs:c.warmup_epochs??3,close_mosaic:c.close_mosaic??10,mosaic:c.mosaic??1,mixup:c.mixup??0,hsv_h:c.hsv_h??.015,hsv_s:c.hsv_s??.7,hsv_v:c.hsv_v??.4,degrees:c.degrees??0,translate:c.translate??.1,scale:c.scale??.5,shear:c.shear??0,perspective:c.perspective??0,flipud:c.flipud??0,fliplr:c.fliplr??.5,cache:c.cache||'False',pretrained:c.pretrained!==false,amp:c.amp!==false,single_cls:!!c.single_cls,rect:!!c.rect,cos_lr:!!c.cos_lr,freeze:c.freeze??0,multi_scale:c.multi_scale??0,save_period:c.save_period??-1,seed:c.seed??0,deterministic:c.deterministic!==false,val_max_samples:c.val_max_samples??0,eval_interval:c.eval_interval??0,eval_metric:c.eval_metric||'map50',continue_threshold:c.continue_threshold??0,stop_threshold:c.stop_threshold??0,queue_priority:priority,auto_convert_targets:c.auto_convert_targets||[],ai_intervention_enabled:false};
-    parameters.resource_strategy=document.getElementById('trV3ResourceStrategy')?.value||c.resource_strategy||'auto';
-    parameters.device=document.getElementById('trV3Device')?.value||'';
-    parameters.gpu_policy=document.getElementById('trV3GpuPolicy')?.value||c.gpu_policy||'auto';
-    if(!parameters.device||!(state.trainingDevicesV3?.options||[]).some(row=>row.id===parameters.device&&row.available!==false))return toast('请重新打开训练窗口并选择可用设备');
-    parameters.batch=c.batch??8;
-    try{const payload=trainingApi().buildTrainingPayload({splitMode:s.mode,trainImageIds:[...s.train],testImageIds:[...s.test],experimentPercent:s.experiment,validationPercent:s.validation,parameters}),response=await api(`/api/v12/projects/${pid()}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});closeModal();await loadRelated();state.alg428Expanded[a.id]=true;renderAlgorithms423();toast(`训练任务已进入后台队列 · ${response.task?.id||''}`)}catch(error){toast(error.message||error)}
-  };
-  const historicalLog=window.showTrainLog423;
+    const historicalLog=window.showTrainLog423;
   window.showTrainLog423=async function(id){
     try{
       const job=await api(`/api/projects/${pid()}/jobs/${id}`);
