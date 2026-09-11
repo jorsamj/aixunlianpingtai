@@ -3252,9 +3252,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.openTrainSettings429=window.openTrainSettings428;
   function splitIds429(ids,seed=0){const arr=[...ids].sort((a,b)=>{const ha=[...String(a+seed)].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7),hb=[...String(b+seed)].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7);return ha-hb});const vn=Math.max(1,Math.min(arr.length-1,Math.round(arr.length*.2)));return{train:arr.slice(vn),val:arr.slice(0,vn)}}
   
-  // final routing/version
-  const oldRender429=render;
-  render=function(){if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}if(state.page==='数据集'){renderNav();renderTop();renderSummary();renderDatasets424();return}oldRender429()};
+  // routing is owned by the later stable render layer.
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V429},100);
 })();
 
