@@ -122,3 +122,36 @@ test('navigation clears page-owned polling timers when leaving the page', () => 
   globalThis.clearInterval = originalClearInterval;
   cleanup();
 });
+
+test('navigation coordinates request cancellation and centralized polling lifecycle', () => {
+  const state = {page: '训练任务'};
+  const calls = [];
+  const requestScope = {
+    navigate(page) { calls.push(`request:navigate:${page}`); },
+    alignPage(page) { calls.push(`request:align:${page}`); },
+  };
+  const pollRegistry = {
+    beforeNavigate(page) { calls.push(`poll:before:${page}`); },
+    afterNavigate(page) { calls.push(`poll:after:${page}`); },
+  };
+
+  globalThis.document = {
+    getElementById() { return {dataset: {}}; },
+  };
+  globalThis.window = {
+    setPage(page) { state.page = page; },
+  };
+
+  const runtime = installNavigationStability({getState: () => state, requestScope, pollRegistry});
+  globalThis.window.setPage('数据集');
+
+  assert.deepEqual(calls, [
+    'request:navigate:数据集',
+    'poll:before:数据集',
+    'request:align:数据集',
+    'poll:after:数据集',
+  ]);
+
+  runtime.destroy();
+  cleanup();
+});
