@@ -19,7 +19,7 @@ function dependencies() {
   };
 }
 
-test('direct train-v3 controls bypass legacy generic sync sampling', async () => {
+test('direct train-v3 controls bypass generic sampling from remaining legacy mirrors', async () => {
   const listeners = new Map();
   globalThis.document = {
     addEventListener(type, handler) { listeners.set(type, handler); },
@@ -30,15 +30,16 @@ test('direct train-v3 controls bypass legacy generic sync sampling', async () =>
 
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {
-      mode: 'random_test_from_training_pool',
-      train: new Set(['img-1']),
-      test: new Set(),
-      experiment: 20,
-      validation: 20,
-    },
+    train429Selected: new Set(['legacy-initial']),
     train428Config: {queue_priority: 50},
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['img-1'],
+      splitMode: 'random_test_from_training_pool',
+      experimentPercent: 20,
+      validationPercent: 20,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{id: 'alg-1', versions: []}],
   };
   globalThis.window = {fetch: async () => ({ok: true})};
@@ -51,10 +52,12 @@ test('direct train-v3 controls bypass legacy generic sync sampling', async () =>
   runtime.sync();
   runtime.update({experimentPercent: 35});
   assert.equal(state.trainingDraft.experimentPercent, 35);
+  assert.deepEqual(state.trainingDraft.materialIds, ['img-1']);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
 
-  // Simulate a stale historical renderer mutating its compatibility mirror. The direct
-  // control event must not cause TrainingDraftRuntime to sample that stale value back.
-  state.trainSplitV3.experiment = 99;
+  // Simulate a stale historical renderer mutating a compatibility mirror. A direct
+  // control event must not cause TrainingDraftRuntime to sample that stale material set.
+  state.train429Selected = new Set(['stale-material']);
   listeners.get('input')({
     target: {
       id: 'trV3Experiment',
@@ -64,7 +67,9 @@ test('direct train-v3 controls bypass legacy generic sync sampling', async () =>
   await Promise.resolve();
 
   assert.equal(state.trainingDraft.experimentPercent, 35);
+  assert.deepEqual(state.trainingDraft.materialIds, ['img-1']);
   assert.equal(runtime.state().directControlSkips, 1);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   runtime.destroy();
