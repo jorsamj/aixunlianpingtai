@@ -277,7 +277,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
         if (event.currentTarget.checked) next.add(code);
         else next.delete(code);
         syncDraftLabels(state, [...next]);
-        refresh();
+        queueRefresh();
       });
     });
     return true;
@@ -317,7 +317,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   queueRefresh();
 
   const runtime = {
-    build: 'module-422511',
+    build: 'module-422512',
     refresh,
     queueRefresh,
     selectedIds: () => selectedIds(getState?.()),
