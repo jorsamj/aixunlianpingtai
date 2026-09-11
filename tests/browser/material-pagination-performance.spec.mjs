@@ -45,17 +45,17 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
     if (limit === 1 && status === 'unprocessed') {
       body = {items: [], total: 0, next_cursor: null};
     } else if (limit === 1 && status === 'processed') {
-      body = {items: [], total: 2, next_cursor: null};
+      body = {items: [], total: 96, next_cursor: null};
     } else if (limit === 1 && annotated === 'true') {
-      body = {items: [], total: 2, next_cursor: null};
+      body = {items: [], total: 96, next_cursor: null};
     } else if (limit === 1) {
-      body = {items: [], total: 2, next_cursor: null};
+      body = {items: [], total: 96, next_cursor: null};
     } else if (query === 'smoke') {
       body = {items: [material('m-search', 'smoke-filtered.jpg')], total: 1, next_cursor: null};
     } else if (cursor === 'cursor-2') {
-      body = {items: [material('m-2', 'page-two.jpg')], total: 2, next_cursor: null};
+      body = {items: [material('m-2', 'page-two.jpg')], total: 96, next_cursor: null};
     } else {
-      body = {items: [material('m-1', 'page-one.jpg')], total: 2, next_cursor: 'cursor-2'};
+      body = {items: [material('m-1', 'page-one.jpg')], total: 96, next_cursor: 'cursor-2'};
     }
 
     await route.fulfill({
@@ -80,19 +80,12 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 
   await expect(page.locator('.data426-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#data412Grid')).toContainText('page-one.jpg', {timeout: 10_000});
-  await expect(page.locator('#data412Pager')).toContainText('1 / 1');
+  await expect(page.locator('#data412Pager')).toContainText('1 / 2');
 
   await page.evaluate(() => {
     document.querySelector('.data426-shell').dataset.performanceMarker = 'preserve-me';
   });
 
-  // The server total is intentionally tiny; force a real next-page cursor to verify the
-  // incremental path independently of the calculated page count.
-  await page.evaluate(() => {
-    state.materialPage61.nextCursor = 'cursor-2';
-    const next = document.querySelector('#data412Pager button:last-child');
-    if (next) next.disabled = false;
-  });
   await page.locator('#data412Pager button:last-child').click();
   await expect(page.locator('#data412Grid')).toContainText('page-two.jpg');
   await expect(page.locator('.data426-shell')).toHaveAttribute('data-performance-marker', 'preserve-me');
