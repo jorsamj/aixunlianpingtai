@@ -3,7 +3,7 @@ import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422503';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422505';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422502';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422501';
@@ -111,10 +111,12 @@ installNegativeSampleRuntime({
   getState: () => state,
   notify,
 });
-installTrainingLabelRuntime({
+const trainingLabelRuntime = installTrainingLabelRuntime({
   getState: () => state,
   notify,
+  trainingDraftRuntime,
 });
+window.PlatformCore.runtime.trainingLabelRuntime = trainingLabelRuntime;
 installMaterialPaginationRuntime();
 installMaterialBatchRuntime({
   projectId: () => state.project?.id,
