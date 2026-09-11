@@ -377,7 +377,6 @@ window.applyAlg=()=>{const t=curTarget();const alg=(t?.algorithms||[]).find(x=>x
 // -----------------------------
 if (!navs.includes('检测台')) navs.push('检测台');
 state.activeLogJob = state.activeLogJob || null;
-state.jobPollTimer = state.jobPollTimer || null;
 
 function statusPillClass(s){return ['done','finished'].includes(s)?'ok':s==='failed'?'err':s==='stopped'?'blue':s==='running'?'warn':'warn'}
 function jobEtaText(j){if(['done','finished'].includes(j.status))return '已完成'; if(j.status==='failed')return '失败'; if(j.status==='stopped')return '已停止'; return j.eta_text||'估算中'}
@@ -389,17 +388,7 @@ function renderJobProgress(j){
 }
 function hasLiveJob(){return (state.jobs||[]).some(j=>['queued','running','waiting','pending'].includes(j.status));}
 async function pollActiveLog(){if(!state.activeLogJob)return;const el=$('#log');if(!el)return;const txt=await safe(api(`/api/projects/${pid()}/jobs/${state.activeLogJob}/log`));if(txt!=null)el.textContent=txt||'暂无日志';el.scrollTop=el.scrollHeight;}
-function setupPagePolling(){
-  if(state.jobPollTimer){clearInterval(state.jobPollTimer);state.jobPollTimer=null;}
-  if(!['训练任务','检测台'].includes(state.page))return;
-  state.jobPollTimer=setInterval(async()=>{
-    if(!pid())return;
-    await loadAll();
-    if(state.page==='训练任务') renderTraining();
-    if(state.page==='检测台') renderDetectBench();
-    if(state.activeLogJob) await pollActiveLog();
-  }, hasLiveJob()?2000:5000);
-}
+function setupPagePolling(){window.PollRegistryRuntime?.replaceTrainingJobTimer?.();}
 render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();setupPagePolling();}
 
 function renderTraining(){
@@ -840,20 +829,7 @@ window.installUsability417=function(){
   };
 
   
-  setupPagePolling=function(){
-    if(state.jobPollTimer){clearInterval(state.jobPollTimer);state.jobPollTimer=null;}
-    if(!['训练任务','检测台'].includes(state.page))return;
-    state.jobPollTimer=setInterval(async()=>{
-      if(!pid())return;
-      if(state.page==='训练任务'){
-        await refreshJobsOnly();
-      }else if(state.page==='检测台'){
-        await refreshJobsOnly();
-        // 检测台不做整页重绘，避免清空已选择图片；后台训练列表在手动刷新时更新。
-      }
-      if(state.activeLogJob) await pollActiveLog();
-    }, hasLiveJob()?2000:5000);
-  };
+  setupPagePolling=function(){window.PollRegistryRuntime?.replaceTrainingJobTimer?.();};
 
   render=function(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest,检测台:renderDetectBench}[state.page]||renderAlgorithms)();setupPagePolling();};
 })();

@@ -133,8 +133,8 @@ test('final dataset, auto-label and video renderers are page-owned', () => {
   cleanup();
 });
 
-test('navigation fallback clears remaining training polling timer when PollRegistry is absent', () => {
-  const state = {page: '训练任务', jobPollTimer: 101};
+test('navigation without PollRegistry has no legacy timer fallback side effects', () => {
+  const state = {page: '训练任务'};
   const cleared = [];
   const originalClearInterval = globalThis.clearInterval;
   globalThis.clearInterval = value => cleared.push(value);
@@ -149,8 +149,8 @@ test('navigation fallback clears remaining training polling timer when PollRegis
   const runtime = installNavigationStability({getState: () => state});
   globalThis.window.setPage('算法列表');
 
-  assert.deepEqual(cleared, [101]);
-  assert.equal(state.jobPollTimer, null);
+  assert.deepEqual(cleared, []);
+  assert.equal(state.page, '算法列表');
 
   runtime.destroy();
   globalThis.clearInterval = originalClearInterval;

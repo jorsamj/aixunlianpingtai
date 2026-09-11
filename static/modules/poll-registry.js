@@ -81,21 +81,12 @@ export function installPollRegistry({getState} = {}) {
   const trainingOwners = ['训练任务', '检测台'];
   const videoOwner = '视频切帧';
   const sourceOwner = '素材接入';
-  let originalSetupPagePolling = null;
-  let wrappedSetupPagePolling = null;
 
   function state() { return getState?.() || {}; }
-
-  function adoptLegacy() {
-    const s = state();
-    registry.adopt('training-jobs', trainingOwners, s.jobPollTimer);
-    return registry.snapshot();
-  }
 
   function clearLegacyReferences(nextPage) {
     const s = state();
     const page = String(nextPage || '');
-    if (!trainingOwners.includes(page)) s.jobPollTimer = null;
     if (page !== videoOwner) {
       if (s.video424Timer != null) {
         try { clearTimeout(s.video424Timer); } catch (_) {}
@@ -111,10 +102,6 @@ export function installPollRegistry({getState} = {}) {
 
   function replaceTrainingJobTimer() {
     const s = state();
-    if (s.jobPollTimer != null) {
-      try { clearInterval(s.jobPollTimer); } catch (_) {}
-      s.jobPollTimer = null;
-    }
     registry.clear('training-jobs');
     if (!trainingOwners.includes(String(s.page || ''))) return null;
 
@@ -128,13 +115,12 @@ export function installPollRegistry({getState} = {}) {
         await window.refreshJobsOnly();
       }
     };
-    s.jobPollTimer = registry.startInterval(
+    return registry.startInterval(
       'training-jobs',
       trainingOwners,
       callback,
       trainingPollDelay(s),
     );
-    return s.jobPollTimer;
   }
 
   function videoTaskActive(task) {
@@ -186,31 +172,8 @@ export function installPollRegistry({getState} = {}) {
     );
   }
 
-  function installPollingCreationBridge() {
-    const current = window.setupPagePolling;
-    if (typeof current !== 'function' || current.__pollRegistryCreationWrapped) return false;
-    originalSetupPagePolling = current;
-    wrappedSetupPagePolling = function (...args) {
-      const result = current.apply(this, args);
-      replaceTrainingJobTimer();
-      adoptLegacy();
-      return result;
-    };
-    wrappedSetupPagePolling.__pollRegistryCreationWrapped = true;
-    wrappedSetupPagePolling.__pollRegistryCreationOriginal = current;
-    window.setupPagePolling = wrappedSetupPagePolling;
-    replaceTrainingJobTimer();
-    adoptLegacy();
-    return true;
-  }
-
-  function rebindCreation() {
-    return installPollingCreationBridge();
-  }
-
   const runtime = {
     registry,
-    adoptLegacy,
     startInterval(key, ownerPages, callback, delay, options) {
       return registry.startInterval(key, ownerPages, callback, delay, options);
     },
@@ -221,23 +184,14 @@ export function installPollRegistry({getState} = {}) {
     replaceTrainingJobTimer,
     replaceVideo424Timer,
     replaceSourceTimer,
-    rebindCreation,
     beforeNavigate(nextPage) {
-      adoptLegacy();
       registry.leave(nextPage);
       clearLegacyReferences(nextPage);
-    },
-    afterNavigate() {
-      adoptLegacy();
     },
     snapshot() { return registry.snapshot(); },
     destroy() {
       registry.clearAll();
-      if (wrappedSetupPagePolling && window.setupPagePolling === wrappedSetupPagePolling) {
-        window.setupPagePolling = originalSetupPagePolling;
-      }
       const s = state();
-      s.jobPollTimer = null;
       s.video424Timer = null;
       if (window.PollRegistryRuntime === runtime) window.PollRegistryRuntime = null;
       window.__pollRegistryInstalled = false;
@@ -246,8 +200,7 @@ export function installPollRegistry({getState} = {}) {
 
   window.PollRegistryRuntime = runtime;
   window.__pollRegistryInstalled = true;
-  adoptLegacy();
-  rebindCreation();
+  replaceTrainingJobTimer();
   replaceVideo424Timer();
   replaceSourceTimer();
   return runtime;

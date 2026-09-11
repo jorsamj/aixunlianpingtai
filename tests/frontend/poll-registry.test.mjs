@@ -72,33 +72,11 @@ test('managed timeout unregisters itself before callback so recursive polling ca
   assert.deepEqual(cleared, []);
 });
 
-test('remaining legacy training timer is adopted and cleared when navigating away', () => {
-  const state = {
-    jobPollTimer: 1,
-  };
-  const cleared = [];
-  const originalClearInterval = globalThis.clearInterval;
-  globalThis.clearInterval = id => cleared.push(id);
-  globalThis.window = {};
-
-  const runtime = installPollRegistry({getState: () => state});
-  runtime.beforeNavigate('数据集');
-
-  assert.deepEqual(cleared, [1]);
-  assert.equal(state.jobPollTimer, null);
-  assert.deepEqual(runtime.snapshot(), []);
-
-  runtime.destroy();
-  globalThis.clearInterval = originalClearInterval;
-  delete globalThis.window;
-});
-
-test('final training polling creation is replaced by a PollRegistry-managed interval', async () => {
+test('training polling is a direct PollRegistry-managed interval and stops on leave', async () => {
   const state = {
     page: '训练任务',
     project: {id: 'p1'},
     jobs: [{id: 'j1', status: 'running'}],
-    jobPollTimer: null,
   };
   const callbacks = new Map();
   const cleared = [];
@@ -116,31 +94,26 @@ test('final training polling creation is replaced by a PollRegistry-managed inte
     callbacks.delete(id);
   };
   globalThis.window = {
-    refreshJobsOnly: async () => { refreshes += 1; },
-    setupPagePolling() {
-      state.jobPollTimer = setInterval(() => {}, 9999);
-    },
+    TrainingTaskRuntime: {refresh: async ({source}) => {
+      assert.equal(source, 'poll');
+      refreshes += 1;
+    }},
   };
 
   const runtime = installPollRegistry({getState: () => state});
-  const firstManaged = state.jobPollTimer;
-  assert.equal(callbacks.get(firstManaged)?.delay, 2000);
-  assert.equal(runtime.snapshot().find(row => row.key === 'training-jobs')?.managed, true);
+  const managed = runtime.snapshot().find(row => row.key === 'training-jobs');
+  assert.deepEqual(managed, {
+    key: 'training-jobs', owners: ['训练任务', '检测台'], active: true, managed: true, delay: 2000,
+  });
+  const timerId = [...callbacks.keys()][0];
+  assert.equal(callbacks.get(timerId)?.delay, 2000);
 
-  window.setupPagePolling();
-  const managed = state.jobPollTimer;
-  assert.notEqual(managed, firstManaged);
-  assert.equal(callbacks.get(managed)?.delay, 2000);
-  assert.equal(runtime.snapshot().find(row => row.key === 'training-jobs')?.managed, true);
-  assert.ok(cleared.includes(firstManaged));
-  assert.ok(cleared.some(id => id !== firstManaged && id !== managed), 'legacy-created timer should be cleared');
-
-  await callbacks.get(managed).callback();
+  await callbacks.get(timerId).callback();
   assert.equal(refreshes, 1);
 
   runtime.beforeNavigate('数据集');
-  assert.equal(state.jobPollTimer, null);
-  assert.equal(callbacks.has(managed), false);
+  assert.equal(callbacks.has(timerId), false);
+  assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), false);
 
   runtime.destroy();
   globalThis.setInterval = originalSetInterval;
@@ -153,7 +126,6 @@ test('video polling is a direct PollRegistry-managed one-shot and re-arms only w
     page: '视频切帧',
     project: {id: 'p1'},
     jobs: [],
-    jobPollTimer: null,
     video424: [{id: 'v1', status: 'RUNNING'}],
     video424Timer: null,
   };
@@ -217,7 +189,6 @@ test('source polling is a direct PollRegistry-managed interval and stops on leav
     page: '素材接入',
     project: {id: 'p1'},
     jobs: [],
-    jobPollTimer: null,
   };
   const callbacks = new Map();
   const cleared = [];

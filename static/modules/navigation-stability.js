@@ -19,19 +19,6 @@ export class NavigationEpochGuard {
   }
 }
 
-function clearTimer(value, clearFn = clearInterval) {
-  if (value == null) return;
-  try { clearFn(value); } catch (_) {}
-}
-
-function clearPageTimers(state, nextPage) {
-  if (!state) return;
-  if (!['训练任务', '检测台'].includes(nextPage)) {
-    clearTimer(state.jobPollTimer);
-    state.jobPollTimer = null;
-  }
-}
-
 const OWNER_FUNCTIONS = {
   '训练任务': [
     'refreshTrainPage428', 'promoteTrain428', 'pauseTrain428', 'resumeTrain428',
@@ -94,8 +81,7 @@ export function installNavigationStability({getState, notify, requestScope, poll
       guard.navigate(requested);
       const s = currentState();
       s.__navigationEpoch = guard.epoch;
-      if (pollRegistry?.beforeNavigate) pollRegistry.beforeNavigate(requested);
-      else clearPageTimers(s, requested);
+      pollRegistry?.beforeNavigate?.(requested);
       const result = originalSetPage.call(this, page, ...args);
       const actualPage = String(s.page || requested);
       if (actualPage !== guard.page) guard.page = actualPage;
