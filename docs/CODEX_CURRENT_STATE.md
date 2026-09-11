@@ -6,14 +6,14 @@
 
 ```text
 branch:                    refactor/frontend-runtime-stabilization
-latest full code acceptance: b74124b974ee12c3bf113fc7a4a336cb706e81f6
-Frontend Runtime run:      34614368651
+latest full code acceptance: 774df651c3f278c782029e64bfa3315b12622a9f
+Frontend Runtime run:      34616465336
 formal VERSION.txt:        42.24.0
 frontend badge:            v42.25.0-dev
-app.js cache:              42.25.47
-main.mjs cache:            42.25.52
-NavigationStability:       422505
-PollRegistry:              422510
+app.js cache:              42.25.48
+main.mjs cache:            42.25.53
+NavigationStability:       422506
+PollRegistry:              422511
 TrainingDraftRuntime:      422516
 TrainingLabelRuntime:      422513
 TrainingSubmitRuntime:     training-submit-422504
@@ -21,12 +21,14 @@ TrainingTaskRuntime:       training-task-runtime-422503
 AutoLabelPollRuntime:      422501
 ```
 
-Run `34614368651` passed syntax, all permanent owner guards, all frontend unit tests and all Real Chrome runtime regressions. Branch HEAD may be newer due to docs-only commits. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34616465336` passed syntax, every permanent owner guard including `Training PollRegistry direct owner guard`, all frontend unit tests and all Real Chrome runtime regressions. Branch HEAD may be newer because handoff docs are updated after the accepted code point. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-finish remaining frontend/runtime debt
+renderer/setPage final-owner table
+→ obsolete override physical deletion
+→ remaining frontend/runtime debt
 → zero-point debt scan
 → resume A800 RC
 ```
@@ -63,6 +65,31 @@ state.trainingDraft
 
 Retired mirrors: `trainingLabelSelected`, `trainSplitV3`, `train429Selected`, `train428AlgorithmId`, `train428Config`, `trainingDraftFromLegacyState`.
 
+### Training task polling
+
+```text
+page lifecycle / historical setupPagePolling handoff
+→ PollRegistryRuntime.replaceTrainingJobTimer()
+→ PollRegistry(training-jobs)
+→ TrainingTaskRuntime.refresh({render:true, source:'poll'})
+→ focused /jobs refresh
+```
+
+Physically retired:
+
+```text
+jobPollTimer
+installPollingCreationBridge
+__pollRegistryCreationWrapped
+originalSetupPagePolling / wrappedSetupPagePolling
+registry.adopt('training-jobs', ...)
+adoptLegacy / rebindCreation
+NavigationStability training timer fallback
+classic setupPagePolling setInterval/clearInterval owner
+```
+
+`setupPagePolling` 这个历史函数名目前仍有两个一行 handoff 入口，但不再创建 timer。下一批 owner-table 清理中可删除这些空壳，前提是所有调用链先证明由直接 lifecycle owner 覆盖。
+
 ### AutoLabel
 
 ```text
@@ -93,20 +120,9 @@ renderSources422
 → refreshSources422
 ```
 
-Physically retired:
+`source422Timer` and all source wrapper/adoption compatibility are retired.
 
-```text
-source422Timer
-installSourceCreationBridge
-__pollRegistrySourceWrapped
-originalRenderSources / wrappedRenderSources
-registry.adopt('sources', ...)
-NavigationStability source timer fallback
-```
-
-Real Chrome verifies source managed polling and navigation cleanup.
-
-## 5. Permanently retired timer compatibility
+## 5. Permanently retired timer / wrapper compatibility
 
 ```text
 auto422Timer
@@ -115,43 +131,18 @@ __videoFramePollTimer
 __prelabelPollTimer
 _oldSetupPollV33
 source422Timer
+jobPollTimer
+installVideo424CreationBridge
+installSourceCreationBridge
+installPollingCreationBridge
+__pollRegistryVideoWrapped
+__pollRegistrySourceWrapped
+__pollRegistryCreationWrapped
 ```
 
 Do not restore compatibility code for these names.
 
-## 6. Only remaining PollRegistry creation bridge
-
-One bridge family remains:
-
-```text
-installPollingCreationBridge()
-→ wraps setupPagePolling
-→ legacy setupPagePolling creates state.jobPollTimer
-→ PollRegistry replaces it with training-jobs managed interval
-```
-
-Target:
-
-```text
-classic page lifecycle
-→ explicit PollRegistryRuntime.replaceTrainingJobTimer()
-→ PollRegistry(training-jobs) owns timer directly
-```
-
-Then remove:
-
-```text
-state.jobPollTimer compatibility
-installPollingCreationBridge
-originalSetupPagePolling / wrappedSetupPagePolling
-__pollRegistryCreationWrapped
-registry.adopt('training-jobs', ...)
-legacy setupPagePolling interval creation
-```
-
-Be careful: `app.js` contains multiple historical `setupPagePolling` generations and many `render(...); setupPagePolling()` calls. Close the polling owner first; do not combine with broad render deletion.
-
-## 7. Permanent CI guards currently active
+## 6. Permanent CI guards currently active
 
 ```text
 Retired training mirror guard
@@ -162,15 +153,45 @@ AutoLabel PollRegistry owner guard
 Retired legacy poll timer compatibility guard
 Video PollRegistry direct owner guard
 Source PollRegistry direct owner guard
+Training PollRegistry direct owner guard
 ```
+
+Training guard enforces zero `jobPollTimer` references in product runtime files and forbids PollRegistry training wrapper/adoption/rebind compatibility from returning.
+
+## 7. Next exact task: renderer / setPage owner map
+
+Polling creation bridges are CLOSED. Do not create another polling runtime.
+
+`static/app.js` still contains a long historical override chain. Current audit has already found multiple `window.setPage=function...` layers and multiple `render=function...` layers, including pure pass-through wrappers and version-era page aliases.
+
+Next execution order:
+
+```text
+1. map final visible page → final renderer → final action owner
+2. map each setPage wrapper and identify independent semantics
+3. mark pure pass-through / superseded layers
+4. delete one owner family at a time with regression coverage
+5. run syntax + unit + Real Chrome after behavior changes
+6. update all three handoff docs after each accepted batch
+```
+
+First candidates to prove/delete:
+
+```text
+two setupPagePolling one-line handoff shells
+pure pass-through setPage wrappers
+fully superseded render layers with no live callers
+```
+
+Do not blindly collapse all `setPage` generations. Some wrappers still carry page aliases, deployment cache invalidation, mobile sidebar behavior or version-era routing.
 
 ## 8. Work order
 
 ```text
-1. close setupPagePolling / training-jobs creation bridge
-2. build renderer/setPage final-owner table and physically delete obsolete layers
-3. remove proven dead app.js and global reload/request debt
-4. unify cache-busting
+1. renderer/setPage final-owner table
+2. obsolete override physical deletion
+3. proven dead app.js + global reload/request debt
+4. cache-busting unification
 5. zero-point MutationObserver/timer/fetch/render/setPage scan
 6. semantic naming + deterministic tests + docs
 7. technical-debt zero-point scan
