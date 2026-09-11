@@ -9,7 +9,8 @@
 3. `docs/superpowers/specs/2026-09-11-v42.25-training-data-contract-design.md` — v42.25 第一批训练数据合同设计。
 4. `docs/superpowers/specs/2026-09-11-v42.25-task-runtime-fencing-design.md` — 第二批 Task Runtime fencing 设计。
 5. `docs/superpowers/specs/2026-09-11-training-resource-contract-fix.md` — 2026-09-11 真实 A800 训练暴露的 batch/cache 参数覆盖事故与修复合同。
-6. 对当前工作先执行 `git diff main...HEAD` / `git log main..HEAD`，不要假设 handoff 已覆盖最后一个 commit。
+6. `docs/superpowers/specs/2026-09-11-negative-sample-contract.md` — `confirmed_empty`、负样本 scope、YOLO 空标签、前端确认动作与训练约束。
+7. 对当前工作先执行 `git diff main...HEAD` / `git log main..HEAD`，不要假设 handoff 已覆盖最后一个 commit。
 
 ## 当前开发状态
 
@@ -20,6 +21,7 @@
 - v42.25 第一批训练数据合同已实现。
 - v42.25 第二批 Task Runtime fencing 已实现，并通过定向 Linux GitHub Actions；**FULL REGRESSION NOT VERIFIED / A800 REAL TRAINING NOT VERIFIED**。
 - 训练资源参数覆盖修复已通过定向 Linux CI，但修复后的 A800 实际训练仍需重新验证。
+- 负样本合同已补齐并通过定向 Linux CI：`confirmed_empty` 可训练、scope 锁定、部分 scope 拒绝、空 YOLO label 落盘、0 框 UI 显式确认均已覆盖；A800 真实训练仍需回归。
 - 未完成真实环境验证前不要合并 main，也不要把 v42.25 描述成生产已验收。
 
 ## 不得回退的核心合同
@@ -30,6 +32,10 @@
 - AnnotationRepository 是 Ground Truth authority；MaterialRepository 中标注字段只是 searchable projection。
 - `unannotated`、`annotated`、`confirmed_empty` 是不同语义；`confirmed_empty` 是合法负样本。
 - `annotation_scope` 属于 Ground Truth 与 Training Snapshot 合同，不得只保存 boxes。
+- 新 `confirmed_empty` 在没有显式 scope 时优先冻结确认当时的 active label codes；历史 `*` 只作为兼容语义，Snapshot 必须解析成当前 locked schema。
+- YOLO 空 `.txt` 表示“locked schema 中所有类别均不存在”；只确认了部分标签为空的样本不得作为整个多分类算法的空标签训练。
+- 普通 0 框保存不得静默创建负样本；前端必须通过“确认无目标”显式确认。
+- `confirmed_empty` 即使 `box_count=0` 仍属于正式已标注素材，训练素材池不得因此过滤掉。
 - same SHA + same normalized GT：训练时 canonicalize，不删除素材记录。
 - same SHA + different normalized GT：必须 `duplicate_annotation_conflict`，不得 keep-first / keep-latest / 随机选择。
 - Train / Validation / Test 必须按不可拆分 Component 划分，并保留最终 leakage guard。
@@ -50,6 +56,16 @@
 - `platform_core/annotation_repository.py`
 - `platform_core/snapshots.py`
 
+负样本合同：
+
+- `platform_core/annotation_repository.py`
+- `platform_core/snapshots.py`
+- `platform_core/training_tasks.py`
+- `static/modules/annotation.js`
+- `static/modules/negative-samples.js`
+- `static/main.mjs`
+- `tests/unit/test_negative_sample_contract.py`
+
 Task Runtime fencing：
 
 - `platform_core/task_runtime/fenced_repository.py`
@@ -66,7 +82,7 @@ Task Runtime fencing：
 
 ## 当前后续优先级
 
-1. 用 A800 对修复后的训练资源合同做真实重跑，确认 `batch=16/workers=4/cache=false` 最终传入 Ultralytics 仍为 `16/4/false`。
+1. 用 A800 对修复后的训练资源合同和负样本合同做真实重跑，确认 `batch=16/workers=4/cache=false` 最终传入 Ultralytics 仍为 `16/4/false`，并确认 `confirmed_empty` 在 bundle 中生成真实空 `.txt`。
 2. 若仍出现 `Pin memory thread exited unexpectedly`，再单独检查 kernel/cgroup OOM、`/dev/shm`、DataLoader worker/pinned memory，不得用全平台强制 `workers=0` 掩盖问题。
 3. 收口算法级 label schema。当前训练 Snapshot 仍从项目全部 active labels 构造 schema，因此 `nc` 可能包含与当前算法无关的项目标签。正确方向是算法/训练任务锁定 stable label codes，而不是按当前批次中“出现过的框”猜类别。
 4. 下一大批做生产安全：`/data` 静态暴露、CORS、SSRF、训练服务器 SecretStore。
