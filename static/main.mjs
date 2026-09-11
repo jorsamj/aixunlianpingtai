@@ -4,7 +4,8 @@ import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422503';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422500';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422501';
+import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
@@ -49,6 +50,10 @@ document.addEventListener('click', async event => {
   }
 });
 
+const pageRequestScope = installPageRequestScope({
+  getPage: () => state.page,
+});
+
 window.PlatformCore = {
   actions: actionRegistry,
   modalStack,
@@ -70,6 +75,7 @@ window.PlatformCore = {
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   storageImport: {storageImportProgressText},
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView},
+  runtime: {pageRequestScope},
   uiBuildVersion: UI_BUILD_VERSION,
 };
 
@@ -113,6 +119,7 @@ installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 installNavigationStability({
   getState: () => state,
   notify,
+  requestScope: pageRequestScope,
 });
 
 function applyBuildVersion() {
