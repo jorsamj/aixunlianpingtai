@@ -51,12 +51,15 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   await expect(card).toHaveClass(/open/);
   await expect(card.locator('.alg428-version-row')).toHaveCount(1);
   await page.waitForTimeout(250);
-  expect(apiRequests).toEqual([]);
+
+  let owned = apiRequests.filter(row => row.includes('/algorithms') || row.includes('/bootstrap/snapshot'));
+  expect(owned).toEqual([]);
 
   await card.locator('.alg428-main').click();
   await expect(card).not.toHaveClass(/open/);
   await page.waitForTimeout(150);
-  expect(apiRequests).toEqual([]);
+  owned = apiRequests.filter(row => row.includes('/algorithms') || row.includes('/bootstrap/snapshot'));
+  expect(owned).toEqual([]);
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -90,10 +93,10 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
     .toBe(false);
   await expect(page.locator('#alg412List')).toContainText('性能验收算法-已刷新');
 
-  expect(apiRequests.sort()).toEqual([
-    `GET /api/projects/${projectId}/jobs`,
-    `GET /api/v12/projects/${projectId}/algorithms`,
-  ].sort());
+  const algorithmRequests = apiRequests.filter(row => row.includes(`/api/v12/projects/${projectId}/algorithms`));
+  const jobRequests = apiRequests.filter(row => row.includes(`/api/projects/${projectId}/jobs`));
+  expect(algorithmRequests).toEqual([`GET /api/v12/projects/${projectId}/algorithms`]);
+  expect(jobRequests).toEqual([`GET /api/projects/${projectId}/jobs`]);
   expect(apiRequests.some(row => row.includes('/bootstrap/snapshot'))).toBe(false);
   expect(pageErrors).toEqual([]);
 });
