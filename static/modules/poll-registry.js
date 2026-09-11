@@ -83,15 +83,12 @@ export function installPollRegistry({getState} = {}) {
   const sourceOwner = '素材接入';
   let originalSetupPagePolling = null;
   let wrappedSetupPagePolling = null;
-  let originalRenderSources = null;
-  let wrappedRenderSources = null;
 
   function state() { return getState?.() || {}; }
 
   function adoptLegacy() {
     const s = state();
     registry.adopt('training-jobs', trainingOwners, s.jobPollTimer);
-    registry.adopt('sources', sourceOwner, s.source422Timer);
     return registry.snapshot();
   }
 
@@ -99,7 +96,6 @@ export function installPollRegistry({getState} = {}) {
     const s = state();
     const page = String(nextPage || '');
     if (!trainingOwners.includes(page)) s.jobPollTimer = null;
-    if (page !== sourceOwner) s.source422Timer = null;
     if (page !== videoOwner) {
       if (s.video424Timer != null) {
         try { clearTimeout(s.video424Timer); } catch (_) {}
@@ -173,10 +169,6 @@ export function installPollRegistry({getState} = {}) {
 
   function replaceSourceTimer() {
     const s = state();
-    if (s.source422Timer != null) {
-      try { clearInterval(s.source422Timer); } catch (_) {}
-      s.source422Timer = null;
-    }
     registry.clear('sources');
     if (String(s.page || '') !== sourceOwner) return null;
 
@@ -186,13 +178,12 @@ export function installPollRegistry({getState} = {}) {
       if (!current.project?.id) return;
       if (typeof window.refreshSources422 === 'function') await window.refreshSources422();
     };
-    s.source422Timer = registry.startInterval(
+    return registry.startInterval(
       'sources',
       sourceOwner,
       callback,
       2500,
     );
-    return s.source422Timer;
   }
 
   function installPollingCreationBridge() {
@@ -213,30 +204,8 @@ export function installPollRegistry({getState} = {}) {
     return true;
   }
 
-  function installSourceCreationBridge() {
-    const current = window.renderSources422;
-    if (typeof current !== 'function' || current.__pollRegistrySourceWrapped) return false;
-    originalRenderSources = current;
-    wrappedRenderSources = async function (...args) {
-      try {
-        return await current.apply(this, args);
-      } finally {
-        replaceSourceTimer();
-        adoptLegacy();
-      }
-    };
-    wrappedRenderSources.__pollRegistrySourceWrapped = true;
-    wrappedRenderSources.__pollRegistrySourceOriginal = current;
-    window.renderSources422 = wrappedRenderSources;
-    if (String(state().page || '') === sourceOwner) replaceSourceTimer();
-    adoptLegacy();
-    return true;
-  }
-
   function rebindCreation() {
-    const page = installPollingCreationBridge();
-    const source = installSourceCreationBridge();
-    return page || source;
+    return installPollingCreationBridge();
   }
 
   const runtime = {
@@ -267,12 +236,8 @@ export function installPollRegistry({getState} = {}) {
       if (wrappedSetupPagePolling && window.setupPagePolling === wrappedSetupPagePolling) {
         window.setupPagePolling = originalSetupPagePolling;
       }
-      if (wrappedRenderSources && window.renderSources422 === wrappedRenderSources) {
-        window.renderSources422 = originalRenderSources;
-      }
       const s = state();
       s.jobPollTimer = null;
-      s.source422Timer = null;
       s.video424Timer = null;
       if (window.PollRegistryRuntime === runtime) window.PollRegistryRuntime = null;
       window.__pollRegistryInstalled = false;
@@ -284,5 +249,6 @@ export function installPollRegistry({getState} = {}) {
   adoptLegacy();
   rebindCreation();
   replaceVideo424Timer();
+  replaceSourceTimer();
   return runtime;
 }

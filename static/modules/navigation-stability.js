@@ -30,10 +30,6 @@ function clearPageTimers(state, nextPage) {
     clearTimer(state.jobPollTimer);
     state.jobPollTimer = null;
   }
-  if (nextPage !== '素材接入') {
-    clearTimer(state.source422Timer);
-    state.source422Timer = null;
-  }
 }
 
 const OWNER_FUNCTIONS = {
