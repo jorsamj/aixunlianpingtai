@@ -6,11 +6,11 @@
 
 ```text
 branch:                    refactor/frontend-runtime-stabilization
-latest full code acceptance: 774df651c3f278c782029e64bfa3315b12622a9f
-Frontend Runtime run:      34616465336
+latest full code acceptance: 4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386
+Frontend Runtime run:      34617573070
 formal VERSION.txt:        42.24.0
 frontend badge:            v42.25.0-dev
-app.js cache:              42.25.48
+app.js cache:              42.25.49
 main.mjs cache:            42.25.53
 NavigationStability:       422506
 PollRegistry:              422511
@@ -21,13 +21,13 @@ TrainingTaskRuntime:       training-task-runtime-422503
 AutoLabelPollRuntime:      422501
 ```
 
-Run `34616465336` passed syntax, every permanent owner guard including `Training PollRegistry direct owner guard`, all frontend unit tests and all Real Chrome runtime regressions. Branch HEAD may be newer because handoff docs are updated after the accepted code point. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34617573070` passed syntax, every permanent owner guard, all frontend unit tests and all Real Chrome runtime regressions. `setupPagePolling` is now physically absent from active `static/app.js`. Branch HEAD may be newer because handoff docs are updated after the accepted code point. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-renderer/setPage final-owner table
-→ obsolete override physical deletion
+pure pass-through setPage wrapper proof/removal
+→ remaining renderer/setPage obsolete layers
 → remaining frontend/runtime debt
 → zero-point debt scan
 → resume A800 RC
@@ -39,6 +39,7 @@ Read:
 docs/TECH_DEBT_CLOSURE_V42_25.md
 docs/CODEX_CURRENT_STATE.md
 docs/frontend-legacy-audit.md
+docs/FRONTEND_OWNER_MAP_V42_25.md
 ```
 
 ## 3. Non-regression backend contracts
@@ -68,7 +69,7 @@ Retired mirrors: `trainingLabelSelected`, `trainSplitV3`, `train429Selected`, `t
 ### Training task polling
 
 ```text
-page lifecycle / historical setupPagePolling handoff
+classic render call site
 → PollRegistryRuntime.replaceTrainingJobTimer()
 → PollRegistry(training-jobs)
 → TrainingTaskRuntime.refresh({render:true, source:'poll'})
@@ -79,16 +80,17 @@ Physically retired:
 
 ```text
 jobPollTimer
+setupPagePolling
 installPollingCreationBridge
 __pollRegistryCreationWrapped
 originalSetupPagePolling / wrappedSetupPagePolling
 registry.adopt('training-jobs', ...)
 adoptLegacy / rebindCreation
 NavigationStability training timer fallback
-classic setupPagePolling setInterval/clearInterval owner
+classic training polling setInterval/clearInterval owner
 ```
 
-`setupPagePolling` 这个历史函数名目前仍有两个一行 handoff 入口，但不再创建 timer。下一批 owner-table 清理中可删除这些空壳，前提是所有调用链先证明由直接 lifecycle owner 覆盖。
+Permanent `Training PollRegistry direct owner guard` now rejects any `setupPagePolling` or `jobPollTimer` reintroduction.
 
 ### AutoLabel
 
@@ -132,6 +134,7 @@ __prelabelPollTimer
 _oldSetupPollV33
 source422Timer
 jobPollTimer
+setupPagePolling
 installVideo424CreationBridge
 installSourceCreationBridge
 installPollingCreationBridge
@@ -156,40 +159,40 @@ Source PollRegistry direct owner guard
 Training PollRegistry direct owner guard
 ```
 
-Training guard enforces zero `jobPollTimer` references in product runtime files and forbids PollRegistry training wrapper/adoption/rebind compatibility from returning.
+## 7. Renderer / setPage owner-map state
 
-## 7. Next exact task: renderer / setPage owner map
-
-Polling creation bridges are CLOSED. Do not create another polling runtime.
-
-`static/app.js` still contains a long historical override chain. Current audit has already found multiple `window.setPage=function...` layers and multiple `render=function...` layers, including pure pass-through wrappers and version-era page aliases.
-
-Next execution order:
+`docs/FRONTEND_OWNER_MAP_V42_25.md` records the current routing chain. Audit baseline before Batch A found:
 
 ```text
-1. map final visible page → final renderer → final action owner
-2. map each setPage wrapper and identify independent semantics
-3. mark pure pass-through / superseded layers
-4. delete one owner family at a time with regression coverage
-5. run syntax + unit + Real Chrome after behavior changes
-6. update all three handoff docs after each accepted batch
+window.setPage=function...   10 historical assignments
+render=function...           22 historical assignments
+setupPagePolling             2 shells / 9 search excerpts
 ```
 
-First candidates to prove/delete:
+After Batch A:
 
 ```text
-two setupPagePolling one-line handoff shells
-pure pass-through setPage wrappers
-fully superseded render layers with no live callers
+setupPagePolling             0 active references
+training polling handoff     direct replaceTrainingJobTimer() calls
 ```
 
-Do not blindly collapse all `setPage` generations. Some wrappers still carry page aliases, deployment cache invalidation, mobile sidebar behavior or version-era routing.
+First next deletion candidate is the v42.3 pure pass-through wrapper:
+
+```text
+const set423Base=window.setPage;
+window.setPage=function(p){set423Base(p)};
+try{setPage=window.setPage}catch(e){}
+```
+
+Current search shows `set423Base` has exactly one match (declaration + use in the same wrapper). The immediately following v42.4 code resets `window.setPage` directly. `setBase424` itself also currently has exactly one declaration match and no business use. Prove this against the current HEAD before editing; then delete only this bounded family and run navigation regressions.
+
+Do not blindly collapse wrappers that still own page aliases, deployment cache invalidation, mobile sidebar behavior, UI persistence or NavigationStability semantics.
 
 ## 8. Work order
 
 ```text
-1. renderer/setPage final-owner table
-2. obsolete override physical deletion
+1. remove first proven pure-pass-through setPage family
+2. continue renderer/setPage obsolete override closure in bounded batches
 3. proven dead app.js + global reload/request debt
 4. cache-busting unification
 5. zero-point MutationObserver/timer/fetch/render/setPage scan
@@ -197,6 +200,8 @@ Do not blindly collapse all `setPage` generations. Some wrappers still carry pag
 7. technical-debt zero-point scan
 8. resume A800 RC
 ```
+
+Every batch: verify current HEAD → prove owner → regression → physical deletion → syntax/unit → Real Chrome where behavior changes → update all four handoff docs.
 
 ## 9. A800 status
 
