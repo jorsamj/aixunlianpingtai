@@ -84,6 +84,7 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
   assert.deepEqual(state.algorithms.map(row => row.id), ['a2']);
   assert.deepEqual(state.jobs.map(row => row.id), ['j2']);
   assert.equal(result.cached, false);
+  assert.equal(result.stale, false);
   assert.equal(renders, 1);
 
   runtime.destroy();
@@ -153,6 +154,59 @@ test('minimum refresh age can reuse fresh algorithm state without network traffi
 
   assert.equal(requests, 2);
   assert.equal(second.cached, true);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('focused refresh uses raw fetch but discards results after navigation and always releases inflight', async () => {
+  const state = {
+    page: '算法列表',
+    project: {id: 'p1'},
+    algorithms: [{id: 'before'}],
+    jobs: [{id: 'before-job'}],
+    alg428Expanded: {},
+  };
+  let generation = 7;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let rawRequests = 0;
+  let scopedRequests = 0;
+  const raw = async url => {
+    rawRequests += 1;
+    await gate;
+    return url.includes('/algorithms')
+      ? response({items: [{id: 'after'}]})
+      : response([{id: 'after-job'}]);
+  };
+  const scoped = async () => {
+    scopedRequests += 1;
+    throw new Error('scoped fetch should not own modular algorithm refresh');
+  };
+  scoped.__pageRequestScopeOriginal = raw;
+  globalThis.window = {
+    fetch: scoped,
+    PageRequestScopeRuntime: {stats: () => ({generation})},
+    renderAlg412: () => { throw new Error('stale refresh must not render'); },
+  };
+
+  const runtime = installAlgorithmListRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  const pending = runtime.refresh();
+  await Promise.resolve();
+  state.page = '数据集';
+  generation += 1;
+  release();
+  const result = await pending;
+
+  assert.equal(rawRequests, 2);
+  assert.equal(scopedRequests, 0);
+  assert.equal(result.stale, true);
+  assert.deepEqual(state.algorithms.map(row => row.id), ['before']);
+  assert.deepEqual(state.jobs.map(row => row.id), ['before-job']);
+  assert.equal(runtime.state().inflight, false);
 
   runtime.destroy();
   cleanup();
