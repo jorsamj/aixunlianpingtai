@@ -1,0 +1,140 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {createTrainingDraft, trainingDraftToRequest} from '../../static/modules/training-draft.js';
+import {
+  buildTrainingEngineParameters,
+  buildTrainingStartPayload,
+  installTrainingSubmitRuntime,
+  validateTrainingDevice,
+} from '../../static/modules/training-submit.js';
+
+function draft(overrides = {}) {
+  return createTrainingDraft({
+    algorithmId: 'alg-1',
+    materialIds: ['img-1', 'img-2'],
+    newLabelCodes: ['fire'],
+    experimentPercent: 35,
+    validationPercent: 18,
+    resource: {strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false},
+    config: {
+      model: 'custom.pt', epochs: 30, imgsz: 640, optimizer: 'auto',
+      lr0: .01, lrf: .01, momentum: .937, weight_decay: .0005,
+      warmup_epochs: 3, close_mosaic: 10, mosaic: 1, mixup: 0,
+      hsv_h: .015, hsv_s: .7, hsv_v: .4, degrees: 0, translate: .1,
+      scale: .5, shear: 0, perspective: 0, flipud: 0, fliplr: .5,
+      pretrained: true, amp: true, single_cls: false, rect: false,
+      cos_lr: false, freeze: 0, multi_scale: 0, save_period: -1,
+      seed: 0, deterministic: true, val_max_samples: 0, eval_interval: 0,
+      eval_metric: 'map50', continue_threshold: 0, stop_threshold: 0,
+      auto_convert_targets: [],
+    },
+    priority: 7,
+    ...overrides,
+  });
+}
+
+const target = {
+  id: 'gpu-local', type: 'local', framework: 'ultralytics',
+  algorithms: [{key: 'yolo_detect', base_model: 'yolo11n.pt'}],
+};
+const algorithm = target.algorithms[0];
+
+test('engine parameters preserve explicit false/zero resource and YOLO settings', () => {
+  const value = draft({
+    resource: {strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 0, cache: false},
+    config: {mosaic: 0, mixup: 0, flipud: 0, fliplr: 0, pretrained: false, amp: false, deterministic: false},
+  });
+  const parameters = buildTrainingEngineParameters({draft: value, target, algorithm});
+
+  assert.equal(parameters.batch, 16);
+  assert.equal(parameters.workers, 0);
+  assert.equal(parameters.cache, false);
+  assert.equal(parameters.mosaic, 0);
+  assert.equal(parameters.fliplr, 0);
+  assert.equal(parameters.pretrained, false);
+  assert.equal(parameters.amp, false);
+  assert.equal(parameters.deterministic, false);
+});
+
+test('start payload is derived from canonical TrainingDraft instead of legacy ids', () => {
+  const payload = buildTrainingStartPayload({
+    draft: draft(), target, algorithm, trainingDraftToRequest,
+  });
+  assert.equal(payload.algorithm_asset_id, 'alg-1');
+  assert.deepEqual(payload.train_image_ids, ['img-1', 'img-2']);
+  assert.deepEqual(payload.train_labels, ['fire']);
+  assert.equal(payload.experiment_percent, 35);
+  assert.equal(payload.validation_percent, 18);
+  assert.equal(payload.queue_priority, 7);
+  assert.equal(payload.device, '0');
+  assert.equal(payload.batch, 16);
+  assert.equal(payload.workers, 4);
+  assert.equal(payload.cache, false);
+  assert.equal(payload.model, 'custom.pt');
+});
+
+test('device validation fails closed for missing or unavailable device', () => {
+  assert.equal(validateTrainingDevice(draft(), [{id: '0', available: true}]).id, '0');
+  assert.throws(() => validateTrainingDevice(draft(), [{id: 'cpu', available: true}]), /设备不可用/);
+  assert.throws(() => validateTrainingDevice(draft(), [{id: '0', available: false}]), /设备不可用/);
+});
+
+test('submit runtime replaces legacy submit and uses canonical draft end-to-end', async () => {
+  const state = {
+    algorithms: [{id: 'alg-1'}],
+    targets: [target],
+    trainingDevicesV3: {options: [{id: '0', available: true}]},
+    alg428Expanded: {},
+  };
+  const controls = {
+    tr429Target: {value: 'gpu-local'},
+    tr429Alg: {value: 'yolo_detect'},
+  };
+  globalThis.document = {getElementById: id => controls[id] || null};
+
+  let sent;
+  let reloaded = 0;
+  let rendered = 0;
+  let closed = 0;
+  const notices = [];
+  const oldSubmit = () => 'legacy';
+  globalThis.window = {
+    submitTrain429: oldSubmit,
+    fetch: async (_url, init) => {
+      sent = JSON.parse(init.body);
+      return {
+        ok: true,
+        async json() { return {task: {id: 'task-1'}}; },
+      };
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft()},
+    trainingDraftToRequest,
+    reloadRelated: async () => { reloaded += 1; },
+    renderAlgorithms: () => { rendered += 1; },
+    closeModal: () => { closed += 1; },
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(window.submitTrain429.__trainingSubmitRuntime, true);
+  const result = await window.submitTrain429();
+
+  assert.equal(result.task.id, 'task-1');
+  assert.deepEqual(sent.train_image_ids, ['img-1', 'img-2']);
+  assert.deepEqual(sent.train_labels, ['fire']);
+  assert.equal(sent.queue_priority, 7);
+  assert.equal(reloaded, 1);
+  assert.equal(rendered, 1);
+  assert.equal(closed, 1);
+  assert.equal(state.alg428Expanded['alg-1'], true);
+  assert.match(notices.at(-1), /训练任务已进入后台队列/);
+
+  runtime.destroy();
+  assert.equal(window.submitTrain429, oldSubmit);
+  delete globalThis.window;
+  delete globalThis.document;
+});
