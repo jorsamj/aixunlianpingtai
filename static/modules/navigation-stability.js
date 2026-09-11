@@ -45,26 +45,28 @@ function clearPageTimers(state, nextPage) {
 const OWNER_FUNCTIONS = {
   '训练任务': [
     'refreshTrainPage428', 'promoteTrain428', 'pauseTrain428', 'resumeTrain428',
-    'stopTrain428', 'deleteTrain428', 'refreshTrain425', 'refreshTrain423'
+    'stopTrain428', 'deleteTrain428', 'refreshTrain425', 'refreshTrain423',
+    'refreshJobsOnly'
   ],
   '素材接入': [
     'refreshSources422', 'saveSource422', 'runSourceNow422', 'toggleSource422', 'deleteSource422'
   ],
   '自动标注及清洗': [
-    'refreshAuto422', 'stopAutoTask422', 'retryAutoTask422', 'createAutoTask422'
+    'refreshAuto422', 'stopAutoTask422', 'retryAutoTask422', 'createAutoTask422',
+    'retryAiTask60', 'showAiTask60'
   ],
-  '视频切帧': ['refreshVideoTasksOnly'],
+  '视频切帧': ['refreshVideoTasksOnly', 'refreshVideo424Delta', 'stopVideo424'],
   '部署转换': ['loadDeployData', 'refreshDeployTasks'],
 };
 
 const PAGE_RENDERERS = {
-  '算法列表': ['renderAlgorithms', 'renderAlgorithms423', 'renderAlgorithms428'],
+  '算法列表': ['renderAlgorithms', 'renderAlgorithms423', 'renderAlgorithms428', 'renderAlg412'],
   '训练资源': ['renderResources'],
-  '数据集': ['renderDatasets', 'renderDatasets412', 'renderDatasets426'],
+  '数据集': ['renderDatasets', 'renderDatasets412', 'renderDatasets424', 'renderDatasets426'],
   '训练任务': ['renderTraining', 'renderTraining423', 'renderTraining425', 'renderTraining428', 'renderTrainPage428'],
   '素材接入': ['renderSources422'],
-  '自动标注及清洗': ['renderAutoLabel422'],
-  '视频切帧': ['renderVideoFrameTasks'],
+  '自动标注及清洗': ['renderAutoLabel422', 'renderAutoLabel424', 'renderOps427'],
+  '视频切帧': ['renderVideoFrameTasks', 'renderVideo424'],
   '部署转换': ['renderDeployTasks', 'renderDeploymentTasks'],
 };
 
@@ -198,8 +200,6 @@ export function installNavigationStability({getState, notify, requestScope, poll
       return guard.token(ownerPage || currentState().page);
     },
     wrapKnownFunctions,
-    // Kept only as a compatibility shim. The old implementation called window.render()
-    // after stale DOM mutations, which caused visible page jumps and expensive full rerenders.
     repairCurrentPage() {
       notify?.('旧页面结果已被拦截');
       return false;
