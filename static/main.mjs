@@ -4,7 +4,7 @@ import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422513';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422509';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422510';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422511';
@@ -180,6 +180,7 @@ installNavigationStability({
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
     return Promise.resolve();
   },
+  beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
 });
 
 function applyBuildVersion() {

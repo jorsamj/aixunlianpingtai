@@ -65,6 +65,7 @@ export function installNavigationStability({
   pollRegistry,
   persistNavigationState,
   waitForNavigationReady,
+  beforeInvokeNavigation,
 } = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
@@ -132,6 +133,7 @@ export function installNavigationStability({
 
       const invokeOriginal = () => {
         try {
+          beforeInvokeNavigation?.(requested);
           return settleResult(originalSetPage.call(this, requested, ...args));
         } catch (error) {
           finalizeNavigation(requested, navigationEpoch);

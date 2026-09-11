@@ -79,7 +79,7 @@ test('final navigation coordinates legacy alias lifecycle with the canonical pag
   cleanup();
 });
 
-test('readiness gate runs after navigation intent but before classic page mutation', async () => {
+test('readiness gate runs before UI cleanup and predecessor page mutation', async () => {
   const state = {page: '算法列表'};
   const calls = [];
   const ready = deferred();
@@ -112,6 +112,9 @@ test('readiness gate runs after navigation intent but before classic page mutati
       calls.push(`ready:${page}`);
       return ready.promise;
     },
+    beforeInvokeNavigation(page) {
+      calls.push(`ui:close:${page}`);
+    },
   });
 
   const navigation = globalThis.window.setPage('数据集');
@@ -129,6 +132,7 @@ test('readiness gate runs after navigation intent but before classic page mutati
     'request:navigate:数据集',
     'poll:before:数据集',
     'ready:数据集',
+    'ui:close:数据集',
     'classic:数据集',
     'request:align:数据集',
     'poll:after:数据集',
