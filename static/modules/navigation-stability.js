@@ -74,7 +74,7 @@ function ownersFor(page) {
   return [page];
 }
 
-export function installNavigationStability({getState, notify} = {}) {
+export function installNavigationStability({getState, notify, requestScope} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
   window.__navigationStabilityInstalled = true;
@@ -92,14 +92,18 @@ export function installNavigationStability({getState, notify} = {}) {
   if (typeof originalSetPage === 'function') {
     window.setPage = function stableSetPage(page, ...args) {
       const requested = String(page || '');
+      requestScope?.navigate?.(requested);
+      pending.clear();
       guard.navigate(requested);
       const s = currentState();
       s.__navigationEpoch = guard.epoch;
       clearPageTimers(s, requested);
       const result = originalSetPage.call(this, page, ...args);
-      if (String(s.page || '') !== guard.page) guard.page = String(s.page || '');
+      const actualPage = String(s.page || requested);
+      if (actualPage !== guard.page) guard.page = actualPage;
+      requestScope?.alignPage?.(actualPage);
       const currentView = document.getElementById('view');
-      if (currentView) currentView.dataset.navigationPage = String(s.page || requested);
+      if (currentView) currentView.dataset.navigationPage = actualPage;
       return result;
     };
   }
