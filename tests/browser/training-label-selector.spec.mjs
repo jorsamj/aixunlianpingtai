@@ -102,7 +102,7 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422503');
+    .toBe('training-draft-runtime-422504');
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
@@ -150,6 +150,41 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
 
+  const writesBeforeSettings = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
+  await dialog.getByRole('button', {name: '配置设置'}).click();
+  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  await expect(settings).toBeVisible({timeout: 10_000});
+  await settings.locator('#ts428Epoch').fill('30');
+  await settings.locator('#ts428Batch').fill('16');
+  await settings.locator('details.advanced427-box summary').click();
+  await settings.locator('#ts428Workers').fill('4');
+  await settings.locator('#ts428Opt').selectOption('AdamW');
+  await settings.locator('#ts428Cache').selectOption('False');
+  await settings.getByRole('button', {name: '应用配置'}).click();
+  await expect(dialog).toBeVisible();
+
+  await expect.poll(async () => page.evaluate(() => ({
+    writes: window.TrainingDraftRuntime.state().directWrites,
+    draft: {
+      epochs: state.trainingDraft?.config?.epochs,
+      optimizer: state.trainingDraft?.config?.optimizer,
+      batch: state.trainingDraft?.resource?.batch,
+      workers: state.trainingDraft?.resource?.workers,
+      cache: state.trainingDraft?.resource?.cache,
+    },
+    legacy: {
+      epochs: state.train428Config?.epochs,
+      optimizer: state.train428Config?.optimizer,
+      batch: state.train428Config?.batch,
+      workers: state.train428Config?.workers,
+      cache: state.train428Config?.cache,
+    },
+  }))).toEqual({
+    writes: writesBeforeSettings + 1,
+    draft: {epochs: 30, optimizer: 'AdamW', batch: 16, workers: 4, cache: false},
+    legacy: {epochs: 30, optimizer: 'AdamW', batch: 16, workers: 4, cache: false},
+  });
+
   await expect.poll(async () => page.evaluate(() => ({
     materials: state.trainingDraft?.materialIds || [],
     labels: state.trainingDraft?.newLabelCodes || [],
@@ -176,6 +211,11 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
         experiment_percent: 20,
         validation_percent: 20,
         queue_priority: 50,
+        epochs: 1,
+        batch: 1,
+        workers: 0,
+        cache: true,
+        optimizer: 'SGD',
       }),
     });
   }, project.id);
@@ -186,6 +226,9 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+  expect(submitted.batch).toBe(16);
+  expect(submitted.workers).toBe(4);
+  expect(submitted.cache).toBe(false);
 
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   submitted = undefined;
@@ -198,6 +241,11 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+  expect(submitted.epochs).toBe(30);
+  expect(submitted.batch).toBe(16);
+  expect(submitted.workers).toBe(4);
+  expect(submitted.cache).toBe(false);
+  expect(submitted.optimizer).toBe('AdamW');
   expect(submitted.framework).toBe('ultralytics');
   expect(submitted.algorithm).toBe('yolo_detect');
   expect(submitted.ai_intervention_enabled).toBe(false);
