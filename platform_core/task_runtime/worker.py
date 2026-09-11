@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -28,7 +31,7 @@ class RepositoryPort(Protocol):
 
 
 class FencedArtifactStore:
-    """ArtifactStore view that refuses stale execution reads and writes."""
+    """ArtifactStore view that refuses stale execution reads and publishes."""
 
     def __init__(self, context: "WorkerContext", store: ArtifactStore):
         self._context = context
@@ -43,8 +46,28 @@ class FencedArtifactStore:
         return self._store.artifact_path(task_id, relative_path)
 
     def atomic_write_json(self, task_id: str, relative_path: str, value: Any) -> None:
+        # Write to a private temp file first, then prove execution ownership a
+        # second time immediately before publishing with os.replace(). This
+        # prevents a stale generation from replacing a newer result after a
+        # long serialization/fsync window.
         self._context.assert_current_execution()
-        self._store.atomic_write_json(task_id, relative_path, value)
+        path = self._store.artifact_path(task_id, relative_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temp_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temp_path = type(path)(temp_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                json.dump(value, stream, ensure_ascii=False, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._context.assert_current_execution()
+            os.replace(temp_path, path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def read_json(self, task_id: str, relative_path: str, default: Any = None) -> Any:
         self._context.assert_current_execution()
@@ -52,7 +75,12 @@ class FencedArtifactStore:
 
     def append_log(self, task_id: str, relative_path: str, text: str) -> None:
         self._context.assert_current_execution()
-        self._store.append_log(task_id, relative_path, text)
+        path = self._store.artifact_path(task_id, relative_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._context.assert_current_execution()
+        with path.open("a", encoding="utf-8", newline="") as stream:
+            stream.write(str(text))
+            stream.flush()
 
 
 @dataclass
