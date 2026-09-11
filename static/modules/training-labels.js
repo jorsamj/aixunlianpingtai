@@ -57,7 +57,8 @@ export function latestVersionLabelInfo(algorithm) {
   if (!latest) {
     return {hasVersion: false, hasAnyVersion: true, codes: [], legacyUnknown: false, blocked: true, version: null};
   }
-  const schema = [...(latest?.label_schema || [])].sort((a, b) => Number(a?.class_id ?? 1e9) - Number(b?.class_id ?? 1e9));
+  const schema = [...(latest?.label_schema || [])]
+    .sort((a, b) => Number(a?.class_id ?? 1e9) - Number(b?.class_id ?? 1e9));
   const codes = unique(schema.map(item => item?.code));
   return {
     hasVersion: true,
@@ -89,20 +90,31 @@ export function resolveClientTrainingLabels({materials, selectedIds, labelCatalo
 }
 
 export function selectedTrainingMaterialIds(state, {preferV429 = false} = {}) {
-  if (preferV429) return unique([...(state?.train429Selected || new Set())]);
+  if (preferV429) {
+    const legacy = unique([...(state?.train429Selected || new Set())]);
+    const draft = state?.trainingDraft;
+    const sameAlgorithm = String(draft?.algorithmId || '') === String(state?.train428AlgorithmId || '');
+    return legacy.length || !sameAlgorithm ? legacy : unique(draft?.materialIds || []);
+  }
   const train = [...(state?.train425Selected?.train || new Set())];
   const val = [...(state?.train425Selected?.val || new Set())];
   return unique([...train, ...val]);
 }
 
 function selectedIds(state) {
-  const currentModal = !!document.querySelector('.train429-create') || !!document.getElementById('tr429Count');
+  const currentModal = Boolean(
+    document.querySelector('.train429-create')
+    || document.querySelector('.train-v3-summary')
+    || document.getElementById('tr429Count')
+  );
   return selectedTrainingMaterialIds(state, {preferV429: currentModal});
 }
 
 function currentAlgorithm(state) {
   const fixed = String(state?.train428AlgorithmId || '').trim();
-  const fallback = document.getElementById('tr425AssetAlg')?.value || document.getElementById('train423Asset')?.value || '';
+  const fallback = document.getElementById('tr425AssetAlg')?.value
+    || document.getElementById('train423Asset')?.value
+    || '';
   const id = fixed || String(fallback || '').trim();
   return (state?.algorithms || []).find(item => String(item?.id || '') === id) || null;
 }
@@ -136,8 +148,25 @@ function resetTaskLabelSelection(state) {
 }
 
 function currentHost() {
+  const v3Summary = document.querySelector('.train429-create .train-v3-summary')
+    || document.querySelector('.train-v3-summary');
+  if (v3Summary) {
+    return {
+      host: v3Summary.closest('.train428-panel') || v3Summary.parentElement,
+      anchor: v3Summary,
+      mode: 'v3',
+    };
+  }
+
   const summary429 = document.querySelector('.train429-create .train429-data-summary');
-  if (summary429) return {host: summary429.closest('.train428-panel'), anchor: summary429, mode: 'v429'};
+  if (summary429) {
+    return {
+      host: summary429.closest('.train428-panel') || summary429.parentElement,
+      anchor: summary429,
+      mode: 'v429',
+    };
+  }
+
   const legacy = document.querySelector('.train428-data') || document.querySelector('.train425-data');
   return legacy ? {host: legacy, anchor: null, mode: 'legacy'} : null;
 }
@@ -168,17 +197,40 @@ function ensurePanelStyle() {
   document.head.appendChild(style);
 }
 
-export function installTrainingLabelRuntime({getState, notify}) {
-  if (window.__trainingLabelRuntimeInstalled) return;
+export function installTrainingLabelRuntime({getState, notify, trainingDraftRuntime} = {}) {
+  if (window.__trainingLabelRuntimeInstalled) return window.TrainingLabelRuntime || null;
   window.__trainingLabelRuntimeInstalled = true;
   ensurePanelStyle();
 
+  const timers = new Set();
+  const wrappedEntrypoints = [];
+  let destroyed = false;
+
+  const later = (fn, delay) => {
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (!destroyed) fn();
+    }, delay);
+    timers.add(timer);
+    return timer;
+  };
+
+  const syncDraftLabels = (state, codes) => {
+    if (!trainingDraftRuntime?.update) return;
+    try {
+      trainingDraftRuntime.update({newLabelCodes: unique(codes)});
+    } catch (error) {
+      notify?.(error?.message || error);
+    }
+  };
+
   const refresh = () => {
+    if (destroyed) return false;
     const state = getState?.();
-    if (!state) return;
+    if (!state) return false;
     const algorithm = currentAlgorithm(state);
     const placement = currentHost();
-    if (!algorithm || !placement?.host) return;
+    if (!algorithm || !placement?.host) return false;
 
     const ids = selectedIds(state);
     const initial = resolveClientTrainingLabels({
@@ -196,13 +248,14 @@ export function installTrainingLabelRuntime({getState, notify}) {
       algorithm,
       requestedCodes: [...(state.trainingLabelSelected || new Set())],
     });
+    syncDraftLabels(state, view.requested);
 
     let panel = document.getElementById('trainingLabelContractPanel');
     if (!panel) {
       panel = document.createElement('div');
       panel.id = 'trainingLabelContractPanel';
       panel.className = 'training-label-contract';
-      if (placement.mode === 'v429' && placement.anchor) placement.anchor.insertAdjacentElement('afterend', panel);
+      if (placement.anchor) placement.anchor.insertAdjacentElement('afterend', panel);
       else placement.host.appendChild(panel);
     }
 
@@ -230,108 +283,92 @@ export function installTrainingLabelRuntime({getState, notify}) {
       <div class="training-label-contract-block"><span class="training-label-contract-title">本次素材标签（可选择）</span><div class="training-label-contract-list">${selectableHtml}</div></div>
       ${missingInherited.length ? `<div class="training-label-warning">继承标签 ${missingInherited.map(code => esc(displayName(state, code))).join('、')} 在本次素材中没有正样本，但仍会保留原 class_id。</div>` : ''}
     `;
+
     panel.querySelectorAll('[data-training-label-code]').forEach(input => {
       input.addEventListener('change', event => {
         const code = String(event.currentTarget.dataset.trainingLabelCode || '');
         state.trainingLabelSelectionTouched = true;
         state.trainingLabelSelected = state.trainingLabelSelected || new Set();
-        event.currentTarget.checked ? state.trainingLabelSelected.add(code) : state.trainingLabelSelected.delete(code);
+        if (event.currentTarget.checked) state.trainingLabelSelected.add(code);
+        else state.trainingLabelSelected.delete(code);
+        syncDraftLabels(state, [...state.trainingLabelSelected]);
         refresh();
       });
     });
+    return true;
   };
 
-  const wrapOpen = name => {
+  const wrap = (name, {reset = false} = {}) => {
     const original = window[name];
     if (typeof original !== 'function' || original.__trainingLabelsWrapped) return;
     const wrapped = function (...args) {
-      resetTaskLabelSelection(getState?.());
+      if (reset) resetTaskLabelSelection(getState?.());
       const result = original.apply(this, args);
-      setTimeout(refresh, 40);
-      setTimeout(refresh, 120);
+      const after = () => {
+        trainingDraftRuntime?.sync?.();
+        for (const delay of [0, 40, 120, 350, 700]) later(refresh, delay);
+      };
+      if (result && typeof result.then === 'function') Promise.resolve(result).finally(after);
+      else after();
       return result;
     };
     wrapped.__trainingLabelsWrapped = true;
     wrapped.__trainingLabelsOriginal = original;
     window[name] = wrapped;
-  };
-
-  const wrapRefresh = name => {
-    const original = window[name];
-    if (typeof original !== 'function' || original.__trainingLabelsWrapped) return;
-    const wrapped = function (...args) {
-      const result = original.apply(this, args);
-      if (result && typeof result.then === 'function') {
-        Promise.resolve(result).finally(() => setTimeout(refresh, 0));
-      } else {
-        setTimeout(refresh, 0);
-      }
-      return result;
-    };
-    wrapped.__trainingLabelsWrapped = true;
-    wrapped.__trainingLabelsOriginal = original;
-    window[name] = wrapped;
+    wrappedEntrypoints.push({name, original, wrapped});
   };
 
   const bindCurrentEntrypoints = () => {
-    wrapOpen('startAlgorithmTraining429');
-    wrapOpen('startAlgorithmTraining423');
-    wrapOpen('openTrain428');
-    wrapOpen('openTrain425');
-    wrapRefresh('refreshTrain429');
-    wrapRefresh('refreshTrain428');
-    wrapRefresh('trainCounts425');
+    wrap('startAlgorithmTraining429', {reset: true});
+    wrap('startAlgorithmTraining423', {reset: true});
+    wrap('openTrain428', {reset: true});
+    wrap('openTrain425', {reset: true});
+    wrap('refreshTrain429');
+    wrap('refreshTrain428');
+    wrap('trainCounts425');
   };
 
-  for (const delay of [0, 100, 400, 1000, 2500]) setTimeout(bindCurrentEntrypoints, delay);
+  bindCurrentEntrypoints();
+  for (const delay of [100, 400, 1000, 2500]) later(bindCurrentEntrypoints, delay);
 
   const modalObserver = typeof MutationObserver !== 'undefined'
-    ? new MutationObserver(() => {
-        if (document.querySelector('.train429-create') && !document.getElementById('trainingLabelContractPanel')) {
-          queueMicrotask(refresh);
-        }
+    ? new MutationObserver(records => {
+        if (!document.querySelector('.train429-create') && !document.querySelector('.train-v3-summary')) return;
+        if (document.getElementById('trainingLabelContractPanel')) return;
+        if (records?.length && records.every(record => {
+          const target = record?.target;
+          return target instanceof Element && target.closest?.('#trainingLabelContractPanel');
+        })) return;
+        queueMicrotask(refresh);
       })
     : null;
   modalObserver?.observe(document.getElementById('modalBody') || document.body, {childList: true, subtree: true});
 
-  const originalFetch = window.fetch.bind(window);
-  window.fetch = async function (input, init = {}) {
-    const url = typeof input === 'string' ? input : String(input?.url || '');
-    const method = String(init?.method || (typeof input !== 'string' ? input?.method : '') || 'GET').toUpperCase();
-    if (method === 'POST' && /\/api\/v12\/projects\/[^/]+\/train\/start(?:\?|$)/.test(url) && typeof init?.body === 'string') {
-      let payload;
-      try { payload = JSON.parse(init.body); } catch { payload = null; }
-      if (payload && payload.algorithm_asset_id) {
-        const state = getState?.();
-        const algorithm = (state?.algorithms || []).find(item => String(item?.id || '') === String(payload.algorithm_asset_id));
-        const ids = unique([...(payload.train_image_ids || []), ...(payload.val_image_ids || []), ...(payload.test_image_ids || [])]);
-        const view = resolveClientTrainingLabels({
-          materials: state?.images || [],
-          selectedIds: ids,
-          labelCatalog: state?.labels || [],
-          algorithm,
-          requestedCodes: [...(state?.trainingLabelSelected || new Set())],
-        });
-        if (view.previousVersionBlocked) {
-          throw new Error('该算法已有版本，但没有成功且可继续训练的版本；平台不会回退到母算法。');
-        }
-        if (!view.hasPreviousVersion && !view.requested.length) {
-          throw new Error('首次训练至少选择一个标签；请在“本次训练标签”中勾选，母算法自带类别不会自动加入。');
-        }
-        payload.train_labels = view.requested;
-        init = {...init, body: JSON.stringify(payload)};
-      }
-    }
-    return originalFetch(input, init);
+  const onChange = event => {
+    if (['tr425AssetAlg', 'tr429Target', 'tr429Alg'].includes(event.target?.id)) later(refresh, 0);
   };
+  document.addEventListener('change', onChange);
 
-  document.addEventListener('change', event => {
-    if (['tr425AssetAlg', 'tr429Target', 'tr429Alg'].includes(event.target?.id)) setTimeout(refresh, 0);
-  });
-
-  window.TrainingLabelRuntime = {
+  const runtime = {
+    build: 'module-422505',
     refresh,
     rebind: bindCurrentEntrypoints,
-    destroy() { modalObserver?.disconnect(); },
+    selectedIds: () => selectedIds(getState?.()),
+    destroy() {
+      destroyed = true;
+      modalObserver?.disconnect();
+      document.removeEventListener('change', onChange);
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      for (const {name, original, wrapped} of wrappedEntrypoints) {
+        if (window[name] === wrapped) window[name] = original;
+      }
+      wrappedEntrypoints.length = 0;
+      if (window.TrainingLabelRuntime === runtime) window.TrainingLabelRuntime = null;
+      window.__trainingLabelRuntimeInstalled = false;
+    },
   };
+
+  window.TrainingLabelRuntime = runtime;
+  return runtime;
 }
