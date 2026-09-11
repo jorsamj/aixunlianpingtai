@@ -1,0 +1,45 @@
+name: Add Storage Render Browser Contract
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/add_storage_render_browser_contract.py
+      - .github/workflows/add-storage-render-browser-contract.yml
+
+permissions:
+  contents: write
+
+jobs:
+  add-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Add exact storage browser contract
+        run: python tools/add_storage_render_browser_contract.py
+      - name: Verify test syntax and exact contract
+        run: |
+          node --check tests/browser/navigation-stability.spec.mjs
+          test "$(grep -F -o "storage configuration route is rendered by the final storage owner" tests/browser/navigation-stability.spec.mjs | wc -l)" -eq 1
+          grep -Fq "window.setPage('素材存储配置')" tests/browser/navigation-stability.spec.mjs
+          grep -Fq "page.locator('.storage61-shell')" tests/browser/navigation-stability.spec.mjs
+          grep -Fq "page.locator('#storage61Rows')" tests/browser/navigation-stability.spec.mjs
+      - name: Commit browser contract
+        run: |
+          if git diff --quiet -- tests/browser/navigation-stability.spec.mjs; then
+            echo 'no browser contract changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/browser/navigation-stability.spec.mjs
+          git commit -m 'test(ui): lock final storage render route'
+          git push
