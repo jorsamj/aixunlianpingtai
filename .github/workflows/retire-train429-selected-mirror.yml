@@ -1,0 +1,52 @@
+name: Retire train429Selected Mirror
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_train429_selected_mirror.py
+      - .github/workflows/retire-train429-selected-mirror.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded migration
+        run: python tools/retire_train429_selected_mirror.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Syntax check migrated training files
+        run: >-
+          node --check static/app.js &&
+          node --check static/modules/training-draft-runtime.js
+      - name: Assert train429Selected is retired from active app.js
+        run: |
+          if grep -n 'train429Selected' static/app.js; then
+            echo 'train429Selected remains in active app.js' >&2
+            exit 1
+          fi
+      - name: Run canonical training tests
+        run: node --test tests/frontend/training-draft-runtime.test.mjs tests/frontend/training-labels.test.mjs tests/frontend/training-submit.test.mjs tests/frontend/training-draft-controls.test.mjs
+      - name: Commit migrated files
+        run: |
+          if git diff --quiet -- static/app.js static/modules/training-draft-runtime.js tests/frontend/training-draft-runtime.test.mjs; then
+            echo 'No migration change required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/modules/training-draft-runtime.js tests/frontend/training-draft-runtime.test.mjs
+          git commit -m 'refactor(ui): retire train429Selected mirror from active training UI'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
