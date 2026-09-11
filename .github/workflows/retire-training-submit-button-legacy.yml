@@ -1,0 +1,50 @@
+name: Retire Training Submit Button Legacy Owner
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_training_submit_button_legacy.py
+      - .github/workflows/retire-training-submit-button-legacy.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply guarded migration
+        run: python tools/retire_training_submit_button_legacy.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Syntax check app.js
+        run: node --check static/app.js
+
+      - name: Run canonical training unit tests
+        run: node --test tests/frontend/training-labels.test.mjs tests/frontend/training-submit.test.mjs tests/frontend/training-draft-runtime.test.mjs
+
+      - name: Commit migrated app.js
+        run: |
+          if git diff --quiet -- static/app.js; then
+            echo "No migration change required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/app.js
+          git commit -m "refactor(ui): retire legacy training submit button owner"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
