@@ -5,7 +5,6 @@ const toast=t=>{const el=$('#toast');el.textContent=t;el.classList.remove('hidde
 async function safe(p){try{return await p}catch(e){toast(e.message||e);return null}}
 const state={page:'算法列表',projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
 const navs=['算法列表','训练资源','数据集','训练任务','测试发布'];
-function setPage(p){state.page=p;render()} window.setPage=setPage;
 function closeModal(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} window.closeModal=closeModal;
 function modal(title,body,wide=false){$('#modalTitle').textContent=title;$('#modalBody').innerHTML=body;$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden')}
 function splitName(s){return s==='val'?'试验集':s==='test'?'评测集':'训练集'}

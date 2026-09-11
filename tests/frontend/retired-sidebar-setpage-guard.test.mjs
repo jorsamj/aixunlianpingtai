@@ -28,6 +28,15 @@ test('V417 classic mobile-sidebar setPage owner cannot return', () => {
   );
 });
 
-test('initial bootstrap setPage binding remains for its separate liveness audit', () => {
-  assert.equal(app.includes('function setPage(p){state.page=p;render()} window.setPage=setPage;'), true);
+test('initial bootstrap setPage binding cannot return after named actual navigation owner migration', () => {
+  assert.equal(app.includes('function setPage(p){state.page=p;render()} window.setPage=setPage;'), false);
+  assert.equal(navigation.includes('performNavigation'), true, 'final navigation must own actual page application');
+  assert.equal(
+    main.includes(`performNavigation: page => {
+    state.page = page;
+    render();
+  },`),
+    true,
+    'main runtime must wire exactly one named state.page mutation + render owner',
+  );
 });
