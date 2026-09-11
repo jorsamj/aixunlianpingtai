@@ -177,5 +177,36 @@ test('TrainingLabel runtime does not rebind removed 428 entrypoints', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
   assert.equal(source.includes("wrap('openTrain428'"), false);
   assert.equal(source.includes("wrap('refreshTrain428'"), false);
-  assert.match(source, /build: 'module-422509'/);
+  assert.match(source, /build: 'module-422510'/);
+});
+
+
+test('final stable renderers make historical 423/425 training entrypoints unreachable', () => {
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+
+  const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
+  const stableAlgorithmPage = app.lastIndexOf('window.renderAlgorithms423=function(){');
+  assert.ok(stableCards >= 0 && stableAlgorithmPage > stableCards);
+  const cardSource = app.slice(stableCards, stableAlgorithmPage);
+  assert.match(cardSource, /startAlgorithmTraining429\('\$\{a\.id\}'\)/);
+  assert.equal(cardSource.includes("startAlgorithmTraining423('${a.id}')"), false);
+
+  const finalTaskRenderer = app.lastIndexOf('window.renderTraining425=window.renderTraining424=window.renderTraining423=function(){');
+  assert.ok(finalTaskRenderer >= 0);
+  const taskSource = app.slice(finalTaskRenderer, finalTaskRenderer + 5000);
+  assert.equal(taskSource.includes('openTrain425()'), false);
+  assert.equal(taskSource.includes('▶ 开始训练'), false);
+
+  const last423Call = app.lastIndexOf("startAlgorithmTraining423('${a.id}')");
+  const last425OpenCall = app.lastIndexOf('openTrain425(');
+  const last425CountCall = app.lastIndexOf('trainCounts425()');
+  assert.ok(last423Call >= 0 && last423Call < stableCards);
+  assert.ok(last425OpenCall >= 0 && last425OpenCall < finalTaskRenderer);
+  assert.ok(last425CountCall >= 0 && last425CountCall < finalTaskRenderer);
+
+  const labels = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
+  assert.equal(labels.includes("wrap('startAlgorithmTraining423'"), false);
+  assert.equal(labels.includes("wrap('openTrain425'"), false);
+  assert.equal(labels.includes("wrap('trainCounts425'"), false);
+  assert.match(labels, /build: 'module-422510'/);
 });

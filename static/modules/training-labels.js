@@ -324,10 +324,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
 
   const bindCurrentEntrypoints = () => {
     wrap('startAlgorithmTraining429', {reset: true});
-    wrap('startAlgorithmTraining423', {reset: true});
-    wrap('openTrain425', {reset: true});
     wrap('refreshTrain429');
-    wrap('trainCounts425');
   };
 
   bindCurrentEntrypoints();
@@ -352,7 +349,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   document.addEventListener('change', onChange);
 
   const runtime = {
-    build: 'module-422509',
+    build: 'module-422510',
     refresh,
     rebind: bindCurrentEntrypoints,
     selectedIds: () => selectedIds(getState?.()),
