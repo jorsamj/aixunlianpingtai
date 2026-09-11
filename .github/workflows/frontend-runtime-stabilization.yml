@@ -215,7 +215,7 @@ jobs:
           grep -Fq 'replaceTrainingJobTimer,' "$file"
           grep -Fq 'replaceTrainingJobTimer();' "$file"
           grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js
-      - name: Retired readiness setPage guard
+      - name: Retired navigation setPage guard
         run: |
           for token in set423Base setBase424 oldSetV39 oldSet42 set422Base; do
             if grep -F -n "$token" static/app.js; then
@@ -242,8 +242,11 @@ jobs:
               raise SystemExit('v42.7 direct alias owner was reintroduced')
           if 'setPageReady414' in app:
               raise SystemExit('classic startup readiness setPage owner was reintroduced')
-          if 'const baseSetPage417=window.setPage;' not in app:
-              raise SystemExit('V417 sidebar owner must remain until its own migration')
+          if 'baseSetPage417' in app:
+              raise SystemExit('classic V417 sidebar setPage owner was reintroduced')
+          bootstrap = 'function setPage(p){state.page=p;render()} window.setPage=setPage;'
+          if app.count(bootstrap) != 1:
+              raise SystemExit(f'initial bootstrap setPage binding must remain exactly once for separate liveness audit; found {app.count(bootstrap)}')
           navigation = Path('static/modules/navigation-stability.js').read_text(encoding='utf-8')
           if 'export function normalizeNavigationPage(page)' not in navigation:
               raise SystemExit('semantic navigation normalizer is missing')
@@ -251,9 +254,13 @@ jobs:
               raise SystemExit('legacy auto-label alias normalization is missing')
           if 'waitForNavigationReady' not in navigation:
               raise SystemExit('final navigation startup readiness owner is missing')
+          if 'beforeInvokeNavigation' not in navigation:
+              raise SystemExit('final navigation pre-invoke UI cleanup owner is missing')
           main = Path('static/main.mjs').read_text(encoding='utf-8')
           if 'if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;' not in main:
               raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')
+          if 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' not in main:
+              raise SystemExit('mobile sidebar close semantic wiring is missing from final navigation runtime')
           PY
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
