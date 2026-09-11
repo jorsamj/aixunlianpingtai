@@ -42,6 +42,38 @@ function clearPageTimers(state, nextPage) {
   if (!['自动标注', '自动标注及清洗'].includes(nextPage)) clearTimer(window.__prelabelPollTimer);
 }
 
+const OWNER_FUNCTIONS = {
+  '训练任务': [
+    'refreshTrainPage428', 'promoteTrain428', 'pauseTrain428', 'resumeTrain428',
+    'stopTrain428', 'deleteTrain428', 'refreshTrain425', 'refreshTrain423'
+  ],
+  '素材接入': [
+    'refreshSources422', 'saveSource422', 'runSourceNow422', 'toggleSource422', 'deleteSource422'
+  ],
+  '自动标注及清洗': [
+    'refreshAuto422', 'stopAutoTask422', 'retryAutoTask422', 'createAutoTask422'
+  ],
+  '视频切帧': ['refreshVideoTasksOnly'],
+  '部署转换': ['loadDeployData', 'refreshDeployTasks'],
+};
+
+const PAGE_RENDERERS = {
+  '算法列表': ['renderAlgorithms', 'renderAlgorithms423', 'renderAlgorithms428'],
+  '训练资源': ['renderResources'],
+  '数据集': ['renderDatasets', 'renderDatasets412', 'renderDatasets426'],
+  '训练任务': ['renderTraining', 'renderTraining423', 'renderTraining425', 'renderTraining428', 'renderTrainPage428'],
+  '素材接入': ['renderSources422'],
+  '自动标注及清洗': ['renderAutoLabel422'],
+  '视频切帧': ['renderVideoFrameTasks'],
+  '部署转换': ['renderDeployTasks', 'renderDeploymentTasks'],
+};
+
+function ownersFor(page) {
+  if (page === '自动标注及清洗') return ['自动标注', '自动标注及清洗'];
+  if (page === '训练任务') return ['训练任务', '检测台'];
+  return [page];
+}
+
 export function installNavigationStability({getState, notify} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
@@ -51,49 +83,10 @@ export function installNavigationStability({getState, notify} = {}) {
   const guard = new NavigationEpochGuard(state?.page || '');
   const pending = new Map();
   const rebindTimers = [];
-  let repairing = false;
-  let repairQueued = false;
   let tokenSeq = 0;
   let destroyed = false;
 
   function currentState() { return getState?.() || state || {}; }
-
-  function repairCurrentPage(reason = 'stale-render') {
-    if (destroyed || repairing || repairQueued) return;
-    const s = currentState();
-    if (!s.page) return;
-    repairQueued = true;
-    queueMicrotask(() => {
-      repairQueued = false;
-      if (destroyed || repairing) return;
-      repairing = true;
-      try {
-        if (typeof window !== 'undefined' && typeof window.render === 'function') window.render();
-        else if (typeof globalThis.render === 'function') globalThis.render();
-      } catch (error) {
-        notify?.(`页面状态恢复失败：${error?.message || error}`);
-      } finally {
-        repairing = false;
-      }
-    });
-  }
-
-  function hasStalePending() {
-    if (destroyed) return false;
-    const s = currentState();
-    for (const item of pending.values()) {
-      if (!guard.isCurrent(item.token, s.page)) return true;
-    }
-    return false;
-  }
-
-  const view = document.getElementById('view');
-  const observer = view && typeof MutationObserver !== 'undefined'
-    ? new MutationObserver(() => {
-        if (!repairing && hasStalePending()) repairCurrentPage('stale-dom-mutation');
-      })
-    : null;
-  observer?.observe(view, {childList: true, subtree: true});
 
   const originalSetPage = window.setPage;
   if (typeof originalSetPage === 'function') {
@@ -104,8 +97,6 @@ export function installNavigationStability({getState, notify} = {}) {
       s.__navigationEpoch = guard.epoch;
       clearPageTimers(s, requested);
       const result = originalSetPage.call(this, page, ...args);
-      // Some legacy aliases rewrite the requested page. Keep the guard aligned
-      // with the authoritative state after the existing router has run.
       if (String(s.page || '') !== guard.page) guard.page = String(s.page || '');
       const currentView = document.getElementById('view');
       if (currentView) currentView.dataset.navigationPage = String(s.page || requested);
@@ -120,7 +111,8 @@ export function installNavigationStability({getState, notify} = {}) {
     const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
     const wrapped = function (...args) {
       const s = currentState();
-      const owner = owners.has(String(s.page || '')) ? String(s.page || '') : [...owners][0];
+      const currentPage = String(s.page || '');
+      const owner = owners.has(currentPage) ? currentPage : [...owners][0];
       const itemId = `${name}:${++tokenSeq}`;
       const item = {token: guard.token(owner), name};
       pending.set(itemId, item);
@@ -136,9 +128,7 @@ export function installNavigationStability({getState, notify} = {}) {
         return result;
       }
       return Promise.resolve(result).finally(() => {
-        const stale = !guard.isCurrent(item.token, currentState().page);
         pending.delete(itemId);
-        if (stale) repairCurrentPage(`stale:${name}`);
       });
     };
     wrapped.__navigationStabilityWrapped = true;
@@ -146,35 +136,35 @@ export function installNavigationStability({getState, notify} = {}) {
     window[name] = wrapped;
   }
 
-  const ownerFunctions = {
-    '训练任务': [
-      'refreshTrainPage428', 'promoteTrain428', 'pauseTrain428', 'resumeTrain428',
-      'stopTrain428', 'deleteTrain428', 'refreshTrain425', 'refreshTrain423'
-    ],
-    '素材接入': [
-      'renderSources422', 'refreshSources422', 'saveSource422', 'runSourceNow422',
-      'toggleSource422', 'deleteSource422'
-    ],
-    '自动标注及清洗': [
-      'renderAutoLabel422', 'refreshAuto422', 'stopAutoTask422', 'retryAutoTask422',
-      'createAutoTask422'
-    ],
-    '视频切帧': ['refreshVideoTasksOnly', 'renderVideoFrameTasks'],
-    '部署转换': ['loadDeployData', 'refreshDeployTasks'],
-  };
+  function wrapRenderer(name, ownerPages) {
+    if (destroyed || typeof window === 'undefined') return;
+    const original = window[name];
+    if (typeof original !== 'function' || original.__navigationOwnerWrapped) return;
+    const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
+    const wrapped = function (...args) {
+      const currentPage = String(currentState().page || '');
+      if (!owners.has(currentPage)) return false;
+      return original.apply(this, args);
+    };
+    wrapped.__navigationOwnerWrapped = true;
+    wrapped.__navigationOwnerOriginal = original;
+    window[name] = wrapped;
+  }
 
   function wrapKnownFunctions() {
     if (destroyed || typeof window === 'undefined') return;
-    Object.entries(ownerFunctions).forEach(([page, names]) => {
-      for (const name of names) {
-        const owners = page === '自动标注及清洗' ? ['自动标注', '自动标注及清洗'] : [page];
-        wrapAsyncOwner(name, owners);
-      }
+    Object.entries(OWNER_FUNCTIONS).forEach(([page, names]) => {
+      const owners = ownersFor(page);
+      for (const name of names) wrapAsyncOwner(name, owners);
+    });
+    Object.entries(PAGE_RENDERERS).forEach(([page, names]) => {
+      const owners = ownersFor(page);
+      for (const name of names) wrapRenderer(name, owners);
     });
   }
 
   // app.js contains historical override layers; some functions are assigned late.
-  // Re-check briefly after module installation so the final implementation is fenced.
+  // Re-check briefly so the final implementation, not an earlier override, is guarded.
   wrapKnownFunctions();
   for (const delay of [50, 250, 800, 1800]) {
     rebindTimers.push(setTimeout(() => wrapKnownFunctions(), delay));
@@ -183,11 +173,21 @@ export function installNavigationStability({getState, notify} = {}) {
   const api = {
     guard,
     pending,
-    repairCurrentPage,
+    isCurrent(token) {
+      return guard.isCurrent(token, currentState().page);
+    },
+    token(ownerPage) {
+      return guard.token(ownerPage || currentState().page);
+    },
     wrapKnownFunctions,
+    // Kept only as a compatibility shim. The old implementation called window.render()
+    // after stale DOM mutations, which caused visible page jumps and expensive full rerenders.
+    repairCurrentPage() {
+      notify?.('旧页面结果已被拦截');
+      return false;
+    },
     destroy() {
       destroyed = true;
-      observer?.disconnect();
       for (const timer of rebindTimers) clearTimeout(timer);
       rebindTimers.length = 0;
       pending.clear();
