@@ -25,6 +25,7 @@ jobs:
           node --check static/modules/training-labels.js &&
           node --check static/modules/training-draft.js &&
           node --check static/modules/training-draft-runtime.js &&
+          node --check static/modules/training-submit.js &&
           node --check static/main.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
