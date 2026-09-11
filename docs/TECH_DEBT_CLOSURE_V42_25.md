@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`，不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`774df651c3f278c782029e64bfa3315b12622a9f`**  
-> **Frontend Runtime Stabilization：run `34616465336`，frontend + Real Chrome 全绿。**  
+> **最近完整代码验收点：`4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386`**  
+> **Frontend Runtime Stabilization：run `34617573070`，frontend + Real Chrome 全绿。**  
 > **更新日期：2026-09-11**
 
 ## 0. 接手入口
@@ -14,12 +14,13 @@
 1. `docs/TECH_DEBT_CLOSURE_V42_25.md`
 2. `docs/CODEX_CURRENT_STATE.md`
 3. `docs/frontend-legacy-audit.md`
+4. `docs/FRONTEND_OWNER_MAP_V42_25.md`
 
 规则：先清技术债，再恢复 A800 RC；未经用户明确允许，不得 merge `main`、改正式 `VERSION.txt`、tag 或 release。
 
 ## 1. 永久退休 surface
 
-不得恢复为 truth source、bootstrap fallback、timer owner 或 compatibility wrapper：
+不得恢复为 truth source、bootstrap fallback、timer owner、polling shell 或 compatibility wrapper：
 
 ```text
 trainingLabelSelected
@@ -35,6 +36,7 @@ __prelabelPollTimer
 _oldSetupPollV33
 source422Timer
 jobPollTimer
+setupPagePolling
 installVideo424CreationBridge
 __pollRegistryVideoWrapped
 installSourceCreationBridge
@@ -60,14 +62,15 @@ adoptLegacy / rebindCreation
 | TD-13 | legacy auto/video/prelabel timer compatibility | named runtimes | **CLOSED** |
 | TD-14A | source polling wrapper/state timer | direct `PollRegistry(sources)` | **CLOSED** |
 | TD-14B | training polling wrapper/state timer | direct `PollRegistry(training-jobs)` | **CLOSED** |
-| TD-14C | historical render/setPage/setupPagePolling entrypoints | final owner table + physical deletion | **NEXT** |
+| TD-14C1 | `setupPagePolling` historical shells | direct `replaceTrainingJobTimer()` call sites | **CLOSED** |
+| TD-14C2 | historical render/setPage overrides | final owner table + physical deletion | **IN PROGRESS** |
 | TD-15 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | TD-17 | cache-busting | single strategy | **OPEN** |
 | TD-18 | global reload / duplicate request | scoped refresh | **OPEN** |
 | TD-19 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
 | TD-20 | version-number business naming | semantic names | **OPEN** |
 | TD-21 | flaky/historical tests | deterministic tests | **IN PROGRESS** |
-| TD-22 | docs drift | 3 authority docs | **IN PROGRESS** |
+| TD-22 | docs drift | 4 handoff docs | **IN PROGRESS** |
 | TD-23 | A800 RC | acceptance runbook | **DEFERRED** |
 | TD-24 | TrainingDraft/TrainingLabel wrappers | direct canonical lifecycle | **CLOSED** |
 
@@ -85,21 +88,22 @@ train-v3 UI
 
 ### Training task polling
 
-Training polling is now wrapper-free and state-timer-free:
+Training polling is wrapper-free, state-timer-free and shell-free：
 
 ```text
-page lifecycle / remaining historical setupPagePolling entrypoint
+classic render call site
 → PollRegistryRuntime.replaceTrainingJobTimer()
 → PollRegistry(training-jobs, 2000ms active / 5000ms idle)
 → TrainingTaskRuntime.refresh({render:true, source:'poll'})
 → focused /jobs update
 ```
 
-Physically removed:
+Physically removed：
 
 ```text
 state.jobPollTimer
 classic setupPagePolling setInterval/clearInterval owner
+setupPagePolling function/assignment shells
 PollRegistry registry.adopt('training-jobs', ...)
 installPollingCreationBridge
 originalSetupPagePolling / wrappedSetupPagePolling
@@ -108,7 +112,7 @@ adoptLegacy / rebindCreation
 NavigationStability jobPollTimer fallback
 ```
 
-`setupPagePolling` 这个历史函数名目前仍有两个一行 handoff 入口，但已不再创建 timer；它们归入下一批 renderer/setPage owner-table 清理，不得重新塞回 polling 逻辑。
+永久 CI 现在要求 `setupPagePolling` 和 `jobPollTimer` 在 active product runtime 中均为 0。
 
 ### AutoLabel
 
@@ -143,7 +147,7 @@ renderSources422
 ## 4. Current version/cache facts
 
 ```text
-app.js cache                     42.25.48
+app.js cache                     42.25.49
 main.mjs cache                   42.25.53
 navigation-stability.js          422506
 poll-registry.js                 422511
@@ -173,15 +177,15 @@ Training PollRegistry direct owner guard
 Training guard requires：
 
 - `jobPollTimer` 在 `static/app.js`、`poll-registry.js`、`navigation-stability.js` 为 0；
+- `setupPagePolling` 在 active `static/app.js` 为 0；
 - PollRegistry 不得恢复 training creation wrapper/adoption/rebind compatibility；
-- 若历史 `setupPagePolling` 入口仍存在，只允许显式 handoff 到 `replaceTrainingJobTimer()`；
-- `replaceTrainingJobTimer()` direct managed owner 必须保留。
+- `replaceTrainingJobTimer()` direct managed owner 和 app 直接 handoff 必须存在。
 
 ## 6. Latest acceptance
 
 ```text
-commit: 774df651c3f278c782029e64bfa3315b12622a9f
-run:    34616465336
+commit: 4cabbe84d7af37cc7cdf11aa2e8dc00db9be3386
+run:    34617573070
 
 syntax                                      PASS
 all permanent owner guards                  PASS
@@ -192,50 +196,50 @@ Real Chrome                                 PASS
 
 该 Real Chrome run 同时覆盖 training label/submit、training task performance/manual refresh、navigation stability、AutoLabel、algorithm list、materials 等现有回归。
 
-## 7. Next exact task: renderer / setPage final-owner table
+## 7. Current next exact task: setPage/render obsolete override closure
 
-Polling creation bridges 已全部关闭。下一步不是再造 Runtime，而是先建立最终 owner 表，再逐层物理删除历史覆盖。
-
-当前已确认 `static/app.js` 至少存在：
+`docs/FRONTEND_OWNER_MAP_V42_25.md` 已建立最终 owner 图。当前静态审计确认：
 
 ```text
-多个 render = ... 历史覆盖
-多个 window.setPage = ... 历史覆盖
-两个只做 PollRegistry handoff 的 setupPagePolling 历史入口
-renderXXX 412 / 417 / 423 / 424 / 425 / 427 / 428 / 429 等代际函数
+window.setPage=function...   10 个历史 assignment（Batch A 前统计）
+render=function...           22 个历史 assignment
+setupPagePolling             0 active 引用
 ```
 
-下一批执行顺序：
+第一个已证明的 setPage 删除候选：
 
 ```text
-1. 列出每个可见页面的最终 renderer / setPage / action owner
-2. 标出仅被后续 wrapper 引用的中间层
-3. 为待删层补/复用 deterministic regression
-4. 一批只删一个 owner family
-5. syntax + unit + Real Chrome
-6. 更新三份交接文档
+const set423Base=window.setPage;
+window.setPage=function(p){set423Base(p)};
+try{setPage=window.setPage}catch(e){}
 ```
 
-优先清理：
+理由：`set423Base` 仅在该纯透传 wrapper 内出现；紧接着 v42.4 又直接重置 `window.setPage=function(p){state.page=p;render()}`。同时 `setBase424` 当前也仅有声明、没有业务使用，需要在同一批中证明后决定是否一并清除。
+
+下一批仍遵守：
 
 ```text
-setupPagePolling 两个空壳 handoff
-纯透传 setPage wrapper（例如只调用 previous owner、没有独立业务语义者）
-已被最终 renderer 完全覆盖且无调用者的旧 render 层
+prove final owner
+→ focused regression
+→ physical deletion
+→ syntax/unit
+→ Real Chrome
+→ 更新四份交接文档
 ```
 
-禁止一次性盲删所有 `setPage/render`，必须先证明最终 owner。
+禁止一次性盲删全部 `setPage/render`；仍承载页面 alias、缓存失效、侧栏关闭、持久化、NavigationStability 协调的层必须保留或先迁移语义。
 
 ## 8. Work order after owner table
 
 ```text
-A. renderer/setPage obsolete override physical deletion
-B. app.js dead code + global reload/request debt
-C. cache-busting unification
-D. MutationObserver/timer/fetch/render/setPage zero-point scan
-E. semantic naming + deterministic test cleanup
-F. technical-debt zero-point scan
-G. A800 RC
+A. pure pass-through setPage wrapper physical deletion
+B. remaining renderer/setPage obsolete override batches
+C. app.js dead code + global reload/request debt
+D. cache-busting unification
+E. MutationObserver/timer/fetch/render/setPage zero-point scan
+F. semantic naming + deterministic test cleanup
+G. technical-debt zero-point scan
+H. A800 RC
 ```
 
 ## 9. Release prohibition
