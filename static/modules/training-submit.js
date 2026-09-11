@@ -80,6 +80,14 @@ export function validateTrainingDevice(draft, devices = []) {
   return match;
 }
 
+export function trainingSubmitReadiness({draft, inheritance, submitting = false} = {}) {
+  if (submitting) return {ready: false, reason: 'submitting'};
+  if (!String(draft?.algorithmId || '').trim()) return {ready: false, reason: 'algorithm'};
+  if ((draft?.materialIds || []).length < 2) return {ready: false, reason: 'materials'};
+  if (inheritance?.blocked) return {ready: false, reason: 'iteration'};
+  return {ready: true, reason: ''};
+}
+
 export function installTrainingSubmitRuntime({
   getState,
   projectId,
@@ -100,6 +108,28 @@ export function installTrainingSubmitRuntime({
   let destroyed = false;
   let submitting = false;
 
+  function submitButton() {
+    if (typeof document === 'undefined') return null;
+    const primary = document.querySelector?.('.train429-create .train428-footer .btn.primary');
+    if (primary) return primary;
+    const buttons = [...(document.querySelectorAll?.('.train429-create button') || [])];
+    return buttons.find(button => /开始训练/.test(String(button.textContent || ''))) || null;
+  }
+
+  function updateReadiness() {
+    const state = getState?.() || {};
+    const draft = state.trainingDraft || trainingDraftRuntime.current?.() || trainingDraftRuntime.sync();
+    const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
+    const readiness = trainingSubmitReadiness({draft, inheritance, submitting});
+    const button = submitButton();
+    if (button) {
+      button.disabled = !readiness.ready;
+      button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
+      button.dataset.trainingSubmitReason = readiness.reason;
+    }
+    return readiness;
+  }
+
   const submit = async function () {
     if (destroyed) throw new Error('训练提交模块已销毁');
     if (submitting) {
@@ -107,6 +137,7 @@ export function installTrainingSubmitRuntime({
       return null;
     }
     submitting = true;
+    updateReadiness();
     try {
       const state = getState?.() || {};
       const draft = trainingDraftRuntime.sync();
@@ -153,8 +184,6 @@ export function installTrainingSubmitRuntime({
       state.alg428Expanded[asset.id] = true;
       notify?.(`训练任务已进入后台队列${body.task?.id || body.job?.id ? ` · ${body.task?.id || body.job?.id}` : ''}`);
 
-      // The task already exists at this point. A list-refresh failure must not be reported
-      // as a training-creation failure or tempt the user to click submit again.
       try {
         await reloadRelated?.();
         renderAlgorithms?.();
@@ -168,6 +197,7 @@ export function installTrainingSubmitRuntime({
       return null;
     } finally {
       submitting = false;
+      updateReadiness();
     }
   };
   submit.__trainingSubmitRuntime = true;
@@ -175,10 +205,11 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422502',
+    build: 'training-submit-422503',
     submit,
+    updateReadiness,
     isSubmitting: () => submitting,
-    state: () => ({submitting, networkOwner: true}),
+    state: () => ({submitting, networkOwner: true, readiness: updateReadiness()}),
     destroy() {
       destroyed = true;
       if (window.submitTrain429 === submit) window.submitTrain429 = originalSubmit;
@@ -188,5 +219,6 @@ export function installTrainingSubmitRuntime({
   };
   window.TrainingSubmitRuntime = runtime;
   window.__trainingSubmitRuntimeInstalled = true;
+  updateReadiness();
   return runtime;
 }
