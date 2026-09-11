@@ -18,14 +18,6 @@ def replace_one(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def replace_test_block(text: str, start_name: str, next_name: str, replacement: str) -> str:
-    start = text.find(f"test('{start_name}")
-    end = text.find(f"test('{next_name}", start + 1)
-    if start < 0 or end < 0:
-        raise SystemExit(f'test block markers missing: {start_name} -> {next_name}')
-    return text[:start] + replacement + text[end:]
-
-
 def migrate_draft() -> None:
     text = DRAFT.read_text(encoding='utf-8')
     start = text.find('export function trainingDraftFromLegacyState(')
@@ -137,6 +129,18 @@ def migrate_runtime_test() -> None:
     text = replace_one(text, '  trainingDraftFromLegacyState,\n', '', 'runtime test legacy import')
     text = replace_one(text, '  return {createTrainingDraft, trainingDraftFromLegacyState, trainingInheritanceFromAlgorithm};', '  return {createTrainingDraft, trainingInheritanceFromAlgorithm};', 'runtime test dependencies')
     text = text.replace('runtime.state().legacyBootstrapCount', 'runtime.state().initializationCount')
+    text = replace_one(
+        text,
+        "test('canonical draft wins over stale legacy mirrors and retired mirrors stay deleted', () => {",
+        "test('canonical draft ignores stale retired mirror-shaped fields without mutating them', () => {",
+        'canonical contamination test title',
+    )
+    text = replace_one(
+        text,
+        "  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);\n  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);",
+        "  assert.deepEqual([...state.trainSplitV3.train], ['legacy-wrong']);\n  assert.deepEqual([...state.trainingLabelSelected], ['legacy-label']);",
+        'retired fixture immutability assertions',
+    )
     start = text.find("test('legacy state is consumed once only when canonical draft is absent'")
     end = text.find("test('TrainingDraftRuntime never intercepts train-start fetches'", start + 1)
     if start < 0 or end < 0:
