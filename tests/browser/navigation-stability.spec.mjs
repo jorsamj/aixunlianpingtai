@@ -220,3 +220,18 @@ test('historical persisted 自动标注 page is restored as canonical 自动标�
 
   expect(pageErrors).toEqual([]);
 });
+
+test('storage configuration route is rendered by the final storage owner', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => window.setPage('素材存储配置'));
+  await expect(page.locator('#title')).toContainText('素材存储配置');
+  await expect(page.locator('.storage61-shell')).toBeVisible({timeout: 10_000});
+  await expect(page.locator('#storage61Rows')).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
+});
