@@ -6,7 +6,13 @@ import sys
 import time
 from pathlib import Path
 
-from platform_core.task_runtime import TaskKind, TaskStatus
+from platform_core.task_runtime import (
+    ExecutionFencedError,
+    ProcessController,
+    TaskKind,
+    TaskStatus,
+    launch_process,
+)
 
 
 VENDOR_TARGETS = {"tensorrt", "ascend", "rockchip", "sophon"}
@@ -49,28 +55,47 @@ def run_conversion(context) -> tuple[TaskStatus, str]:
     stdout_path = job_dir / "worker.stdout.log"
     command = [str(request.get("python_path") or sys.executable), str(worker), "--job-dir", str(job_dir)]
     started = time.perf_counter()
+    controller = ProcessController()
     with stdout_path.open("ab") as stdout:
-        process = subprocess.Popen(command, cwd=str(worker.parent), stdout=stdout, stderr=subprocess.STDOUT)
-        while process.poll() is None:
-            job = _read(job_file)
-            context.repository.heartbeat(
-                context.task.task_id, context.lease.lease_token,
-                progress=float(job.get("progress") or 0), stage=str(job.get("stage") or "CONVERTING"),
-                current_item=str(job.get("source_name") or ""),
-            )
-            if context.cancel_requested():
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                job.update({"status": "stopped", "stage": "已停止", "message": "用户取消", "cancel_requested": True})
-                _write(job_file, job)
-                raise InterruptedError("conversion cancelled")
-            time.sleep(0.25)
+        launched = launch_process(
+            command,
+            cwd=worker.parent,
+            stdout=stdout,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            context.bind_process(launched.identity)
+            while launched.process.poll() is None:
+                job = _read(job_file)
+                context.heartbeat(
+                    progress=float(job.get("progress") or 0),
+                    stage=str(job.get("stage") or "CONVERTING"),
+                    current_item=str(job.get("source_name") or ""),
+                )
+                if context.cancel_requested():
+                    controller.terminate_tree(launched.identity)
+                    job.update({
+                        "status": "stopped",
+                        "stage": "已停止",
+                        "message": "用户取消",
+                        "cancel_requested": True,
+                    })
+                    context.assert_current_execution()
+                    _write(job_file, job)
+                    raise InterruptedError("conversion cancelled")
+                time.sleep(0.25)
+        except ExecutionFencedError:
+            controller.terminate_tree(launched.identity)
+            raise
+        except Exception:
+            if context.lease_lost:
+                controller.terminate_tree(launched.identity)
+            raise
+
+    context.assert_current_execution()
     job = _read(job_file)
     job.update({
-        "exit_code": process.returncode,
+        "exit_code": launched.process.returncode,
         "duration_seconds": round(time.perf_counter() - started, 3),
         "worker_command": command,
         "stdout_path": str(stdout_path),
@@ -83,6 +108,7 @@ def run_conversion(context) -> tuple[TaskStatus, str]:
             "message": "转换产物已生成，但当前环境无法用目标 Runtime/芯片真实加载，不能标记为通过。",
             "hardware_verified": False,
         })
+    context.assert_current_execution()
     _write(job_file, job)
     result = {
         "job_id": job.get("id"), "status": job.get("status"), "target": job.get("target"),
