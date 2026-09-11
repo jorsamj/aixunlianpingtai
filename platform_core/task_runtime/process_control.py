@@ -130,35 +130,60 @@ class ProcessController:
             except psutil.AccessDenied as error:
                 self._raise_access_denied("resumed", error)
 
-    def terminate_tree(self, identity: ProcessIdentity, timeout: float = 5.0) -> None:
-        try:
-            root = self.inspect(identity)
-        except ProcessLookupError:
+    def _terminate_verified(
+        self,
+        processes: list[psutil.Process],
+        *,
+        timeout: float,
+        label: str,
+    ) -> None:
+        if not processes:
             return
-        processes = self._tree(root)
         for process in processes:
             try:
                 process.resume()
             except psutil.NoSuchProcess:
                 continue
             except psutil.AccessDenied as error:
-                self._raise_access_denied("resumed before termination", error)
+                self._raise_access_denied(f"resumed before {label} termination", error)
         for process in processes:
             try:
                 process.terminate()
             except psutil.NoSuchProcess:
                 continue
             except psutil.AccessDenied as error:
-                self._raise_access_denied("terminated", error)
+                self._raise_access_denied(f"{label} terminated", error)
         _, alive = psutil.wait_procs(processes, timeout=max(0.1, float(timeout)))
-        for process in alive:
-            try:
-                process.kill()
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.AccessDenied as error:
-                self._raise_access_denied("killed", error)
         if alive:
-            _, still_alive = psutil.wait_procs(alive, timeout=max(0.1, float(timeout)))
+            # Preserve input order. For descendants this guarantees every known
+            # child is handled before the root is ever touched by the caller.
+            alive_pids = {process.pid for process in alive}
+            ordered_alive = [process for process in processes if process.pid in alive_pids]
+            for process in ordered_alive:
+                try:
+                    process.kill()
+                except psutil.NoSuchProcess:
+                    continue
+                except psutil.AccessDenied as error:
+                    self._raise_access_denied(f"{label} killed", error)
+            _, still_alive = psutil.wait_procs(
+                ordered_alive,
+                timeout=max(0.1, float(timeout)),
+            )
             if still_alive:
-                raise PermissionError("process tree termination could not be verified")
+                raise PermissionError(f"{label} process termination could not be verified")
+
+    def terminate_tree(self, identity: ProcessIdentity, timeout: float = 5.0) -> None:
+        try:
+            root = self.inspect(identity)
+        except ProcessLookupError:
+            return
+        processes = self._tree(root)
+        descendants = [process for process in processes if process.pid != root.pid]
+
+        # The root remains alive until every descendant is verified gone. If a
+        # child cannot be inspected/terminated, keeping the root alive allows the
+        # repository to continue proving that the old execution still exists and
+        # prevents a false-safe requeue.
+        self._terminate_verified(descendants, timeout=timeout, label="child")
+        self._terminate_verified([root], timeout=timeout, label="root")
