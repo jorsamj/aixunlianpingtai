@@ -3,6 +3,7 @@ from pathlib import Path
 APP = Path("static/app.js")
 RUNTIME = Path("static/modules/training-draft-runtime.js")
 TEST = Path("tests/frontend/training-draft-runtime.test.mjs")
+MAIN = Path("static/main.mjs")
 
 
 def replace_exact(text: str, old: str, new: str, expected: int, label: str) -> str:
@@ -64,10 +65,23 @@ def migrate_test() -> None:
     TEST.write_text(text, encoding="utf-8")
 
 
+def migrate_main() -> None:
+    text = MAIN.read_text(encoding="utf-8")
+    text = replace_exact(
+        text,
+        "./modules/training-draft-runtime.js?v=422509",
+        "./modules/training-draft-runtime.js?v=422510",
+        1,
+        "training draft runtime module cache",
+    )
+    MAIN.write_text(text, encoding="utf-8")
+
+
 def main() -> None:
     migrate_runtime()
     migrate_app()
     migrate_test()
+    migrate_main()
     print("train429Selected active mirror retirement complete")
 
 
