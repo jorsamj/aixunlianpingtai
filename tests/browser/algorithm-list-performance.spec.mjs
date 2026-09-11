@@ -12,6 +12,8 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
     .toBe('algorithm-list-runtime-422501');
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412))
+    .toBe(true);
 
   await page.evaluate(() => {
     state.algorithms = [{
