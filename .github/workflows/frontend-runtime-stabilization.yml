@@ -131,6 +131,35 @@ jobs:
             exit 1
           fi
           grep -Fq 'replaceVideo424Timer' static/modules/poll-registry.js
+      - name: Video PollRegistry direct owner guard
+        run: |
+          if grep -F -n 'setTimeout(refreshVideo424Delta,2000)' static/app.js; then
+            echo 'classic video renderer must not create its own polling timeout' >&2
+            exit 1
+          fi
+          if grep -F -n 'clearTimeout(state.video424Timer)' static/app.js; then
+            echo 'classic video renderer must not clear its own polling timeout' >&2
+            exit 1
+          fi
+          if [ "$(grep -F -o 'window.PollRegistryRuntime?.replaceVideo424Timer?.()' static/app.js | wc -l)" -ne 2 ]; then
+            echo 'renderVideo424 and refreshVideo424Delta must both hand lifecycle explicitly to PollRegistry' >&2
+            exit 1
+          fi
+          file=static/modules/poll-registry.js
+          for token in \
+            installVideo424CreationBridge \
+            __pollRegistryVideoWrapped \
+            originalRenderVideo424 \
+            wrappedRenderVideo424 \
+            originalRefreshVideo424 \
+            wrappedRefreshVideo424 \
+            "registry.adopt('video-frames'"; do
+            if grep -F -n "$token" "$file"; then
+              echo "video wrapper/adoption compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'replaceVideo424Timer();' "$file"
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
