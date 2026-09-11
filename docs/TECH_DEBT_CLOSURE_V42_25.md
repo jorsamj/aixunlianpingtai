@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`ceab780b8f3d8314061d852bf2eccc8db9235f54`**  
-> **Frontend Runtime Stabilization：run `34644092284`，frontend + Real Chrome 全绿。**  
+> **最近完整代码验收点：`bdfb7ae692a197486dc61ed9919c5e18ae1bf9f4`**  
+> **Frontend Runtime Stabilization：run `34645250462`，frontend + Real Chrome 全绿。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -15,7 +15,7 @@
 3. `docs/frontend-legacy-audit.md`
 4. `docs/FRONTEND_OWNER_MAP_V42_25.md`
 
-先清技术债，再恢复 A800 RC；未经用户明确允许，不得 merge `main`、改正式 `VERSION.txt`、tag 或 release。
+当前优先级仍是技术债关闭；A800 RC 暂缓。未经用户明确允许，不得 merge `main`、改正式 `VERSION.txt`、tag 或 release。
 
 ## 1. 永久退休 surface
 
@@ -54,6 +54,7 @@ set422Base
 v34 window.setPage(...saveUiState...)
 v35 window.setPage(state.page/render)
 v42.4 window.setPage(state.page/render)
+v42.7 direct window.setPage auto-label alias owner
 ```
 
 ## 2. 技术债状态
@@ -66,12 +67,13 @@ v42.4 window.setPage(state.page/render)
 | metrics SQLite FD | deterministic close | **CLOSED** |
 | training / AutoLabel / video / source polling | named runtime + `PollRegistry` | **CLOSED** |
 | `setupPagePolling` / classic polling compatibility | direct managed owners | **CLOSED** |
-| v42.3 pass-through + unused v42.4 base capture | later router | **CLOSED** |
-| duplicate V37 mobile-sidebar setPage | V417 `baseSetPage417` | **CLOSED** |
-| pre-v42.4 dead setPage family (`oldSetV39/oldSet42/set422Base`) | later direct reset | **CLOSED** |
-| pre-v42.7 direct setPage family (v34/v35/v42.4) | v42.7 route + final navigation runtime | **CLOSED** |
+| old pass-through / duplicate setPage layers | later/final navigation owner | **CLOSED** |
+| pre-v42.7 direct setPage family | semantic navigation runtime | **CLOSED** |
+| v42.7 direct alias owner | `normalizeNavigationPage()` | **CLOSED** |
 | navigation UI state persistence | `NavigationStability` + `ui-state.js` | **CLOSED** |
-| remaining historical render/setPage overrides | semantic final router + bounded render owners | **IN PROGRESS** |
+| `setPageReady414` startup readiness | migrate to named navigation runtime | **IN PROGRESS** |
+| `baseSetPage417` mobile-sidebar wrapper | migrate after readiness | **OPEN** |
+| remaining historical render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | cache-busting | single strategy | **OPEN** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -79,7 +81,7 @@ v42.4 window.setPage(state.page/render)
 | version-number business naming | semantic names | **OPEN** |
 | A800 RC | acceptance runbook | **DEFERRED** |
 
-## 3. Current canonical owners
+## 3. Canonical owners
 
 ### Training
 
@@ -91,55 +93,46 @@ train-v3 UI
 → POST /api/v12/projects/{project_id}/train/start
 ```
 
-### Training polling
+### Polling
 
 ```text
-classic render call site
-→ replaceTrainingJobTimer()
-→ PollRegistry(training-jobs)
-→ TrainingTaskRuntime.refresh({source:'poll'})
-→ focused /jobs update
+training-jobs → PollRegistry + TrainingTaskRuntime
+AutoLabel      → AutoLabelPollRuntime + PollRegistry
+video          → PollRegistry(video-frames)
+sources        → PollRegistry(sources)
 ```
 
 ### Navigation
 
-当前受保护语义链：
+当前 live chain：
 
 ```text
 initial bootstrap setPage binding
-→ v42.7 route/alias owner
 → setPageReady414        startup snapshot/uiReady gate
 → baseSetPage417         mobile sidebar close
 → NavigationStability    outer runtime coordinator
+   ├─ normalizeNavigationPage()
    ├─ PageRequestScope / navigation epoch
    ├─ PollRegistry before/after navigation
    └─ persistUiState() → ui-state.js
 ```
 
-已确认的真实语义：
-
-- `自动标注` → `自动标注及清洗` alias 仍由 v42.7 owner 持有；
-- `setPageReady414` 在 `uiReady=false` 时等待 `__v53InitPromise`；
-- `baseSetPage417` 关闭 mobile sidebar/backdrop；
-- `NavigationStability` 对 Promise 型导航必须等实际导航完成后才执行 align / afterNavigate / persist；
-- `ui-state.js` 是当前页面持久化语义 owner；旧 v34 `setPage(...saveUiState...)` 已退休。
-
-Real Chrome 已验证：sidebar/backdrop 关闭、旧页面请求不得跳回、导航到“数据集”后 localStorage 保存“数据集”且刷新后仍恢复“数据集”。
-
-### AutoLabel / Video / Sources
+已迁移到命名 runtime 的 alias：
 
 ```text
-renderOps427 → AutoLabelPollRuntime → PollRegistry(auto-label-v60)
-renderVideo424 / refreshVideo424Delta → PollRegistry(video-frames)
-renderSources422 → PollRegistry(sources)
+自动标注 → 自动标注及清洗
 ```
+
+`NavigationStability` 从导航开始就使用 canonical page，因此 `PageRequestScope`、`PollRegistry`、guard、底层 `setPage`、最终持久化都只看到 `自动标注及清洗`。
+
+注意：v42.7 的 `render=function(){if(state.page==='自动标注')...}` 仍在 classic render 链中；它属于后续 render-owner 清理，不再是 setPage owner。
 
 ## 4. Current cache/build facts
 
 ```text
-app.js cache                     42.25.53
-main.mjs cache                   42.25.54
-navigation-stability.js          422507
+app.js cache                     42.25.54
+main.mjs cache                   42.25.55
+navigation-stability.js          422508
 ui-state.js                      422500
 poll-registry.js                 422511
 training-draft-runtime.js        422516
@@ -151,101 +144,87 @@ TrainingTaskRuntime              training-task-runtime-422503
 
 Cache-busting 仍未统一。
 
-## 5. Permanent guards / tests
-
-主 frontend workflow owner guards + `tests/frontend/*.test.mjs`。
-
-永久静态/语义合同：
+## 5. 永久合同
 
 ```text
 tests/frontend/retired-sidebar-setpage-guard.test.mjs
 tests/frontend/retired-pre-v424-setpage-guard.test.mjs
-  # 文件名保留历史，但当前语义已升级为 pre-v42.7 direct owner retirement guard
+  # 文件名为历史名，当前已同时禁止 v42.7 direct alias owner 回归
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
 tests/frontend/ui-state.test.mjs
 ```
 
-浏览器合同：
+`tests/browser/navigation-stability.spec.mjs` 当前锁定：
 
 ```text
-tests/browser/navigation-stability.spec.mjs
-→ delayed request cannot jump back
-→ managed polling stops on leave
-→ final navigation closes mobile sidebar + backdrop
-→ selected page persists to localStorage and restores after reload
+stale request 不得跳回旧页面
+managed polling 离页停止
+最终导航关闭 mobile sidebar/backdrop
+页面选择持久化并在 reload 后恢复
+legacy 自动标注 route 必须 canonicalize 为 自动标注及清洗并持久化 canonical 值
 ```
 
-不得为了删除历史代码而放宽上述合同。
+不得为了继续删 classic 代码而放宽这些合同。
 
 ## 6. Latest acceptance
 
 ```text
-commit: ceab780b8f3d8314061d852bf2eccc8db9235f54
-run:    34644092284
+commit: bdfb7ae692a197486dc61ed9919c5e18ae1bf9f4
+run:    34645250462
 
-syntax + ui-state syntax                         PASS
-all permanent owner guards                       PASS
-pre-v42.7 retirement guard                       PASS
-all frontend unit tests                          PASS
-Real Chrome runtime regressions                  PASS
+syntax / permanent owner guards   PASS
+all frontend unit tests           PASS
+Real Chrome runtime regressions   PASS
 ```
 
 该验收点证明：
 
-1. v34 persistence direct `setPage`、v35 direct `setPage`、v42.4 direct `setPage` 已物理删除；
-2. v42.7 alias、`setPageReady414`、`baseSetPage417` 仍存在；
-3. 页面持久化已迁移至最终 `NavigationStability + ui-state.js`；
-4. 临时 AST audit / migration helper / workflow 均已物理删除；
-5. 删除后导航、轮询、训练、算法列表、素材分页等 Real Chrome 回归均未退化。
+1. v42.7 direct `window.setPage` alias owner 已物理删除；
+2. `normalizeNavigationPage()` 成为 alias 语义 owner；
+3. `setPageReady414` 和 `baseSetPage417` 仍保留；
+4. `自动标注` legacy route 在删除旧 owner 后仍真实进入并持久化为 `自动标注及清洗`；
+5. 一次性 alias migration helper/workflow 已物理删除；
+6. 训练、轮询、算法列表、素材分页等浏览器回归未退化。
 
-### 本批 liveness 证据
+## 7. 下一批：startup readiness
 
-临时 Acorn AST 审计在删除前证明：
+下一批只处理 `setPageReady414`，不同时动 sidebar wrapper。
 
-```text
-v34 persist → v35 plain       load-time immediate setPage calls = 0
-v35 plain   → v42.4 plain     load-time immediate setPage calls = 0
-v42.4 plain → v42.7 alias     load-time immediate setPage calls = 0
+当前真实语义：
+
+```js
+if (!state.uiReady && window.__v53InitPromise) {
+  await window.__v53InitPromise;
+}
+return previousSetPage(page);
 ```
 
-因此三个 earlier direct owner 在同步脚本完成后均被 v42.7 覆盖，不承担 live-chain 语义。
-
-## 7. Current next task — remaining setPage semantic chain
-
-现在不要再按版本号盲删。剩余需要逐项证明的 setPage 层是：
+删除前必须先完成：
 
 ```text
-initial function setPage(...) → window.setPage=setPage
-v42.7 alias direct owner
-setPageReady414 async readiness wrapper
-baseSetPage417 sidebar wrapper
-NavigationStability final module wrapper
+A. 补真实浏览器合同：启动 snapshot 尚未 ready 时发起导航，页面不能提前切换
+B. init Promise resolve 后必须只导航一次到用户请求页
+C. PageRequestScope / PollRegistry / persistence 必须在正确时序收尾
+D. 将 readiness 迁入 NavigationStability 或独立 named readiness hook
+E. 双 owner 等价期 unit + Real Chrome 全绿
+F. 再物理删除 setPageReady414 wrapper
 ```
 
-下一批先做 owner/语义表，不直接删除：
-
-```text
-A. 初始 bootstrap binding 是否被任何初始化 closure / historical function 捕获并在 v42.7 之后实际使用
-B. 将 “自动标注 → 自动标注及清洗” alias 迁入语义化 route owner 是否可行
-C. readiness 是否可进入 NavigationStability，而不改变 startup snapshot fencing
-D. sidebar close 是否可进入 final navigation runtime，而不改变移动端行为
-E. 每迁移一个语义，先补/保留 unit + Real Chrome，再删除对应 classic layer
-```
-
-特别注意：alias、readiness、sidebar 三项都有真实业务语义，不得因为 wrapper 数量多就一次性删除。
+现有 `navigation-persistence.test.mjs` 只覆盖模块级异步 predecessor，**尚不能替代真实 startup/browser readiness 合同**。
 
 ## 8. 后续顺序
 
 ```text
-A. remaining setPage semantic-chain consolidation
-B. remaining render override owner audit / obsolete layer deletion
-C. app.js dead code + global reload/request debt
-D. cache-busting unification
-E. MutationObserver/timer/fetch/render/setPage zero-point scan
-F. semantic naming + deterministic test cleanup
-G. technical-debt zero-point scan
-H. A800 RC
+A. setPageReady414 readiness migration
+B. baseSetPage417 sidebar migration
+C. remaining render override owner audit / obsolete layer deletion
+D. app.js dead code + global reload/request debt
+E. cache-busting unification
+F. MutationObserver/timer/fetch/render/setPage zero-point scan
+G. semantic naming + deterministic test cleanup
+H. technical-debt zero-point scan
+I. A800 RC
 ```
 
 ## 9. 发布禁令
