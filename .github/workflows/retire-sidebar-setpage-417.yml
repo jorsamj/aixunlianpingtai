@@ -1,0 +1,55 @@
+name: Retire V417 Sidebar setPage Owner
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_sidebar_setpage_417.py
+      - .github/workflows/retire-sidebar-setpage-417.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded V417 sidebar retirement
+        run: python tools/retire_sidebar_setpage_417.py
+      - name: Verify focused navigation contracts
+        run: |
+          node --check static/app.js
+          node --check static/modules/navigation-stability.js
+          node --check static/main.mjs
+          node --test tests/frontend/navigation-stability.test.mjs tests/frontend/navigation-persistence.test.mjs tests/frontend/ui-state.test.mjs tests/frontend/retired-sidebar-setpage-guard.test.mjs tests/frontend/retired-pre-v424-setpage-guard.test.mjs
+          if grep -Fq 'baseSetPage417' static/app.js; then
+            echo 'classic baseSetPage417 remains' >&2
+            exit 1
+          fi
+          grep -Fq 'function setPage(p){state.page=p;render()} window.setPage=setPage;' static/app.js
+          grep -Fq 'beforeInvokeNavigation' static/modules/navigation-stability.js
+          grep -Fq 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' static/main.mjs
+          grep -Fq '/static/app.js?v=42.25.56' static/index.html
+          grep -Fq '/static/main.mjs?v=42.25.57' static/index.html
+      - name: Commit retired sidebar owner
+        run: |
+          if git diff --quiet -- static/app.js static/index.html tests/frontend/retired-sidebar-setpage-guard.test.mjs; then
+            echo 'no sidebar retirement changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/retired-sidebar-setpage-guard.test.mjs
+          git commit -m 'refactor(ui): retire classic V417 sidebar setPage owner'
+          git push
