@@ -1,0 +1,57 @@
+name: Retire Final TrainingDraft Wrapper
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_final_training_draft_wrapper.py
+      - .github/workflows/retire-final-training-draft-wrapper.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded final wrapper retirement
+        run: python tools/retire_final_training_draft_wrapper.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Syntax check
+        run: >-
+          node --check static/modules/training-draft-runtime.js &&
+          node --check static/main.mjs &&
+          node --check tests/frontend/training-draft-direct-write.test.mjs &&
+          node --check tests/browser/training-label-selector.spec.mjs
+      - name: Assert TrainingDraftRuntime is wrapper-free
+        run: |
+          for token in startAlgorithmTraining429 wrapLegacyMutation directMutationFor mutationWrappers __trainingDraftMutationWrapped; do
+            if grep -n "$token" static/modules/training-draft-runtime.js; then
+              echo "TrainingDraftRuntime still owns classic wrapper token: $token" >&2
+              exit 1
+            fi
+          done
+      - name: Run all frontend unit tests
+        run: node --test tests/frontend/*.test.mjs
+      - name: Commit wrapper-free runtime
+        run: |
+          if git diff --quiet -- static/modules/training-draft-runtime.js static/main.mjs static/index.html tests/frontend/training-draft-direct-write.test.mjs tests/browser/training-label-selector.spec.mjs .github/workflows/frontend-runtime-stabilization.yml; then
+            echo 'No migration change required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/modules/training-draft-runtime.js static/main.mjs static/index.html tests/frontend/training-draft-direct-write.test.mjs tests/browser/training-label-selector.spec.mjs .github/workflows/frontend-runtime-stabilization.yml
+          git commit -m 'refactor(ui): make TrainingDraftRuntime wrapper-free'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
