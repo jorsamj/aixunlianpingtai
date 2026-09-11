@@ -87,6 +87,11 @@ export function installNavigationStability({getState, notify, requestScope, poll
   let destroyed = false;
 
   function currentState() { return getState?.() || state || {}; }
+  function adoptCurrentPageTimers(ownerPages) {
+    const page = String(currentState().page || '');
+    const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
+    if (owners.has(page)) pollRegistry?.afterNavigate?.(page);
+  }
 
   const originalSetPage = window.setPage;
   if (typeof originalSetPage === 'function') {
@@ -131,10 +136,12 @@ export function installNavigationStability({getState, notify, requestScope, poll
       }
       if (!result || typeof result.then !== 'function') {
         pending.delete(itemId);
+        adoptCurrentPageTimers([...owners]);
         return result;
       }
       return Promise.resolve(result).finally(() => {
         pending.delete(itemId);
+        adoptCurrentPageTimers([...owners]);
       });
     };
     wrapped.__navigationStabilityWrapped = true;
@@ -150,7 +157,12 @@ export function installNavigationStability({getState, notify, requestScope, poll
     const wrapped = function (...args) {
       const currentPage = String(currentState().page || '');
       if (!owners.has(currentPage)) return false;
-      return original.apply(this, args);
+      const result = original.apply(this, args);
+      if (result && typeof result.then === 'function') {
+        return Promise.resolve(result).finally(() => adoptCurrentPageTimers([...owners]));
+      }
+      adoptCurrentPageTimers([...owners]);
+      return result;
     };
     wrapped.__navigationOwnerWrapped = true;
     wrapped.__navigationOwnerOriginal = original;
