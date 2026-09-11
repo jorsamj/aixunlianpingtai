@@ -45,6 +45,14 @@ class Scheduler:
             except ExecutionFencedError:
                 context.terminate_bound_process()
                 return
+            except Exception:
+                # If the Worker cannot prove that its lease was renewed (for
+                # example because the local task DB became unavailable), fail
+                # closed. Continuing a child process would reopen split-brain
+                # execution once another Worker can recover the expired task.
+                context.mark_lease_lost()
+                context.terminate_bound_process()
+                return
 
     def _reap_before_claim(self) -> None:
         reaper = getattr(self.repository, "reap_expired_processes", None)
