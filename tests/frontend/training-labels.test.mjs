@@ -5,6 +5,7 @@ import {
   latestVersionLabelInfo,
   resolveClientTrainingLabels,
   selectedMaterialLabelCodes,
+  selectedTrainingMaterialIds,
 } from '../../static/modules/training-labels.js';
 
 const catalog = [
@@ -46,6 +47,24 @@ test('confirmed empty scope contributes concrete labels and ignores legacy star'
   assert.deepEqual(
     selectedMaterialLabelCodes(materials, ['a', 'b'], catalog),
     ['fire', 'smoke'],
+  );
+});
+
+test('current v42.9 training modal reads train429Selected instead of legacy train425Selected', () => {
+  const state = {
+    train429Selected: new Set(['img-new-1', 'img-new-2']),
+    train425Selected: {
+      train: new Set(['img-old-train']),
+      val: new Set(['img-old-val']),
+    },
+  };
+  assert.deepEqual(
+    selectedTrainingMaterialIds(state, {preferV429: true}),
+    ['img-new-1', 'img-new-2'],
+  );
+  assert.deepEqual(
+    selectedTrainingMaterialIds(state, {preferV429: false}),
+    ['img-old-train', 'img-old-val'],
   );
 });
 
