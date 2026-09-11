@@ -34,10 +34,7 @@ test('available labels come only from selected materials', () => {
     {id: 'b', labels: ['smoke']},
     {id: 'c', labels: ['helmet']},
   ];
-  assert.deepEqual(
-    selectedMaterialLabelCodes(materials, ['a', 'b'], catalog),
-    ['fire', 'smoke', 'person'],
-  );
+  assert.deepEqual(selectedMaterialLabelCodes(materials, ['a', 'b'], catalog), ['fire', 'smoke', 'person']);
 });
 
 test('confirmed empty scope contributes concrete labels and ignores legacy star', () => {
@@ -45,24 +42,15 @@ test('confirmed empty scope contributes concrete labels and ignores legacy star'
     {id: 'a', labels: [], annotation_scope: ['fire', 'smoke']},
     {id: 'b', labels: [], annotation_scope: ['*']},
   ];
-  assert.deepEqual(
-    selectedMaterialLabelCodes(materials, ['a', 'b'], catalog),
-    ['fire', 'smoke'],
-  );
+  assert.deepEqual(selectedMaterialLabelCodes(materials, ['a', 'b'], catalog), ['fire', 'smoke']);
 });
 
 test('training material ids come only from canonical draft even when historical state is polluted', () => {
   const state = {
     train428AlgorithmId: 'stale-algorithm',
     train429Selected: new Set(['stale-material']),
-    train425Selected: {
-      train: new Set(['stale-train']),
-      val: new Set(['stale-val']),
-    },
-    trainingDraft: {
-      algorithmId: 'canonical-algorithm',
-      materialIds: ['canonical-1', 'canonical-2'],
-    },
+    train425Selected: {train: new Set(['stale-train']), val: new Set(['stale-val'])},
+    trainingDraft: {algorithmId: 'canonical-algorithm', materialIds: ['canonical-1', 'canonical-2']},
   };
   assert.deepEqual(selectedTrainingMaterialIds(state), ['canonical-1', 'canonical-2']);
 });
@@ -78,18 +66,12 @@ test('training materials are empty before canonical draft exists', () => {
 test('previous version labels are inherited and only material labels are selectable additions', () => {
   const algorithm = {
     versions: [successfulVersion({
-      label_schema: [
-        {code: 'fire', class_id: 0},
-        {code: 'smoke', class_id: 1},
-      ],
+      label_schema: [{code: 'fire', class_id: 0}, {code: 'smoke', class_id: 1}],
     })],
   };
   const view = resolveClientTrainingLabels({
     materials: [{id: 'a', labels: ['fire', 'cigarette', 'person']}],
-    selectedIds: ['a'],
-    labelCatalog: catalog,
-    algorithm,
-    requestedCodes: ['cigarette'],
+    selectedIds: ['a'], labelCatalog: catalog, algorithm, requestedCodes: ['cigarette'],
   });
   assert.deepEqual(view.inherited, ['fire', 'smoke']);
   assert.deepEqual(view.selectable, ['person', 'cigarette']);
@@ -100,18 +82,10 @@ test('previous version labels are inherited and only material labels are selecta
 test('failed newer version never overrides latest successful trainable label schema', () => {
   const info = latestVersionLabelInfo({
     versions: [
-      successfulVersion({
-        id: 'ok',
-        created_at: '2026-09-10T00:00:00Z',
-        label_schema: [{code: 'fire', class_id: 0}],
-      }),
+      successfulVersion({id: 'ok', created_at: '2026-09-10T00:00:00Z', label_schema: [{code: 'fire', class_id: 0}]}),
       {
-        id: 'failed-newer',
-        created_at: '2026-09-11T00:00:00Z',
-        training_status: 'FAILED',
-        artifact_verified: false,
-        trainable: false,
-        label_schema: [{code: 'person', class_id: 0}],
+        id: 'failed-newer', created_at: '2026-09-11T00:00:00Z', training_status: 'FAILED',
+        artifact_verified: false, trainable: false, label_schema: [{code: 'person', class_id: 0}],
       },
     ],
   });
@@ -122,11 +96,8 @@ test('failed newer version never overrides latest successful trainable label sch
 test('algorithm with versions but no successful trainable version is blocked instead of treated as first training', () => {
   const info = latestVersionLabelInfo({
     versions: [{
-      id: 'failed',
-      created_at: '2026-09-11T00:00:00Z',
-      training_status: 'FAILED',
-      artifact_verified: false,
-      trainable: false,
+      id: 'failed', created_at: '2026-09-11T00:00:00Z', training_status: 'FAILED',
+      artifact_verified: false, trainable: false,
     }],
   });
   assert.equal(info.hasAnyVersion, true);
@@ -137,10 +108,7 @@ test('algorithm with versions but no successful trainable version is blocked ins
 test('first training never inherits mother-model classes', () => {
   const view = resolveClientTrainingLabels({
     materials: [{id: 'a', labels: ['fire', 'smoke']}],
-    selectedIds: ['a'],
-    labelCatalog: catalog,
-    algorithm: {versions: []},
-    requestedCodes: ['fire'],
+    selectedIds: ['a'], labelCatalog: catalog, algorithm: {versions: []}, requestedCodes: ['fire'],
   });
   assert.equal(view.hasPreviousVersion, false);
   assert.deepEqual(view.inherited, []);
@@ -148,9 +116,7 @@ test('first training never inherits mother-model classes', () => {
 });
 
 test('legacy successful previous version is flagged for server-side snapshot recovery', () => {
-  const info = latestVersionLabelInfo({
-    versions: [successfulVersion({id: 'old'})],
-  });
+  const info = latestVersionLabelInfo({versions: [successfulVersion({id: 'old'})]});
   assert.equal(info.hasVersion, true);
   assert.equal(info.legacyUnknown, true);
   assert.deepEqual(info.codes, []);
@@ -159,16 +125,8 @@ test('legacy successful previous version is flagged for server-side snapshot rec
 test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () => {
   const source = readFileSync(new URL('../../static/modules/training-labels.js', import.meta.url), 'utf8');
   for (const token of [
-    '__trainingLabelsWrapped',
-    'wrappedEntrypoints',
-    "wrap('startAlgorithmTraining429'",
-    "wrap('refreshTrain429'",
-    'train425Selected',
-    'tr425AssetAlg',
-    'train423Asset',
-    '.train425-data',
-    '.train428-data',
-    'setTimeout(',
+    '__trainingLabelsWrapped', 'wrappedEntrypoints', "wrap('startAlgorithmTraining429'", "wrap('refreshTrain429'",
+    'train425Selected', 'tr425AssetAlg', 'train423Asset', '.train425-data', '.train428-data', 'setTimeout(',
   ]) {
     assert.equal(source.includes(token), false, `retired TrainingLabel lifecycle token remains: ${token}`);
   }
@@ -176,12 +134,11 @@ test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () =>
   assert.match(source, /queueMicrotask/);
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422511'/);
+  assert.match(source, /build: 'module-422512'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-
   const stableCards = app.lastIndexOf('window.renderAlg412=function(){');
   const stableAlgorithmPage = app.lastIndexOf('window.renderAlgorithms423=function(){');
   assert.ok(stableCards >= 0 && stableAlgorithmPage > stableCards);
