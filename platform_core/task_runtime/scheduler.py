@@ -4,7 +4,7 @@ import threading
 from collections.abc import Mapping
 
 from .models import TaskKind, TaskStatus
-from .worker import TaskHandler, WorkerContext
+from .worker import ExecutionFencedError, TaskHandler, WorkerContext
 
 
 class HardwareUnavailableError(RuntimeError):
@@ -41,15 +41,32 @@ class Scheduler:
         interval = max(1.0, self.lease_seconds / 3)
         while not stop.wait(interval):
             try:
-                self.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
-                )
-            except (KeyError, PermissionError):
+                context.heartbeat()
+            except ExecutionFencedError:
+                context.terminate_bound_process()
                 return
 
-    def run_once(self) -> bool:
+    def _reap_before_claim(self) -> None:
+        reaper = getattr(self.repository, "reap_expired_processes", None)
+        if callable(reaper):
+            reaper()
         self.repository.release_expired()
+
+    @staticmethod
+    def _finish_if_owned(
+        context: WorkerContext,
+        status: TaskStatus,
+        result_ref: str | None = None,
+        *,
+        error: str | None = None,
+    ) -> None:
+        try:
+            context.finish(status, result_ref, error=error)
+        except ExecutionFencedError:
+            context.terminate_bound_process()
+
+    def run_once(self) -> bool:
+        self._reap_before_claim()
         if self.gpu_resources is not None:
             self.gpu_resources.refresh()
         lease = self.repository.claim_next(
@@ -62,7 +79,13 @@ class Scheduler:
         if lease is None:
             return False
 
-        context = WorkerContext(lease.task, lease, self.repository, self.artifacts)
+        context = WorkerContext(
+            lease.task,
+            lease,
+            self.repository,
+            self.artifacts,
+            lease_seconds=self.lease_seconds,
+        )
         handler = self.handlers[lease.task.kind]
         stop_renewal = threading.Event()
         renewal = threading.Thread(
@@ -75,59 +98,60 @@ class Scheduler:
         try:
             if lease.task.kind is TaskKind.TRAINING and not lease.task.resource_key.startswith("training:remote:"):
                 assignment = self.gpu_resources.assignment(lease)
-                self.artifacts.atomic_write_json(lease.task.task_id, "assignment.json", assignment)
+                context.artifacts.atomic_write_json(lease.task.task_id, "assignment.json", assignment)
             recovered = lease.task.attempt > 1 or bool(context.load_checkpoint())
             status, result_ref = (
                 handler.recover(context) if recovered else handler.run(context)
             )
-            current = self.repository.get(lease.task.task_id)
+            current = context.assert_current_execution()
             if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
                 status, result_ref = TaskStatus.CANCELLED, None
-            self.repository.finish(
-                lease.task.task_id,
-                lease.lease_token,
-                status,
-                result_ref,
-            )
+            context.finish(status, result_ref)
+        except ExecutionFencedError:
+            # Never let a stale generation publish FAILED/SUCCEEDED over the
+            # execution that replaced it. Bound child processes are terminated
+            # by exact PID/create_time/command-hash identity.
+            context.terminate_bound_process()
         except InterruptedError as error:
-            current = self.repository.get(lease.task.task_id)
-            if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
-                self.repository.finish(
-                    lease.task.task_id,
-                    lease.lease_token,
-                    TaskStatus.CANCELLED,
-                )
+            if context.lease_lost:
+                context.terminate_bound_process()
             else:
-                self.repository.finish(
-                    lease.task.task_id,
-                    lease.lease_token,
-                    TaskStatus.FAILED,
-                    error=str(error),
-                )
+                try:
+                    current = context.assert_current_execution()
+                except ExecutionFencedError:
+                    context.terminate_bound_process()
+                else:
+                    if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
+                        self._finish_if_owned(context, TaskStatus.CANCELLED)
+                    else:
+                        self._finish_if_owned(
+                            context,
+                            TaskStatus.FAILED,
+                            error=str(error),
+                        )
         except HardwareUnavailableError as error:
-            self.repository.finish(
-                lease.task.task_id,
-                lease.lease_token,
+            self._finish_if_owned(
+                context,
                 TaskStatus.BLOCKED_BY_HARDWARE,
                 error=str(error),
             )
         except EnvironmentError as error:
-            self.repository.finish(
-                lease.task.task_id,
-                lease.lease_token,
+            self._finish_if_owned(
+                context,
                 TaskStatus.BLOCKED_BY_ENVIRONMENT,
                 error=str(error),
             )
         except Exception as error:
-            self.repository.finish(
-                lease.task.task_id,
-                lease.lease_token,
+            self._finish_if_owned(
+                context,
                 TaskStatus.FAILED,
                 error=f"{type(error).__name__}: {error}",
             )
         finally:
             stop_renewal.set()
             renewal.join(timeout=max(1.0, self.lease_seconds / 3 + 0.5))
+            if context.lease_lost:
+                context.terminate_bound_process()
         return True
 
     def serve_forever(self, stop: threading.Event | None = None) -> None:
