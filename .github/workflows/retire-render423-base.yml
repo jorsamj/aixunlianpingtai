@@ -1,0 +1,54 @@
+name: Retire render423Base
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_render423_base.py
+      - .github/workflows/retire-render423-base.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded render423 retirement
+        run: python tools/retire_render423_base.py
+      - name: Verify focused render contracts
+        run: |
+          node --check static/app.js
+          node --check tests/frontend/render-owner-retirement.test.mjs
+          node --test tests/frontend/render-owner-retirement.test.mjs tests/frontend/render-alias-restore.test.mjs tests/frontend/navigation-stability.test.mjs
+          if grep -Fq 'render423Base' static/app.js; then
+            echo 'render423Base remains after retirement' >&2
+            exit 1
+          fi
+          grep -Fq 'const renderBase428=render;' static/app.js
+          grep -Fq 'const oldRender412=render;' static/app.js
+          grep -Fq 'window.renderTraining425=window.renderTraining424=window.renderTraining423=function()' static/app.js
+          grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()};' static/app.js
+          grep -Fq '/static/app.js?v=42.25.61' static/index.html
+      - name: Commit retired render423 wrapper
+        run: |
+          if git diff --quiet -- static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs; then
+            echo 'no render423 retirement changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs
+          git commit -m 'refactor(ui): retire shadowed render423 route wrapper'
+          git push
