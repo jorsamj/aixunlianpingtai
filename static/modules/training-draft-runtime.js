@@ -115,7 +115,6 @@ export function installTrainingDraftRuntime({
       validation: draft.validationPercent,
     };
     s.train429Selected = train;
-    s.trainingLabelSelected = new Set(draft.newLabelCodes || []);
 
     const previousConfig = s.train428Config || {};
     const nextConfig = {
@@ -423,7 +422,7 @@ export function installTrainingDraftRuntime({
   scheduleDelayedSyncs();
 
   const runtime = {
-    build: 'training-draft-runtime-422505',
+    build: 'training-draft-runtime-422506',
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
