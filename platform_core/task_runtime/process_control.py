@@ -97,9 +97,18 @@ class ProcessController:
     def _tree(root: psutil.Process) -> list[psutil.Process]:
         try:
             descendants = root.children(recursive=True)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
             descendants = []
+        except psutil.AccessDenied as error:
+            # Never pretend an uninspectable tree has no children. That could
+            # terminate only the launcher while leaving the real GPU/SDK child
+            # alive and make the task look safe to recover.
+            raise PermissionError("process tree cannot be inspected") from error
         return [*descendants, root]
+
+    @staticmethod
+    def _raise_access_denied(action: str, error: psutil.AccessDenied) -> None:
+        raise PermissionError(f"process tree cannot be {action}") from error
 
     def suspend_tree(self, identity: ProcessIdentity) -> None:
         root = self.inspect(identity)
@@ -108,6 +117,8 @@ class ProcessController:
                 process.suspend()
             except psutil.NoSuchProcess:
                 continue
+            except psutil.AccessDenied as error:
+                self._raise_access_denied("suspended", error)
 
     def resume_tree(self, identity: ProcessIdentity) -> None:
         root = self.inspect(identity)
@@ -116,6 +127,8 @@ class ProcessController:
                 process.resume()
             except psutil.NoSuchProcess:
                 continue
+            except psutil.AccessDenied as error:
+                self._raise_access_denied("resumed", error)
 
     def terminate_tree(self, identity: ProcessIdentity, timeout: float = 5.0) -> None:
         try:
@@ -126,18 +139,26 @@ class ProcessController:
         for process in processes:
             try:
                 process.resume()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except psutil.NoSuchProcess:
                 continue
+            except psutil.AccessDenied as error:
+                self._raise_access_denied("resumed before termination", error)
         for process in processes:
             try:
                 process.terminate()
             except psutil.NoSuchProcess:
                 continue
+            except psutil.AccessDenied as error:
+                self._raise_access_denied("terminated", error)
         _, alive = psutil.wait_procs(processes, timeout=max(0.1, float(timeout)))
         for process in alive:
             try:
                 process.kill()
             except psutil.NoSuchProcess:
                 continue
+            except psutil.AccessDenied as error:
+                self._raise_access_denied("killed", error)
         if alive:
-            psutil.wait_procs(alive, timeout=max(0.1, float(timeout)))
+            _, still_alive = psutil.wait_procs(alive, timeout=max(0.1, float(timeout)))
+            if still_alive:
+                raise PermissionError("process tree termination could not be verified")
