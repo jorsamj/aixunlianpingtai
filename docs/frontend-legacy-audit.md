@@ -27,31 +27,36 @@ No new numbered override generation is allowed.
 ## 2. Current versions / latest acceptance
 
 ```text
-app.js                         42.25.44
-main.mjs                       42.25.49
-training-draft-runtime         422516
-TrainingDraftRuntime build     training-draft-runtime-422516
-training-labels                422513
-TrainingLabelRuntime build     module-422513
-AutoLabelPollRuntime           422501 / auto-label-poll-422501
-TrainingSubmitRuntime          training-submit-422504
-TrainingTaskRuntime            training-task-runtime-422503
+app.js                         42.25.45
+main.mjs                       42.25.50
+navigation-stability          422504
+poll-registry                 422508
+training-draft-runtime        422516
+TrainingDraftRuntime build    training-draft-runtime-422516
+training-labels               422513
+TrainingLabelRuntime build    module-422513
+AutoLabelPollRuntime          422501 / auto-label-poll-422501
+TrainingSubmitRuntime         training-submit-422504
+TrainingTaskRuntime           training-task-runtime-422503
 ```
 
 Latest full acceptance:
 
 ```text
-commit  7dbe7414767ed2808d17cc61a85c4897054391b1
-run     34609355389
-syntax                               PASS
-retired-mirror guard                 PASS
-network-owner guard                  PASS
-TrainingDraft wrapper/owner guard    PASS
-TrainingLabel canonical lifecycle    PASS
-AutoLabel PollRegistry owner guard   PASS
-frontend unit                        PASS
-Real Chrome                          PASS
+commit  4a86f4b497abb024daa9927c7be54e75fcea3692
+run     34610390049
+syntax                                      PASS
+retired-mirror guard                        PASS
+network-owner guard                         PASS
+TrainingDraft wrapper/owner guard           PASS
+TrainingLabel canonical lifecycle guard     PASS
+AutoLabel PollRegistry owner guard          PASS
+retired legacy poll timer compatibility     PASS
+frontend unit                               PASS
+Real Chrome                                 PASS
 ```
+
+The current branch may be ahead of this commit with documentation-only handoff commits. Treat `4a86f4...` as the latest fully exercised code acceptance point until a later code HEAD passes the same full workflow.
 
 ## 3. Training ownership audit: CLOSED
 
@@ -94,34 +99,81 @@ Clean tab explicitly calls `AutoLabelPollRuntime.deactivate()`.
 Physically retired:
 
 ```text
-auto422Timer (2500ms)
-ai60ListTimer (1800ms)
+auto422Timer
+ai60ListTimer
 AutoLabelPollRuntime renderOps427 wrapper
 __autoLabelPollRuntimeWrapped
 originalRenderOps / wrappedRenderOps
 100/400/1000ms rebind timers
 ```
 
-The runtime itself contains no `setTimeout/clearTimeout` lifecycle owner; PollRegistry is the timer owner. Runtime diagnostics are `classicWrapperOwner=false` and `timerOwner=false`.
+The runtime itself contains no timer lifecycle owner; PollRegistry owns the managed one-shot.
 
-Permanent CI requires `static/app.js` to stay free of `auto422Timer/ai60ListTimer`, requires explicit app → Runtime activate/deactivate handoff, and forbids renderer wrapping/rebind timers in the Runtime.
+## 5. Legacy poll timer compatibility audit: CLOSED
+
+Physically retired from product runtime code:
+
+```text
+auto422Timer
+__videoFramePollTimer
+__prelabelPollTimer
+_oldSetupPollV33
+```
+
+Removed compatibility layers:
+
+- PollRegistry no longer adopts/clears those retired timer names;
+- NavigationStability fallback no longer clears those retired names;
+- v33 `setupPagePolling` wrapper that only created/cleared video/prelabel intervals is gone;
+- unit tests no longer model these timers as live compatibility state.
+
+Permanent CI prevents these names from returning to:
+
+```text
+static/app.js
+static/modules/poll-registry.js
+static/modules/navigation-stability.js
+```
+
+## 6. Current video polling owner
+
+The current visible video page is the v42.4 path:
+
+```text
+renderVideo424
+→ loadVideo424
+→ render #video424Rows
+→ state.video424Timer
+→ PollRegistry(video-frames)
+```
+
+For refresh:
+
+```text
+PollRegistry managed one-shot (2000 ms)
+→ refreshVideo424Delta
+→ loadVideo424
+→ patchVideoRows424 only
+→ active task? re-arm : stop
+```
 
 Real Chrome proves:
 
-- `auto-label-v60` is managed by PollRegistry at 1800ms;
-- task rows update without replacing the page root;
-- active task polling continues;
+- `video-frames` is managed by PollRegistry;
+- rows patch without replacing `#view`;
 - navigation away clears the managed key;
-- no page errors.
+- the retired `__videoFramePollTimer` is absent/null.
 
-## 5. Established page owners relevant to training
+Do not create a second video polling owner.
+
+## 7. Training task / materials / navigation owners already established
 
 ### Algorithm list
 Stable visible renderer: `renderAlgorithms423 → renderAlg412`.
 Training action: `startAlgorithmTraining429`.
 
 ### Training task page
-Final owner is the 428-era task-center renderer assigned to `renderTraining423/424/425`; it shows active/history tasks and no create-training entry. Training starts from the algorithm list.
+Final owner is the 428-era task-center renderer assigned to `renderTraining423/424/425`; training starts from the algorithm list.
 
 ### Training tasks runtime
 `TrainingTaskRuntime` owns focused jobs refresh/polling with 120 ms cross-source coalescing and force-fresh mutation refresh.
@@ -132,35 +184,52 @@ Final owner is the 428-era task-center renderer assigned to `renderTraining423/4
 ### Navigation/request lifecycle
 `NavigationStability`, `PageRequestScope`, and `PollRegistry` own stabilized navigation/request/poll lifecycle. Do not restore global render-repair loops.
 
-## 6. Next polling debt: video / prelabel / setupPagePolling
+## 8. Remaining PollRegistry bridge debt
 
-Verified current v33 legacy chain:
-
-```text
-const _oldSetupPollV33 = setupPagePolling
-setupPagePolling = function() {
-  _oldSetupPollV33();
-  clearInterval(window.__videoFramePollTimer);
-  clearInterval(window.__prelabelPollTimer);
-  if (state.page === '视频切帧') {
-    window.__videoFramePollTimer = setInterval(refreshVideoTasksOnly, 2500);
-  }
-}
-```
-
-`refreshVideoTasksOnly()` is already a narrow updater:
+PollRegistry still contains compatibility creation bridges:
 
 ```text
-GET /api/v33/projects/{pid}/video-tasks
-→ state.videoTasks
-→ #videoTaskRows only
+installPollingCreationBridge()
+  → wraps setupPagePolling
+
+installVideo424CreationBridge()
+  → wraps renderVideo424
+  → wraps refreshVideo424Delta
+
+installSourceCreationBridge()
+  → wraps renderSources422
+
+rebindCreation()
 ```
 
-Therefore video polling should migrate to a named PollRegistry lifecycle owner rather than re-rendering the full page.
+Current pattern:
 
-`__prelabelPollTimer` was found only as a clear in this wrapper during the first pass; no creation site was found in that pass. Re-audit before physically deleting the cleanup reference.
+```text
+legacy function creates timer
+→ PollRegistry wrapper runs afterward
+→ clears/replaces/adopts legacy timer
+```
 
-## 7. Render/override debt
+Target pattern:
+
+```text
+page renderer/action
+→ explicit lifecycle handoff
+→ PollRegistry creates/clears managed timer directly
+```
+
+Deletion rule for this batch:
+
+1. prove final renderer/action owner;
+2. add or reuse deterministic regression;
+3. make the renderer/action call explicit managed lifecycle;
+4. remove matching wrapper bridge and restoration path;
+5. syntax + focused unit + full frontend + Real Chrome;
+6. update all three handoff docs.
+
+Do not delete all three bridges blindly: training, video and source polling have different lifecycle semantics.
+
+## 9. Render/override debt after bridge cleanup
 
 Audit targets remain:
 
@@ -178,15 +247,16 @@ setTimeout
 window.fetch =
 ```
 
-Deletion rule: prove final owner → regression coverage → physical deletion → syntax/unit → Chrome where relevant.
+Deletion rule remains: prove final owner → regression coverage → physical deletion → syntax/unit → Chrome where relevant.
 
-## 8. Cache-busting debt
+## 10. Cache-busting debt
 
 ```text
 styles/bootstrap                  42.24.0-style versions
-app.js                            42.25.44
-main.mjs                          42.25.49
-training-draft.js                 422506
+app.js                            42.25.45
+main.mjs                          42.25.50
+navigation-stability.js           422504
+poll-registry.js                  422508
 training-draft-runtime.js         422516
 training-labels.js                422513
 auto-label-poll-runtime.js        422501
@@ -194,21 +264,20 @@ auto-label-poll-runtime.js        422501
 
 Still not unified.
 
-## 9. Current cleanup order
+## 11. Current cleanup order
 
 ```text
-1. migrate __videoFramePollTimer to PollRegistry / named video lifecycle owner
-2. resolve prelabel legacy cleanup + old setupPagePolling layers
-3. establish renderer/setPage final-owner table
-4. remove proven dead app.js / global reload/request debt
-5. unify cache-busting
-6. zero-point observer/timer/fetch/render/setPage scan
-7. semantic naming + deterministic tests + docs sync
-8. technical-debt zero-point scan
-9. resume A800 RC
+1. retire PollRegistry creation bridges / old setupPagePolling through explicit lifecycle handoff
+2. establish renderer/setPage final-owner table
+3. remove proven dead app.js / global reload/request debt
+4. unify cache-busting
+5. zero-point observer/timer/fetch/render/setPage scan
+6. semantic naming + deterministic tests + docs sync
+7. technical-debt zero-point scan
+8. resume A800 RC
 ```
 
-## 10. Non-negotiable rules
+## 12. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. No global render-repair loop.
@@ -219,4 +288,5 @@ Still not unified.
 7. Do not weaken duplicate-request/race/browser tests.
 8. TrainingDraftRuntime and TrainingLabelRuntime remain wrapper-free.
 9. AutoLabel polling remains PollRegistry-only; no legacy timer or renderer wrapper revival.
-10. Frontend acceptance is not A800/CUDA acceptance.
+10. `auto422Timer`, `__videoFramePollTimer`, `__prelabelPollTimer`, `_oldSetupPollV33` remain permanently retired.
+11. Frontend acceptance is not A800/CUDA acceptance.
