@@ -79,6 +79,7 @@ export function installPollRegistry({getState} = {}) {
   if (window.__pollRegistryInstalled) return window.PollRegistryRuntime;
   const registry = new PollRegistry();
   const trainingOwners = ['训练任务', '检测台'];
+  const videoOwner = '视频切帧';
   let originalSetupPagePolling = null;
   let wrappedSetupPagePolling = null;
 
@@ -89,7 +90,7 @@ export function installPollRegistry({getState} = {}) {
     registry.adopt('training-jobs', trainingOwners, s.jobPollTimer);
     registry.adopt('sources', '素材接入', s.source422Timer);
     registry.adopt('auto-label', ['自动标注', '自动标注及清洗'], s.auto422Timer);
-    registry.adopt('video-frames', '视频切帧', window.__videoFramePollTimer);
+    registry.adopt('video-frames', videoOwner, window.__videoFramePollTimer);
     registry.adopt('prelabel', ['自动标注', '自动标注及清洗'], window.__prelabelPollTimer);
     return registry.snapshot();
   }
@@ -100,7 +101,7 @@ export function installPollRegistry({getState} = {}) {
     if (!trainingOwners.includes(page)) s.jobPollTimer = null;
     if (page !== '素材接入') s.source422Timer = null;
     if (!['自动标注', '自动标注及清洗'].includes(page)) s.auto422Timer = null;
-    if (page !== '视频切帧') window.__videoFramePollTimer = null;
+    if (page !== videoOwner) window.__videoFramePollTimer = null;
     if (!['自动标注', '自动标注及清洗'].includes(page)) window.__prelabelPollTimer = null;
   }
 
@@ -133,13 +134,38 @@ export function installPollRegistry({getState} = {}) {
     return s.jobPollTimer;
   }
 
-  function installTrainingJobCreationBridge() {
+  function replaceVideoFrameTimer() {
+    if (window.__videoFramePollTimer != null) {
+      try { clearInterval(window.__videoFramePollTimer); } catch (_) {}
+      window.__videoFramePollTimer = null;
+    }
+    registry.clear('video-frames');
+    const s = state();
+    if (String(s.page || '') !== videoOwner) return null;
+
+    const callback = async () => {
+      const current = state();
+      if (String(current.page || '') !== videoOwner) return;
+      if (!current.project?.id) return;
+      if (typeof window.refreshVideoTasksOnly === 'function') await window.refreshVideoTasksOnly();
+    };
+    window.__videoFramePollTimer = registry.startInterval(
+      'video-frames',
+      videoOwner,
+      callback,
+      2500,
+    );
+    return window.__videoFramePollTimer;
+  }
+
+  function installPollingCreationBridge() {
     const current = window.setupPagePolling;
     if (typeof current !== 'function' || current.__pollRegistryCreationWrapped) return false;
     originalSetupPagePolling = current;
     wrappedSetupPagePolling = function (...args) {
       const result = current.apply(this, args);
       replaceTrainingJobTimer();
+      replaceVideoFrameTimer();
       adoptLegacy();
       return result;
     };
@@ -147,6 +173,7 @@ export function installPollRegistry({getState} = {}) {
     wrappedSetupPagePolling.__pollRegistryCreationOriginal = current;
     window.setupPagePolling = wrappedSetupPagePolling;
     replaceTrainingJobTimer();
+    replaceVideoFrameTimer();
     adoptLegacy();
     return true;
   }
@@ -162,7 +189,8 @@ export function installPollRegistry({getState} = {}) {
     },
     clear(key) { return registry.clear(key); },
     replaceTrainingJobTimer,
-    rebindCreation: installTrainingJobCreationBridge,
+    replaceVideoFrameTimer,
+    rebindCreation: installPollingCreationBridge,
     beforeNavigate(nextPage) {
       adoptLegacy();
       registry.leave(nextPage);
@@ -179,6 +207,7 @@ export function installPollRegistry({getState} = {}) {
       }
       const s = state();
       s.jobPollTimer = null;
+      window.__videoFramePollTimer = null;
       if (window.PollRegistryRuntime === runtime) window.PollRegistryRuntime = null;
       window.__pollRegistryInstalled = false;
     },
@@ -187,6 +216,6 @@ export function installPollRegistry({getState} = {}) {
   window.PollRegistryRuntime = runtime;
   window.__pollRegistryInstalled = true;
   adoptLegacy();
-  installTrainingJobCreationBridge();
+  installPollingCreationBridge();
   return runtime;
 }
