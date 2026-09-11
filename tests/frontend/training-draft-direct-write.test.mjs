@@ -43,7 +43,7 @@ test('train-v3 material confirmation updates canonical draft before legacy callb
       validation: 20,
     },
     train428Config: {},
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{id: 'alg-1', versions: []}],
     trainMaterialPickerV3: {role: 'train', selected: new Set(['new-a', 'shared'])},
   };
@@ -68,6 +68,7 @@ test('train-v3 material confirmation updates canonical draft before legacy callb
   assert.deepEqual(state.trainingDraft.testMaterialIds, ['old-test']);
   assert.deepEqual([...state.train429Selected], ['new-a', 'shared']);
   assert.equal(runtime.state().directWrites, 1);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
@@ -84,7 +85,7 @@ test('split mode writes canonical draft before legacy callback runs', () => {
       validation: 20,
     },
     train428Config: {},
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{id: 'alg-1', versions: []}],
   };
   let observedMode;
@@ -116,7 +117,7 @@ test('opening a different algorithm resets canonical training selection before l
       validation: 25,
     },
     train428Config: {},
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{id: 'alg-old', versions: []}, {id: 'alg-new', versions: []}],
   };
   let observedInsideLegacy;
@@ -144,6 +145,7 @@ test('opening a different algorithm resets canonical training selection before l
   });
   assert.equal(state.trainingDraft.algorithmId, 'alg-new');
   assert.equal(runtime.state().directWrites, 1);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
@@ -180,7 +182,7 @@ test('training settings write canonical resource values before legacy save and a
       experiment: 20, validation: 20,
     },
     train428Config: {batch: 8, workers: 0, cache: 'False', epochs: 100, imgsz: 640},
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{id: 'alg-1', versions: []}],
   };
   let observedInsideLegacy;
@@ -214,6 +216,7 @@ test('training settings write canonical resource values before legacy save and a
   assert.equal(state.trainingDraft.resource.cache, false);
   assert.equal(state.trainingDraft.config.epochs, 30);
   assert.equal(runtime.state().directWrites, 1);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   cleanup(runtime);
 });
