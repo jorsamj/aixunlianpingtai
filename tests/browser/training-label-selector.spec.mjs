@@ -212,7 +212,11 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   await dialog.getByRole('button', {name: '开始训练'}).click();
-  await expect.poll(() => submitted).toBeTruthy();
+  await expect.poll(async () => ({
+    submitted: Boolean(submitted),
+    runtime: await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null),
+    toast: await page.locator('#toast').textContent(),
+  })).toMatchObject({submitted: true});
 
   expect(submitted.algorithm_asset_id).toBe(algorithmId);
   expect(submitted.train_image_ids).toEqual(imageIds);
