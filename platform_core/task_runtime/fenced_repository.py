@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Iterable
 
-from .models import TaskStatus, utc_now
+from .models import TaskKind, TaskStatus, utc_now
 from .process_control import (
     ProcessController,
     ProcessIdentity,
     ProcessIdentityMismatchError,
 )
 from .repository import TERMINAL_STATUSES, TaskRepository, _from_row, _iso
+
+
+_RECOVERY_HOLD_STAGES = (
+    "lease_expired_process_alive",
+    "recovery_blocked_process_inspection",
+)
 
 
 class FencedTaskRepository(TaskRepository):
@@ -24,6 +31,70 @@ class FencedTaskRepository(TaskRepository):
         if execution_generation is None:
             return "", ()
         return " AND attempt=?", (int(execution_generation),)
+
+    def claim_next(
+        self,
+        worker_id: str,
+        kinds: Iterable[TaskKind | str],
+        capabilities: Iterable[str],
+        lease_seconds: int = 30,
+        admission=None,
+    ):
+        caller_admission = admission
+
+        def fenced_admission(database, candidate, owner, token, expires_at, now):
+            held = database.execute(
+                """
+                SELECT task_id FROM tasks
+                 WHERE task_id<>? AND resource_key=?
+                   AND status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND stage IN (?,?)
+                 LIMIT 1
+                """,
+                (
+                    candidate["task_id"],
+                    candidate["resource_key"],
+                    *_RECOVERY_HOLD_STAGES,
+                ),
+            ).fetchone()
+            if held is not None:
+                return False, (
+                    "RESOURCE_RECOVERY_FENCE: expired execution still owns "
+                    f"resource via task {held['task_id']}"
+                )
+
+            # Passing an admission callback makes the legacy claim SQL delegate
+            # local TRAINING resource arbitration. If no caller supplied a GPU
+            # admission policy, preserve the original single-resource behavior.
+            if (
+                caller_admission is None
+                and str(candidate["kind"]) == TaskKind.TRAINING.value
+                and not str(candidate["resource_key"]).startswith("training:remote:")
+            ):
+                active = database.execute(
+                    """
+                    SELECT task_id FROM tasks
+                     WHERE task_id<>? AND resource_key=?
+                       AND status IN ('RUNNING','CANCEL_REQUESTED')
+                       AND lease_expires_at>?
+                     LIMIT 1
+                    """,
+                    (candidate["task_id"], candidate["resource_key"], now),
+                ).fetchone()
+                if active is not None:
+                    return False, f"RESOURCE_BUSY: owned by task {active['task_id']}"
+
+            if caller_admission is None:
+                return True, None
+            return caller_admission(database, candidate, owner, token, expires_at, now)
+
+        return super().claim_next(
+            worker_id,
+            kinds,
+            capabilities,
+            lease_seconds,
+            admission=fenced_admission,
+        )
 
     def assert_execution(
         self,
@@ -244,8 +315,7 @@ class FencedTaskRepository(TaskRepository):
                 finished_at = now
             elif kind == "MATERIAL_IMPORT" and accepted == 1 and str(row["stage"]) in {
                 "indexing",
-                "lease_expired_process_alive",
-                "recovery_blocked_process_inspection",
+                *_RECOVERY_HOLD_STAGES,
             }:
                 stage = "indexing_queued"
                 finished_at = row["finished_at"]
@@ -274,13 +344,10 @@ class FencedTaskRepository(TaskRepository):
                AND task_id NOT IN (
                     SELECT task_id FROM tasks
                      WHERE status IN ('RUNNING','CANCEL_REQUESTED')
-                       AND stage IN (
-                            'lease_expired_process_alive',
-                            'recovery_blocked_process_inspection'
-                       )
+                       AND stage IN (?,?)
                )
             """,
-            (now,),
+            (now, *_RECOVERY_HOLD_STAGES),
         )
         return released
 
