@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   createTrainingDraft,
-  trainingDraftFromLegacyState,
-  trainingDraftToRequest,
   trainingInheritanceFromAlgorithm,
 } from '../../static/modules/training-draft.js';
 import {installTrainingDraftRuntime} from '../../static/modules/training-draft-runtime.js';
@@ -13,13 +11,11 @@ import {TRAINING_DRAFT_CONTROL_IDS} from '../../static/modules/training-draft-co
 function dependencies() {
   return {
     createTrainingDraft,
-    trainingDraftFromLegacyState,
-    trainingDraftToRequest,
     trainingInheritanceFromAlgorithm,
   };
 }
 
-test('direct train-v3 controls bypass generic sampling from remaining legacy mirrors', async () => {
+test('direct train-v3 controls bypass generic sampling from retired mirror-shaped fields', async () => {
   const listeners = new Map();
   globalThis.document = {
     addEventListener(type, handler) { listeners.set(type, handler); },
@@ -53,10 +49,10 @@ test('direct train-v3 controls bypass generic sampling from remaining legacy mir
   runtime.update({experimentPercent: 35});
   assert.equal(state.trainingDraft.experimentPercent, 35);
   assert.deepEqual(state.trainingDraft.materialIds, ['img-1']);
-  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
+  assert.deepEqual([...state.train429Selected], ['legacy-initial']);
 
-  // Simulate a stale historical renderer mutating a compatibility mirror. A direct
-  // control event must not cause TrainingDraftRuntime to sample that stale material set.
+  // Simulate stale historical data being mutated outside the canonical owner. A direct
+  // control event must not sample or rewrite that retired state.
   state.train429Selected = new Set(['stale-material']);
   listeners.get('input')({
     target: {
@@ -68,9 +64,10 @@ test('direct train-v3 controls bypass generic sampling from remaining legacy mir
 
   assert.equal(state.trainingDraft.experimentPercent, 35);
   assert.deepEqual(state.trainingDraft.materialIds, ['img-1']);
+  assert.deepEqual([...state.train429Selected], ['stale-material']);
+  assert.equal(state.train428AlgorithmId, 'alg-1');
+  assert.equal(state.train428Config.queue_priority, 50);
   assert.equal(runtime.state().directControlSkips, 1);
-  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
-  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   runtime.destroy();
   delete globalThis.window;
