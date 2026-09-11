@@ -110,9 +110,21 @@ class ProcessController:
     def _raise_access_denied(action: str, error: psutil.AccessDenied) -> None:
         raise PermissionError(f"process tree cannot be {action}") from error
 
+    @classmethod
+    def _execution_alive(cls, process: psutil.Process) -> bool:
+        try:
+            return process.status() != psutil.STATUS_ZOMBIE
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            return False
+        except psutil.AccessDenied as error:
+            cls._raise_access_denied("verified", error)
+        return False
+
     def suspend_tree(self, identity: ProcessIdentity) -> None:
         root = self.inspect(identity)
         for process in reversed(self._tree(root)):
+            if not self._execution_alive(process):
+                continue
             try:
                 process.suspend()
             except psutil.NoSuchProcess:
@@ -123,6 +135,8 @@ class ProcessController:
     def resume_tree(self, identity: ProcessIdentity) -> None:
         root = self.inspect(identity)
         for process in self._tree(root):
+            if not self._execution_alive(process):
+                continue
             try:
                 process.resume()
             except psutil.NoSuchProcess:
@@ -137,28 +151,32 @@ class ProcessController:
         timeout: float,
         label: str,
     ) -> None:
-        if not processes:
+        active = [process for process in processes if self._execution_alive(process)]
+        if not active:
             return
-        for process in processes:
+        for process in active:
             try:
                 process.resume()
             except psutil.NoSuchProcess:
                 continue
             except psutil.AccessDenied as error:
                 self._raise_access_denied(f"resumed before {label} termination", error)
-        for process in processes:
+        for process in active:
             try:
                 process.terminate()
             except psutil.NoSuchProcess:
                 continue
             except psutil.AccessDenied as error:
                 self._raise_access_denied(f"{label} terminated", error)
-        _, alive = psutil.wait_procs(processes, timeout=max(0.1, float(timeout)))
+        _, alive = psutil.wait_procs(active, timeout=max(0.1, float(timeout)))
+        alive = [process for process in alive if self._execution_alive(process)]
         if alive:
             # Preserve input order. For descendants this guarantees every known
-            # child is handled before the root is ever touched by the caller.
+            # executing child is handled before the root is ever touched by the
+            # caller. A zombie is already non-executing and will be reaped after
+            # its parent exits, so it must not block safe root termination.
             alive_pids = {process.pid for process in alive}
-            ordered_alive = [process for process in processes if process.pid in alive_pids]
+            ordered_alive = [process for process in active if process.pid in alive_pids]
             for process in ordered_alive:
                 try:
                     process.kill()
@@ -170,6 +188,9 @@ class ProcessController:
                 ordered_alive,
                 timeout=max(0.1, float(timeout)),
             )
+            still_alive = [
+                process for process in still_alive if self._execution_alive(process)
+            ]
             if still_alive:
                 raise PermissionError(f"{label} process termination could not be verified")
 
@@ -181,9 +202,9 @@ class ProcessController:
         processes = self._tree(root)
         descendants = [process for process in processes if process.pid != root.pid]
 
-        # The root remains alive until every descendant is verified gone. If a
-        # child cannot be inspected/terminated, keeping the root alive allows the
-        # repository to continue proving that the old execution still exists and
-        # prevents a false-safe requeue.
+        # The root remains alive until every descendant is verified non-executing.
+        # If a child cannot be inspected/terminated, keeping the root alive lets
+        # the repository continue proving the old execution exists. Zombie
+        # descendants are already non-executing and are reaped when the root exits.
         self._terminate_verified(descendants, timeout=timeout, label="child")
         self._terminate_verified([root], timeout=timeout, label="root")
