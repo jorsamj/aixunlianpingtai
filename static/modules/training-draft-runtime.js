@@ -26,6 +26,7 @@ export function installTrainingDraftRuntime({
 
   const state = () => getState?.() || {};
   const directControlIdSet = new Set((directControlIds || []).map(value => String(value || '')).filter(Boolean));
+  const subscribers = new Set();
   let destroyed = false;
   let syncQueued = false;
   let directControlSkips = 0;
@@ -62,10 +63,23 @@ export function installTrainingDraftRuntime({
     });
   }
 
-  function commitDraft(s, draft, inheritance) {
+  function notifySubscribers(type, draft, patch = null) {
+    if (destroyed || !subscribers.size) return;
+    const event = {type, draft, patch};
+    for (const listener of [...subscribers]) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error?.('TrainingDraftRuntime subscriber failed', error);
+      }
+    }
+  }
+
+  function commitDraft(s, draft, inheritance, {type = 'sync', patch = null} = {}) {
     s.trainingDraft = draft;
     s.trainingDraftInheritance = inheritance;
     window.TrainingSubmitRuntime?.updateReadiness?.();
+    notifySubscribers(type, draft, patch);
     return draft;
   }
 
@@ -93,7 +107,7 @@ export function installTrainingDraftRuntime({
     const result = s.trainingDraft
       ? normalizeCanonical(s, s.trainingDraft)
       : initializeCanonical(s);
-    return commitDraft(s, result.draft, result.inheritance);
+    return commitDraft(s, result.draft, result.inheritance, {type: 'sync'});
   }
 
   function update(patch = {}) {
@@ -107,7 +121,13 @@ export function installTrainingDraftRuntime({
       config: {...(base?.config || {}), ...(patch.config || {})},
     });
     const result = normalizeCanonical(s, next);
-    return commitDraft(s, result.draft, result.inheritance);
+    return commitDraft(s, result.draft, result.inheritance, {type: 'update', patch});
+  }
+
+  function subscribe(listener) {
+    if (destroyed || typeof listener !== 'function') return () => {};
+    subscribers.add(listener);
+    return () => subscribers.delete(listener);
   }
 
   function scheduleSync() {
@@ -158,9 +178,10 @@ export function installTrainingDraftRuntime({
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422513',
+    build: 'training-draft-runtime-422514',
     sync,
     update,
+    subscribe,
     current() { return state().trainingDraft || sync(); },
     materialIds() {
       const draft = state().trainingDraft || sync();
@@ -179,9 +200,18 @@ export function installTrainingDraftRuntime({
       return runtime.setMaterialIds([...selected]);
     },
     inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
-    state() { return {directControlSkips, initializationCount, networkOwner: false, classicWrapperOwner: false}; },
+    state() {
+      return {
+        directControlSkips,
+        initializationCount,
+        subscribers: subscribers.size,
+        networkOwner: false,
+        classicWrapperOwner: false,
+      };
+    },
     destroy() {
       destroyed = true;
+      subscribers.clear();
       if (typeof document !== 'undefined') {
         document.removeEventListener?.('change', onChange);
         document.removeEventListener?.('input', onInput);
