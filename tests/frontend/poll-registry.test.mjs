@@ -46,6 +46,32 @@ test('registry can own interval creation instead of only adopting legacy timers'
   assert.deepEqual(cleared, [91]);
 });
 
+test('managed timeout unregisters itself before callback so recursive polling can re-arm cleanly', async () => {
+  const registry = new PollRegistry();
+  const created = [];
+  const cleared = [];
+  let calls = 0;
+  registry.startTimeout('auto-label-v60', '自动标注及清洗', async () => {
+    calls += 1;
+    assert.deepEqual(registry.snapshot(), []);
+  }, 1800, {
+    setFn(callback, delay) {
+      created.push({callback, delay});
+      return 77;
+    },
+    clearFn: id => cleared.push(id),
+  });
+
+  assert.deepEqual(registry.snapshot(), [{
+    key: 'auto-label-v60', owners: ['自动标注及清洗'], active: true, managed: true, delay: 1800,
+  }]);
+  assert.equal(created[0].delay, 1800);
+  await created[0].callback();
+  assert.equal(calls, 1);
+  assert.deepEqual(registry.snapshot(), []);
+  assert.deepEqual(cleared, []);
+});
+
 test('legacy page timers are adopted and references are cleared when navigating away', () => {
   const state = {
     jobPollTimer: 1,
