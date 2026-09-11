@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: bdfb7ae692a197486dc61ed9919c5e18ae1bf9f4
-Frontend Runtime run:        34645250462
+latest full code acceptance: 1470bb9f0dd19e1be5d0695cd7f4de21173dd944
+Frontend Runtime run:        34652823778
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.54
-main.mjs cache:              42.25.55
-NavigationStability:         422508
+app.js cache:                42.25.55
+main.mjs cache:              42.25.56
+NavigationStability:         422509
 UI state runtime:            422500
 PollRegistry:                422511
 TrainingDraftRuntime:        422516
@@ -22,13 +22,13 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34645250462` passed syntax, permanent owner guards, all frontend unit tests and all Real Chrome runtime regressions. Branch HEAD may be newer because docs are synced after accepted code points. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34652823778` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome 12/12. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-setPageReady414 startup-readiness migration
-→ baseSetPage417 sidebar migration
+baseSetPage417 sidebar migration
+→ initial bootstrap setPage liveness audit
 → remaining renderer override owner audit
 → app.js/global reload/request debt
 → cache-busting unification
@@ -84,18 +84,17 @@ v34 persistence direct setPage
 v35 plain direct setPage
 v42.4 plain direct setPage
 v42.7 direct auto-label alias setPage
+setPageReady414 startup-readiness wrapper
 ```
 
-Accepted milestones include:
+Latest milestones:
 
 ```text
-setupPagePolling shells       4cabbe84... / 34617573070
-set423Base/setBase424         871b1c91... / 34618276191
-V37 duplicate sidebar owner   f3eb6b36... / 34619698115
-pre-v42.4 dead family         eb76e48a... / 34620286461
-navigation persistence fix    cd92639a... / 34621453809
 pre-v42.7 direct family       ceab780b... / 34644092284
 v42.7 alias owner             bdfb7ae6... / 34645250462
+readiness baseline            0adc46fe... / 34652201043
+readiness double-owner        a618696e... / 34652478444
+readiness owner retired       1470bb9f... / 34652823778
 ```
 
 ## 4. Current setPage topology
@@ -104,96 +103,82 @@ Current classic/runtime chain:
 
 ```text
 initial function setPage(...) → window.setPage=setPage
-setPageReady414 async startup-readiness wrapper
 baseSetPage417 mobile-sidebar wrapper
 NavigationStability final module wrapper
 ```
 
-Semantic alias normalization has moved to:
+Named `NavigationStability` now owns:
 
 ```text
-NavigationStability.normalizeNavigationPage()
-自动标注 → 自动标注及清洗
-```
+normalizeNavigationPage()
+  自动标注 → 自动标注及清洗
 
-The final runtime normalizes the requested page before PageRequestScope, PollRegistry, guard, predecessor invocation and UI-state persistence. Real Chrome proves the legacy `自动标注` route still enters and persists the canonical `自动标注及清洗` page after the classic direct alias owner was removed.
+waitForNavigationReady()
+  !state.uiReady && window.__v53InitPromise
+  → wait before actual page mutation/render
 
-Current remaining classic semantics:
-
-```text
-setPageReady414:
-  if uiReady=false and __v53InitPromise exists, await startup init before actual navigation
-
-baseSetPage417:
-  close mobile sidebar/backdrop on navigation
-
-NavigationStability:
-  canonical page normalization
+navigation lifecycle
+  PageRequestScope navigation intent
   navigation epoch
-  PageRequestScope cancellation/alignment
-  PollRegistry before/after navigation
-  async completion fencing
+  PollRegistry before/after
+  async finalization
   persistNavigationState()
 ```
 
-Important runtime-order nuance: `baseSetPage417` is defined inside `installUsability417`; although its source block appears earlier, `window.installUsability417?.()` executes later, after `setPageReady414`, so the live capture chain remains readiness → sidebar → NavigationStability.
+Important readiness ordering is permanently tested:
 
-## 5. Permanent tests / guards
+```text
+request:navigate
+→ poll:before
+→ readiness wait
+→ predecessor/classic page mutation
+→ request:align
+→ poll:after
+→ persistence
+```
 
-Main workflow owner guards + all `tests/frontend/*.test.mjs`.
+Real Chrome `tests/browser/navigation-readiness.spec.mjs` delays `/api/v53/bootstrap/snapshot`, proves `state.page` does not change early, then proves the requested page renders/persists only after startup resolves.
 
-Navigation contracts:
+## 5. Remaining classic setPage semantic owner
+
+### `baseSetPage417`
+
+Current code semantics:
+
+```js
+const baseSetPage417=window.setPage;
+window.setPage=function(page){
+  window.toggleMobileSidebarV37?.(false);
+  return baseSetPage417?.(page);
+};
+```
+
+It closes `#sidebar.mobile-open` and `#sideBackdrop.show` before invoking the predecessor. Existing Real Chrome already checks navigation closes both.
+
+Do not delete it yet. First move this exact behavior into a named NavigationStability before-navigation hook, run a double-owner phase, then physically delete the classic wrapper.
+
+The initial bootstrap `function setPage(...) → window.setPage=setPage` remains out of scope until the sidebar wrapper is closed and its capture/liveness is audited separately.
+
+## 6. Permanent tests / guards
+
+Frontend navigation contracts:
 
 ```text
 tests/frontend/retired-sidebar-setpage-guard.test.mjs
 tests/frontend/retired-pre-v424-setpage-guard.test.mjs
-  # historical filename; now also forbids v42.7 direct alias owner
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
 tests/frontend/ui-state.test.mjs
 ```
 
-Browser contract in `tests/browser/navigation-stability.spec.mjs` includes:
+Browser contracts:
 
 ```text
-stale delayed request cannot jump back
-managed page polling stops on leave
-final navigation closes mobile sidebar/backdrop
-selected page persists and restores after reload
-legacy 自动标注 route canonicalizes and persists as 自动标注及清洗
+tests/browser/navigation-stability.spec.mjs
+tests/browser/navigation-readiness.spec.mjs
 ```
 
-Do not weaken these tests.
-
-## 6. Next exact audit: startup readiness
-
-Do not delete `setPageReady414` yet.
-
-Current code semantics:
-
-```js
-const setPageReady414 = window.setPage;
-window.setPage = async function(page) {
-  if (!state.uiReady && window.__v53InitPromise) await window.__v53InitPromise;
-  return setPageReady414(page);
-};
-```
-
-Before migration:
-
-```text
-1. Add a Real Chrome contract for navigation requested while startup is not ready.
-2. While __v53InitPromise is pending, the requested page must not render early.
-3. After init resolves, the requested page must navigate exactly once.
-4. Final state/localStorage must be the requested canonical page.
-5. PageRequestScope / PollRegistry / persistence ordering must remain correct.
-6. Migrate readiness into NavigationStability or a named readiness hook.
-7. Run a double-owner equivalence phase.
-8. Only then physically remove setPageReady414.
-9. Keep baseSetPage417 untouched in this batch.
-```
-
-`tests/frontend/navigation-persistence.test.mjs` covers a generic async predecessor, but it does **not** replace the required browser-level startup readiness contract.
+Do not weaken them.
 
 ## 7. Non-regression backend contracts
 
@@ -209,8 +194,8 @@ Before migration:
 ## 8. Work order
 
 ```text
-1. setPageReady414 readiness migration
-2. baseSetPage417 sidebar migration
+1. baseSetPage417 sidebar migration
+2. initial bootstrap setPage capture/liveness audit
 3. remaining renderer/setPage obsolete override closure
 4. proven dead app.js + global reload/request debt
 5. cache-busting unification
@@ -220,7 +205,7 @@ Before migration:
 9. resume A800 RC
 ```
 
-Every batch: live HEAD → liveness/semantic proof → deterministic regression → physical deletion → permanent guard → full frontend + Real Chrome → update all four handoff docs.
+Every batch: live HEAD → liveness/semantic proof → deterministic regression → named semantic owner → double-owner proof → physical deletion → permanent guard → full frontend + Real Chrome → docs sync.
 
 ## 9. A800 status
 
