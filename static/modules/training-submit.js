@@ -3,11 +3,6 @@ function required(value, message) {
   return value;
 }
 
-function numberOr(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
 export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
   required(target?.id, '请选择可用训练资源');
@@ -103,9 +98,15 @@ export function installTrainingSubmitRuntime({
 
   const originalSubmit = window.submitTrain429;
   let destroyed = false;
+  let submitting = false;
 
   const submit = async function () {
     if (destroyed) throw new Error('训练提交模块已销毁');
+    if (submitting) {
+      notify?.('训练任务正在创建，请勿重复提交');
+      return null;
+    }
+    submitting = true;
     try {
       const state = getState?.() || {};
       const draft = trainingDraftRuntime.sync();
@@ -143,15 +144,25 @@ export function installTrainingSubmitRuntime({
       const body = await response.json();
 
       closeModal?.();
-      await reloadRelated?.();
       state.alg428Expanded = state.alg428Expanded || {};
       state.alg428Expanded[asset.id] = true;
-      renderAlgorithms?.();
       notify?.(`训练任务已进入后台队列${body.task?.id || body.job?.id ? ` · ${body.task?.id || body.job?.id}` : ''}`);
+
+      // The task already exists at this point. A list-refresh failure must not be reported
+      // as a training-creation failure or tempt the user to click submit again.
+      try {
+        await reloadRelated?.();
+        renderAlgorithms?.();
+      } catch (refreshError) {
+        console.warn?.('training task created but list refresh failed', refreshError);
+        notify?.('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
+      }
       return body;
     } catch (error) {
       notify?.(error?.message || error);
       return null;
+    } finally {
+      submitting = false;
     }
   };
   submit.__trainingSubmitRuntime = true;
@@ -159,8 +170,9 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422500',
+    build: 'training-submit-422501',
     submit,
+    isSubmitting: () => submitting,
     destroy() {
       destroyed = true;
       if (window.submitTrain429 === submit) window.submitTrain429 = originalSubmit;
