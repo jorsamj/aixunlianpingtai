@@ -113,6 +113,8 @@ state.trainingLabelSelected
 
 This is a primary source of regressions because display state and submit state can come from different generations.
 
+A canonical data model now exists in `static/modules/training-draft.js`. It does **not yet replace the legacy UI state**; it is the migration target for the final train-v3 dialog and submit path.
+
 ### 2.5 `main.mjs` is a second runtime layer
 
 `static/main.mjs` installs modules on top of classic `app.js`, including:
@@ -126,6 +128,7 @@ resource discovery
 navigation stability
 page request scope
 poll registry
+training draft model
 ```
 
 The migration target is to move authority from global classic functions to explicit modules, but during migration **a feature must not have two active owners**.
@@ -168,7 +171,15 @@ window.__videoFramePollTimer
 window.__prelabelPollTimer
 ```
 
-Current phase adopts timers created by legacy code and guarantees they are cleared when their owner page is left. Next phase will move timer creation itself into PollRegistry so page modules stop calling `setInterval` directly.
+Current phase adopts timers created by legacy code and guarantees they are cleared when their owner page is left. Async page renderers/refreshers also re-adopt timers created after their awaited data loads finish.
+
+Next phase will move timer creation itself into PollRegistry so page modules stop calling `setInterval` directly.
+
+### 2.9 One global toast surface is now explicit
+
+Historical classic code declared a lexical `toast` helper while later compatibility/module code sometimes expected `window.toast`.
+
+`static/main.mjs` now guarantees one `window.toast(message)` surface. This fixed the only page error discovered by the first real Chrome stale-navigation regression.
 
 ## 3. Target runtime architecture
 
@@ -205,26 +216,56 @@ DONE      remove MutationObserver/global-render repair
 DONE      page renderer ownership guards
 DONE      page GET RequestScope / AbortController migration bridge
 DONE      centralized legacy PollRegistry adoption/leave cleanup
+DONE      adopt timers created after async legacy renders
+DONE      real Chrome delayed-old-request navigation regression
 NEXT      migrate timer creation into PollRegistry
-NEXT      browser stress test with delayed API responses
+NEXT      replace legacy global Router with explicit Router ownership
 ```
+
+Real browser acceptance already covered:
+
+```text
+open Training Tasks
+→ deliberately delay an API GET
+→ navigate to Datasets
+→ release the old Training Tasks request
+→ title/nav remain on Datasets
+→ no page error
+```
+
+The browser result is important: this is not only a Node/unit contract anymore.
 
 ### P0-B — Training consolidation
 
-Replace historical training state with one draft object:
+Canonical model added:
 
 ```js
 trainingDraft = {
   algorithmId,
   baseVersionId,
   materialIds,
-  inheritedLabels,
+  testMaterialIds,
+  splitMode,
+  experimentPercent,
+  validationPercent,
+  inheritedLabelCodes,
   newLabelCodes,
-  experiment,
+  effectiveLabelCodes,
   resource,
   config,
   priority
 };
+```
+
+Current status:
+
+```text
+DONE      canonical TrainingDraft data model
+DONE      legacy-state -> TrainingDraft adapter
+DONE      TrainingDraft -> request validator/builder
+NEXT      make final train-v3 dialog maintain state.trainingDraft
+NEXT      make submit path read TrainingDraft as authority
+NEXT      remove duplicate 428/429/v3 state after browser parity
 ```
 
 Target components before Vue migration:
@@ -288,6 +329,7 @@ Current stabilization implementation lives in:
 static/modules/navigation-stability.js
 static/modules/page-request-scope.js
 static/modules/poll-registry.js
+static/modules/training-draft.js
 static/main.mjs
 ```
 
@@ -297,6 +339,8 @@ Tests:
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/page-request-scope.test.mjs
 tests/frontend/poll-registry.test.mjs
+tests/frontend/training-draft.test.mjs
+tests/browser/navigation-stability.spec.mjs
 ```
 
 CI workflow:
@@ -305,11 +349,19 @@ CI workflow:
 .github/workflows/frontend-runtime-stabilization.yml
 ```
 
-The full frontend Node suite is intentionally run here, not only the newly-added tests, so stale historical test contracts are exposed during stabilization.
+Current CI contract deliberately runs both:
+
+```text
+all frontend Node tests
++
+real Chrome stale-navigation regression
+```
+
+The browser regression is green after standardizing the global toast surface.
 
 Next implementation target:
 
 ```text
-move high-frequency polling creation and row updates into PollRegistry/page-local renderers,
-then start TrainingDialog state consolidation.
+make final train-v3 maintain one canonical TrainingDraft,
+then migrate high-frequency polling creation and task-row updates away from legacy full-page render paths.
 ```
