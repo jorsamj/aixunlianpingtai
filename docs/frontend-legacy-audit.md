@@ -7,9 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: f3eb6b360123dd688eea4dd0f29c05a9db5b4c05
-run:    34619698115
-
+commit: eb76e48adaafe3c71556918d42efc98cca5d8f2f
+run:    34620286461
 frontend:     PASS
 Real Chrome:  PASS
 ```
@@ -17,7 +16,7 @@ Real Chrome:  PASS
 Current caches/builds:
 
 ```text
-app.js                    42.25.51
+app.js                    42.25.52
 main.mjs                  42.25.53
 navigation-stability      422506
 poll-registry             422511
@@ -26,11 +25,9 @@ training-labels           422513
 auto-label-poll-runtime   422501
 ```
 
-Branch HEAD may be ahead because documentation commits follow accepted code commits.
-
 ## 2. Closed owner surfaces
 
-### Training canonical state / submit
+### Training
 
 ```text
 state.trainingDraft
@@ -39,160 +36,95 @@ state.trainingDraft
 → /train/start
 ```
 
-Retired mirrors/fallbacks:
+Retired training mirrors/fallbacks stay retired.
+
+### Polling
 
 ```text
-trainingLabelSelected
-trainSplitV3
-train429Selected
-train428AlgorithmId
-train428Config
-trainingDraftFromLegacyState
+training-jobs → PollRegistry + TrainingTaskRuntime
+AutoLabel      → AutoLabelPollRuntime + PollRegistry
+video          → PollRegistry(video-frames)
+sources        → PollRegistry(sources)
 ```
 
-### Training polling
+No classic timer or creation-wrapper ownership may return.
+
+## 3. Accepted navigation-debt batches
 
 ```text
-classic render call site
-→ replaceTrainingJobTimer()
-→ PollRegistry(training-jobs)
-→ TrainingTaskRuntime.refresh({source:'poll'})
-→ focused /jobs refresh
+Batch A: setupPagePolling/jobPollTimer                CLOSED
+Batch B: set423Base + setBase424                     CLOSED
+Batch C: duplicate V37 baseSetPage sidebar wrapper   CLOSED
+Batch D: oldSetV39 + oldSet42 + set422Base           CLOSED
 ```
 
-Retired: `jobPollTimer`, `setupPagePolling`, creation wrappers/adoption/rebind and NavigationStability fallback.
+Batch D was proven dead by source-order/reference guards: each base token had exactly declaration + self-wrapper call, then v42.4 synchronously replaced `window.setPage` without invoking the previous owner. Acceptance `eb76e48a... / run 34620286461` passed full Real Chrome.
 
-### AutoLabel / Video / Sources
-
-```text
-renderOps427 → AutoLabelPollRuntime → PollRegistry(auto-label-v60)
-renderVideo424 / refreshVideo424Delta → PollRegistry(video-frames)
-renderSources422 → PollRegistry(sources)
-```
-
-Legacy timer/renderer wrapper ownership is gone.
-
-## 3. Navigation cleanup accepted so far
-
-### Batch A — training polling shell
-
-```text
-setupPagePolling = 0
-jobPollTimer      = 0
-```
-
-### Batch B — pass-through setPage family
-
-Physically removed:
-
-```text
-set423Base
-setBase424
-```
-
-### Batch C — duplicate mobile-sidebar setPage owner
-
-The earlier V37 wrapper:
-
-```text
-const baseSetPage=window.setPage;
-window.setPage=function(page){toggleMobileSidebarV37(false);baseSetPage(page)};
-```
-
-is physically gone.
-
-The later V417 owner remains:
-
-```text
-const baseSetPage417=window.setPage;
-window.setPage=function(page){window.toggleMobileSidebarV37?.(false);return baseSetPage417?.(page)};
-```
-
-Permanent static guard:
+Permanent static guards:
 
 ```text
 tests/frontend/retired-sidebar-setpage-guard.test.mjs
+tests/frontend/retired-pre-v424-setpage-guard.test.mjs
 ```
 
-Permanent browser behavior contract:
+## 4. Current setPage topology
+
+Current `static/app.js` scan shows 7 remaining `window.setPage=` assignments/bindings:
 
 ```text
-tests/browser/navigation-stability.spec.mjs
-→ final navigation owner closes the mobile sidebar and backdrop
+initial function binding
+UI-state persistence direct assignment
+v35 direct state.page/render
+v42.4 direct state.page/render
+v42.7 direct auto-label alias
+setPageReady414 async readiness wrapper
+baseSetPage417 sidebar-close wrapper
 ```
 
-## 4. Current setPage chain audit
+The likely final live chain begins at v42.7 because that assignment discards the previous `window.setPage`; `setPageReady414` then wraps v42.7 and V417 wraps readiness. `NavigationStability` wraps the final classic owner after module load.
 
-Baseline before deletion contained 10 historical `window.setPage=function...` assignments. After accepted Batch B and C, current static read reports 8.
+## 5. Next candidate — pre-v42.7 dead direct assignments
 
-Important liveness rule: a wrapper can contain meaningful code yet still be dead if a later direct `window.setPage = ...` assignment discards it and no other reference retains it.
-
-### Next candidate — pre-v42.4 dead family
-
-Current exact reference reads show:
+Potentially dead after full synchronous script initialization:
 
 ```text
-oldSetV39   → declaration + own wrapper call only
-oldSet42    → declaration + own wrapper call only
-set422Base  → declaration + own wrapper call only
+UI-state persistence direct assignment
+v35 direct state.page/render assignment
+v42.4 direct state.page/render assignment
 ```
 
-Their historical semantics were:
+Do not delete merely because v42.7 overwrites them. Before deletion prove:
 
 ```text
-oldSetV39  deployment-page deployLoaded invalidation
-oldSet42   v42 page-family loaded invalidation
-set422Base aliases 新建算法/自动迭代 → 算法列表
+1. source order is earlier-direct-assignments → v42.7 reset
+2. no immediate synchronous setPage call between those assignments depends on their temporary behavior
+3. no closure retains the older assigned functions
+4. current persistence requirements are satisfied elsewhere
+5. current navigation aliases/routes remain covered by v42.7/later owners
+6. setPageReady414, baseSetPage417 and NavigationStability remain untouched
 ```
 
-Then v42.4 directly assigns:
+If a prior direct assignment is used during initialization, split the family further instead of broad deletion.
 
-```text
-window.setPage=function(p){state.page=p;render()};
-```
-
-without calling previous owner. This appears to sever all three wrappers from the final chain.
-
-Before deletion, prove:
-
-```text
-1. no external/local references retain these wrappers
-2. source order places v42.4 direct reset after them
-3. current visible navigation contracts are covered by later router/render owners
-4. deletion leaves syntax/unit/Real Chrome green
-```
-
-This is dead-code cleanup, not an instruction to reintroduce old invalidation/alias behavior.
-
-## 5. Do-not-delete-yet navigation owners
+## 6. Protected navigation contracts
 
 ```text
 setPageReady414
-  waits for __v53InitPromise when uiReady is false
+  wait for __v53InitPromise while uiReady=false
 
 baseSetPage417
-  current classic mobile sidebar close owner
+  close mobile sidebar/backdrop
 
 NavigationStability
   request epoch
-  PageRequestScope navigation alignment
-  PollRegistry before/after navigation
+  PageRequestScope alignment
+  PollRegistry leave/enter
   stale async-owner protection
 ```
 
-Later aliases/cache/persistence layers require their own liveness proof.
+Real Chrome explicitly verifies sidebar/backdrop close after final navigation.
 
-## 6. Existing training polling contracts that must survive
-
-- one in-flight `/jobs` refresh;
-- 120ms poll/manual coalescing;
-- mutation refresh force-fresh;
-- manual refresh re-arms PollRegistry;
-- exactly one `/jobs` GET per manual refresh in Real Chrome;
-- navigation clears `training-jobs`;
-- no `loadAll()` replacement for focused polling.
-
-## 7. Minimum audit targets after setPage cleanup
+## 7. Remaining audit targets
 
 ```text
 render = ...
@@ -207,20 +139,20 @@ setTimeout
 window.fetch =
 ```
 
-For every family:
+Each family must follow:
 
 ```text
-prove final owner
-→ identify independent semantics
-→ deterministic regression
-→ physical deletion
+live HEAD
+→ exact liveness/reference proof
+→ regression
+→ bounded physical deletion
 → permanent guard
 → syntax/unit
-→ Real Chrome when behavior/navigation changes
+→ Real Chrome where relevant
 → docs sync
 ```
 
-## 8. Permanent non-regression rules
+## 8. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. No global render-repair loop.
@@ -230,13 +162,13 @@ prove final owner
 6. Do not weaken duplicate-request/race/performance/browser tests.
 7. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
 8. AutoLabel remains PollRegistry-only.
-9. Video/source/training polling ownership stays direct.
+9. Video/source/training polling direct ownership must not regress.
 10. Frontend CI is not A800/CUDA acceptance.
 
 ## 9. Work order
 
 ```text
-1. pre-v42.4 dead setPage family
+1. pre-v42.7 dead direct setPage family
 2. remaining obsolete render/setPage layers
 3. app.js dead code + global reload/request debt
 4. cache-busting unification
