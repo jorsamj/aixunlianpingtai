@@ -9,14 +9,20 @@ import {
 } from '../../static/modules/training-draft.js';
 import {installTrainingDraftRuntime} from '../../static/modules/training-draft-runtime.js';
 
-function setupDom(priority = '30') {
+function setupDom(values = {}) {
   const listeners = new Map();
+  const controls = {
+    tr429Priority: '30',
+    ...values,
+  };
   globalThis.document = {
     addEventListener(type, handler) { listeners.set(type, handler); },
     removeEventListener(type, handler) { if (listeners.get(type) === handler) listeners.delete(type); },
-    getElementById(id) { return id === 'tr429Priority' ? {value: priority} : null; },
+    getElementById(id) {
+      return Object.hasOwn(controls, id) ? {value: controls[id]} : null;
+    },
   };
-  return listeners;
+  return {listeners, controls};
 }
 
 function dependencies() {
@@ -35,7 +41,7 @@ function cleanup(runtime) {
 }
 
 test('runtime mirrors legacy train-v3 state into one canonical draft', () => {
-  setupDom('25');
+  setupDom({tr429Priority: '25'});
   const state = {
     train428AlgorithmId: 'alg-1',
     trainSplitV3: {
@@ -73,8 +79,95 @@ test('runtime mirrors legacy train-v3 state into one canonical draft', () => {
   cleanup(runtime);
 });
 
+test('live train-v3 controls override stale legacy state and are mirrored back', () => {
+  setupDom({
+    tr429Priority: '7',
+    trV3Experiment: '35',
+    trV3Validation: '18',
+    trV3ResourceStrategy: 'manual',
+    trV3Device: '0',
+    trV3GpuPolicy: 'exclusive',
+  });
+  const state = {
+    train428AlgorithmId: 'alg-1',
+    trainSplitV3: {
+      mode: 'random_test_from_training_pool',
+      train: new Set(['img-1', 'img-2']),
+      test: new Set(),
+      experiment: 20,
+      validation: 20,
+    },
+    train428Config: {
+      resource_strategy: 'auto', device: 'cpu', gpu_policy: 'auto',
+      batch: 16, workers: 4, cache: false, queue_priority: 50,
+    },
+    trainingLabelSelected: new Set(['fire']),
+    algorithms: [{id: 'alg-1', versions: []}],
+  };
+  globalThis.window = {fetch: async () => ({ok: true})};
+
+  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
+  const draft = runtime.sync();
+
+  assert.equal(draft.experimentPercent, 35);
+  assert.equal(draft.validationPercent, 18);
+  assert.equal(draft.priority, 7);
+  assert.deepEqual(draft.resource, {
+    strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false,
+  });
+  assert.equal(state.trainSplitV3.experiment, 35);
+  assert.equal(state.trainSplitV3.validation, 18);
+  assert.equal(state.train428Config.resource_strategy, 'manual');
+  assert.equal(state.train428Config.device, '0');
+  assert.equal(state.train428Config.gpu_policy, 'exclusive');
+  assert.equal(state.train428Config.queue_priority, 7);
+
+  cleanup(runtime);
+});
+
+test('runtime update writes canonical draft and compatibility mirrors together', () => {
+  setupDom();
+  const state = {
+    train428AlgorithmId: 'alg-1',
+    trainSplitV3: {
+      mode: 'random_test_from_training_pool', train: new Set(['a', 'b']), test: new Set(),
+      experiment: 20, validation: 20,
+    },
+    train428Config: {device: 'cpu', batch: 8, workers: 0, cache: false},
+    trainingLabelSelected: new Set(['fire']),
+    algorithms: [{id: 'alg-1', versions: []}],
+  };
+  globalThis.window = {fetch: async () => ({ok: true})};
+
+  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
+  runtime.sync();
+  const draft = runtime.update({
+    materialIds: ['b', 'c'],
+    newLabelCodes: ['smoke'],
+    resource: {device: '0', strategy: 'manual'},
+  });
+
+  assert.deepEqual(draft.materialIds, ['b', 'c']);
+  assert.deepEqual(draft.newLabelCodes, ['smoke']);
+  assert.equal(draft.resource.device, '0');
+  assert.equal(draft.resource.strategy, 'manual');
+  assert.deepEqual([...state.trainSplitV3.train], ['b', 'c']);
+  assert.deepEqual([...state.train429Selected], ['b', 'c']);
+  assert.deepEqual([...state.trainingLabelSelected], ['smoke']);
+  assert.equal(state.train428Config.device, '0');
+  assert.equal(state.train428Config.resource_strategy, 'manual');
+
+  cleanup(runtime);
+});
+
 test('train start POST is canonicalized from TrainingDraft before it reaches the previous fetch chain', async () => {
-  setupDom('35');
+  setupDom({
+    tr429Priority: '35',
+    trV3Validation: '17',
+    trV3ResourceStrategy: 'manual',
+    trV3Device: '0',
+    trV3GpuPolicy: 'exclusive',
+  });
   const state = {
     train428AlgorithmId: 'alg-1',
     trainSplitV3: {
@@ -84,7 +177,7 @@ test('train start POST is canonicalized from TrainingDraft before it reaches the
       validation: 20,
     },
     train428Config: {
-      resource_strategy: 'manual', device: '0', gpu_policy: 'exclusive',
+      resource_strategy: 'auto', device: 'cpu', gpu_policy: 'auto',
       batch: 16, workers: 4, cache: false,
     },
     trainingLabelSelected: new Set(['person']),
@@ -115,7 +208,10 @@ test('train start POST is canonicalized from TrainingDraft before it reaches the
   assert.deepEqual(sent.test_image_ids, ['img-3']);
   assert.deepEqual(sent.train_labels, ['person']);
   assert.equal(sent.split_mode, 'independent_test_set');
+  assert.equal(sent.validation_percent, 17);
+  assert.equal(sent.resource_strategy, 'manual');
   assert.equal(sent.device, '0');
+  assert.equal(sent.gpu_policy, 'exclusive');
   assert.equal(sent.batch, 16);
   assert.equal(sent.workers, 4);
   assert.equal(sent.cache, false);
