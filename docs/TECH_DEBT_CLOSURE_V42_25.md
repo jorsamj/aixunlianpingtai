@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`05abf71d067d4b1e08a2bdeeb9d7787e9fc06dd4`**  
-> **Frontend Runtime Stabilization：run `34655960701`，frontend + Real Chrome 全绿。**  
+> **最近完整代码验收点：`58ece59e95722437069c7e03277363197e564136`**  
+> **Frontend Runtime Stabilization：run `34659775870`，frontend + Real Chrome 全绿。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -19,7 +19,7 @@
 
 ## 1. 永久退休 surface
 
-不得恢复为 truth source、bootstrap fallback、timer owner、polling shell、direct navigation owner 或 compatibility wrapper：
+以下对象不得恢复为 truth source、bootstrap fallback、timer owner、polling shell、direct navigation owner 或 historical render owner：
 
 ```text
 trainingLabelSelected
@@ -47,17 +47,19 @@ registry.adopt('training-jobs', ...)
 adoptLegacy / rebindCreation
 set423Base
 setBase424
-baseSetPage (V37 duplicate mobile-sidebar wrapper)
+baseSetPage
 oldSetV39
 oldSet42
 set422Base
-v34 window.setPage(...saveUiState...)
-v35 window.setPage(state.page/render)
-v42.4 window.setPage(state.page/render)
+v34/v35/v42.4 direct window.setPage owners
 v42.7 direct window.setPage auto-label alias owner
 setPageReady414
 baseSetPage417
 initial bootstrap function setPage(p){state.page=p;render()} / window.setPage=setPage
+v42.7 render-level state.page 自动标注 → 自动标注及清洗 mutation
+oldRender429
+previousRender61
+render423Base
 ```
 
 ## 2. 技术债状态
@@ -72,6 +74,8 @@ initial bootstrap function setPage(p){state.page=p;render()} / window.setPage=se
 | `setupPagePolling` / classic polling compatibility | direct managed owners | **CLOSED** |
 | classic `setPage` owner family | `NavigationStability` | **CLOSED** |
 | navigation alias/readiness/sidebar/apply/persistence | `NavigationStability` + `ui-state.js` | **CLOSED** |
+| historical persisted `自动标注` alias | restore-boundary canonicalization | **CLOSED** |
+| fully shadowed render generations (`oldRender429`, `previousRender61`, `render423Base`) | later bounded render owners | **CLOSED** |
 | remaining historical render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -103,12 +107,12 @@ sources        → PollRegistry(sources)
 
 ### Navigation
 
-`static/app.js` 当前不得再定义任何 `window.setPage=` owner。最终导航链：
+`static/app.js` 当前不得再定义任何 `window.setPage=` owner：
 
 ```text
 window.setPage = NavigationStability.stableSetPage
   → normalizeNavigationPage()
-  → PageRequestScope.navigate / navigation epoch
+  → PageRequestScope / navigation epoch
   → PollRegistry.beforeNavigate
   → waitForNavigationReady() / __v53InitPromise
   → beforeInvokeNavigation() / toggleMobileSidebarV37(false)
@@ -120,13 +124,33 @@ window.setPage = NavigationStability.stableSetPage
   → persistUiState()
 ```
 
-关键合同：named `performNavigation` 配置后不得再调用 classic predecessor；一次导航只允许一次 page mutation / render。runtime 即使没有 classic predecessor，也必须自行安装 `window.setPage`。
+历史 localStorage 中的 `自动标注` 在 v34 restore boundary 先 canonicalize 为 `自动标注及清洗`，随后写回 storage；render 本身不再修改 route state。
+
+### Render — 当前已确认的 live owner
+
+当前不能误删：
+
+```text
+oldRender412   → 算法列表 / 数据集稳定路由 owner
+renderBase428  → 训练任务路由 owner（算法分支已被 oldRender412 遮蔽，但训练分支仍活跃）
+renderTraining423 → 当前训练页 renderer，并直接调用 PollRegistry.replaceTrainingJobTimer()
+finalRender    → 素材存储配置最终路由 owner
+```
+
+已证明并物理删除：
+
+```text
+v42.7 render alias state mutation
+oldRender429    （算法/数据分支被 oldRender412 完全遮蔽）
+previousRender61（素材存储配置被 finalRender 完全遮蔽）
+render423Base   （算法被 oldRender412、训练被 renderBase428 完全遮蔽）
+```
 
 ## 4. Current cache/build facts
 
 ```text
-app.js cache                     42.25.57
-main.mjs cache                   42.25.59
+app.js cache                     42.25.61
+main.mjs cache                   42.25.64
 navigation-stability.js          422511
 ui-state.js                      422500
 poll-registry.js                 422511
@@ -149,13 +173,16 @@ tests/frontend/retired-pre-v424-setpage-guard.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
 tests/frontend/ui-state.test.mjs
+tests/frontend/render-alias-restore.test.mjs
+tests/frontend/render-owner-retirement.test.mjs
 ```
 
-主 CI `Retired navigation setPage guard` 当前要求：
-- `static/app.js` 不得出现任何 `window.setPage=` classic owner；
-- `setPageReady414` / `baseSetPage417` / bootstrap binding 不得回归；
-- `normalizeNavigationPage`、`waitForNavigationReady`、`beforeInvokeNavigation`、`performNavigation` 必须存在；
-- `main.mjs` 必须继续明确接入 readiness、sidebar cleanup、`state.page = page; render()` named apply。
+永久要求：
+- `static/app.js` 不得出现任何 classic `window.setPage=` owner；
+- render 不得重新承担 `自动标注` route canonicalization；
+- `oldRender429` / `previousRender61` / `render423Base` 不得回归；
+- `oldRender412`、`renderBase428`、`finalRender` 当前仍是 live owner，不得在无 liveness proof 时删除；
+- `renderTraining423()` 必须保持 direct PollRegistry training-job ownership。
 
 Browser：
 
@@ -164,61 +191,78 @@ tests/browser/navigation-stability.spec.mjs
 tests/browser/navigation-readiness.spec.mjs
 ```
 
-Real Chrome 锁定：stale request fencing、managed polling 离页停止、sidebar/backdrop close、页面持久化/reload、legacy alias canonicalization、startup readiness，以及 inline 菜单 / programmatic `window.setPage` 的真实导航路径。
+Real Chrome 当前锁定 14 个以上核心场景，包括 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、新旧 localStorage 冷启动 canonicalization，以及 `素材存储配置` 最终 render owner 页面。
 
-## 6. Latest acceptance — initial bootstrap setPage retirement
+## 6. Recent render acceptance history
 
 ```text
-named actual-owner equivalence:
-  commit 04b6982eb50d7afd95ca62517240ed0f7e49f135
-  run    34655575856
+historical auto-label restore bug baseline:
+  commit 582b913e6643689b00462b1b3bc0154a43a94995
+  run    34656484008
+  frontend PASS / Chrome 12 PASS + 1 FAIL
+  failure: UI canonical，但 localStorage 仍保留 自动标注
+
+alias restore-boundary fix + render mutation retirement:
+  commit e35a29b0ded0bf81a5c0f968b07d535472b07f30
+  run    34656747269
   frontend PASS / Real Chrome PASS
 
-physical retirement:
-  bot commit 1f3e53c5f91f9478b2bad74a07d545af51f99f9b
-  focused exact deletion + navigation tests PASS
+oldRender429 retirement:
+  bot    5b8a20b54ab21918b5336bb7d2f534bd11fb22f1
+  final  0455eeef696f19457b0f1a2b79e229a7e381b3db
+  run    34659041402
+  frontend PASS / Real Chrome PASS
 
-final cleaned acceptance:
-  commit 05abf71d067d4b1e08a2bdeeb9d7787e9fc06dd4
-  run    34655960701
-  syntax + permanent navigation guards PASS
-  all frontend unit tests PASS
-  Real Chrome PASS
+storage final-owner browser baseline:
+  commit 00721975e9ca95fba9c65b1bf04bde83ef50a654
+  run    34659361434
+  frontend PASS / Real Chrome PASS
+
+previousRender61 retirement:
+  bot    78543cedd0d154d4337d52c504dd7af4ca44f591
+  final  69732d9ed659a62a3a1e92b36d07b912e141b8c9
+  run    34659543452
+  frontend PASS / Real Chrome PASS
+
+render423Base retirement:
+  bot    ca5c757f13649d487e0f9ffd4f8c1fb69654b948
+  final  58ece59e95722437069c7e03277363197e564136
+  run    34659775870
+  frontend PASS / Real Chrome PASS
 ```
 
-该批证明：
-1. 最后一条 classic bootstrap `setPage` 已从 `static/app.js` 物理删除；
-2. `performNavigation` 是唯一 actual page mutation/render owner；
-3. runtime 无 predecessor 仍会安装全局 `window.setPage`；
-4. inline 菜单和 programmatic `window.setPage` 在真实 Chrome 中继续工作；
-5. readiness、sidebar、PollRegistry、request fencing、persistence 无退化；
-6. 两组 bootstrap 一次性 migration helper/workflow 已全部物理删除；
-7. classic `setPage` owner family 当前可以视为 **zero-point CLOSED**。
+所有对应一次性 migration helper/workflow 均在验收后物理删除；永久 tests 保留。
 
-## 7. 下一批：render override owner audit
+## 7. 下一批：remaining render owner audit
 
-下一目标不是盲删 `render()`，而是建立最终 renderer capture/liveness 表。优先审计：
+不要按版本号批量删除。下一阶段只做 capture/liveness 证明，重点审计：
 
 ```text
-render = ... / const xxx=render 捕获链
-v42.7 render-level 自动标注 → 自动标注及清洗 fallback
-renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
-NavigationStability PAGE_RENDERERS guards
+baseRenderV37       页面增强 requestAnimationFrame owner
+oldRenderV39        部署相关 route owner
+renderBase424       质量/数据/视频/自动标注等 route owner
+render426base       文件输入美化 post-render owner
+renderBase427       自动标注及清洗 route owner
+renderBase428       训练任务 live owner（当前不能整层删除）
+oldRender412        算法/数据 live owner
+render414Base       标签管理 + version badge owner
+baseRender417       版本 badge/footer correction owner
+finalRender         素材存储配置 live owner
+cleanup MutationObserver / post-render cleanup wrapper
 ```
 
-执行顺序：
-1. 枚举所有 `render` 赋值/捕获和最终调用链；
-2. 区分全局 shell render、page renderer、已被后层完全覆盖的 dead generation；
-3. 先给真实语义补 unit/Chrome 合同；
-4. 迁入 bounded semantic owner 后再做物理删除；
-5. 每刀保持 `render()` 启动路径、导航、局部刷新、表单/滚动/选择状态不退化。
-
-特别注意：v42.7 render-level alias fallback 仍是已知 render-chain debt。setPage alias 已 canonicalize，因此可优先证明该 fallback 是否已冗余，但不得无测试直接删。
+执行规则：
+1. 先证明 exact source order、capture/reference 和 page coverage；
+2. 对 live 语义先补 unit/Chrome；
+3. 只删除 fully shadowed generation；
+4. 语义迁移必须先 double-owner equivalence；
+5. 每刀 full frontend + Real Chrome；
+6. 不允许通过放宽测试换取删除成功。
 
 ## 8. 后续顺序
 
 ```text
-A. render override owner audit / obsolete layer deletion
+A. remaining render override owner audit / obsolete layer deletion
 B. app.js dead code + global reload/request debt
 C. cache-busting unification
 D. MutationObserver/timer/fetch/render/setPage zero-point scan
