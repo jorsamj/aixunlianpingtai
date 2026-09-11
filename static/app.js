@@ -2524,8 +2524,6 @@ window.installUsability417=function(){
     if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();window.PollRegistryRuntime?.replaceTrainingJobTimer?.();return}
     render423Base();
   };
-  const set423Base=window.setPage;
-  window.setPage=function(p){set423Base(p)};try{setPage=window.setPage}catch(e){}
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V423},100);
 })();
 
@@ -2724,7 +2722,6 @@ window.installUsability417=function(){
     // call previous render for deploy/test/config pages, but it will redraw nav/top; acceptable
     renderBase424();
   };
-  const setBase424=window.setPage;
   window.setPage=function(p){state.page=p;render()};try{setPage=window.setPage}catch(e){}
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V424},100);
 })();
