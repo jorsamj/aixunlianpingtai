@@ -24,7 +24,38 @@ static/app.js historical shell
 
 No new numbered override generation is allowed.
 
-## 2. Canonical training owner
+## 2. Current versions / latest acceptance
+
+```text
+app.js                         42.25.44
+main.mjs                       42.25.49
+training-draft-runtime         422516
+TrainingDraftRuntime build     training-draft-runtime-422516
+training-labels                422513
+TrainingLabelRuntime build     module-422513
+AutoLabelPollRuntime           422501 / auto-label-poll-422501
+TrainingSubmitRuntime          training-submit-422504
+TrainingTaskRuntime            training-task-runtime-422503
+```
+
+Latest full acceptance:
+
+```text
+commit  7dbe7414767ed2808d17cc61a85c4897054391b1
+run     34609355389
+syntax                               PASS
+retired-mirror guard                 PASS
+network-owner guard                  PASS
+TrainingDraft wrapper/owner guard    PASS
+TrainingLabel canonical lifecycle    PASS
+AutoLabel PollRegistry owner guard   PASS
+frontend unit                        PASS
+Real Chrome                          PASS
+```
+
+## 3. Training ownership audit: CLOSED
+
+Canonical chain:
 
 ```text
 state.trainingDraft
@@ -33,25 +64,7 @@ state.trainingDraft
 → /api/v12/projects/{project_id}/train/start
 ```
 
-Current versions:
-
-```text
-app.js                         42.25.43
-main.mjs                       42.25.48
-training-draft                 422506
-training-draft-runtime         422516
-TrainingDraftRuntime build     training-draft-runtime-422516
-training-labels                422513
-TrainingLabelRuntime build     module-422513
-TrainingSubmitRuntime          training-submit-422504
-TrainingTaskRuntime            training-task-runtime-422503
-```
-
-`TrainingSubmitRuntime` is the sole `/train/start` network owner.
-
-## 3. Retired training mirror/adapter surface
-
-Fully retired from active product training ownership:
+Retired training mirror/adapter surface:
 
 ```text
 trainingLabelSelected
@@ -62,69 +75,46 @@ train428Config
 trainingDraftFromLegacyState
 ```
 
-Missing draft initializes an empty canonical draft; no mirror recovery is permitted.
+TrainingDraftRuntime and TrainingLabelRuntime are wrapper-free. TrainingLabel is also timer-free/canonical-only. `.training-label-contract` belongs only to TrainingLabelRuntime; DraftRuntime must not generic-sync those controls.
 
-## 4. TrainingDraft wrapper audit: CLOSED
+## 4. AutoLabel polling audit: CLOSED
 
-TrainingDraftRuntime is completely wrapper-free. It does not replace, decorate, restore, or count mutations from classic `app.js` functions.
-
-Permanent event-owner boundary:
+Final owner:
 
 ```text
-.train429-create / .train-v3-picker generic form events → TrainingDraftRuntime
-.training-label-contract events                         → TrainingLabelRuntime only
+renderOps427 label tab render complete
+→ AutoLabelPollRuntime.activate(annotationTasks60)
+→ PollRegistry(auto-label-v60)
+→ refreshRows
+→ active tasks only re-arm
 ```
 
-DraftRuntime explicitly excludes `.training-label-contract` before generic event sync. This is mandatory because otherwise a label checkbox click can schedule `sync()`, notify LabelRuntime, and cause the element being clicked to be replaced.
+Clean tab explicitly calls `AutoLabelPollRuntime.deactivate()`.
 
-Runtime diagnostics remain:
+Physically retired:
 
 ```text
-networkOwner=false
-classicWrapperOwner=false
+auto422Timer (2500ms)
+ai60ListTimer (1800ms)
+AutoLabelPollRuntime renderOps427 wrapper
+__autoLabelPollRuntimeWrapped
+originalRenderOps / wrappedRenderOps
+100/400/1000ms rebind timers
 ```
 
-## 5. TrainingLabel wrapper/lifecycle audit: CLOSED
+The runtime itself contains no `setTimeout/clearTimeout` lifecycle owner; PollRegistry is the timer owner. Runtime diagnostics are `classicWrapperOwner=false` and `timerOwner=false`.
 
-Canonical ownership:
+Permanent CI requires `static/app.js` to stay free of `auto422Timer/ai60ListTimer`, requires explicit app → Runtime activate/deactivate handoff, and forbids renderer wrapping/rebind timers in the Runtime.
 
-- materials: `trainingDraft.materialIds`;
-- new labels: `trainingDraft.newLabelCodes`.
+Real Chrome proves:
 
-All historical TrainingLabel wrapper targets are retired:
+- `auto-label-v60` is managed by PollRegistry at 1800ms;
+- task rows update without replacing the page root;
+- active task polling continues;
+- navigation away clears the managed key;
+- no page errors.
 
-```text
-openTrain428
-refreshTrain428
-startAlgorithmTraining423
-openTrain425
-trainCounts425
-startAlgorithmTraining429
-refreshTrain429
-```
-
-Also removed:
-
-```text
-post-entrypoint refresh timers
-rebind timers
-legacy train425Selected fallback
-legacy tr425AssetAlg/train423Asset lookup
-legacy .train428-data/.train425-data host fallback
-```
-
-Current lifecycle is canonical subscription based:
-
-```text
-TrainingDraftRuntime.subscribe()
-→ TrainingLabelRuntime
-```
-
-A pure `newLabelCodes` update does not rebuild the panel. The checkbox DOM remains stable during click/change; only the visible label count is updated. A MutationObserver remains solely for outer modal DOM replacement and is not a polling substitute.
-
-Real Chrome covers first session toggle, final submit payload, and second-session reset.
-
-## 6. Established page owners relevant to training
+## 5. Established page owners relevant to training
 
 ### Algorithm list
 Stable visible renderer: `renderAlgorithms423 → renderAlg412`.
@@ -142,47 +132,40 @@ Final owner is the 428-era task-center renderer assigned to `renderTraining423/4
 ### Navigation/request lifecycle
 `NavigationStability`, `PageRequestScope`, and `PollRegistry` own stabilized navigation/request/poll lifecycle. Do not restore global render-repair loops.
 
-## 7. Current AutoLabel polling overlap
+## 6. Next polling debt: video / prelabel / setupPagePolling
 
-Current code still has multiple lifecycle owners around the same page/task stream:
-
-```text
-legacy auto422Timer interval       2500 ms
-legacy v60 ai60ListTimer timeout   app-owned
-AutoLabelPollRuntime               renderOps427 wrapper
-AutoLabelPollRuntime               100/400/1000 ms rebind timers
-PollRegistry                       auto-label-v60 managed one-shot
-```
-
-Target state:
+Verified current v33 legacy chain:
 
 ```text
-AutoLabelPollRuntime + PollRegistry
+const _oldSetupPollV33 = setupPagePolling
+setupPagePolling = function() {
+  _oldSetupPollV33();
+  clearInterval(window.__videoFramePollTimer);
+  clearInterval(window.__prelabelPollTimer);
+  if (state.page === '视频切帧') {
+    window.__videoFramePollTimer = setInterval(refreshVideoTasksOnly, 2500);
+  }
+}
 ```
 
-Only active v60 annotation tasks should re-arm polling. Navigation away must clear the managed key immediately. Obsolete legacy timers/wrappers must be physically removed rather than being created and then cleared by Runtime.
-
-Existing Real Chrome test already verifies:
-
-- task rows refresh without replacing `#view`;
-- `auto-label-v60` is PollRegistry-managed;
-- navigation away clears the key.
-
-## 8. Other remaining timer/polling debt
+`refreshVideoTasksOnly()` is already a narrow updater:
 
 ```text
-__videoFramePollTimer
-prelabel legacy timer
-old setupPagePolling
+GET /api/v33/projects/{pid}/video-tasks
+→ state.videoTasks
+→ #videoTaskRows only
 ```
 
-A timer is not closed merely because a newer runtime clears it later; obsolete creation should be physically removed.
+Therefore video polling should migrate to a named PollRegistry lifecycle owner rather than re-rendering the full page.
 
-## 9. Render/override debt
+`__prelabelPollTimer` was found only as a clear in this wrapper during the first pass; no creation site was found in that pass. Re-audit before physically deleting the cleanup reference.
+
+## 7. Render/override debt
 
 Audit targets remain:
 
 ```text
+setupPagePolling
 render = ...
 window.setPage = ...
 renderXXX412 / 417 / 423 / 428 / 429
@@ -197,42 +180,25 @@ window.fetch =
 
 Deletion rule: prove final owner → regression coverage → physical deletion → syntax/unit → Chrome where relevant.
 
-## 10. Cache-busting debt
-
-Current values:
+## 8. Cache-busting debt
 
 ```text
 styles/bootstrap                  42.24.0-style versions
-app.js                            42.25.43
-main.mjs                          42.25.48
+app.js                            42.25.44
+main.mjs                          42.25.49
 training-draft.js                 422506
 training-draft-runtime.js         422516
 training-labels.js                422513
+auto-label-poll-runtime.js        422501
 ```
 
 Still not unified.
 
-## 11. Latest full acceptance
+## 9. Current cleanup order
 
 ```text
-commit  5ad08f03406e10dfd8c66a1455f068d503a77a4f
-run     34608378866
-syntax                               PASS
-retired-mirror guard                 PASS
-network-owner guard                  PASS
-TrainingDraft wrapper/owner guard    PASS
-TrainingLabel canonical lifecycle    PASS
-frontend unit                        PASS
-Real Chrome                          PASS
-```
-
-This acceptance closes both TrainingDraft and TrainingLabel classic-wrapper/timer debt.
-
-## 12. Current cleanup order
-
-```text
-1. AutoLabel polling single-owner cleanup
-2. retire __videoFramePollTimer / prelabel / setupPagePolling
+1. migrate __videoFramePollTimer to PollRegistry / named video lifecycle owner
+2. resolve prelabel legacy cleanup + old setupPagePolling layers
 3. establish renderer/setPage final-owner table
 4. remove proven dead app.js / global reload/request debt
 5. unify cache-busting
@@ -242,7 +208,7 @@ This acceptance closes both TrainingDraft and TrainingLabel classic-wrapper/time
 9. resume A800 RC
 ```
 
-## 13. Non-negotiable rules
+## 10. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. No global render-repair loop.
@@ -251,6 +217,6 @@ This acceptance closes both TrainingDraft and TrainingLabel classic-wrapper/time
 5. No mother-model class inheritance on first training.
 6. Explicit false/zero training resource values must survive UI → draft → request.
 7. Do not weaken duplicate-request/race/browser tests.
-8. TrainingDraftRuntime and TrainingLabelRuntime must remain wrapper-free.
-9. DraftRuntime must not generic-sync TrainingLabel-owned controls.
+8. TrainingDraftRuntime and TrainingLabelRuntime remain wrapper-free.
+9. AutoLabel polling remains PollRegistry-only; no legacy timer or renderer wrapper revival.
 10. Frontend acceptance is not A800/CUDA acceptance.
