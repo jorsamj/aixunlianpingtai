@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -264,7 +265,7 @@ def read_metrics(path):
     if not path.is_file():
         return {}
     try:
-        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1) as db:
+        with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1)) as db, db:
             row = db.execute("SELECT value FROM summary WHERE id=1").fetchone()
         return json.loads(row[0]) if row else {}
     except (sqlite3.Error, ValueError, OSError):
@@ -291,7 +292,7 @@ class TrainingMetrics:
             psutil.cpu_percent()
         except ImportError:
             pass
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             db.executescript("CREATE TABLE IF NOT EXISTS samples (id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
                              "CREATE TABLE IF NOT EXISTS summary (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);"
                              "CREATE TABLE IF NOT EXISTS epochs (id INTEGER PRIMARY KEY, value TEXT NOT NULL);")
@@ -324,7 +325,7 @@ class TrainingMetrics:
                 sample.update(gpu_utilization=gpu["utilization"], gpu_total_bytes=gpu["total_bytes"],
                               gpu_used_bytes=gpu["total_bytes"] - gpu["free_bytes"],
                               gpu_memory_percent=100 * (1 - gpu["free_bytes"] / gpu["total_bytes"]))
-        with self.lock, self.connect() as db:
+        with self.lock, closing(self.connect()) as db, db:
             db.execute("INSERT INTO samples(value) VALUES (?)", (json.dumps(sample),))
             db.execute("DELETE FROM samples WHERE id NOT IN (SELECT id FROM samples ORDER BY id DESC LIMIT 720)")
             rows = [json.loads(row[0]) for row in db.execute("SELECT value FROM samples ORDER BY id DESC LIMIT 6")]
@@ -353,7 +354,7 @@ class TrainingMetrics:
     def on_epoch_end(self, trainer):
         duration = max(0.001, time.monotonic() - self.epoch_started)
         count = len(trainer.train_loader.dataset)
-        with self.lock, self.connect() as db:
+        with self.lock, closing(self.connect()) as db, db:
             self.epoch_duration = round(duration, 3)
             self.images_per_second = round(count / duration, 3)
             db.execute("INSERT INTO epochs(value) VALUES (?)", (json.dumps(dict(
