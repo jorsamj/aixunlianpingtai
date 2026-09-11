@@ -16,6 +16,7 @@ static/app.js historical/versioned overrides
        ├── PollRegistry
        ├── AlgorithmListRuntime
        ├── TrainingTaskRuntime
+       ├── MaterialPaginationRuntime61
        ├── TrainingDraftRuntime
        ├── TrainingSubmitRuntime
        ├── training-labels
@@ -69,17 +70,9 @@ auto-label-v60    one-shot, 1.8s while active
 
 Remaining legacy timer fields are compatibility cleanup, not a reason to add more polling wrappers.
 
-## 3. Algorithm list debt status
+## 3. P0-C incremental rendering — complete
 
-Final classic renderer is v42.12 `renderAlg412` / `renderAlgorithms423`.
-
-Historical bug:
-
-```text
-expand algorithm
--> GET all algorithms
--> rerender all algorithm cards
-```
+### Algorithms
 
 Replacement owner:
 
@@ -96,20 +89,7 @@ refresh -> patch cards, preserve page shell
 training-create success -> focused algorithms/jobs refresh
 ```
 
-Later v42.14 algorithm create/edit/delete was already incremental and does not need another replacement layer.
-
-## 4. Training task debt status
-
-Final visible classic task page is the v42.8 `.train428-page` path.
-
-Historical refresh/action pattern:
-
-```text
-loadRelated()
--> datasets/images/labels/algorithms/publish/test data
--> renderTraining423()
--> replace page DOM
-```
+### Training tasks
 
 Replacement owner:
 
@@ -130,7 +110,37 @@ delete  -> optional stop + DELETE -> GET jobs -> patch
 
 The final `.train428-page` node is preserved during normal refresh/action operations.
 
-## 5. Auto-label / video / source polling status
+The material full-pool hydration path is not allowed to call a late global `render()` for `训练任务`; this closes the historical race that could rebuild the shell after navigation.
+
+### Datasets / materials
+
+Replacement owner:
+
+```text
+static/modules/material-pagination-runtime.js
+window.MaterialPaginationRuntime61
+```
+
+The v61 server-paged material API remains the correct data shape.
+
+Current contract:
+
+```text
+first entry / structural toolbar change
+-> build .data426-shell
+
+page / search / label filter / source filter / top refresh
+-> v61 material requests only
+-> update page state/totals
+-> patch #data412Grid + counts + pager + source/filter decorations
+-> preserve .data426-shell
+```
+
+Switching processed/unprocessed tabs or toggling delete mode may rebuild the shell because the toolbar/filters structurally change. Routine data refreshes must not.
+
+Real Chrome verifies natural pagination, search and top refresh preserve the shell and do not request bootstrap, algorithms, datasets, or legacy `/api/projects/{id}/images`.
+
+## 4. Auto-label / video / source polling status
 
 ### Auto-label
 
@@ -144,7 +154,7 @@ Final owner path is v42.4 `renderVideo424 / refreshVideo424Delta`, not old v33. 
 
 `source422Timer` creation is replaced by a PollRegistry-managed 2.5 second interval. Refresh remains table-local.
 
-## 6. Canonical training state
+## 5. Canonical training state
 
 Canonical source of truth:
 
@@ -174,28 +184,35 @@ They must not regain authority. Do not add `train430`, `train431`, etc.
 
 Training label owner is `static/modules/training-labels.js`. Training POST owner is `TrainingSubmitRuntime`.
 
-## 7. Remaining high-value debt
+## 6. Remaining high-value debt
 
-### P0-A Dataset/material page
+### P0-B Training mirror removal
 
-The v61 server-paged material path is already the correct data shape, but `loadMaterialPage61()` still calls `renderPagedDataset61()`, which can rebuild the dataset shell through the historical base renderer.
+This is now the principal frontend P0 item.
+
+Final train-v3 still writes several controls into historical state first and relies on `TrainingDraftRuntime.sync()` / event sampling / compatibility wrappers to reconstruct the canonical draft.
 
 Next target:
 
 ```text
-server page fetch
--> update state.images/page totals
--> patch cards + counts + pager + controls
--> preserve dataset shell when it already exists
+train-v3 user action
+-> TrainingDraftRuntime.update(...)
+-> state.trainingDraft
+-> temporary mirror to old fields only for legacy rendering
 ```
 
-Also intercept top-level Refresh on `数据集` so it does not fall back to `loadCore412() + extras412() + render()`.
+Priority direct-write actions:
 
-### P0-B Training mirror removal
+```text
+confirmTrainMaterialPickerV3
+setTrainSplitModeV3
+training config apply/save
+algorithm selection / resource controls where still legacy-first
+```
 
-Continue moving final train-v3 control writes directly through `TrainingDraftRuntime.update()`. Remove old state fields only after browser parity.
+Remove old state fields only after browser parity proves the canonical draft is the direct owner.
 
-### P0-C Global render chain
+### P0-C Global render chain cleanup
 
 `app.js` still contains many historical `render=function(){...}` and `window.setPage` override layers. Do not delete them wholesale. A classic owner can be removed only after its replacement named module has unit + real-browser parity.
 
@@ -214,7 +231,7 @@ frontend/
 
 Migration must be page-by-page replacement, not permanent dual-run.
 
-## 8. Regression gates
+## 7. Regression gates
 
 Workflow:
 
@@ -233,11 +250,12 @@ Playwright Chrome:
   auto-label-polling.spec.mjs
   algorithm-list-performance.spec.mjs
   training-task-performance.spec.mjs
+  material-pagination-performance.spec.mjs
 ```
 
-The current recorded milestone (`512f5a59...`) passed Node and real Chrome. Always confirm latest HEAD checks before claiming green.
+The recorded milestone `e38b72a4...` passed Node and real Chrome. Always confirm latest HEAD checks before claiming green.
 
-## 9. Non-negotiable rules
+## 8. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. No global `window.render()` repair loop.
