@@ -1,0 +1,32 @@
+name: v42.25 runtime validation
+
+on:
+  push:
+    branches:
+      - refactor/v42.25-runtime
+  workflow_dispatch:
+
+jobs:
+  runtime-fencing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight test dependencies
+        run: python -m pip install --upgrade pytest psutil
+      - name: Run Task Runtime fencing tests
+        run: >-
+          python -m pytest
+          tests/unit/task_runtime/test_repository.py
+          tests/unit/task_runtime/test_scheduler.py
+          tests/unit/task_runtime/test_process_control.py
+          tests/unit/task_runtime/test_fencing.py
+          tests/unit/task_runtime/test_resource_fencing.py
+          tests/unit/task_runtime/test_gpu_recovery_fencing.py
+          tests/unit/task_runtime/test_artifact_fencing.py
+          tests/unit/test_conversion_tasks.py
+          tests/unit/test_conversion_process_fencing.py
+          -q
