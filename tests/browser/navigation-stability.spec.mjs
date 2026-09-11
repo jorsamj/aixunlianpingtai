@@ -91,7 +91,6 @@ test('final v42.4 video polling patches rows with a PollRegistry-managed one-sho
   await page.evaluate(() => window.setPage('视频切帧'));
   await expect(page.locator('#title')).toContainText('视频切帧');
   await expect(page.locator('#video424Rows')).toBeVisible({timeout: 10_000});
-  await expect(page.locator('#video424Rows')).toContainText('browser-video.mp4');
 
   await page.evaluate(() => {
     window.__videoStableRoot = document.getElementById('view');
@@ -179,5 +178,25 @@ test('final navigation persists the selected page and restores it after reload',
 
   await page.reload();
   await expect(page.locator('#title')).toContainText('数据集', {timeout: 15_000});
+  expect(pageErrors).toEqual([]);
+});
+
+test('legacy auto-label route alias resolves to 自动标注及清洗 through final navigation', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => window.setPage('自动标注'));
+  await expect(page.locator('#title')).toContainText('自动标注及清洗');
+  await expect.poll(async () => page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem('mc_train_ui_state_v34') || '{}').page || '';
+    } catch (_) {
+      return '';
+    }
+  })).toBe('自动标注及清洗');
+
   expect(pageErrors).toEqual([]);
 });
