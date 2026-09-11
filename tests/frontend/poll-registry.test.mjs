@@ -159,7 +159,7 @@ test('final training polling creation is replaced by a PollRegistry-managed inte
   delete globalThis.window;
 });
 
-test('video frame polling creation is replaced by a PollRegistry-managed interval and cleared on leave', async () => {
+test('final v42.4 video polling uses a managed one-shot and re-arms only while a task is active', async () => {
   const state = {
     page: '视频切帧',
     project: {id: 'p1'},
@@ -167,52 +167,79 @@ test('video frame polling creation is replaced by a PollRegistry-managed interva
     jobPollTimer: null,
     source422Timer: null,
     auto422Timer: null,
+    video424: [{id: 'v1', status: 'RUNNING'}],
+    video424Timer: null,
   };
-  const callbacks = new Map();
-  const cleared = [];
+  const timeouts = new Map();
+  const clearedTimeouts = [];
+  const intervals = new Map();
+  const clearedIntervals = [];
   let nextTimer = 200;
   let refreshes = 0;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => {
+    clearedTimeouts.push(id);
+    timeouts.delete(id);
+  };
   globalThis.setInterval = (callback, delay) => {
     const id = ++nextTimer;
-    callbacks.set(id, {callback, delay});
+    intervals.set(id, {callback, delay});
     return id;
   };
   globalThis.clearInterval = id => {
-    cleared.push(id);
-    callbacks.delete(id);
+    clearedIntervals.push(id);
+    intervals.delete(id);
   };
   globalThis.window = {
-    __videoFramePollTimer: null,
-    refreshVideoTasksOnly: async () => { refreshes += 1; },
-    setupPagePolling() {
-      window.__videoFramePollTimer = setInterval(() => {}, 9999);
+    __videoFramePollTimer: 199,
+    PlatformCore: {video: {isActiveVideoTask: task => String(task?.status).toUpperCase() === 'RUNNING'}},
+    renderVideo424: async () => {
+      state.video424Timer = setTimeout(() => {}, 9999);
+    },
+    refreshVideo424Delta: async () => {
+      refreshes += 1;
+      state.video424Timer = setTimeout(() => {}, 9999);
     },
   };
 
   const runtime = installPollRegistry({getState: () => state});
-  const managed = window.__videoFramePollTimer;
-  assert.equal(callbacks.get(managed)?.delay, 2500);
+  await window.renderVideo424();
+
+  const firstManaged = state.video424Timer;
+  assert.equal(timeouts.get(firstManaged)?.delay, 2000);
   assert.deepEqual(runtime.snapshot().find(row => row.key === 'video-frames'), {
-    key: 'video-frames', owners: ['视频切帧'], active: true, managed: true, delay: 2500,
+    key: 'video-frames', owners: ['视频切帧'], active: true, managed: true, delay: 2000,
   });
+  assert.ok(clearedIntervals.includes(199), 'legacy v33 video interval should be retired');
+  assert.ok(clearedTimeouts.some(id => id !== firstManaged), 'legacy v42.4 timeout should be retired');
 
-  window.setupPagePolling();
-  const replacement = window.__videoFramePollTimer;
-  assert.notEqual(replacement, managed);
-  assert.equal(callbacks.get(replacement)?.delay, 2500);
-  assert.ok(cleared.includes(managed));
-  assert.ok(cleared.some(id => id !== managed && id !== replacement), 'legacy video timer should be cleared');
-
-  await callbacks.get(replacement).callback();
+  await timeouts.get(firstManaged).callback();
   assert.equal(refreshes, 1);
+  const secondManaged = state.video424Timer;
+  assert.notEqual(secondManaged, firstManaged);
+  assert.equal(timeouts.get(secondManaged)?.delay, 2000);
+  assert.equal(runtime.snapshot().find(row => row.key === 'video-frames')?.managed, true);
+
+  state.video424 = [{id: 'v1', status: 'SUCCEEDED'}];
+  await timeouts.get(secondManaged).callback();
+  assert.equal(refreshes, 2);
+  assert.equal(state.video424Timer, null);
+  assert.equal(runtime.snapshot().some(row => row.key === 'video-frames'), false);
 
   runtime.beforeNavigate('数据集');
-  assert.equal(window.__videoFramePollTimer, null);
-  assert.equal(callbacks.has(replacement), false);
+  assert.equal(state.video424Timer, null);
 
   runtime.destroy();
+  globalThis.setTimeout = originalSetTimeout;
+  globalThis.clearTimeout = originalClearTimeout;
   globalThis.setInterval = originalSetInterval;
   globalThis.clearInterval = originalClearInterval;
   delete globalThis.window;
