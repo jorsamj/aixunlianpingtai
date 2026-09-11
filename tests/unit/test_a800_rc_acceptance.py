@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -59,13 +60,15 @@ def _fixture(tmp_path: Path, *, wrong_label=False, negative_bytes=b""):
         "requested_cache": False,
         "resolved_cache": False,
     }
+    model_bytes = b"verified-model"
+    model_sha = hashlib.sha256(model_bytes).hexdigest()
     result = {
         "snapshot_id": "snap-rc",
         "requested_device": "0",
         "assigned_device": "cuda:0",
         "actual_device": "cuda:0",
         "actual_train_params": {"batch": 16, "workers": 4, "cache": False},
-        "verified_models": [{"ref": "outputs/00_best.pt", "sha256": "abc"}],
+        "verified_models": [{"ref": "outputs/00_best.pt", "sha256": model_sha, "size_bytes": len(model_bytes)}],
         "base_version_name": "",
         "base_selection_reason": "first_training",
     }
@@ -97,7 +100,7 @@ def _fixture(tmp_path: Path, *, wrong_label=False, negative_bytes=b""):
     negative.write_bytes(negative_bytes)
     model = task_root / "outputs" / "00_best.pt"
     model.parent.mkdir(parents=True, exist_ok=True)
-    model.write_bytes(b"verified-model")
+    model.write_bytes(model_bytes)
     job_path = tmp_path / "job.json"
     _write(job_path, job)
     return data_dir, job_path, task_id
@@ -116,6 +119,8 @@ def _args(data_dir: Path, job_path: Path, task_id: str):
         expected_workers=4,
         expected_cache=False,
         expected_device="0",
+        require_iteration=False,
+        expected_base_version=None,
         output=None,
     )
 
@@ -151,3 +156,49 @@ def test_cache_and_device_normalization_support_runtime_forms():
     assert rc._cache("ram") == "ram"
     assert rc._device("cuda:0") == "0"
     assert rc._device("0") == "0"
+
+def test_verify_job_rejects_missing_verified_model_artifact(tmp_path):
+    data_dir, job_path, task_id = _fixture(tmp_path)
+    model = data_dir / "task_runtime" / "artifacts" / task_id / "outputs" / "00_best.pt"
+    model.unlink()
+    report = rc.verify_job(_args(data_dir, job_path, task_id))
+    assert report.ok is False
+    failed = {row.name for row in report.checks if not row.ok}
+    assert "verified trained model artifacts are intact" in failed
+
+
+def test_verify_iteration_matches_latest_successful_trainable_version(tmp_path):
+    data_dir, job_path, task_id = _fixture(tmp_path)
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    job.update({
+        "asset_algorithm_id": "alg-1",
+        "base_version_id": "v-good-new",
+        "base_version_name": "20260911090000",
+        "base_selection_reason": "latest_verified_version",
+    })
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+    result_path = data_dir / "task_runtime" / "artifacts" / task_id / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result.update({
+        "base_version_id": "v-good-new",
+        "base_version_name": "20260911090000",
+        "base_selection_reason": "latest_verified_version",
+    })
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    algorithms = [{
+        "id": "alg-1",
+        "versions": [
+            {"id": "v-failed-later", "version_name": "20260911100000", "finished_at": "2026-09-11T10:00:00Z", "training_status": "FAILED", "artifact_verified": False, "framework": "ultralytics"},
+            {"id": "v-good-new", "version_name": "20260911090000", "finished_at": "2026-09-11T09:00:00Z", "training_status": "SUCCEEDED", "artifact_verified": True, "trainable": True, "framework": "ultralytics"},
+            {"id": "v-good-old", "version_name": "20260910090000", "finished_at": "2026-09-10T09:00:00Z", "training_status": "SUCCEEDED", "artifact_verified": True, "trainable": True, "framework": "ultralytics"},
+        ],
+    }]
+    algorithms_path = data_dir / "projects" / "project-rc" / "algorithms.json"
+    _write(algorithms_path, algorithms)
+    args = _args(data_dir, job_path, task_id)
+    args.require_iteration = True
+    args.expected_base_version = "v-good-new"
+    report = rc.verify_job(args)
+    assert report.ok, json.dumps(report.as_dict(), ensure_ascii=False, indent=2)
+    assert report.evidence["iteration"]["expected_latest_successful_version_id"] == "v-good-new"
+

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -22,6 +23,14 @@ def _json(path: Path, default: Any = None) -> Any:
     if not path.is_file():
         return default
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _http_json(base_url: str, path: str, timeout: float = 10.0) -> Any:
@@ -350,7 +359,23 @@ def verify_job(args: argparse.Namespace) -> Report:
                    detail="本次任务没有负样本，无法完成 confirmed_empty 实机验收")
 
     verified_models = result.get("verified_models") or []
-    report.add("verified trained model exists", bool(verified_models), expected=">=1 verified model", actual=verified_models)
+    model_evidence = []
+    for item in verified_models:
+        ref = str(item.get("ref") or "") if isinstance(item, dict) else str(item or "")
+        model_path = task_root / ref if ref else task_root / "__missing_model_ref__"
+        size = model_path.stat().st_size if model_path.is_file() else None
+        digest = _sha256(model_path) if size and size > 0 else None
+        expected_size = item.get("size_bytes") if isinstance(item, dict) else None
+        expected_sha = str(item.get("sha256") or "") if isinstance(item, dict) else ""
+        ok = bool(size and size > 0)
+        if expected_size is not None:
+            ok = ok and int(expected_size) == int(size or -1)
+        if expected_sha:
+            ok = ok and digest == expected_sha
+        model_evidence.append({"ref": ref, "path": str(model_path), "size": size, "sha256": digest, "ok": ok})
+    report.evidence["verified_models"] = model_evidence
+    report.add("verified trained model artifacts are intact", bool(model_evidence) and all(row["ok"] for row in model_evidence),
+               expected="all verified model refs exist with matching size/SHA256", actual=model_evidence)
 
     report.evidence["resources"] = {
         "resolved": resolved,
@@ -364,10 +389,43 @@ def verify_job(args: argparse.Namespace) -> Report:
         "data_yaml": yaml_codes,
         "nc": len(yaml_codes),
     }
+    base_version_id = str(result.get("base_version_id") or job.get("base_version_id") or "")
+    base_version_name = str(result.get("base_version_name") or job.get("base_version_name") or "")
+    base_reason = str(result.get("base_selection_reason") or job.get("base_selection_reason") or "")
     report.evidence["iteration"] = {
-        "base_version_name": result.get("base_version_name") or job.get("base_version_name"),
-        "base_selection_reason": result.get("base_selection_reason") or job.get("base_selection_reason"),
+        "base_version_id": base_version_id,
+        "base_version_name": base_version_name,
+        "base_selection_reason": base_reason,
     }
+    if args.require_iteration:
+        algorithms_path = data_dir / "projects" / args.project_id / "algorithms.json"
+        algorithms = _json(algorithms_path, []) or []
+        algorithm_id = str(job.get("asset_algorithm_id") or job.get("algorithm_asset_id") or "")
+        algorithm = next((row for row in algorithms if str(row.get("id") or "") == algorithm_id), None)
+        versions = list((algorithm or {}).get("versions") or [])
+        successful = {"SUCCEEDED", "PARTIAL_SUCCESS", "DONE", "FINISHED", "COMPLETED"}
+        eligible = [row for row in versions
+                    if str(row.get("training_status") or "").upper() in successful
+                    and row.get("artifact_verified") is True
+                    and row.get("trainable") is not False
+                    and str(row.get("framework") or "ultralytics").lower() == "ultralytics"]
+        eligible.sort(key=lambda row: str(row.get("finished_at") or row.get("created_at") or row.get("version_name") or ""), reverse=True)
+        expected_base = eligible[0] if eligible else None
+        expected_base_id = str((expected_base or {}).get("id") or "")
+        report.evidence["iteration"].update({
+            "algorithm_id": algorithm_id,
+            "algorithms_path": str(algorithms_path),
+            "expected_latest_successful_version_id": expected_base_id,
+        })
+        report.add("iteration uses latest verified version reason", base_reason == "latest_verified_version",
+                   expected="latest_verified_version", actual=base_reason)
+        report.add("iteration base is latest successful trainable version", bool(expected_base_id) and base_version_id == expected_base_id,
+                   expected=expected_base_id, actual=base_version_id)
+        if args.expected_base_version:
+            expected_literal = str(args.expected_base_version)
+            report.add("iteration base matches explicitly expected version",
+                       expected_literal in {base_version_id, base_version_name},
+                       expected=expected_literal, actual={"id": base_version_id, "name": base_version_name})
     return report
 
 
@@ -403,6 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--expected-batch", type=int, default=16)
     verify.add_argument("--expected-workers", type=int, default=4)
     verify.add_argument("--expected-cache", action=argparse.BooleanOptionalAction, default=False)
+    verify.add_argument("--require-iteration", action="store_true", help="要求本任务严格从最新成功可训练版本继续训练")
+    verify.add_argument("--expected-base-version", default=None, help="可选：进一步锁定期望的 base version id 或 version_name")
     verify.set_defaults(handler=verify_job)
     return parser
 
