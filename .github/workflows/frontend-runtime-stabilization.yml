@@ -22,6 +22,7 @@ jobs:
           node --check static/modules/navigation-stability.js &&
           node --check static/modules/page-request-scope.js &&
           node --check static/modules/poll-registry.js &&
+          node --check static/modules/algorithm-list-runtime.js &&
           node --check static/modules/training-labels.js &&
           node --check static/modules/training-draft.js &&
           node --check static/modules/training-draft-runtime.js &&
@@ -55,3 +56,4 @@ jobs:
           tests/browser/navigation-stability.spec.mjs
           tests/browser/training-label-selector.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
+          tests/browser/algorithm-list-performance.spec.mjs
