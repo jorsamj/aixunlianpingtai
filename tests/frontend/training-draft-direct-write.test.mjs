@@ -36,14 +36,16 @@ test('train-v3 material confirmation updates canonical draft before legacy callb
   setupDom();
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {
-      mode: 'independent_test_set',
-      train: new Set(['old-train']),
-      test: new Set(['shared', 'old-test']),
-      validation: 20,
-    },
+    trainSplitV3: {mode: 'random_test_from_training_pool', train: new Set(['stale']), test: new Set(), experiment: 99, validation: 99},
     train428Config: {},
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['old-train'],
+      testMaterialIds: ['shared', 'old-test'],
+      splitMode: 'independent_test_set',
+      validationPercent: 20,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{id: 'alg-1', versions: []}],
     trainMaterialPickerV3: {role: 'train', selected: new Set(['new-a', 'shared'])},
   };
@@ -67,6 +69,7 @@ test('train-v3 material confirmation updates canonical draft before legacy callb
   assert.deepEqual(state.trainingDraft.materialIds, ['new-a', 'shared']);
   assert.deepEqual(state.trainingDraft.testMaterialIds, ['old-test']);
   assert.deepEqual([...state.train429Selected], ['new-a', 'shared']);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(runtime.state().directWrites, 1);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
@@ -77,15 +80,16 @@ test('split mode writes canonical draft before legacy callback runs', () => {
   setupDom();
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {
-      mode: 'random_test_from_training_pool',
-      train: new Set(['a']),
-      test: new Set(),
-      experiment: 20,
-      validation: 20,
-    },
+    trainSplitV3: {mode: 'independent_test_set', train: new Set(['wrong']), test: new Set(['wrong-test']), validation: 99},
     train428Config: {},
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['a'],
+      splitMode: 'random_test_from_training_pool',
+      experimentPercent: 20,
+      validationPercent: 20,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{id: 'alg-1', versions: []}],
   };
   let observedMode;
@@ -100,7 +104,7 @@ test('split mode writes canonical draft before legacy callback runs', () => {
 
   assert.equal(observedMode, 'independent_test_set');
   assert.equal(state.trainingDraft.splitMode, 'independent_test_set');
-  assert.equal(state.trainSplitV3.mode, 'independent_test_set');
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(runtime.state().directWrites, 1);
 
   cleanup(runtime);
@@ -110,14 +114,16 @@ test('opening a different algorithm resets canonical training selection before l
   setupDom();
   const state = {
     train428AlgorithmId: 'alg-old',
-    trainSplitV3: {
-      mode: 'independent_test_set',
-      train: new Set(['old-a']),
-      test: new Set(['old-test']),
-      validation: 25,
-    },
+    trainSplitV3: {mode: 'random_test_from_training_pool', train: new Set(['stale']), test: new Set(), experiment: 99, validation: 99},
     train428Config: {},
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-old',
+      materialIds: ['old-a'],
+      testMaterialIds: ['old-test'],
+      splitMode: 'independent_test_set',
+      validationPercent: 25,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{id: 'alg-old', versions: []}, {id: 'alg-new', versions: []}],
   };
   let observedInsideLegacy;
@@ -144,6 +150,7 @@ test('opening a different algorithm resets canonical training selection before l
     mode: 'random_test_from_training_pool',
   });
   assert.equal(state.trainingDraft.algorithmId, 'alg-new');
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(runtime.state().directWrites, 1);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
@@ -177,12 +184,16 @@ test('training settings write canonical resource values before legacy save and a
   };
   const state = {
     train428AlgorithmId: 'alg-1',
-    trainSplitV3: {
-      mode: 'random_test_from_training_pool', train: new Set(['a']), test: new Set(),
-      experiment: 20, validation: 20,
-    },
+    trainSplitV3: {mode: 'independent_test_set', train: new Set(['wrong']), test: new Set(['wrong-test']), validation: 99},
     train428Config: {batch: 8, workers: 0, cache: 'False', epochs: 100, imgsz: 640},
-    trainingDraft: {newLabelCodes: ['fire']},
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1',
+      materialIds: ['a'],
+      splitMode: 'random_test_from_training_pool',
+      experimentPercent: 20,
+      validationPercent: 20,
+      newLabelCodes: ['fire'],
+    }),
     algorithms: [{id: 'alg-1', versions: []}],
   };
   let observedInsideLegacy;
@@ -215,6 +226,7 @@ test('training settings write canonical resource values before legacy save and a
   assert.equal(state.trainingDraft.resource.workers, 4);
   assert.equal(state.trainingDraft.resource.cache, false);
   assert.equal(state.trainingDraft.config.epochs, 30);
+  assert.equal(Object.hasOwn(state, 'trainSplitV3'), false);
   assert.equal(runtime.state().directWrites, 1);
   assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
