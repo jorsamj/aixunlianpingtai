@@ -43,6 +43,8 @@ test('delayed request from previous page cannot jump back over the current page'
   })).toMatchObject({managed: true, owners: ['训练任务', '检测台']});
 
   await page.getByRole('button', {name: /数据集/}).click();
+  const delayedUrl2 = delayedUrl;
+  expect(delayedUrl2).toContain('/api/');
   await expect(page.locator('#title')).toContainText('数据集');
   await expect(page.getByRole('button', {name: /数据集/})).toHaveClass(/active/);
   await expect.poll(async () => page.evaluate(() => (
@@ -157,5 +159,27 @@ test('final navigation owner closes the mobile sidebar and backdrop', async ({pa
   await expect(page.locator('#sidebar')).not.toHaveClass(/mobile-open/);
   await expect(page.locator('#sideBackdrop')).not.toHaveClass(/show/);
 
+  expect(pageErrors).toEqual([]);
+});
+
+test('final navigation persists the selected page and restores it after reload', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toContainText('数据集');
+  await expect.poll(async () => page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem('mc_train_ui_state_v34') || '{}').page || '';
+    } catch (_) {
+      return '';
+    }
+  })).toBe('数据集');
+
+  await page.reload();
+  await expect(page.locator('#title')).toContainText('数据集', {timeout: 15_000});
   expect(pageErrors).toEqual([]);
 });
