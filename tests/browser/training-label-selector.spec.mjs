@@ -55,7 +55,7 @@ async function seedProject(request) {
   return {project, imageIds: images.map(item => item.id), algorithmId: created.algorithm.id};
 }
 
-test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only live request path', async ({page, request}) => {
+test('training dialog uses canonical wrapper-free label lifecycle and sole submit path', async ({page, request}) => {
   const {project, imageIds, algorithmId} = await seedProject(request);
   let submitted;
 
@@ -95,13 +95,24 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422513');
+    .toBe('training-draft-runtime-422514');
+  await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
+    .toBe('module-422511');
   await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
     .toBe('training-submit-422504');
   expect(await page.evaluate(() => ({
     draftOwnsNetwork: window.TrainingDraftRuntime.state().networkOwner,
+    draftOwnsClassicWrapper: window.TrainingDraftRuntime.state().classicWrapperOwner,
+    labelOwnsClassicWrapper: window.TrainingLabelRuntime.state().classicWrapperOwner,
+    labelOwnsTimers: window.TrainingLabelRuntime.state().timerOwner,
     submitOwnsNetwork: window.TrainingSubmitRuntime.state().networkOwner,
-  }))).toEqual({draftOwnsNetwork: false, submitOwnsNetwork: true});
+  }))).toEqual({
+    draftOwnsNetwork: false,
+    draftOwnsClassicWrapper: false,
+    labelOwnsClassicWrapper: false,
+    labelOwnsTimers: false,
+    submitOwnsNetwork: true,
+  });
 
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
@@ -238,4 +249,22 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
   expect(submitted.algorithm).toBe('yolo_detect');
   expect(submitted.ai_intervention_enabled).toBe(false);
   await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
+
+  // Start the same algorithm again. The previous task deliberately deselected smoke.
+  // A new canonical start session must reset the label interaction state without a classic wrapper.
+  await page.getByRole('button', {name: /算法列表/}).click();
+  const secondCard = page.locator('.alg428-card', {hasText: '烟火标签算法'});
+  await secondCard.getByRole('button', {name: '训练'}).click();
+  const secondDialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
+  await expect(secondDialog).toBeVisible({timeout: 10_000});
+  await secondDialog.getByRole('button', {name: '选择训练素材'}).click();
+  const secondPicker = page.getByRole('dialog', {name: '选择本次训练素材'});
+  await secondPicker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await secondPicker.getByRole('button', {name: '确认选择'}).click();
+
+  const secondLabels = secondDialog.locator('#trainingLabelContractPanel');
+  await expect(secondLabels.locator('input[data-training-label-code="fire"]')).toBeChecked();
+  await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).toBeChecked();
+  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || []))
+    .toEqual(['fire', 'smoke']);
 });
