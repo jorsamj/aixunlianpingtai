@@ -40,6 +40,12 @@ jobs:
               echo "retired training mirror $token was reintroduced into active app.js" >&2
               exit 1
             fi
+            for file in static/modules/training-draft.js static/modules/training-draft-runtime.js static/modules/training-labels.js; do
+              if grep -n "$token" "$file"; then
+                echo "retired training mirror $token was reintroduced into $file" >&2
+                exit 1
+              fi
+            done
           done
       - name: Canonical training network owner guard
         run: |
