@@ -1,0 +1,58 @@
+name: Retire Training Module Legacy Bootstrap
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_training_module_legacy_bootstrap.py
+      - .github/workflows/retire-training-module-legacy-bootstrap.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded migration
+        run: python tools/retire_training_module_legacy_bootstrap.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Syntax check training modules
+        run: >-
+          node --check static/modules/training-draft.js &&
+          node --check static/modules/training-draft-runtime.js &&
+          node --check static/modules/training-labels.js &&
+          node --check static/main.mjs
+      - name: Assert retired mirrors are absent from core training modules
+        run: |
+          for file in static/modules/training-draft.js static/modules/training-draft-runtime.js static/modules/training-labels.js; do
+            for token in trainSplitV3 trainingLabelSelected train429Selected train428AlgorithmId train428Config; do
+              if grep -n "$token" "$file"; then
+                echo "$token remains in $file" >&2
+                exit 1
+              fi
+            done
+          done
+      - name: Run canonical training tests
+        run: node --test tests/frontend/training-draft.test.mjs tests/frontend/training-draft-runtime.test.mjs tests/frontend/training-labels.test.mjs tests/frontend/training-draft-controls.test.mjs tests/frontend/training-submit.test.mjs
+      - name: Commit migrated training modules
+        run: |
+          if git diff --quiet -- static/modules/training-draft.js static/modules/training-draft-runtime.js static/modules/training-labels.js static/main.mjs tests/frontend/training-draft.test.mjs tests/frontend/training-draft-runtime.test.mjs tests/frontend/training-labels.test.mjs; then
+            echo 'No migration change required.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/modules/training-draft.js static/modules/training-draft-runtime.js static/modules/training-labels.js static/main.mjs tests/frontend/training-draft.test.mjs tests/frontend/training-draft-runtime.test.mjs tests/frontend/training-labels.test.mjs
+          git commit -m 'refactor(ui): make training modules canonical-only'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
