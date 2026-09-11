@@ -356,10 +356,13 @@ export function installTrainingDraftRuntime({
       }
       const result = original.apply(this, args);
       const settle = () => {
-        if (!direct || direct.resync) {
-          sync();
-          scheduleDelayedSyncs();
+        if (direct && !direct.resync) {
+          const s = state();
+          mirrorDraftToLegacy(s, s.trainingDraft);
+          return;
         }
+        sync();
+        scheduleDelayedSyncs();
       };
       if (result && typeof result.then === 'function') return Promise.resolve(result).finally(settle);
       settle();
