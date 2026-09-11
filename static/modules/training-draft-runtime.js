@@ -50,6 +50,7 @@ export function installTrainingDraftRuntime({
   trainingDraftFromLegacyState,
   trainingDraftToRequest,
   trainingInheritanceFromAlgorithm,
+  directControlIds = [],
 } = {}) {
   if (typeof window === 'undefined' || typeof window.fetch !== 'function') return null;
   if (window.__trainingDraftRuntimeInstalled) return window.TrainingDraftRuntime;
@@ -59,9 +60,11 @@ export function installTrainingDraftRuntime({
 
   const state = () => getState?.() || {};
   const originalFetch = window.fetch.bind(window);
+  const directControlIdSet = new Set((directControlIds || []).map(value => String(value || '')).filter(Boolean));
   let destroyed = false;
   let syncQueued = false;
   let directWrites = 0;
+  let directControlSkips = 0;
   const delayedSyncTimers = new Set();
   const mutationWrappers = [];
 
@@ -201,13 +204,23 @@ export function installTrainingDraftRuntime({
     );
   }
 
+  function ownedDirectControl(event) {
+    const id = String(event?.target?.id || '');
+    if (!id || !directControlIdSet.has(id)) return false;
+    directControlSkips += 1;
+    return true;
+  }
+
   const onChange = event => {
+    if (ownedDirectControl(event)) return;
     if (relevantTrainingEvent(event)) scheduleSync();
   };
   const onInput = event => {
+    if (ownedDirectControl(event)) return;
     if (relevantTrainingEvent(event)) scheduleSync();
   };
   const onClick = event => {
+    if (ownedDirectControl(event)) return;
     if (!relevantTrainingEvent(event)) return;
     scheduleSync();
     scheduleDelayedSyncs();
@@ -410,12 +423,12 @@ export function installTrainingDraftRuntime({
   scheduleDelayedSyncs();
 
   const runtime = {
-    build: 'training-draft-runtime-422504',
+    build: 'training-draft-runtime-422505',
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
     inheritance() { return state().trainingDraftInheritance || inheritanceFor(state()); },
-    state() { return {directWrites}; },
+    state() { return {directWrites, directControlSkips}; },
     destroy() {
       destroyed = true;
       for (const timer of delayedSyncTimers) clearTimeout(timer);
