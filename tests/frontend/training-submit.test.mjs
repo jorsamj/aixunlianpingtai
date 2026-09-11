@@ -40,6 +40,29 @@ const target = {
 };
 const algorithm = target.algorithms[0];
 
+function installDom() {
+  const controls = {
+    tr429Target: {value: 'gpu-local'},
+    tr429Alg: {value: 'yolo_detect'},
+  };
+  globalThis.document = {getElementById: id => controls[id] || null};
+}
+
+function baseState() {
+  return {
+    algorithms: [{id: 'alg-1'}],
+    targets: [target],
+    trainingDevicesV3: {options: [{id: '0', available: true}]},
+    alg428Expanded: {},
+  };
+}
+
+function cleanup(runtime) {
+  runtime?.destroy();
+  delete globalThis.window;
+  delete globalThis.document;
+}
+
 test('engine parameters preserve explicit false/zero resource and YOLO settings', () => {
   const value = draft({
     resource: {strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 0, cache: false},
@@ -81,17 +104,8 @@ test('device validation fails closed for missing or unavailable device', () => {
 });
 
 test('submit runtime replaces legacy submit and uses canonical draft end-to-end', async () => {
-  const state = {
-    algorithms: [{id: 'alg-1'}],
-    targets: [target],
-    trainingDevicesV3: {options: [{id: '0', available: true}]},
-    alg428Expanded: {},
-  };
-  const controls = {
-    tr429Target: {value: 'gpu-local'},
-    tr429Alg: {value: 'yolo_detect'},
-  };
-  globalThis.document = {getElementById: id => controls[id] || null};
+  const state = baseState();
+  installDom();
 
   let sent;
   let reloaded = 0;
@@ -131,10 +145,75 @@ test('submit runtime replaces legacy submit and uses canonical draft end-to-end'
   assert.equal(rendered, 1);
   assert.equal(closed, 1);
   assert.equal(state.alg428Expanded['alg-1'], true);
-  assert.match(notices.at(-1), /训练任务已进入后台队列/);
+  assert.match(notices[0], /训练任务已进入后台队列/);
 
   runtime.destroy();
   assert.equal(window.submitTrain429, oldSubmit);
-  delete globalThis.window;
-  delete globalThis.document;
+  cleanup();
+});
+
+test('double click cannot create two independent training tasks', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  let calls = 0;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      calls += 1;
+      await pending;
+      return {ok: true, async json() { return {task: {id: 'task-once'}}; }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft()},
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  const first = window.submitTrain429();
+  const second = await window.submitTrain429();
+  assert.equal(second, null);
+  assert.equal(calls, 1);
+  assert.equal(runtime.isSubmitting(), true);
+  assert.match(notices.at(-1), /请勿重复提交/);
+
+  release();
+  await first;
+  assert.equal(runtime.isSubmitting(), false);
+  assert.equal(calls, 1);
+  cleanup(runtime);
+});
+
+test('refresh failure after successful POST does not invite a duplicate training task', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      calls += 1;
+      return {ok: true, async json() { return {task: {id: 'created'}}; }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft()},
+    trainingDraftToRequest,
+    reloadRelated: async () => { throw new Error('list offline'); },
+    notify: message => notices.push(String(message)),
+  });
+
+  const result = await window.submitTrain429();
+  assert.equal(result.task.id, 'created');
+  assert.equal(calls, 1);
+  assert.match(notices[0], /训练任务已进入后台队列/);
+  assert.match(notices.at(-1), /列表刷新失败/);
+  cleanup(runtime);
 });
