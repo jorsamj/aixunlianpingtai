@@ -214,6 +214,15 @@ jobs:
           grep -Fq 'replaceTrainingJobTimer,' "$file"
           grep -Fq 'replaceTrainingJobTimer();' "$file"
           grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js
+      - name: Retired pass-through setPage guard
+        run: |
+          for token in set423Base setBase424; do
+            if grep -F -n "$token" static/app.js; then
+              echo "retired pass-through setPage compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'window.setPage=function(p){state.page=p;render()};try{setPage=window.setPage}catch(e){}' static/app.js
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 
