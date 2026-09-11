@@ -6,6 +6,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - tools/retire_pre_v427_direct_setpage.py
+      - tests/frontend/retired-pre-v424-setpage-guard.test.mjs
       - .github/workflows/retire-pre-v427-direct-setpage.yml
 
 permissions:
