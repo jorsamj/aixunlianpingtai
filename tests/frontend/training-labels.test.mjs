@@ -70,6 +70,21 @@ test('current training modal prefers canonical material ids over stale train429S
   );
 });
 
+test('canonical material ids stay authoritative when legacy algorithm and selection are stale', () => {
+  const state = {
+    train428AlgorithmId: 'stale-algorithm',
+    train429Selected: new Set(['stale-material']),
+    trainingDraft: {
+      algorithmId: 'canonical-algorithm',
+      materialIds: ['canonical-1', 'canonical-2'],
+    },
+  };
+  assert.deepEqual(
+    selectedTrainingMaterialIds(state, {preferV429: true}),
+    ['canonical-1', 'canonical-2'],
+  );
+});
+
 test('current training modal falls back to legacy selected materials before canonical draft exists', () => {
   const state = {
     train429Selected: new Set(['img-new-1', 'img-new-2']),
