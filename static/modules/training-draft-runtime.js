@@ -80,8 +80,6 @@ export function installTrainingDraftRuntime({
   }
 
   function retireOldMirrors(s) {
-    // These two migrations are complete. Never allow generic UI sampling to
-    // recreate them after the canonical draft has been established.
     delete s.trainSplitV3;
     delete s.trainingLabelSelected;
   }
@@ -90,6 +88,7 @@ export function installTrainingDraftRuntime({
     s.trainingDraft = draft;
     s.trainingDraftInheritance = inheritance;
     retireOldMirrors(s);
+    window.TrainingSubmitRuntime?.updateReadiness?.();
     return draft;
   }
 
@@ -331,12 +330,10 @@ export function installTrainingDraftRuntime({
     'saveTrainSettings428',
   ]) wrapLegacyMutation(name);
 
-  // Bootstrap exactly once when the old app has not yet created a canonical draft.
-  // Subsequent syncs are canonical-first and never re-sample compatibility mirrors.
   sync();
 
   const runtime = {
-    build: 'training-draft-runtime-422508',
+    build: 'training-draft-runtime-422509',
     sync,
     update,
     current() { return state().trainingDraft || sync(); },
