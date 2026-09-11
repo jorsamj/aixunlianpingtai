@@ -53,10 +53,11 @@ text = read(path)
 text = replace_once(text,
 """test('legacy page timers are adopted and references are cleared when navigating away', () => {\n  const state = {\n    jobPollTimer: 1,\n    source422Timer: 2,\n    auto422Timer: 3,\n  };\n  const cleared = [];\n  const originalClearInterval = globalThis.clearInterval;\n  globalThis.clearInterval = id => cleared.push(id);\n  globalThis.window = {\n    __videoFramePollTimer: 4,\n    __prelabelPollTimer: 5,\n  };\n\n  const runtime = installPollRegistry({getState: () => state});\n  runtime.beforeNavigate('数据集');\n\n  assert.deepEqual(cleared.sort((a, b) => a - b), [1, 2, 3, 4, 5]);\n  assert.equal(state.jobPollTimer, null);\n  assert.equal(state.source422Timer, null);\n  assert.equal(state.auto422Timer, null);\n  assert.equal(globalThis.window.__videoFramePollTimer, null);\n  assert.equal(globalThis.window.__prelabelPollTimer, null);\n  assert.deepEqual(runtime.snapshot(), []);\n\n  runtime.destroy();\n  globalThis.clearInterval = originalClearInterval;\n  delete globalThis.window;\n});\n""",
 """test('remaining legacy page timers are adopted and references are cleared when navigating away', () => {\n  const state = {\n    jobPollTimer: 1,\n    source422Timer: 2,\n  };\n  const cleared = [];\n  const originalClearInterval = globalThis.clearInterval;\n  globalThis.clearInterval = id => cleared.push(id);\n  globalThis.window = {};\n\n  const runtime = installPollRegistry({getState: () => state});\n  runtime.beforeNavigate('数据集');\n\n  assert.deepEqual(cleared.sort((a, b) => a - b), [1, 2]);\n  assert.equal(state.jobPollTimer, null);\n  assert.equal(state.source422Timer, null);\n  assert.deepEqual(runtime.snapshot(), []);\n\n  runtime.destroy();\n  globalThis.clearInterval = originalClearInterval;\n  delete globalThis.window;\n});\n""", 'update PollRegistry legacy adoption test')
-text = replace_once(text, """    auto422Timer: null,\n""", "", 'remove auto422 from training fixture')
-# There are two additional fixtures with the same line; retire them deterministically.
-for index in range(2):
-    text = replace_once(text, """    auto422Timer: null,\n""", "", f'remove auto422 fixture {index+2}')
+needle = "    auto422Timer: null,\n"
+count = text.count(needle)
+if count != 3:
+    raise SystemExit(f'remove auto422 fixtures: expected 3 matches, found {count}')
+text = text.replace(needle, '')
 text = replace_once(text, """    __videoFramePollTimer: 199,\n""", "", 'remove retired video fixture')
 text = replace_once(text, """  assert.ok(clearedIntervals.includes(199), 'legacy v33 video interval should be retired');\n""", "", 'remove retired video expectation')
 write(path, text)
