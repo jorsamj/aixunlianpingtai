@@ -7,7 +7,8 @@ import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422503
 import {installNavigationStability} from './modules/navigation-stability.js?v=422502';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422501';
-import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest} from './modules/training-draft.js?v=422501';
+import {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422502';
+import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422501';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
@@ -70,6 +71,13 @@ const pageRequestScope = installPageRequestScope({
 const pollRegistry = installPollRegistry({
   getState: () => state,
 });
+const trainingDraftRuntime = installTrainingDraftRuntime({
+  getState: () => state,
+  createTrainingDraft,
+  trainingDraftFromLegacyState,
+  trainingDraftToRequest,
+  trainingInheritanceFromAlgorithm,
+});
 
 window.PlatformCore = {
   actions: actionRegistry,
@@ -85,7 +93,7 @@ window.PlatformCore = {
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
-  trainingDraft: {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest},
+  trainingDraft: {createTrainingDraft, trainingDraftFromLegacyState, trainingDraftToRequest, trainingInheritanceFromAlgorithm},
   quality: {qualityChartModel},
   reports: {reportPresentation},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
@@ -93,7 +101,7 @@ window.PlatformCore = {
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   storageImport: {storageImportProgressText},
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView},
-  runtime: {pageRequestScope, pollRegistry},
+  runtime: {pageRequestScope, pollRegistry, trainingDraftRuntime},
   uiBuildVersion: UI_BUILD_VERSION,
 };
 
