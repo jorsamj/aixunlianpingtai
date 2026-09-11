@@ -12,7 +12,7 @@ MIGRATIONS = (
     (
         "refreshProjected417",
         """const aid=state.train428AlgorithmId,a=(state.algorithms||[]).find(x=>String(x.id)===String(aid)),needsBase=!!a?.versions?.length,base=state.iteration414?.[aid],start=root?.querySelector('.train428-footer .btn.primary');if(start)start.disabled=(state.train429Selected?.size||0)<2||(needsBase&&(!base?.version_name||!!base.error))""",
-        """// TrainingSubmitRuntime owns submit readiness; legacy projected summary must not mutate button.disabled""",
+        """/* TrainingSubmitRuntime owns submit readiness; legacy projected summary must not mutate button.disabled */""",
     ),
 )
 
