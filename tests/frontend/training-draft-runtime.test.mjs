@@ -222,3 +222,39 @@ test('TrainingDraftRuntime never intercepts train-start fetches', async () => {
 
   cleanup(runtime);
 });
+
+test('canonical draft subscribers receive update intent and can unsubscribe deterministically', () => {
+  setupDom();
+  const state = {
+    trainingDraft: createTrainingDraft({
+      algorithmId: 'alg-1', materialIds: [],
+      splitMode: 'random_test_from_training_pool', experimentPercent: 20,
+      validationPercent: 20, newLabelCodes: [],
+    }),
+    algorithms: [{id: 'alg-1', versions: []}],
+  };
+  globalThis.window = {fetch: async () => ({ok: true})};
+
+  const runtime = installTrainingDraftRuntime({getState: () => state, ...dependencies()});
+  const events = [];
+  const unsubscribe = runtime.subscribe(event => events.push(event));
+
+  runtime.update({materialIds: ['a', 'b'], newLabelCodes: ['fire']});
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'update');
+  assert.deepEqual(events[0].patch, {materialIds: ['a', 'b'], newLabelCodes: ['fire']});
+  assert.deepEqual(events[0].draft.materialIds, ['a', 'b']);
+  assert.equal(runtime.state().subscribers, 1);
+
+  runtime.sync();
+  assert.equal(events.length, 2);
+  assert.equal(events[1].type, 'sync');
+
+  unsubscribe();
+  assert.equal(runtime.state().subscribers, 0);
+  runtime.update({materialIds: ['c']});
+  assert.equal(events.length, 2);
+  assert.equal(runtime.state().classicWrapperOwner, false);
+
+  cleanup(runtime);
+});
