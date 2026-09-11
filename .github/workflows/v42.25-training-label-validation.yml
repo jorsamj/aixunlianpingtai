@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install lightweight test dependencies
-        run: python -m pip install --upgrade pytest pillow pyyaml filelock psutil requests
+        run: python -m pip install --upgrade pytest pillow pyyaml filelock psutil requests opencv-python-headless
       - name: Check UI modules
         run: >-
           node --check static/modules/training-labels.js &&
