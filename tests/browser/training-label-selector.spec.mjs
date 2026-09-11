@@ -103,6 +103,8 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
     .toBe('training-draft-runtime-422504');
+  await expect.poll(async () => page.evaluate(() => window.TrainingDraftControlsRuntime?.build || null))
+    .toBe('training-draft-controls-422500');
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
@@ -146,9 +148,32 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   await smoke.uncheck();
   await expect(smoke).not.toBeChecked();
 
+  const controlWritesBefore = await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites);
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
+  await dialog.locator('#trV3ResourceStrategy').selectOption('manual');
+  await dialog.locator('#trV3GpuPolicy').selectOption('exclusive');
+
+  expect(await page.evaluate(() => ({
+    draft: {
+      experiment: state.trainingDraft?.experimentPercent,
+      validation: state.trainingDraft?.validationPercent,
+      priority: state.trainingDraft?.priority,
+      strategy: state.trainingDraft?.resource?.strategy,
+      device: state.trainingDraft?.resource?.device,
+      gpuPolicy: state.trainingDraft?.resource?.gpuPolicy,
+    },
+    legacy: {
+      strategy: state.train428Config?.resource_strategy,
+      device: state.train428Config?.device,
+      gpuPolicy: state.train428Config?.gpu_policy,
+    },
+  }))).toEqual({
+    draft: {experiment: 35, validation: 18, priority: 7, strategy: 'manual', device: 'cpu', gpuPolicy: 'exclusive'},
+    legacy: {strategy: 'manual', device: 'cpu', gpuPolicy: 'exclusive'},
+  });
+  expect(await page.evaluate(() => window.TrainingDraftControlsRuntime.state().directWrites)).toBeGreaterThan(controlWritesBefore);
 
   const writesBeforeSettings = await page.evaluate(() => window.TrainingDraftRuntime.state().directWrites);
   await dialog.getByRole('button', {name: '配置设置'}).click();
@@ -211,6 +236,9 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
         experiment_percent: 20,
         validation_percent: 20,
         queue_priority: 50,
+        resource_strategy: 'auto',
+        device: 'stale',
+        gpu_policy: 'auto',
         epochs: 1,
         batch: 1,
         workers: 0,
@@ -226,6 +254,9 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+  expect(submitted.resource_strategy).toBe('manual');
+  expect(submitted.device).toBe('cpu');
+  expect(submitted.gpu_policy).toBe('exclusive');
   expect(submitted.batch).toBe(16);
   expect(submitted.workers).toBe(4);
   expect(submitted.cache).toBe(false);
@@ -241,6 +272,9 @@ test('training dialog shows material-derived labels and canonical TrainingDraft 
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+  expect(submitted.resource_strategy).toBe('manual');
+  expect(submitted.device).toBe('cpu');
+  expect(submitted.gpu_policy).toBe('exclusive');
   expect(submitted.epochs).toBe(30);
   expect(submitted.batch).toBe(16);
   expect(submitted.workers).toBe(4);
