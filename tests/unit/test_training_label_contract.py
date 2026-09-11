@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.training_label_tasks import (
@@ -12,6 +14,7 @@ from platform_core.training_label_tasks import (
     resolve_training_label_contract,
     selected_material_label_codes,
 )
+from platform_core.training_tasks import materialize_portable_dataset
 
 
 def _project(tmp_path: Path) -> tuple[Path, Path]:
@@ -236,3 +239,57 @@ def test_projection_rejects_positive_material_with_only_unselected_labels(tmp_pa
             _scoped_selected_project_images(Materials(), project, ["a"])
     finally:
         _LABEL_CONTRACT.reset(token)
+
+
+def test_portable_data_yaml_contains_only_effective_task_schema(tmp_path: Path):
+    _, project = _project(tmp_path)
+    AnnotationRepository(project).upsert(
+        "a",
+        [_box("fire"), _box("smoke"), _box("person")],
+        annotation_state="annotated",
+    )
+    image_file = tmp_path / "source.jpg"
+    image_file.write_bytes(b"not-a-real-image-but-copy-contract-only")
+    content_hash = hashlib.sha256(image_file.read_bytes()).hexdigest()
+
+    class Materials:
+        def get_many(self, _ids):
+            return [{
+                "id": "a",
+                "filename": "source.jpg",
+                "width": 100,
+                "height": 100,
+            }]
+
+    contract = {
+        "project_path": str(project.resolve()),
+        "effective_label_codes": ["fire", "smoke"],
+        "effective_label_schema": [
+            {"code": "fire", "class_id": 0},
+            {"code": "smoke", "class_id": 1},
+        ],
+    }
+    token = _LABEL_CONTRACT.set(contract)
+    try:
+        rows = _scoped_selected_project_images(Materials(), project, ["a"])
+    finally:
+        _LABEL_CONTRACT.reset(token)
+    rows[0]["content_sha256"] = content_hash
+    snapshot = {
+        "snapshot_id": "task-schema-only",
+        "label_schema": contract["effective_label_schema"],
+        "ids": {"train": ["a"], "validation": [], "test": []},
+        "images": [{"image_id": "a", "content_sha256": content_hash}],
+    }
+    bundle = materialize_portable_dataset(
+        tmp_path / "work",
+        snapshot,
+        rows,
+        lambda _row: image_file,
+        safety_reserve_bytes=0,
+    )
+    data = yaml.safe_load((bundle / "dataset" / "data.yaml").read_text(encoding="utf-8"))
+    assert data["names"] == {0: "fire", 1: "smoke"}
+    label_lines = (bundle / "dataset" / "labels" / "train" / "a.txt").read_text(encoding="utf-8").splitlines()
+    assert {line.split()[0] for line in label_lines} == {"0", "1"}
+    assert all("person" not in line for line in label_lines)
