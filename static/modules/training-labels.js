@@ -92,9 +92,7 @@ export function resolveClientTrainingLabels({materials, selectedIds, labelCatalo
 export function selectedTrainingMaterialIds(state, {preferV429 = false} = {}) {
   if (preferV429) {
     const draft = state?.trainingDraft;
-    const canonicalAlgorithm = String(draft?.algorithmId || '').trim();
-    const legacyAlgorithm = String(state?.train428AlgorithmId || '').trim();
-    if (draft && (!legacyAlgorithm || canonicalAlgorithm === legacyAlgorithm)) {
+    if (draft && String(draft?.algorithmId || '').trim()) {
       return unique(draft?.materialIds || []);
     }
     return unique([...(state?.train429Selected || new Set())]);
@@ -361,7 +359,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
   document.addEventListener('change', onChange);
 
   const runtime = {
-    build: 'module-422506',
+    build: 'module-422507',
     refresh,
     rebind: bindCurrentEntrypoints,
     selectedIds: () => selectedIds(getState?.()),
