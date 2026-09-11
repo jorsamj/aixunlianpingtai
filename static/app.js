@@ -1990,9 +1990,6 @@ window.installUsability417=function(){
     oldRenderV39();
   };
   // existing setPage calls render dynamically; reset deployment cache on relevant pages only.
-  const oldSetV39=window.setPage;
-  window.setPage=function(p){if(['部署转换','部署产物','部署资源','部署插件'].includes(p))state.deployLoaded=false;oldSetV39(p)};
-  try{setPage=window.setPage}catch(e){}
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V39},100);
 })();
 
@@ -2196,8 +2193,6 @@ window.installUsability417=function(){
     if(state.page==='质量中心'){renderNav();renderTop();renderSummary();renderQualityV42();return}
     oldRender42();
   };
-  const oldSet42=window.setPage;
-  window.setPage=function(p){if(['新建算法','素材接入','自动迭代','质量中心'].includes(p))state.v42.loaded=false;oldSet42(p)};try{setPage=window.setPage}catch(e){}
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V42},180);
 })();
 
@@ -2409,8 +2404,6 @@ window.installUsability417=function(){
     if(state.page==='自动标注'){renderNav();renderTop();renderSummary();renderAutoLabel422();return}
     render422Base();
   };
-  const set422Base=window.setPage;
-  window.setPage=function(p){if(p==='新建算法'||p==='自动迭代')p='算法列表';set422Base(p)};try{setPage=window.setPage}catch(e){}
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V422},100);
 })();
 
