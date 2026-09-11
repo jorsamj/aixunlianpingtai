@@ -95,9 +95,9 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422508');
+    .toBe('training-draft-runtime-422509');
   await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
-    .toBe('training-submit-422502');
+    .toBe('training-submit-422503');
   expect(await page.evaluate(() => ({
     draftOwnsNetwork: window.TrainingDraftRuntime.state().networkOwner,
     submitOwnsNetwork: window.TrainingSubmitRuntime.state().networkOwner,
@@ -175,8 +175,6 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
     retiredSplitMirror: false,
   });
 
-  // Remaining compatibility mirrors may still be mutated by legacy app.js UI code during
-  // migration, but they are no longer allowed to overwrite the canonical TrainingDraft.
   await page.evaluate(() => {
     state.train428AlgorithmId = 'stale-algorithm';
     state.train429Selected = new Set(['stale-material']);
@@ -196,8 +194,10 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
     batch: 16,
     optimizer: 'AdamW',
   });
+  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
+  expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner'))
+    .toBe('TrainingSubmitRuntime');
 
-  // A raw caller-owned fetch is intentionally NOT rewritten by TrainingDraftRuntime anymore.
   submitted = undefined;
   await page.evaluate(async projectId => {
     await fetch(`/api/v12/projects/${projectId}/train/start`, {
@@ -209,8 +209,6 @@ test('training dialog uses TrainingDraft + TrainingSubmitRuntime as the only liv
   await expect.poll(() => submitted).toBeTruthy();
   expect(submitted).toEqual({algorithm_asset_id: 'raw-caller', train_image_ids: ['raw-id'], train_labels: ['raw-label']});
 
-  // The actual UI submission must go through TrainingSubmitRuntime and derive the request only
-  // from the canonical draft, irrespective of the stale compatibility mirrors above.
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   await dialog.getByRole('button', {name: '开始训练'}).click();
