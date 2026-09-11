@@ -81,9 +81,7 @@ test('engine parameters preserve explicit false/zero resource and YOLO settings'
 });
 
 test('start payload is derived from canonical TrainingDraft instead of legacy ids', () => {
-  const payload = buildTrainingStartPayload({
-    draft: draft(), target, algorithm, trainingDraftToRequest,
-  });
+  const payload = buildTrainingStartPayload({draft: draft(), target, algorithm, trainingDraftToRequest});
   assert.equal(payload.algorithm_asset_id, 'alg-1');
   assert.deepEqual(payload.train_image_ids, ['img-1', 'img-2']);
   assert.deepEqual(payload.train_labels, ['fire']);
@@ -103,7 +101,7 @@ test('device validation fails closed for missing or unavailable device', () => {
   assert.throws(() => validateTrainingDevice(draft(), [{id: '0', available: false}]), /设备不可用/);
 });
 
-test('submit runtime replaces legacy submit and uses canonical draft end-to-end', async () => {
+test('submit runtime is the sole train-start network owner and uses canonical draft end-to-end', async () => {
   const state = baseState();
   installDom();
 
@@ -117,16 +115,13 @@ test('submit runtime replaces legacy submit and uses canonical draft end-to-end'
     submitTrain429: oldSubmit,
     fetch: async (_url, init) => {
       sent = JSON.parse(init.body);
-      return {
-        ok: true,
-        async json() { return {task: {id: 'task-1'}}; },
-      };
+      return {ok: true, async json() { return {task: {id: 'task-1'}}; }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft()},
+    trainingDraftRuntime: {sync: () => draft(), inheritance: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { reloaded += 1; },
     renderAlgorithms: () => { rendered += 1; },
@@ -135,6 +130,7 @@ test('submit runtime replaces legacy submit and uses canonical draft end-to-end'
   });
 
   assert.equal(window.submitTrain429.__trainingSubmitRuntime, true);
+  assert.equal(runtime.state().networkOwner, true);
   const result = await window.submitTrain429();
 
   assert.equal(result.task.id, 'task-1');
@@ -150,6 +146,33 @@ test('submit runtime replaces legacy submit and uses canonical draft end-to-end'
   runtime.destroy();
   assert.equal(window.submitTrain429, oldSubmit);
   cleanup();
+});
+
+test('iteration block is enforced by TrainingSubmitRuntime before any POST', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => { calls += 1; return {ok: true, async json() { return {}; }}; },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => draft(),
+      inheritance: () => ({blocked: true}),
+    },
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  const result = await window.submitTrain429();
+  assert.equal(result, null);
+  assert.equal(calls, 0);
+  assert.match(notices.at(-1), /不会回退母算法/);
+  cleanup(runtime);
 });
 
 test('double click cannot create two independent training tasks', async () => {
@@ -170,7 +193,7 @@ test('double click cannot create two independent training tasks', async () => {
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft()},
+    trainingDraftRuntime: {sync: () => draft(), inheritance: () => ({blocked: false})},
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
   });
@@ -204,7 +227,7 @@ test('refresh failure after successful POST does not invite a duplicate training
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft()},
+    trainingDraftRuntime: {sync: () => draft(), inheritance: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { throw new Error('list offline'); },
     notify: message => notices.push(String(message)),
