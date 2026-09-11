@@ -10,17 +10,25 @@ test('pre-v42.4 severed setPage wrappers cannot return', () => {
   }
 });
 
-test('later navigation owners remain after pre-v42.4 cleanup', () => {
+test('pre-v42.7 direct setPage owners cannot return after persistence moved to final navigation', () => {
   assert.equal(
-    app.includes('window.setPage=function(p){state.page=p;render()};try{setPage=window.setPage}catch(e){}'),
-    true,
-    'v42.4 direct reset must remain',
+    app.includes('window.setPage=function(p){state.page=p;render()};'),
+    false,
+    'plain v35/v42.4 direct setPage owners must remain retired',
   );
+  assert.equal(
+    app.includes('window.setPage=function(p){\n    state.page=p;\n    saveUiState();\n    render();\n  };'),
+    false,
+    'v34 persistence setPage owner must remain retired',
+  );
+});
+
+test('post-v42.7 navigation owners remain after direct-owner cleanup', () => {
   assert.equal(app.includes('const setPageReady414=window.setPage;'), true, 'startup readiness owner must remain');
   assert.equal(app.includes('const baseSetPage417=window.setPage;'), true, 'V417 sidebar owner must remain');
   assert.equal(
-    app.includes("window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};"),
+    app.includes("window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}"),
     true,
-    'later auto-label route owner must remain',
+    'v42.7 auto-label route owner must remain',
   );
 });
