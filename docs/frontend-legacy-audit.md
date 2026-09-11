@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: 05abf71d067d4b1e08a2bdeeb9d7787e9fc06dd4
-run:    34655960701
+commit: 58ece59e95722437069c7e03277363197e564136
+run:    34659775870
 frontend:     PASS
 Real Chrome:  PASS
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS
 Current caches/builds:
 
 ```text
-app.js                    42.25.57
-main.mjs                  42.25.59
+app.js                    42.25.61
+main.mjs                  42.25.64
 navigation-stability      422511
 ui-state                  422500
 poll-registry             422511
@@ -52,32 +52,9 @@ No classic timer or creation-wrapper ownership may return.
 
 ### Navigation — classic owner family zero-point CLOSED
 
-Accepted batches:
+`static/app.js` must contain **zero** classic `window.setPage=` assignments. Permanent CI enforces this.
 
-```text
-setupPagePolling/jobPollTimer                              CLOSED
-set423Base + setBase424                                   CLOSED
-duplicate V37 baseSetPage sidebar wrapper                 CLOSED
-oldSetV39 + oldSet42 + set422Base                         CLOSED
-navigation persistence → named runtime                    CLOSED
-v34/v35/v42.4 direct setPage family                       CLOSED
-v42.7 direct auto-label alias owner                       CLOSED
-setPageReady414 startup readiness                         CLOSED
-baseSetPage417 sidebar close                              CLOSED
-initial bootstrap setPage mutation/render owner           CLOSED
-```
-
-Latest evidence:
-
-```text
-sidebar final                 f6e71c05... / 34653776200 PASS
-named actual-owner equivalence 04b6982e... / 34655575856 PASS
-bootstrap final               05abf71d... / 34655960701 PASS
-```
-
-`static/app.js` must now contain **zero** classic `window.setPage=` assignments. Permanent CI enforces this.
-
-## 3. Final navigation topology
+Final topology:
 
 ```text
 NavigationStability.stableSetPage
@@ -94,61 +71,126 @@ NavigationStability.stableSetPage
   → persistNavigationState
 ```
 
-`NavigationStability` installs global `window.setPage` even without a predecessor. When `performNavigation` is configured, no classic predecessor is invoked. Unit tests explicitly prove one named apply / one render / zero classic calls.
+## 3. Render retirement already completed
 
-The following remain permanent browser contracts: menu navigation, programmatic `window.setPage`, startup readiness, sidebar/backdrop close, stale request fencing, PollRegistry stop-on-leave, alias canonicalization and persistence/reload.
+### v42.7 route alias mutation
 
-## 4. Current target — classic render override family
+The old render chain changed `state.page` from `自动标注` to `自动标注及清洗`. This has been removed.
 
-The next debt is the historical `render` capture/override chain, not navigation.
-
-Known live/debt areas:
+Current responsibility split:
 
 ```text
-base/global render() shell
-render = function(...) historical overrides
-const old/finalRender = render capture layers
-v42.7 render-level 自动标注 → 自动标注及清洗 fallback
-renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
-NavigationStability PAGE_RENDERERS ownership guards
-startup __clInit direct render()
-refresh handlers that call render() directly
+navigation alias request  → NavigationStability.normalizeNavigationPage
+historical persisted page → v34 restore-boundary canonicalization + writeback
+render                    → never mutates route alias state
 ```
 
-Known render-level alias fallback:
+A new Real Chrome cold-start test first exposed a real bug: the UI became canonical but localStorage did not. Baseline `582b913e... / 34656484008` failed 1 of 13 browser tests; fix `e35a29b0... / 34656747269` passed fully.
 
-```js
-render=function(){
-  if(state.page==='自动标注') state.page='自动标注及清洗';
-  ...
-}
-```
+### Fully shadowed classic render generations
 
-Navigation already canonicalizes aliases before `performNavigation`, so this fallback is a candidate for retirement. However startup and refresh paths can call `render()` directly; its liveness must be proven before deletion.
-
-## 5. Audit method for render family
-
-For every candidate generation:
+Physically retired and permanently guarded:
 
 ```text
-live HEAD
-→ enumerate exact assignment/capture/reference topology
-→ identify final live owner vs fully shadowed generation
-→ lock real semantic behavior
-→ migrate semantic ownership if needed
-→ double-owner equivalence where semantics move
-→ bounded physical deletion
-→ permanent guard
-→ frontend + Real Chrome
-→ docs sync
+oldRender429
+previousRender61
+render423Base
 ```
 
-Do not delete by version suffix alone. Do not add a global render-repair loop. Prefer page-scoped/semantic render owners and local DOM refreshes over periodic whole-page repaint.
+Why they were dead:
+
+```text
+oldRender429:
+  算法列表 + 数据集 were intercepted by later oldRender412;
+  all other pages were pass-through.
+
+previousRender61:
+  素材存储配置 was intercepted by later finalRender;
+  all other pages were pass-through.
+
+render423Base:
+  算法列表 was intercepted by oldRender412;
+  训练任务 was intercepted by renderBase428;
+  all other pages were pass-through.
+```
+
+Acceptance evidence:
+
+```text
+oldRender429      0455eeef... / 34659041402 PASS
+storage baseline  00721975... / 34659361434 PASS
+previousRender61  69732d9e... / 34659543452 PASS
+render423Base     58ece59e... / 34659775870 PASS
+```
+
+One-shot migration helpers/workflows were deleted after acceptance.
+
+## 4. Current live render topology — partial map
+
+These are confirmed live and must not be removed as whole layers without a new proof:
+
+```text
+oldRender412
+  routes 算法列表 and 数据集
+
+renderBase428
+  routes 训练任务
+  algorithm branch is shadowed, but training branch is live
+
+renderTraining423
+  current training renderer
+  directly owns PollRegistry.replaceTrainingJobTimer()
+
+finalRender
+  routes 素材存储配置
+```
+
+Still under audit:
+
+```text
+baseRenderV37       post-render page enhancement
+oldRenderV39        deployment routes
+renderBase424       quality/data/video/auto-label routes
+render426base       post-render file-input beautification
+renderBase427       自动标注及清洗 route
+render414Base       标签管理 + version badge behavior
+baseRender417       version badge/footer correction
+post-render cleanup wrapper + MutationObserver
+older base/global render generations reached through the chain
+```
+
+A branch inside a live wrapper may be dead while the wrapper remains live. Delete branches/layers only after exact source-order and coverage proof.
+
+## 5. Permanent contracts added for render cleanup
+
+Frontend:
+
+```text
+tests/frontend/render-alias-restore.test.mjs
+tests/frontend/render-owner-retirement.test.mjs
+```
+
+They currently prevent return of:
+
+```text
+render-level auto-label alias mutation
+oldRender429
+previousRender61
+render423Base
+```
+
+and require the currently live owners needed to replace them.
+
+Browser:
+
+`tests/browser/navigation-stability.spec.mjs` now includes a real `素材存储配置` route contract requiring `.storage61-shell` and `#storage61Rows` to render without page errors.
+
+Existing browser performance suites continue to cover algorithm list, training task and material page behavior.
 
 ## 6. Remaining technical-debt targets
 
 ```text
-render override generations
+remaining render override generations
 loadAll / loadRelated / loadCore412 ownership
 proven dead app.js code
 global reload / duplicate requests
@@ -158,24 +200,45 @@ version-number business naming
 final zero-point scan
 ```
 
-## 7. Non-negotiable rules
+## 7. Audit method
+
+For every candidate generation:
+
+```text
+live HEAD
+→ exact assignment/capture/reference topology
+→ identify final live owner vs fully shadowed generation
+→ lock real semantic behavior
+→ migrate semantic ownership if needed
+→ double-owner equivalence where semantics move
+→ bounded physical deletion
+→ permanent guard
+→ frontend + Real Chrome
+→ delete temporary migration artifacts
+→ docs sync
+```
+
+Do not delete by version suffix alone. Do not add a global render-repair loop. Prefer page-scoped/semantic render owners and local DOM refreshes over periodic whole-page repaint.
+
+## 8. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. Retired training mirrors/fallbacks stay retired.
 3. Classic `setPage` ownership must remain zero in `app.js`.
-4. No mother-model class inheritance on first training.
-5. Explicit false/zero training settings survive end-to-end.
-6. Trial/test inference must never receive GT labels.
-7. Do not weaken duplicate-request/race/performance/Real Chrome tests.
-8. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
-9. AutoLabel remains PollRegistry-only.
-10. Video/source/training polling direct ownership must not regress.
-11. Frontend CI is not A800/CUDA acceptance.
+4. Render must not resume route-state alias mutation.
+5. No mother-model class inheritance on first training.
+6. Explicit false/zero training settings survive end-to-end.
+7. Trial/test inference must never receive GT labels.
+8. Do not weaken duplicate-request/race/performance/Real Chrome tests.
+9. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
+10. AutoLabel remains PollRegistry-only.
+11. Video/source/training polling direct ownership must not regress.
+12. Frontend CI is not A800/CUDA acceptance.
 
-## 8. Work order
+## 9. Work order
 
 ```text
-1. render override owner audit / obsolete generation deletion
+1. remaining render override owner audit / obsolete generation deletion
 2. app.js dead code + global reload/request debt
 3. cache-busting unification
 4. zero-point observer/timer/fetch/render/setPage scan
