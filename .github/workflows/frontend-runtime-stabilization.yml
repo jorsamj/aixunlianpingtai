@@ -18,6 +18,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Syntax check
-        run: node --check static/modules/navigation-stability.js
+        run: >-
+          node --check static/modules/navigation-stability.js &&
+          node --check static/modules/page-request-scope.js &&
+          node --check static/main.mjs
       - name: Frontend unit tests
-        run: node --test tests/frontend/navigation-stability.test.mjs tests/frontend/training-labels.test.mjs
+        run: node --test tests/frontend/*.test.mjs
