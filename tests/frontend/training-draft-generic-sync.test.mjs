@@ -38,7 +38,7 @@ test('direct train-v3 controls bypass legacy generic sync sampling', async () =>
       validation: 20,
     },
     train428Config: {queue_priority: 50},
-    trainingLabelSelected: new Set(['fire']),
+    trainingDraft: {newLabelCodes: ['fire']},
     algorithms: [{id: 'alg-1', versions: []}],
   };
   globalThis.window = {fetch: async () => ({ok: true})};
@@ -65,6 +65,7 @@ test('direct train-v3 controls bypass legacy generic sync sampling', async () =>
 
   assert.equal(state.trainingDraft.experimentPercent, 35);
   assert.equal(runtime.state().directControlSkips, 1);
+  assert.equal(Object.hasOwn(state, 'trainingLabelSelected'), false);
 
   runtime.destroy();
   delete globalThis.window;
