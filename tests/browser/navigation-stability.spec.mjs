@@ -140,3 +140,22 @@ test('source polling is PollRegistry-managed after initial page render and stops
 
   expect(pageErrors).toEqual([]);
 });
+
+test('final navigation owner closes the mobile sidebar and backdrop', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => window.toggleMobileSidebarV37?.(true));
+  await expect(page.locator('#sidebar')).toHaveClass(/mobile-open/);
+  await expect(page.locator('#sideBackdrop')).toHaveClass(/show/);
+
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toContainText('数据集');
+  await expect(page.locator('#sidebar')).not.toHaveClass(/mobile-open/);
+  await expect(page.locator('#sideBackdrop')).not.toHaveClass(/show/);
+
+  expect(pageErrors).toEqual([]);
+});
