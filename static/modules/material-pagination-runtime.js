@@ -497,7 +497,7 @@ export function installMaterialPaginationRuntime() {
   document.addEventListener('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'material-pagination-runtime-422204',
+    build: 'material-pagination-runtime-422205',
     load: loadMaterialPage61,
     refresh: focusedRefresh61,
     patch: patchPagedDataset61,
@@ -515,7 +515,10 @@ export function installMaterialPaginationRuntime() {
 
   setTimeout(() => {
     refreshSummary61();
-    if (state.page === '数据集') loadMaterialPage61({reset: true});
+    if (state.page !== '数据集') return;
+    const signature = filterSignature61();
+    const needsBootstrap = !hasDatasetShell61() || signature !== state.materialFilterSignature61;
+    if (needsBootstrap) loadMaterialPage61({reset: true});
   }, 250);
   setTimeout(refreshSummary61, 1200);
   return true;
