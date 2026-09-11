@@ -81,3 +81,28 @@ test('video frame polling is PollRegistry-managed and is destroyed when leaving 
 
   expect(pageErrors).toEqual([]);
 });
+
+test('source polling is PollRegistry-managed after initial page render and stops on leave', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => window.setPage('素材接入'));
+  await expect(page.locator('#title')).toContainText('素材接入');
+  await expect(page.locator('#source422Rows')).toBeVisible({timeout: 10_000});
+
+  await expect.poll(async () => page.evaluate(() => {
+    const row = window.PollRegistryRuntime?.snapshot?.().find(item => item.key === 'sources');
+    return row ? {managed: row.managed, owners: row.owners, delay: row.delay} : null;
+  })).toEqual({managed: true, owners: ['素材接入'], delay: 2500});
+
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toContainText('数据集');
+  await expect.poll(async () => page.evaluate(() => (
+    window.PollRegistryRuntime?.snapshot?.().some(item => item.key === 'sources') || false
+  ))).toBe(false);
+
+  expect(pageErrors).toEqual([]);
+});
