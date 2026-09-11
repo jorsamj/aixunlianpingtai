@@ -21,6 +21,10 @@ def hash_command(argv: Sequence[str | os.PathLike[str]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+class ProcessIdentityMismatchError(PermissionError):
+    """The PID exists but is not the exact process previously bound to a task."""
+
+
 @dataclass(frozen=True)
 class ProcessIdentity:
     pid: int
@@ -86,7 +90,7 @@ class ProcessController:
             abs(observed_create_time - float(identity.create_time)) > 0.01
             or observed_hash != identity.command_hash
         ):
-            raise PermissionError("process identity does not match")
+            raise ProcessIdentityMismatchError("process identity does not match")
         return process
 
     @staticmethod
