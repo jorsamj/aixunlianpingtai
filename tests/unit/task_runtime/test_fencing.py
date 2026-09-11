@@ -103,6 +103,64 @@ def test_live_process_blocks_requeue_until_exact_tree_is_reaped(tmp_path):
             launched.process.wait(timeout=5)
 
 
+def test_gpu_reservation_is_retained_while_expired_process_is_still_alive(tmp_path):
+    repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
+    _add(repository)
+    lease = repository.claim_next("worker-a", [TaskKind.VIDEO_FRAMES], set(), lease_seconds=30)
+    assert lease is not None
+    launched = launch_process(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        cwd=tmp_path,
+    )
+    try:
+        repository.bind_process(
+            "task-1",
+            lease.lease_token,
+            launched.identity,
+            execution_generation=lease.task.attempt,
+        )
+        old = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        with repository._connect() as database:
+            database.execute(
+                """
+                INSERT INTO gpu_reservations
+                (task_id, gpu_uuid, gpu_index, reserved_bytes, estimated_bytes,
+                 worker_id, worker_slot, lease_token, policy, share_eligible,
+                 sharing_evidence_at, created_at, heartbeat_at, expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "task-1", "GPU-test", 0, 1024, 1024,
+                    "worker-a", "slot-a", lease.lease_token, "exclusive", 0,
+                    None, old, old, old,
+                ),
+            )
+            database.execute(
+                "UPDATE tasks SET lease_expires_at=? WHERE task_id='task-1'",
+                (old,),
+            )
+
+        assert repository.release_expired() == 0
+        with repository._connect() as database:
+            reservation = database.execute(
+                "SELECT task_id FROM gpu_reservations WHERE task_id='task-1'"
+            ).fetchone()
+        assert reservation is not None
+
+        assert repository.reap_expired_processes(timeout=1.0) == 1
+        launched.process.wait(timeout=5)
+        assert repository.release_expired() == 1
+        with repository._connect() as database:
+            reservation = database.execute(
+                "SELECT task_id FROM gpu_reservations WHERE task_id='task-1'"
+            ).fetchone()
+        assert reservation is None
+    finally:
+        if launched.process.poll() is None:
+            launched.process.terminate()
+            launched.process.wait(timeout=5)
+
+
 def test_pid_identity_mismatch_never_kills_unrelated_process_and_allows_recovery(tmp_path):
     repository = FencedTaskRepository(tmp_path / "tasks.sqlite3")
     _add(repository)
