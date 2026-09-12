@@ -6,8 +6,8 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: f51d44c089b6342398c14bd38c8669747adad48b
-Frontend Runtime run:        34700252041
+latest full code acceptance: c6ac70b670a6297ccba065854779c10b8ca47cf3
+Frontend Runtime run:        34700984963
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
@@ -23,18 +23,18 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34700252041` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20k artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34700984963` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after Resource Discovery SQLite migration-artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Permanent Resource Discovery SQLite workflow `34700900542` passed on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-Resource Discovery SQLite / FD lifecycle code-level closure
-→ production soak for resource lifecycle (30–60 min, separate acceptance)
+Navigation Action Fencing / stale mutation UI side effects
 → resume R20 final global reload/request zero-point
-→ Navigation Action Fencing / stale mutation side effects
 → external algorithm catalog read-only boundary
+→ separate Resource Lifecycle production soak / non-SQLite resource classes
 → ZIP 10k / training progress / GPU tuner / deployment artifact E2E
 → app.js/app.py normalization
+→ backend regression
 → A800 RC
 ```
 
@@ -162,7 +162,51 @@ app.js cache:       42.25.87
 
 Permanent proof: `tests/frontend/v18-import-completion-scope.test.mjs` and `tests/browser/material-pagination-performance.spec.mjs`. One-shot migration artifacts are physically deleted.
 
-Current exact next scope is **Resource Discovery SQLite / FD lifecycle code-level closure**. Do not claim the entire production lifecycle gate closed until the separate 30–60 minute soak is actually executed.
+Current exact next scope was **Resource Discovery SQLite / FD lifecycle code-level closure**; that code-level slice is now closed below. The separate 30–60 minute production soak remains OPEN / NOT VERIFIED.
+
+### Resource Discovery SQLite lifecycle — code-level CLOSED
+
+A guarded baseline proved the two target defects before migration: reopening `DiscoveryCache` reran schema bootstrap/WAL work, and `_ModelManifest` opened 6 SQLite connections with 0 explicit closes. The same baseline already passed concurrent generation allocation and Linux FD trend, so the migration was kept narrowly scoped.
+
+Migration result:
+
+```text
+DiscoveryCache._initialize
+→ FileLock(<db>.init.lock)
+→ PRAGMA user_version schema gate
+→ WAL transition only during single-owner first initialization
+
+DiscoveryCache._connect
+→ foreign_keys + busy_timeout only
+→ no repeated journal_mode transition
+
+_ModelManifest
+→ closing(connection)
+→ transaction context only for commit/rollback
+→ closing(cursor) for streamed rows
+```
+
+Acceptance:
+
+```text
+baseline/migration run: 34700801232
+old baseline:           2 failed / 2 passed
+post-migration focused: 6/6 PASS
+product:                8ba4e10db5958204aca3d87779711d8e95f5d83b
+permanent CI commit:    5b66ee03e5aaa3af3a2f18a9092f12e303f69937
+permanent CI run:       34700900542
+Ubuntu:                 PASS
+Windows:                PASS
+cleanup:                c6ac70b670a6297ccba065854779c10b8ca47cf3
+cleanup Frontend run:   34700984963
+Real Chrome:            32/32 PASS
+```
+
+Permanent proof: `tests/unit/test_resource_discovery_sqlite_lifecycle.py` + `.github/workflows/resource-discovery-sqlite-stability.yml`. One-shot migration artifacts are physically deleted.
+
+**Boundary:** 30–60 minute production soak is still NOT VERIFIED. ZIP/file/subprocess/socket/tempfile/directory iterator/mmap/GPU worker/thread/executor lifecycle is outside this batch. The whole Resource Lifecycle Zero-Point therefore remains OPEN.
+
+Current exact next scope: **Navigation Action Fencing**. Audit stale POST/PUT/DELETE, XHR upload and timer/callback completions so a business mutation may finish after navigation but cannot switch page, render the departed page, open an old modal, or mutate the current-page DOM.
 
 Read in order:
 

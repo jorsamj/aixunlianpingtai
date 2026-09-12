@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`f51d44c089b6342398c14bd38c8669747adad48b`**  
-> **Frontend Runtime Stabilization：run `34700252041`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed。**  
+> **最近完整代码验收点：`c6ac70b670a6297ccba065854779c10b8ca47cf3`**  
+> **Frontend Runtime Stabilization：run `34700984963`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -133,7 +133,7 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | Paddle environment activation full reload | `refreshPaddleTrainingTargets20d` + training_options-only target refresh | **CLOSED (R20d)** |
 | model-config / prompt-template mutation full reload + stale prompt UI | authoritative mutation result + local state patch | **CLOSED (R20e)** |
 | model-config save/edit broad related refresh | M4 `saveVisionModelM4` authoritative result + local `state.modelConfigs` upsert | **CLOSED (R20f)** |
-| resource-discovery SQLite / FD lifecycle | lock-safe single-owner init + deterministic close + soak | **IN PROGRESS — code-level closure next** |
+| resource-discovery SQLite init / manifest FD lifecycle | lock-safe single-owner init + deterministic close | **CODE-LEVEL CLOSED; production soak OPEN** |
 | ZIP / server-storage import completion broad refresh | scoped labels + paged material refresh | **CLOSED (R20g)** |
 | legacy algorithm CRUD + shadowed algorithm renderer generations | stable 414/423/429 owners + authoritative local `state.algorithms` patch | **CLOSED (R20h)** |
 | legacy dataset-group CRUD + shadowed dataset render generations | final `renderDatasets424` route + bounded compatibility delegate | **CLOSED (R20i)** |
@@ -268,6 +268,53 @@ app.js cache:       42.25.87
 永久合同：`tests/frontend/v18-import-completion-scope.test.mjs` + `tests/browser/material-pagination-performance.spec.mjs`。一次性 helper/workflow 已物理删除。
 
 R20 尚未整体 CLOSED；根据用户授权，先切换到 P0 Resource Discovery SQLite / FD lifecycle。代码级并发与 deterministic close 可在 CI 闭环，但 30–60 分钟生产 soak 未执行前仍标记 NOT VERIFIED。
+
+## 2.6 Resource Discovery SQLite / FD lifecycle — code-level closure
+
+本批只关闭 Resource Discovery 的 SQLite 初始化与连接生命周期，不扩张为整个 Resource Lifecycle Zero-Point。
+
+旧代码 baseline 在真正迁移前得到可复现红线：
+
+```text
+run: 34700801232
+4 tests collected
+reopen cache schema/WAL bootstrap      FAILED（重复 executescript）
+_ModelManifest explicit close          FAILED（opened 6 / closed 0）
+concurrent init + generation allocation PASS
+Linux SQLite FD trend                   PASS
+baseline total                          2 failed / 2 passed
+```
+
+迁移后：
+
+```text
+DiscoveryCache schema/WAL → FileLock single-owner + PRAGMA user_version gate
+ordinary connection       → 不再执行 PRAGMA journal_mode=WAL
+transaction               → closing(connection) + explicit commit/rollback
+_ModelManifest            → closing(connection/cursor)
+focused regression        → 6/6 PASS
+```
+
+永久验收：
+
+```text
+product:                 8ba4e10db5958204aca3d87779711d8e95f5d83b
+permanent guard commit:  5b66ee03e5aaa3af3a2f18a9092f12e303f69937
+permanent workflow:      .github/workflows/resource-discovery-sqlite-stability.yml
+permanent run:           34700900542
+Ubuntu:                  PASS（含 /proc SQLite FD trend）
+Windows:                 PASS（Linux-only FD test 按合同 skip）
+cleanup:                 c6ac70b670a6297ccba065854779c10b8ca47cf3
+cleanup Frontend run:    34700984963
+cleanup Real Chrome:     32/32 PASS
+formal VERSION.txt:      42.24.0 unchanged
+```
+
+永久测试：`tests/unit/test_resource_discovery_sqlite_lifecycle.py`。一次性 migration helper/workflow 已物理删除。
+
+**仍 OPEN / NOT VERIFIED：** 30–60 分钟真实生产 soak；file/ZIP handle、subprocess pipe、socket、tempfile、directory iterator、mmap、Torch/GPU worker process、worker lock/stale PID、thread/executor 等其他资源类。故整个 Resource Lifecycle Zero-Point 仍不得标 CLOSED。
+
+按用户授权，下一主线切到 **Navigation Action Fencing**；生产 soak 单独列为后续验收，不阻塞当前代码主线。
 
 ## 3. Canonical owners
 

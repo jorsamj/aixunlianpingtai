@@ -17,8 +17,8 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: f51d44c089b6342398c14bd38c8669747adad48b
-Frontend Runtime run:        34700252041
+latest full code acceptance: c6ac70b670a6297ccba065854779c10b8ca47cf3
+Frontend Runtime run:        34700984963
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
 app.js cache:                42.25.87
@@ -26,7 +26,7 @@ main.mjs cache:              42.25.88
 NavigationStability:         422511
 ```
 
-`34700252041` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 32/32。
+`34700984963` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 32/32。Resource Discovery SQLite 永久 workflow `34700900542` 已在 Ubuntu + Windows 双平台通过。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -85,36 +85,45 @@ NavigationStability
 
 永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
 
-## 下一批准确范围：Resource Discovery SQLite / FD zero-point
+## 下一批准确范围：Navigation Action Fencing
 
-R20g、R20h、R20i、R20j、R20k 已 CLOSED。R20k 保留 live v18 `doImportData` 的上传、进度和结果语义，只把成功后的 broad `reload()` 收窄为标签刷新 + 当前数据集页分页素材刷新；永久 Real Chrome 请求合同已并入 material pagination suite。
+R20g–R20k 已 CLOSED。Resource Discovery SQLite / FD 本批也已经完成 **代码级关闭**，但只覆盖 SQLite 初始化/连接生命周期，不等于整个 Resource Lifecycle Zero-Point 已关闭。
 
-R20k 验收：
-
-```text
-product:            1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb
-focused run:        34700022284 (211/211 frontend unit + focused Chrome 2/2 PASS)
-validation:         60775456f3d4c8a441ba58ce65106af114aeebb2
-validation run:     34700127243
-validation Chrome:  32/32 PASS
-cleanup:            f51d44c089b6342398c14bd38c8669747adad48b
-cleanup run:        34700252041
-cleanup Chrome:     32/32 PASS
-app.js cache:       42.25.87
-main.mjs cache:     42.25.88
-```
-
-永久合同：`tests/frontend/v18-import-completion-scope.test.mjs` + `tests/browser/material-pagination-performance.spec.mjs`。一次性 R20k migration helper/workflow 已物理删除。
-
-按用户授权，前端 R20 同类小债先暂停扩张，下一批切到更高生产风险的 **Resource Discovery SQLite / FD lifecycle**。当前已审计出的真实风险：
+Resource Discovery SQLite 本批验收：
 
 ```text
-DiscoveryCache._connect() 每次连接都执行 PRAGMA journal_mode=WAL
-DiscoveryCache 初始化 schema/cache_meta 缺少跨进程 single-owner fencing
-_ModelManifest 多处使用 sqlite3.Connection context manager，但该 context manager 只提交/回滚、不负责 close
+baseline / migration run: 34700801232
+old-code baseline:        2 failed / 2 passed
+  - repeated schema/WAL initialization: FAILED as expected
+  - _ModelManifest explicit close:      FAILED as expected (opened 6 / closed 0)
+  - concurrent generation allocation:   PASS
+  - Linux SQLite FD trend:               PASS
+product:                  8ba4e10db5958204aca3d87779711d8e95f5d83b
+post-migration focused:   6/6 PASS
+permanent guard:          5b66ee03e5aaa3af3a2f18a9092f12e303f69937
+permanent guard run:      34700900542
+Ubuntu:                   PASS (includes /proc SQLite FD trend)
+Windows:                  PASS (Linux-only FD test skipped by contract)
+cleanup:                  c6ac70b670a6297ccba065854779c10b8ca47cf3
+cleanup Frontend run:     34700984963
+cleanup Real Chrome:      32/32 PASS
+formal VERSION.txt:       42.24.0 unchanged
 ```
 
-目标：WAL 只在受锁 schema 初始化阶段设置；初始化跨进程 single-owner；普通连接只做 per-connection PRAGMA；所有 DiscoveryCache / _ModelManifest SQLite 连接 deterministic close；补并发初始化、generation 写竞争、Linux FD trend 永久测试。30–60 分钟生产 soak 未执行前必须保持 **NOT VERIFIED**，不得提前宣称整个 Resource Lifecycle Zero-Point CLOSED。
+最终代码合同：
+
+```text
+DiscoveryCache schema/WAL initialization → FileLock single owner + PRAGMA user_version gate
+ordinary DiscoveryCache connection       → no journal_mode transition; per-connection PRAGMA only
+DiscoveryCache transactions              → deterministic closing + explicit commit/rollback
+_ModelManifest connections/cursor        → deterministic closing
+permanent cross-platform CI              → .github/workflows/resource-discovery-sqlite-stability.yml
+permanent test                            → tests/unit/test_resource_discovery_sqlite_lifecycle.py
+```
+
+**仍 OPEN / NOT VERIFIED：** 30–60 分钟真实生产 soak；以及 ZIP/file/subprocess/socket/tempfile/directory iterator/mmap/GPU worker/thread/executor 等其他资源生命周期。本批不得被描述为整个 Resource Lifecycle Zero-Point CLOSED。
+
+按用户授权，SQLite 代码级闭环到这里先停，不让生产 soak 阻塞主线。下一批切到 **Navigation Action Fencing**：审计 POST/PUT/DELETE、XHR upload、setTimeout 与业务 callback 的 stale completion，确保动作可在后台完成，但离开来源页后不得切页、重绘旧页、弹旧 modal 或改当前页 DOM。优先补 Real Chrome：A slow mutation → B/C navigation → mutation completes，最终页面必须保持用户最后选择。
 
 ## 不得回退的核心合同
 
@@ -135,14 +144,14 @@ _ModelManifest 多处使用 sqlite3.Connection context manager，但该 context 
 ## 当前后续优先级
 
 ```text
-1. R20 final global reload/request zero-point
-2. proven-dead app.js/runtime shell cleanup
-3. stale async action fencing / lifecycle zero-point
-4. cache-busting unification
-5. semantic naming + deterministic tests + docs
-6. technical-debt zero-point scan
-7. unified task progress + durable queue productionization
-8. resume A800 RC only after the above acceptance gates
+1. Navigation Action Fencing / stale mutation UI side-effect zero-point
+2. R20 final global reload/request zero-point
+3. External Algorithm Catalog read-only boundary
+4. Resource Lifecycle production soak + remaining non-SQLite resource classes
+5. ZIP 10k / Training Progress v2 / GPU Performance Tuner / Deployment Artifact E2E
+6. app.js / app.py normalization + cache-busting / semantic naming / deterministic cleanup
+7. technical-debt final zero-point + backend regression
+8. A800 RC only after acceptance gates
 ```
 
 ## 修改与交接要求

@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       f51d44c089b6342398c14bd38c8669747adad48b
-run:          34700252041
+commit:       c6ac70b670a6297ccba065854779c10b8ca47cf3
+run:          34700984963
 frontend:     PASS
 Real Chrome:  PASS (32/32)
 ```
@@ -111,6 +111,8 @@ zero-reference uploadImages / autoSplit / buildYolo / checkDatasetQuality / setI
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
 
 R20k did **not** retire the live `doImportData` owner. It migrated only its successful completion refresh from broad `reload()` to labels + current paged materials. Acceptance: product `1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb`, validation `60775456f3d4c8a441ba58ce65106af114aeebb2` / run `34700127243`, cleanup `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`, Real Chrome **32/32**. Permanent contracts: `tests/frontend/v18-import-completion-scope.test.mjs` and `tests/browser/material-pagination-performance.spec.mjs`.
+
+Cross-cutting checkpoint after R20k: Resource Discovery SQLite code-level lifecycle was accepted at product `8ba4e10db5958204aca3d87779711d8e95f5d83b`. Baseline run `34700801232` proved the two target failures before migration; permanent cross-platform workflow run `34700900542` passed Ubuntu + Windows; artifact cleanup `c6ac70b670a6297ccba065854779c10b8ca47cf3` passed Frontend Runtime `34700984963` with Real Chrome **32/32**. Production soak and non-SQLite resource classes remain outside this frontend audit and OPEN.
 
 ## 4. R9 — visible version ownership consolidation
 

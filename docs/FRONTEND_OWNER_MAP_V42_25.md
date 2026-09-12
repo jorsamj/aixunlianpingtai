@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`  
+> Latest fully accepted code point: `c6ac70b670a6297ccba065854779c10b8ca47cf3` / run `34700984963`  
 > Real Chrome: 32/32 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -84,6 +84,8 @@ R20i product: `feeb98f441bb1fe5d0f8f409a1509c66606e59ef`; validation `11131ca30c
 R20j product: `e6398f7d8ae665079c82d64217c434af4a73073c`; focused run `34699354229`; validation `693a2fa2c3d39378782ac2270a95924eff5ca5ec` / run `34699442423`; cleanup `9c7a3497b9acf69364d83e5cf778ec4139bdbc69` / run `34699599796`; frontend PASS; Real Chrome **31/31 passed**. Five globally zero-reference dataset actions were physically retired. `doImportData` is explicitly preserved as live and becomes R20k because its successful v18 import path still invokes broad `reload()`.  
 
 R20k product: `1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb`; focused run `34700022284` (211/211 frontend unit, focused Chrome 2/2); validation `60775456f3d4c8a441ba58ce65106af114aeebb2` / run `34700127243`; cleanup `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`; frontend PASS; Real Chrome **32/32 passed**. `doImportData` remains the live v18 XHR owner, but its successful completion now refreshes only labels and the current paged material domain. One-shot R20k migration artifacts are physically deleted.  
+
+Cross-cutting P0 checkpoint: Resource Discovery SQLite lifecycle product `8ba4e10db5958204aca3d87779711d8e95f5d83b`; permanent Linux/Windows guard `5b66ee03e5aaa3af3a2f18a9092f12e303f69937` / run `34700900542`; cleanup `c6ac70b670a6297ccba065854779c10b8ca47cf3` / Frontend Runtime `34700984963` with Real Chrome **32/32 passed**. This is not a new frontend owner batch and does not close the broader resource-lifecycle soak gate.  
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
