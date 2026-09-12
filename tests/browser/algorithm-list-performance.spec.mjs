@@ -250,7 +250,7 @@ test('publishing a pending model as an algorithm version keeps the live publish 
   });
 
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#modalBody')).toContainText('publish-r20b.pt');
+  await expect(page.locator('#modalBody input[disabled]').first()).toHaveValue('publish-r20b.pt');
   await expect(page.locator('#algoSel')).toHaveValue('algo-publish-r20b');
   await page.locator('#verName').fill('R20B-PUBLISH');
   await page.locator('#verRemark').fill('发布行为基线');
