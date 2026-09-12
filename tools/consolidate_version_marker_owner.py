@@ -15,11 +15,11 @@ app = app_path.read_text(encoding='utf-8')
 # Retire historical startup-only writers that repeatedly overwrite the visible
 # version badge after the final renderTop owner has already rendered it.
 legacy_version_timer = re.compile(
-    r"\s*setTimeout\(\(\)=>\{const v=document\.getElementById\('versionBadge'\);if\(v\)v\.textContent=(?:'v42\.24\.0'|'v'\+V(?:39|42|422|423|424|425|427|428|429|411))\},(?:50|100|120|150|180)\);"
+    r"\s*setTimeout\(\(\)=>\{const v=document\.getElementById\('versionBadge'\);if\(v\)v\.textContent=(?:'v42\.24\.0'|'v'\+V(?:39|42|422|423|424|425|426|427|428|429|411))\},(?:50|100|120|150|180)\);"
 )
 matches = legacy_version_timer.findall(app)
-if len(matches) != 11:
-    raise SystemExit(f'legacy visible version timers: expected 11 matches, found {len(matches)}')
+if len(matches) != 12:
+    raise SystemExit(f'legacy visible version timers: expected 12 matches, found {len(matches)}')
 app = legacy_version_timer.sub('', app)
 
 base_render_417 = "  const baseRender417=render;\n  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0';return result};\n  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0'},delay));\n"
@@ -31,6 +31,8 @@ if "[120,600,1600].forEach" in app:
     raise SystemExit('baseRender417 delayed correction timers remain')
 if legacy_version_timer.search(app):
     raise SystemExit('legacy visible version timer remains')
+if re.search(r"setTimeout\(\(\)=>\{const v=document\.getElementById\('versionBadge'\);if\(v\)v\.textContent=", app):
+    raise SystemExit('unclassified delayed visible version timer remains')
 
 # Keep the final element-specific owners. Both resolve to formal VERSION 42.24.0.
 if "const V426='42.24.0';" not in app:
