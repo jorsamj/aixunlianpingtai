@@ -321,3 +321,69 @@ test('modal table wrapping and first-field focus survive normalization ownership
   expect(pageErrors).toEqual([]);
 });
 
+test('ZIP import completion surfaces review action and auto-opens review', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.route(/\/api\/v19\/projects\/[^/]+\/datasets\/default\/import\/jobs$/, async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'zip-browser-1',
+        image_count: 3,
+        format_hints: ['YOLO'],
+        upload_seconds: 0.1,
+        scan_seconds: 0.1,
+      }),
+    });
+  });
+  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-browser-1\/start$/, async route => {
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
+  });
+  await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs\/zip-browser-1$/, async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'zip-browser-1',
+        status: 'done',
+        stage: '导入完成',
+        message: '完成',
+        progress: 100,
+        processing_seconds: 0.2,
+        report: {imported_images: 3, annotated_images: 2, boxes: 5, warnings: []},
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => {
+    window.__zipReviewOpened = null;
+    window.showImportReview412 = jobId => { window.__zipReviewOpened = jobId; };
+  });
+
+  await page.evaluate(async () => { await window.openDataUpload426(); });
+  await expect(page.locator('#up426Zip')).toBeAttached();
+  await page.locator('#up426Zip').setInputFiles({
+    name: 'browser.zip',
+    mimeType: 'application/zip',
+    buffer: Buffer.from('browser-zip-probe'),
+  });
+
+  await expect.poll(async () => page.evaluate(() => state.import411?.stage || ''), {timeout: 10_000}).toBe('导入完成');
+  await expect.poll(async () => page.evaluate(() => ({
+    bound: Boolean(state.import411?.__reviewBound),
+    opened: window.__zipReviewOpened,
+    hasButton: Boolean(document.querySelector('.review412-btn')),
+    persistedButton: String(state.import411?.resultHtml || '').includes('review412-btn'),
+  })), {timeout: 10_000}).toEqual({
+    bound: true,
+    opened: 'zip-browser-1',
+    hasButton: true,
+    persistedButton: true,
+  });
+
+  expect(pageErrors).toEqual([]);
+});
