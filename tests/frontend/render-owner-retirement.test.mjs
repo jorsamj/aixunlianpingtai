@@ -68,3 +68,21 @@ test('oldRender412 remains the sole outer algorithm-list route owner', () => {
     true,
   );
 });
+
+test('legacy auto-label render route owners cannot return', () => {
+  assert.equal(
+    app.includes("if(state.page==='自动标注'){renderNav();renderTop();renderSummary();renderAutoLabel422();return}"),
+    false,
+  );
+  assert.equal(
+    app.includes("if(state.page==='自动标注'){renderAutoLabel424();return}"),
+    false,
+  );
+});
+
+test('canonical auto-label cleanup render route remains live', () => {
+  assert.equal(
+    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()}"),
+    true,
+  );
+});

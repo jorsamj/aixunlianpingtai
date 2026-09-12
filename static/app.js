@@ -2391,7 +2391,6 @@ window.installUsability417=function(){
     if(state.page==='工作台'){renderNav();renderTop();renderSummary();renderDashboard422();if(!state.v42?.loaded)load42(true).then(()=>{if(state.page==='工作台')renderDashboard422()});return}
     if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms422();return}
     if(state.page==='素材接入'){renderNav();renderTop();renderSummary();renderSources422();return}
-    if(state.page==='自动标注'){renderNav();renderTop();renderSummary();renderAutoLabel422();return}
     render422Base();
   };
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V422},100);
@@ -2689,7 +2688,6 @@ window.installUsability417=function(){
     if(state.page==='质量中心'){renderQualityCenter424();return}
     if(state.page==='数据集'){renderDatasets424();return}
     if(state.page==='视频切帧'){renderVideo424();return}
-    if(state.page==='自动标注'){renderAutoLabel424();return}
     if(state.page==='训练任务'){renderTraining424();return}
     // v42.3 pages retain their own final implementations
     if(state.page==='算法列表'){renderAlgorithms423();return}
