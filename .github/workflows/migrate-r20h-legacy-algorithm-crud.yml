@@ -71,10 +71,13 @@ jobs:
           from pathlib import Path
           path = Path('tests/browser/algorithm-crud-owner.spec.mjs')
           text = path.read_text(encoding='utf-8')
-          old = """  const unexpected = requests.filter(row => !expected.includes(row));
-          expect(unexpected).toEqual([]);
-          expect(pageErrors).toEqual([]);"""
-          new = """  const forbiddenBroadRefresh = requests.filter(row => {
+          start_marker = '  const unexpected = requests.filter(row => !expected.includes(row));'
+          end_marker = '  expect(pageErrors).toEqual([]);'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('browser request guard semantic anchors changed unexpectedly')
+          replacement = '''  const forbiddenBroadRefresh = requests.filter(row => {
             if (expected.includes(row)) return false;
             const [method, rawPath] = row.split(' ', 2);
             const pathOnly = rawPath.split('?')[0];
@@ -89,10 +92,8 @@ jobs:
               || pathOnly.includes('/bootstrap/snapshot');
           });
           expect(forbiddenBroadRefresh).toEqual([]);
-          expect(pageErrors).toEqual([]);"""
-          if text.count(old) != 1:
-              raise SystemExit('browser request guard anchor changed unexpectedly')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          '''
+          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
           PY
       - name: Verify formal version unchanged
         run: test "$(cat VERSION.txt)" = "42.24.0"
