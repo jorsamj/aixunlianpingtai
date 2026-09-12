@@ -62,6 +62,6 @@ test('final model config modal still wires save to saveModelConfig427', () => {
   const finalOpen = app.lastIndexOf('window.openModelConfigModalV35=function');
   assert.ok(finalOpen >= 0);
   const region = app.slice(finalOpen, start);
-  assert.match(region, /onclick=\\"saveModelConfig427\('\$\{id\}'\)\\"/);
+  assert.match(region, /onclick="saveModelConfig427\('\$\{id\}'\)"/);
 });
 ''', encoding='utf-8')
