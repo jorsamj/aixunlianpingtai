@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`a21846c33d79612f9ab4a47e2a69195da29caa3b`**  
-> **Frontend Runtime Stabilization：run `34681966242`，frontend + Real Chrome 全绿，Real Chrome 24/24 passed。**  
+> **最近完整代码验收点：`89327ded9da924753f5f900fc3b79e6df353927f`**  
+> **Frontend Runtime Stabilization：run `34684119911`，frontend + Real Chrome 全绿，Real Chrome 27/27 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -122,6 +122,8 @@ legacy baseRender + RAF page normalization wrapper
 | model-version publish full reload | authoritative POST result + local state patch | **CLOSED (R20b)** |
 | training-server create full reload | POST + training_options-only target refresh | **CLOSED (R20c)** |
 | Paddle environment activation full reload | `refreshPaddleTrainingTargets20d` + training_options-only target refresh | **CLOSED (R20d)** |
+| model-config / prompt-template mutation full reload + stale prompt UI | authoritative mutation result + local state patch | **CLOSED (R20e)** |
+| resource-discovery SQLite concurrent cache initialization | lock-safe/single-owner cache initialization | **OPEN — R20e validation diagnostic** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -233,8 +235,8 @@ global reload / loadAll / loadRelated request ownership
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.80
-main.mjs cache                   42.25.85
+app.js cache                     42.25.81
+main.mjs cache                   42.25.86
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -271,6 +273,7 @@ tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/training-server-refresh-owner.test.mjs
 tests/frontend/paddle-resource-refresh-owner.test.mjs
+tests/frontend/model-config-prompt-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -311,7 +314,7 @@ R12 永久要求：
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 已在 R18 退休，不得回归；startup/page normalization 均由 readiness-aware final render owner 承担。
 
-当前验收：run `34681966242`，frontend PASS，Real Chrome **24/24 passed**。
+当前验收：run `34684119911`，frontend PASS，Real Chrome **27/27 passed**。
 
 ### R16 — event-owned ZIP completion + page-scoped material summary
 
@@ -575,3 +578,34 @@ G. A800 RC
 ## 10. 发布禁令
 
 正式 `v42.25.0` 前必须：技术债无未解决 P0/P1、Frontend Runtime 与 Release Regression 全绿、A800 preflight/首训/迭代/worker fencing 实机全绿，并取得用户明确 merge/version/tag/release 授权。
+
+### R20e — 模型配置 / 提示词 mutation local ownership
+
+R20e 的 source-order audit 证明三条 mutation 仍为最终可达 owner：删除模型配置、保存/编辑提示词模板、删除提示词模板。旧实现均在 mutation 成功后执行 `loadAll()`。其中提示词路径存在真实状态同步错误：当前模型配置页的 loadAll extras 会重载 `modelConfigs`，但不会重载 `promptTemplates`，因此 POST/DELETE 成功后页面仍显示旧提示词状态。
+
+```text
+baseline:             afa2bfcb474cc9970129723af5589ab74a26eca7
+baseline run:         34683803977 → 1/3 PASS
+                       prompt save：成功后新模板未出现在页面
+                       prompt delete：成功后旧模板仍留在页面
+first migration run:  34683969019 → unit 3/4；仅 wiring guard 转义错误；未提交产品
+guard fix:            becabf102d10520db52fdac9af1d5238357aa3f3
+focused run:          34684037005 → unit 4/4 + Chrome 3/3 PASS
+product:              febece523b462692cc857431cb901fc5a863d091
+validation:           89327ded9da924753f5f900fc3b79e6df353927f
+full run:             34684119911
+frontend:             PASS
+Real Chrome:          27/27 PASS
+```
+
+最终 owner：
+
+```text
+deleteModelConfigV35     → DELETE → state.modelConfigs local filter → render
+savePromptTemplateV35    → POST/PUT authoritative item → state.promptTemplates local upsert → render
+deletePromptTemplateV35  → DELETE → state.promptTemplates local filter → render
+```
+
+三条永久 Chrome 合同均要求 action 期间 bootstrap=0、model-config GET=0、prompt-template GET=0。R20 mutation refresh debt 继续 **IN PROGRESS**，下一批必须做剩余 `reload/loadAll/loadRelated` 的 final-owner zero-point audit；历史 shadowed code 和用户显式“完整刷新”按钮不得误计为 mutation debt。
+
+附带诊断：full run 中 resource-discovery cache 初始化曾记录一次 `sqlite3.OperationalError: database is locked`，但 27/27 Chrome 全部通过。该问题单独列入 resource-discovery 并发技术债，不影响 R20e 验收结论。

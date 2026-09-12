@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: a21846c33d79612f9ab4a47e2a69195da29caa3b
-Frontend Runtime run:        34681966242
+latest full code acceptance: 89327ded9da924753f5f900fc3b79e6df353927f
+Frontend Runtime run:        34684119911
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.80
-main.mjs cache:              42.25.85
+app.js cache:                42.25.81
+main.mjs cache:              42.25.86
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34681966242` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **24 tests and passed 24/24**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34684119911` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **27 tests and passed 27/27**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -554,3 +554,49 @@ live HEAD
 ## 10. A800 status
 
 **DEFERRED** until current P0/P1 technical debt is closed. Frontend CI is not CUDA/A800 acceptance.
+
+### R20e — model configuration / prompt mutation local ownership
+
+The zero-point audit found three still-live mutation success paths in 模型配置: `deleteModelConfigV35`, `savePromptTemplateV35`, and `deletePromptTemplateV35`. All three used global `loadAll()` after mutation. The prompt paths also exposed a real correctness bug: the current model-page extras reload model configs but not prompt templates, so a successful prompt save/delete left the visible prompt list stale.
+
+```text
+baseline:             afa2bfcb474cc9970129723af5589ab74a26eca7
+baseline run:         34683803977 → 1/3 PASS
+                       model-config delete PASS
+                       prompt save failed to appear immediately
+                       prompt delete failed to disappear immediately
+first migration run:  34683969019 → unit 3/4; wiring guard escaping only; no product commit
+guard fix:            becabf102d10520db52fdac9af1d5238357aa3f3
+focused run:          34684037005 → unit 4/4 + Real Chrome 3/3 PASS
+product:              febece523b462692cc857431cb901fc5a863d091
+validation:           89327ded9da924753f5f900fc3b79e6df353927f
+full run:             34684119911
+frontend:             PASS
+Real Chrome:          27/27 PASS
+app.js:               42.25.81
+main.mjs:             42.25.86
+formal VERSION.txt:   42.24.0
+```
+
+Final mutation ownership:
+
+```text
+deleteModelConfigV35
+  → DELETE model config
+  → local state.modelConfigs filter
+  → local render
+
+savePromptTemplateV35
+  → authoritative POST/PUT response
+  → local state.promptTemplates upsert
+  → local render
+
+deletePromptTemplateV35
+  → DELETE prompt template
+  → local state.promptTemplates filter
+  → local render
+```
+
+Permanent request contracts require zero bootstrap, model-config GET, or prompt-template GET fan-out from these actions. R20/global mutation refresh debt remains **IN PROGRESS** until the next source-order zero-point audit proves no additional live mutation success owner still uses global refresh.
+
+The full R20e Chrome run also logged one non-fatal `sqlite3.OperationalError: database is locked` while initializing the resource-discovery cache. All 27 browser contracts still passed. Treat that as a separate resource-discovery concurrency diagnostic, not as an R20e acceptance failure.

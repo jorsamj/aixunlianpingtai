@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `a21846c33d79612f9ab4a47e2a69195da29caa3b` / run `34681966242`  
-> Real Chrome: 24/24 passed  
+> Latest fully accepted code point: `89327ded9da924753f5f900fc3b79e6df353927f` / run `34684119911`  
+> Real Chrome: 27/27 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -68,6 +68,7 @@ initial bootstrap setPage                       CLOSED
 | R20b | model-version publish full reload → authoritative POST result + local state patch | `d18044d3...` / `34679069872` |
 | R20c | training-server full reload → POST + training_options-only target refresh | `e3f23f59...` / `34681236515` |
 | R20d | Paddle activation full reload → training_options-only target refresh | `a21846c3...` / `34681966242` |
+| R20e | model-config/prompt full reload + stale prompt UI → authoritative local state ownership | `89327ded...` / `34684119911` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -207,6 +208,9 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Algorithm version delete refresh | `delVersion → AlgorithmListRuntime.refresh` | DELETE + algorithms/jobs scoped refresh; no global reload fan-out | unit + Chrome request contract |
 | Model-version publish | final `saveAssign` → authoritative POST result | one POST; local algorithm-version + pending-state patch; zero reload GETs | unit + Chrome request contract |
 | Training-server creation | final `saveServer` → training_options scoped refresh | POST server + GET training_options; replace targets; bootstrap=0 | unit + Chrome request contract |
+| Model-config deletion | `deleteModelConfigV35` | DELETE + local `state.modelConfigs` removal; no follow-up GET | unit + Chrome request contract |
+| Prompt-template save/edit | `savePromptTemplateV35` | authoritative POST/PUT item + local upsert; no follow-up GET | unit + Chrome request contract |
+| Prompt-template deletion | `deletePromptTemplateV35` | DELETE + local `state.promptTemplates` removal; no follow-up GET | unit + Chrome request contract |
 | Paddle environment activation | final `detectPaddle` / `quickPaddleDetect` → `refreshPaddleTrainingTargets20d` | required POSTs + one training_options GET per activation; bootstrap=0 | unit + Chrome request contract |
 | Training task page route | `renderBase428 → renderTraining423()` | training-only route | browser performance + guard |
 | Quality center route | `renderBase424 → renderQualityCenter424()` | live route retained | guard |
@@ -453,3 +457,38 @@ live HEAD
 ## 13. Release boundary
 
 No `main` merge, `VERSION.txt` bump, tag/release or A800 acceptance claim is authorized. A800 RC remains deferred until current P0/P1 debt and zero-point scan are complete.
+
+### R20e — model configuration mutation owners
+
+```text
+deleteModelConfigV35
+  → DELETE
+  → filter state.modelConfigs
+  → render
+
+savePromptTemplateV35
+  → POST/PUT returns authoritative template
+  → upsert state.promptTemplates
+  → render
+
+deletePromptTemplateV35
+  → DELETE
+  → filter state.promptTemplates
+  → render
+```
+
+Acceptance chain:
+
+```text
+baseline:             afa2bfcb474cc9970129723af5589ab74a26eca7 / 34683803977 → 1/3 PASS, exposed stale prompt UI
+first migration run:  34683969019 → product not committed; generated wiring assertion escaped incorrectly
+guard fix:            becabf102d10520db52fdac9af1d5238357aa3f3
+focused:              34684037005 → unit 4/4 + Chrome 3/3 PASS
+product:              febece523b462692cc857431cb901fc5a863d091
+validation:           89327ded9da924753f5f900fc3b79e6df353927f
+full run:             34684119911
+frontend:             PASS
+Real Chrome:          27/27 PASS
+```
+
+These mutation owners now have zero bootstrap/model-config/prompt-template follow-up GET fan-out. R20 remains open only pending final zero-point proof across the remaining source-order `reload/loadAll/loadRelated` sites.

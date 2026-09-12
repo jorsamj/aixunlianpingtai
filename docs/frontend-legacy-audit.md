@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       a21846c33d79612f9ab4a47e2a69195da29caa3b
-run:          34681966242
+commit:       89327ded9da924753f5f900fc3b79e6df353927f
+run:          34684119911
 frontend:     PASS
-Real Chrome:  PASS (24/24)
+Real Chrome:  PASS (27/27)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.80
-main.mjs                  42.25.85
+app.js                    42.25.81
+main.mjs                  42.25.86
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -465,7 +465,7 @@ cleanup(root) invokes window.beautifyFileInputs426?.(root)
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **24/24** in run `34681966242`.
+Current accepted Real Chrome suite: **27/27** in run `34684119911`.
 
 ## 9. Remaining technical-debt targets
 
@@ -530,3 +530,22 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 6. technical-debt zero-point scan
 7. A800 RC
 ```
+
+### R20e — live model-config / prompt mutation refresh retirement
+
+The next source-order audit found three genuinely live mutation owners in the final 模型配置 surface. The old prompt save/delete path was not merely expensive: because model-page extras reload model configs but not prompt templates, its global refresh left prompt UI stale.
+
+```text
+baseline:             afa2bfcb474cc9970129723af5589ab74a26eca7 / 34683803977 → 1/3 PASS
+first migration run:  34683969019 → unit 3/4, over-escaped wiring assertion only; no product commit
+guard fix:            becabf102d10520db52fdac9af1d5238357aa3f3
+focused:              34684037005 → unit 4/4 + Chrome 3/3 PASS
+product:              febece523b462692cc857431cb901fc5a863d091
+validation:           89327ded9da924753f5f900fc3b79e6df353927f / 34684119911
+frontend:             PASS
+Real Chrome:          27/27 PASS
+```
+
+Live mutation topology is now local/authoritative: model-config delete filters `state.modelConfigs`; prompt save upserts the POST/PUT result into `state.promptTemplates`; prompt delete filters that collection. None of these actions may issue bootstrap/model-config/prompt-template follow-up GETs.
+
+The full run also emitted one non-fatal resource-discovery SQLite `database is locked` during cache initialization. Keep that as a separate concurrency audit target.
