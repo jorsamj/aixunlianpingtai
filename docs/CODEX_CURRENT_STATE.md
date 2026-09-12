@@ -6,12 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 70b6f755cd8633de3e8591ac2fee044efc770b97
-Frontend Runtime run:        34663768606
+latest full code acceptance: 36fd25c48a2251d1b4a85583921c00dd98bf33fb
+Frontend Runtime run:        34664755130
 formal VERSION.txt:          42.24.0
-frontend badge:              v42.25.0-dev
-app.js cache:                42.25.65
-main.mjs cache:              42.25.68
+visible frontend version:    v42.24.0
+internal UI build metadata:  42.25.0-dev
+app.js cache:                42.25.66
+main.mjs cache:              42.25.70
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -22,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34663768606` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions; browser-navigation ran 14 tests and passed 14/14. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34664755130` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation now runs **15 tests and passed 15/15**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -33,6 +34,8 @@ remaining render override owner audit / obsolete generation deletion
 → zero-point lifecycle scan
 → A800 RC
 ```
+
+A800 RC remains deferred.
 
 Read in order:
 
@@ -65,7 +68,7 @@ video          → PollRegistry(video-frames)
 sources        → PollRegistry(sources)
 ```
 
-Legacy timers/shells/wrappers/adoption compatibility are retired. R8 also removed the old `renderAutoLabel424()` 1.8-second self-refresh timeout, which could only fire for the now-impossible legacy page value `自动标注`.
+Legacy timers/shells/wrappers/adoption compatibility are retired. R8 removed the old `renderAutoLabel424()` 1.8-second self-refresh timeout keyed to the now-impossible legacy page value `自动标注`.
 
 ### Navigation
 
@@ -91,24 +94,14 @@ performNavigation: page => {
 }
 ```
 
-Permanent CI forbids any `window.setPage=` assignment in `static/app.js`; R8 additionally locks `state.page==='自动标注'` to zero occurrences in `app.js`.
+Permanent CI forbids classic `window.setPage=` owners in `static/app.js`.
 
-## 4. Render debt already closed
+## 4. Render / lifecycle debt already closed
 
-### Route alias state mutation and legacy route owners
-
-Historical render code used to mutate `自动标注 → 自动标注及清洗`. Current responsibility split:
-- navigation request alias → `NavigationStability.normalizeNavigationPage()`;
-- historical localStorage restore → v34 restore-boundary canonicalization + canonical writeback;
-- render itself no longer mutates route state;
-- v42.2 and v42.4 render branches keyed to legacy `自动标注` are physically removed;
-- the final old-page `renderAutoLabel424` self-refresh predicate/timer is physically removed.
-
-`renderBase427` is the live route owner for canonical `自动标注及清洗` and delegates to `renderOps427()`; periodic AutoLabel work remains `AutoLabelPollRuntime + PollRegistry` only.
-
-### Physically retired render/lifecycle debt
+Physically retired and permanently guarded:
 
 ```text
+v42.7 render route-state alias mutation
 oldRender429
 previousRender61
 render423Base
@@ -117,66 +110,96 @@ v42.2 render422 legacy 自动标注 route branch
 v42.4 renderBase424 legacy 自动标注 route branch
 renderBase424 算法列表 / 数据集 / 训练任务 branches
 renderAutoLabel424 legacy 自动标注 1.8s self-refresh timeout/predicate
+baseRender417 visible-version correction wrapper
+baseRender417 120/600/1600ms correction timers
+12 historical app.js versionBadge startup timers
+main.mjs applyBuildVersion visible-version writer
+main.mjs 80/500/1800/3600/8000ms visible-version writers
 ```
 
-`renderAutoLabel424()` itself is not yet dead: historical action functions still call it directly. R8 deliberately removed only the unreachable timer, not the function body.
+### R9 — version marker ownership consolidation
 
-Accepted points:
+A new Real Chrome contract first exposed a real pre-existing bug:
 
 ```text
-oldRender429                  0455eeef696f19457b0f1a2b79e229a7e381b3db / 34659041402 PASS
-previousRender61              69732d9ed659a62a3a1e92b36d07b912e141b8c9 / 34659543452 PASS
-render423Base                 58ece59e95722437069c7e03277363197e564136 / 34659775870 PASS
-renderBase428 alg branch      6be679b6b23f566d14434e2032b8af8015341ae4 / 34660269685 PASS
-legacy auto-label route owner 66339fc0b8459328a68bf775230eae179a4d969d / 34663089996 PASS (Chrome 14/14)
-renderBase424 shadowed routes 2d9bc0b30a72761d784cc57472eb50b158b8851f / 34663389819 PASS (Chrome 14/14)
-AutoLabel424 legacy timer     70b6f755cd8633de3e8591ac2fee044efc770b97 / 34663768606 PASS (Chrome 14/14)
+baseline commit: 50d72687f099eb554ec77e9045e42713025c4453
+baseline run:    34664100285
+frontend:        PASS
+Chrome:          14 PASS / 1 FAIL
+failure:         expected v42.24.0, received v42.25.0-dev after delayed startup writers
 ```
 
-All corresponding one-shot migration helpers/workflows were physically deleted after acceptance.
+Root cause was `static/main.mjs` mixing internal build metadata with visible formal version display through `applyBuildVersion()` plus delayed timers. Classic `app.js` also contained 12 historical delayed badge writers and `baseRender417` correction timers.
+
+R9 final split:
+
+```text
+internal build metadata:
+  UI_BUILD_VERSION = 42.25.0-dev
+  → document.documentElement.dataset.uiBuild only
+
+visible formal version:
+  initial HTML badge → v42.24.0
+  top badge          → top412 / V412 = 42.24.0
+  sidebar footer     → nav426 / V426 = 42.24.0
+```
+
+Product commit:
+
+```text
+1e9ae1118a77313d8dd3d4c0cf12d5ce5f9edff7
+```
+
+Final validation:
+
+```text
+36fd25c48a2251d1b4a85583921c00dd98bf33fb
+run 34664755130
+frontend PASS
+Real Chrome 15/15 PASS
+```
+
+Permanent guard: `tests/frontend/version-marker-owner.test.mjs`; it is included automatically by the main CI command `node --test tests/frontend/*.test.mjs`. The 15th Real Chrome test permanently verifies visible formal version stability after historical delay windows and across final render owners.
 
 ## 5. Current live render owners — do not delete without proof
 
 ```text
 oldRender412
-  algorithm list + data-set stable routing
-  sole outer 算法列表 / 数据集 stable route owner
+  算法列表 / 数据集 stable routing
 
 renderBase428
-  training-only route to current renderTraining423
+  training-only route to renderTraining423
 
 renderTraining423
   current training renderer
-  directly calls PollRegistryRuntime.replaceTrainingJobTimer()
+  directly activates PollRegistry training-jobs
 
 renderBase427
   canonical 自动标注及清洗 route owner
-  delegates to renderOps427()
 
 renderBase424
-  now only 质量中心 + 视频切帧 route owner
+  质量中心 / 视频切帧 route owner only
 
 oldRenderV39
   deployment conversion/artifact/resource/plugin/component routes
 
 render414Base
-  标签管理 route + version badge semantics
+  标签管理 route; remains live
 
 finalRender
-  final 素材存储配置 route owner
+  素材存储配置 final route owner
 ```
 
-Other wrappers still require independent liveness analysis:
+Still requiring independent liveness analysis:
 
 ```text
 baseRenderV37
 render426base
-baseRender417
 post-render cleanup / MutationObserver layer
-older base/global render generations
+older base/global render generations still reachable through delegates
 ```
 
-`baseRender417` is a current audit candidate because later v42.6 `renderNav`/`renderTop` also enforce the same visible `42.24.0` badge/footer value, but no deletion is allowed until exact source-order and all-page equivalence are proven.
+`baseRender417` is no longer an audit target; R9 retired it after the visible-version semantics were proven elsewhere and locked by Chrome.
 
 ## 6. Permanent frontend/browser contracts
 
@@ -185,6 +208,7 @@ Frontend includes:
 ```text
 render-alias-restore.test.mjs
 render-owner-retirement.test.mjs
+version-marker-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -192,17 +216,14 @@ retired-pre-v424-setpage-guard.test.mjs
 auto-label-poll-runtime.test.mjs
 ```
 
-`render-owner-retirement.test.mjs` permanently requires:
-- old fully shadowed generations stay absent;
-- v42.2/v42.4 legacy `自动标注` route branches stay absent;
-- `state.page==='自动标注'` stays absent from `static/app.js`;
-- legacy `renderAutoLabel424` self-refresh timer stays absent;
-- canonical `自动标注及清洗` keeps `renderBase427 → renderOps427()` ownership;
-- `renderBase428` stays training-only;
-- `oldRender412` stays authoritative for algorithm/data routes;
-- `renderBase424` cannot regain algorithm/data/training routes and must retain quality/video routes.
+Important R9 permanent requirements:
+- `baseRender417` must remain absent;
+- delayed classic `versionBadge` startup writers must remain absent;
+- `main.mjs` may keep `UI_BUILD_VERSION` as internal metadata but must not write `#versionBadge` or `.nav-footer b`;
+- visible initial version must be `v42.24.0`;
+- `top412` and `nav426` must keep formal-version display semantics until a later explicitly named owner migration is proven.
 
-Real Chrome verifies navigation, startup readiness, stale-request fencing, PollRegistry stop-on-leave, AutoLabel managed polling, sidebar close, current/historical auto-label alias canonicalization, page persistence/reload, storage configuration route, algorithm list, training task and material performance paths. Current accepted browser suite is 14/14.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, and formal-version stability. Current accepted suite: **15/15**.
 
 Do not weaken these tests.
 
@@ -215,7 +236,7 @@ live HEAD
 → exact assignment/capture/source-order proof
 → page coverage/liveness proof
 → browser/unit behavior contract where needed
-→ semantic migration if the layer is live
+→ semantic migration if live
 → double-owner equivalence if semantics move
 → physical deletion only when shadowed/dead
 → permanent guard
