@@ -101,7 +101,7 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   expect(pageErrors).toEqual([]);
 });
 
-test('algorithm version deletion stays functional before scoped refresh migration', async ({page}) => {
+test('algorithm version deletion uses focused refresh without full reload', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -169,11 +169,29 @@ test('algorithm version deletion stays functional before scoped refresh migratio
   await expect(page.locator('#modal')).toHaveClass(/hidden/);
   await expect(page.locator('#alg412List')).toContainText('版本删除验收算法');
   await expect(page.locator('#alg412List')).not.toContainText('20260912100000');
-  expect(requests.sort()).toEqual([
-    `DELETE /api/v12/projects/${projectId}/algorithms/algo-version-delete/versions/version-delete-1`,
-    `GET /api/projects/${projectId}/jobs`,
-    `GET /api/v12/projects/${projectId}/algorithms`,
-  ].sort());
+
+  const deleteRequest = `DELETE /api/v12/projects/${projectId}/algorithms/algo-version-delete/versions/version-delete-1`;
+  const algorithmRequest = `GET /api/v12/projects/${projectId}/algorithms`;
+  const jobRequest = `GET /api/projects/${projectId}/jobs`;
+  expect(requests.filter(row => row === deleteRequest)).toEqual([deleteRequest]);
+  expect(requests.filter(row => row === algorithmRequest)).toEqual([algorithmRequest]);
+  expect(requests.filter(row => row === jobRequest)).toEqual([jobRequest]);
+
+  const forbiddenFullReloadRequests = requests.filter(row => {
+    const path = row.slice(row.indexOf(' ') + 1).split('?')[0];
+    return path === '/api/projects'
+      || path === `/api/projects/${projectId}`
+      || path.startsWith(`/api/projects/${projectId}/datasets`)
+      || path.startsWith(`/api/projects/${projectId}/images`)
+      || path.startsWith(`/api/v12/projects/${projectId}/labels`)
+      || path.startsWith(`/api/v12/projects/${projectId}/publish/pending`)
+      || path.startsWith(`/api/v12/projects/${projectId}/test_models`)
+      || path === '/api/training_options'
+      || path === '/api/v16/inference_envs'
+      || path === '/api/system/recommendation'
+      || path === '/api/local_models'
+      || path.includes('/bootstrap/snapshot');
+  });
+  expect(forbiddenFullReloadRequests).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
-
