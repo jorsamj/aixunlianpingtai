@@ -29,7 +29,7 @@ test('historical render maps retain only a bounded dataset delegate', () => {
   assert.match(app, /if\(state\.page==='数据集'\)\{renderDatasets424\(\);return\}/);
 });
 
-test('R20i cache moves without changing the formal visible version', () => {
-  assert.match(index, /app\.js\?v=42\.25\.85/);
+test('R20i keeps the formal visible version independent from internal cache bumps', () => {
   assert.match(index, /id="versionBadge" class="version-badge">v42\.24\.0</);
+  assert.match(index, /<script src="\/static\/app\.js\?v=42\.25\.\d+"><\/script>/);
 });
