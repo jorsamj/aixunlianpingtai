@@ -4,6 +4,7 @@ from pathlib import Path
 app_path = Path('static/app.js')
 index_path = Path('static/index.html')
 test_path = Path('tests/frontend/model-config-save-refresh-owner.test.mjs')
+diagnostic_path = Path('tests/browser/r20f-runtime-diagnostic.spec.mjs')
 
 app = app_path.read_text(encoding='utf-8')
 start_marker = "  window.saveModelConfig427=async function(id=''){"
@@ -64,5 +65,68 @@ test('final model config modal still wires save to saveModelConfig427', () => {
   assert.ok(finalOpen >= 0);
   const region = app.slice(finalOpen, start);
   assert.match(region, /onclick="saveModelConfig427\('\$\{id\}'\)"/);
+});
+''', encoding='utf-8')
+
+diagnostic_path.write_text(r'''import {test, expect} from '@playwright/test';
+
+test('R20f runtime owner diagnostic', async ({page}) => {
+  const requests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) requests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
+  await page.route(/\/api\/v35\/model-configs(?:\?.*)?$/, async route => {
+    const request = route.request();
+    if (request.method() === 'GET') {
+      await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: []})});
+      return;
+    }
+    if (request.method() !== 'POST') return route.continue();
+    const body = request.postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({...body, id: 'cfg-r20f-diag', has_api_key: false, api_key_masked: ''}),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true), {timeout: 15_000}).toBe(true);
+  const runtime = await page.evaluate(() => ({
+    saveSource: String(window.saveModelConfig427),
+    renderSource: String(window.renderModelConfigPageV35),
+    scripts: [...document.scripts].map(script => script.src).filter(Boolean),
+    page: state.page,
+    configs: state.modelConfigs,
+  }));
+  console.log('R20F_RUNTIME_BEFORE=' + JSON.stringify(runtime));
+  expect(runtime.saveSource).toContain('const saved=await api(');
+  expect(runtime.saveSource).not.toContain('await loadRelated()');
+  expect(runtime.scripts.some(src => src.includes('/static/app.js?v=42.25.82'))).toBe(true);
+
+  await page.evaluate(() => {
+    state.page = '模型配置';
+    state.modelConfigs = [];
+    state.promptTemplates = [];
+    render();
+    window.openModelConfigModalV35();
+  });
+  await page.locator('#mcName').fill('R20f Diagnostic');
+  await page.locator('#mcModel').fill('r20f-diag-model');
+  await page.locator('#mcUrl').fill('http://127.0.0.1:19021/detect');
+  await page.locator('#modalBody').getByRole('button', {name: '保存'}).click();
+  await expect(page.locator('#modal')).toHaveClass(/hidden/);
+  await page.waitForTimeout(250);
+  const after = await page.evaluate(() => ({
+    configs: state.modelConfigs,
+    view: document.getElementById('view')?.innerText || '',
+    toast: document.getElementById('toast')?.innerText || '',
+    saveSource: String(window.saveModelConfig427),
+  }));
+  console.log('R20F_RUNTIME_AFTER=' + JSON.stringify(after));
+  console.log('R20F_RUNTIME_REQUESTS=' + JSON.stringify(requests));
+  expect(after.configs.some(item => item.id === 'cfg-r20f-diag')).toBe(true);
+  expect(after.view).toContain('R20f Diagnostic');
 });
 ''', encoding='utf-8')
