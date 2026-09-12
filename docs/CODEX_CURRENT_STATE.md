@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 0dacf581da4acb52312f75eb7e85e6b334e060db
-Frontend Runtime run:        34665470320
+latest full code acceptance: 9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1
+Frontend Runtime run:        34665890699
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.67
-main.mjs cache:              42.25.71
+app.js cache:                42.25.68
+main.mjs cache:              42.25.72
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,12 +23,12 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34665470320` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation now runs **16 tests and passed 16/16**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34665890699` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation now runs **17 tests and passed 17/17**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-remaining render/modal/post-render owner audit
+baseRenderV37 / baseModalV37 / cleanup+observer owner audit
 → app.js/global reload/request debt
 → cache-busting unification
 → zero-point lifecycle scan
@@ -69,7 +69,7 @@ video          → PollRegistry(video-frames)
 sources        → PollRegistry(sources)
 ```
 
-Legacy timers/shells/wrappers/adoption compatibility are retired. R8 removed the old `renderAutoLabel424()` 1.8-second self-refresh timeout keyed to the impossible legacy page value `自动标注`.
+Legacy timers/shells/wrappers/adoption compatibility are retired.
 
 ### Navigation
 
@@ -107,20 +107,19 @@ oldRender429
 previousRender61
 render423Base
 renderBase428 算法列表 branch
-v42.2 render422 legacy 自动标注 route branch
-v42.4 renderBase424 legacy 自动标注 route branch
+v42.2/v42.4 legacy 自动标注 route branches
 renderBase424 算法列表 / 数据集 / 训练任务 branches
 renderAutoLabel424 legacy 自动标注 1.8s self-refresh timeout/predicate
-baseRender417 visible-version correction wrapper
-baseRender417 120/600/1600ms correction timers
+baseRender417 visible-version correction wrapper/timers
 12 historical app.js versionBadge startup timers
 main.mjs applyBuildVersion visible-version writer/timers
 render426base page-render file-input beautification wrapper
+modal426 modal file-input beautification wrapper
 ```
 
 ### R9 — version marker ownership consolidation
 
-A Real Chrome baseline exposed the delayed `v42.25.0-dev` overwrite. R9 separated internal build metadata from visible formal version display.
+A Real Chrome baseline exposed delayed `v42.25.0-dev` overwrite. R9 separated internal build metadata from visible formal version display.
 
 ```text
 product:    1e9ae1118a77313d8dd3d4c0cf12d5ce5f9edff7
@@ -129,57 +128,57 @@ run:        34664755130
 Chrome:     15/15 PASS
 ```
 
-Final split:
-
-```text
-UI_BUILD_VERSION = 42.25.0-dev
-  → document.documentElement.dataset.uiBuild only
-
-initial visible badge → v42.24.0
-top visible badge     → top412 / V412 = 42.24.0
-sidebar footer        → nav426 / V426 = 42.24.0
-```
-
 ### R10 — render426base page wrapper retirement
 
-Audit proved `render426base` was live, not dead: on `测试发布`, the unmarked `#predFile` input depended on the wrapper's post-render `beautifyFileInputs426()` callback. The current `数据集` upload flow uses hidden `data-file426=1` inputs and is intentionally excluded from this beautifier, so it was not used as the behavior baseline.
-
-Migration:
-
-```text
-before:
-  render426base
-  → render()
-  → requestAnimationFrame(beautifyFileInputs426(#view))
-
-after:
-  post-render cleanup(root)
-  → beautifyFileInputs426(root)
-  → existing cleanup semantics
-```
-
-`modal426` was deliberately **not** removed in R10. Modal file-input beautification remains a separate live-audit target.
-
-R10 acceptance:
+`render426base` was live: `测试发布 #predFile` depended on post-render `beautifyFileInputs426()`. Behavior was locked first, then page ownership moved to `cleanup(root)`.
 
 ```text
 behavior baseline: 6b67497ae43a32edf343fc7dec49f7b3824c1088
 product:           b9d25955c185aaabb4108f3d37cfecd9f876390a
 validation:        0dacf581da4acb52312f75eb7e85e6b334e060db
 run:               34665470320
-frontend:          PASS
 Real Chrome:       16/16 PASS
 ```
 
-Permanent guards:
+### R11 — modal426 retirement
+
+A generic modal behavior contract proved the old wrapper's file-input semantics before migration. After R10, the existing `#modalBody` MutationObserver already routes inserted modal nodes through `cleanup(root)`, and `cleanup(root)` owns `beautifyFileInputs426`.
+
+Final topology:
+
+```text
+modal body mutation
+→ modalBody MutationObserver
+→ cleanup(addedNode)
+→ beautifyFileInputs426(root)
+```
+
+Retired:
+
+```text
+const modal426=modal
+requestAnimationFrame(()=>beautifyFileInputs426(layer||document))
+```
+
+R11 acceptance:
+
+```text
+behavior baseline: d2aa614870a52864e991502c2218134943afb14f
+product:           8ff8e7fd9dc055b6e413c273cc030e7f20a2f0c1
+validation:        9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1
+run:               34665890699
+frontend:          PASS
+Real Chrome:       17/17 PASS
+```
+
+Permanent proof remains in:
 
 ```text
 tests/frontend/file-input-beautification-owner.test.mjs
-navigation-stability.spec.mjs:
-  file input beautification survives page render lifecycle ownership
+tests/browser/navigation-stability.spec.mjs
 ```
 
-The unit guard forbids `render426base` from returning, requires `cleanup(root)` to call `window.beautifyFileInputs426?.(root)`, and explicitly requires `modal426` to remain until its own migration is proven.
+All R10/R11 one-shot baseline/migration helpers and workflows were deleted after acceptance.
 
 ## 5. Current live render owners — do not delete without proof
 
@@ -210,24 +209,21 @@ finalRender
   素材存储配置 final route owner
 
 cleanup(root)
-  page post-render normalization
-  page file-input beautification after R10
-
-modal426
-  modal post-render file-input beautification; still under audit
+  page/modal post-render normalization
+  file-input beautification
 ```
 
 Still requiring independent liveness analysis:
 
 ```text
-modal426
 baseRenderV37
-post-render cleanup wrapper + MutationObserver ownership
+baseModalV37
+post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
-`baseRender417` and `render426base` are no longer audit targets; they are permanently retired.
+`baseRender417`, `render426base`, and `modal426` are permanently retired.
 
 ## 6. Permanent frontend/browser contracts
 
@@ -245,7 +241,14 @@ retired-pre-v424-setpage-guard.test.mjs
 auto-label-poll-runtime.test.mjs
 ```
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page-render file-input beautification. Current accepted suite: **16/16**.
+`file-input-beautification-owner.test.mjs` now permanently requires:
+- `render426base` absent;
+- `modal426` absent;
+- old page/modal RAF beautification callbacks absent;
+- `cleanup(root)` calls `beautifyFileInputs426`;
+- `view` and `modalBody` observer wiring remains until lifecycle ownership is explicitly migrated.
+
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **17/17**.
 
 Do not weaken these tests.
 
@@ -282,7 +285,7 @@ live HEAD
 ## 9. Work order
 
 ```text
-1. modal426 / baseRenderV37 / cleanup+observer owner audit
+1. baseRenderV37 / baseModalV37 / cleanup+observer owner audit
 2. proven dead app.js + global reload/request debt
 3. cache-busting unification
 4. zero-point MutationObserver/timer/fetch/render/setPage scan
