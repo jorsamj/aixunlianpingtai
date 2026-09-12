@@ -19,6 +19,9 @@ test('startup dispatch remains owned by the final __clInit path', () => {
   assert.equal(app.includes('window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;'), true);
 });
 
-test('bounded cleanup timer is not confused with retired startup renders', () => {
-  assert.equal(app.includes("setTimeout(()=>{renderTop();cleanup(document);},100);"), true);
+test('bounded startup cleanup timer cannot return after final render ownership', () => {
+  assert.equal(app.includes("setTimeout(()=>{renderTop();cleanup(document);},100);"), false);
+  assert.equal(app.includes('window.PostRenderNormalizationRuntime=Object.freeze({apply:cleanup});'), true);
+  assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
+  assert.equal(app.includes("if(modalBody)modalObserver.observe(modalBody,{childList:true,subtree:true});"), true);
 });

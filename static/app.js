@@ -2206,7 +2206,6 @@ window.installUsability417=function(){
   const modalObserver=new MutationObserver(muts=>{for(const m of muts){m.addedNodes.forEach(n=>{if(n.nodeType===1)cleanup(n)})}});
   const modalBody=document.getElementById('modalBody');
   if(modalBody)modalObserver.observe(modalBody,{childList:true,subtree:true});
-  setTimeout(()=>{renderTop();cleanup(document);},100);
 })();
 
 // ============================================================
