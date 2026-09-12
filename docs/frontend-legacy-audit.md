@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       36fd25c48a2251d1b4a85583921c00dd98bf33fb
-run:          34664755130
+commit:       0dacf581da4acb52312f75eb7e85e6b334e060db
+run:          34665470320
 frontend:     PASS
-Real Chrome:  PASS (15/15)
+Real Chrome:  PASS (16/16)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.66
-main.mjs                  42.25.70
+app.js                    42.25.67
+main.mjs                  42.25.71
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -50,7 +50,7 @@ video          → PollRegistry(video-frames)
 sources        → PollRegistry(sources)
 ```
 
-No classic timer or creation-wrapper ownership may return.
+No classic polling timer or creation-wrapper ownership may return.
 
 ### Navigation
 
@@ -83,75 +83,96 @@ v42.2 render422 legacy 自动标注 route branch
 v42.4 renderBase424 legacy 自动标注 route branch
 renderBase424 算法列表 / 数据集 / 训练任务 branches
 renderAutoLabel424 legacy 1.8s self-refresh timeout/predicate
-baseRender417 visible-version correction wrapper
-baseRender417 delayed correction timers
+baseRender417 visible-version correction wrapper/timers
 12 historical app.js delayed versionBadge startup writers
 main.mjs applyBuildVersion visible-version writer/timers
+render426base page-render file-input beautification wrapper
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
 
 ## 4. R9 — visible version ownership consolidation
 
-The migration was driven by a failing Real Chrome baseline, not by static assumption.
-
-Baseline:
+A failing Real Chrome baseline exposed a real asynchronous owner conflict:
 
 ```text
-commit:   50d72687f099eb554ec77e9045e42713025c4453
-run:      34664100285
-frontend: PASS
-Chrome:   14 PASS / 1 FAIL
-failure:  #versionBadge expected v42.24.0 but became v42.25.0-dev
+50d72687f099eb554ec77e9045e42713025c4453 / 34664100285
+frontend PASS
+Chrome 14 PASS / 1 FAIL
+#versionBadge became v42.25.0-dev after delayed startup work
 ```
-
-Root cause:
-
-```text
-main.mjs:
-  UI_BUILD_VERSION = 42.25.0-dev
-  applyBuildVersion()
-  delayed writes at 80 / 500 / 1800 / 3600 / 8000ms
-
-app.js:
-  12 historical delayed versionBadge writers
-  baseRender417 visible correction wrapper
-  baseRender417 delayed correction timers
-```
-
-Those owners were fighting each other even though most classic constants currently resolved to `42.24.0`.
 
 Final ownership split:
 
 ```text
-build metadata:
-  UI_BUILD_VERSION = 42.25.0-dev
+UI_BUILD_VERSION = 42.25.0-dev
   → document.documentElement.dataset.uiBuild only
 
-visible formal version:
-  static/index.html initial badge = v42.24.0
-  top badge                      = top412 / V412
-  sidebar footer                 = nav426 / V426
+static/index.html visible initial badge → v42.24.0
+top412 / V412                         → visible top v42.24.0
+nav426 / V426                         → visible footer v42.24.0
 ```
 
-Product:
+Accepted at:
 
 ```text
-1e9ae1118a77313d8dd3d4c0cf12d5ce5f9edff7
-```
-
-Validation:
-
-```text
-36fd25c48a2251d1b4a85583921c00dd98bf33fb
-run 34664755130
-frontend PASS
+product:    1e9ae1118a77313d8dd3d4c0cf12d5ce5f9edff7
+validation: 36fd25c48a2251d1b4a85583921c00dd98bf33fb
+run:        34664755130
 Real Chrome 15/15 PASS
 ```
 
-Permanent frontend guard: `tests/frontend/version-marker-owner.test.mjs`. Permanent browser guard: `formal version marker stays stable across final render owners and delayed legacy timers` in `navigation-stability.spec.mjs`.
+## 5. R10 — render426base page owner retirement
 
-## 5. Current live render topology
+`render426base` was initially suspected to be removable, but exact behavior audit proved it was live. The final `测试发布` renderer still emits an ordinary file input:
+
+```html
+<input id="predFile" type="file" accept="image/*" class="file">
+```
+
+Before R10, its platform file-picker UI depended on:
+
+```text
+render426base
+→ render()
+→ requestAnimationFrame
+→ beautifyFileInputs426(#view)
+```
+
+The current `数据集` upload flow was deliberately not used as the baseline because its actual inputs are hidden and marked `data-file426=1`, which explicitly excludes them from `beautifyFileInputs426`.
+
+R10 first locked the real live behavior in Chrome, then moved page ownership into the later post-render cleanup owner:
+
+```text
+cleanup(root)
+→ window.beautifyFileInputs426?.(root)
+→ existing cleanup work
+```
+
+The historical `render426base` wrapper is now absent. `modal426` remains present on purpose; modal behavior was not silently folded into R10 and requires its own liveness/equivalence proof.
+
+Acceptance:
+
+```text
+behavior baseline: 6b67497ae43a32edf343fc7dec49f7b3824c1088
+product:           b9d25955c185aaabb4108f3d37cfecd9f876390a
+validation:        0dacf581da4acb52312f75eb7e85e6b334e060db
+run:               34665470320
+frontend:          PASS
+Real Chrome:       16/16 PASS
+```
+
+Permanent proof:
+
+```text
+tests/frontend/file-input-beautification-owner.test.mjs
+navigation-stability.spec.mjs:
+  file input beautification survives page render lifecycle ownership
+```
+
+All R10 one-shot baseline/migration helpers and workflows were deleted after acceptance.
+
+## 6. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
 
@@ -180,24 +201,28 @@ render414Base
 
 finalRender
   素材存储配置 final route owner
+
+cleanup(root)
+  post-render DOM normalization
+  page file-input beautification after R10
+
+modal426
+  modal file-input beautification wrapper; still under audit
 ```
 
 Still under audit:
 
 ```text
+modal426
 baseRenderV37
-  post-render page enhancement
-
-render426base
-  post-render file-input beautification
-
-post-render cleanup wrapper + MutationObserver
+post-render cleanup wrapper + MutationObserver lifecycle
+body-wide ZIP-review MutationObserver lifecycle
 older base/global render generations reached through delegates
 ```
 
-`baseRender417` is CLOSED and must not return.
+`baseRender417` and `render426base` are CLOSED and must not return.
 
-## 6. Permanent contracts
+## 7. Permanent contracts
 
 Frontend includes:
 
@@ -205,29 +230,28 @@ Frontend includes:
 tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
+tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
 ```
 
-R9 requires:
+Key R10 requirements:
 
 ```text
-baseRender417 absent
-historical delayed versionBadge writers absent
-main.mjs visible version writes absent
-applyBuildVersion absent
-initial visible version = v42.24.0
-UI_BUILD_VERSION kept only as internal metadata
-final visible top/footer owners remain formal 42.24.0
+render426base absent
+old requestAnimationFrame page beautification callback absent
+cleanup(root) invokes window.beautifyFileInputs426?.(root)
+modal426 remains until separately audited
+测试发布 #predFile still receives native-file426 + filepicker426 behavior
 ```
 
-Current Real Chrome suite: **15/15** in run `34664755130`.
+Current accepted Real Chrome suite: **16/16** in run `34665470320`.
 
-## 7. Remaining technical-debt targets
+## 8. Remaining technical-debt targets
 
 ```text
-remaining render override generations
+modal426 / baseRenderV37 / cleanup+observer owner audit
 loadAll / loadRelated / loadCore412 ownership
 proven dead app.js code
 global reload / duplicate requests
@@ -237,9 +261,9 @@ version-number business naming
 final zero-point scan
 ```
 
-## 8. Audit method
+## 9. Audit method
 
-For every candidate generation:
+For every candidate:
 
 ```text
 live HEAD
@@ -255,9 +279,9 @@ live HEAD
 → docs sync
 ```
 
-Do not delete by version suffix alone. Do not add a global render-repair loop. Prefer page-scoped/semantic owners and local DOM refreshes over periodic whole-page repaint.
+Do not delete by version suffix alone. Do not add a global render-repair loop. Prefer semantic/page-scoped owners and explicit lifecycle cleanup.
 
-## 9. Non-negotiable rules
+## 10. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. Retired training mirrors/fallbacks stay retired.
@@ -268,18 +292,19 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 7. `renderBase428` remains training-only unless semantics move first.
 8. `renderBase424` remains quality/video-only unless semantics move first.
 9. AutoLabel remains PollRegistry-only.
-10. `baseRender417` and delayed visible-version writers stay retired.
+10. `baseRender417`, `render426base`, and delayed visible-version writers stay retired.
 11. Internal build metadata must never become a visible formal-version owner.
-12. No mother-model class inheritance on first training.
-13. Explicit false/zero training settings survive end-to-end.
-14. Trial/test inference never receives GT labels.
-15. Do not weaken duplicate-request/race/performance/Real Chrome tests.
-16. Frontend CI is not A800/CUDA acceptance.
+12. `modal426` cannot be removed merely because page beautification moved to cleanup; modal equivalence must be proven first.
+13. No mother-model class inheritance on first training.
+14. Explicit false/zero training settings survive end-to-end.
+15. Trial/test inference never receives GT labels.
+16. Do not weaken duplicate-request/race/performance/Real Chrome tests.
+17. Frontend CI is not A800/CUDA acceptance.
 
-## 10. Work order
+## 11. Work order
 
 ```text
-1. remaining render override owner audit / obsolete generation deletion
+1. modal426 / baseRenderV37 / cleanup+observer audit
 2. app.js dead code + global reload/request debt
 3. cache-busting unification
 4. zero-point observer/timer/fetch/render/setPage scan
