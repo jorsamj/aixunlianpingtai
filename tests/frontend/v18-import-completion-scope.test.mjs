@@ -18,7 +18,8 @@ test('final v36 import UI still delegates ZIP upload to live doImportData', () =
 
 test('live v18 import completion refreshes only labels and paged materials', () => {
   const block = liveImportBlock();
-  assert.match(block, /\/api\/v18\/projects\/\$\{pid\(\)\}\/datasets\/\$\{state\.datasetId\}\/import/);
+  const endpoint = '/api/v18/projects/${pid()}/datasets/${state.datasetId}/import';
+  assert.equal(block.split(endpoint).length - 1, 1, 'live owner must submit the v18 import endpoint exactly once');
   assert.match(block, /await window\.refreshLabels414\?\.\(false\)/);
   assert.match(block, /if\(state\.page==='数据集'\)await window\.reloadMaterialPage61\?\.\(\)/);
   for (const forbidden of ['await reload()', 'await loadAll()', 'await loadRelated()']) {
