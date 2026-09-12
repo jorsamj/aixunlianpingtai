@@ -29,7 +29,7 @@ test('base modal owns autofocus without a V37 compatibility wrapper', () => {
   assert.equal(app.includes('const baseModalV37=modal;'), false);
   assert.equal(app.includes('baseModalV37('), false);
   assert.equal(app.split(autofocus).length - 1, 1);
-  assert.equal(app.includes("function modal(title,body,wide=false){$('#modalTitle').textContent=title;$('#modalBody').innerHTML=body;"), true);
+  assert.equal(app.includes("function modal(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);"), true);
   assert.equal(app.includes('const oldModal424=modal, oldClose424=closeModal;'), true);
   assert.equal(app.includes('oldModal424(title,body,wide); return baseModal;'), true);
 });
@@ -41,5 +41,6 @@ test('final render owns page normalization without legacy view observer or RAF w
   assert.equal(app.split('window.PostRenderNormalizationRuntime=Object.freeze({apply:cleanup});').length - 1, 1);
   assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
   assert.equal(app.includes("render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};"), true);
-  assert.equal(app.includes("modalObserver.observe(modalBody,{childList:true,subtree:true})"), true);
+  assert.equal(app.includes('new MutationObserver'), false);
+  assert.equal(app.includes('window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});'), true);
 });

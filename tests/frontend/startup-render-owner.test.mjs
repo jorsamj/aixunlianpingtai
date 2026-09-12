@@ -23,5 +23,6 @@ test('bounded startup cleanup timer cannot return after final render ownership',
   assert.equal(app.includes("setTimeout(()=>{renderTop();cleanup(document);},100);"), false);
   assert.equal(app.includes('window.PostRenderNormalizationRuntime=Object.freeze({apply:cleanup});'), true);
   assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
-  assert.equal(app.includes("if(modalBody)modalObserver.observe(modalBody,{childList:true,subtree:true});"), true);
+  assert.equal(app.includes('new MutationObserver'), false);
+  assert.equal(app.includes('window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});'), true);
 });

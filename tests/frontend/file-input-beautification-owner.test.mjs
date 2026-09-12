@@ -20,11 +20,11 @@ test('post-render cleanup owns file-input beautification', () => {
   );
 });
 
-test('modal426 stays retired while modalBody keeps the only normalization observer', () => {
+test('modal426 and modal normalization observers stay retired behind ModalContentRuntime', () => {
   assert.equal(app.includes('const modal426=modal;'), false);
   assert.equal(app.includes('requestAnimationFrame(()=>beautifyFileInputs426(layer||document))'), false);
-  assert.equal(app.includes("const view=document.getElementById('view'),modalBody=document.getElementById('modalBody');"), false);
-  assert.equal(app.includes("observer.observe(view,{childList:true,subtree:true})"), false);
-  assert.equal(app.includes("const modalBody=document.getElementById('modalBody');"), true);
-  assert.equal(app.includes("if(modalBody)modalObserver.observe(modalBody,{childList:true,subtree:true});"), true);
+  assert.equal(app.includes('new MutationObserver'), false);
+  assert.equal(app.includes('window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});'), true);
+  assert.equal(app.includes("if(root.id==='modalBody')window.PostRenderNormalizationRuntime?.apply?.(root);"), true);
+  assert.equal(app.includes("window.ModalContentRuntime.replace($('#modalBody'),body);"), true);
 });
