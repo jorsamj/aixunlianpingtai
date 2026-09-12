@@ -135,8 +135,10 @@ test('stale AI confirmation cannot patch or close UI owned by a newer page', asy
   const intercepted = new Promise(resolve => { interceptedResolve = resolve; });
 
   await boot(page);
-  await page.route(/\/api\/v47\/projects\/[^/]+\/ai-label-tasks\/ai-r2\/confirm$/, async route => {
-    if (route.request().method() !== 'POST') return route.continue();
+  await page.route('**/api/v47/projects/**', async route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() !== 'POST' || !pathname.endsWith('/ai-label-tasks/ai-r2/confirm')) return route.continue();
     interceptedResolve();
     await gate;
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
@@ -145,11 +147,29 @@ test('stale AI confirmation cannot patch or close UI owned by a newer page', asy
   });
 
   await page.evaluate(() => window.setPage('数据集'));
-  await page.evaluate(() => {
+  const setup = await page.evaluate(() => {
     state.v427AiConfirm = new Set(['image-ai-r2']);
+    const source = String(window.confirmAiLabel427);
     void window.confirmAiLabel427('ai-r2');
+    return {size: state.v427AiConfirm.size, source: source.slice(0, 900)};
   });
-  await Promise.race([intercepted, new Promise((_, reject) => setTimeout(() => reject(new Error('AI confirm POST was not intercepted')), 8_000))]);
+  expect(setup.size).toBe(1);
+
+  const interceptedOk = await Promise.race([
+    intercepted.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 2500)),
+  ]);
+  if (!interceptedOk) {
+    const diag = await page.evaluate(() => ({
+      page: state.page,
+      confirmType: typeof window.confirmAiLabel427,
+      confirmSize: state.v427AiConfirm?.size,
+      confirmIterable: !!state.v427AiConfirm?.[Symbol.iterator],
+      toast: document.getElementById('toast')?.textContent || '',
+      source: String(window.confirmAiLabel427).slice(0, 1200),
+    }));
+    throw new Error(`AI confirm POST was not intercepted; diagnostics=${JSON.stringify(diag)}`);
+  }
 
   await protectNewPageModal(page, '模型配置');
   release();
