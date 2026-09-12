@@ -1,0 +1,57 @@
+name: Retire enhancePageV37 Normalization Helper
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_enhance_page_v37.py
+      - .github/workflows/retire-enhance-page-v37.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser-test backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded V37 normalization migration
+        run: python tools/retire_enhance_page_v37.py
+      - name: Verify focused static and unit contracts
+        run: |
+          node --check static/app.js
+          node --test tests/frontend/post-render-normalization-owner.test.mjs tests/frontend/file-input-beautification-owner.test.mjs tests/frontend/render-owner-retirement.test.mjs tests/frontend/navigation-stability.test.mjs
+          if grep -F -n 'enhancePageV37' static/app.js; then
+            echo 'retired enhancePageV37 compatibility helper remains' >&2
+            exit 1
+          fi
+          grep -Fq 'const baseRenderV37=render;' static/app.js
+          grep -Fq 'const baseModalV37=modal;' static/app.js
+          grep -Fq "root.querySelectorAll('table.table').forEach(wrapTable);" static/app.js
+          grep -Fq '/static/app.js?v=42.25.69' static/index.html
+      - name: Verify normalization browser behavior after migration
+        run: >-
+          npx playwright test tests/browser/navigation-stability.spec.mjs
+          --grep "modal table wrapping and first-field focus survive normalization ownership"
+      - name: Commit V37 normalization migration
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/post-render-normalization-owner.test.mjs
+          git commit -m 'refactor(ui): retire enhancePageV37 normalization helper'
+          git push
