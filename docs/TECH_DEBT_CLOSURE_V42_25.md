@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`f5b8ff8789de0f51d2a03bcabe126191005ba24c`**  
-> **Frontend Runtime Stabilization：run `34669152742`，frontend 179/179 + Real Chrome 19/19 全绿。**  
+> **最近完整代码验收点：`954e9dba9c891ecd5c7f21144cf00d8664c11620`**  
+> **Frontend Runtime Stabilization：run `34670319479`，frontend + Real Chrome 全绿，Real Chrome 19/19 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -81,6 +81,7 @@ enhancePageV37 modal normalization callback
 baseRenderV37 duplicate versionInfo wrapper
 baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
+bounded 100ms renderTop/cleanup startup timer
 oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
 legacy baseRender + RAF page normalization wrapper
@@ -112,6 +113,7 @@ legacy baseRender + RAF page normalization wrapper
 | body-wide ZIP review observer / persisted result race | `completeZipImportReview412` explicit completion owner | **CLOSED (R16)** |
 | off-page material summary timer requests | page-scoped `refreshSummary61` | **CLOSED (R16)** |
 | page normalization baseRender/RAF/view observer | final `PostRenderNormalizationRuntime.apply` | **CLOSED (R17)** |
+| bounded 100ms startup cleanup timer | final `__clInit → render → PostRenderNormalizationRuntime` | **CLOSED (R18)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -213,7 +215,7 @@ refreshSummary61           → paged 数据集-only material summary requests
 Remaining audit candidates:
 
 ```text
-modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
+modalBody MutationObserver lifecycle
 older base/global render generations still reachable through delegates
 ```
 
@@ -222,8 +224,8 @@ older base/global render generations still reachable through delegates
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.74
-main.mjs cache                   42.25.79
+app.js cache                     42.25.75
+main.mjs cache                   42.25.80
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -294,7 +296,7 @@ R12 永久要求：
 - `baseModalV37` 已在 R14 退休；首个可编辑字段 autofocus 由 base `modal()` 唯一承担；
 - v35/v36/V37 的 80/100/120ms startup render/version timer 已在 R15 退休；
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
-- bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 是独立 cleanup owner，不得与已退休 startup render timer 混淆。
+- bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 已在 R18 退休，不得回归；startup/page normalization 均由 readiness-aware final render owner 承担。
 
 当前验收：run `34669152742`，frontend **179/179**，Real Chrome **19/19 passed**。
 
@@ -335,6 +337,19 @@ Real Chrome:     19/19 PASS
 ```
 
 The first full validation correctly exposed one stale structure-bound storage-owner unit assertion; the product behavior was not reverted. The guard was tightened to require one storage route owner plus one final page-normalization call, then the full suite passed.
+
+### R18 — bounded startup cleanup timer retirement
+
+R18 retired the remaining readiness-bypassing `setTimeout(()=>{renderTop();cleanup(document);},100)` wakeup. Final startup already waits for the v53 snapshot/current-page refresh and then calls the final `render()`, while R17 made that final render the sole page-normalization dispatch. The modal observer was deliberately left untouched because post-open base-modal body mutations still depend on normalization.
+
+```text
+product:    1572fdf4fad6e0fe8d10b5253a236722e85b3495
+validation: 954e9dba9c891ecd5c7f21144cf00d8664c11620
+run:        34670319479
+frontend:   PASS
+Real Chrome: 19/19 PASS
+```
+
 
 
 

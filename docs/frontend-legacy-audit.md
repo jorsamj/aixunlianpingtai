@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       f5b8ff8789de0f51d2a03bcabe126191005ba24c
-run:          34669152742
+commit:       954e9dba9c891ecd5c7f21144cf00d8664c11620
+run:          34670319479
 frontend:     PASS
 Real Chrome:  PASS (19/19)
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS (19/19)
 Current caches/builds:
 
 ```text
-app.js                    42.25.74
-main.mjs                  42.25.79
+app.js                    42.25.75
+main.mjs                  42.25.80
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -91,6 +91,7 @@ enhancePageV37 post-render normalization helper
 baseRenderV37 duplicate versionInfo wrapper
 baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
+bounded 100ms renderTop/cleanup startup timer
 oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
 legacy baseRender + RAF page normalization wrapper
@@ -234,7 +235,7 @@ v36 100ms  versionInfo + render
 V37 120ms  versionInfo + render
 ```
 
-Final startup remains owned by `queueMicrotask → final __clInit`. The separate bounded cleanup timer that calls `renderTop(); cleanup(document);` at 100ms is intentionally retained.
+Final startup remains owned by `queueMicrotask → final __clInit`. The separate 100ms `renderTop(); cleanup(document)` wakeup was later retired in R18 after final-render normalization ownership was proven.
 
 ```text
 product:    280a31bf365b1a6646a57213dfa2dff97e10e0b5
@@ -282,6 +283,19 @@ Real Chrome:     19/19 PASS
 ```
 
 The first full validation correctly exposed one stale structure-bound storage-owner unit assertion; the product behavior was not reverted. The guard was tightened to require one storage route owner plus one final page-normalization call, then the full suite passed.
+
+### R18 — bounded startup cleanup timer retirement
+
+R18 retired the remaining readiness-bypassing `setTimeout(()=>{renderTop();cleanup(document);},100)` wakeup. Final startup already waits for the v53 snapshot/current-page refresh and then calls the final `render()`, while R17 made that final render the sole page-normalization dispatch. The modal observer was deliberately left untouched because post-open base-modal body mutations still depend on normalization.
+
+```text
+product:    1572fdf4fad6e0fe8d10b5253a236722e85b3495
+validation: 954e9dba9c891ecd5c7f21144cf00d8664c11620
+run:        34670319479
+frontend:   PASS
+Real Chrome: 19/19 PASS
+```
+
 
 
 ## 7. Current live render topology
@@ -332,7 +346,7 @@ refreshSummary61
 Still under audit:
 
 ```text
-modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
+modalBody MutationObserver lifecycle
 older base/global render generations reached through delegates
 ```
 
@@ -367,12 +381,12 @@ cleanup(root) invokes window.beautifyFileInputs426?.(root)
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **19/19** in run `34669152742`.
+Current accepted Real Chrome suite: **19/19** in run `34670319479`.
 
 ## 9. Remaining technical-debt targets
 
 ```text
-modal observer + bounded cleanup timer lifecycle audit
+modal observer lifecycle audit
 loadAll / loadRelated / loadCore412 ownership
 proven dead app.js code
 global reload / duplicate requests
@@ -425,7 +439,7 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 ## 12. Work order
 
 ```text
-1. modalBody MutationObserver + bounded 100ms cleanup timer lifecycle audit
+1. modalBody MutationObserver lifecycle audit
 2. app.js dead code + global reload/request debt
 3. cache-busting unification
 4. zero-point observer/timer/fetch/render/setPage scan

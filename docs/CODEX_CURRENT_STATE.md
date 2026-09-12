@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: f5b8ff8789de0f51d2a03bcabe126191005ba24c
-Frontend Runtime run:        34669152742
+latest full code acceptance: 954e9dba9c891ecd5c7f21144cf00d8664c11620
+Frontend Runtime run:        34670319479
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.74
-main.mjs cache:              42.25.79
+app.js cache:                42.25.75
+main.mjs cache:              42.25.80
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,12 +23,12 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34669152742` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **19 tests and passed 19/19**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34670319479` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **19 tests and passed 19/19**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-modal observer + bounded cleanup timer lifecycle audit
+modal observer lifecycle audit
 → app.js/global reload/request debt
 → cache-busting unification
 → zero-point lifecycle scan
@@ -119,6 +119,7 @@ enhancePageV37 post-render normalization helper
 baseRenderV37 duplicate versionInfo wrapper
 baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
+bounded 100ms renderTop/cleanup startup timer
 oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
 legacy baseRender + RAF page normalization wrapper
@@ -257,7 +258,7 @@ diagnostic repeat:   training performance 10/10 PASS; only GET /jobs observed
 
 ### R15 — legacy startup render timer retirement
 
-The race audit identified three historical startup compatibility timers as unowned render wakeups: v35 80ms, v36 100ms and V37 120ms. They were physically removed. Final startup dispatch remains `queueMicrotask → final __clInit`; the separate bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` cleanup timer remains intentionally live.
+The race audit identified three historical startup compatibility timers as unowned render wakeups: v35 80ms, v36 100ms and V37 120ms. They were physically removed. Final startup dispatch remains `queueMicrotask → final __clInit`. The separate bounded 100ms cleanup timer was later retired in R18 after final-render normalization ownership was proven.
 
 ```text
 product:             280a31bf365b1a6646a57213dfa2dff97e10e0b5
@@ -308,6 +309,19 @@ Real Chrome:     19/19 PASS
 
 The first full validation correctly exposed one stale structure-bound storage-owner unit assertion; the product behavior was not reverted. The guard was tightened to require one storage route owner plus one final page-normalization call, then the full suite passed.
 
+### R18 — bounded startup cleanup timer retirement
+
+R18 retired the remaining readiness-bypassing `setTimeout(()=>{renderTop();cleanup(document);},100)` wakeup. Final startup already waits for the v53 snapshot/current-page refresh and then calls the final `render()`, while R17 made that final render the sole page-normalization dispatch. The modal observer was deliberately left untouched because post-open base-modal body mutations still depend on normalization.
+
+```text
+product:    1572fdf4fad6e0fe8d10b5253a236722e85b3495
+validation: 954e9dba9c891ecd5c7f21144cf00d8664c11620
+run:        34670319479
+frontend:   PASS
+Real Chrome: 19/19 PASS
+```
+
+
 
 ## 5. Current live render owners — do not delete without proof
 
@@ -356,7 +370,7 @@ refreshSummary61
 Still requiring independent liveness analysis:
 
 ```text
-modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
+modalBody MutationObserver lifecycle
 older base/global render generations still reachable through delegates
 ```
 
@@ -426,7 +440,7 @@ live HEAD
 ## 9. Work order
 
 ```text
-1. modalBody MutationObserver + bounded 100ms cleanup timer lifecycle audit
+1. modalBody MutationObserver lifecycle audit
 2. proven dead app.js + global reload/request debt
 3. cache-busting unification
 4. zero-point MutationObserver/timer/fetch/render/setPage scan

@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `f5b8ff8789de0f51d2a03bcabe126191005ba24c` / run `34669152742`  
+> Latest fully accepted code point: `954e9dba9c891ecd5c7f21144cf00d8664c11620` / run `34670319479`  
 > Real Chrome: 19/19 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -62,6 +62,7 @@ initial bootstrap setPage                       CLOSED
 | R15 | v35/v36/V37 80/100/120ms startup render/version timers | `b6edea36...` / `34667776611` |
 | R16 | body-wide ZIP review observer + off-page material summary leakage | `540c0944...` / `34668702371` |
 | R17 | page baseRender/RAF wrapper + `#view` normalization observer | `f5b8ff87...` / `34669152742` |
+| R18 | bounded 100ms `renderTop/cleanup` startup wakeup | `954e9dba...` / `34670319479` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -76,6 +77,19 @@ R14 product: `6eafbe21c3c364a3e8099fd7ff3cdaf2a19e4829`; validation `8593516eb79
 R15 product: `280a31bf365b1a6646a57213dfa2dff97e10e0b5`; validation `b6edea36296ab9548037457a124b4369776f6f5e` / run `34667776611`; focused training performance 5/5 and final Real Chrome **18/18 passed**.  
 R16 baseline: `540de6aef4ddbf82a6cf36994a31a73937abca73` / run `34668429941` exposed ZIP persisted-review loss and the remaining training-page `/materials` race. R16 product: `12df27e2af9155e3a1b9f745e46605396e321815`; focused run `34668639496` passed ZIP completion and training isolation 5/5; validation `540c0944f45030ea198af2be153c1505f71e62f0` / run `34668702371`; Real Chrome **19/19 passed**. All R16 one-shot migration artifacts were removed.  
 R17 product: `4fc5d90a15ef2fc2dc22aa00f39967deba6f53f8`; validation `c3301d065fa820539873a4fa2f739992ef63f3d2`; guard alignment `f5b8ff8789de0f51d2a03bcabe126191005ba24c` / run `34669152742`; frontend **179/179 passed**, Real Chrome **19/19 passed**. The early page normalization wrapper, RAF cleanup and `#view` observer are permanently retired; `#modalBody` remains independent.
+
+### R18 — bounded startup cleanup timer retirement
+
+R18 retired the remaining readiness-bypassing `setTimeout(()=>{renderTop();cleanup(document);},100)` wakeup. Final startup already waits for the v53 snapshot/current-page refresh and then calls the final `render()`, while R17 made that final render the sole page-normalization dispatch. The modal observer was deliberately left untouched because post-open base-modal body mutations still depend on normalization.
+
+```text
+product:    1572fdf4fad6e0fe8d10b5253a236722e85b3495
+validation: 954e9dba9c891ecd5c7f21144cf00d8664c11620
+run:        34670319479
+frontend:   PASS
+Real Chrome: 19/19 PASS
+```
+
 
 ## 4. Current final navigation owner
 
@@ -283,6 +297,7 @@ oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
 legacy baseRender + RAF page normalization wrapper
 #view post-render MutationObserver
+bounded 100ms renderTop/cleanup startup timer
 ```
 
 ## 10. Remaining render/lifecycle audit targets
@@ -290,7 +305,7 @@ legacy baseRender + RAF page normalization wrapper
 Independent proof is still required for:
 
 ```text
-modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
+modalBody MutationObserver lifecycle
 older base/global render generations still reachable through delegates
 ```
 
@@ -322,7 +337,7 @@ modal file input beautification survives modal lifecycle ownership
 modal table wrapping and first-field focus survive normalization ownership
 ```
 
-Current accepted Real Chrome suite: **19/19** in run `34669152742`.
+Current accepted Real Chrome suite: **19/19** in run `34670319479`.
 
 ## 12. Per-batch checklist
 
