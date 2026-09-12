@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: 2d9bc0b30a72761d784cc57472eb50b158b8851f
-run:    34663389819
+commit: 70b6f755cd8633de3e8591ac2fee044efc770b97
+run:    34663768606
 frontend:     PASS
 Real Chrome:  PASS (14/14)
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS (14/14)
 Current caches/builds:
 
 ```text
-app.js                    42.25.64
-main.mjs                  42.25.67
+app.js                    42.25.65
+main.mjs                  42.25.68
 navigation-stability      422511
 ui-state                  422500
 poll-registry             422511
@@ -48,7 +48,7 @@ video          → PollRegistry(video-frames)
 sources        → PollRegistry(sources)
 ```
 
-No classic timer or creation-wrapper ownership may return.
+No classic timer or creation-wrapper ownership may return. R8 removed the last old-page AutoLabel424 self-refresh timeout; `static/app.js` now contains zero `state.page==='自动标注'` predicates.
 
 ### Navigation — classic owner family zero-point CLOSED
 
@@ -71,11 +71,9 @@ NavigationStability.stableSetPage
   → persistNavigationState
 ```
 
-## 3. Render retirement already completed
+## 3. Render/lifecycle retirement already completed
 
-### v42.7 route alias mutation + old-name route branches
-
-The old render chain changed `state.page` from `自动标注` to `自动标注及清洗`. This has been removed.
+### auto-label route alias + legacy timer
 
 Current responsibility split:
 
@@ -83,10 +81,20 @@ Current responsibility split:
 navigation alias request  → NavigationStability.normalizeNavigationPage
 historical persisted page → v34 restore-boundary canonicalization + writeback
 canonical render route    → renderBase427 → renderOps427()
+managed polling           → AutoLabelPollRuntime + PollRegistry
 render                    → never mutates route alias state
 ```
 
-The v42.2/v42.4 route branches keyed to legacy `自动标注` are physically removed. `renderAutoLabel424()` still contains a legacy old-name self-refresh predicate; it is not a route owner and remains for separate dead-code/lifecycle proof.
+Physically retired:
+
+```text
+v42.7 render route-state alias mutation
+v42.2 render422 legacy 自动标注 route branch
+v42.4 renderBase424 legacy 自动标注 route branch
+renderAutoLabel424 legacy 1.8s self-refresh timeout keyed to 自动标注
+```
+
+The old `renderAutoLabel424()` function itself remains because historical submit/stop/retry action functions still call it directly. R8 was intentionally timer-only.
 
 ### Fully shadowed classic render generations / branches
 
@@ -97,25 +105,16 @@ oldRender429
 previousRender61
 render423Base
 renderBase428 的 算法列表 branch
-v42.2 render422 的 legacy 自动标注 route branch
-v42.4 renderBase424 的 legacy 自动标注 route branch
 renderBase424 的 算法列表 / 数据集 / 训练任务 branches
 ```
 
-Why the latest R7 branches were dead:
+R7 proof remains:
 
 ```text
-renderBase424 算法列表:
-  later oldRender412 intercepts 算法列表 before delegation can reach renderBase424.
-
-renderBase424 数据集:
-  later oldRender412 intercepts 数据集 before delegation can reach renderBase424.
-
-renderBase424 训练任务:
-  oldRender412 delegates to later renderBase428, which intercepts 训练任务 before renderBase424.
-
-renderBase424 wrapper itself:
-  remains live for 质量中心 and 视频切帧, so the wrapper was reduced rather than deleted.
+renderBase424 算法列表 → later oldRender412 intercepts first
+renderBase424 数据集   → later oldRender412 intercepts first
+renderBase424 训练任务 → later renderBase428 intercepts first
+renderBase424 wrapper  → still live for 质量中心 / 视频切帧
 ```
 
 Acceptance evidence:
@@ -128,6 +127,7 @@ render423Base            58ece59e... / 34659775870 PASS
 renderBase428 alg branch 6be679b6... / 34660269685 PASS
 legacy auto-label routes 66339fc0... / 34663089996 PASS (Chrome 14/14)
 renderBase424 branches   2d9bc0b3... / 34663389819 PASS (Chrome 14/14)
+AutoLabel424 timer       70b6f755... / 34663768606 PASS (Chrome 14/14)
 ```
 
 One-shot migration helpers/workflows were deleted after acceptance.
@@ -152,7 +152,13 @@ renderBase427
   delegates to renderOps427()
 
 renderBase424
-  now only 质量中心 / 视频切帧 route owner
+  质量中心 / 视频切帧 route owner only
+
+oldRenderV39
+  deployment conversion/artifact/resource/plugin/component routes
+
+render414Base
+  标签管理 route + version badge semantics
 
 finalRender
   素材存储配置 final route owner
@@ -162,14 +168,13 @@ Still under audit:
 
 ```text
 baseRenderV37       post-render page enhancement
-oldRenderV39        deployment routes
 render426base       post-render file-input beautification
-render414Base       标签管理 + version badge behavior
 baseRender417       version badge/footer correction
 post-render cleanup wrapper + MutationObserver
 older base/global render generations reached through the chain
-renderAutoLabel424  legacy old-page self-refresh condition (dead-code candidate, not route owner)
 ```
+
+`oldRenderV39` and `render414Base` were re-checked after R7/R8 and are live; they are not deletion candidates merely because they are historical wrappers.
 
 ## 5. Permanent contracts added for render cleanup
 
@@ -178,13 +183,16 @@ Frontend:
 ```text
 tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
+tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
-They now prevent return of:
+They prevent return of:
 
 ```text
 render-level auto-label alias mutation
 legacy v42.2/v42.4 自动标注 route branches
+legacy state.page==='自动标注' predicate
+legacy AutoLabel424 1.8s timeout
 oldRender429
 previousRender61
 render423Base
@@ -196,12 +204,13 @@ and require live replacements, including:
 
 ```text
 renderBase427 → renderOps427() for 自动标注及清洗
+AutoLabelPollRuntime + PollRegistry for AutoLabel polling
 oldRender412 → 算法列表 / 数据集
 renderBase428 → 训练任务
 renderBase424 → 质量中心 / 视频切帧 only
 ```
 
-Browser performance suites continue to cover algorithm list, training task and material/data behavior. Current accepted browser suite is 14/14.
+Current accepted Real Chrome suite is 14/14 in run `34663768606`, including `auto-label-polling.spec.mjs`.
 
 ## 6. Remaining technical-debt targets
 
@@ -241,18 +250,19 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 1. No new numbered compatibility generation.
 2. Retired training mirrors/fallbacks stay retired.
 3. Classic `setPage` ownership must remain zero in `app.js`.
-4. Render must not resume route-state alias mutation.
-5. Legacy v42.2/v42.4 `自动标注` route branches must stay absent; canonical route remains `renderBase427`.
-6. `renderBase428` must remain training-only unless its training semantics are explicitly migrated first.
-7. `renderBase424` must remain quality/video-only unless those semantics are explicitly migrated first.
-8. No mother-model class inheritance on first training.
-9. Explicit false/zero training settings survive end-to-end.
-10. Trial/test inference must never receive GT labels.
-11. Do not weaken duplicate-request/race/performance/Real Chrome tests.
-12. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
-13. AutoLabel remains PollRegistry-only.
-14. Video/source/training polling direct ownership must not regress.
-15. Frontend CI is not A800/CUDA acceptance.
+4. `state.page==='自动标注'` must remain zero in `app.js`.
+5. Render must not resume route-state alias mutation.
+6. Legacy v42.2/v42.4 `自动标注` route branches and AutoLabel424 legacy timer must stay absent.
+7. `renderBase428` must remain training-only unless its training semantics are explicitly migrated first.
+8. `renderBase424` must remain quality/video-only unless those semantics are explicitly migrated first.
+9. AutoLabel remains PollRegistry-only.
+10. No mother-model class inheritance on first training.
+11. Explicit false/zero training settings survive end-to-end.
+12. Trial/test inference must never receive GT labels.
+13. Do not weaken duplicate-request/race/performance/Real Chrome tests.
+14. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
+15. Video/source/training polling direct ownership must not regress.
+16. Frontend CI is not A800/CUDA acceptance.
 
 ## 9. Work order
 
