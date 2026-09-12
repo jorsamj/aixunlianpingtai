@@ -6,6 +6,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - tools/consolidate_modal_content_owner.py
+      - tools/align_r19_modal_owner_guards.py
       - .github/workflows/consolidate-modal-content-owner.yml
 
 permissions:
@@ -31,6 +32,8 @@ jobs:
         run: npm ci
       - name: Apply guarded modal-content migration
         run: python tools/consolidate_modal_content_owner.py
+      - name: Align permanent guards to semantic modal owner
+        run: python tools/align_r19_modal_owner_guards.py
       - name: Verify static and unit contracts
         run: |
           node --check static/app.js
@@ -43,7 +46,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add static/app.js static/index.html tests/frontend/file-input-beautification-owner.test.mjs tests/frontend/startup-render-owner.test.mjs tests/frontend/modal-content-owner.test.mjs
+          git add static/app.js static/index.html tests/frontend/file-input-beautification-owner.test.mjs tests/frontend/post-render-normalization-owner.test.mjs tests/frontend/startup-render-owner.test.mjs tests/frontend/modal-content-owner.test.mjs
           git diff --cached --quiet && { echo 'No product changes'; exit 1; }
           git commit -m 'refactor(ui): consolidate modal content owner'
           git push origin HEAD:refactor/frontend-runtime-stabilization
