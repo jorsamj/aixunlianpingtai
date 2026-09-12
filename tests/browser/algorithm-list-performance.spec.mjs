@@ -169,7 +169,11 @@ test('algorithm version deletion stays functional before scoped refresh migratio
   await expect(page.locator('#modal')).toHaveClass(/hidden/);
   await expect(page.locator('#alg412List')).toContainText('版本删除验收算法');
   await expect(page.locator('#alg412List')).not.toContainText('20260912100000');
-  expect(requests.some(row => row === `DELETE /api/v12/projects/${projectId}/algorithms/algo-version-delete/versions/version-delete-1`)).toBe(true);
+  expect(requests.sort()).toEqual([
+    `DELETE /api/v12/projects/${projectId}/algorithms/algo-version-delete/versions/version-delete-1`,
+    `GET /api/projects/${projectId}/jobs`,
+    `GET /api/v12/projects/${projectId}/algorithms`,
+  ].sort());
   expect(pageErrors).toEqual([]);
 });
 
