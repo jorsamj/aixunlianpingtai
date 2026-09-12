@@ -6,6 +6,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - tools/sync_r18_docs.py
+      - tools/fix_r18_sync_anchor.py
       - .github/workflows/sync-r18-docs.yml
 
 permissions:
@@ -22,6 +23,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Correct R18 sync anchor
+        run: python tools/fix_r18_sync_anchor.py
       - name: Synchronize R18 ledgers
         run: python tools/sync_r18_docs.py
       - name: Validate R18 ledgers and formal version
