@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`7fcfcaec0b088a851dbcd580ac226b3dd892fa83`**  
-> **Frontend Runtime Stabilization：run `34702374386`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed；Navigation Action Fencing 永久 run `34702374346` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**  
+> **最近完整代码验收点：`3a8781dccf6704fe76d35d99c05b80590dc507c3`**  
+> **Frontend Runtime Stabilization：run `34721755310`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed；Navigation Action Fencing 永久 run `34721755316` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -110,7 +110,9 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | `setupPagePolling` / classic polling compatibility | direct managed owners | **CLOSED** |
 | classic `setPage` owner family | `NavigationStability` | **CLOSED** |
 | navigation alias/readiness/sidebar/apply/persistence | `NavigationStability` + `ui-state.js` | **CLOSED** |
-| Navigation Action Fencing R1 — training-server/Paddle + targeted direct page writes | `NavigationStability.action` + epoch/token fence | **CLOSED (R1); overall action fencing IN PROGRESS** |
+| Navigation Action Fencing R1 — training-server/Paddle + targeted direct page writes | `NavigationStability.action` + epoch/token fence | **CLOSED (R1)** |
+| Navigation Action Fencing R2 — final M4 model save/test + clean confirm + v60 AI review completion | live owner action fence before UI/state commit | **CLOSED (R2)** |
+| Navigation Action Fencing remaining upload/deployment/timer/callback completions | final async-action zero-point | **IN PROGRESS** |
 | historical persisted `自动标注` alias | restore-boundary canonicalization | **CLOSED** |
 | shadowed historical render generations/branches R2–R7 | bounded later render owners | **CLOSED** |
 | legacy AutoLabel424 no-op self-refresh timer | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
@@ -182,7 +184,38 @@ tests/browser/navigation-action-fencing.spec.mjs
 
 一次性 R1 migration/follow-up helper 与 workflow 已物理删除。
 
-**边界：整个 Navigation Action Fencing 仍为 IN PROGRESS。** R1 只关闭训练服务器/Paddle 与本批 direct-page-write surface；最终 Model Config 427、AI 标注/清洗确认、图片/ZIP/XHR upload completion、deployment mutation、其他 timer/callback family 尚未全部迁移，不能宣称 stale async UI side effect 全局为 0。下一批为 **R2：最终 Model Config / AI 清洗与 modal mutation completion**。
+**R1 边界已由 R2 继续收口。** R2 已关闭最终模型配置、清洗确认与 v60 AI review completion；图片/ZIP/XHR upload completion、deployment mutation、其他 timer/callback family 仍需 final scan，因此全局 stale-async zero-point 仍为 IN PROGRESS。
+
+### Navigation Action Fencing R2 — final Model Config / clean / v60 AI completion CLOSED
+
+真实 source-order/liveness 审计确认最终 owner 不是历史命名：模型配置保存由 `saveVisionModelM4` 负责；清洗确认最终为 `confirmClean429`，`confirmClean427` 仅兼容别名；AI 最终提交由 v60 `completeAiReview60(mode)` 负责，`confirmAiLabel427` 仅兼容到 `completeAiReview60('partial')`。
+
+旧代码 Real Chrome baseline 真实复现了慢 mutation 完成后关闭/覆盖新页面 modal 的问题（M4 保存、最终清洗确认、v60 AI review completion）；模型连接测试 completion 同批通过 source contract 迁移并永久锁定。最终所有这些 owner 都在请求前捕获 `NavigationStability.action(state.page)`，并在 `await` 返回后、任何 state/DOM/modal/render/toast side effect 前检查 `action.isCurrent()`。
+
+清洗确认不再 `loadRelated()` broad refresh，而是使用后端 authoritative `deleted_ids + processed_ids` 精确更新本地素材。v60 AI review 保持 durable `/api/v60/.../annotation-tasks/{id}/decisions` + `commit:true` 合同，只有当前 action 仍有效时才执行 `applyTaskResult/closeModal/toast/renderOps427`。
+
+```text
+baseline / migration run: 34721629224
+product:                  9f6df85b994f23b5408759fb64485b9477c75936
+cleanup / permanentize:   3a8781dccf6704fe76d35d99c05b80590dc507c3
+Frontend Runtime:         34721755310
+full Real Chrome:         32/32 PASS
+permanent Action Fencing: 34721755316 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.90
+main.mjs cache:           42.25.89
+NavigationStability:      422512
+```
+
+永久合同：
+
+```text
+tests/frontend/navigation-action-fencing-r2.test.mjs
+tests/browser/navigation-action-fencing-r2.spec.mjs
+.github/workflows/navigation-action-fencing.yml
+```
+
+R2 一次性 migration helper/workflow 已物理删除。**R2 本批 CLOSED；整个 Navigation Action Fencing final zero-point 仍未 CLOSED。**
 
 ## 2.1 R20g — import completion scoped refresh
 

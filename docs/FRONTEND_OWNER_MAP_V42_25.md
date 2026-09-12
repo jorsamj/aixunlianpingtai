@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `7fcfcaec0b088a851dbcd580ac226b3dd892fa83` / run `34702374386`  
+> Latest fully accepted code point: `3a8781dccf6704fe76d35d99c05b80590dc507c3` / run `34721755310`  
 > Real Chrome: 32/32 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -41,7 +41,7 @@ initial bootstrap setPage                       CLOSED
 
 `static/app.js` contains zero classic `window.setPage=` assignments.
 
-Navigation Action Fencing R1 is also accepted: `NavigationStability.action(ownerPage)` owns stale mutation commit checks for the migrated surface. `saveServer` no longer closes/redraws UI after leaving its owner page; targeted direct fixed-page business writes are zero. Product `8269eb0cca84ea310f48ee13af34ab09dd1bfeff`, follow-up `01234ef186f3e57bef2d29ac19420952beef6c36`, cleanup `7fcfcaec0b088a851dbcd580ac226b3dd892fa83`; permanent run `34702374346` PASS; full Real Chrome `34702374386` **32/32**. Overall async-action zero-point remains IN PROGRESS; R2 targets final Model Config / AI-cleaning modal mutations.
+Navigation Action Fencing R1+R2 are accepted. `NavigationStability.action(ownerPage)` owns stale mutation commit checks for the migrated surfaces. R2 locks the true final model/config and review owners: `saveVisionModelM4`, `testModelConfigV35`, `confirmClean429` (`confirmClean427` compatibility alias), and v60 `completeAiReview60` (`confirmAiLabel427` compatibility alias). Clean confirmation is local-state-only from authoritative `deleted_ids + processed_ids`; v60 AI commit remains `taskApi(review.id)/decisions` with `commit:true`. Product `9f6df85b994f23b5408759fb64485b9477c75936`, cleanup/permanentization `3a8781dccf6704fe76d35d99c05b80590dc507c3`; permanent run `34721755316` PASS; full Real Chrome `34721755310` **32/32**. Overall async-action zero-point remains IN PROGRESS only for the remaining upload/ZIP/deployment/timer-callback completion families.
 
 ### Render / lifecycle
 

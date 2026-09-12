@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       7fcfcaec0b088a851dbcd580ac226b3dd892fa83
-run:          34702374386
+commit:       3a8781dccf6704fe76d35d99c05b80590dc507c3
+run:          34721755310
 frontend:     PASS
 Real Chrome:  PASS (32/32)
 ```
@@ -16,7 +16,7 @@ Real Chrome:  PASS (32/32)
 Current caches/builds:
 
 ```text
-app.js                    42.25.88
+app.js                    42.25.90
 main.mjs                  42.25.89
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -69,7 +69,7 @@ NavigationStability.stableSetPage
   → persistNavigationState
 ```
 
-R1 action fencing adds `NavigationStability.action(ownerPage) → token/isCurrent/commit` for mutation-completion ownership. Real Chrome proved the old `saveServer` could close a modal created after navigation; that stale side effect is now fenced. Product `8269eb0cca84ea310f48ee13af34ab09dd1bfeff`, follow-up `01234ef186f3e57bef2d29ac19420952beef6c36`, cleanup `7fcfcaec0b088a851dbcd580ac226b3dd892fa83`, full run `34702374386` **32/32**, permanent Action Fencing run `34702374346` PASS. R1 is closed; global stale-async zero-point is not. R2 targets final Model Config / AI-cleaning modal mutation families.
+R1 action fencing adds `NavigationStability.action(ownerPage) → token/isCurrent/commit` for mutation-completion ownership. R2 extends the same commit fence to the true final `saveVisionModelM4`, `testModelConfigV35`, `confirmClean429`, and v60 `completeAiReview60` owners. Clean confirmation now uses authoritative `deleted_ids + processed_ids` local patching instead of broad `loadRelated()`, and v60 AI review keeps the durable `taskApi(review.id)/decisions` + `commit:true` contract. R2 product `9f6df85b994f23b5408759fb64485b9477c75936`, cleanup/permanentization `3a8781dccf6704fe76d35d99c05b80590dc507c3`, full run `34721755310` **32/32**, permanent Action Fencing run `34721755316` PASS. R1 and R2 are closed; global stale-async zero-point is still not closed because upload/ZIP/deployment/timer-callback completion families remain for the final scan.
 
 ## 3. Render/lifecycle retirement completed so far
 

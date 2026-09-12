@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 7fcfcaec0b088a851dbcd580ac226b3dd892fa83
-Frontend Runtime run:        34702374386
+latest full code acceptance: 3a8781dccf6704fe76d35d99c05b80590dc507c3
+Frontend Runtime run:        34721755310
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.88
+app.js cache:                42.25.90
 main.mjs cache:              42.25.89
 NavigationStability:         422512
 UI state runtime:            422500
@@ -23,13 +23,14 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34702374386` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after Navigation Action Fencing R1 migration-artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Permanent Action Fencing workflow `34702374346` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34721755310` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after Navigation Action Fencing R2 migration-artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Permanent Action Fencing workflow `34721755316` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-Navigation Action Fencing R2 — final Model Config / AI-cleaning modal mutations
-→ resume R20 final global reload/request zero-point
+R20 final global reload/request zero-point
+→ Unified Task Progress + Durable Queue Runtime productionization
+→ Navigation Action Fencing final scan (upload/ZIP/deployment/timer-callback completions)
 → external algorithm catalog read-only boundary
 → separate Resource Lifecycle production soak / non-SQLite resource classes
 → ZIP 10k / training progress / GPU tuner / deployment artifact E2E
@@ -74,7 +75,34 @@ tests/browser/navigation-action-fencing.spec.mjs
 
 一次性 R1 migration/follow-up helper 与 workflow 已物理删除。
 
-**边界：整个 Navigation Action Fencing 仍为 IN PROGRESS。** R1 只关闭训练服务器/Paddle 与本批 direct-page-write surface；最终 Model Config 427、AI 标注/清洗确认、图片/ZIP/XHR upload completion、deployment mutation、其他 timer/callback family 尚未全部迁移，不能宣称 stale async UI side effect 全局为 0。下一批为 **R2：最终 Model Config / AI 清洗与 modal mutation completion**。
+**R1 已由 R2 继续收口。** R2 关闭最终 M4 模型保存/连接测试、最终清洗确认和 v60 AI review completion；upload/ZIP/deployment/timer-callback completion 仍留给 final scan，因此全局 stale-async zero-point 仍为 IN PROGRESS。
+
+### Navigation Action Fencing R2 — final Model Config / clean / v60 AI completion CLOSED
+
+最终 live owner：
+
+```text
+saveVisionModelM4
+testModelConfigV35
+confirmClean429  (confirmClean427 compatibility alias)
+completeAiReview60(mode)  (confirmAiLabel427 compatibility alias)
+```
+
+所有 completion 在异步请求前捕获 `NavigationStability.action(state.page)`，在请求返回后、提交 state/DOM/modal/render/toast 前拒绝 stale action。`confirmClean429` 使用 authoritative `deleted_ids + processed_ids` 做 local patch，已移除 broad `loadRelated()`；v60 AI review 保持 `taskApi(review.id)/decisions` + `commit:true` durable contract。
+
+```text
+baseline / migration run: 34721629224
+product:                  9f6df85b994f23b5408759fb64485b9477c75936
+cleanup / permanentize:   3a8781dccf6704fe76d35d99c05b80590dc507c3
+Frontend Runtime:         34721755310
+full Real Chrome:         32/32 PASS
+permanent Action Fencing: 34721755316 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.90
+main.mjs cache:           42.25.89
+```
+
+永久合同为 `tests/frontend/navigation-action-fencing-r2.test.mjs`、`tests/browser/navigation-action-fencing-r2.spec.mjs`，并已合并进唯一长期 `.github/workflows/navigation-action-fencing.yml`。一次性 R2 helper/workflow 已物理删除。
 
 ### R20g — import completion scoped refresh + mechanical close
 
