@@ -19,7 +19,7 @@ test('live model config save owner uses authoritative mutation result without br
   assert.doesNotMatch(owner, /loadAll\s*\(/);
 });
 
-test('M4 captures the vision modal before later compatibility overrides', () => {
+test('M4 captures the vision modal as the final model-config owner', () => {
   const m4Start = app.indexOf('M4: real vision providers, reviewable boxes, explicit targets');
   const m4Open = app.indexOf('window.openModelConfigModalV35=function', m4Start);
   const capture = app.indexOf('window.__m4OpenModelConfig=window.openModelConfigModalV35;', m4Open);
@@ -28,11 +28,12 @@ test('M4 captures the vision modal before later compatibility overrides', () => 
   assert.match(region, /onclick=\"saveVisionModelM4\('\$\{id\}'\)\"/);
 });
 
-test('M4 final activation restores the captured modal after compatibility layers', () => {
+test('M4 final activation restores the captured modal without any shadowed function owner', () => {
   const capture = app.indexOf('window.__m4OpenModelConfig=window.openModelConfigModalV35;');
-  const compatibilityOpen = app.indexOf('window.openModelConfigModalV35=function', capture + 1);
   const activation = app.indexOf('M4 final activation: later compatibility layers must not replace these contracts.');
-  assert.ok(capture >= 0 && compatibilityOpen > capture && activation > compatibilityOpen);
+  const laterFunctionOwner = app.indexOf('window.openModelConfigModalV35=function', capture + 1);
+  assert.ok(capture >= 0 && activation > capture);
+  assert.equal(laterFunctionOwner, -1, 'retired compatibility modal generations must stay absent after the M4 capture');
   const activationRegion = app.slice(activation, activation + 1200);
   assert.match(activationRegion, /if\(window\.__m4OpenModelConfig\)window\.openModelConfigModalV35=window\.__m4OpenModelConfig/);
 });
