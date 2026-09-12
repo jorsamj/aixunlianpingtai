@@ -2,13 +2,13 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `36fd25c48a2251d1b4a85583921c00dd98bf33fb` / run `34664755130`  
-> Real Chrome: 15/15 passed  
+> Latest fully accepted code point: `0dacf581da4acb52312f75eb7e85e6b334e060db` / run `34665470320`  
+> Real Chrome: 16/16 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
 
-This map exists to delete historical frontend overrides without changing current behavior. Preserve live semantics, not version-era wrapper count. `static/app.js` remains a historical append-only chain; later assignments can completely shadow earlier layers or individual branches.
+This map exists to delete historical frontend overrides without changing current behavior. Preserve live semantics, not version-era wrapper count. `static/app.js` remains a historical append-only chain; later assignments can shadow earlier layers or individual branches.
 
 ## 2. Runtime ownership
 
@@ -21,7 +21,7 @@ static/app.js bounded classic render/page shell
    → named runtimes
 ```
 
-Navigation ownership is already outside the classic `setPage` family. Current cleanup target is the remaining render/post-render chain and lifecycle debt.
+Navigation ownership is already outside the classic `setPage` family. Current cleanup target is the remaining render/modal/post-render chain and lifecycle debt.
 
 ## 3. Closed owner batches
 
@@ -54,8 +54,9 @@ initial bootstrap setPage                       CLOSED
 | R7 | shadowed `renderBase424` 算法列表 / 数据集 / 训练任务 branches | `2d9bc0b3...` / `34663389819` |
 | R8 | legacy `renderAutoLabel424` old-page 1.8s self-refresh timer/predicate | `70b6f755...` / `34663768606` |
 | R9 | visible-version multi-owner chain: `baseRender417`, 12 app timers, main `applyBuildVersion` timers | `36fd25c4...` / `34664755130` |
+| R10 | `render426base` page-render file-input beautification wrapper | `0dacf581...` / `34665470320` |
 
-R9 product commit: `1e9ae1118a77313d8dd3d4c0cf12d5ce5f9edff7`. Final acceptance increased the browser suite to 15 tests; **15/15 passed**. All one-shot migration helpers/workflows were removed after success.
+R10 product commit: `b9d25955c185aaabb4108f3d37cfecd9f876390a`. Final acceptance increased the browser suite to 16 tests; **16/16 passed**. All one-shot baseline/migration helpers/workflows were removed after success.
 
 ## 4. Current final navigation owner
 
@@ -96,20 +97,13 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Deployment routes | `oldRenderV39` | conversion/artifact/resource/plugin/component | liveness audit |
 | Label management route | `render414Base` | label management | liveness audit |
 | Storage configuration route | `finalRender` | `renderStorageSources61()` | dedicated Chrome contract |
+| Page post-render normalization | `cleanup(root)` wrapper | DOM cleanup + page file-input beautification | unit + Chrome |
+| Modal file-input beautification | `modal426` | beautify ordinary modal file inputs after modal render | pending independent audit |
 | Visible top version | `top412 / V412` | formal `v42.24.0` | unit + Chrome |
 | Visible sidebar version | `nav426 / V426` | formal `v42.24.0` | unit + Chrome |
 | Internal UI build metadata | `UI_BUILD_VERSION` → `document.documentElement.dataset.uiBuild` | `42.25.0-dev`, non-visible | unit guard |
 
-## 6. Version ownership after R9
-
-The failed baseline proved visible version had multiple asynchronous owners:
-
-```text
-50d72687f099eb554ec77e9045e42713025c4453 / run 34664100285
-frontend PASS
-Chrome 14 PASS + 1 FAIL
-received v42.25.0-dev after expecting formal v42.24.0
-```
+## 6. R9 version ownership
 
 Retired:
 
@@ -130,9 +124,46 @@ nav426 / V426                         → sidebar footer v42.24.0
 UI_BUILD_VERSION                      → internal dataset metadata only
 ```
 
-This is locked by `tests/frontend/version-marker-owner.test.mjs` and the 15th navigation Real Chrome contract.
+## 7. R10 page file-input ownership
 
-## 7. Render topology — confirmed live / retired
+Exact pre-R10 live behavior:
+
+```text
+render426base
+→ previous render chain
+→ requestAnimationFrame
+→ beautifyFileInputs426(document.getElementById('view') || document)
+```
+
+The final `测试发布` page still contains an ordinary `#predFile` input, so the wrapper was live. A dedicated Chrome contract locked that behavior before migration.
+
+Final R10 ownership:
+
+```text
+render chain
+→ later cleanup wrapper
+   → cleanup(#view)
+      → window.beautifyFileInputs426?.(root)
+      → other cleanup semantics
+```
+
+Retired:
+
+```text
+render426base
+requestAnimationFrame(()=>beautifyFileInputs426(#view)) page callback
+```
+
+Intentionally retained:
+
+```text
+beautifyFileInputs426 implementation/export
+modal426 modal wrapper
+```
+
+`modal426` must not be inferred dead from the page migration. Modal behavior needs an independent baseline and equivalence proof.
+
+## 8. Render topology — confirmed live / retired
 
 ### Confirmed live
 
@@ -145,6 +176,8 @@ renderBase424     质量中心 / 视频切帧
 oldRenderV39      deployment routes
 render414Base     标签管理 route
 finalRender       素材存储配置
+cleanup(root)     post-render normalization + page file-input beautification
+modal426          modal file-input beautification, pending audit
 ```
 
 ### Physically retired
@@ -159,26 +192,28 @@ renderBase424 算法列表 / 数据集 / 训练任务 branches
 renderAutoLabel424 legacy old-page timer/predicate
 baseRender417 visible-version wrapper/timers
 historical visible-version delayed writers
+render426base page-render wrapper
 ```
 
-## 8. Remaining render audit targets
+## 9. Remaining render/lifecycle audit targets
 
-Independent liveness proof is still required for:
+Independent proof is still required for:
 
 ```text
+modal426
+  modal post-render file-input beautification
+
 baseRenderV37
   requestAnimationFrame page enhancement
 
-render426base
-  post-render file-input beautification
-
-post-render cleanup wrapper + MutationObserver
+post-render cleanup wrapper + view/modalBody MutationObserver
+body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
 `oldRenderV39`, `render414Base`, `renderBase424`, `renderBase427`, `renderBase428`, `oldRender412`, and `finalRender` are confirmed live and are not whole-wrapper deletion candidates without semantic migration proof.
 
-## 9. Permanent proof currently active
+## 10. Permanent proof currently active
 
 Frontend:
 
@@ -188,30 +223,26 @@ tests/frontend/retired-pre-v424-setpage-guard.test.mjs
 tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
+tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
-Browser suite includes:
+Browser suite includes the permanent R10 contract:
 
 ```text
-tests/browser/navigation-stability.spec.mjs
-tests/browser/navigation-readiness.spec.mjs
-tests/browser/auto-label-polling.spec.mjs
-tests/browser/algorithm-list-performance.spec.mjs
-tests/browser/training-task-performance.spec.mjs
-tests/browser/material-pagination-performance.spec.mjs
+file input beautification survives page render lifecycle ownership
 ```
 
-Current accepted Real Chrome suite: **15/15** in run `34664755130`.
+Current accepted Real Chrome suite: **16/16** in run `34665470320`.
 
-## 10. Per-batch checklist
+## 11. Per-batch checklist
 
 ```text
 live HEAD
 → exact reference/liveness/source-order proof
 → deterministic regression or browser contract
-→ bounded physical deletion
+→ bounded semantic migration/deletion
 → permanent guard
 → syntax/focused unit
 → full frontend
@@ -220,6 +251,6 @@ live HEAD
 → sync all four handoff docs
 ```
 
-## 11. Release boundary
+## 12. Release boundary
 
 No `main` merge, `VERSION.txt` bump, tag/release or A800 acceptance claim is authorized. A800 RC remains deferred until current P0/P1 debt and zero-point scan are complete.
