@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `0dacf581da4acb52312f75eb7e85e6b334e060db` / run `34665470320`  
-> Real Chrome: 16/16 passed  
+> Latest fully accepted code point: `9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1` / run `34665890699`  
+> Real Chrome: 17/17 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -21,7 +21,7 @@ static/app.js bounded classic render/page shell
    → named runtimes
 ```
 
-Navigation ownership is already outside the classic `setPage` family. Current cleanup target is the remaining render/modal/post-render chain and lifecycle debt.
+Navigation ownership is already outside the classic `setPage` family. Current cleanup target is the remaining render/post-render chain and lifecycle debt.
 
 ## 3. Closed owner batches
 
@@ -55,8 +55,12 @@ initial bootstrap setPage                       CLOSED
 | R8 | legacy `renderAutoLabel424` old-page 1.8s self-refresh timer/predicate | `70b6f755...` / `34663768606` |
 | R9 | visible-version multi-owner chain: `baseRender417`, 12 app timers, main `applyBuildVersion` timers | `36fd25c4...` / `34664755130` |
 | R10 | `render426base` page-render file-input beautification wrapper | `0dacf581...` / `34665470320` |
+| R11 | `modal426` modal file-input beautification wrapper | `9bad939a...` / `34665890699` |
 
-R10 product commit: `b9d25955c185aaabb4108f3d37cfecd9f876390a`. Final acceptance increased the browser suite to 16 tests; **16/16 passed**. All one-shot baseline/migration helpers/workflows were removed after success.
+R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
+R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
+R11 product: `8ff8e7fd9dc055b6e413c273cc030e7f20a2f0c1`.  
+R11 final acceptance increased the browser suite to 17 tests; **17/17 passed**. All one-shot baseline/migration helpers/workflows were removed after success.
 
 ## 4. Current final navigation owner
 
@@ -97,8 +101,8 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Deployment routes | `oldRenderV39` | conversion/artifact/resource/plugin/component | liveness audit |
 | Label management route | `render414Base` | label management | liveness audit |
 | Storage configuration route | `finalRender` | `renderStorageSources61()` | dedicated Chrome contract |
-| Page post-render normalization | `cleanup(root)` wrapper | DOM cleanup + page file-input beautification | unit + Chrome |
-| Modal file-input beautification | `modal426` | beautify ordinary modal file inputs after modal render | pending independent audit |
+| Page post-render normalization | `cleanup(root)` + view observer | DOM cleanup + page file-input beautification | unit + Chrome |
+| Modal post-render normalization | `cleanup(root)` + modalBody observer | dynamic modal file-input beautification | unit + Chrome |
 | Visible top version | `top412 / V412` | formal `v42.24.0` | unit + Chrome |
 | Visible sidebar version | `nav426 / V426` | formal `v42.24.0` | unit + Chrome |
 | Internal UI build metadata | `UI_BUILD_VERSION` → `document.documentElement.dataset.uiBuild` | `42.25.0-dev`, non-visible | unit guard |
@@ -124,44 +128,65 @@ nav426 / V426                         → sidebar footer v42.24.0
 UI_BUILD_VERSION                      → internal dataset metadata only
 ```
 
-## 7. R10 page file-input ownership
+## 7. R10/R11 file-input ownership
 
-Exact pre-R10 live behavior:
+### R10 page path
+
+Pre-R10:
 
 ```text
 render426base
 → previous render chain
 → requestAnimationFrame
-→ beautifyFileInputs426(document.getElementById('view') || document)
+→ beautifyFileInputs426(#view)
 ```
 
-The final `测试发布` page still contains an ordinary `#predFile` input, so the wrapper was live. A dedicated Chrome contract locked that behavior before migration.
-
-Final R10 ownership:
+Final page ownership:
 
 ```text
 render chain
-→ later cleanup wrapper
-   → cleanup(#view)
-      → window.beautifyFileInputs426?.(root)
-      → other cleanup semantics
+→ cleanup wrapper
+→ cleanup(#view)
+→ beautifyFileInputs426(root)
 ```
 
-Retired:
+### R11 modal path
+
+Pre-R11:
+
+```text
+modal426
+→ previous modal owner
+→ requestAnimationFrame
+→ beautifyFileInputs426(layer || document)
+```
+
+Final modal ownership:
+
+```text
+modalBody DOM mutation
+→ MutationObserver
+→ cleanup(addedNode)
+→ beautifyFileInputs426(root)
+```
+
+Physically retired:
 
 ```text
 render426base
-requestAnimationFrame(()=>beautifyFileInputs426(#view)) page callback
+modal426
+both dedicated file-input beautification RAF callbacks
 ```
 
-Intentionally retained:
+Retained:
 
 ```text
 beautifyFileInputs426 implementation/export
-modal426 modal wrapper
+cleanup(root)
+view + modalBody observer wiring
 ```
 
-`modal426` must not be inferred dead from the page migration. Modal behavior needs an independent baseline and equivalence proof.
+The observer lifecycle itself is still a later audit target; current behavior is locked by permanent unit + Chrome contracts.
 
 ## 8. Render topology — confirmed live / retired
 
@@ -176,8 +201,7 @@ renderBase424     质量中心 / 视频切帧
 oldRenderV39      deployment routes
 render414Base     标签管理 route
 finalRender       素材存储配置
-cleanup(root)     post-render normalization + page file-input beautification
-modal426          modal file-input beautification, pending audit
+cleanup(root)     post-render normalization + page/modal file-input beautification
 ```
 
 ### Physically retired
@@ -193,6 +217,7 @@ renderAutoLabel424 legacy old-page timer/predicate
 baseRender417 visible-version wrapper/timers
 historical visible-version delayed writers
 render426base page-render wrapper
+modal426 modal wrapper
 ```
 
 ## 9. Remaining render/lifecycle audit targets
@@ -200,13 +225,13 @@ render426base page-render wrapper
 Independent proof is still required for:
 
 ```text
-modal426
-  modal post-render file-input beautification
-
 baseRenderV37
-  requestAnimationFrame page enhancement
+  requestAnimationFrame page enhancement + state.versionInfo write
 
-post-render cleanup wrapper + view/modalBody MutationObserver
+baseModalV37
+  modal enhancement + initial-focus wrapper
+
+post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
@@ -228,13 +253,14 @@ tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
-Browser suite includes the permanent R10 contract:
+Browser suite includes permanent contracts:
 
 ```text
 file input beautification survives page render lifecycle ownership
+modal file input beautification survives modal lifecycle ownership
 ```
 
-Current accepted Real Chrome suite: **16/16** in run `34665470320`.
+Current accepted Real Chrome suite: **17/17** in run `34665890699`.
 
 ## 11. Per-batch checklist
 
