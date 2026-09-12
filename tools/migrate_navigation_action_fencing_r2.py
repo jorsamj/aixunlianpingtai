@@ -32,8 +32,8 @@ replace_last_line(
 )
 
 replace_last_line(
-    'window.confirmClean427=async function(id)',
-    "window.confirmClean427=async function(id){const action=window.NavigationStability?.action?.(state.page);try{const r=await api(`/api/v47/projects/${pid()}/clean-tasks/${id}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete_ids:[...state.v427CleanConfirm]})});if(action&&!action.isCurrent())return;const deleted=new Set((r.deleted_ids||[]).map(String));if(deleted.size)state.images=(state.images||[]).filter(x=>!deleted.has(String(x.id)));closeModal();if(state.page==='数据集')renderDatasets424();else if(state.page==='自动标注及清洗'||state.page==='自动标注')window.renderOps427?.();toast(`清洗已确认，删除 ${r.deleted||0} 张`)}catch(e){if(action&&!action.isCurrent())return;toast(e.message||e)}};"
+    'window.confirmClean429=async function(id)',
+    "window.confirmClean429=async function(id){const action=window.NavigationStability?.action?.(state.page);try{const r=await api(`/api/v47/projects/${pid()}/clean-tasks/${id}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete_ids:[...state.v427CleanConfirm]})});if(action&&!action.isCurrent())return;const del=new Set((r.deleted_ids||[]).map(String)),proc=new Set((r.processed_ids||[]).map(String));state.images=(state.images||[]).filter(x=>!del.has(String(x.id)));state.images.forEach(x=>{if(proc.has(String(x.id))){x.processing_status='processed';x.cleaned_at=new Date().toISOString()}});closeModal();if(state.page==='数据集')renderDatasets424();toast(`清洗确认完成：删除 ${r.deleted||0} 张，其余进入已处理`)}catch(e){if(action&&!action.isCurrent())return;toast(e.message||e)}};"
 )
 
 replace_last_line(
