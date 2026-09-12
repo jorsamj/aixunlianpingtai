@@ -105,7 +105,7 @@ if tail.count(anchor2)!=1:
 tail=tail.replace(anchor2,replacement2,1)
 BROWSER.write_text(b[:start]+tail,encoding='utf-8')
 
-UNIT.write_text("""import test from 'node:test';
+UNIT.write_text(r"""import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
