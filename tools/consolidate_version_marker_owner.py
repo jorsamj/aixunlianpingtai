@@ -15,7 +15,7 @@ app = app_path.read_text(encoding='utf-8')
 # Retire historical startup-only writers that repeatedly overwrite the visible
 # version badge after the final renderTop owner has already rendered it.
 legacy_version_timer = re.compile(
-    r"\s*setTimeout\(\(\)=>\{const v=document\.getElementById\('versionBadge'\);if\(v\)v\.textContent=(?:'v42\.24\.0'|'v'\+V(?:39|42|422|423|424|425|426|427|428|429|411))\},(?:50|100|120|150|180)\);"
+    r"\s*setTimeout\(\(\)=>\{const v=document\.getElementById\('versionBadge'\);if\(v\)v\.textContent=(?:'v42\.24\.0'|'v'\+V(?:39|42|422|423|424|425|427|428|429|410|411))\},(?:50|100|120|150|180)\);"
 )
 matches = legacy_version_timer.findall(app)
 if len(matches) != 12:
