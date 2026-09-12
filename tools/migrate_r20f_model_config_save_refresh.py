@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# R20f rerun after the permanent Chrome baseline was aligned with final UI readiness.
 app_path = Path('static/app.js')
 index_path = Path('static/index.html')
 test_path = Path('tests/frontend/model-config-save-refresh-owner.test.mjs')
