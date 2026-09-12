@@ -298,3 +298,4 @@ jobs:
           tests/browser/algorithm-list-performance.spec.mjs
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs
+          tests/browser/source-import-completion-scope.spec.mjs
