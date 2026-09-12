@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       40a87bf70402dccfc0387950b6856a561ce1ebe1
-run:          34724354775
+commit:       b83b2bf360b891265157e602f622d409d1d2332f
+run:          34725907423
 frontend:     PASS
 Real Chrome:  PASS (33/33)
 ```
@@ -16,7 +16,7 @@ Real Chrome:  PASS (33/33)
 Current caches/builds:
 
 ```text
-app.js                    42.25.92
+app.js                    42.25.93
 main.mjs                  42.25.89
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -109,6 +109,7 @@ oldSelectDataset persistence wrapper
 currentDataset helper
 two shadowed historical dataset-group render bodies
 zero-reference uploadImages / autoSplit / buildYolo / checkDatasetQuality / setImageSplit owners
+shadowed v35/v426/v427 Model Config modal/save generations
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -118,6 +119,8 @@ R20k did **not** retire the live `doImportData` owner. It migrated only its succ
 R20m physically retired the shadowed early v423 algorithm create/edit generation after source-order proof and a pre-retirement Real Chrome pass showed final CRUD already resolves to the later stable 414 owners. Baseline `243bcb1b17074848d91c2c9c64d47dbed54e5e9b`, migration run `34724242632`, product `71cdb2ad192ec99b0e21bfe3c1f70bffca0f586e`, cleanup/final acceptance `40a87bf70402dccfc0387950b6856a561ce1ebe1` / run `34724354775`, Real Chrome **33/33**, Action Fencing `34724354790` PASS. `tests/frontend/shadowed-algorithm-crud-r20m.test.mjs` permanently locks owner cardinality/absence; existing `algorithm-list-performance.spec.mjs` locks live CRUD behavior. Global R20 zero-point remains open.
 
 R20l kept the live `refreshSourceImportTasksV36` owner but removed its terminal broad refresh. Real Chrome baseline proved the old terminal `loadRelated()` fan-out; completion now calls only `refreshLabels414(false)` plus `reloadMaterialPage61()` when still on 数据集. Active source-import polling cadence remains unchanged. Product `f260127d2d41281bc1d996a172e7d4290536f24c`, migration run `34723694735`, permanentization `b17bd0c33bfb99e5557fc245a89a6c4444a8257e`, cleanup/final acceptance `f8356bcf5ec1ea128fb38db2820df38146b48cfd` / run `34723808299`, Real Chrome **33/33**, Action Fencing `34723808298` PASS. Permanent contracts: `tests/frontend/source-import-completion-scope.test.mjs` and `tests/browser/source-import-completion-scope.spec.mjs`; one-shot migration artifacts are deleted. Global R20 zero-point remains open.
+
+R20n retired the three shadowed Model Config modal/save generations (`saveModelConfigV35`, `saveModelConfig426`, `saveModelConfig427`) after source-order proof plus the same M4 Real Chrome contract passed before and after deletion. Final M4 `saveVisionModelM4` and `testModelConfigV35` remain authoritative and action-fenced. Product `9acaa534e596464a1ebe129e435916ed7dd9cdf2`, cleanup `fce8034a861e1f9c5c0d37568891717309845794`, final accepted HEAD `b83b2bf360b891265157e602f622d409d1d2332f` / Frontend Runtime `34725907423`, Real Chrome **33/33**, Action Fencing `34725907404` PASS; app cache `42.25.93`. One-shot migration artifacts are deleted. **Further non-blocking legacy cleanup is PAUSED by user request; remaining debt stays OPEN/DEFERRED unless it blocks real use, performance, data integrity or release acceptance.**
 
 Cross-cutting checkpoint after R20k: Resource Discovery SQLite code-level lifecycle was accepted at product `8ba4e10db5958204aca3d87779711d8e95f5d83b`. Baseline run `34700801232` proved the two target failures before migration; permanent cross-platform workflow run `34700900542` passed Ubuntu + Windows; artifact cleanup `c6ac70b670a6297ccba065854779c10b8ca47cf3` passed Frontend Runtime `34700984963` with Real Chrome **32/32**. Production soak and non-SQLite resource classes remain outside this frontend audit and OPEN.
 

@@ -1,10 +1,10 @@
 # v42.25 技术债关闭总账
 
-> **状态：ACTIVE / 技术债优先阶段**  
+> **状态：PAUSED / 非阻断技术债清理按用户要求暂停**
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`40a87bf70402dccfc0387950b6856a561ce1ebe1`**
-> **Frontend Runtime Stabilization：run `34724354775`，frontend + Real Chrome 全绿，Real Chrome 33/33 passed；Navigation Action Fencing 永久 run `34724354790` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**
+> **最近完整代码验收点：`b83b2bf360b891265157e602f622d409d1d2332f`**
+> **Frontend Runtime Stabilization：run `34725907423`，frontend + Real Chrome 全绿，Real Chrome 33/33 passed；Navigation Action Fencing 永久 run `34725907404` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -16,7 +16,7 @@
 3. `docs/frontend-legacy-audit.md`
 4. `docs/FRONTEND_OWNER_MAP_V42_25.md`
 
-当前优先级仍是技术债关闭；A800 RC 暂缓。未经用户明确允许，不得 merge `main`、改正式 `VERSION.txt`、tag 或 release。
+技术债清理主线已按用户要求暂停。剩余非阻断债务保持 OPEN/DEFERRED；只有真实功能、性能、数据完整性或发布验收问题才恢复对应清理。未经用户明确允许，不得 merge `main`、改正式 `VERSION.txt`、tag 或 release。
 
 ## 1. 永久退休 surface
 
@@ -92,6 +92,7 @@ v30 `oldRenderAlgorithms` algorithm renderer wrapper
 v39 `oldViewAlgoV39` algorithm detail wrapper
 v42.2 `renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422` shadowed algorithm page generation
 v423 shadowed `openNewAlgorithm423(async)/saveNewAlgorithm423/editAlgorithm423(old modal)/saveEditAlgorithm423` create/edit generation
+shadowed Model Config v35/v426/v427 modal/save generations (`saveModelConfigV35/saveModelConfig426/saveModelConfig427`)
 legacy dataset-group `selectDataset/newDataset/saveDataset/editDataset/saveEditDataset/delDataset`
 `oldSelectDataset` persistence compatibility wrapper
 legacy `currentDataset()` helper
@@ -113,7 +114,7 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | navigation alias/readiness/sidebar/apply/persistence | `NavigationStability` + `ui-state.js` | **CLOSED** |
 | Navigation Action Fencing R1 — training-server/Paddle + targeted direct page writes | `NavigationStability.action` + epoch/token fence | **CLOSED (R1)** |
 | Navigation Action Fencing R2 — final M4 model save/test + clean confirm + v60 AI review completion | live owner action fence before UI/state commit | **CLOSED (R2)** |
-| Navigation Action Fencing remaining upload/deployment/timer/callback completions | final async-action zero-point | **IN PROGRESS** |
+| Navigation Action Fencing remaining upload/deployment/timer/callback completions | final async-action zero-point | **OPEN / DEFERRED** |
 | historical persisted `自动标注` alias | restore-boundary canonicalization | **CLOSED** |
 | shadowed historical render generations/branches R2–R7 | bounded later render owners | **CLOSED** |
 | legacy AutoLabel424 no-op self-refresh timer | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
@@ -144,12 +145,34 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | zero-reference legacy dataset actions | physically retired, final `renderDatasets424` / import owners preserved | **CLOSED (R20j)** |
 | live v18 `doImportData` success broad reload | labels + paged materials only | **CLOSED (R20k)** |
 | source-import terminal completion broad refresh | labels + current paged materials only | **CLOSED (R20l)** |
+| shadowed v35/v426/v427 Model Config generations | final M4 `saveVisionModelM4` + capture/final activation | **CLOSED (R20n)** |
 | shadowed v423 algorithm create/edit broad-refresh generation | stable 414 authoritative local-state CRUD only | **CLOSED (R20m)** |
-| global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
+| global reload / duplicate request | scoped refresh / zero-point proof | **OPEN / PAUSED (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
 | version-number business naming | semantic names | **OPEN** |
 | A800 RC | acceptance runbook | **DEFERRED** |
+
+### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
+
+Source-order 与删除前/后的同一套 M4 Real Chrome 合同证明：旧 v35 / v426 / v427 `openModelConfigModalV35 → saveModelConfigV35/saveModelConfig426/saveModelConfig427` generations 已被最终 M4 owner 覆盖，运行时不可达。R20n 仅物理删除这 3 套历史 modal/save generation；最终 `saveVisionModelM4`、`testModelConfigV35`、M4 capture/final activation、模型配置字段与 API 语义均保持不变。
+
+```text
+baseline + migration run: 34725790087
+product:                  9acaa534e596464a1ebe129e435916ed7dd9cdf2
+cleanup:                  fce8034a861e1f9c5c0d37568891717309845794
+contract alignment / accepted HEAD: b83b2bf360b891265157e602f622d409d1d2332f
+Frontend Runtime:         34725907423
+full Real Chrome:         33/33 PASS
+Navigation Action Fencing:34725907404 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.93
+main.mjs cache:           42.25.89
+```
+
+永久 source contract：`tests/frontend/shadowed-model-config-generations-r20n.test.mjs`；最终 M4 行为继续由 `tests/browser/navigation-action-fencing-r2.spec.mjs` 与现有 Action Fencing workflow 覆盖。一次性 R20n migration helper/workflow 已物理删除。
+
+**按用户要求，从 R20n 起技术债清理主线 PAUSED。** 剩余 R20 global reload/request zero-point、stale-async final scan、cache-busting、历史 dead code、命名/结构归一化、Resource Lifecycle production soak 等均保持 OPEN/DEFERRED，不宣称 CLOSED；除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，否则不得为了“代码更干净”继续展开技术债批次。
 
 ## 2.0a Navigation Action Fencing R1
 

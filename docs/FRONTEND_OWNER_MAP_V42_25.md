@@ -1,8 +1,8 @@
 # Frontend Final-Owner Map — v42.25
 
 > Branch: `refactor/frontend-runtime-stabilization`  
-> Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `40a87bf70402dccfc0387950b6856a561ce1ebe1` / run `34724354775`
+> Status: PAUSED AUDIT — non-blocking technical-debt cleanup deferred by user request
+> Latest fully accepted code point: `b83b2bf360b891265157e602f622d409d1d2332f` / run `34725907423`
 > Real Chrome: 33/33 passed
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -21,7 +21,7 @@ static/app.js bounded classic render/page shell
    → named runtimes
 ```
 
-Navigation ownership is already outside the classic `setPage` family. Current cleanup target is the remaining render/post-render chain and lifecycle debt.
+Navigation ownership is already outside the classic `setPage` family. Further non-blocking cleanup is PAUSED; resume this audit only for real functional/performance/data-integrity/release-blocking evidence.
 
 ## 3. Closed owner batches
 
@@ -80,6 +80,9 @@ Navigation Action Fencing R1+R2 are accepted. `NavigationStability.action(ownerP
 | R20k | live v18 import completion broad reload → labels + current paged materials only | `f51d44c089...` / `34700252041` (32/32) |
 | R20l | live source-import terminal broad `loadRelated()` → labels + current paged materials only | `f8356bcf5e...` / `34723808299` (33/33) |
 | R20m | shadowed v423 algorithm create/edit generation physically retired; stable 414 CRUD remains final | `40a87bf704...` / `34724354775` (33/33) |
+| R20n | shadowed v35/v426/v427 Model Config modal/save generations retired; final M4 owner preserved | `b83b2bf360...` / `34725907423` (33/33) |
+
+R20n product: `9acaa534e596464a1ebe129e435916ed7dd9cdf2`; cleanup `fce8034a861e1f9c5c0d37568891717309845794`; final accepted contract `b83b2bf360b891265157e602f622d409d1d2332f` / Frontend Runtime `34725907423`; Real Chrome **33/33 passed**; Action Fencing `34725907404` PASS. The final M4 `openModelConfigModalV35 → saveVisionModelM4` owner, M4 capture/final activation and model-config API semantics remain unchanged. One-shot R20n migration artifacts are physically deleted. Further non-blocking owner cleanup is PAUSED by user request.
 
 R20h product: `d58e690ffcc1523f213a65cfc0a57380ffdc571e`; focused run `34696508446`; validation `210a9ad1f6271a8a8986db3f223f4813a6cce288` / run `34696729028`; frontend PASS; Real Chrome **31/31 passed**. The bounded base `renderAlgorithms()` compatibility delegate remains until older global render maps are retired, and the later report compatibility owner remains live by contract. R20h one-shot migration artifacts were deleted.  
 

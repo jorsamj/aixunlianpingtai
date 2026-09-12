@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 40a87bf70402dccfc0387950b6856a561ce1ebe1
-Frontend Runtime run:        34724354775
+latest full code acceptance: b83b2bf360b891265157e602f622d409d1d2332f
+Frontend Runtime run:        34725907423
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.92
+app.js cache:                42.25.93
 main.mjs cache:              42.25.89
 NavigationStability:         422512
 UI state runtime:            422500
@@ -23,14 +23,15 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34724354775` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20m shadowed-owner retirement and migration-artifact cleanup. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34724354790` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34725907423` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after final R20n shadowed Model Config retirement. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34725907404` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-R20 final global reload/request zero-point
-→ Unified Task Progress + Durable Queue Runtime productionization
-→ Navigation Action Fencing final scan (upload/ZIP/deployment/timer-callback completions)
+TECH-DEBT CLEANUP PAUSED BY USER REQUEST
+→ resume only for real functional/performance/data-integrity/release-blocking evidence
+→ Unified Task Progress + Durable Queue Runtime productionization (product work, when requested)
+→ Navigation Action Fencing final scan DEFERRED unless a real stale-async defect appears
 → external algorithm catalog read-only boundary
 → separate Resource Lifecycle production soak / non-SQLite resource classes
 → ZIP 10k / training progress / GPU tuner / deployment artifact E2E
@@ -39,7 +40,28 @@ R20 final global reload/request zero-point
 → A800 RC
 ```
 
-A800 RC remains deferred.
+A800 RC remains deferred unless the next product/acceptance task explicitly resumes it.
+
+### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
+
+Source-order 与删除前/后的同一套 M4 Real Chrome 合同证明：旧 v35 / v426 / v427 `openModelConfigModalV35 → saveModelConfigV35/saveModelConfig426/saveModelConfig427` generations 已被最终 M4 owner 覆盖，运行时不可达。R20n 仅物理删除这 3 套历史 modal/save generation；最终 `saveVisionModelM4`、`testModelConfigV35`、M4 capture/final activation、模型配置字段与 API 语义均保持不变。
+
+```text
+baseline + migration run: 34725790087
+product:                  9acaa534e596464a1ebe129e435916ed7dd9cdf2
+cleanup:                  fce8034a861e1f9c5c0d37568891717309845794
+contract alignment / accepted HEAD: b83b2bf360b891265157e602f622d409d1d2332f
+Frontend Runtime:         34725907423
+full Real Chrome:         33/33 PASS
+Navigation Action Fencing:34725907404 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.93
+main.mjs cache:           42.25.89
+```
+
+永久 source contract：`tests/frontend/shadowed-model-config-generations-r20n.test.mjs`；最终 M4 行为继续由 `tests/browser/navigation-action-fencing-r2.spec.mjs` 与现有 Action Fencing workflow 覆盖。一次性 R20n migration helper/workflow 已物理删除。
+
+**按用户要求，从 R20n 起技术债清理主线 PAUSED。** 剩余 R20 global reload/request zero-point、stale-async final scan、cache-busting、历史 dead code、命名/结构归一化、Resource Lifecycle production soak 等均保持 OPEN/DEFERRED，不宣称 CLOSED；除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，否则不得为了“代码更干净”继续展开技术债批次。
 
 ### R20m — shadowed v423 algorithm CRUD generation retirement CLOSED
 

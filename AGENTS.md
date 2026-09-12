@@ -17,18 +17,18 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 40a87bf70402dccfc0387950b6856a561ce1ebe1
-Frontend Runtime run:        34724354775
+latest full code acceptance: b83b2bf360b891265157e602f622d409d1d2332f
+Frontend Runtime run:        34725907423
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.92
+app.js cache:                42.25.93
 main.mjs cache:              42.25.89
 NavigationStability:         422512
 ```
 
-`34724354775` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34724354790` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
+`34725907423` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34725907404` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
 
-**仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
+**技术债清理主线已按用户要求暂停；后续优先真实功能、性能、数据完整性与生产验收。A800 RC 是否推进由后续任务决定。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
 ## 当前前端 owner 状态
 
@@ -85,7 +85,30 @@ NavigationStability
 
 永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
 
-## 下一批准确范围：R20 final global reload/request zero-point
+## 当前边界：技术债清理 PAUSED
+
+除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，不再继续 dead-code / zero-point / 命名 / cache-busting 类清理。剩余债务保留为 OPEN/DEFERRED，不影响当前功能使用时不主动扩展。
+
+### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
+
+Source-order 与删除前/后的同一套 M4 Real Chrome 合同证明：旧 v35 / v426 / v427 `openModelConfigModalV35 → saveModelConfigV35/saveModelConfig426/saveModelConfig427` generations 已被最终 M4 owner 覆盖，运行时不可达。R20n 仅物理删除这 3 套历史 modal/save generation；最终 `saveVisionModelM4`、`testModelConfigV35`、M4 capture/final activation、模型配置字段与 API 语义均保持不变。
+
+```text
+baseline + migration run: 34725790087
+product:                  9acaa534e596464a1ebe129e435916ed7dd9cdf2
+cleanup:                  fce8034a861e1f9c5c0d37568891717309845794
+contract alignment / accepted HEAD: b83b2bf360b891265157e602f622d409d1d2332f
+Frontend Runtime:         34725907423
+full Real Chrome:         33/33 PASS
+Navigation Action Fencing:34725907404 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.93
+main.mjs cache:           42.25.89
+```
+
+永久 source contract：`tests/frontend/shadowed-model-config-generations-r20n.test.mjs`；最终 M4 行为继续由 `tests/browser/navigation-action-fencing-r2.spec.mjs` 与现有 Action Fencing workflow 覆盖。一次性 R20n migration helper/workflow 已物理删除。
+
+**按用户要求，从 R20n 起技术债清理主线 PAUSED。** 剩余 R20 global reload/request zero-point、stale-async final scan、cache-busting、历史 dead code、命名/结构归一化、Resource Lifecycle production soak 等均保持 OPEN/DEFERRED，不宣称 CLOSED；除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，否则不得为了“代码更干净”继续展开技术债批次。
 
 ### R20m — shadowed v423 algorithm CRUD generation retirement CLOSED
 
@@ -182,9 +205,9 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 ## 当前后续优先级
 
 ```text
-1. R20 final global reload/request zero-point
-2. Unified Task Progress + Durable Queue Runtime productionization
-3. Navigation Action Fencing final scan (upload/ZIP/deployment/timer-callback completions)
+1. 技术债清理 PAUSED；仅在真实功能/性能/数据/发布阻断时恢复
+2. Unified Task Progress + Durable Queue Runtime productionization（按后续产品任务推进）
+3. Navigation Action Fencing final scan — DEFERRED，除非出现真实 stale-async 故障
 4. External Algorithm Catalog read-only boundary
 5. Resource Lifecycle production soak + remaining non-SQLite resource classes
 6. ZIP 10k / Training Progress v2 / GPU Performance Tuner / Deployment Artifact E2E
