@@ -6,7 +6,7 @@ async function safe(p){try{return await p}catch(e){toast(e.message||e);return nu
 const state={page:'算法列表',projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
 const navs=['算法列表','训练资源','数据集','训练任务','测试发布'];
 function closeModal(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} window.closeModal=closeModal;
-function modal(title,body,wide=false){$('#modalTitle').textContent=title;$('#modalBody').innerHTML=body;$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden')}
+function modal(title,body,wide=false){$('#modalTitle').textContent=title;$('#modalBody').innerHTML=body;$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})}
 function splitName(s){return s==='val'?'试验集':s==='test'?'评测集':'训练集'}
 function splitPill(s){return `<span class="pill ${s==='val'?'warn':s==='test'?'blue':'ok'}">${splitName(s)}</span>`}
 function currentDataset(){return state.datasets.find(d=>d.id===state.datasetId)||state.datasets[0]}
@@ -1789,9 +1789,6 @@ window.installUsability417=function(){
   };
 
 
-  const baseModalV37=modal;
-  modal=function(title,body,wide){baseModalV37(title,body,wide);requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})};
-  window.modal=modal;
   const modalEl=document.getElementById('modal');if(modalEl)modalEl.addEventListener('mousedown',e=>{if(e.target===modalEl)closeModal()});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.getElementById('modal')?.classList.contains('hidden'))closeModal()});
 

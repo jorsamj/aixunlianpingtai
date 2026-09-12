@@ -4,6 +4,8 @@ import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
+const autofocus = "requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})";
+
 test('enhancePageV37 compatibility helper cannot return', () => {
   assert.equal(app.includes('function enhancePageV37'), false);
   assert.equal(app.includes('requestAnimationFrame(enhancePageV37)'), false);
@@ -23,7 +25,11 @@ test('baseRenderV37 duplicate versionInfo wrapper cannot return', () => {
   assert.equal(app.includes('state.versionInfo={...(state.versionInfo||{}),version:V42};'), true);
 });
 
-test('baseModalV37 retains autofocus until separately migrated', () => {
-  assert.equal(app.includes('const baseModalV37=modal;'), true);
-  assert.equal(app.includes("requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})"), true);
+test('base modal owns autofocus without a V37 compatibility wrapper', () => {
+  assert.equal(app.includes('const baseModalV37=modal;'), false);
+  assert.equal(app.includes('baseModalV37('), false);
+  assert.equal(app.split(autofocus).length - 1, 1);
+  assert.equal(app.includes("function modal(title,body,wide=false){$('#modalTitle').textContent=title;$('#modalBody').innerHTML=body;"), true);
+  assert.equal(app.includes('const oldModal424=modal, oldClose424=closeModal;'), true);
+  assert.equal(app.includes('oldModal424(title,body,wide); return baseModal;'), true);
 });
