@@ -7,16 +7,16 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       9c7a3497b9acf69364d83e5cf778ec4139bdbc69
-run:          34699599796
+commit:       f51d44c089b6342398c14bd38c8669747adad48b
+run:          34700252041
 frontend:     PASS
-Real Chrome:  PASS (31/31)
+Real Chrome:  PASS (32/32)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.86
+app.js                    42.25.87
 main.mjs                  42.25.88
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -109,6 +109,8 @@ zero-reference uploadImages / autoSplit / buildYolo / checkDatasetQuality / setI
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
+
+R20k did **not** retire the live `doImportData` owner. It migrated only its successful completion refresh from broad `reload()` to labels + current paged materials. Acceptance: product `1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb`, validation `60775456f3d4c8a441ba58ce65106af114aeebb2` / run `34700127243`, cleanup `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`, Real Chrome **32/32**. Permanent contracts: `tests/frontend/v18-import-completion-scope.test.mjs` and `tests/browser/material-pagination-performance.spec.mjs`.
 
 ## 4. R9 — visible version ownership consolidation
 

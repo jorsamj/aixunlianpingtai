@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 9c7a3497b9acf69364d83e5cf778ec4139bdbc69
-Frontend Runtime run:        34699599796
+latest full code acceptance: f51d44c089b6342398c14bd38c8669747adad48b
+Frontend Runtime run:        34700252041
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.86
+app.js cache:                42.25.87
 main.mjs cache:              42.25.88
 NavigationStability:         422511
 UI state runtime:            422500
@@ -23,20 +23,18 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34699599796` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20j artifact cleanup. Browser navigation runs **31 tests and passed 31/31**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34700252041` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20k artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-app.js/global reload/request debt
-→ live v18 doImportData completion scoped refresh
-→ live training stop/delete scoped refresh
-→ historical import/saveAssign generation liveness cleanup
-→ proven dead app.js/runtime shell cleanup
-→ stale async action fencing / lifecycle zero-point
-→ cache-busting unification
-→ semantic naming/dead-code cleanup
-→ unified task progress + durable queue productionization
+Resource Discovery SQLite / FD lifecycle code-level closure
+→ production soak for resource lifecycle (30–60 min, separate acceptance)
+→ resume R20 final global reload/request zero-point
+→ Navigation Action Fencing / stale mutation side effects
+→ external algorithm catalog read-only boundary
+→ ZIP 10k / training progress / GPU tuner / deployment artifact E2E
+→ app.js/app.py normalization
 → A800 RC
 ```
 
@@ -146,7 +144,25 @@ app.js cache:       42.25.86
 
 Permanent proof: `tests/frontend/legacy-dataset-action-shell.test.mjs`. R20j one-shot migration artifacts are physically deleted.
 
-Current exact next scope is **R20k: live v18 `doImportData` success-path scoped refresh**. Preserve its modal/progress/result semantics, replace broad reload with label refresh plus paged-material refresh only while on 数据集, and lock the request boundary in Real Chrome.
+### R20k — live v18 import completion scoped refresh
+
+The final v36 import modal still calls the unique live `doImportData` XHR owner. R20k preserved that UI/protocol owner and replaced only the success-path broad `await reload()` with `refreshLabels414(false)` plus `reloadMaterialPage61()` when the user is still on 数据集. The permanent browser contract performs a mocked ZIP upload and rejects project/dataset/image/job/algorithm/bootstrap fan-out.
+
+```text
+product:            1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb
+focused run:        34700022284 (211/211 frontend unit; focused Chrome 2/2 PASS)
+validation:         60775456f3d4c8a441ba58ce65106af114aeebb2
+validation run:     34700127243
+validation Chrome:  32/32 PASS
+cleanup:            f51d44c089b6342398c14bd38c8669747adad48b
+cleanup run:        34700252041
+cleanup Chrome:     32/32 PASS
+app.js cache:       42.25.87
+```
+
+Permanent proof: `tests/frontend/v18-import-completion-scope.test.mjs` and `tests/browser/material-pagination-performance.spec.mjs`. One-shot migration artifacts are physically deleted.
+
+Current exact next scope is **Resource Discovery SQLite / FD lifecycle code-level closure**. Do not claim the entire production lifecycle gate closed until the separate 30–60 minute soak is actually executed.
 
 Read in order:
 

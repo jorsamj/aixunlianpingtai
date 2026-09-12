@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `9c7a3497b9acf69364d83e5cf778ec4139bdbc69` / run `34699599796`  
-> Real Chrome: 31/31 passed  
+> Latest fully accepted code point: `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`  
+> Real Chrome: 32/32 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -75,12 +75,15 @@ initial bootstrap setPage                       CLOSED
 | R20h | legacy algorithm CRUD + v30/v39/v42.2 shadowed algorithm generations retired; stable 414/423/429 local-state owners remain | `210a9ad1...` / `34696729028` (31/31) |
 | R20i | legacy dataset-group CRUD + two shadowed dataset render generations + persistence wrapper retired; bounded delegate remains | `a7116811a...` / `34698983278` (31/31) |
 | R20j | zero-reference dataset actions retired; live import and MaterialPagination owners preserved | `9c7a3497b9...` / `34699599796` (31/31) |
+| R20k | live v18 import completion broad reload → labels + current paged materials only | `f51d44c089...` / `34700252041` (32/32) |
 
 R20h product: `d58e690ffcc1523f213a65cfc0a57380ffdc571e`; focused run `34696508446`; validation `210a9ad1f6271a8a8986db3f223f4813a6cce288` / run `34696729028`; frontend PASS; Real Chrome **31/31 passed**. The bounded base `renderAlgorithms()` compatibility delegate remains until older global render maps are retired, and the later report compatibility owner remains live by contract. R20h one-shot migration artifacts were deleted.  
 
 R20i product: `feeb98f441bb1fe5d0f8f409a1509c66606e59ef`; validation `11131ca30c17809e016807aa6c75b0bf203fa6f8` / run `34698850495`; cleanup `a7116811adb26ebe5f0f9e621bf23df1dd1f605f` / run `34698983278`; frontend PASS; Real Chrome **31/31 passed**. Final dataset routing remains `renderDatasets424`; one bounded `renderDatasets()` delegate remains for historical render-map symbol compatibility. The dataset-group CRUD family, `oldSelectDataset`, `currentDataset()` and both shadowed dataset-group render bodies are physically retired and permanently guarded.  
 
 R20j product: `e6398f7d8ae665079c82d64217c434af4a73073c`; focused run `34699354229`; validation `693a2fa2c3d39378782ac2270a95924eff5ca5ec` / run `34699442423`; cleanup `9c7a3497b9acf69364d83e5cf778ec4139bdbc69` / run `34699599796`; frontend PASS; Real Chrome **31/31 passed**. Five globally zero-reference dataset actions were physically retired. `doImportData` is explicitly preserved as live and becomes R20k because its successful v18 import path still invokes broad `reload()`.  
+
+R20k product: `1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb`; focused run `34700022284` (211/211 frontend unit, focused Chrome 2/2); validation `60775456f3d4c8a441ba58ce65106af114aeebb2` / run `34700127243`; cleanup `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`; frontend PASS; Real Chrome **32/32 passed**. `doImportData` remains the live v18 XHR owner, but its successful completion now refreshes only labels and the current paged material domain. One-shot R20k migration artifacts are physically deleted.  
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  

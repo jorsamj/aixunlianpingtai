@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`9c7a3497b9acf69364d83e5cf778ec4139bdbc69`**  
-> **Frontend Runtime Stabilization：run `34699599796`，frontend + Real Chrome 全绿，Real Chrome 31/31 passed。**  
+> **最近完整代码验收点：`f51d44c089b6342398c14bd38c8669747adad48b`**  
+> **Frontend Runtime Stabilization：run `34700252041`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -133,12 +133,12 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | Paddle environment activation full reload | `refreshPaddleTrainingTargets20d` + training_options-only target refresh | **CLOSED (R20d)** |
 | model-config / prompt-template mutation full reload + stale prompt UI | authoritative mutation result + local state patch | **CLOSED (R20e)** |
 | model-config save/edit broad related refresh | M4 `saveVisionModelM4` authoritative result + local `state.modelConfigs` upsert | **CLOSED (R20f)** |
-| resource-discovery SQLite concurrent cache initialization | lock-safe/single-owner cache initialization | **OPEN — R20e validation diagnostic** |
+| resource-discovery SQLite / FD lifecycle | lock-safe single-owner init + deterministic close + soak | **IN PROGRESS — code-level closure next** |
 | ZIP / server-storage import completion broad refresh | scoped labels + paged material refresh | **CLOSED (R20g)** |
 | legacy algorithm CRUD + shadowed algorithm renderer generations | stable 414/423/429 owners + authoritative local `state.algorithms` patch | **CLOSED (R20h)** |
 | legacy dataset-group CRUD + shadowed dataset render generations | final `renderDatasets424` route + bounded compatibility delegate | **CLOSED (R20i)** |
 | zero-reference legacy dataset actions | physically retired, final `renderDatasets424` / import owners preserved | **CLOSED (R20j)** |
-| live v18 `doImportData` success broad reload | labels + paged materials only | **OPEN — R20k** |
+| live v18 `doImportData` success broad reload | labels + paged materials only | **CLOSED (R20k)** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -244,6 +244,30 @@ app.js cache:       42.25.86
 ```
 
 永久 guard：`tests/frontend/legacy-dataset-action-shell.test.mjs`。一次性 R20j migration helper/workflow 已物理删除。R20 尚未整体 CLOSED；下一批 R20k 先迁 live `doImportData`，之后再处理 `stopJob/deleteJob`。
+
+## 2.5 R20k — live v18 import completion scoped refresh
+
+R20k 保留最终 v36 `importData()` → 唯一 `doImportData()` → v18 XHR 的真实 owner，只迁移成功后的刷新边界：`await reload()` 已替换为 `refreshLabels414(false)`，且仅在用户仍处于数据集页时调用 `reloadMaterialPage61()`。导入进度、结果卡、警告和 toast 语义保持不变。
+
+永久 Real Chrome 合同真实走 file input + v18 POST mock，并禁止 projects/datasets/images/jobs/algorithms/publish/test_models/bootstrap 等 broad fan-out。
+
+```text
+product:            1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb
+focused run:        34700022284
+focused frontend:   211/211 PASS
+focused Chrome:     2/2 PASS
+validation:         60775456f3d4c8a441ba58ce65106af114aeebb2
+validation run:     34700127243
+validation Chrome:  32/32 PASS
+cleanup:            f51d44c089b6342398c14bd38c8669747adad48b
+cleanup run:        34700252041
+cleanup Chrome:     32/32 PASS
+app.js cache:       42.25.87
+```
+
+永久合同：`tests/frontend/v18-import-completion-scope.test.mjs` + `tests/browser/material-pagination-performance.spec.mjs`。一次性 helper/workflow 已物理删除。
+
+R20 尚未整体 CLOSED；根据用户授权，先切换到 P0 Resource Discovery SQLite / FD lifecycle。代码级并发与 deterministic close 可在 CI 闭环，但 30–60 分钟生产 soak 未执行前仍标记 NOT VERIFIED。
 
 ## 3. Canonical owners
 

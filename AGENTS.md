@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 9c7a3497b9acf69364d83e5cf778ec4139bdbc69
-Frontend Runtime run:        34699599796
+latest full code acceptance: f51d44c089b6342398c14bd38c8669747adad48b
+Frontend Runtime run:        34700252041
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.86
+app.js cache:                42.25.87
 main.mjs cache:              42.25.88
 NavigationStability:         422511
 ```
 
-`34699599796` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 31/31。
+`34700252041` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 32/32。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -85,44 +85,36 @@ NavigationStability
 
 永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
 
-## 下一批准确范围：R20 final zero-point
+## 下一批准确范围：Resource Discovery SQLite / FD zero-point
 
-R20g、R20h、R20i、R20j 已 CLOSED。R20j 通过全局引用证明物理退休了 5 个 zero-reference dataset action owner：`uploadImages / autoSplit / buildYolo / checkDatasetQuality / setImageSplit`。最终 `renderDatasets424 + MaterialPaginationRuntime61` 与 live import owner 均未误删。
+R20g、R20h、R20i、R20j、R20k 已 CLOSED。R20k 保留 live v18 `doImportData` 的上传、进度和结果语义，只把成功后的 broad `reload()` 收窄为标签刷新 + 当前数据集页分页素材刷新；永久 Real Chrome 请求合同已并入 material pagination suite。
 
-下一批准确目标是 **R20k：live v18 `doImportData` completion scoped refresh**。它是当前最终 v36 import UI 仍会调用的真实 owner，成功路径现在仍执行 `await reload()`，不得按 dead shell 删除。
-
-```text
-final renderDatasets424
-→ importData()（最终 v36 modal owner）
-→ doImportData()（唯一 live v18 XHR owner）
-→ POST /api/v18/projects/{project}/datasets/{dataset}/import
-→ 当前：await reload()   ← R20k 目标
-
-目标语义：
-→ 导入成功结果/进度 UI 保持不变
-→ refreshLabels414(false)
-→ 仅当 state.page === '数据集' 时 reloadMaterialPage61()
-→ 禁止 loadAll/loadRelated/reload bootstrap fan-out
-```
-
-R20k 必须先加 permanent unit/request contract，并把 Real Chrome 导入成功测试并入现有 `material-pagination-performance.spec.mjs`，避免修改永久 workflow。之后再处理 live `stopJob/deleteJob` broad reload。
-
-R20j 验收：
+R20k 验收：
 
 ```text
-product:            e6398f7d8ae665079c82d64217c434af4a73073c
-focused run:        34699354229
-validation:         693a2fa2c3d39378782ac2270a95924eff5ca5ec
-validation run:     34699442423
-validation Chrome:  31/31 PASS
-cleanup:            9c7a3497b9acf69364d83e5cf778ec4139bdbc69
-cleanup run:        34699599796
-cleanup Chrome:     31/31 PASS
-app.js cache:       42.25.86
+product:            1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb
+focused run:        34700022284 (211/211 frontend unit + focused Chrome 2/2 PASS)
+validation:         60775456f3d4c8a441ba58ce65106af114aeebb2
+validation run:     34700127243
+validation Chrome:  32/32 PASS
+cleanup:            f51d44c089b6342398c14bd38c8669747adad48b
+cleanup run:        34700252041
+cleanup Chrome:     32/32 PASS
+app.js cache:       42.25.87
 main.mjs cache:     42.25.88
 ```
 
-永久 guard：`tests/frontend/legacy-dataset-action-shell.test.mjs`。一次性 R20j migration helper/workflow 已物理删除。
+永久合同：`tests/frontend/v18-import-completion-scope.test.mjs` + `tests/browser/material-pagination-performance.spec.mjs`。一次性 R20k migration helper/workflow 已物理删除。
+
+按用户授权，前端 R20 同类小债先暂停扩张，下一批切到更高生产风险的 **Resource Discovery SQLite / FD lifecycle**。当前已审计出的真实风险：
+
+```text
+DiscoveryCache._connect() 每次连接都执行 PRAGMA journal_mode=WAL
+DiscoveryCache 初始化 schema/cache_meta 缺少跨进程 single-owner fencing
+_ModelManifest 多处使用 sqlite3.Connection context manager，但该 context manager 只提交/回滚、不负责 close
+```
+
+目标：WAL 只在受锁 schema 初始化阶段设置；初始化跨进程 single-owner；普通连接只做 per-connection PRAGMA；所有 DiscoveryCache / _ModelManifest SQLite 连接 deterministic close；补并发初始化、generation 写竞争、Linux FD trend 永久测试。30–60 分钟生产 soak 未执行前必须保持 **NOT VERIFIED**，不得提前宣称整个 Resource Lifecycle Zero-Point CLOSED。
 
 ## 不得回退的核心合同
 
