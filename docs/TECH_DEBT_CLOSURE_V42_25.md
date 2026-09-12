@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`36fd25c48a2251d1b4a85583921c00dd98bf33fb`**  
-> **Frontend Runtime Stabilization：run `34664755130`，frontend + Real Chrome 全绿，Real Chrome 15/15 passed。**  
+> **最近完整代码验收点：`0dacf581da4acb52312f75eb7e85e6b334e060db`**  
+> **Frontend Runtime Stabilization：run `34665470320`，frontend + Real Chrome 全绿，Real Chrome 16/16 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -71,6 +71,8 @@ baseRender417 120/600/1600ms version correction timers
 12 historical app.js delayed versionBadge startup writers
 main.mjs applyBuildVersion visible-version owner
 main.mjs 80/500/1800/3600/8000ms visible-version writers
+render426base page-render file-input beautification wrapper
+render426base requestAnimationFrame page beautification callback
 ```
 
 ## 2. 技术债状态
@@ -89,7 +91,8 @@ main.mjs 80/500/1800/3600/8000ms visible-version writers
 | shadowed historical render generations/branches R2–R7 | bounded later render owners | **CLOSED** |
 | legacy AutoLabel424 no-op self-refresh timer | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
 | visible version multi-owner / delayed writers | formal display owners + internal build metadata split | **CLOSED (R9)** |
-| remaining historical render overrides | bounded semantic owners | **IN PROGRESS** |
+| `render426base` page post-render wrapper | `cleanup(root)` page post-render owner | **CLOSED (R10)** |
+| remaining historical render/modal overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
 | cache-busting | single strategy | **OPEN** |
@@ -150,7 +153,19 @@ internal metadata sink                document.documentElement.dataset.uiBuild
 
 `UI_BUILD_VERSION` is not a user-visible version owner.
 
-## 4. Current live render owners
+### Page file-input beautification — R10 final owner
+
+```text
+render()
+→ later post-render cleanup wrapper
+→ cleanup(#view)
+   → window.beautifyFileInputs426?.(root)
+   → other cleanup semantics
+```
+
+`render426base` is physically retired. `modal426` remains a distinct modal lifecycle owner pending its own audit.
+
+## 4. Current live render / post-render owners
 
 Confirmed live; do not remove as whole wrappers without a new semantic migration proof:
 
@@ -163,24 +178,27 @@ renderBase424     → 质量中心 / 视频切帧
 oldRenderV39      → deployment conversion/artifact/resource/plugin/component
 render414Base     → 标签管理
 finalRender       → 素材存储配置
+cleanup(root)     → post-render normalization + page file-input beautification
+modal426          → modal file-input beautification（待独立审计）
 ```
 
 Remaining audit candidates:
 
 ```text
+modal426
 baseRenderV37
-render426base
-post-render cleanup wrapper + MutationObserver
+post-render cleanup wrapper + view/modalBody MutationObserver
+body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
-`baseRender417` 已在 R9 退役，不再是 live audit candidate。
+`baseRender417` 已在 R9 退役；`render426base` 已在 R10 退役，二者都不再是 live audit candidate。
 
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.66
-main.mjs cache                   42.25.70
+app.js cache                     42.25.67
+main.mjs cache                   42.25.71
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -208,6 +226,7 @@ tests/frontend/ui-state.test.mjs
 tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
+tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -218,22 +237,25 @@ R9 永久要求：
 - `main.mjs` 不得通过 `UI_BUILD_VERSION` 写 `#versionBadge` 或 `.nav-footer b`；
 - `applyBuildVersion` 不得回归；
 - 初始可见版本必须是 `v42.24.0`；
-- internal UI build metadata 可保留 `42.25.0-dev`，但只能作为内部 metadata；
-- 当前 formal top/footer owner 在显式迁移前必须继续输出 `42.24.0`。
+- internal UI build metadata 可保留 `42.25.0-dev`，但只能作为内部 metadata。
+
+R10 永久要求：
+
+- `render426base` 不得回归；
+- old `requestAnimationFrame(()=>beautifyFileInputs426(#view))` page callback 不得回归；
+- `cleanup(root)` 必须继续调用 `window.beautifyFileInputs426?.(root)`；
+- `测试发布` 的 `#predFile` 必须继续获得 `native-file426 + filepicker426` 行为；
+- `modal426` 在独立迁移证明完成前必须保留，不能被 R10 顺带误删。
 
 Browser：
 
-Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、AutoLabel polling、素材存储、算法/训练/素材性能路径，以及 formal version 在历史 delay window 与跨路由后的稳定性。
+Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、AutoLabel polling、素材存储、算法/训练/素材性能路径、formal version 稳定性，以及 page-render 文件选择器美化行为。
 
-当前验收：run `34664755130`，**15/15 passed**。
+当前验收：run `34665470320`，**16/16 passed**。
 
 ## 7. Recent render/lifecycle acceptance history
 
 ```text
-historical auto-label restore bug baseline
-  582b913e... / 34656484008
-  frontend PASS / Chrome 12 PASS + 1 FAIL
-
 alias restore-boundary fix
   e35a29b0... / 34656747269 PASS
 
@@ -261,46 +283,54 @@ legacy AutoLabel424 self-refresh timer retirement
   70b6f755... / 34663768606
   Chrome 14/14 PASS
 
-R9 version-marker baseline
-  50d72687f099eb554ec77e9045e42713025c4453 / 34664100285
+R9 version-marker failing baseline
+  50d72687... / 34664100285
   frontend PASS / Chrome 14 PASS + 1 FAIL
-  failure: delayed writer changed visible version to v42.25.0-dev
-
-R9 product
-  1e9ae1118a77313d8dd3d4c0cf12d5ce5f9edff7
 
 R9 final validation
   36fd25c48a2251d1b4a85583921c00dd98bf33fb / 34664755130
   frontend PASS / Real Chrome 15/15 PASS
+
+R10 file-input page-owner behavior baseline
+  6b67497ae43a32edf343fc7dec49f7b3824c1088
+  focused Chrome PASS
+
+R10 product
+  b9d25955c185aaabb4108f3d37cfecd9f876390a
+
+R10 final validation
+  0dacf581da4acb52312f75eb7e85e6b334e060db / 34665470320
+  frontend PASS / Real Chrome 16/16 PASS
 ```
 
-所有对应一次性 migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
+所有对应一次性 baseline/migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
 
-## 8. 下一批：remaining render owner audit
+## 8. 下一批：remaining modal/render/lifecycle owner audit
 
-继续按 capture/liveness 证明推进。优先独立审计：
+优先独立审计：
 
 ```text
-render426base       post-render file-input beautification
-baseRenderV37       requestAnimationFrame page enhancement
-cleanup wrapper     post-render cleanup + MutationObserver
+modal426          modal file-input beautification
+baseRenderV37     requestAnimationFrame page enhancement
+cleanup wrapper   post-render cleanup + MutationObserver
+body observer     ZIP import review MutationObserver
 ```
 
-`oldRenderV39` 与 `render414Base` 已再次确认 live，不得因为版本号旧就直接删。
+`oldRenderV39` 与 `render414Base` 已确认 live，不得因为版本号旧就直接删。
 
 执行规则：
 
-1. 先证明 exact source order、capture/reference 和 page coverage；
+1. 先证明 exact source order、capture/reference 和 page/modal coverage；
 2. 对 live 语义先补 unit/Chrome；
-3. 只删除 fully shadowed generation/branch；
-4. 语义迁移必须先 double-owner equivalence；
+3. 只删除 fully shadowed generation/branch，或先迁移 live 语义再删除；
+4. 语义迁移必须先有行为合同；
 5. 每刀 full frontend + Real Chrome；
 6. 不允许通过放宽测试换取删除成功。
 
 ## 9. 后续顺序
 
 ```text
-A. remaining render override owner audit / obsolete layer deletion
+A. modal426 / baseRenderV37 / cleanup+observer owner audit
 B. app.js dead code + global reload/request debt
 C. cache-busting unification
 D. MutationObserver/timer/fetch/render/setPage zero-point scan
