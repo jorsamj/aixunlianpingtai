@@ -6,6 +6,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - tools/audit_r20g_global_refresh_owners.py
+      - tools/audit_r20g_refresh_aliases.py
       - .github/workflows/audit-r20g-global-refresh-owners.yml
   workflow_dispatch:
 
@@ -23,6 +24,8 @@ jobs:
           python-version: '3.12'
       - name: Run authoritative full-file R20g audit
         run: python tools/audit_r20g_global_refresh_owners.py
+      - name: Run R20g refresh alias audit
+        run: python tools/audit_r20g_refresh_aliases.py
       - name: Verify audit is read-only
         run: |
           test "$(cat VERSION.txt)" = "42.24.0"
