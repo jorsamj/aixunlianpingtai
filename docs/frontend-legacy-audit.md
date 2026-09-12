@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       954e9dba9c891ecd5c7f21144cf00d8664c11620
-run:          34670319479
+commit:       f60d00096a0929a63d0370494ef1f1d489f54ca3
+run:          34670989473
 frontend:     PASS
-Real Chrome:  PASS (19/19)
+Real Chrome:  PASS (20/20)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.75
-main.mjs                  42.25.80
+app.js                    42.25.76
+main.mjs                  42.25.81
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -96,6 +96,7 @@ oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
 legacy baseRender + RAF page normalization wrapper
 #view post-render MutationObserver
+#modalBody normalization MutationObserver
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -297,6 +298,20 @@ Real Chrome: 19/19 PASS
 ```
 
 
+### R19 — explicit modal content ownership
+
+R19 retired the last active DOM normalization observer. A permanent Real Chrome baseline first locked a real post-open base-modal refresh path (后台导入任务 → 刷新). Modal content writes now go through `ModalContentRuntime.replace(root, html)`. When `root.id === 'modalBody'`, that owner synchronously invokes `PostRenderNormalizationRuntime.apply(root)`; preview/review rewrites also route through the same content replacement owner. `static/app.js` now contains zero active `MutationObserver` constructions.
+
+```text
+baseline:   6f5fac4313d23083c6bbe9e2a3b8a5284cd49583
+product:    1bb210fbb10a7bee9f5b875d0dd6016187c1ef72
+validation: f60d00096a0929a63d0370494ef1f1d489f54ca3
+run:        34670989473
+frontend:   PASS
+Real Chrome: 20/20 PASS
+```
+
+
 
 ## 7. Current live render topology
 
@@ -330,8 +345,11 @@ finalRender
 
 PostRenderNormalizationRuntime.apply / cleanup(root)
   final-render page normalization
-  modal observer normalization target
   table wrapping + page/modal file-input beautification
+
+ModalContentRuntime.replace(root, html)
+  explicit base-modal and modal-like content replacement
+  applies normalization synchronously for #modalBody
 
 base modal()
   modal first-editable-field autofocus
@@ -346,8 +364,8 @@ refreshSummary61
 Still under audit:
 
 ```text
-modalBody MutationObserver lifecycle
 older base/global render generations reached through delegates
+global reload / loadAll / loadRelated request ownership
 ```
 
 `baseRender417`, `render426base`, `modal426`, `enhancePageV37`, `baseRenderV37`, `baseModalV37`, and the v35/v36/V37 startup render timers are CLOSED and must not return.
@@ -364,6 +382,7 @@ tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/startup-render-owner.test.mjs
 tests/frontend/lifecycle-event-ownership.test.mjs
+tests/frontend/modal-content-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -376,20 +395,19 @@ render426base absent
 modal426 absent
 old page/modal RAF beautification callbacks absent
 cleanup(root) invokes window.beautifyFileInputs426?.(root)
-#view observer remains retired; modalBody observer remains until explicit modal lifecycle migration
+#view observer remains retired; #modalBody normalization observer is retired; ModalContentRuntime owns modal content replacement
 测试发布 #predFile receives native-file426 + filepicker426
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **19/19** in run `34670319479`.
+Current accepted Real Chrome suite: **20/20** in run `34670989473`.
 
 ## 9. Remaining technical-debt targets
 
 ```text
-modal observer lifecycle audit
 loadAll / loadRelated / loadCore412 ownership
-proven dead app.js code
 global reload / duplicate requests
+proven dead app.js/runtime shell
 cache-busting heterogeneity
 MutationObserver / setInterval / setTimeout / fetch lifecycle
 version-number business naming

@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `954e9dba9c891ecd5c7f21144cf00d8664c11620` / run `34670319479`  
-> Real Chrome: 19/19 passed  
+> Latest fully accepted code point: `f60d00096a0929a63d0370494ef1f1d489f54ca3` / run `34670989473`  
+> Real Chrome: 20/20 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -63,6 +63,7 @@ initial bootstrap setPage                       CLOSED
 | R16 | body-wide ZIP review observer + off-page material summary leakage | `540c0944...` / `34668702371` |
 | R17 | page baseRender/RAF wrapper + `#view` normalization observer | `f5b8ff87...` / `34669152742` |
 | R18 | bounded 100ms `renderTop/cleanup` startup wakeup | `954e9dba...` / `34670319479` |
+| R19 | `#modalBody` normalization observer → explicit `ModalContentRuntime` | `f60d0009...` / `34670989473` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -88,6 +89,20 @@ validation: 954e9dba9c891ecd5c7f21144cf00d8664c11620
 run:        34670319479
 frontend:   PASS
 Real Chrome: 19/19 PASS
+```
+
+
+### R19 — explicit modal content ownership
+
+R19 retired the last active DOM normalization observer. A permanent Real Chrome baseline first locked a real post-open base-modal refresh path (后台导入任务 → 刷新). Modal content writes now go through `ModalContentRuntime.replace(root, html)`. When `root.id === 'modalBody'`, that owner synchronously invokes `PostRenderNormalizationRuntime.apply(root)`; preview/review rewrites also route through the same content replacement owner. `static/app.js` now contains zero active `MutationObserver` constructions.
+
+```text
+baseline:   6f5fac4313d23083c6bbe9e2a3b8a5284cd49583
+product:    1bb210fbb10a7bee9f5b875d0dd6016187c1ef72
+validation: f60d00096a0929a63d0370494ef1f1d489f54ca3
+run:        34670989473
+frontend:   PASS
+Real Chrome: 20/20 PASS
 ```
 
 
@@ -131,7 +146,7 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Label management route | `render414Base` | label management | liveness audit |
 | Storage configuration route | `finalRender` | `renderStorageSources61()` + final page normalization dispatch | dedicated Chrome contract |
 | Page post-render normalization | `finalRender` → `PostRenderNormalizationRuntime.apply` → `cleanup(root)` | exactly one final-render cleanup; no view observer/RAF wrapper | unit + Chrome |
-| Modal post-render normalization | `cleanup(root)` + modalBody observer | table wrapping + dynamic modal file-input beautification | unit + Chrome |
+| Modal content + normalization | `ModalContentRuntime.replace` → `PostRenderNormalizationRuntime.apply` for `#modalBody` | explicit replacement, table wrapping + dynamic modal file-input beautification | unit + Chrome |
 | Render-path formal versionInfo | later `V42` render owner | `state.versionInfo.version = 42.24.0` before delegate | unit + Chrome |
 | Modal autofocus | base `modal()` | first editable modal field autofocus | Chrome + unit guard |
 | Visible top version | `top412 / V412` | formal `v42.24.0` | unit + Chrome |
@@ -194,7 +209,7 @@ modal426
 → beautifyFileInputs426(layer || document)
 ```
 
-Final modal ownership:
+R11 interim modal ownership (superseded by R19):
 
 ```text
 modalBody DOM mutation
@@ -202,6 +217,8 @@ modalBody DOM mutation
 → cleanup(addedNode)
 → beautifyFileInputs426(root)
 ```
+
+R19 final ownership is explicit `ModalContentRuntime.replace` with synchronous normalization for `#modalBody`.
 
 Physically retired:
 
@@ -217,10 +234,10 @@ Retained:
 beautifyFileInputs426 implementation/export
 cleanup(root)
 PostRenderNormalizationRuntime final-render page dispatch
-modalBody observer wiring only
+ModalContentRuntime explicit replacement owner
 ```
 
-The observer lifecycle itself is still a later audit target; current behavior is locked by permanent unit + Chrome contracts.
+The observer lifecycle was closed in R19; current behavior is locked by permanent unit + Chrome contracts.
 
 ## 8. R12 post-render normalization ownership
 
@@ -271,7 +288,9 @@ oldRenderV39      deployment routes
 render414Base     标签管理 route
 finalRender       素材存储配置 + final page normalization dispatch
 PostRenderNormalizationRuntime.apply / cleanup(root)
-                  page normalization + modal observer target + table/file-input cleanup
+                  page normalization + table/file-input cleanup
+ModalContentRuntime.replace(root, html)
+                  explicit modal/preview/review replacement + #modalBody normalization
 base modal()       first editable modal field autofocus
 ```
 
@@ -297,6 +316,7 @@ oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
 legacy baseRender + RAF page normalization wrapper
 #view post-render MutationObserver
+#modalBody normalization MutationObserver
 bounded 100ms renderTop/cleanup startup timer
 ```
 
@@ -305,8 +325,8 @@ bounded 100ms renderTop/cleanup startup timer
 Independent proof is still required for:
 
 ```text
-modalBody MutationObserver lifecycle
 older base/global render generations still reachable through delegates
+global reload / loadAll / loadRelated request ownership
 ```
 
 `oldRenderV39`, `render414Base`, `renderBase424`, `renderBase427`, `renderBase428`, `oldRender412`, and `finalRender` are confirmed live and are not whole-wrapper deletion candidates without semantic migration proof.
@@ -325,6 +345,7 @@ tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/startup-render-owner.test.mjs
 tests/frontend/lifecycle-event-ownership.test.mjs
+tests/frontend/modal-content-owner.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
@@ -335,9 +356,10 @@ Browser suite includes permanent contracts:
 file input beautification survives page render lifecycle ownership
 modal file input beautification survives modal lifecycle ownership
 modal table wrapping and first-field focus survive normalization ownership
+base modal post-open content refresh stays functional
 ```
 
-Current accepted Real Chrome suite: **19/19** in run `34670319479`.
+Current accepted Real Chrome suite: **20/20** in run `34670989473`.
 
 ## 12. Per-batch checklist
 

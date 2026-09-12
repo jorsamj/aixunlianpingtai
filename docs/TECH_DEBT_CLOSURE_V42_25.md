@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`954e9dba9c891ecd5c7f21144cf00d8664c11620`**  
-> **Frontend Runtime Stabilization：run `34670319479`，frontend + Real Chrome 全绿，Real Chrome 19/19 passed。**  
+> **最近完整代码验收点：`f60d00096a0929a63d0370494ef1f1d489f54ca3`**  
+> **Frontend Runtime Stabilization：run `34670989473`，frontend + Real Chrome 全绿，Real Chrome 20/20 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -86,6 +86,7 @@ oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
 legacy baseRender + RAF page normalization wrapper
 #view post-render MutationObserver
+#modalBody normalization MutationObserver
 ```
 
 ## 2. 技术债状态
@@ -114,6 +115,7 @@ legacy baseRender + RAF page normalization wrapper
 | off-page material summary timer requests | page-scoped `refreshSummary61` | **CLOSED (R16)** |
 | page normalization baseRender/RAF/view observer | final `PostRenderNormalizationRuntime.apply` | **CLOSED (R17)** |
 | bounded 100ms startup cleanup timer | final `__clInit → render → PostRenderNormalizationRuntime` | **CLOSED (R18)** |
+| `#modalBody` normalization observer | `ModalContentRuntime.replace` + synchronous `PostRenderNormalizationRuntime` | **CLOSED (R19)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -184,9 +186,10 @@ page render
 → cleanup(#view)
    → window.beautifyFileInputs426?.(root)
 
-modal body mutation
-→ modalBody MutationObserver
-→ cleanup(addedNode)
+modal content write
+→ ModalContentRuntime.replace(root, html)
+→ if root.id === 'modalBody': PostRenderNormalizationRuntime.apply(root)
+→ cleanup(root)
    → window.beautifyFileInputs426?.(root)
 ```
 
@@ -206,7 +209,9 @@ oldRenderV39      → deployment conversion/artifact/resource/plugin/component
 render414Base     → 标签管理
 finalRender       → 素材存储配置 + final page normalization dispatch
 PostRenderNormalizationRuntime.apply / cleanup(root)
-                  → page normalization + modal observer target + table/file-input cleanup
+                  → page normalization + table/file-input cleanup
+ModalContentRuntime.replace(root, html)
+                  → explicit modal/preview/review content + #modalBody normalization
 base modal()       → modal first-editable-field autofocus
 completeZipImportReview412 → explicit successful ZIP completion review
 refreshSummary61           → paged 数据集-only material summary requests
@@ -215,8 +220,8 @@ refreshSummary61           → paged 数据集-only material summary requests
 Remaining audit candidates:
 
 ```text
-modalBody MutationObserver lifecycle
 older base/global render generations still reachable through delegates
+global reload / loadAll / loadRelated request ownership
 ```
 
 `baseRender417`、`render426base`、`modal426` 均已退休，不再是 live audit candidate。
@@ -224,8 +229,8 @@ older base/global render generations still reachable through delegates
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.75
-main.mjs cache                   42.25.80
+app.js cache                     42.25.76
+main.mjs cache                   42.25.81
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -277,7 +282,7 @@ R10/R11 永久要求：
 - 两个历史 `requestAnimationFrame(...beautifyFileInputs426...)` callback 不得回归；
 - `cleanup(root)` 必须继续调用 `window.beautifyFileInputs426?.(root)`；
 - `#view` cleanup observer 已在 R17 退休，不得回归；页面 cleanup 必须保持 final-render-owned；
-- `modalBody` cleanup observer 暂时保留，待独立 modal lifecycle 迁移；
+- `#modalBody` normalization observer 已在 R19 退休，不得回归；modal replacement 必须由 `ModalContentRuntime` 显式拥有；
 - `测试发布` 的 `#predFile` 必须继续获得 `native-file426 + filepicker426` 行为；
 - 动态 modal 中普通 file input 必须继续获得同等 filepicker 行为。
 
@@ -298,7 +303,7 @@ R12 永久要求：
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 已在 R18 退休，不得回归；startup/page normalization 均由 readiness-aware final render owner 承担。
 
-当前验收：run `34669152742`，frontend **179/179**，Real Chrome **19/19 passed**。
+当前验收：run `34670989473`，frontend PASS，Real Chrome **20/20 passed**。
 
 ### R16 — event-owned ZIP completion + page-scoped material summary
 
@@ -348,6 +353,20 @@ validation: 954e9dba9c891ecd5c7f21144cf00d8664c11620
 run:        34670319479
 frontend:   PASS
 Real Chrome: 19/19 PASS
+```
+
+
+### R19 — explicit modal content ownership
+
+R19 retired the last active DOM normalization observer. A permanent Real Chrome baseline first locked a real post-open base-modal refresh path (后台导入任务 → 刷新). Modal content writes now go through `ModalContentRuntime.replace(root, html)`. When `root.id === 'modalBody'`, that owner synchronously invokes `PostRenderNormalizationRuntime.apply(root)`; preview/review rewrites also route through the same content replacement owner. `static/app.js` now contains zero active `MutationObserver` constructions.
+
+```text
+baseline:   6f5fac4313d23083c6bbe9e2a3b8a5284cd49583
+product:    1bb210fbb10a7bee9f5b875d0dd6016187c1ef72
+validation: f60d00096a0929a63d0370494ef1f1d489f54ca3
+run:        34670989473
+frontend:   PASS
+Real Chrome: 20/20 PASS
 ```
 
 
@@ -442,14 +461,9 @@ R15 startup render timer retirement
 
 所有对应一次性 baseline/migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
 
-## 8. 下一批：remaining render/lifecycle owner audit
+## 8. 下一批：global reload / request ownership audit
 
-优先独立审计：
-
-```text
-cleanup wrapper   post-render cleanup + view/modalBody MutationObserver lifecycle
-body observer     ZIP import review MutationObserver
-```
+R17–R19 已把 active normalization observers 清零；下一批优先处理高频 mutation 后仍调用 `reload() → loadAll() → loadRelated()` 的全量刷新债务。目标是先量化调用面和网络请求，再按 mutation 语义迁移为 scoped refresh，不允许靠缓存或测试放宽掩盖重复请求。
 
 `oldRenderV39` 与 `render414Base` 已确认 live，不得因为版本号旧就直接删。
 
@@ -465,8 +479,8 @@ body observer     ZIP import review MutationObserver
 ## 9. 后续顺序
 
 ```text
-A. post-render cleanup wrapper + view/modalBody MutationObserver lifecycle audit
-B. app.js dead code + global reload/request debt
+A. global reload / loadAll / loadRelated duplicate-request ownership audit
+B. proven dead app.js/runtime-shell cleanup
 C. cache-busting unification
 D. MutationObserver/timer/fetch/render/setPage zero-point scan
 E. semantic naming + deterministic test cleanup
