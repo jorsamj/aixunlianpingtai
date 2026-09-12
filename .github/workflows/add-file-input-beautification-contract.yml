@@ -35,11 +35,11 @@ jobs:
       - name: Verify current owner satisfies the contract
         run: >-
           npx playwright test tests/browser/navigation-stability.spec.mjs
-          --grep "file input beautification survives page and modal lifecycle ownership"
+          --grep "file input beautification survives page render lifecycle ownership"
       - name: Commit permanent browser contract
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add tests/browser/navigation-stability.spec.mjs
-          git commit -m 'test(ui): lock file input beautification behavior'
+          git commit -m 'test(ui): lock page file input beautification behavior'
           git push
