@@ -1789,9 +1789,6 @@ window.installUsability417=function(){
   };
 
 
-  const baseRenderV37=render;
-  render=function(){state.versionInfo={...(state.versionInfo||{}),version:V37_VERSION};baseRenderV37()};
-
   const baseModalV37=modal;
   modal=function(title,body,wide){baseModalV37(title,body,wide);requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})};
   window.modal=modal;
