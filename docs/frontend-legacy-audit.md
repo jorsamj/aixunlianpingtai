@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       94dbebb43d83b1d522ea4e3f6522154417f3e985
-run:          34690924552
+commit:       6337f1a0379c7e60fbbc459668090504c0b6095b
+run:          34695825386
 frontend:     PASS
-Real Chrome:  PASS (28/28)
+Real Chrome:  PASS (30/30)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.82
-main.mjs                  42.25.87
+app.js                    42.25.83
+main.mjs                  42.25.88
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -373,6 +373,20 @@ Real Chrome:             24/24 PASS
 ```
 
 No product was committed by the failed first migration run. Permanent proof now locks select/test/detect payload semantics, canonical target refresh, and bootstrap=0.
+
+### R20g — scoped import completion ownership
+
+The final live ZIP completion path and server-storage confirmation path now avoid broad `loadRelated()` / `loadAll()` fan-out. Permanent owner tests require label refresh only when needed and paged material refresh only for the active 数据集 page. One-shot migration artifacts were physically removed after acceptance.
+
+```text
+product:          a67778fd9b60384dbfffa2156e99670d244dadc9
+validation:       a2f4cb40abb6d70ad4faf89bde60c1ee39e4a179
+validation run:   34693503185
+Real Chrome:      30/30 PASS
+artifact cleanup: 6337f1a0379c7e60fbbc459668090504c0b6095b
+cleanup run:      34695825386
+cleanup Chrome:   30/30 PASS
+```
 
 ## 7. Current live render topology
 

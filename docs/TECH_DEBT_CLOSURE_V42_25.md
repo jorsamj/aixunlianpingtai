@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`94dbebb43d83b1d522ea4e3f6522154417f3e985`**  
-> **Frontend Runtime Stabilization：run `34690924552`，frontend + Real Chrome 全绿，Real Chrome 28/28 passed。**  
+> **最近完整代码验收点：`6337f1a0379c7e60fbbc459668090504c0b6095b`**  
+> **Frontend Runtime Stabilization：run `34695825386`，frontend + Real Chrome 全绿，Real Chrome 30/30 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -125,11 +125,28 @@ legacy baseRender + RAF page normalization wrapper
 | model-config / prompt-template mutation full reload + stale prompt UI | authoritative mutation result + local state patch | **CLOSED (R20e)** |
 | model-config save/edit broad related refresh | M4 `saveVisionModelM4` authoritative result + local `state.modelConfigs` upsert | **CLOSED (R20f)** |
 | resource-discovery SQLite concurrent cache initialization | lock-safe/single-owner cache initialization | **OPEN — R20e validation diagnostic** |
+| ZIP / server-storage import completion broad refresh | scoped labels + paged material refresh | **CLOSED (R20g)** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
 | version-number business naming | semantic names | **OPEN** |
 | A800 RC | acceptance runbook | **DEFERRED** |
+
+## 2.1 R20g — import completion scoped refresh
+
+R20g 将最终 ZIP 导入完成与 server-storage 导入确认从 broad `loadRelated()/loadAll()` 收窄到真实受影响域：需要时刷新标签；只有当前处于数据集页面时刷新分页素材。永久测试锁定最终 owner 不再调用 broad refresh。一次性 migration helper/workflow 在验收后已物理删除。
+
+```text
+product:          a67778fd9b60384dbfffa2156e99670d244dadc9
+validation:       a2f4cb40abb6d70ad4faf89bde60c1ee39e4a179
+validation run:   34693503185
+Real Chrome:      30/30 PASS
+cleanup:          6337f1a0379c7e60fbbc459668090504c0b6095b
+cleanup run:      34695825386
+cleanup Chrome:   30/30 PASS
+```
+
+R20 仍未整体 CLOSED；下一批继续做 global reload/request zero-point 与 proven-dead runtime shell 清理。
 
 ## 3. Canonical owners
 

@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 94dbebb43d83b1d522ea4e3f6522154417f3e985
-Frontend Runtime run:        34690924552
+latest full code acceptance: 6337f1a0379c7e60fbbc459668090504c0b6095b
+Frontend Runtime run:        34695825386
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.82
-main.mjs cache:              42.25.87
+app.js cache:                42.25.83
+main.mjs cache:              42.25.88
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34690924552` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **28 tests and passed 28/28**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34695825386` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **30 tests and passed 30/30**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -37,6 +37,24 @@ app.js/global reload/request debt
 ```
 
 A800 RC remains deferred.
+
+### R20g — import completion scoped refresh + mechanical close
+
+The final ZIP-import completion owner and server-storage import confirmation no longer broaden into `loadRelated()` / `loadAll()`. They refresh only labels when required and the paged material domain when the user is actually on 数据集. The one-shot migration helper/workflow were physically deleted after full acceptance.
+
+```text
+product:            a67778fd9b60384dbfffa2156e99670d244dadc9
+validation:         a2f4cb40abb6d70ad4faf89bde60c1ee39e4a179
+validation run:     34693503185
+validation Chrome:  30/30 PASS
+artifact cleanup:   6337f1a0379c7e60fbbc459668090504c0b6095b
+cleanup run:        34695825386
+cleanup Chrome:     30/30 PASS
+app.js cache:       42.25.83
+main.mjs cache:     42.25.88
+```
+
+Current exact next scope is **R20 final global reload/request zero-point** plus proven-dead `app.js` runtime-shell deletion. Do not reopen classic `setPage` ownership.
 
 Read in order:
 

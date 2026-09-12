@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 05abf71d067d4b1e08a2bdeeb9d7787e9fc06dd4
-Frontend Runtime run:        34655960701
+latest full code acceptance: 6337f1a0379c7e60fbbc459668090504c0b6095b
+Frontend Runtime run:        34695825386
 formal VERSION.txt:          42.24.0
-frontend badge:              v42.25.0-dev
-app.js cache:                42.25.57
-main.mjs cache:              42.25.59
+frontend badge:              v42.24.0
+app.js cache:                42.25.83
+main.mjs cache:              42.25.88
 NavigationStability:         422511
 ```
 
-`34655960701` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions。
+`34695825386` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 30/30。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -85,23 +85,31 @@ NavigationStability
 
 永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
 
-## 下一批准确范围：render owner audit
+## 下一批准确范围：R20 final zero-point
 
-现在只处理历史 render override/capture 家族，不回头重构已关闭的 setPage 链。
+R20g 已 CLOSED。现在继续处理 `static/app.js` 中剩余的 global reload/request debt 与 proven-dead runtime shell；不回头重构已经 CLOSED 的 `setPage` / NavigationStability。
 
 重点枚举：
 
 ```text
-render = ...
-old/final render capture variables
-v42.7 render-level 自动标注 alias fallback
-renderXXX412 / 417 / 423 / 424 / 425 / 427 / 428 / 429
-NavigationStability PAGE_RENDERERS guards
-startup __clInit direct render()
-refresh handlers direct render()
+reload() / loadAll() / loadRelated() mutation callers
+older base/global render generations reached through delegates
+proven-dead algorithm/data compatibility CRUD + renderer shells
+refresh handlers that still broaden request scope
+stale async completion side effects
 ```
 
-规则：先建立 capture/liveness/semantic 表，再识别 dead generation。真实语义先补合同、迁 owner、双 owner 验证，再物理删除；不得按版本号一把删。
+规则：先建立 assignment/reference/liveness/semantic 表，再识别 dead generation；真实语义先补永久合同，再迁 owner / 局部 state patch / scoped refresh，最后物理删除。不得按版本号一把删。
+
+R20g 验收：
+
+```text
+product:            a67778fd9b60384dbfffa2156e99670d244dadc9
+validation:         a2f4cb40abb6d70ad4faf89bde60c1ee39e4a179
+validation run:     34693503185 (frontend + Real Chrome 30/30 PASS)
+artifact cleanup:   6337f1a0379c7e60fbbc459668090504c0b6095b
+cleanup run:        34695825386 (frontend + Real Chrome 30/30 PASS)
+```
 
 ## 不得回退的核心合同
 
@@ -122,13 +130,14 @@ refresh handlers direct render()
 ## 当前后续优先级
 
 ```text
-1. render override owner audit / obsolete generation deletion
-2. proven dead app.js + global reload/request debt
-3. cache-busting unification
-4. MutationObserver/timer/fetch/render/setPage zero-point scan
+1. R20 final global reload/request zero-point
+2. proven-dead app.js/runtime shell cleanup
+3. stale async action fencing / lifecycle zero-point
+4. cache-busting unification
 5. semantic naming + deterministic tests + docs
 6. technical-debt zero-point scan
-7. resume A800 RC
+7. unified task progress + durable queue productionization
+8. resume A800 RC only after the above acceptance gates
 ```
 
 ## 修改与交接要求
@@ -137,4 +146,4 @@ refresh handlers direct render()
 - 旧测试锁定已确认错误旧语义时，应升级合同，不得回退正确代码。
 - 未真实执行的测试写 `NOT VERIFIED`。
 - 一次性 audit/migration helper/workflow 批次验收后必须物理删除。
-- 每批完成后同步四份当前 handoff 文档。
+- 每批完成后同步 AGENTS.md + 四份 docs 当前 handoff 文档。

@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `94dbebb43d83b1d522ea4e3f6522154417f3e985` / run `34690924552`  
-> Real Chrome: 28/28 passed  
+> Latest fully accepted code point: `6337f1a0379c7e60fbbc459668090504c0b6095b` / run `34695825386`  
+> Real Chrome: 30/30 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -70,6 +70,8 @@ initial bootstrap setPage                       CLOSED
 | R20d | Paddle activation full reload → training_options-only target refresh | `a21846c3...` / `34681966242` |
 | R20e | model-config/prompt full reload + stale prompt UI → authoritative local state ownership | `89327ded...` / `34684119911` |
 | R20f | final M4 model-config save/edit broad `loadRelated` → authoritative saved item + local `modelConfigs` upsert | `94dbebb4...` / `34690924552` |
+| R20g | ZIP + server-storage import completion broad refresh → scoped labels/material refresh | `a2f4cb40...` / `34693503185` (30/30) |
+| R20g close | one-shot migration helper/workflow physical deletion | `6337f1a0...` / `34695825386` (30/30) |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
