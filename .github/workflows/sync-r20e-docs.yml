@@ -1,0 +1,38 @@
+name: Sync R20e Ledgers
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/sync_r20e_docs.py
+      - .github/workflows/sync-r20e-docs.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Sync four ledgers
+        run: python tools/sync_r20e_docs.py
+      - name: Verify formal version
+        run: |
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --exit-code -- VERSION.txt
+      - name: Commit ledger sync
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md
+          git diff --cached --quiet && { echo 'No ledger changes'; exit 1; }
+          git commit -m 'docs(ui): record R20e acceptance'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
