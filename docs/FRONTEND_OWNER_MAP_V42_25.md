@@ -2,12 +2,12 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `58ece59e95722437069c7e03277363197e564136` / run `34659775870`  
+> Latest fully accepted code point: `6be679b6b23f566d14434e2032b8af8015341ae4` / run `34660269685`  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
 
-This map exists to delete historical frontend overrides without changing current behavior. Preserve live semantics, not version-era wrapper count. `static/app.js` remains a historical append-only chain; later assignments can completely shadow earlier layers.
+This map exists to delete historical frontend overrides without changing current behavior. Preserve live semantics, not version-era wrapper count. `static/app.js` remains a historical append-only chain; later assignments can completely shadow earlier layers or individual branches.
 
 ## 2. Runtime ownership
 
@@ -48,6 +48,7 @@ initial bootstrap setPage                       CLOSED
 | R2 | `oldRender429` | `0455eeef...` / `34659041402` |
 | R3 | `previousRender61` | `69732d9e...` / `34659543452` |
 | R4 | `render423Base` | `58ece59e...` / `34659775870` |
+| R5 | shadowed `renderBase428` 算法列表 branch | `6be679b6...` / `34660269685` |
 
 Each accepted batch passed frontend unit + Real Chrome. Temporary migration helpers/workflows were removed after success.
 
@@ -82,8 +83,8 @@ Historical localStorage `自动标注` values are canonicalized at restore time 
 | Video | `PollRegistry(video-frames)` | one-shot row patch | unit + Chrome |
 | Sources | `PollRegistry(sources)` | managed interval | unit + Chrome |
 | Data/material | `MaterialPaginationRuntime61` + `oldRender412`/current renderer | pagination/card patch/annotation stability | browser performance |
-| Algorithm list | `AlgorithmListRuntime` + `oldRender412`/current renderer | expand/refresh/version rows | browser performance |
-| Training task page route | `renderBase428` | route to current `renderTraining423` | browser performance |
+| Algorithm list | `AlgorithmListRuntime` + `oldRender412`/current renderer | sole outer route, expand/refresh/version rows | browser performance + permanent guard |
+| Training task page route | `renderBase428` | training-only route to current `renderTraining423` | browser performance + permanent guard |
 | Storage configuration page route | `finalRender` | route to `renderStorageSources61` | dedicated Real Chrome contract |
 
 ## 6. Render topology — confirmed live / retired
@@ -93,10 +94,11 @@ Historical localStorage `自动标注` values are canonicalized at restore time 
 ```text
 oldRender412
   算法列表 / 数据集 stable routing
+  sole outer 算法列表 route owner
 
 renderBase428
-  训练任务 routing remains live
-  its 算法列表 branch is shadowed by oldRender412, so only part of this wrapper is dead
+  仅保留 训练任务 routing
+  its former 算法列表 branch has been physically removed
 
 renderTraining423
   current training-page renderer
@@ -119,6 +121,10 @@ render423Base
   oldRender412 handled 算法列表;
   renderBase428 handled 训练任务;
   no independent special page remained
+
+renderBase428 算法列表 branch
+  oldRender412 handled 算法列表 first;
+  only the training branch remains live inside the wrapper
 ```
 
 ## 7. Remaining render audit targets
@@ -141,6 +147,9 @@ render426base
 renderBase427
   自动标注及清洗 route
 
+renderBase428
+  training-task route remains live; do not delete whole wrapper without semantic migration
+
 render414Base
   标签管理 route + version badge behavior
 
@@ -151,7 +160,7 @@ post-render cleanup wrapper + MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
-Do not delete an entire wrapper because one branch is shadowed. Split the dead branch from live behavior only after behavior coverage exists.
+Do not delete an entire wrapper because one branch is shadowed. Split dead branches from live behavior only after behavior coverage exists.
 
 ## 8. Permanent proof currently active
 
@@ -165,6 +174,8 @@ tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/navigation-stability.test.mjs
 ```
 
+`render-owner-retirement.test.mjs` now explicitly requires the old combined renderBase428 algorithm+training wrapper to stay absent, the training-only wrapper to remain present, and `oldRender412` to remain the sole outer algorithm-list route owner.
+
 Browser:
 
 ```text
@@ -174,8 +185,6 @@ tests/browser/algorithm-list-performance.spec.mjs
 tests/browser/training-task-performance.spec.mjs
 tests/browser/material-pagination-performance.spec.mjs
 ```
-
-The navigation suite now explicitly verifies the final storage configuration render route in addition to alias/readiness/persistence/polling contracts.
 
 ## 9. Per-batch checklist
 
