@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit: 58ece59e95722437069c7e03277363197e564136
-run:    34659775870
+commit: 6be679b6b23f566d14434e2032b8af8015341ae4
+run:    34660269685
 frontend:     PASS
 Real Chrome:  PASS
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS
 Current caches/builds:
 
 ```text
-app.js                    42.25.61
-main.mjs                  42.25.64
+app.js                    42.25.62
+main.mjs                  42.25.65
 navigation-stability      422511
 ui-state                  422500
 poll-registry             422511
@@ -85,9 +85,9 @@ historical persisted page → v34 restore-boundary canonicalization + writeback
 render                    → never mutates route alias state
 ```
 
-A new Real Chrome cold-start test first exposed a real bug: the UI became canonical but localStorage did not. Baseline `582b913e... / 34656484008` failed 1 of 13 browser tests; fix `e35a29b0... / 34656747269` passed fully.
+A Real Chrome cold-start test first exposed the old persistence bug; the restore-boundary fix then passed fully.
 
-### Fully shadowed classic render generations
+### Fully shadowed classic render generations / branches
 
 Physically retired and permanently guarded:
 
@@ -95,6 +95,7 @@ Physically retired and permanently guarded:
 oldRender429
 previousRender61
 render423Base
+renderBase428 的 算法列表 branch
 ```
 
 Why they were dead:
@@ -112,15 +113,20 @@ render423Base:
   算法列表 was intercepted by oldRender412;
   训练任务 was intercepted by renderBase428;
   all other pages were pass-through.
+
+renderBase428 算法列表 branch:
+  later oldRender412 intercepts 算法列表 first;
+  the wrapper itself remains live for 训练任务.
 ```
 
 Acceptance evidence:
 
 ```text
-oldRender429      0455eeef... / 34659041402 PASS
-storage baseline  00721975... / 34659361434 PASS
-previousRender61  69732d9e... / 34659543452 PASS
-render423Base     58ece59e... / 34659775870 PASS
+oldRender429             0455eeef... / 34659041402 PASS
+storage baseline         00721975... / 34659361434 PASS
+previousRender61         69732d9e... / 34659543452 PASS
+render423Base            58ece59e... / 34659775870 PASS
+renderBase428 alg branch 6be679b6... / 34660269685 PASS
 ```
 
 One-shot migration helpers/workflows were deleted after acceptance.
@@ -132,10 +138,10 @@ These are confirmed live and must not be removed as whole layers without a new p
 ```text
 oldRender412
   routes 算法列表 and 数据集
+  now the sole outer 算法列表 route owner
 
 renderBase428
-  routes 训练任务
-  algorithm branch is shadowed, but training branch is live
+  routes only 训练任务 after the shadowed algorithm branch was removed
 
 renderTraining423
   current training renderer
@@ -177,15 +183,14 @@ render-level auto-label alias mutation
 oldRender429
 previousRender61
 render423Base
+renderBase428 shadowed 算法列表 branch
 ```
 
-and require the currently live owners needed to replace them.
+and require the live replacements, including `oldRender412` as sole outer algorithm route and `renderBase428` as training-only route wrapper.
 
 Browser:
 
-`tests/browser/navigation-stability.spec.mjs` now includes a real `素材存储配置` route contract requiring `.storage61-shell` and `#storage61Rows` to render without page errors.
-
-Existing browser performance suites continue to cover algorithm list, training task and material page behavior.
+`tests/browser/navigation-stability.spec.mjs` includes a real `素材存储配置` route contract. Existing browser performance suites continue to cover algorithm list, training task and material page behavior.
 
 ## 6. Remaining technical-debt targets
 
@@ -207,7 +212,7 @@ For every candidate generation:
 ```text
 live HEAD
 → exact assignment/capture/reference topology
-→ identify final live owner vs fully shadowed generation
+→ identify final live owner vs fully shadowed generation/branch
 → lock real semantic behavior
 → migrate semantic ownership if needed
 → double-owner equivalence where semantics move
@@ -226,14 +231,15 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 2. Retired training mirrors/fallbacks stay retired.
 3. Classic `setPage` ownership must remain zero in `app.js`.
 4. Render must not resume route-state alias mutation.
-5. No mother-model class inheritance on first training.
-6. Explicit false/zero training settings survive end-to-end.
-7. Trial/test inference must never receive GT labels.
-8. Do not weaken duplicate-request/race/performance/Real Chrome tests.
-9. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
-10. AutoLabel remains PollRegistry-only.
-11. Video/source/training polling direct ownership must not regress.
-12. Frontend CI is not A800/CUDA acceptance.
+5. `renderBase428` must remain training-only unless its training semantics are explicitly migrated first.
+6. No mother-model class inheritance on first training.
+7. Explicit false/zero training settings survive end-to-end.
+8. Trial/test inference must never receive GT labels.
+9. Do not weaken duplicate-request/race/performance/Real Chrome tests.
+10. TrainingDraftRuntime / TrainingLabelRuntime remain wrapper-free.
+11. AutoLabel remains PollRegistry-only.
+12. Video/source/training polling direct ownership must not regress.
+13. Frontend CI is not A800/CUDA acceptance.
 
 ## 9. Work order
 
