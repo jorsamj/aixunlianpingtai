@@ -22,7 +22,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install focused test dependencies
-        run: python -m pip install --disable-pip-version-check pytest filelock psutil
+        run: python -m pip install --disable-pip-version-check pytest filelock psutil pillow
 
       - name: Prove baseline is red before migration
         shell: bash
@@ -34,6 +34,8 @@ jobs:
           test "$code" -ne 0 || { echo 'Baseline unexpectedly green; migration proof invalid'; exit 1; }
           grep -Fq 'test_reopening_cache_does_not_reassert_wal_or_schema' /tmp/resource-discovery-baseline.log
           grep -Fq 'test_model_manifest_explicitly_closes_every_sqlite_connection' /tmp/resource-discovery-baseline.log
+          grep -Fq 'FAILED tests/unit/test_resource_discovery_sqlite_lifecycle.py::test_reopening_cache_does_not_reassert_wal_or_schema' /tmp/resource-discovery-baseline.log
+          grep -Fq 'FAILED tests/unit/test_resource_discovery_sqlite_lifecycle.py::test_model_manifest_explicitly_closes_every_sqlite_connection' /tmp/resource-discovery-baseline.log
 
       - name: Apply guarded SQLite lifecycle migration
         run: python tools/migrate_resource_discovery_sqlite_lifecycle.py
