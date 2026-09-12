@@ -7,16 +7,16 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       3a8781dccf6704fe76d35d99c05b80590dc507c3
-run:          34721755310
+commit:       f8356bcf5ec1ea128fb38db2820df38146b48cfd
+run:          34723808299
 frontend:     PASS
-Real Chrome:  PASS (32/32)
+Real Chrome:  PASS (33/33)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.90
+app.js                    42.25.91
 main.mjs                  42.25.89
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -113,6 +113,8 @@ zero-reference uploadImages / autoSplit / buildYolo / checkDatasetQuality / setI
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
 
 R20k did **not** retire the live `doImportData` owner. It migrated only its successful completion refresh from broad `reload()` to labels + current paged materials. Acceptance: product `1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb`, validation `60775456f3d4c8a441ba58ce65106af114aeebb2` / run `34700127243`, cleanup `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`, Real Chrome **32/32**. Permanent contracts: `tests/frontend/v18-import-completion-scope.test.mjs` and `tests/browser/material-pagination-performance.spec.mjs`.
+
+R20l kept the live `refreshSourceImportTasksV36` owner but removed its terminal broad refresh. Real Chrome baseline proved the old terminal `loadRelated()` fan-out; completion now calls only `refreshLabels414(false)` plus `reloadMaterialPage61()` when still on 数据集. Active source-import polling cadence remains unchanged. Product `f260127d2d41281bc1d996a172e7d4290536f24c`, migration run `34723694735`, permanentization `b17bd0c33bfb99e5557fc245a89a6c4444a8257e`, cleanup/final acceptance `f8356bcf5ec1ea128fb38db2820df38146b48cfd` / run `34723808299`, Real Chrome **33/33**, Action Fencing `34723808298` PASS. Permanent contracts: `tests/frontend/source-import-completion-scope.test.mjs` and `tests/browser/source-import-completion-scope.spec.mjs`; one-shot migration artifacts are deleted. Global R20 zero-point remains open.
 
 Cross-cutting checkpoint after R20k: Resource Discovery SQLite code-level lifecycle was accepted at product `8ba4e10db5958204aca3d87779711d8e95f5d83b`. Baseline run `34700801232` proved the two target failures before migration; permanent cross-platform workflow run `34700900542` passed Ubuntu + Windows; artifact cleanup `c6ac70b670a6297ccba065854779c10b8ca47cf3` passed Frontend Runtime `34700984963` with Real Chrome **32/32**. Production soak and non-SQLite resource classes remain outside this frontend audit and OPEN.
 

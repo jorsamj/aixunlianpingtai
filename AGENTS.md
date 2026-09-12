@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 7fcfcaec0b088a851dbcd580ac226b3dd892fa83
-Frontend Runtime run:        34702374386
+latest full code acceptance: f8356bcf5ec1ea128fb38db2820df38146b48cfd
+Frontend Runtime run:        34723808299
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.88
+app.js cache:                42.25.91
 main.mjs cache:              42.25.89
 NavigationStability:         422512
 ```
 
-`34702374386` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 32/32。Navigation Action Fencing 永久 workflow `34702374346` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
+`34723808299` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34723808298` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -85,7 +85,26 @@ NavigationStability
 
 永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
 
-## 下一批准确范围：Navigation Action Fencing R2
+## 下一批准确范围：R20 final global reload/request zero-point
+
+### R20l — source-import terminal completion scoped refresh CLOSED
+
+最终 live `refreshSourceImportTasksV36()` 在地址读取任务进入 terminal 状态后，已从 broad `loadRelated()` 改为只刷新标签 schema 和当前可见的数据集分页素材。任务 active 期间的 1.8s polling cadence、source-import API 和任务列表 UI 均保持不变。
+
+```text
+baseline + migration run: 34723694735
+product:                  f260127d2d41281bc1d996a172e7d4290536f24c
+permanent Chrome guard:   b17bd0c33bfb99e5557fc245a89a6c4444a8257e
+cleanup / acceptance:     f8356bcf5ec1ea128fb38db2820df38146b48cfd
+Frontend Runtime:         34723808299
+full Real Chrome:         33/33 PASS
+Navigation Action Fencing:34723808298 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.91
+main.mjs cache:           42.25.89
+```
+
+永久合同：`tests/frontend/source-import-completion-scope.test.mjs` + `tests/browser/source-import-completion-scope.spec.mjs`；browser spec 已进入唯一长期 `Frontend Runtime Stabilization` Chrome 清单。一次性 R20l migration helper/workflow 已物理删除。**这只关闭 source-import terminal completion；R20 全局 reload/request zero-point 仍为 IN PROGRESS。**
 
 ### Navigation Action Fencing R1 — resource/Paddle mutation completion CLOSED
 
@@ -121,7 +140,7 @@ tests/browser/navigation-action-fencing.spec.mjs
 
 一次性 R1 migration/follow-up helper 与 workflow 已物理删除。
 
-**边界：整个 Navigation Action Fencing 仍为 IN PROGRESS。** R1 只关闭训练服务器/Paddle 与本批 direct-page-write surface；最终 Model Config 427、AI 标注/清洗确认、图片/ZIP/XHR upload completion、deployment mutation、其他 timer/callback family 尚未全部迁移，不能宣称 stale async UI side effect 全局为 0。下一批为 **R2：最终 Model Config / AI 清洗与 modal mutation completion**。
+**边界：Navigation Action Fencing R1 + R2 已 CLOSED，但全局 stale-async zero-point 仍为 IN PROGRESS。** R2 已关闭最终 M4 Model Config、清洗确认和 v60 AI review completion；upload/ZIP/deployment/timer-callback completion family 仍留给 final scan，不能宣称 stale async UI side effect 全局为 0。
 
 Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**；30–60 分钟生产 soak 和非 SQLite resource classes 不因本批改变状态。
 
@@ -144,14 +163,15 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 ## 当前后续优先级
 
 ```text
-1. Navigation Action Fencing / stale mutation UI side-effect zero-point
-2. R20 final global reload/request zero-point
-3. External Algorithm Catalog read-only boundary
-4. Resource Lifecycle production soak + remaining non-SQLite resource classes
-5. ZIP 10k / Training Progress v2 / GPU Performance Tuner / Deployment Artifact E2E
-6. app.js / app.py normalization + cache-busting / semantic naming / deterministic cleanup
-7. technical-debt final zero-point + backend regression
-8. A800 RC only after acceptance gates
+1. R20 final global reload/request zero-point
+2. Unified Task Progress + Durable Queue Runtime productionization
+3. Navigation Action Fencing final scan (upload/ZIP/deployment/timer-callback completions)
+4. External Algorithm Catalog read-only boundary
+5. Resource Lifecycle production soak + remaining non-SQLite resource classes
+6. ZIP 10k / Training Progress v2 / GPU Performance Tuner / Deployment Artifact E2E
+7. app.js / app.py normalization + cache-busting / semantic naming / deterministic cleanup
+8. technical-debt final zero-point + backend regression
+9. A800 RC only after acceptance gates
 ```
 
 ## 修改与交接要求

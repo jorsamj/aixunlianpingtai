@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 3a8781dccf6704fe76d35d99c05b80590dc507c3
-Frontend Runtime run:        34721755310
+latest full code acceptance: f8356bcf5ec1ea128fb38db2820df38146b48cfd
+Frontend Runtime run:        34723808299
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.90
+app.js cache:                42.25.91
 main.mjs cache:              42.25.89
 NavigationStability:         422512
 UI state runtime:            422500
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34721755310` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after Navigation Action Fencing R2 migration-artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Permanent Action Fencing workflow `34721755316` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34723808299` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20l permanentization and migration-artifact cleanup. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34723808298` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -40,6 +40,34 @@ R20 final global reload/request zero-point
 ```
 
 A800 RC remains deferred.
+
+### R20l — source-import terminal completion scoped refresh CLOSED
+
+Final liveness/source-order proof confirmed that `window.refreshSourceImportTasksV36()` is the live source-import polling owner. Its terminal branch used to call final broad `loadRelated()`, which fans out across project/datasets/full images/labels/algorithms/publish/test-models/model-configs/prompt-templates. Real Chrome baseline proved the fan-out before migration.
+
+The terminal branch now owns only the domains actually changed by a completed source import:
+
+```text
+refreshLabels414(false)
++ if still on 数据集 → reloadMaterialPage61()
+```
+
+Active-task polling cadence and source-import API semantics are unchanged.
+
+```text
+baseline + migration run: 34723694735
+product:                  f260127d2d41281bc1d996a172e7d4290536f24c
+permanent Chrome guard:   b17bd0c33bfb99e5557fc245a89a6c4444a8257e
+cleanup / acceptance:     f8356bcf5ec1ea128fb38db2820df38146b48cfd
+Frontend Runtime:         34723808299
+full Real Chrome:         33/33 PASS
+Action Fencing:           34723808298 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.91
+main.mjs cache:           42.25.89
+```
+
+Permanent contracts: `tests/frontend/source-import-completion-scope.test.mjs`, `tests/browser/source-import-completion-scope.spec.mjs`, and the browser spec is explicitly listed in `.github/workflows/frontend-runtime-stabilization.yml`. One-shot R20l migration artifacts are physically deleted. **R20l is CLOSED; global R20 zero-point remains IN PROGRESS.**
 
 ### Navigation Action Fencing R1 — resource/Paddle mutation completion CLOSED
 

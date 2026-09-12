@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`3a8781dccf6704fe76d35d99c05b80590dc507c3`**  
-> **Frontend Runtime Stabilization：run `34721755310`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed；Navigation Action Fencing 永久 run `34721755316` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**  
+> **最近完整代码验收点：`f8356bcf5ec1ea128fb38db2820df38146b48cfd`**
+> **Frontend Runtime Stabilization：run `34723808299`，frontend + Real Chrome 全绿，Real Chrome 33/33 passed；Navigation Action Fencing 永久 run `34723808298` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -142,6 +142,7 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | legacy dataset-group CRUD + shadowed dataset render generations | final `renderDatasets424` route + bounded compatibility delegate | **CLOSED (R20i)** |
 | zero-reference legacy dataset actions | physically retired, final `renderDatasets424` / import owners preserved | **CLOSED (R20j)** |
 | live v18 `doImportData` success broad reload | labels + paged materials only | **CLOSED (R20k)** |
+| source-import terminal completion broad refresh | labels + current paged materials only | **CLOSED (R20l)** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -216,6 +217,27 @@ tests/browser/navigation-action-fencing-r2.spec.mjs
 ```
 
 R2 一次性 migration helper/workflow 已物理删除。**R2 本批 CLOSED；整个 Navigation Action Fencing final zero-point 仍未 CLOSED。**
+
+## 2.0b R20l — source-import terminal scoped refresh
+
+Source-order/liveness audit proved that `refreshSourceImportTasksV36()` remains the final live owner for address/server source-import task polling. On terminal completion it still invoked final `loadRelated()`, causing a real broad GET fan-out. The dedicated Real Chrome baseline intercepted the terminal source-import jobs response and proved those broad project/dataset/image/algorithm/publish/test-model/config requests before migration.
+
+The terminal owner now refreshes only label schema plus the current paged material domain when the user is still on 数据集. Active polling stays at 1800ms and the source-import task API/UI is unchanged.
+
+```text
+baseline + migration run: 34723694735
+product:                  f260127d2d41281bc1d996a172e7d4290536f24c
+permanent Chrome guard:   b17bd0c33bfb99e5557fc245a89a6c4444a8257e
+cleanup / acceptance:     f8356bcf5ec1ea128fb38db2820df38146b48cfd
+Frontend Runtime:         34723808299
+full Real Chrome:         33/33 PASS
+Action Fencing:           34723808298 PASS
+formal VERSION.txt:       42.24.0 unchanged
+app.js cache:             42.25.91
+main.mjs cache:           42.25.89
+```
+
+Permanent contracts: `tests/frontend/source-import-completion-scope.test.mjs` and `tests/browser/source-import-completion-scope.spec.mjs`; the Chrome contract is part of the permanent Frontend Runtime workflow. One-shot migration helper/workflow are physically deleted. **R20l CLOSED; global R20 reload/request zero-point stays IN PROGRESS.**
 
 ## 2.1 R20g — import completion scoped refresh
 
