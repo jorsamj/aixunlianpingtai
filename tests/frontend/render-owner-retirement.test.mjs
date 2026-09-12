@@ -127,3 +127,18 @@ test('later owners remain authoritative for renderBase424 retired routes', () =>
     true,
   );
 });
+
+test('legacy AutoLabel424 self-refresh timer cannot return', () => {
+  assert.equal(
+    app.includes("if(state.prelabel424.some(t=>['queued','running'].includes(t.status)))setTimeout(()=>{if(state.page==='自动标注')renderAutoLabel424()},1800)"),
+    false,
+  );
+  assert.equal(app.includes("state.page==='自动标注'"), false);
+});
+
+test('canonical AutoLabel render route remains the only page-state route', () => {
+  assert.equal(
+    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()}"),
+    true,
+  );
+});
