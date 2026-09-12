@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1
-Frontend Runtime run:        34665890699
+latest full code acceptance: 60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29
+Frontend Runtime run:        34666673017
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.68
-main.mjs cache:              42.25.72
+app.js cache:                42.25.69
+main.mjs cache:              42.25.73
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34665890699` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation now runs **17 tests and passed 17/17**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34666673017` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation now runs **18 tests and passed 18/18**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -115,6 +115,7 @@ baseRender417 visible-version correction wrapper/timers
 main.mjs applyBuildVersion visible-version writer/timers
 render426base page-render file-input beautification wrapper
 modal426 modal file-input beautification wrapper
+enhancePageV37 post-render normalization helper
 ```
 
 ### R9 — version marker ownership consolidation
@@ -180,6 +181,38 @@ tests/browser/navigation-stability.spec.mjs
 
 All R10/R11 one-shot baseline/migration helpers and workflows were deleted after acceptance.
 
+### R12 — enhancePageV37 normalization helper retirement
+
+Audit proved `enhancePageV37()` still owned table wrapping and “使用建议” cleanup, while `baseModalV37` also used it before autofocus. R12 locked modal table wrapping + autofocus in Real Chrome, then moved normalization into the later `cleanup(root)` owner.
+
+```text
+before:
+  baseRenderV37/baseModalV37
+  → requestAnimationFrame(enhancePageV37)
+  → table wrapping / 使用建议 cleanup
+
+after:
+  cleanup(root)
+  → table.table → .table-wrap
+  → panel/history cleanup
+
+baseRenderV37 → state.versionInfo write only
+baseModalV37  → first editable field autofocus only
+```
+
+R12 acceptance:
+
+```text
+behavior baseline: 6ae19dc79abbf690371a71162c97a2df6322518b
+product:           202a5a82b0cb4629423ee0c6812f649031234daa
+validation:        60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29
+run:               34666673017
+frontend:          PASS
+Real Chrome:       18/18 PASS
+```
+
+Permanent proof: `tests/frontend/post-render-normalization-owner.test.mjs` plus the browser contract `modal table wrapping and first-field focus survive normalization ownership`.
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -210,14 +243,20 @@ finalRender
 
 cleanup(root)
   page/modal post-render normalization
-  file-input beautification
+  table wrapping + file-input beautification
+
+baseRenderV37
+  state.versionInfo formal-version compatibility write only
+
+baseModalV37
+  first editable modal field autofocus only
 ```
 
 Still requiring independent liveness analysis:
 
 ```text
-baseRenderV37
-baseModalV37
+baseRenderV37 versionInfo compatibility ownership
+baseModalV37 autofocus ownership
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
@@ -234,6 +273,7 @@ render-alias-restore.test.mjs
 render-owner-retirement.test.mjs
 version-marker-owner.test.mjs
 file-input-beautification-owner.test.mjs
+post-render-normalization-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -248,7 +288,7 @@ auto-label-poll-runtime.test.mjs
 - `cleanup(root)` calls `beautifyFileInputs426`;
 - `view` and `modalBody` observer wiring remains until lifecycle ownership is explicitly migrated.
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **17/17**.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **18/18**.
 
 Do not weaken these tests.
 

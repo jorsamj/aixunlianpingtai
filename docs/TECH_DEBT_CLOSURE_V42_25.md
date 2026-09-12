@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1`**  
-> **Frontend Runtime Stabilization：run `34665890699`，frontend + Real Chrome 全绿，Real Chrome 17/17 passed。**  
+> **最近完整代码验收点：`60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29`**  
+> **Frontend Runtime Stabilization：run `34666673017`，frontend + Real Chrome 全绿，Real Chrome 18/18 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -75,6 +75,9 @@ render426base page-render file-input beautification wrapper
 render426base requestAnimationFrame page beautification callback
 modal426 modal file-input beautification wrapper
 modal426 requestAnimationFrame modal beautification callback
+enhancePageV37 compatibility helper
+requestAnimationFrame(enhancePageV37) page callback
+enhancePageV37 modal normalization callback
 ```
 
 ## 2. 技术债状态
@@ -95,6 +98,7 @@ modal426 requestAnimationFrame modal beautification callback
 | visible version multi-owner / delayed writers | formal display owners + internal build metadata split | **CLOSED (R9)** |
 | `render426base` page post-render wrapper | `cleanup(root)` page post-render owner | **CLOSED (R10)** |
 | `modal426` modal post-render wrapper | `cleanup(root)` + `modalBody` MutationObserver | **CLOSED (R11)** |
+| `enhancePageV37` post-render normalization helper | `cleanup(root)` table/panel normalization | **CLOSED (R12)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -185,14 +189,16 @@ renderBase424     → 质量中心 / 视频切帧
 oldRenderV39      → deployment conversion/artifact/resource/plugin/component
 render414Base     → 标签管理
 finalRender       → 素材存储配置
-cleanup(root)     → post-render normalization + page/modal file-input beautification
+cleanup(root)     → post-render normalization + table wrapping + page/modal file-input beautification
+baseRenderV37      → state.versionInfo formal-version compatibility write only
+baseModalV37       → modal first-editable-field autofocus only
 ```
 
 Remaining audit candidates:
 
 ```text
-baseRenderV37
-baseModalV37
+baseRenderV37      state.versionInfo compatibility write only
+baseModalV37       autofocus only
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
@@ -203,8 +209,8 @@ older base/global render generations still reachable through delegates
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.68
-main.mjs cache                   42.25.72
+app.js cache                     42.25.69
+main.mjs cache                   42.25.73
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -233,6 +239,7 @@ tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
 tests/frontend/file-input-beautification-owner.test.mjs
+tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -259,7 +266,16 @@ Browser：
 
 Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、AutoLabel polling、素材存储、算法/训练/素材性能路径、formal version 稳定性，以及 page/modal 文件选择器美化行为。
 
-当前验收：run `34665890699`，**17/17 passed**。
+R12 永久要求：
+
+- `enhancePageV37` 不得回归；
+- `requestAnimationFrame(enhancePageV37)` 不得回归；
+- `cleanup(root)` 必须继续统一处理 `table.table → .table-wrap`；
+- `cleanup(root)` 必须继续移除“使用建议”等历史提示 panel；
+- `baseRenderV37` 当前只保留 `state.versionInfo` 写入，在独立证明前不得顺带删除；
+- `baseModalV37` 当前只保留首个可编辑字段 autofocus，在独立证明前不得顺带删除。
+
+当前验收：run `34666673017`，**18/18 passed**。
 
 ## 7. Recent render/lifecycle acceptance history
 
@@ -316,6 +332,17 @@ R11 product
 R11 final validation
   9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1 / 34665890699
   frontend PASS / Real Chrome 17/17 PASS
+
+R12 post-render normalization behavior baseline
+  6ae19dc79abbf690371a71162c97a2df6322518b
+  focused Chrome PASS
+
+R12 product
+  202a5a82b0cb4629423ee0c6812f649031234daa
+
+R12 final validation
+  60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29 / 34666673017
+  frontend PASS / Real Chrome 18/18 PASS
 ```
 
 所有对应一次性 baseline/migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
@@ -325,8 +352,8 @@ R11 final validation
 优先独立审计：
 
 ```text
-baseRenderV37     requestAnimationFrame page enhancement + versionInfo write
-baseModalV37      modal enhance/focus wrapper
+baseRenderV37     state.versionInfo compatibility write only
+baseModalV37      modal first-field autofocus only
 cleanup wrapper   post-render cleanup + view/modalBody MutationObserver lifecycle
 body observer     ZIP import review MutationObserver
 ```

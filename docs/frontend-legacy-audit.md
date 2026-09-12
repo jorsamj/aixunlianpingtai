@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1
-run:          34665890699
+commit:       60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29
+run:          34666673017
 frontend:     PASS
-Real Chrome:  PASS (17/17)
+Real Chrome:  PASS (18/18)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.68
-main.mjs                  42.25.72
+app.js                    42.25.69
+main.mjs                  42.25.73
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -87,6 +87,7 @@ baseRender417 visible-version correction wrapper/timers
 main.mjs applyBuildVersion visible-version writer/timers
 render426base page-render file-input beautification wrapper
 modal426 modal file-input beautification wrapper
+enhancePageV37 post-render normalization helper
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -168,7 +169,28 @@ Chrome:     17/17 PASS
 
 All R10/R11 one-shot baseline/migration helpers/workflows were deleted after acceptance.
 
-## 6. Current live render topology
+## 6. R12 — post-render normalization consolidation
+
+`enhancePageV37()` was still live and owned table wrapping plus old “使用建议” panel removal. A permanent Chrome contract first locked modal table wrapping and first-field autofocus. Normalization then moved into the later cleanup owner:
+
+```text
+cleanup(root)
+→ wrap table.table in .table-wrap when needed
+→ remove historical guidance panels
+→ existing file-input/placeholder/empty-state cleanup
+```
+
+`enhancePageV37` and its RAF callbacks are now absent. `baseRenderV37` remains only for `state.versionInfo` compatibility; `baseModalV37` remains only for modal autofocus.
+
+```text
+baseline:   6ae19dc79abbf690371a71162c97a2df6322518b
+product:    202a5a82b0cb4629423ee0c6812f649031234daa
+validation: 60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29
+run:        34666673017
+Chrome:     18/18 PASS
+```
+
+## 7. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
 
@@ -200,22 +222,28 @@ finalRender
 
 cleanup(root)
   post-render DOM normalization
-  page + modal file-input beautification
+  table wrapping + page/modal file-input beautification
+
+baseRenderV37
+  state.versionInfo compatibility write only
+
+baseModalV37
+  modal first-editable-field autofocus only
 ```
 
 Still under audit:
 
 ```text
-baseRenderV37
-baseModalV37
+baseRenderV37 versionInfo compatibility ownership
+baseModalV37 autofocus ownership
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver lifecycle
 older base/global render generations reached through delegates
 ```
 
-`baseRender417`, `render426base`, and `modal426` are CLOSED and must not return.
+`baseRender417`, `render426base`, `modal426`, and `enhancePageV37` are CLOSED and must not return.
 
-## 7. Permanent contracts
+## 8. Permanent contracts
 
 Frontend includes:
 
@@ -224,6 +252,7 @@ tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
 tests/frontend/file-input-beautification-owner.test.mjs
+tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -241,9 +270,9 @@ view + modalBody observer wiring remains until explicit lifecycle migration
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **17/17** in run `34665890699`.
+Current accepted Real Chrome suite: **18/18** in run `34666673017`.
 
-## 8. Remaining technical-debt targets
+## 9. Remaining technical-debt targets
 
 ```text
 baseRenderV37 / baseModalV37 / cleanup+observer owner audit
@@ -256,7 +285,7 @@ version-number business naming
 final zero-point scan
 ```
 
-## 9. Audit method
+## 10. Audit method
 
 For every candidate:
 
@@ -276,7 +305,7 @@ live HEAD
 
 Do not delete by version suffix alone. Do not add a global render-repair loop. Prefer semantic/page-scoped owners and explicit lifecycle cleanup.
 
-## 10. Non-negotiable rules
+## 11. Non-negotiable rules
 
 1. No new numbered compatibility generation.
 2. Retired training mirrors/fallbacks stay retired.
@@ -296,7 +325,7 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 16. Do not weaken duplicate-request/race/performance/Real Chrome tests.
 17. Frontend CI is not A800/CUDA acceptance.
 
-## 11. Work order
+## 12. Work order
 
 ```text
 1. baseRenderV37 / baseModalV37 / cleanup+observer audit
