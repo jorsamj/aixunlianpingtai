@@ -130,24 +130,4 @@ test('final classic owners keep formal badge and footer values', () => {
 });
 """, encoding='utf-8')
 
-workflow_path = Path('.github/workflows/frontend-runtime-stabilization.yml')
-workflow = workflow_path.read_text(encoding='utf-8')
-needle = "      - name: Frontend unit tests\n        run: node --test tests/frontend/*.test.mjs\n"
-guard = """      - name: Formal version marker owner guard
-        run: |
-          node --test tests/frontend/version-marker-owner.test.mjs
-          if grep -F -n 'baseRender417' static/app.js; then
-            echo 'retired baseRender417 version correction owner was reintroduced' >&2
-            exit 1
-          fi
-          if grep -F -n 'applyBuildVersion' static/main.mjs; then
-            echo 'main.mjs visible build-version writer was reintroduced' >&2
-            exit 1
-          fi
-      - name: Frontend unit tests
-        run: node --test tests/frontend/*.test.mjs
-"""
-workflow = replace_once(workflow, needle, guard, 'main CI version marker guard insertion')
-workflow_path.write_text(workflow, encoding='utf-8')
-
 print('consolidated visible version marker ownership')
