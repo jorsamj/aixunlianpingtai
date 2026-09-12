@@ -1477,7 +1477,7 @@ window.installUsability417=function(){
       if(box)box.textContent=`paddle=${r.modules?.paddle||'-'}，PaddleDetection=${r.paddledet_exists?'存在':'未找到'}`;
       await refreshPaddleTrainingTargets20d();
       if(action&&!action.isCurrent())return;
-      await window.setPage?.('训练资源'); toast('飞桨环境已启用');
+      render(); toast('飞桨环境已启用');
     }catch(e){toast(e.message||'检测失败')}finally{state.resourceBusy=false; setBtnBusy(btn,false)}
   };
   window.quickPaddleDetect=async function(){
@@ -1491,7 +1491,7 @@ window.installUsability417=function(){
       if(action&&!action.isCurrent())return;
       await refreshPaddleTrainingTargets20d();
       if(action&&!action.isCurrent())return;
-      await window.setPage?.('训练资源'); toast('已启用飞桨环境');
+      render(); toast('已启用飞桨环境');
     }catch(e){toast(e.message||'一键检测失败')}finally{setBtnBusy(btn,false)}
   };
 
