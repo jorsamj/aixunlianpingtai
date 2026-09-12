@@ -24,6 +24,30 @@ jobs:
           python-version: '3.12'
       - name: Synchronize handoff docs
         run: python tools/sync_r20l_handoff.py
+      - name: Normalize only R20l-generated Markdown lines
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          targets = [
+              Path('docs/TECH_DEBT_CLOSURE_V42_25.md'),
+              Path('docs/FRONTEND_OWNER_MAP_V42_25.md'),
+          ]
+          needles = (
+              'f8356bcf5ec1ea128fb38db2820df38146b48cfd',
+              '> Real Chrome: 33/33 passed',
+              'One-shot R20l migration artifacts are physically deleted.',
+          )
+          for path in targets:
+              lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+              out = []
+              for line in lines:
+                  if any(needle in line for needle in needles):
+                      newline = '\n' if line.endswith('\n') else ''
+                      line = line.rstrip('\r\n').rstrip(' \t') + newline
+                  out.append(line)
+              path.write_text(''.join(out), encoding='utf-8')
+          PY
       - name: Verify formal release state and R20l permanent contracts
         run: |
           test "$(cat VERSION.txt)" = "42.24.0"
