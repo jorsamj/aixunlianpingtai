@@ -10,13 +10,8 @@ old = "window.delVersion=async(aid,vid)=>{if(!confirm('确认删除该版本？'
 new = "window.delVersion=async(aid,vid)=>{if(!confirm('确认删除该版本？'))return;await safe(api(`/api/v12/projects/${pid()}/algorithms/${aid}/versions/${vid}`,{method:'DELETE'}));closeModal();const runtime=window.AlgorithmListRuntime;if(!runtime?.refresh){toast('算法列表刷新模块未加载，请刷新页面后重试');return}await runtime.refresh({render:true});toast('已删除版本')};"
 
 app = APP.read_text(encoding='utf-8')
-if app.count(old) != 2:
-    raise SystemExit(f'R20 expected exactly 2 historical delVersion owners, got {app.count(old)}')
-# First owner is shadowed by the repeated classic block; remove it physically.
-app = app.replace(old, '', 1)
-# The remaining final classic owner is live through versionRows423(..., forModal=true).
 if app.count(old) != 1:
-    raise SystemExit('R20 final delVersion owner not uniquely isolated')
+    raise SystemExit(f'R20 expected exactly 1 live delVersion owner, got {app.count(old)}')
 app = app.replace(old, new, 1)
 if app.count('window.delVersion=') != 1:
     raise SystemExit(f'R20 delVersion owner count={app.count("window.delVersion=")}')
