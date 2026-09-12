@@ -2202,11 +2202,10 @@ window.installUsability417=function(){
     root.querySelectorAll('input[placeholder],textarea[placeholder]').forEach(el=>{const v=el.getAttribute('placeholder')||'';if(/^(例如|如：|如 |选填|多个|rtsp|http|[A-Za-z]:[\\/]|\\\\)/i.test(v))el.removeAttribute('placeholder')});
     const desc=document.getElementById('pageDesc');if(desc)desc.textContent='';
   }
-  const baseRender=render;
-  render=function(){baseRender();cleanup(document.getElementById('view'));requestAnimationFrame(()=>cleanup(document.getElementById('view')))};
-  const observer=new MutationObserver(muts=>{for(const m of muts){m.addedNodes.forEach(n=>{if(n.nodeType===1)cleanup(n)})}});
-  const view=document.getElementById('view'),modalBody=document.getElementById('modalBody');
-  if(view)observer.observe(view,{childList:true,subtree:true});if(modalBody)observer.observe(modalBody,{childList:true,subtree:true});
+  window.PostRenderNormalizationRuntime=Object.freeze({apply:cleanup});
+  const modalObserver=new MutationObserver(muts=>{for(const m of muts){m.addedNodes.forEach(n=>{if(n.nodeType===1)cleanup(n)})}});
+  const modalBody=document.getElementById('modalBody');
+  if(modalBody)modalObserver.observe(modalBody,{childList:true,subtree:true});
   setTimeout(()=>{renderTop();cleanup(document);},100);
 })();
 
@@ -4190,5 +4189,5 @@ window.installUsability417?.();
   if(window.__storageOpenUpload61)window.openDataUpload426=window.__storageOpenUpload61;
   if(window.__storageDoUploadImages61)window.doUploadImages426=window.__storageDoUploadImages61;
   const finalRender=render;
-  render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61();return}finalRender()};
+  render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};
 })();
