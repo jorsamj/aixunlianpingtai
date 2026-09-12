@@ -14,17 +14,18 @@ if final_route not in app:
 if app.count('function renderDatasets(){') != 2:
     raise SystemExit(f'expected exactly two classic renderDatasets generations, got {app.count("function renderDatasets(){")}')
 
-retired_owners = [
-    'window.selectDataset=',
-    'window.newDataset=',
-    'window.saveDataset=',
-    'window.editDataset=',
-    'window.saveEditDataset=',
-    'window.delDataset=',
-]
-for token in retired_owners:
-    if app.count(token) != 1:
-        raise SystemExit(f'expected one legacy dataset owner {token}, got {app.count(token)}')
+expected_counts = {
+    'window.selectDataset=': 2,
+    'window.newDataset=': 1,
+    'window.saveDataset=': 1,
+    'window.editDataset=': 1,
+    'window.saveEditDataset=': 1,
+    'window.delDataset=': 1,
+    'oldSelectDataset': 1,
+}
+for token, expected in expected_counts.items():
+    if app.count(token) != expected:
+        raise SystemExit(f'expected {expected} legacy dataset owner token(s) {token}, got {app.count(token)}')
 
 current_dataset = "function currentDataset(){return state.datasets.find(d=>d.id===state.datasetId)||state.datasets[0]}\n"
 if app.count(current_dataset) != 1:
@@ -50,10 +51,22 @@ if crud_start < 0 or crud_end < 0:
 crud_block = app[crud_start:crud_end]
 if 'await reload()' not in crud_block:
     raise SystemExit('legacy dataset CRUD no longer matches broad-reload generation')
-for token in retired_owners:
+for token in ('window.selectDataset=', 'window.newDataset=', 'window.saveDataset=', 'window.editDataset=', 'window.saveEditDataset=', 'window.delDataset='):
     if token not in crud_block:
         raise SystemExit(f'legacy CRUD block missing {token}')
 app = app[:crud_start] + app[crud_end + 1:]
+
+persist_wrapper = """  const oldSelectDataset=window.selectDataset;
+  window.selectDataset=async function(id){
+    state.datasetId=id;
+    saveUiState();
+    await loadRelated();
+    render();
+  };
+"""
+if app.count(persist_wrapper) != 1:
+    raise SystemExit('dataset persistence wrapper anchor changed')
+app = app.replace(persist_wrapper, '', 1)
 
 second_start = app.find('function renderDatasets(){', first_start + len(delegate))
 second_end = app.find('\nfunction renderResources(){', second_start)
@@ -69,7 +82,16 @@ if app.count('function renderDatasets(){') != 1:
     raise SystemExit('classic dataset renderer count did not collapse to one delegate')
 if delegate.strip() not in app:
     raise SystemExit('bounded dataset delegate missing after migration')
-for token in retired_owners + ['currentDataset()']:
+for token in [
+    'window.selectDataset=',
+    'window.newDataset=',
+    'window.saveDataset=',
+    'window.editDataset=',
+    'window.saveEditDataset=',
+    'window.delDataset=',
+    'oldSelectDataset',
+    'currentDataset()',
+]:
     if token in app:
         raise SystemExit(f'retired dataset-group surface still present: {token}')
 if final_route not in app:
@@ -95,6 +117,7 @@ const retired = [
   'window.editDataset=',
   'window.saveEditDataset=',
   'window.delDataset=',
+  'oldSelectDataset',
   'currentDataset()',
 ];
 
