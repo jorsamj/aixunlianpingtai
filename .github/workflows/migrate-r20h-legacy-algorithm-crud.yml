@@ -24,6 +24,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Retire v39 legacy viewAlgorithm wrapper prerequisite
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('static/app.js')
+          app = path.read_text(encoding='utf-8')
+          start = app.find('  const oldViewAlgoV39=window.viewAlgorithm;')
+          end = app.find('  // Add deployment to dashboard', start)
+          if start < 0 or end < 0:
+              raise SystemExit('v39 viewAlgorithm wrapper anchors not found')
+          block = app[start:end]
+          if 'window.viewAlgorithm=id=>' not in block or 'oldViewAlgoV39' not in block:
+              raise SystemExit('v39 viewAlgorithm wrapper does not match expected legacy owner')
+          app = app[:start] + app[end:]
+          path.write_text(app, encoding='utf-8')
+          PY
       - name: Apply guarded R20h migration
         run: python tools/migrate_r20h_legacy_algorithm_crud.py
       - name: Verify formal version unchanged
@@ -54,6 +70,7 @@ jobs:
             'window.viewAlgorithm=' \
             'window.showReport=' \
             'const oldRenderAlgorithms = window.renderAlgorithms;' \
+            'oldViewAlgoV39' \
             'window.renderAlgorithms422=' \
             'window.openNewAlgorithm422=' \
             'window.saveNewAlgorithm422='; do
