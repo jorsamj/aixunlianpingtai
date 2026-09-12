@@ -31,6 +31,22 @@ jobs:
         run: npm ci
       - name: Apply guarded migration
         run: python tools/migrate_r20e_model_config_prompt_refresh.py
+      - name: Fix generated wiring guard escaping
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/frontend/model-config-prompt-refresh-owner.test.mjs')
+          s=p.read_text(encoding='utf-8')
+          start=s.index("test('final model configuration renderer still reaches the migrated mutation owners'")
+          end=s.index('\n});', start)+4
+          block='''test('final model configuration renderer still reaches the migrated mutation owners', () => {
+            const finalRenderer = app.slice(app.lastIndexOf('window.renderModelConfigPageV35=function()'));
+            assert.match(finalRenderer, /deleteModelConfigV35/);
+            assert.equal(app.includes('onclick="savePromptTemplateV35('), true);
+            assert.equal(app.includes('onclick="deletePromptTemplateV35('), true);
+          });'''
+          p.write_text(s[:start]+block+s[end:],encoding='utf-8')
+          PY
       - name: Verify static and unit contracts
         run: |
           node --check static/app.js
