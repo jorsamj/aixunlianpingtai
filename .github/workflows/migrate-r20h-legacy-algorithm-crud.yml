@@ -49,11 +49,22 @@ jobs:
           marker = "    'window.showReport=',\n"
           count = text.count(marker)
           if count != 2:
-              raise SystemExit(f'expected showReport retirement marker twice, got {count}')
+              raise SystemExit(f'expected showReport migration marker twice, got {count}')
           path.write_text(text.replace(marker, ''), encoding='utf-8')
           PY
       - name: Apply guarded R20h migration
         run: python tools/migrate_r20h_legacy_algorithm_crud.py
+      - name: Align generated permanent report compatibility guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/frontend/legacy-algorithm-crud-owner.test.mjs')
+          text = path.read_text(encoding='utf-8')
+          marker = "  'window.showReport=',\n"
+          if text.count(marker) != 1:
+              raise SystemExit('generated report compatibility marker changed unexpectedly')
+          path.write_text(text.replace(marker, '', 1), encoding='utf-8')
+          PY
       - name: Verify formal version unchanged
         run: test "$(cat VERSION.txt)" = "42.24.0"
       - name: Install frontend dependencies
