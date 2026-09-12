@@ -1,0 +1,84 @@
+name: Migrate R20m Shadowed Algorithm CRUD
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/migrate_shadowed_algorithm_crud_r20m.py
+      - .github/workflows/migrate-shadowed-algorithm-crud-r20m.yml
+      - tests/frontend/shadowed-algorithm-crud-r20m.test.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install focused test dependencies
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set fetch-retries 3
+          npm config set fetch-retry-mintimeout 10000
+          npm config set fetch-retry-maxtimeout 60000
+          npm ci
+          python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Baseline source guard must prove R20m is RED
+        shell: bash
+        run: |
+          set +e
+          node --test tests/frontend/shadowed-algorithm-crud-r20m.test.mjs > /tmp/r20m-unit.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/r20m-unit.log
+          if [ "$code" -eq 0 ]; then
+            echo 'R20m source baseline unexpectedly green before retirement' >&2
+            exit 1
+          fi
+          grep -q 'shadowed v423 algorithm CRUD owner must be retired' /tmp/r20m-unit.log
+
+      - name: Baseline Real Chrome must prove final CRUD owner is already live
+        run: npx playwright test tests/browser/algorithm-list-performance.spec.mjs
+
+      - name: Apply guarded R20m retirement
+        run: python tools/migrate_shadowed_algorithm_crud_r20m.py
+
+      - name: Syntax check
+        run: node --check static/app.js
+
+      - name: Focused unit contracts
+        run: >-
+          node --test
+          tests/frontend/shadowed-algorithm-crud-r20m.test.mjs
+          tests/frontend/legacy-algorithm-crud-owner.test.mjs
+
+      - name: Focused Real Chrome
+        run: npx playwright test tests/browser/algorithm-list-performance.spec.mjs
+
+      - name: Verify formal version unchanged
+        run: test "$(cat VERSION.txt)" = "42.24.0"
+
+      - name: Commit product retirement
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html
+          if git diff --cached --quiet; then
+            echo 'R20m retirement produced no product changes' >&2
+            exit 1
+          fi
+          git commit -m 'refactor(ui): retire shadowed v423 algorithm CRUD'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
