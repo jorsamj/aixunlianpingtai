@@ -2206,6 +2206,7 @@ window.installUsability417=function(){
   }
   function cleanup(root){
     if(!root||!root.querySelectorAll)return;
+    window.beautifyFileInputs426?.(root);
     root.querySelectorAll('.subline,.compact-note,.callout,.import-box,.v42-stepbar,.v42-loopline,.v42-wizard-head').forEach(x=>x.remove());
     root.querySelectorAll('.v42-source-hero>div:first-child,.v42-quality-head>div:first-child,.v42-loop-hero>div:first-child').forEach(x=>x.remove());
     root.querySelectorAll('.panel').forEach(p=>{const t=p.querySelector('.panel-title')?.textContent?.trim();if(['接入方式','系统原则','一条主流程','快速入口','使用建议'].includes(t))p.remove()});
@@ -2839,7 +2840,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
   window.beautifyFileInputs426=beautifyFileInputs426;
   const modal426=modal; modal=function(title,body,wide=false){const layer=modal426(title,body,wide);requestAnimationFrame(()=>beautifyFileInputs426(layer||document));return layer};window.modal=modal;
-  const render426base=render;render=function(){render426base();requestAnimationFrame(()=>beautifyFileInputs426(document.getElementById('view')||document))};
+
 
   // Annotation save: update the exact current image immediately; no full reload.
   window.saveAnn=async function(silent=false){
