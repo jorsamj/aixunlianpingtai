@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`66339fc0b8459328a68bf775230eae179a4d969d`**  
-> **Frontend Runtime Stabilization：run `34663089996`，frontend + Real Chrome 全绿，Real Chrome 14/14 passed。**  
+> **最近完整代码验收点：`2d9bc0b30a72761d784cc57472eb50b158b8851f`**  
+> **Frontend Runtime Stabilization：run `34663389819`，frontend + Real Chrome 全绿，Real Chrome 14/14 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -63,6 +63,7 @@ render423Base
 renderBase428 的 shadowed 算法列表 branch
 v42.2 render422 legacy 自动标注 route branch
 v42.4 renderBase424 legacy 自动标注 route branch
+renderBase424 的 shadowed 算法列表 / 数据集 / 训练任务 branches
 ```
 
 ## 2. 技术债状态
@@ -81,6 +82,7 @@ v42.4 renderBase424 legacy 自动标注 route branch
 | fully shadowed render generations (`oldRender429`, `previousRender61`, `render423Base`) | later bounded render owners | **CLOSED** |
 | shadowed `renderBase428` 算法列表 branch | `oldRender412` sole algorithm-list route owner | **CLOSED** |
 | legacy `自动标注` render route owner branches | canonical `自动标注及清洗` + `renderBase427` | **CLOSED** |
+| shadowed `renderBase424` 算法/数据/训练 route branches | `oldRender412` + `renderBase428` | **CLOSED** |
 | remaining historical render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -140,6 +142,7 @@ oldRender412      → 算法列表 / 数据集稳定路由 owner
 renderBase428     → 仅保留训练任务路由 owner
 renderTraining423 → 当前训练页 renderer，并直接调用 PollRegistry.replaceTrainingJobTimer()
 renderBase427     → 自动标注及清洗 canonical route owner
+renderBase424     → 仅保留质量中心 / 视频切帧 route owner
 finalRender       → 素材存储配置最终路由 owner
 ```
 
@@ -153,15 +156,16 @@ render423Base
 renderBase428 中被 oldRender412 完全遮蔽的 算法列表 branch
 v42.2 render422 中不可达的 legacy 自动标注 route branch
 v42.4 renderBase424 中不可达的 legacy 自动标注 route branch
+renderBase424 中被后置 owner 完全遮蔽的 算法列表 / 数据集 / 训练任务 branches
 ```
 
-注意：`renderAutoLabel424()` 函数体内仍有历史 `state.page==='自动标注'` 自刷新条件；本批没有把它误判成 route owner，也没有激活到 canonical 页面。它属于后续 dead-code/liveness 独立审计范围。
+注意：`renderAutoLabel424()` 函数体内仍有历史 `state.page==='自动标注'` 自刷新条件；它不是 route owner，本批没有把它和 render route retirement 混在一起。它属于后续 dead-code/lifecycle 独立审计范围。
 
 ## 4. Current cache/build facts
 
 ```text
-app.js cache                     42.25.63
-main.mjs cache                   42.25.66
+app.js cache                     42.25.64
+main.mjs cache                   42.25.67
 navigation-stability.js          422511
 ui-state.js                      422500
 poll-registry.js                 422511
@@ -195,7 +199,8 @@ tests/frontend/render-owner-retirement.test.mjs
 - canonical `自动标注及清洗` 必须继续由 `renderBase427` 路由到 `renderOps427()`；
 - `oldRender429` / `previousRender61` / `render423Base` 不得回归；
 - `renderBase428` 不得重新出现其 shadowed 算法列表 branch，只允许保留训练任务 branch；
-- `oldRender412` 仍是唯一 outer 算法列表 route owner；
+- `renderBase424` 不得重新出现算法列表 / 数据集 / 训练任务 branch，只允许保留质量中心 / 视频切帧 route 语义；
+- `oldRender412` 仍是唯一 outer 算法列表 / 数据集稳定 route owner；
 - `renderTraining423()` 必须保持 direct PollRegistry training-job ownership；
 - `finalRender` 当前仍是 live storage owner，不得无证明删除。
 
@@ -206,7 +211,7 @@ tests/browser/navigation-stability.spec.mjs
 tests/browser/navigation-readiness.spec.mjs
 ```
 
-Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、新旧 localStorage 冷启动 canonicalization、素材存储配置最终 owner，以及算法列表/训练任务/素材分页性能路径。run `34663089996` 实际执行 14 条 browser tests，14/14 passed。
+Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、新旧 localStorage 冷启动 canonicalization、素材存储配置最终 owner，以及算法列表/训练任务/素材分页性能路径。run `34663389819` 实际执行 14 条 browser tests，14/14 passed。
 
 ## 6. Recent render acceptance history
 
@@ -255,36 +260,35 @@ legacy 自动标注 render route branch retirement:
   run    34663089996
   frontend PASS / Real Chrome 14/14 PASS
   retired: v42.2 render422 branch + v42.4 renderBase424 branch
+
+renderBase424 shadowed route branch retirement:
+  product 784acc8aaf31145be941947acd305afe31538068
+  validation 2d9bc0b30a72761d784cc57472eb50b158b8851f
+  run    34663389819
+  frontend PASS / Real Chrome 14/14 PASS
+  retired: renderBase424 算法列表 / 数据集 / 训练任务 branches
+  retained live: 质量中心 / 视频切帧
 ```
 
-对应一次性 migration helper/workflow 已在验收后物理删除；永久 tests 保留。
+对应一次性 migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
 
 ## 7. 下一批：remaining render owner audit
 
-继续按 capture/liveness 证明推进。当前高价值候选是 `renderBase424` 内仍存在的历史分支：
-
-```text
-算法列表 → 后置 oldRender412 已先行拦截
-数据集   → 后置 oldRender412 已先行拦截
-训练任务 → 后置 renderBase428 已先行拦截
-```
-
-这三个分支看起来 fully shadowed，但仍必须逐项证明 exact source order / capture / page coverage 后再删；`renderBase424` 整层仍有 `质量中心`、`视频切帧` 等 live 语义，禁止整层删除。
-
-其余仍需独立审计：
+继续按 capture/liveness 证明推进。`renderBase424` 已缩减为只保留真实 live route，不再是下一刀对象。其余仍需独立审计：
 
 ```text
 baseRenderV37       页面增强 requestAnimationFrame owner
 oldRenderV39        部署相关 route owner
-renderBase424       质量/视频等 live route + 待证明 shadowed branches
+renderBase424       质量中心 / 视频切帧 live route owner
 render426base       文件输入美化 post-render owner
 renderBase427       自动标注及清洗 live route owner
-renderBase428       训练任务 live owner（当前不能整层删除）
+renderBase428       训练任务 live owner
 oldRender412        算法/数据 live owner
 render414Base       标签管理 + version badge owner
 baseRender417       版本 badge/footer correction owner
 finalRender         素材存储配置 live owner
 cleanup MutationObserver / post-render cleanup wrapper
+renderAutoLabel424  legacy old-name self-refresh dead-code candidate（非 route owner）
 ```
 
 执行规则：
