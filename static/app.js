@@ -52,7 +52,7 @@ window.detectUltra=()=>{const root=$('#uroot')?.value.trim()||'';return window.R
 window.scanModels=()=>{const root=$('#scanRoot')?.value.trim()||'';if(!root)return toast('请先填写要扫描的模型目录');return window.ResourceDiscoveryRuntime?.scanModels({scope:'directory',roots:[root]})||toast('资源检测模块正在加载，请稍后重试')};
 window.addServer=()=>modal('新增训练服务器',`<div class="form"><div class="field"><label>服务器名称</label><input id="sname" class="input" placeholder="例如：GPU训练服务器"></div><div class="field"><label>服务地址</label><input id="surl" class="input" placeholder="http://192.168.1.10:8020"></div><button class="btn primary" onclick="saveServer()">保存</button></div>`);
 window.quickAddServer=()=>{const url=$('#quickServerUrl').value.trim();if(!url)return toast('请输入服务器地址');modal('确认接入服务器',`<div class="form"><div class="field"><label>服务器名称</label><input id="sname" class="input" value="训练服务器"></div><div class="field"><label>服务地址</label><input id="surl" class="input" value="${esc(url)}"></div><button class="btn primary" onclick="saveServer()">保存</button></div>`)};
-window.saveServer=async()=>{await safe(api('/api/train_servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#sname').value||'训练服务器',base_url:$('#surl').value})}));closeModal();await reload();toast('已保存服务器')};
+window.saveServer=async()=>{await safe(api('/api/train_servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#sname').value||'训练服务器',base_url:$('#surl').value})}));closeModal();const opts=await safe(api(`/api/training_options?project_id=${pid()}`));if(opts)state.targets=opts.targets||[];render();toast('已保存服务器')};
 
 function renderDatasets(){
   const ds=state.datasets||[];

@@ -457,6 +457,31 @@ test('training server connection keeps existing form and payload behavior', asyn
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#surl')).toHaveValue('http://127.0.0.1:18020');
   await page.locator('#sname').fill('R20c训练服务器');
+  const projectId = await page.evaluate(() => state.project?.id);
+  expect(projectId).toBeTruthy();
+  const encoded = encodeURIComponent(projectId);
+  await page.route(`**/api/training_options?project_id=${encoded}`, async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({targets: [{
+        id: 'server-r20c',
+        name: 'R20c训练服务器',
+        type: 'server',
+        framework: 'ultralytics',
+        status: 'ready',
+        version: 'remote',
+        algorithms: [],
+        base_models: [],
+      }]}),
+    });
+  });
+  await expect.poll(async () => page.evaluate(() => !state.__extras412)).toBe(true);
+  const requests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) requests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
   await page.locator('#modalBody').getByRole('button', {name: '保存'}).click();
 
   await expect(page.locator('#modal')).toHaveClass(/hidden/);
@@ -465,6 +490,13 @@ test('training server connection keeps existing form and payload behavior', asyn
     name: 'R20c训练服务器',
     base_url: 'http://127.0.0.1:18020',
   });
+  await expect.poll(async () => page.evaluate(() => state.targets.find(x => x.id === 'server-r20c')?.name || null)).toBe('R20c训练服务器');
+  await expect(page.locator('.resource-grid')).toContainText('R20c训练服务器');
+  const ownedRequests = requests.filter(row => row.includes('/api/train_servers') || row.includes('/api/training_options') || row.includes('/bootstrap/snapshot'));
+  expect(ownedRequests).toEqual([
+    'POST /api/train_servers',
+    `GET /api/training_options?project_id=${projectId}`,
+  ]);
   expect(pageErrors).toEqual([]);
 });
 
