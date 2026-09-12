@@ -622,6 +622,7 @@ test('model config delete keeps model configuration page consistent', async ({pa
   page.on('dialog', dialog => dialog.accept());
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true), {timeout: 15_000}).toBe(true);
   await page.evaluate(() => {
     state.page = '模型配置';
     state.modelConfigs = [{
