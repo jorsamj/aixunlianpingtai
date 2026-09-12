@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          pytest -vv tests/unit/test_resource_discovery_sqlite_lifecycle.py | tee /tmp/resource-discovery-baseline.log
+          pytest --confcutdir=tests/unit -vv tests/unit/test_resource_discovery_sqlite_lifecycle.py | tee /tmp/resource-discovery-baseline.log
           code=${PIPESTATUS[0]}
           set -e
           test "$code" -ne 0 || { echo 'Baseline unexpectedly green; migration proof invalid'; exit 1; }
@@ -42,7 +42,7 @@ jobs:
         run: python -m py_compile platform_core/resource_discovery/cache.py platform_core/resource_discovery/tasks.py
 
       - name: Focused lifecycle tests
-        run: pytest -q tests/unit/test_resource_discovery_sqlite_lifecycle.py tests/unit/test_portable_resource_discovery.py
+        run: pytest --confcutdir=tests/unit -q tests/unit/test_resource_discovery_sqlite_lifecycle.py tests/unit/test_portable_resource_discovery.py
 
       - name: Verify formal version unchanged
         run: test "$(cat VERSION.txt)" = "42.24.0"
