@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 6be679b6b23f566d14434e2032b8af8015341ae4
-Frontend Runtime run:        34660269685
+latest full code acceptance: 66339fc0b8459328a68bf775230eae179a4d969d
+Frontend Runtime run:        34663089996
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.62
-main.mjs cache:              42.25.65
+app.js cache:                42.25.63
+main.mjs cache:              42.25.66
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -22,7 +22,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34660269685` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34663089996` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions; browser-navigation ran 14 tests and passed 14/14. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -95,7 +95,7 @@ Permanent CI forbids any `window.setPage=` assignment in `static/app.js`.
 
 ## 4. Render debt already closed
 
-### Route alias state mutation
+### Route alias state mutation and legacy route owners
 
 Historical render code used to mutate:
 
@@ -106,7 +106,10 @@ Historical render code used to mutate:
 That behavior is now split correctly:
 - navigation request alias → `NavigationStability.normalizeNavigationPage()`;
 - historical localStorage restore → v34 restore-boundary canonicalization + canonical writeback;
-- render itself no longer mutates route state.
+- render itself no longer mutates route state;
+- the v42.2 and v42.4 render branches keyed to legacy `自动标注` have now been physically removed.
+
+`renderBase427` is the confirmed live route owner for canonical `自动标注及清洗` and delegates to `renderOps427()`.
 
 ### Physically retired render debt
 
@@ -124,15 +127,21 @@ render423Base
 renderBase428 算法列表 branch
   fully shadowed by later oldRender412
   wrapper itself remains live because 训练任务 branch is still current
+
+v42.2 render422 legacy 自动标注 route branch
+v42.4 renderBase424 legacy 自动标注 route branch
+  unreachable after navigation + restore canonicalization;
+  canonical page is owned by later renderBase427
 ```
 
 Accepted points:
 
 ```text
-oldRender429             0455eeef696f19457b0f1a2b79e229a7e381b3db / 34659041402 PASS
-previousRender61         69732d9ed659a62a3a1e92b36d07b912e141b8c9 / 34659543452 PASS
-render423Base            58ece59e95722437069c7e03277363197e564136 / 34659775870 PASS
-renderBase428 alg branch 6be679b6b23f566d14434e2032b8af8015341ae4 / 34660269685 PASS
+oldRender429                  0455eeef696f19457b0f1a2b79e229a7e381b3db / 34659041402 PASS
+previousRender61              69732d9ed659a62a3a1e92b36d07b912e141b8c9 / 34659543452 PASS
+render423Base                 58ece59e95722437069c7e03277363197e564136 / 34659775870 PASS
+renderBase428 alg branch      6be679b6b23f566d14434e2032b8af8015341ae4 / 34660269685 PASS
+legacy auto-label route owner 66339fc0b8459328a68bf775230eae179a4d969d / 34663089996 PASS (Chrome 14/14)
 ```
 
 All corresponding one-shot migration helpers/workflows were physically deleted after acceptance.
@@ -142,7 +151,7 @@ All corresponding one-shot migration helpers/workflows were physically deleted a
 ```text
 oldRender412
   algorithm list + data-set stable routing
-  sole outer 算法列表 route owner after renderBase428 branch retirement
+  sole outer 算法列表 route owner
 
 renderBase428
   now contains only the live 训练任务 route branch
@@ -151,6 +160,10 @@ renderBase428
 renderTraining423
   current training renderer
   directly calls PollRegistryRuntime.replaceTrainingJobTimer()
+
+renderBase427
+  canonical 自动标注及清洗 route owner
+  delegates to renderOps427()
 
 finalRender
   final 素材存储配置 route owner
@@ -163,13 +176,14 @@ baseRenderV37
 oldRenderV39
 renderBase424
 render426base
-renderBase427
 render414Base
 baseRender417
 post-render cleanup / MutationObserver layer
 ```
 
-Do not remove a whole wrapper merely because one branch is shadowed.
+`renderBase424` is still live as a whole because it retains quality/video routes. However its 算法列表 / 数据集 / 训练任务 branches are the next high-value shadowing candidates: later `oldRender412` owns 算法列表+数据集 and later `renderBase428` owns 训练任务. Prove source order/capture before deleting those branches.
+
+The old `renderAutoLabel424()` body still contains a legacy `state.page==='自动标注'` self-refresh condition. It is not a route owner and was intentionally not changed in the route-retirement batch; audit it separately as dead-code/lifecycle debt.
 
 ## 6. Permanent frontend/browser contracts
 
@@ -186,6 +200,8 @@ retired-pre-v424-setpage-guard.test.mjs
 
 `render-owner-retirement.test.mjs` now permanently requires:
 - old fully shadowed generations stay absent;
+- v42.2/v42.4 legacy `自动标注` route branches stay absent;
+- canonical `自动标注及清洗` keeps `renderBase427 → renderOps427()` ownership;
 - `renderBase428` must not regain an 算法列表 branch;
 - `renderBase428` must keep its 训练任务 branch;
 - `oldRender412` remains the sole outer 算法列表 route owner.
