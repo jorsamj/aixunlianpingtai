@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 2d9bc0b30a72761d784cc57472eb50b158b8851f
-Frontend Runtime run:        34663389819
+latest full code acceptance: 70b6f755cd8633de3e8591ac2fee044efc770b97
+Frontend Runtime run:        34663768606
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.64
-main.mjs cache:              42.25.67
+app.js cache:                42.25.65
+main.mjs cache:              42.25.68
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -22,7 +22,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34663389819` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions; browser-navigation ran 14 tests and passed 14/14. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34663768606` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions; browser-navigation ran 14 tests and passed 14/14. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -65,7 +65,7 @@ video          → PollRegistry(video-frames)
 sources        → PollRegistry(sources)
 ```
 
-Legacy timers/shells/wrappers/adoption compatibility are retired.
+Legacy timers/shells/wrappers/adoption compatibility are retired. R8 also removed the old `renderAutoLabel424()` 1.8-second self-refresh timeout, which could only fire for the now-impossible legacy page value `自动标注`.
 
 ### Navigation
 
@@ -91,7 +91,7 @@ performNavigation: page => {
 }
 ```
 
-Permanent CI forbids any `window.setPage=` assignment in `static/app.js`.
+Permanent CI forbids any `window.setPage=` assignment in `static/app.js`; R8 additionally locks `state.page==='自动标注'` to zero occurrences in `app.js`.
 
 ## 4. Render debt already closed
 
@@ -101,11 +101,12 @@ Historical render code used to mutate `自动标注 → 自动标注及清洗`. 
 - navigation request alias → `NavigationStability.normalizeNavigationPage()`;
 - historical localStorage restore → v34 restore-boundary canonicalization + canonical writeback;
 - render itself no longer mutates route state;
-- v42.2 and v42.4 render branches keyed to legacy `自动标注` are physically removed.
+- v42.2 and v42.4 render branches keyed to legacy `自动标注` are physically removed;
+- the final old-page `renderAutoLabel424` self-refresh predicate/timer is physically removed.
 
-`renderBase427` is the live route owner for canonical `自动标注及清洗` and delegates to `renderOps427()`.
+`renderBase427` is the live route owner for canonical `自动标注及清洗` and delegates to `renderOps427()`; periodic AutoLabel work remains `AutoLabelPollRuntime + PollRegistry` only.
 
-### Physically retired render debt
+### Physically retired render/lifecycle debt
 
 ```text
 oldRender429
@@ -115,9 +116,10 @@ renderBase428 算法列表 branch
 v42.2 render422 legacy 自动标注 route branch
 v42.4 renderBase424 legacy 自动标注 route branch
 renderBase424 算法列表 / 数据集 / 训练任务 branches
+renderAutoLabel424 legacy 自动标注 1.8s self-refresh timeout/predicate
 ```
 
-The latest branch-level proof is `renderBase424`: later `oldRender412` intercepts 算法列表/数据集 and later `renderBase428` intercepts 训练任务 before delegation can reach `renderBase424`. The wrapper remains live for `质量中心` and `视频切帧`, so only the three shadowed branches were removed.
+`renderAutoLabel424()` itself is not yet dead: historical action functions still call it directly. R8 deliberately removed only the unreachable timer, not the function body.
 
 Accepted points:
 
@@ -128,6 +130,7 @@ render423Base                 58ece59e95722437069c7e03277363197e564136 / 3465977
 renderBase428 alg branch      6be679b6b23f566d14434e2032b8af8015341ae4 / 34660269685 PASS
 legacy auto-label route owner 66339fc0b8459328a68bf775230eae179a4d969d / 34663089996 PASS (Chrome 14/14)
 renderBase424 shadowed routes 2d9bc0b30a72761d784cc57472eb50b158b8851f / 34663389819 PASS (Chrome 14/14)
+AutoLabel424 legacy timer     70b6f755cd8633de3e8591ac2fee044efc770b97 / 34663768606 PASS (Chrome 14/14)
 ```
 
 All corresponding one-shot migration helpers/workflows were physically deleted after acceptance.
@@ -153,6 +156,12 @@ renderBase427
 renderBase424
   now only 质量中心 + 视频切帧 route owner
 
+oldRenderV39
+  deployment conversion/artifact/resource/plugin/component routes
+
+render414Base
+  标签管理 route + version badge semantics
+
 finalRender
   final 素材存储配置 route owner
 ```
@@ -161,14 +170,13 @@ Other wrappers still require independent liveness analysis:
 
 ```text
 baseRenderV37
-oldRenderV39
 render426base
-render414Base
 baseRender417
 post-render cleanup / MutationObserver layer
+older base/global render generations
 ```
 
-The old `renderAutoLabel424()` body still contains a legacy `state.page==='自动标注'` self-refresh condition. It is not a route owner and was intentionally left for a separate dead-code/lifecycle audit.
+`baseRender417` is a current audit candidate because later v42.6 `renderNav`/`renderTop` also enforce the same visible `42.24.0` badge/footer value, but no deletion is allowed until exact source-order and all-page equivalence are proven.
 
 ## 6. Permanent frontend/browser contracts
 
@@ -181,17 +189,20 @@ navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
 retired-pre-v424-setpage-guard.test.mjs
+auto-label-poll-runtime.test.mjs
 ```
 
 `render-owner-retirement.test.mjs` permanently requires:
 - old fully shadowed generations stay absent;
 - v42.2/v42.4 legacy `自动标注` route branches stay absent;
+- `state.page==='自动标注'` stays absent from `static/app.js`;
+- legacy `renderAutoLabel424` self-refresh timer stays absent;
 - canonical `自动标注及清洗` keeps `renderBase427 → renderOps427()` ownership;
 - `renderBase428` stays training-only;
 - `oldRender412` stays authoritative for algorithm/data routes;
 - `renderBase424` cannot regain algorithm/data/training routes and must retain quality/video routes.
 
-Real Chrome verifies navigation, startup readiness, stale-request fencing, PollRegistry stop-on-leave, sidebar close, current/historical auto-label alias canonicalization, page persistence/reload, storage configuration route, algorithm list, training task and material performance paths. Current accepted browser suite is 14/14.
+Real Chrome verifies navigation, startup readiness, stale-request fencing, PollRegistry stop-on-leave, AutoLabel managed polling, sidebar close, current/historical auto-label alias canonicalization, page persistence/reload, storage configuration route, algorithm list, training task and material performance paths. Current accepted browser suite is 14/14.
 
 Do not weaken these tests.
 
