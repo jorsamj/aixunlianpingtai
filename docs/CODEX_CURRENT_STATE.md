@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: f8356bcf5ec1ea128fb38db2820df38146b48cfd
-Frontend Runtime run:        34723808299
+latest full code acceptance: 40a87bf70402dccfc0387950b6856a561ce1ebe1
+Frontend Runtime run:        34724354775
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.91
+app.js cache:                42.25.92
 main.mjs cache:              42.25.89
 NavigationStability:         422512
 UI state runtime:            422500
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34723808299` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20l permanentization and migration-artifact cleanup. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34723808298` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34724354775` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20m shadowed-owner retirement and migration-artifact cleanup. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34724354790` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -40,6 +40,27 @@ R20 final global reload/request zero-point
 ```
 
 A800 RC remains deferred.
+
+### R20m — shadowed v423 algorithm CRUD generation retirement CLOSED
+
+Liveness/source-order audit found two generations sharing `openNewAlgorithm423` / `editAlgorithm423`. The early v423 generation owned `saveNewAlgorithm423` / `saveEditAlgorithm423` and broad `loadRelated()`, but later stable 414 assignments overwrite the entrypoints before any final algorithm UI action can invoke them. The existing CRUD Real Chrome contract passed **before** retirement, proving the stable 414 generation was already live.
+
+R20m physically removed only the unreachable early create/edit generation. Final create/edit/delete continue to patch authoritative `state.algorithms` locally and remain broad-refresh free.
+
+```text
+baseline:                  243bcb1b17074848d91c2c9c64d47dbed54e5e9b
+baseline + migration run: 34724242632
+product:                   71cdb2ad192ec99b0e21bfe3c1f70bffca0f586e
+cleanup / acceptance:      40a87bf70402dccfc0387950b6856a561ce1ebe1
+Frontend Runtime:          34724354775
+full Real Chrome:          33/33 PASS
+Action Fencing:            34724354790 PASS
+formal VERSION.txt:        42.24.0 unchanged
+app.js cache:              42.25.92
+main.mjs cache:            42.25.89
+```
+
+Permanent source contract: `tests/frontend/shadowed-algorithm-crud-r20m.test.mjs`. Browser behavior remains covered by `tests/browser/algorithm-list-performance.spec.mjs`. One-shot R20m migration artifacts are physically deleted. **R20m CLOSED; global R20 zero-point remains IN PROGRESS.**
 
 ### R20l — source-import terminal completion scoped refresh CLOSED
 

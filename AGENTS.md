@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: f8356bcf5ec1ea128fb38db2820df38146b48cfd
-Frontend Runtime run:        34723808299
+latest full code acceptance: 40a87bf70402dccfc0387950b6856a561ce1ebe1
+Frontend Runtime run:        34724354775
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.91
+app.js cache:                42.25.92
 main.mjs cache:              42.25.89
 NavigationStability:         422512
 ```
 
-`34723808299` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34723808298` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
+`34724354775` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34724354790` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -86,6 +86,25 @@ NavigationStability
 永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
 
 ## 下一批准确范围：R20 final global reload/request zero-point
+
+### R20m — shadowed v423 algorithm CRUD generation retirement CLOSED
+
+Source-order + Real Chrome 已证明旧 v423 create/edit generation 从运行时不可达：删除前 `algorithm-list-performance.spec.mjs` 已完整通过，真实 UI 一直解析到后面的 stable 414 owner。R20m 因此没有“迁移 broad refresh”，而是物理删除旧 `openNewAlgorithm423(async) / saveNewAlgorithm423 / editAlgorithm423(old modal) / saveEditAlgorithm423` generation；后面的 `saveNewAlgorithm414 / saveEditAlgorithm414` authoritative local-state owner 保持不变。
+
+```text
+baseline:                  243bcb1b17074848d91c2c9c64d47dbed54e5e9b
+baseline + migration run: 34724242632
+product:                   71cdb2ad192ec99b0e21bfe3c1f70bffca0f586e
+cleanup / acceptance:      40a87bf70402dccfc0387950b6856a561ce1ebe1
+Frontend Runtime:          34724354775
+full Real Chrome:          33/33 PASS
+Navigation Action Fencing: 34724354790 PASS
+formal VERSION.txt:        42.24.0 unchanged
+app.js cache:              42.25.92
+main.mjs cache:            42.25.89
+```
+
+永久 source contract：`tests/frontend/shadowed-algorithm-crud-r20m.test.mjs`；行为合同复用现有 `tests/browser/algorithm-list-performance.spec.mjs`。一次性 migration helper/workflow 已物理删除。**R20m CLOSED；R20 全局 reload/request zero-point 仍为 IN PROGRESS。**
 
 ### R20l — source-import terminal completion scoped refresh CLOSED
 

@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `f8356bcf5ec1ea128fb38db2820df38146b48cfd` / run `34723808299`
+> Latest fully accepted code point: `40a87bf70402dccfc0387950b6856a561ce1ebe1` / run `34724354775`
 > Real Chrome: 33/33 passed
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -79,6 +79,7 @@ Navigation Action Fencing R1+R2 are accepted. `NavigationStability.action(ownerP
 | R20j | zero-reference dataset actions retired; live import and MaterialPagination owners preserved | `9c7a3497b9...` / `34699599796` (31/31) |
 | R20k | live v18 import completion broad reload → labels + current paged materials only | `f51d44c089...` / `34700252041` (32/32) |
 | R20l | live source-import terminal broad `loadRelated()` → labels + current paged materials only | `f8356bcf5e...` / `34723808299` (33/33) |
+| R20m | shadowed v423 algorithm create/edit generation physically retired; stable 414 CRUD remains final | `40a87bf704...` / `34724354775` (33/33) |
 
 R20h product: `d58e690ffcc1523f213a65cfc0a57380ffdc571e`; focused run `34696508446`; validation `210a9ad1f6271a8a8986db3f223f4813a6cce288` / run `34696729028`; frontend PASS; Real Chrome **31/31 passed**. The bounded base `renderAlgorithms()` compatibility delegate remains until older global render maps are retired, and the later report compatibility owner remains live by contract. R20h one-shot migration artifacts were deleted.  
 
@@ -87,6 +88,8 @@ R20i product: `feeb98f441bb1fe5d0f8f409a1509c66606e59ef`; validation `11131ca30c
 R20j product: `e6398f7d8ae665079c82d64217c434af4a73073c`; focused run `34699354229`; validation `693a2fa2c3d39378782ac2270a95924eff5ca5ec` / run `34699442423`; cleanup `9c7a3497b9acf69364d83e5cf778ec4139bdbc69` / run `34699599796`; frontend PASS; Real Chrome **31/31 passed**. Five globally zero-reference dataset actions were physically retired. `doImportData` is explicitly preserved as live and becomes R20k because its successful v18 import path still invokes broad `reload()`.  
 
 R20k product: `1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb`; focused run `34700022284` (211/211 frontend unit, focused Chrome 2/2); validation `60775456f3d4c8a441ba58ce65106af114aeebb2` / run `34700127243`; cleanup `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`; frontend PASS; Real Chrome **32/32 passed**. `doImportData` remains the live v18 XHR owner, but its successful completion now refreshes only labels and the current paged material domain. One-shot R20k migration artifacts are physically deleted.  
+
+R20m baseline `243bcb1b17074848d91c2c9c64d47dbed54e5e9b` / migration run `34724242632`; product `71cdb2ad192ec99b0e21bfe3c1f70bffca0f586e`; cleanup/final acceptance `40a87bf70402dccfc0387950b6856a561ce1ebe1` / Frontend Runtime `34724354775`; frontend PASS; Real Chrome **33/33 passed**; Action Fencing `34724354790` PASS. The early v423 algorithm create/edit generation was proven shadowed and physically deleted; stable 414 authoritative local-state CRUD remains the only final create/edit owner. Permanent source contract: `tests/frontend/shadowed-algorithm-crud-r20m.test.mjs`; browser behavior remains covered by `tests/browser/algorithm-list-performance.spec.mjs`. One-shot R20m migration artifacts are physically deleted.
 
 R20l product: `f260127d2d41281bc1d996a172e7d4290536f24c`; baseline/migration run `34723694735`; permanent Chrome guard `b17bd0c33bfb99e5557fc245a89a6c4444a8257e`; cleanup/final acceptance `f8356bcf5ec1ea128fb38db2820df38146b48cfd` / Frontend Runtime `34723808299`; frontend PASS; Real Chrome **33/33 passed**; Action Fencing `34723808298` PASS. The final live `refreshSourceImportTasksV36()` terminal branch no longer calls broad `loadRelated()`; it refreshes only labels and the current paged material domain. Active polling cadence/API semantics are unchanged. One-shot R20l migration artifacts are physically deleted.
 

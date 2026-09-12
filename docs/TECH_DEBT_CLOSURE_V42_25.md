@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`f8356bcf5ec1ea128fb38db2820df38146b48cfd`**
-> **Frontend Runtime Stabilization：run `34723808299`，frontend + Real Chrome 全绿，Real Chrome 33/33 passed；Navigation Action Fencing 永久 run `34723808298` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**
+> **最近完整代码验收点：`40a87bf70402dccfc0387950b6856a561ce1ebe1`**
+> **Frontend Runtime Stabilization：run `34724354775`，frontend + Real Chrome 全绿，Real Chrome 33/33 passed；Navigation Action Fencing 永久 run `34724354790` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -91,6 +91,7 @@ base algorithm CRUD `window.newAlgorithm/saveAlgorithm/editAlgorithm/saveEditAlg
 v30 `oldRenderAlgorithms` algorithm renderer wrapper
 v39 `oldViewAlgoV39` algorithm detail wrapper
 v42.2 `renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422` shadowed algorithm page generation
+v423 shadowed `openNewAlgorithm423(async)/saveNewAlgorithm423/editAlgorithm423(old modal)/saveEditAlgorithm423` create/edit generation
 legacy dataset-group `selectDataset/newDataset/saveDataset/editDataset/saveEditDataset/delDataset`
 `oldSelectDataset` persistence compatibility wrapper
 legacy `currentDataset()` helper
@@ -143,6 +144,7 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | zero-reference legacy dataset actions | physically retired, final `renderDatasets424` / import owners preserved | **CLOSED (R20j)** |
 | live v18 `doImportData` success broad reload | labels + paged materials only | **CLOSED (R20k)** |
 | source-import terminal completion broad refresh | labels + current paged materials only | **CLOSED (R20l)** |
+| shadowed v423 algorithm create/edit broad-refresh generation | stable 414 authoritative local-state CRUD only | **CLOSED (R20m)** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -217,6 +219,27 @@ tests/browser/navigation-action-fencing-r2.spec.mjs
 ```
 
 R2 一次性 migration helper/workflow 已物理删除。**R2 本批 CLOSED；整个 Navigation Action Fencing final zero-point 仍未 CLOSED。**
+
+## 2.0c R20m — shadowed v423 algorithm CRUD retirement
+
+Source-order audit proved the early v423 create/edit generation is shadowed by the later stable 414 assignments. Its only `saveNewAlgorithm423` / `saveEditAlgorithm423` callsites lived inside those overwritten modal entrypoints. The existing algorithm CRUD Real Chrome test passed before deletion, proving current behavior did not depend on the old broad-refresh generation.
+
+R20m physically removed that unreachable block and kept the stable 414/423/429 owners. No new runtime or refresh path was introduced.
+
+```text
+baseline:                  243bcb1b17074848d91c2c9c64d47dbed54e5e9b
+baseline + migration run: 34724242632
+product:                   71cdb2ad192ec99b0e21bfe3c1f70bffca0f586e
+cleanup / acceptance:      40a87bf70402dccfc0387950b6856a561ce1ebe1
+Frontend Runtime:          34724354775
+full Real Chrome:          33/33 PASS
+Action Fencing:            34724354790 PASS
+formal VERSION.txt:        42.24.0 unchanged
+app.js cache:              42.25.92
+main.mjs cache:            42.25.89
+```
+
+Permanent source contract: `tests/frontend/shadowed-algorithm-crud-r20m.test.mjs`; permanent behavior contract remains `tests/browser/algorithm-list-performance.spec.mjs`. One-shot migration helper/workflow are physically deleted. **R20m CLOSED; global R20 reload/request zero-point remains IN PROGRESS.**
 
 ## 2.0b R20l — source-import terminal scoped refresh
 

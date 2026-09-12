@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       f8356bcf5ec1ea128fb38db2820df38146b48cfd
-run:          34723808299
+commit:       40a87bf70402dccfc0387950b6856a561ce1ebe1
+run:          34724354775
 frontend:     PASS
 Real Chrome:  PASS (33/33)
 ```
@@ -16,7 +16,7 @@ Real Chrome:  PASS (33/33)
 Current caches/builds:
 
 ```text
-app.js                    42.25.91
+app.js                    42.25.92
 main.mjs                  42.25.89
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -103,6 +103,7 @@ base algorithm CRUD new/save/edit/saveEdit/view globals
 v30 oldRenderAlgorithms wrapper
 v39 oldViewAlgoV39 wrapper
 v42.2 renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422 generation
+shadowed v423 openNewAlgorithm423(async)/saveNewAlgorithm423/editAlgorithm423(old modal)/saveEditAlgorithm423 generation
 legacy dataset-group select/new/save/edit/delete CRUD generation
 oldSelectDataset persistence wrapper
 currentDataset helper
@@ -113,6 +114,8 @@ zero-reference uploadImages / autoSplit / buildYolo / checkDatasetQuality / setI
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
 
 R20k did **not** retire the live `doImportData` owner. It migrated only its successful completion refresh from broad `reload()` to labels + current paged materials. Acceptance: product `1e929d47cf1a96bcb3fa17ad3eeb1e6c6029addb`, validation `60775456f3d4c8a441ba58ce65106af114aeebb2` / run `34700127243`, cleanup `f51d44c089b6342398c14bd38c8669747adad48b` / run `34700252041`, Real Chrome **32/32**. Permanent contracts: `tests/frontend/v18-import-completion-scope.test.mjs` and `tests/browser/material-pagination-performance.spec.mjs`.
+
+R20m physically retired the shadowed early v423 algorithm create/edit generation after source-order proof and a pre-retirement Real Chrome pass showed final CRUD already resolves to the later stable 414 owners. Baseline `243bcb1b17074848d91c2c9c64d47dbed54e5e9b`, migration run `34724242632`, product `71cdb2ad192ec99b0e21bfe3c1f70bffca0f586e`, cleanup/final acceptance `40a87bf70402dccfc0387950b6856a561ce1ebe1` / run `34724354775`, Real Chrome **33/33**, Action Fencing `34724354790` PASS. `tests/frontend/shadowed-algorithm-crud-r20m.test.mjs` permanently locks owner cardinality/absence; existing `algorithm-list-performance.spec.mjs` locks live CRUD behavior. Global R20 zero-point remains open.
 
 R20l kept the live `refreshSourceImportTasksV36` owner but removed its terminal broad refresh. Real Chrome baseline proved the old terminal `loadRelated()` fan-out; completion now calls only `refreshLabels414(false)` plus `reloadMaterialPage61()` when still on 数据集. Active source-import polling cadence remains unchanged. Product `f260127d2d41281bc1d996a172e7d4290536f24c`, migration run `34723694735`, permanentization `b17bd0c33bfb99e5557fc245a89a6c4444a8257e`, cleanup/final acceptance `f8356bcf5ec1ea128fb38db2820df38146b48cfd` / run `34723808299`, Real Chrome **33/33**, Action Fencing `34723808298` PASS. Permanent contracts: `tests/frontend/source-import-completion-scope.test.mjs` and `tests/browser/source-import-completion-scope.spec.mjs`; one-shot migration artifacts are deleted. Global R20 zero-point remains open.
 
