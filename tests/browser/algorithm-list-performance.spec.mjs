@@ -195,3 +195,75 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   expect(forbiddenFullReloadRequests).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
+
+test('publishing a pending model as an algorithm version keeps the live publish flow functional', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('测试发布'));
+  await expect(page.locator('#title')).toContainText('测试发布');
+
+  const projectId = await page.evaluate(() => state.project?.id);
+  expect(projectId).toBeTruthy();
+  const encoded = encodeURIComponent(projectId);
+  let submittedBody = null;
+  await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-publish-r20b/versions`, async route => {
+    submittedBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        version: {
+          id: 'version-publish-r20b',
+          version_name: '20260912143000',
+          model_name: 'publish-r20b.pt',
+          model_key: 'project::publish-r20b.pt',
+          size_mb: 8.5,
+          created_at: '2026-09-12T14:30:00Z',
+        },
+      }),
+    });
+  });
+
+  await page.evaluate(() => {
+    state.algorithms = [{
+      id: 'algo-publish-r20b',
+      name: '发布验收算法',
+      remark: 'R20b publish baseline',
+      industry: '测试',
+      algorithm_type: 'yolo_ultralytics',
+      versions: [],
+    }];
+    state.pending = [{
+      name: 'publish-r20b.pt',
+      model_key: 'project::publish-r20b.pt',
+      type: 'pt',
+      framework: 'ultralytics',
+      size_mb: 8.5,
+      job_id: 'job-publish-r20b',
+      job_name: 'R20b publish baseline',
+    }];
+    window.assignVersion('publish-r20b.pt');
+  });
+
+  await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#modalBody')).toContainText('publish-r20b.pt');
+  await expect(page.locator('#algoSel')).toHaveValue('algo-publish-r20b');
+  await page.locator('#verName').fill('R20B-PUBLISH');
+  await page.locator('#verRemark').fill('发布行为基线');
+  await page.locator('#modalBody').getByRole('button', {name: '发布为算法版本'}).click();
+
+  await expect(page.locator('#modal')).toHaveClass(/hidden/);
+  await expect(page.locator('#toast')).toContainText('已发布为算法版本');
+  expect(submittedBody).toMatchObject({
+    model_name: 'publish-r20b.pt',
+    model_source: 'project',
+    version_name: 'R20B-PUBLISH',
+    remark: '发布行为基线',
+    job_id: 'job-publish-r20b',
+  });
+  expect(pageErrors).toEqual([]);
+});
