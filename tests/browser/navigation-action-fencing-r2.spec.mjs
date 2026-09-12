@@ -51,9 +51,9 @@ test('stale final M4 model save cannot close or redraw the page selected afterwa
   await page.waitForTimeout(700);
 
   await expect(page.locator('#title')).toContainText('数据集');
-  await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#modalTitle')).toHaveText('R2新页面保护');
-  await expect(page.locator('#actionFenceR2Sentinel')).toHaveText('new-page-r2');
+  await expect(page.locator('#modal'), 'stale M4 save closed the newer page modal').not.toHaveClass(/hidden/);
+  await expect(page.locator('#modalTitle'), 'stale M4 save rewrote the newer page modal title').toHaveText('R2新页面保护');
+  await expect(page.locator('#actionFenceR2Sentinel'), 'stale M4 save destroyed the newer page modal body').toHaveText('new-page-r2');
   expect(pageErrors).toEqual([]);
 });
 
@@ -80,8 +80,8 @@ test('stale model connection test cannot open its result modal over a newer page
   release();
   await page.waitForTimeout(500);
 
-  await expect(page.locator('#modalTitle')).toHaveText('R2新页面保护');
-  await expect(page.locator('#actionFenceR2Sentinel')).toHaveText('new-page-r2');
+  await expect(page.locator('#modalTitle'), 'stale model test replaced the newer page modal').toHaveText('R2新页面保护');
+  await expect(page.locator('#actionFenceR2Sentinel'), 'stale model test destroyed the newer page modal body').toHaveText('new-page-r2');
 });
 
 test('stale clean confirmation cannot close newer UI or start broad project refresh', async ({page}) => {
@@ -122,7 +122,7 @@ test('stale clean confirmation cannot close newer UI or start broad project refr
   await page.waitForTimeout(900);
 
   await expect(page.locator('#title')).toContainText('模型配置');
-  await expect(page.locator('#modalTitle')).toHaveText('R2新页面保护');
-  await expect(page.locator('#actionFenceR2Sentinel')).toHaveText('new-page-r2');
-  expect(broadGetsAfterRelease).toBe(0);
+  await expect(page.locator('#modalTitle'), 'stale clean confirm replaced or closed the newer page modal').toHaveText('R2新页面保护');
+  await expect(page.locator('#actionFenceR2Sentinel'), 'stale clean confirm destroyed the newer page modal body').toHaveText('new-page-r2');
+  expect(broadGetsAfterRelease, 'stale clean confirm started loadRelated broad GET fan-out').toBe(0);
 });
