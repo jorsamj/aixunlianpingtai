@@ -1,0 +1,56 @@
+name: Retire Legacy AutoLabel Render Routes
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_legacy_autolabel_render_routes.py
+      - .github/workflows/retire-legacy-autolabel-render-routes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded legacy AutoLabel render-route retirement
+        run: python tools/retire_legacy_autolabel_render_routes.py
+      - name: Verify focused render contracts
+        run: |
+          node --check static/app.js
+          node --check tests/frontend/render-owner-retirement.test.mjs
+          node --test tests/frontend/render-owner-retirement.test.mjs tests/frontend/render-alias-restore.test.mjs tests/frontend/navigation-stability.test.mjs tests/frontend/navigation-persistence.test.mjs
+          if grep -Fq "if(state.page==='自动标注'){renderNav();renderTop();renderSummary();renderAutoLabel422();return}" static/app.js; then
+            echo 'v42.2 legacy auto-label render route remains' >&2
+            exit 1
+          fi
+          if grep -Fq "if(state.page==='自动标注'){renderAutoLabel424();return}" static/app.js; then
+            echo 'v42.4 legacy auto-label render route remains' >&2
+            exit 1
+          fi
+          grep -Fq "render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()}" static/app.js
+          grep -Fq "const restoredPage=lastState.page==='自动标注'?'自动标注及清洗':lastState.page;" static/app.js
+          grep -Fq '/static/app.js?v=42.25.63' static/index.html
+      - name: Commit retired legacy AutoLabel render routes
+        run: |
+          if git diff --quiet -- static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs; then
+            echo 'no legacy AutoLabel render-route retirement changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs
+          git commit -m 'refactor(ui): retire legacy auto-label render routes'
+          git push
