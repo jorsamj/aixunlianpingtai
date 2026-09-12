@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`103d630b24bd1aad77190149291c4c9f25e8ab75`**  
-> **Frontend Runtime Stabilization：run `34677761599`，frontend + Real Chrome 全绿，Real Chrome 21/21 passed。**  
+> **最近完整代码验收点：`d18044d3d98231affc7488974e04623dab6d2b10`**  
+> **Frontend Runtime Stabilization：run `34679069872`，frontend + Real Chrome 全绿，Real Chrome 22/22 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -119,6 +119,7 @@ legacy baseRender + RAF page normalization wrapper
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | algorithm version delete full reload | `AlgorithmListRuntime.refresh` (algorithms + jobs) | **CLOSED (R20a)** |
+| model-version publish full reload | authoritative POST result + local state patch | **CLOSED (R20b)** |
 | global reload / duplicate request | scoped refresh | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -230,8 +231,8 @@ global reload / loadAll / loadRelated request ownership
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.76
-main.mjs cache                   42.25.81
+app.js cache                     42.25.78
+main.mjs cache                   42.25.83
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -264,6 +265,8 @@ tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/startup-render-owner.test.mjs
 tests/frontend/lifecycle-event-ownership.test.mjs
+tests/frontend/algorithm-version-refresh-owner.test.mjs
+tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -304,7 +307,7 @@ R12 永久要求：
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 已在 R18 退休，不得回归；startup/page normalization 均由 readiness-aware final render owner 承担。
 
-当前验收：run `34670989473`，frontend PASS，Real Chrome **20/20 passed**。
+当前验收：run `34679069872`，frontend PASS，Real Chrome **22/22 passed**。
 
 ### R16 — event-owned ZIP completion + page-scoped material summary
 
@@ -387,6 +390,26 @@ main.mjs:   42.25.82
 ```
 
 This closes only the version-delete refresh path. R20/global reload debt remains **IN PROGRESS** and must continue mutation-domain by mutation-domain.
+
+### R20b — model-version publish authoritative state update
+
+The final live 测试发布 `saveAssign` owner no longer calls global `reload()` after a successful version publish. The API response's `version` is authoritative: it is inserted into the selected algorithm state, the matching pending model is removed, transient assignment state is cleared, and the current page is rendered locally. The publish action is permanently guarded as one POST with no reload GET fan-out.
+
+```text
+initial baseline:   b41340d4ee292f7e8e268f4bd59206efe072d690 / 34678815343 → 21/22
+                    test assertion mismatch only: disabled input value was checked as modal text
+corrected baseline: b7043a5b780c9d0c4ca160c4bc7d7951a83198ff / focused 34678924407 PASS
+product:            4a2eb2a78869db0b91f1920ff4b7ba3b0dd45b89
+focused migration:  34679011468 PASS
+validation:         d18044d3d98231affc7488974e04623dab6d2b10
+full run:           34679069872
+frontend:           PASS
+Real Chrome:        22/22 PASS
+app.js:             42.25.78
+main.mjs:            42.25.83
+```
+
+R20 remains **IN PROGRESS** for other live mutation owners.
 
 ## 7. Recent render/lifecycle acceptance history
 
@@ -479,7 +502,7 @@ R15 startup render timer retirement
 
 ## 8. 下一批：global reload / request ownership audit
 
-R17–R19 已把 active normalization observers 清零。R20a 已关闭算法版本删除的全量 reload：最终 owner 只做 DELETE + algorithms/jobs focused refresh。R20 仍需继续审计其他 live mutation owner，并逐域迁移 `reload() → loadAll() → loadRelated()` 全量刷新债务；不允许靠缓存或测试放宽掩盖重复请求。
+R17–R19 已把 active normalization observers 清零。R20a 已关闭算法版本删除的全量 reload；R20b 又关闭测试发布模型归属版本后的全量 reload，并改为使用 POST 返回值直接更新算法版本与 pending state。R20 仍需继续审计其他 live mutation owner，并逐域迁移 `reload() → loadAll() → loadRelated()` 全量刷新债务；不允许靠缓存或测试放宽掩盖重复请求。
 
 `oldRenderV39` 与 `render414Base` 已确认 live，不得因为版本号旧就直接删。
 

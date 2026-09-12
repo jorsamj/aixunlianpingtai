@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       103d630b24bd1aad77190149291c4c9f25e8ab75
-run:          34677761599
+commit:       d18044d3d98231affc7488974e04623dab6d2b10
+run:          34679069872
 frontend:     PASS
-Real Chrome:  PASS (21/21)
+Real Chrome:  PASS (22/22)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.77
-main.mjs                  42.25.82
+app.js                    42.25.78
+main.mjs                  42.25.83
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -329,6 +329,21 @@ main.mjs:   42.25.82
 
 This closes only the version-delete refresh path. R20/global reload debt remains **IN PROGRESS** and must continue mutation-domain by mutation-domain.
 
+### R20b — model-version publish local state ownership
+
+The final live 测试发布 `saveAssign` owner previously performed a successful version POST and then invoked global `reload()`. The backend already returns the authoritative created `version`, so the owner now patches `state.algorithms`, removes the matching pending model, clears transient assignment state and renders locally. The permanent browser request contract requires exactly one publish POST and forbids bootstrap/algorithms/pending/jobs/models/training-resource reload fan-out from this action.
+
+```text
+initial baseline:   b41340d4ee292f7e8e268f4bd59206efe072d690 / 34678815343 → 21/22
+corrected baseline: b7043a5b780c9d0c4ca160c4bc7d7951a83198ff / 34678924407 PASS
+product:            4a2eb2a78869db0b91f1920ff4b7ba3b0dd45b89
+validation:         d18044d3d98231affc7488974e04623dab6d2b10 / 34679069872
+frontend:           PASS
+Real Chrome:        22/22 PASS
+```
+
+The initial baseline failure was only an incorrect test assertion against modal text; the model name is rendered as a disabled input value. No product fix was hidden by that correction.
+
 ## 7. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
@@ -400,6 +415,7 @@ tests/frontend/startup-render-owner.test.mjs
 tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/modal-content-owner.test.mjs
 tests/frontend/algorithm-version-refresh-owner.test.mjs
+tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -417,7 +433,7 @@ cleanup(root) invokes window.beautifyFileInputs426?.(root)
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **21/21** in run `34677761599`.
+Current accepted Real Chrome suite: **22/22** in run `34679069872`.
 
 ## 9. Remaining technical-debt targets
 

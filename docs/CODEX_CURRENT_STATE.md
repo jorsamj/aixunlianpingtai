@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 103d630b24bd1aad77190149291c4c9f25e8ab75
-Frontend Runtime run:        34677761599
+latest full code acceptance: d18044d3d98231affc7488974e04623dab6d2b10
+Frontend Runtime run:        34679069872
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.77
-main.mjs cache:              42.25.82
+app.js cache:                42.25.78
+main.mjs cache:              42.25.83
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34677761599` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **21 tests and passed 21/21**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34679069872` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **22 tests and passed 22/22**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -354,6 +354,26 @@ main.mjs:   42.25.82
 
 This closes only the version-delete refresh path. R20/global reload debt remains **IN PROGRESS** and must continue mutation-domain by mutation-domain.
 
+### R20b — model publish authoritative state update
+
+The final live `saveAssign` owner was proven reachable from 测试发布. Its POST already returns the authoritative created `version`, so R20b removes the redundant global reload after publish. On success the owner prepends the returned version to the selected algorithm, removes the published model from `state.pending`, clears `state.assigningModel`, closes the modal and renders locally. The publish action itself now owns exactly one POST and zero follow-up GETs.
+
+```text
+initial baseline:   b41340d4ee292f7e8e268f4bd59206efe072d690 / run 34678815343 → 21/22
+                    failure was a test-DOM mismatch: model name is an input value, not modal text
+corrected baseline: b7043a5b780c9d0c4ca160c4bc7d7951a83198ff / focused run 34678924407 PASS
+product:            4a2eb2a78869db0b91f1920ff4b7ba3b0dd45b89
+focused migration:  34679011468 PASS
+validation:         d18044d3d98231affc7488974e04623dab6d2b10
+run:                34679069872
+frontend:           PASS
+Real Chrome:        22/22 PASS
+app.js:             42.25.78
+main.mjs:            42.25.83
+```
+
+R20/global reload debt remains **IN PROGRESS**; R20b closes only the live model-version publish path.
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -424,6 +444,7 @@ startup-render-owner.test.mjs
 lifecycle-event-ownership.test.mjs
 modal-content-owner.test.mjs
 algorithm-version-refresh-owner.test.mjs
+algorithm-version-publish-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -439,7 +460,7 @@ auto-label-poll-runtime.test.mjs
 - `#view` observer remains retired; page normalization must stay final-render-owned;
 - `#modalBody` normalization observer is retired and must not return; modal content replacement must stay `ModalContentRuntime`-owned.
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **21/21**; this includes `base modal post-open content refresh stays functional` and `algorithm version deletion uses focused refresh without full reload`.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **22/22**; this includes `base modal post-open content refresh stays functional`, `algorithm version deletion uses focused refresh without full reload`, and the model-version publish authoritative-state/request-boundary contract.
 
 Do not weaken these tests.
 
