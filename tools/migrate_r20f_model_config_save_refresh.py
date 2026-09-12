@@ -59,20 +59,22 @@ test('live model config save owner uses authoritative mutation result without br
   assert.doesNotMatch(owner, /loadAll\s*\(/);
 });
 
-test('final runtime model config modal wires save to the M4 owner', () => {
-  const finalOpen = app.lastIndexOf('window.openModelConfigModalV35=function');
-  assert.ok(finalOpen >= 0);
-  const nextBoundary = app.indexOf('\n  window.saveVisionModelM4=async function', finalOpen);
-  assert.ok(nextBoundary > finalOpen, 'final model config modal must be paired with M4 save owner');
-  const region = app.slice(finalOpen, nextBoundary);
+test('M4 captures the vision modal before later compatibility overrides', () => {
+  const m4Start = app.indexOf('M4: real vision providers, reviewable boxes, explicit targets');
+  const m4Open = app.indexOf('window.openModelConfigModalV35=function', m4Start);
+  const capture = app.indexOf('window.__m4OpenModelConfig=window.openModelConfigModalV35;', m4Open);
+  assert.ok(m4Start >= 0 && m4Open > m4Start && capture > m4Open);
+  const region = app.slice(m4Open, capture);
   assert.match(region, /onclick=\"saveVisionModelM4\('\$\{id\}'\)\"/);
 });
 
-test('shadowed saveModelConfig427 is not the final modal save target', () => {
-  const finalOpen = app.lastIndexOf('window.openModelConfigModalV35=function');
-  const nextBoundary = app.indexOf('\n  window.saveVisionModelM4=async function', finalOpen);
-  const region = app.slice(finalOpen, nextBoundary);
-  assert.doesNotMatch(region, /saveModelConfig427/);
+test('M4 final activation restores the captured modal after compatibility layers', () => {
+  const capture = app.indexOf('window.__m4OpenModelConfig=window.openModelConfigModalV35;');
+  const compatibilityOpen = app.indexOf('window.openModelConfigModalV35=function', capture + 1);
+  const activation = app.indexOf('M4 final activation: later compatibility layers must not replace these contracts.');
+  assert.ok(capture >= 0 && compatibilityOpen > capture && activation > compatibilityOpen);
+  const activationRegion = app.slice(activation, activation + 1200);
+  assert.match(activationRegion, /if\(window\.__m4OpenModelConfig\)window\.openModelConfigModalV35=window\.__m4OpenModelConfig/);
 });
 ''', encoding='utf-8')
 
