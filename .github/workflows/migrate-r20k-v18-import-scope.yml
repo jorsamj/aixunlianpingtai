@@ -1,0 +1,72 @@
+name: Migrate R20k V18 Import Scope
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/migrate_r20k_v18_import_completion_scope.py
+      - .github/workflows/migrate-r20k-v18-import-scope.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Apply guarded R20k migration
+        run: python tools/migrate_r20k_v18_import_completion_scope.py
+
+      - name: Verify formal version unchanged
+        run: |
+          test "$(cat VERSION.txt)" = "42.24.0"
+          grep -Fq 'app.js?v=42.25.87' static/index.html
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Syntax check
+        run: node --check static/app.js
+
+      - name: Run all frontend unit tests
+        run: node --test tests/frontend/*.test.mjs
+
+      - name: Install backend browser-test dependencies
+        run: python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Focused Real Chrome import/material regressions
+        run: npx playwright test tests/browser/material-pagination-performance.spec.mjs
+
+      - name: Verify live owner stays scoped
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          app = Path('static/app.js').read_text(encoding='utf-8')
+          assert app.count('window.doImportData=') == 1
+          s = app.index('window.doImportData=')
+          e = app.index('\n\nwindow.manageLabels=', s)
+          block = app[s:e]
+          assert 'await window.refreshLabels414?.(false)' in block
+          assert "if(state.page==='数据集')await window.reloadMaterialPage61?.()" in block
+          for token in ('await reload()', 'await loadAll()', 'await loadRelated()'):
+              assert token not in block, token
+          print('R20k live v18 import owner scoped-refresh guard PASS')
+          PY
+
+      - name: Commit product migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/app.js static/index.html tests/frontend/v18-import-completion-scope.test.mjs tests/browser/material-pagination-performance.spec.mjs
+          git diff --cached --quiet && { echo 'No product changes'; exit 1; }
+          git commit -m "refactor(ui): scope live v18 import completion refresh"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
