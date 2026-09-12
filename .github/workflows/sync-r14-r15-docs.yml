@@ -27,9 +27,21 @@ jobs:
       - name: Validate documentation update
         run: |
           test "$(cat VERSION.txt)" = "42.24.0"
-          git diff --check
           git diff --exit-code -- VERSION.txt
-          git diff -- docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md docs/TECH_DEBT_CLOSURE_V42_25.md | grep -q '34667776611'
+          python - <<'PY'
+          from pathlib import Path
+          paths = [
+              'docs/CODEX_CURRENT_STATE.md',
+              'docs/frontend-legacy-audit.md',
+              'docs/FRONTEND_OWNER_MAP_V42_25.md',
+              'docs/TECH_DEBT_CLOSURE_V42_25.md',
+          ]
+          for path in paths:
+              text = Path(path).read_text(encoding='utf-8')
+              assert '34667776611' in text, path
+              assert 'b6edea36296ab9548037457a124b4369776f6f5e' in text, path
+              assert '<<<<<<<' not in text and '>>>>>>>' not in text, path
+          PY
       - name: Commit ledgers
         run: |
           git config user.name 'github-actions[bot]'
