@@ -63,7 +63,15 @@ jobs:
           PY
 
       - name: Action fence unit contracts
-        run: node --test tests/frontend/navigation-action-fencing.test.mjs tests/frontend/navigation-stability.test.mjs
+        run: >-
+          node --test
+          tests/frontend/navigation-action-fencing.test.mjs
+          tests/frontend/navigation-action-fencing-r2.test.mjs
+          tests/frontend/navigation-stability.test.mjs
+          tests/frontend/model-config-mutation-owner.test.mjs
 
       - name: Real Chrome stale mutation contract
-        run: npx playwright test tests/browser/navigation-action-fencing.spec.mjs
+        run: >-
+          npx playwright test
+          tests/browser/navigation-action-fencing-r2.spec.mjs
+          tests/browser/navigation-action-fencing.spec.mjs
