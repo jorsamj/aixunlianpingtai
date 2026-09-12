@@ -1,0 +1,53 @@
+name: Fix Deployment Artifact E2E
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/fix_deployment_artifact_e2e.py
+      - .github/workflows/fix-deployment-artifact-e2e.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Apply deployment artifact E2E fix
+        run: python tools/fix_deployment_artifact_e2e.py
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest httpx
+          npm ci
+      - name: Syntax and source contract
+        run: |
+          node --check static/app.js
+          node --test tests/frontend/deployment-artifact-refresh.test.mjs
+      - name: Deployment artifact API contract
+        run: python -m pytest -q tests/api/test_deployment_artifact_visibility.py tests/api/test_conversion_jobs.py
+      - name: Focused Real Chrome deployment artifact flow
+        run: npx playwright test tests/browser/deployment-artifact-visibility.spec.mjs tests/browser/model-and-conversion.spec.mjs
+      - name: Verify release boundary
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          grep -q '/static/app.js?v=42.25.94' static/index.html
+          git diff --check
+      - name: Commit validated product fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/app.js static/index.html tests/api/test_deployment_artifact_visibility.py tests/frontend/deployment-artifact-refresh.test.mjs tests/browser/deployment-artifact-visibility.spec.mjs
+          git diff --cached --check
+          git commit -m "fix(deploy): surface completed conversion artifacts"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
