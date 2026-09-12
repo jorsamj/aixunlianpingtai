@@ -1,0 +1,56 @@
+name: Retire render426base Page Wrapper
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_render426base_page_wrapper.py
+      - .github/workflows/retire-render426base-page-wrapper.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser-test backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded render426base migration
+        run: python tools/retire_render426base_page_wrapper.py
+      - name: Verify focused static and unit contracts
+        run: |
+          node --check static/app.js
+          node --test tests/frontend/file-input-beautification-owner.test.mjs tests/frontend/render-owner-retirement.test.mjs tests/frontend/navigation-stability.test.mjs
+          if grep -F -n 'render426base' static/app.js; then
+            echo 'retired render426base page wrapper remains' >&2
+            exit 1
+          fi
+          grep -Fq 'const modal426=modal;' static/app.js
+          grep -Fq 'window.beautifyFileInputs426?.(root);' static/app.js
+          grep -Fq '/static/app.js?v=42.25.67' static/index.html
+      - name: Verify browser behavior after owner migration
+        run: >-
+          npx playwright test tests/browser/navigation-stability.spec.mjs
+          --grep "file input beautification survives page render lifecycle ownership"
+      - name: Commit render426base retirement
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/file-input-beautification-owner.test.mjs
+          git commit -m 'refactor(ui): retire render426base page wrapper'
+          git push
