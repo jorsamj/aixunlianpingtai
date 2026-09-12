@@ -7,6 +7,7 @@ on:
     paths:
       - tools/audit_r20g_global_refresh_owners.py
       - tools/audit_r20g_refresh_aliases.py
+      - tools/audit_r20g_import_contracts.py
       - .github/workflows/audit-r20g-global-refresh-owners.yml
   workflow_dispatch:
 
@@ -26,6 +27,8 @@ jobs:
         run: python tools/audit_r20g_global_refresh_owners.py
       - name: Run R20g refresh alias audit
         run: python tools/audit_r20g_refresh_aliases.py
+      - name: Inspect import result contracts
+        run: python tools/audit_r20g_import_contracts.py
       - name: Verify audit is read-only
         run: |
           test "$(cat VERSION.txt)" = "42.24.0"
