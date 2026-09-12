@@ -747,9 +747,6 @@ window.installUsability417=function(){
   window.openTrainSettings428=window.openTrainSettings429;
   const baseOpenConvert417=window.openNewConvert428;
   window.openNewConvert428=async function(...args){const result=await baseOpenConvert417?.(...args);setTimeout(()=>{const root=document.querySelector('.convert428-create'),footer=root?.querySelector('.row.end'),primary=footer?.querySelector('.btn.primary');if(footer&&primary&&!footer.querySelector('.configure417-resource'))primary.insertAdjacentHTML('beforebegin',`<button class="btn configure417-resource" onclick="closeModal();closeModal();setPage('部署资源')">配置部署资源</button>`)},20);return result};
-  const baseRender417=render;
-  render=function(){const result=baseRender417?.(),badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0';return result};
-  [120,600,1600].forEach(delay=>setTimeout(()=>{const badge=document.getElementById('versionBadge'),footer=document.querySelector('.nav-footer b');if(badge)badge.textContent='v42.24.0';if(footer)footer.textContent='v42.24.0'},delay));
   if(state.page==='数据集')renderDatasets424();
 };
 
@@ -1980,7 +1977,6 @@ window.installUsability417=function(){
     oldRenderV39();
   };
   // existing setPage calls render dynamically; reset deployment cache on relevant pages only.
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V39},100);
 })();
 
 
@@ -2025,8 +2021,6 @@ window.installUsability417=function(){
   function addRockchipOption(){const k=document.getElementById('drKind');if(k&&!k.querySelector('option[value="rockchip"]')){const o=document.createElement('option');o.value='rockchip';o.textContent='瑞芯微 RKNN-Toolkit2';k.insertBefore(o,k.firstChild)}}
   window.openDeployResourceModal=()=>{oldOpen();addRockchipOption()};
   window.editDeployResource=id=>{oldEdit(id);addRockchipOption();const r=(state.deployResources||[]).find(x=>x.id===id);if(r?.kind==='rockchip'){const k=document.getElementById('drKind');if(k)k.value='rockchip';toggleDeployResourceFields()}};
-
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v42.24.0'},150);
 })();
 
 // ============================================================
@@ -2183,7 +2177,6 @@ window.installUsability417=function(){
     if(state.page==='质量中心'){renderNav();renderTop();renderSummary();renderQualityV42();return}
     oldRender42();
   };
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V42},180);
 })();
 
 // ============================================================
@@ -2393,7 +2386,6 @@ window.installUsability417=function(){
     if(state.page==='素材接入'){renderNav();renderTop();renderSummary();renderSources422();return}
     render422Base();
   };
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V422},100);
 })();
 
 // ============================================================
@@ -2497,7 +2489,6 @@ window.installUsability417=function(){
   window.deleteJob423=async id=>{if(!confirm('确认删除训练任务？'))return;await safe(api(`/api/v12/projects/${pid()}/jobs/${id}`,{method:'DELETE'}));await refreshTrain423();toast('已删除')};
 
   // Algorithm/training routing is owned by the later stable render layers.
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V423},100);
 })();
 
 // ============================================================
@@ -2690,7 +2681,6 @@ window.installUsability417=function(){
     // algorithm/data/training routes are owned by later stable wrappers.
     renderBase424();
   };
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V424},100);
 })();
 
 /* ============================================================
@@ -2797,7 +2787,6 @@ window.installUsability417=function(){
   window.renderTraining424=window.renderTraining425=function(){document.getElementById('view').innerHTML=`<section class="taskpage424"><div class="taskpage424-head"><div></div><button class="btn primary" onclick="openTrain425()">▶ 开始训练</button></div><section class="panel"><div class="table-wrap"><table class="table train424-table"><thead><tr><th>训练任务</th><th>状态</th><th>训练资源 / 算法</th><th>数据</th><th>进度 / 已用</th><th>预计剩余</th><th>创建时间</th><th>操作</th></tr></thead>${rowsTrain425()}</table></div></section></section>`};
 
   // version badge
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V425},120);
 })();
 
 
@@ -3004,7 +2993,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // route + page alias
   const renderBase427=render;
   render=function(){renderNav();renderTop();renderSummary();if(state.page==='自动标注及清洗'){renderOps427();return}renderBase427()};
-    setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V427},120);
 })();
 
 /* ============================================================
@@ -3138,7 +3126,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const renderBase428=render;
   render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};
   window.startAlgorithmTraining428=window.startAlgorithmTraining423;
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V428},120);
 })();
 
 /* ============================================================
@@ -3239,7 +3226,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function splitIds429(ids,seed=0){const arr=[...ids].sort((a,b)=>{const ha=[...String(a+seed)].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7),hb=[...String(b+seed)].reduce((s,c)=>(s*31+c.charCodeAt(0))>>>0,7);return ha-hb});const vn=Math.max(1,Math.min(arr.length-1,Math.round(arr.length*.2)));return{train:arr.slice(vn),val:arr.slice(0,vn)}}
   
   // routing is owned by the later stable render layer.
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V429},100);
 })();
 
 // ===== v42.10.1 hotfixes: keep new algorithm cards and refresh new training summary =====
@@ -3290,7 +3276,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       let startedJob;try{startedJob=await api(`/api/v19/projects/${pid()}/import/jobs/${job.id}/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected_paths:[]})})}catch(e){throw new Error(`后台导入无法启动：${e.message||e}`)}step410('zip410StepProcess','active');const done=await pollZip410(job.id,performance.now());result410(done,totalStart);if(done.status==='done'){await loadRelated();if(state.page==='数据集')renderDatasets424()}
     }catch(e){clearInterval(timer);step410('zip410StepUpload','failed');step410('zip410StepDone','failed');set410('zip410DoneText','上传或导入失败');set410('zip410ProgressLabel','失败');const box=document.getElementById('zip410Result');if(box){box.classList.remove('hidden');box.className='zip410-result failed';box.innerHTML=`<h3>上传失败</h3><p>${esc(e.message||String(e))}</p><button class="btn" onclick="closeModal();setTimeout(openDataUpload426,30)">重新上传</button>`}toast(e.message||e)}finally{inp.value=''}};
   // Keep visible version marker aligned.
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V410},120);
 })();
 
 /* ============================================================
@@ -3396,8 +3381,6 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     xhr.onerror=()=>setImport411({stage:'上传失败',progress:100,eta:0,resultHtml:'<div class="alert err">网络连接中断，ZIP 上传失败。</div>',active:true});
     xhr.onload=async()=>{let job={};try{job=JSON.parse(xhr.responseText||'{}')}catch(e){};if(xhr.status<200||xhr.status>=300){setImport411({stage:'上传失败',progress:100,eta:0,resultHtml:`<div class="alert err">${esc(job.detail||xhr.responseText||'上传失败')}</div>`});return}setImport411({jobId:job.id,stage:'ZIP校验完成',message:`发现 ${job.image_count||0} 张图片 · ${esc((job.format_hints||[]).join('/')||'待识别')}`,progress:38,uploadSeconds:job.upload_seconds,processSeconds:job.scan_seconds,eta:null});try{await api(`/api/v19/projects/${pid()}/import/jobs/${job.id}/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected_paths:[]})});const done=await pollImport411(job.id),r=done.report||{};if(done.status==='done'){const warns=(r.warnings||[]).map(x=>`<li>${esc(x)}</li>`).join('');setImport411({stage:'导入完成',message:`${r.imported_images||0} 张图片 · ${r.boxes||0} 个框`,progress:100,eta:0,processSeconds:done.processing_seconds,resultHtml:`<div class="alert ok"><b>导入完成</b>：${r.imported_images||0} 张图片，其中 ${r.annotated_images||0} 张带标注，${r.boxes||0} 个框。</div>${warns?`<ul class="zip410-warn">${warns}</ul>`:''}<div class="row end"><button class="btn" onclick="state.import411.active=false;updateImportDock411();closeModal()">关闭</button><button class="btn primary" onclick="state.import411.active=false;updateImportDock411();closeModal();setPage('数据集')">查看数据</button></div>`});invalidateQuality411();await related411();if(state.page==='数据集')renderDatasets424()}else setImport411({stage:'导入失败',progress:100,eta:0,resultHtml:`<div class="alert err">${esc(done.error||done.message||'导入失败')}</div>`})}catch(e){setImport411({stage:'导入失败',progress:100,eta:0,resultHtml:`<div class="alert err">${esc(e.message||e)}</div>`})}};xhr.send(fd);inp.value='';
   };
-
-  setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V411},50);
   // Run the one initial load only after every version override above has been installed.
   queueMicrotask(()=>{if(window.__clInit)window.__clInit()});
 })();

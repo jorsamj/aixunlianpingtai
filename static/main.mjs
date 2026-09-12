@@ -187,13 +187,4 @@ installNavigationStability({
   },
 });
 
-function applyBuildVersion() {
-  const badge = document.getElementById('versionBadge');
-  if (badge) badge.textContent = `v${UI_BUILD_VERSION}`;
-  const footer = document.querySelector('.nav-footer b');
-  if (footer) footer.textContent = `v${UI_BUILD_VERSION}`;
-  document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;
-}
-
-applyBuildVersion();
-for (const delay of [80, 500, 1800, 3600, 8000]) setTimeout(applyBuildVersion, delay);
+document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;
