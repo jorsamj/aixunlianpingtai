@@ -1,0 +1,52 @@
+name: Retire Shadowed renderBase428 Algorithm Branch
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/retire_shadowed_render428_algorithm_branch.py
+      - .github/workflows/retire-shadowed-render428-algorithm-branch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Apply guarded render428 branch retirement
+        run: python tools/retire_shadowed_render428_algorithm_branch.py
+      - name: Verify focused render contracts
+        run: |
+          node --check static/app.js
+          node --check tests/frontend/render-owner-retirement.test.mjs
+          node --test tests/frontend/render-owner-retirement.test.mjs tests/frontend/render-alias-restore.test.mjs tests/frontend/navigation-stability.test.mjs
+          if grep -Fq "render=function(){if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};" static/app.js; then
+            echo 'shadowed renderBase428 algorithm branch remains' >&2
+            exit 1
+          fi
+          grep -Fq "render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};" static/app.js
+          grep -Fq 'const oldRender412=render;' static/app.js
+          grep -Fq '/static/app.js?v=42.25.62' static/index.html
+      - name: Commit retired render428 branch
+        run: |
+          if git diff --quiet -- static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs; then
+            echo 'no render428 algorithm-branch retirement changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html tests/frontend/render-owner-retirement.test.mjs
+          git commit -m 'refactor(ui): retire shadowed render428 algorithm branch'
+          git push
