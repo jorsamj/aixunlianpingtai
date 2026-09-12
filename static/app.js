@@ -3142,7 +3142,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   // Final route override: task center never exposes a create button; algorithm list is the only training entry.
   const renderBase428=render;
-  render=function(){if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};
+  render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};
   window.startAlgorithmTraining428=window.startAlgorithmTraining423;
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V428},120);
 })();

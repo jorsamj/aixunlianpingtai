@@ -50,3 +50,21 @@ test('later algorithm/training owners and direct training polling remain', () =>
   assert.equal(app.includes('window.renderTraining425=window.renderTraining424=window.renderTraining423=function()'), true);
   assert.equal(app.includes('window.PollRegistryRuntime?.replaceTrainingJobTimer?.()};'), true);
 });
+
+test('renderBase428 keeps only its live training route branch', () => {
+  assert.equal(
+    app.includes("render=function(){if(state.page==='算法列表'){renderNav();renderTop();renderSummary();renderAlgorithms423();return}if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};"),
+    false,
+  );
+  assert.equal(
+    app.includes("render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};"),
+    true,
+  );
+});
+
+test('oldRender412 remains the sole outer algorithm-list route owner', () => {
+  assert.equal(
+    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='算法列表'){renderAlgorithms423();return}if(state.page==='数据集'){renderDatasets424();return}oldRender412()};"),
+    true,
+  );
+});
