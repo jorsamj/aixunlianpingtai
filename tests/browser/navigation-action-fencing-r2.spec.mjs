@@ -74,7 +74,7 @@ test('stale model connection test cannot open its result modal over a newer page
   });
 
   await page.evaluate(() => window.setPage('模型配置'));
-  await page.evaluate(() => window.testModelConfigV35('cfg-r2'));
+  await page.evaluate(() => { void window.testModelConfigV35('cfg-r2'); });
   await Promise.race([intercepted, new Promise((_, reject) => setTimeout(() => reject(new Error('model test POST was not intercepted')), 8_000))]);
   await protectNewPageModal(page, '数据集');
   release();
@@ -103,7 +103,7 @@ test('stale clean confirmation cannot close newer UI or start broad project refr
     interceptedResolve();
     await gate;
     confirmReleased = true;
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, deleted: 1, deleted_ids: ['image-r2'], deleted_images: []})});
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, deleted: 1, deleted_ids: ['image-r2'], deleted_images: [], processed_ids: []})});
   });
   page.on('request', request => {
     if (!confirmReleased || request.method() !== 'GET') return;
@@ -122,7 +122,45 @@ test('stale clean confirmation cannot close newer UI or start broad project refr
   await page.waitForTimeout(900);
 
   await expect(page.locator('#title')).toContainText('模型配置');
-  await expect(page.locator('#modalTitle'), 'stale clean confirm replaced or closed the newer page modal').toHaveText('R2新页面保护');
+  await expect(page.locator('#modal'), 'stale clean confirm closed the newer page modal').not.toHaveClass(/hidden/);
+  await expect(page.locator('#modalTitle'), 'stale clean confirm replaced the newer page modal').toHaveText('R2新页面保护');
   await expect(page.locator('#actionFenceR2Sentinel'), 'stale clean confirm destroyed the newer page modal body').toHaveText('new-page-r2');
-  expect(broadGetsAfterRelease, 'stale clean confirm started loadRelated broad GET fan-out').toBe(0);
+  expect(broadGetsAfterRelease, 'stale clean confirm started broad GET fan-out').toBe(0);
+});
+
+test('stale AI confirmation cannot patch or close UI owned by a newer page', async ({page}) => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let interceptedResolve;
+  const intercepted = new Promise(resolve => { interceptedResolve = resolve; });
+
+  await boot(page);
+  await page.route(/\/api\/v47\/projects\/[^/]+\/ai-label-tasks\/ai-r2\/result$/, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({result: {labels: ['smoke'], items: [{image_id: 'image-ai-r2', filename: 'image-ai-r2.jpg', status: 'ok', boxes: [{label: 'smoke', x1: 1, y1: 1, x2: 10, y2: 10, confidence: 0.9}]}]}}),
+  }));
+  await page.route(/\/api\/v47\/projects\/[^/]+\/ai-label-tasks\/ai-r2\/confirm$/, async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    interceptedResolve();
+    await gate;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
+      applied_images: 1, boxes_added: 1, applied_image_ids: ['image-ai-r2'],
+    })});
+  });
+
+  await page.evaluate(() => window.setPage('数据集'));
+  await page.evaluate(() => window.reviewAiLabel427('ai-r2'));
+  await expect(page.getByRole('button', {name: '确认写入标注'})).toBeVisible();
+  await page.getByRole('button', {name: '确认写入标注'}).click();
+  await Promise.race([intercepted, new Promise((_, reject) => setTimeout(() => reject(new Error('AI confirm POST was not intercepted')), 8_000))]);
+
+  await protectNewPageModal(page, '模型配置');
+  release();
+  await page.waitForTimeout(700);
+
+  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#modal'), 'stale AI confirm closed the newer page modal').not.toHaveClass(/hidden/);
+  await expect(page.locator('#modalTitle'), 'stale AI confirm replaced the newer page modal').toHaveText('R2新页面保护');
+  await expect(page.locator('#actionFenceR2Sentinel'), 'stale AI confirm destroyed the newer page modal body').toHaveText('new-page-r2');
 });
