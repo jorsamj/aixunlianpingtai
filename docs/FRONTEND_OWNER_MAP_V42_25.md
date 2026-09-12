@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29` / run `34666673017`  
+> Latest fully accepted code point: `43e31c7e683fbda4b9c36a3d35188262b6a9ff1b` / run `34666985800`  
 > Real Chrome: 18/18 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -57,6 +57,7 @@ initial bootstrap setPage                       CLOSED
 | R10 | `render426base` page-render file-input beautification wrapper | `0dacf581...` / `34665470320` |
 | R11 | `modal426` modal file-input beautification wrapper | `9bad939a...` / `34665890699` |
 | R12 | `enhancePageV37` post-render normalization helper + RAF callbacks | `60d87751...` / `34666673017` |
+| R13 | `baseRenderV37` duplicate versionInfo render wrapper | `43e31c7e...` / `34666985800` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -64,7 +65,9 @@ R11 product: `8ff8e7fd9dc055b6e413c273cc030e7f20a2f0c1`.
 R11 final acceptance increased the browser suite to 17 tests; **17/17 passed**.  
 R12 baseline: `6ae19dc79abbf690371a71162c97a2df6322518b`.  
 R12 product: `202a5a82b0cb4629423ee0c6812f649031234daa`.  
-R12 final acceptance increased the browser suite to 18 tests; **18/18 passed**. All one-shot baseline/migration helpers/workflows were removed after success.
+R12 final acceptance increased the browser suite to 18 tests; **18/18 passed**.  
+R13 product: `928d2387d46a0472bd202bd4df84af8d1573b6c2`.  
+R13 validation: `43e31c7e683fbda4b9c36a3d35188262b6a9ff1b` / run `34666985800`; **18/18 passed**. All one-shot migration helpers/workflows were removed after success.
 
 ## 4. Current final navigation owner
 
@@ -107,7 +110,7 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Storage configuration route | `finalRender` | `renderStorageSources61()` | dedicated Chrome contract |
 | Page post-render normalization | `cleanup(root)` + view observer | DOM cleanup + table wrapping + page file-input beautification | unit + Chrome |
 | Modal post-render normalization | `cleanup(root)` + modalBody observer | table wrapping + dynamic modal file-input beautification | unit + Chrome |
-| V37 render compatibility | `baseRenderV37` | `state.versionInfo` formal-version compatibility write only | static/unit guard |
+| Render-path formal versionInfo | later `V42` render owner | `state.versionInfo.version = 42.24.0` before delegate | unit + Chrome |
 | V37 modal compatibility | `baseModalV37` | first editable modal field autofocus only | Chrome + unit guard |
 | Visible top version | `top412 / V412` | formal `v42.24.0` | unit + Chrome |
 | Visible sidebar version | `nav426 / V426` | formal `v42.24.0` | unit + Chrome |
@@ -243,7 +246,6 @@ oldRenderV39      deployment routes
 render414Base     标签管理 route
 finalRender       素材存储配置
 cleanup(root)     post-render normalization + table wrapping + page/modal file-input beautification
-baseRenderV37      state.versionInfo compatibility write only
 baseModalV37       first editable modal field autofocus only
 ```
 
@@ -262,6 +264,7 @@ historical visible-version delayed writers
 render426base page-render wrapper
 modal426 modal wrapper
 enhancePageV37 normalization helper/RAF callbacks
+baseRenderV37 duplicate versionInfo wrapper
 ```
 
 ## 10. Remaining render/lifecycle audit targets
@@ -269,11 +272,11 @@ enhancePageV37 normalization helper/RAF callbacks
 Independent proof is still required for:
 
 ```text
-baseRenderV37
-  state.versionInfo compatibility write only
-
 baseModalV37
   initial-focus wrapper only
+
+V37 startup timer
+  120ms state.versionInfo + render compatibility timer
 
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
@@ -306,7 +309,7 @@ modal file input beautification survives modal lifecycle ownership
 modal table wrapping and first-field focus survive normalization ownership
 ```
 
-Current accepted Real Chrome suite: **18/18** in run `34666673017`.
+Current accepted Real Chrome suite: **18/18** in run `34666985800`.
 
 ## 12. Per-batch checklist
 

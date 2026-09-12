@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29
-run:          34666673017
+commit:       43e31c7e683fbda4b9c36a3d35188262b6a9ff1b
+run:          34666985800
 frontend:     PASS
 Real Chrome:  PASS (18/18)
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS (18/18)
 Current caches/builds:
 
 ```text
-app.js                    42.25.69
-main.mjs                  42.25.73
+app.js                    42.25.70
+main.mjs                  42.25.74
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -88,6 +88,7 @@ main.mjs applyBuildVersion visible-version writer/timers
 render426base page-render file-input beautification wrapper
 modal426 modal file-input beautification wrapper
 enhancePageV37 post-render normalization helper
+baseRenderV37 duplicate versionInfo wrapper
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -190,6 +191,19 @@ run:        34666673017
 Chrome:     18/18 PASS
 ```
 
+### R13 — duplicate V37 render version write
+
+`baseRenderV37` was reduced by R12 to a single `state.versionInfo.version=42.24.0` write. A later V42 render owner writes the same formal version before delegating into the old render chain, so R13 removed the duplicate wrapper without moving any UI behavior.
+
+```text
+product:    928d2387d46a0472bd202bd4df84af8d1573b6c2
+validation: 43e31c7e683fbda4b9c36a3d35188262b6a9ff1b
+run:        34666985800
+Chrome:     18/18 PASS
+```
+
+`baseModalV37` autofocus remains live. The V37 120ms startup timer remains and was not part of R13.
+
 ## 7. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
@@ -224,9 +238,6 @@ cleanup(root)
   post-render DOM normalization
   table wrapping + page/modal file-input beautification
 
-baseRenderV37
-  state.versionInfo compatibility write only
-
 baseModalV37
   modal first-editable-field autofocus only
 ```
@@ -234,14 +245,14 @@ baseModalV37
 Still under audit:
 
 ```text
-baseRenderV37 versionInfo compatibility ownership
 baseModalV37 autofocus ownership
+V37 120ms startup render/version timer
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver lifecycle
 older base/global render generations reached through delegates
 ```
 
-`baseRender417`, `render426base`, `modal426`, and `enhancePageV37` are CLOSED and must not return.
+`baseRender417`, `render426base`, `modal426`, `enhancePageV37`, and `baseRenderV37` are CLOSED and must not return.
 
 ## 8. Permanent contracts
 
@@ -270,7 +281,7 @@ view + modalBody observer wiring remains until explicit lifecycle migration
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **18/18** in run `34666673017`.
+Current accepted Real Chrome suite: **18/18** in run `34666985800`.
 
 ## 9. Remaining technical-debt targets
 

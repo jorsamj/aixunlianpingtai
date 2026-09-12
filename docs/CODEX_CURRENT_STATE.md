@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29
-Frontend Runtime run:        34666673017
+latest full code acceptance: 43e31c7e683fbda4b9c36a3d35188262b6a9ff1b
+Frontend Runtime run:        34666985800
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.69
-main.mjs cache:              42.25.73
+app.js cache:                42.25.70
+main.mjs cache:              42.25.74
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34666673017` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation now runs **18 tests and passed 18/18**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34666985800` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **18 tests and passed 18/18**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -116,6 +116,7 @@ main.mjs applyBuildVersion visible-version writer/timers
 render426base page-render file-input beautification wrapper
 modal426 modal file-input beautification wrapper
 enhancePageV37 post-render normalization helper
+baseRenderV37 duplicate versionInfo wrapper
 ```
 
 ### R9 — version marker ownership consolidation
@@ -213,6 +214,30 @@ Real Chrome:       18/18 PASS
 
 Permanent proof: `tests/frontend/post-render-normalization-owner.test.mjs` plus the browser contract `modal table wrapping and first-field focus survive normalization ownership`.
 
+### R13 — baseRenderV37 retirement
+
+R13 proved the remaining V37 render wrapper was only a duplicate formal-version write:
+
+```text
+baseRenderV37
+→ state.versionInfo.version = 42.24.0
+→ delegate
+
+later V42 render owner
+→ state.versionInfo.version = 42.24.0
+→ oldRender42()
+```
+
+Because the later V42 owner writes the same value before delegating into the old chain, `baseRenderV37` was physically removed. `baseModalV37` was intentionally untouched. The V37 120ms startup timer also remains and is a separate lifecycle target.
+
+```text
+product:    928d2387d46a0472bd202bd4df84af8d1573b6c2
+validation: 43e31c7e683fbda4b9c36a3d35188262b6a9ff1b
+run:        34666985800
+frontend:   PASS
+Chrome:     18/18 PASS
+```
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -245,9 +270,6 @@ cleanup(root)
   page/modal post-render normalization
   table wrapping + file-input beautification
 
-baseRenderV37
-  state.versionInfo formal-version compatibility write only
-
 baseModalV37
   first editable modal field autofocus only
 ```
@@ -255,8 +277,8 @@ baseModalV37
 Still requiring independent liveness analysis:
 
 ```text
-baseRenderV37 versionInfo compatibility ownership
 baseModalV37 autofocus ownership
+V37 120ms startup render/version timer
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates

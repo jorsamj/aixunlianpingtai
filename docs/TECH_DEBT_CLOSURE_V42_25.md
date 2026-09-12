@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29`**  
-> **Frontend Runtime Stabilization：run `34666673017`，frontend + Real Chrome 全绿，Real Chrome 18/18 passed。**  
+> **最近完整代码验收点：`43e31c7e683fbda4b9c36a3d35188262b6a9ff1b`**  
+> **Frontend Runtime Stabilization：run `34666985800`，frontend + Real Chrome 全绿，Real Chrome 18/18 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -78,6 +78,7 @@ modal426 requestAnimationFrame modal beautification callback
 enhancePageV37 compatibility helper
 requestAnimationFrame(enhancePageV37) page callback
 enhancePageV37 modal normalization callback
+baseRenderV37 duplicate versionInfo wrapper
 ```
 
 ## 2. 技术债状态
@@ -99,6 +100,7 @@ enhancePageV37 modal normalization callback
 | `render426base` page post-render wrapper | `cleanup(root)` page post-render owner | **CLOSED (R10)** |
 | `modal426` modal post-render wrapper | `cleanup(root)` + `modalBody` MutationObserver | **CLOSED (R11)** |
 | `enhancePageV37` post-render normalization helper | `cleanup(root)` table/panel normalization | **CLOSED (R12)** |
+| `baseRenderV37` duplicate versionInfo wrapper | later `V42` render versionInfo owner | **CLOSED (R13)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -190,15 +192,14 @@ oldRenderV39      → deployment conversion/artifact/resource/plugin/component
 render414Base     → 标签管理
 finalRender       → 素材存储配置
 cleanup(root)     → post-render normalization + table wrapping + page/modal file-input beautification
-baseRenderV37      → state.versionInfo formal-version compatibility write only
 baseModalV37       → modal first-editable-field autofocus only
 ```
 
 Remaining audit candidates:
 
 ```text
-baseRenderV37      state.versionInfo compatibility write only
 baseModalV37       autofocus only
+V37 120ms startup render/version timer
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
@@ -209,8 +210,8 @@ older base/global render generations still reachable through delegates
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.69
-main.mjs cache                   42.25.73
+app.js cache                     42.25.70
+main.mjs cache                   42.25.74
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -272,10 +273,12 @@ R12 永久要求：
 - `requestAnimationFrame(enhancePageV37)` 不得回归；
 - `cleanup(root)` 必须继续统一处理 `table.table → .table-wrap`；
 - `cleanup(root)` 必须继续移除“使用建议”等历史提示 panel；
-- `baseRenderV37` 当前只保留 `state.versionInfo` 写入，在独立证明前不得顺带删除；
-- `baseModalV37` 当前只保留首个可编辑字段 autofocus，在独立证明前不得顺带删除。
+- `baseRenderV37` 已在 R13 退休，不得回归；
+- later `V42` render 继续承担 render-path formal `state.versionInfo.version=42.24.0`；
+- `baseModalV37` 当前只保留首个可编辑字段 autofocus，在独立证明前不得顺带删除；
+- V37 `120ms` startup render/version timer 仍存在，属于独立 timer/lifecycle 债，R13 未删除。
 
-当前验收：run `34666673017`，**18/18 passed**。
+当前验收：run `34666985800`，**18/18 passed**。
 
 ## 7. Recent render/lifecycle acceptance history
 
@@ -343,6 +346,13 @@ R12 product
 R12 final validation
   60d87751e4e259a3a8ef11e6c1a5d5a9ea42ab29 / 34666673017
   frontend PASS / Real Chrome 18/18 PASS
+
+R13 product
+  928d2387d46a0472bd202bd4df84af8d1573b6c2
+
+R13 final validation
+  43e31c7e683fbda4b9c36a3d35188262b6a9ff1b / 34666985800
+  frontend PASS / Real Chrome 18/18 PASS
 ```
 
 所有对应一次性 baseline/migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
@@ -352,8 +362,8 @@ R12 final validation
 优先独立审计：
 
 ```text
-baseRenderV37     state.versionInfo compatibility write only
 baseModalV37      modal first-field autofocus only
+V37 startup timer  120ms versionInfo + render compatibility timer
 cleanup wrapper   post-render cleanup + view/modalBody MutationObserver lifecycle
 body observer     ZIP import review MutationObserver
 ```
