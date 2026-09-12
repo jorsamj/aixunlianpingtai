@@ -40,6 +40,18 @@ jobs:
           app = app[:start] + app[end:]
           path.write_text(app, encoding='utf-8')
           PY
+      - name: Preserve live report compatibility contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/migrate_r20h_legacy_algorithm_crud.py')
+          text = path.read_text(encoding='utf-8')
+          marker = "    'window.showReport=',\n"
+          count = text.count(marker)
+          if count != 2:
+              raise SystemExit(f'expected showReport retirement marker twice, got {count}')
+          path.write_text(text.replace(marker, ''), encoding='utf-8')
+          PY
       - name: Apply guarded R20h migration
         run: python tools/migrate_r20h_legacy_algorithm_crud.py
       - name: Verify formal version unchanged
@@ -68,7 +80,6 @@ jobs:
             'window.editAlgorithm=' \
             'window.saveEditAlgorithm=' \
             'window.viewAlgorithm=' \
-            'window.showReport=' \
             'const oldRenderAlgorithms = window.renderAlgorithms;' \
             'oldViewAlgoV39' \
             'window.renderAlgorithms422=' \
