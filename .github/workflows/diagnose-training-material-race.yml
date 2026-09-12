@@ -1,0 +1,45 @@
+name: Diagnose Training Material Race
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/diagnose-training-material-race.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser-test backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Add runner-only request diagnostics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/browser/training-task-performance.spec.mjs')
+          s=p.read_text(encoding='utf-8')
+          needle="  const jobRequests = apiRequests.filter(row => row.includes(`/api/projects/${projectId}/jobs`));\n"
+          if s.count(needle)!=1:
+              raise SystemExit('diagnostic insertion point changed')
+          s=s.replace(needle,"  console.log('TRAINING_FIRST_REFRESH_REQUESTS', JSON.stringify(apiRequests));\n  console.log('TRAINING_FIRST_REFRESH_PAGE', await page.evaluate(() => ({page: state.page, epoch: state.__navigationEpoch, uiReady: state.uiReady})));\n"+needle,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+      - name: Repeat focused browser race diagnostic
+        run: npx playwright test tests/browser/training-task-performance.spec.mjs --repeat-each=10
