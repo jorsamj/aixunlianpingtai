@@ -16,7 +16,7 @@ permissions:
 jobs:
   migrate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,6 +30,10 @@ jobs:
 
       - name: Install focused test dependencies
         run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set fetch-retries 3
+          npm config set fetch-retry-mintimeout 10000
+          npm config set fetch-retry-maxtimeout 60000
           npm ci
           python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
 
