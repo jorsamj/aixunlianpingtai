@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
+// R20i permanent contract: dataset-group CRUD is historical; the live data page is renderDatasets424.
 const app = fs.readFileSync('static/app.js', 'utf8');
 const index = fs.readFileSync('static/index.html', 'utf8');
 
