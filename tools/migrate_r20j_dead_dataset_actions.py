@@ -51,7 +51,7 @@ if index.count(old_cache) != 1:
     raise SystemExit('expected app.js cache 42.25.85 exactly once')
 index = index.replace(old_cache, new_cache, 1)
 
-TEST.write_text("""import test from 'node:test';
+TEST.write_text(r"""import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
@@ -77,9 +77,9 @@ test('R20j preserves the final dataset route and bounded renderer delegate', () 
   assert.match(app, /function renderDatasets\(\)\{return window\.renderDatasets424\?\.\(\)\}/);
 });
 
-test('R20j cache moves without changing the formal visible version', () => {
-  assert.match(index, /app\.js\?v=42\.25\.86/);
+test('R20j keeps the formal visible version independent from internal cache bumps', () => {
   assert.match(index, /id="versionBadge" class="version-badge">v42\.24\.0</);
+  assert.match(index, /<script src="\/static\/app\.js\?v=42\.25\.\d+"><\/script>/);
 });
 """, encoding='utf-8')
 
