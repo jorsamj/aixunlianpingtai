@@ -1,0 +1,95 @@
+name: Migrate R20l Source Import Completion Scope
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/migrate_source_import_completion_scope_r20l.py
+      - .github/workflows/migrate-source-import-completion-scope-r20l.yml
+      - tests/frontend/source-import-completion-scope.test.mjs
+      - tests/browser/source-import-completion-scope.spec.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install focused test dependencies
+        run: |
+          npm ci
+          python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Baseline unit must prove R20l is RED
+        shell: bash
+        run: |
+          set +e
+          node --test tests/frontend/source-import-completion-scope.test.mjs > /tmp/r20l-unit.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/r20l-unit.log
+          if [ "$code" -eq 0 ]; then
+            echo 'R20l unit baseline unexpectedly green before migration' >&2
+            exit 1
+          fi
+          grep -q 'terminal source-import completion must not broad-refresh project state' /tmp/r20l-unit.log
+
+      - name: Baseline Real Chrome must prove broad request fan-out
+        shell: bash
+        run: |
+          set +e
+          npx playwright test tests/browser/source-import-completion-scope.spec.mjs > /tmp/r20l-chrome.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/r20l-chrome.log
+          if [ "$code" -eq 0 ]; then
+            echo 'R20l Chrome baseline unexpectedly green before migration' >&2
+            exit 1
+          fi
+          grep -q 'terminal source import triggered broad GET fan-out' /tmp/r20l-chrome.log
+
+      - name: Apply guarded R20l migration
+        run: python tools/migrate_source_import_completion_scope_r20l.py
+
+      - name: Syntax check
+        run: node --check static/app.js
+
+      - name: Focused unit contracts
+        run: >-
+          node --test
+          tests/frontend/source-import-completion-scope.test.mjs
+          tests/frontend/v18-import-completion-scope.test.mjs
+
+      - name: Focused Real Chrome
+        run: >-
+          npx playwright test
+          tests/browser/source-import-completion-scope.spec.mjs
+          tests/browser/material-pagination-performance.spec.mjs
+
+      - name: Verify formal version unchanged
+        run: test "$(cat VERSION.txt)" = "42.24.0"
+
+      - name: Commit product migration
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add static/app.js static/index.html
+          if git diff --cached --quiet; then
+            echo 'R20l migration produced no product changes' >&2
+            exit 1
+          fi
+          git commit -m 'perf(import): scope source-import completion refresh'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
