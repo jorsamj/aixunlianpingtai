@@ -140,7 +140,8 @@ export function installMaterialPaginationRuntime() {
 
   async function refreshSummary61() {
     const pid = projectId();
-    if (!pid || transport.mode !== 'paged') return;
+    if (!pid || !isPagedDataset()) return;
+    const expectedPage = state.page;
     try {
       const totalParams = buildMaterialQuery({limit: 1});
       const annotatedParams = buildMaterialQuery({limit: 1, annotated: 'marked'});
@@ -148,7 +149,7 @@ export function installMaterialPaginationRuntime() {
         responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${totalParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
         responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${annotatedParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
       ]);
-      if (transport.mode !== 'paged') return;
+      if (state.page !== expectedPage || !isPagedDataset()) return;
       state.materialSummary61 = {
         total: Number(totalPage.total || 0),
         annotated: Number(annotatedPage.total || 0),
