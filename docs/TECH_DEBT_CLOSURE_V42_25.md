@@ -3,13 +3,14 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`70b6f755cd8633de3e8591ac2fee044efc770b97`**  
-> **Frontend Runtime Stabilization：run `34663768606`，frontend + Real Chrome 全绿，Real Chrome 14/14 passed。**  
+> **最近完整代码验收点：`36fd25c48a2251d1b4a85583921c00dd98bf33fb`**  
+> **Frontend Runtime Stabilization：run `34664755130`，frontend + Real Chrome 全绿，Real Chrome 15/15 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
 
 按顺序阅读：
+
 1. `docs/TECH_DEBT_CLOSURE_V42_25.md`
 2. `docs/CODEX_CURRENT_STATE.md`
 3. `docs/frontend-legacy-audit.md`
@@ -19,7 +20,7 @@
 
 ## 1. 永久退休 surface
 
-以下对象不得恢复为 truth source、bootstrap fallback、timer owner、polling shell、direct navigation owner 或 historical render owner：
+以下对象不得恢复为 truth source、bootstrap fallback、timer owner、polling shell、direct navigation owner、historical render owner 或 visible-version owner：
 
 ```text
 trainingLabelSelected
@@ -55,16 +56,21 @@ v34/v35/v42.4 direct window.setPage owners
 v42.7 direct window.setPage auto-label alias owner
 setPageReady414
 baseSetPage417
-initial bootstrap function setPage(p){state.page=p;render()} / window.setPage=setPage
+initial bootstrap setPage/window.setPage owner
 v42.7 render-level state.page 自动标注 → 自动标注及清洗 mutation
 oldRender429
 previousRender61
 render423Base
-renderBase428 的 shadowed 算法列表 branch
+renderBase428 shadowed 算法列表 branch
 v42.2 render422 legacy 自动标注 route branch
 v42.4 renderBase424 legacy 自动标注 route branch
-renderBase424 的 shadowed 算法列表 / 数据集 / 训练任务 branches
-renderAutoLabel424 legacy 自动标注 self-refresh timeout / page-state predicate
+renderBase424 shadowed 算法列表 / 数据集 / 训练任务 branches
+renderAutoLabel424 legacy 自动标注 self-refresh timeout/predicate
+baseRender417 visible-version correction wrapper
+baseRender417 120/600/1600ms version correction timers
+12 historical app.js delayed versionBadge startup writers
+main.mjs applyBuildVersion visible-version owner
+main.mjs 80/500/1800/3600/8000ms visible-version writers
 ```
 
 ## 2. 技术债状态
@@ -80,11 +86,9 @@ renderAutoLabel424 legacy 自动标注 self-refresh timeout / page-state predica
 | classic `setPage` owner family | `NavigationStability` | **CLOSED** |
 | navigation alias/readiness/sidebar/apply/persistence | `NavigationStability` + `ui-state.js` | **CLOSED** |
 | historical persisted `自动标注` alias | restore-boundary canonicalization | **CLOSED** |
-| fully shadowed render generations (`oldRender429`, `previousRender61`, `render423Base`) | later bounded render owners | **CLOSED** |
-| shadowed `renderBase428` 算法列表 branch | `oldRender412` sole algorithm-list route owner | **CLOSED** |
-| legacy `自动标注` render route owner branches | canonical `自动标注及清洗` + `renderBase427` | **CLOSED** |
-| shadowed `renderBase424` 算法/数据/训练 route branches | `oldRender412` + `renderBase428` | **CLOSED** |
+| shadowed historical render generations/branches R2–R7 | bounded later render owners | **CLOSED** |
 | legacy AutoLabel424 no-op self-refresh timer | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
+| visible version multi-owner / delayed writers | formal display owners + internal build metadata split | **CLOSED (R9)** |
 | remaining historical render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -116,15 +120,13 @@ sources        → PollRegistry(sources)
 
 ### Navigation
 
-`static/app.js` 当前不得再定义任何 `window.setPage=` owner：
-
 ```text
 window.setPage = NavigationStability.stableSetPage
   → normalizeNavigationPage()
   → PageRequestScope / navigation epoch
   → PollRegistry.beforeNavigate
-  → waitForNavigationReady() / __v53InitPromise
-  → beforeInvokeNavigation() / toggleMobileSidebarV37(false)
+  → waitForNavigationReady()
+  → beforeInvokeNavigation()
   → performNavigation(page)
        state.page = page
        render()
@@ -133,42 +135,54 @@ window.setPage = NavigationStability.stableSetPage
   → persistUiState()
 ```
 
-历史 localStorage 中的 `自动标注` 在 v34 restore boundary 先 canonicalize 为 `自动标注及清洗`，随后写回 storage；render 本身不再修改 route state。v42.2/v42.4 旧 route owner 已物理删除，`static/app.js` 中旧 `state.page==='自动标注'` page-state predicate 也已归零。
+`static/app.js` must contain zero classic `window.setPage=` owners.
 
-### Render — 当前已确认的 live owner
-
-当前不能误删：
+### Visible version / build metadata — R9 final split
 
 ```text
-oldRender412      → 算法列表 / 数据集稳定路由 owner
-renderBase428     → 仅保留训练任务路由 owner
-renderTraining423 → 当前训练页 renderer，并直接调用 PollRegistry.replaceTrainingJobTimer()
-renderBase427     → 自动标注及清洗 canonical route owner
-renderBase424     → 仅保留质量中心 / 视频切帧 route owner
-finalRender       → 素材存储配置最终路由 owner
+formal VERSION.txt                    42.24.0
+static/index.html initial badge       v42.24.0
+top visible badge owner               top412 / V412 = 42.24.0
+sidebar visible footer owner          nav426 / V426 = 42.24.0
+internal UI build metadata            UI_BUILD_VERSION = 42.25.0-dev
+internal metadata sink                document.documentElement.dataset.uiBuild
 ```
 
-已证明并物理删除：
+`UI_BUILD_VERSION` is not a user-visible version owner.
+
+## 4. Current live render owners
+
+Confirmed live; do not remove as whole wrappers without a new semantic migration proof:
 
 ```text
-v42.7 render alias state mutation
-oldRender429
-previousRender61
-render423Base
-renderBase428 中被 oldRender412 完全遮蔽的 算法列表 branch
-v42.2 render422 中不可达的 legacy 自动标注 route branch
-v42.4 renderBase424 中不可达的 legacy 自动标注 route branch
-renderBase424 中被后置 owner 完全遮蔽的 算法列表 / 数据集 / 训练任务 branches
-renderAutoLabel424 中永远 no-op 的 legacy 自动标注 1.8s self-refresh timeout
+oldRender412      → 算法列表 / 数据集
+renderBase428     → 训练任务
+renderTraining423 → 当前训练页 + direct PollRegistry activation
+renderBase427     → 自动标注及清洗
+renderBase424     → 质量中心 / 视频切帧
+oldRenderV39      → deployment conversion/artifact/resource/plugin/component
+render414Base     → 标签管理
+finalRender       → 素材存储配置
 ```
 
-`renderAutoLabel424()` 本体仍被历史 action 函数直接调用，因此 R8 只退休不可达 timer/predicate，不把函数本体误判成 dead code。现行 AutoLabel 周期刷新仍只由 `AutoLabelPollRuntime + PollRegistry` 管理。
-
-## 4. Current cache/build facts
+Remaining audit candidates:
 
 ```text
-app.js cache                     42.25.65
-main.mjs cache                   42.25.68
+baseRenderV37
+render426base
+post-render cleanup wrapper + MutationObserver
+older base/global render generations still reachable through delegates
+```
+
+`baseRender417` 已在 R9 退役，不再是 live audit candidate。
+
+## 5. Current cache/build facts
+
+```text
+app.js cache                     42.25.66
+main.mjs cache                   42.25.70
+visible formal version           42.24.0
+internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
 ui-state.js                      422500
 poll-registry.js                 422511
@@ -179,9 +193,9 @@ TrainingSubmitRuntime            training-submit-422504
 TrainingTaskRuntime              training-task-runtime-422503
 ```
 
-Cache-busting 仍未统一。
+Cache-busting 仍未统一；这与 visible version ownership 是不同技术债。
 
-## 5. 永久合同
+## 6. 永久合同
 
 Frontend：
 
@@ -193,117 +207,89 @@ tests/frontend/navigation-persistence.test.mjs
 tests/frontend/ui-state.test.mjs
 tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
+tests/frontend/version-marker-owner.test.mjs
+tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
-永久要求：
-- `static/app.js` 不得出现任何 classic `window.setPage=` owner；
-- `static/app.js` 不得重新出现 `state.page==='自动标注'` 旧 page-state predicate；
-- render 不得重新承担 `自动标注` route canonicalization；
-- v42.2/v42.4 旧 `自动标注` render route owner 分支不得回归；
-- legacy `renderAutoLabel424` 1.8 秒 self-refresh timeout 不得回归；
-- canonical `自动标注及清洗` 必须继续由 `renderBase427` 路由到 `renderOps427()`；
-- AutoLabel polling 必须继续由 `AutoLabelPollRuntime + PollRegistry` 管理；
-- `oldRender429` / `previousRender61` / `render423Base` 不得回归；
-- `renderBase428` 只允许保留训练任务 branch；
-- `renderBase424` 只允许保留质量中心 / 视频切帧 route 语义；
-- `oldRender412` 仍是唯一 outer 算法列表 / 数据集稳定 route owner；
-- `renderTraining423()` 必须保持 direct PollRegistry training-job ownership；
-- `finalRender` 当前仍是 live storage owner，不得无证明删除。
+R9 永久要求：
+
+- `baseRender417` 不得回归；
+- classic delayed `versionBadge` startup writers 不得回归；
+- `main.mjs` 不得通过 `UI_BUILD_VERSION` 写 `#versionBadge` 或 `.nav-footer b`；
+- `applyBuildVersion` 不得回归；
+- 初始可见版本必须是 `v42.24.0`；
+- internal UI build metadata 可保留 `42.25.0-dev`，但只能作为内部 metadata；
+- 当前 formal top/footer owner 在显式迁移前必须继续输出 `42.24.0`。
 
 Browser：
 
-```text
-tests/browser/navigation-stability.spec.mjs
-tests/browser/navigation-readiness.spec.mjs
-tests/browser/auto-label-polling.spec.mjs
-```
+Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、AutoLabel polling、素材存储、算法/训练/素材性能路径，以及 formal version 在历史 delay window 与跨路由后的稳定性。
 
-Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、新旧 localStorage 冷启动 canonicalization、AutoLabel polling、素材存储配置最终 owner，以及算法列表/训练任务/素材分页性能路径。run `34663768606` 实际执行 14 条 browser tests，14/14 passed。
+当前验收：run `34664755130`，**15/15 passed**。
 
-## 6. Recent render acceptance history
+## 7. Recent render/lifecycle acceptance history
 
 ```text
-historical auto-label restore bug baseline:
-  commit 582b913e6643689b00462b1b3bc0154a43a94995
-  run    34656484008
+historical auto-label restore bug baseline
+  582b913e... / 34656484008
   frontend PASS / Chrome 12 PASS + 1 FAIL
-  failure: UI canonical，但 localStorage 仍保留 自动标注
 
-alias restore-boundary fix + render mutation retirement:
-  commit e35a29b0ded0bf81a5c0f968b07d535472b07f30
-  run    34656747269
-  frontend PASS / Real Chrome PASS
+alias restore-boundary fix
+  e35a29b0... / 34656747269 PASS
 
-oldRender429 retirement:
-  final  0455eeef696f19457b0f1a2b79e229a7e381b3db
-  run    34659041402
-  frontend PASS / Real Chrome PASS
+oldRender429 retirement
+  0455eeef... / 34659041402 PASS
 
-storage final-owner browser baseline:
-  commit 00721975e9ca95fba9c65b1bf04bde83ef50a654
-  run    34659361434
-  frontend PASS / Real Chrome PASS
+previousRender61 retirement
+  69732d9e... / 34659543452 PASS
 
-previousRender61 retirement:
-  final  69732d9ed659a62a3a1e92b36d07b912e141b8c9
-  run    34659543452
-  frontend PASS / Real Chrome PASS
+render423Base retirement
+  58ece59e... / 34659775870 PASS
 
-render423Base retirement:
-  final  58ece59e95722437069c7e03277363197e564136
-  run    34659775870
-  frontend PASS / Real Chrome PASS
+renderBase428 algorithm branch retirement
+  6be679b6... / 34660269685 PASS
 
-renderBase428 shadowed algorithm branch retirement:
-  cleaned HEAD 6be679b6b23f566d14434e2032b8af8015341ae4
-  run    34660269685
-  frontend PASS / Real Chrome PASS
+legacy 自动标注 render route retirement
+  66339fc0... / 34663089996
+  Chrome 14/14 PASS
 
-legacy 自动标注 render route branch retirement:
-  product a6005374fd560f6e30ec700b91bf02b13f8dc170
-  validation 66339fc0b8459328a68bf775230eae179a4d969d
-  run    34663089996
-  frontend PASS / Real Chrome 14/14 PASS
+renderBase424 shadowed route retirement
+  2d9bc0b3... / 34663389819
+  Chrome 14/14 PASS
 
-renderBase424 shadowed route branch retirement:
-  product 784acc8aaf31145be941947acd305afe31538068
-  validation 2d9bc0b30a72761d784cc57472eb50b158b8851f
-  run    34663389819
-  frontend PASS / Real Chrome 14/14 PASS
-  retained live: 质量中心 / 视频切帧
+legacy AutoLabel424 self-refresh timer retirement
+  70b6f755... / 34663768606
+  Chrome 14/14 PASS
 
-legacy AutoLabel424 self-refresh timer retirement:
-  product 33c95b7b3e3105be469b2576efd2d50dbbef18e0
-  validation 70b6f755cd8633de3e8591ac2fee044efc770b97
-  run    34663768606
-  frontend PASS / Real Chrome 14/14 PASS
-  retired: old-page 1.8s timeout + final `state.page==='自动标注'` predicate
+R9 version-marker baseline
+  50d72687f099eb554ec77e9045e42713025c4453 / 34664100285
+  frontend PASS / Chrome 14 PASS + 1 FAIL
+  failure: delayed writer changed visible version to v42.25.0-dev
+
+R9 product
+  1e9ae1118a77313d8dd3d4c0cf12d5ce5f9edff7
+
+R9 final validation
+  36fd25c48a2251d1b4a85583921c00dd98bf33fb / 34664755130
+  frontend PASS / Real Chrome 15/15 PASS
 ```
 
-对应一次性 migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
+所有对应一次性 migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
 
-## 7. 下一批：remaining render owner audit
+## 8. 下一批：remaining render owner audit
 
-继续按 capture/liveness 证明推进。当前已核实：`oldRenderV39` 的部署转换/产物/资源/插件/组件检测仍是 live route owner；`render414Base` 的标签管理也仍是 live route owner，不能为了减少 wrapper 数量直接删除。
-
-其余仍需独立审计：
+继续按 capture/liveness 证明推进。优先独立审计：
 
 ```text
-baseRenderV37       页面增强 requestAnimationFrame owner
-oldRenderV39        部署相关 live route owner
-renderBase424       质量中心 / 视频切帧 live route owner
-render426base       文件输入美化 post-render owner
-renderBase427       自动标注及清洗 live route owner
-renderBase428       训练任务 live owner
-oldRender412        算法/数据 live owner
-render414Base       标签管理 + version badge live owner
-baseRender417       version badge/footer correction owner（待证明是否冗余）
-finalRender         素材存储配置 live owner
-cleanup MutationObserver / post-render cleanup wrapper
-older base/global render generations
+render426base       post-render file-input beautification
+baseRenderV37       requestAnimationFrame page enhancement
+cleanup wrapper     post-render cleanup + MutationObserver
 ```
+
+`oldRenderV39` 与 `render414Base` 已再次确认 live，不得因为版本号旧就直接删。
 
 执行规则：
+
 1. 先证明 exact source order、capture/reference 和 page coverage；
 2. 对 live 语义先补 unit/Chrome；
 3. 只删除 fully shadowed generation/branch；
@@ -311,7 +297,7 @@ older base/global render generations
 5. 每刀 full frontend + Real Chrome；
 6. 不允许通过放宽测试换取删除成功。
 
-## 8. 后续顺序
+## 9. 后续顺序
 
 ```text
 A. remaining render override owner audit / obsolete layer deletion
@@ -323,6 +309,6 @@ F. technical-debt zero-point scan
 G. A800 RC
 ```
 
-## 9. 发布禁令
+## 10. 发布禁令
 
 正式 `v42.25.0` 前必须：技术债无未解决 P0/P1、Frontend Runtime 与 Release Regression 全绿、A800 preflight/首训/迭代/worker fencing 实机全绿，并取得用户明确 merge/version/tag/release 授权。
