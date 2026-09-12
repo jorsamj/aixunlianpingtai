@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 58ece59e95722437069c7e03277363197e564136
-Frontend Runtime run:        34659775870
+latest full code acceptance: 6be679b6b23f566d14434e2032b8af8015341ae4
+Frontend Runtime run:        34660269685
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.25.0-dev
-app.js cache:                42.25.61
-main.mjs cache:              42.25.64
+app.js cache:                42.25.62
+main.mjs cache:              42.25.65
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -22,7 +22,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34659775870` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34660269685` passed syntax, permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -108,9 +108,7 @@ That behavior is now split correctly:
 - historical localStorage restore → v34 restore-boundary canonicalization + canonical writeback;
 - render itself no longer mutates route state.
 
-A new cold-start Chrome contract exposed the old persistence bug first (`582b913e... / 34656484008`: 12 pass, 1 fail), then the fix passed at `e35a29b0... / 34656747269`.
-
-### Fully shadowed render layers physically retired
+### Physically retired render debt
 
 ```text
 oldRender429
@@ -122,27 +120,33 @@ previousRender61
 render423Base
   算法列表 branch fully shadowed by oldRender412
   训练任务 branch fully shadowed by renderBase428
+
+renderBase428 算法列表 branch
+  fully shadowed by later oldRender412
+  wrapper itself remains live because 训练任务 branch is still current
 ```
 
 Accepted points:
 
 ```text
-oldRender429      0455eeef696f19457b0f1a2b79e229a7e381b3db / 34659041402 PASS
-previousRender61  69732d9ed659a62a3a1e92b36d07b912e141b8c9 / 34659543452 PASS
-render423Base     58ece59e95722437069c7e03277363197e564136 / 34659775870 PASS
+oldRender429             0455eeef696f19457b0f1a2b79e229a7e381b3db / 34659041402 PASS
+previousRender61         69732d9ed659a62a3a1e92b36d07b912e141b8c9 / 34659543452 PASS
+render423Base            58ece59e95722437069c7e03277363197e564136 / 34659775870 PASS
+renderBase428 alg branch 6be679b6b23f566d14434e2032b8af8015341ae4 / 34660269685 PASS
 ```
 
-Storage route has a permanent Real Chrome contract; algorithm/training remain covered by existing browser performance suites.
+All corresponding one-shot migration helpers/workflows were physically deleted after acceptance.
 
 ## 5. Current live render owners — do not delete without proof
 
 ```text
 oldRender412
   algorithm list + data-set stable routing
+  sole outer 算法列表 route owner after renderBase428 branch retirement
 
 renderBase428
-  training-task routing remains live
-  its algorithm branch is shadowed, but the wrapper as a whole is NOT dead
+  now contains only the live 训练任务 route branch
+  wrapper is NOT dead
 
 renderTraining423
   current training renderer
@@ -180,15 +184,13 @@ retired-sidebar-setpage-guard.test.mjs
 retired-pre-v424-setpage-guard.test.mjs
 ```
 
-Real Chrome verifies:
-- inline/programmatic navigation;
-- startup readiness and stale-request fencing;
-- PollRegistry stop-on-leave;
-- sidebar close;
-- current and historical auto-label alias canonicalization;
-- page persistence/reload;
-- storage configuration final render route;
-- algorithm-list/training-task/material performance paths.
+`render-owner-retirement.test.mjs` now permanently requires:
+- old fully shadowed generations stay absent;
+- `renderBase428` must not regain an 算法列表 branch;
+- `renderBase428` must keep its 训练任务 branch;
+- `oldRender412` remains the sole outer 算法列表 route owner.
+
+Real Chrome verifies navigation, startup readiness, stale-request fencing, PollRegistry stop-on-leave, sidebar close, current/historical auto-label alias canonicalization, page persistence/reload, storage configuration route, algorithm list, training task and material performance paths.
 
 Do not weaken these tests.
 
