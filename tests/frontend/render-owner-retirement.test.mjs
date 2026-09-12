@@ -86,3 +86,44 @@ test('canonical auto-label cleanup render route remains live', () => {
     true,
   );
 });
+
+test('shadowed renderBase424 algorithm/data/training branches cannot return', () => {
+  const retired = `  const renderBase424=render;
+  render=function(){
+    renderNav();renderTop();renderSummary();
+    if(state.page==='质量中心'){renderQualityCenter424();return}
+    if(state.page==='数据集'){renderDatasets424();return}
+    if(state.page==='视频切帧'){renderVideo424();return}
+    if(state.page==='训练任务'){renderTraining424();return}
+    // v42.3 pages retain their own final implementations
+    if(state.page==='算法列表'){renderAlgorithms423();return}
+    // call previous render for deploy/test/config pages, but it will redraw nav/top; acceptable
+    renderBase424();
+  };`;
+  assert.equal(app.includes(retired), false);
+});
+
+test('renderBase424 keeps only its live quality and video route branches', () => {
+  const live = `  const renderBase424=render;
+  render=function(){
+    renderNav();renderTop();renderSummary();
+    if(state.page==='质量中心'){renderQualityCenter424();return}
+    if(state.page==='视频切帧'){renderVideo424();return}
+    // algorithm/data/training routes are owned by later stable wrappers.
+    renderBase424();
+  };`;
+  assert.equal(app.includes(live), true);
+  assert.equal(app.includes("if(state.page==='质量中心'){renderQualityCenter424();return}"), true);
+  assert.equal(app.includes("if(state.page==='视频切帧'){renderVideo424();return}"), true);
+});
+
+test('later owners remain authoritative for renderBase424 retired routes', () => {
+  assert.equal(
+    app.includes("render=function(){renderNav();renderTop();renderSummary();if(state.page==='算法列表'){renderAlgorithms423();return}if(state.page==='数据集'){renderDatasets424();return}oldRender412()};"),
+    true,
+  );
+  assert.equal(
+    app.includes("render=function(){if(state.page==='训练任务'){renderNav();renderTop();renderSummary();renderTraining423();return}renderBase428()};"),
+    true,
+  );
+});

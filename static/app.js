@@ -2686,12 +2686,8 @@ window.installUsability417=function(){
   render=function(){
     renderNav();renderTop();renderSummary();
     if(state.page==='质量中心'){renderQualityCenter424();return}
-    if(state.page==='数据集'){renderDatasets424();return}
     if(state.page==='视频切帧'){renderVideo424();return}
-    if(state.page==='训练任务'){renderTraining424();return}
-    // v42.3 pages retain their own final implementations
-    if(state.page==='算法列表'){renderAlgorithms423();return}
-    // call previous render for deploy/test/config pages, but it will redraw nav/top; acceptable
+    // algorithm/data/training routes are owned by later stable wrappers.
     renderBase424();
   };
   setTimeout(()=>{const v=document.getElementById('versionBadge');if(v)v.textContent='v'+V424},100);
