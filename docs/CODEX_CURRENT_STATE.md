@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 89327ded9da924753f5f900fc3b79e6df353927f
-Frontend Runtime run:        34684119911
+latest full code acceptance: 94dbebb43d83b1d522ea4e3f6522154417f3e985
+Frontend Runtime run:        34690924552
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.81
-main.mjs cache:              42.25.86
+app.js cache:                42.25.82
+main.mjs cache:              42.25.87
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34684119911` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **27 tests and passed 27/27**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34690924552` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **28 tests and passed 28/28**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -490,6 +490,7 @@ algorithm-version-refresh-owner.test.mjs
 algorithm-version-publish-owner.test.mjs
 training-server-refresh-owner.test.mjs
 paddle-resource-refresh-owner.test.mjs
+model-config-save-refresh-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -505,7 +506,7 @@ auto-label-poll-runtime.test.mjs
 - `#view` observer remains retired; page normalization must stay final-render-owned;
 - `#modalBody` normalization observer is retired and must not return; modal content replacement must stay `ModalContentRuntime`-owned.
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **24/24**; this includes algorithm-version delete focused refresh, model-version publish authoritative-state ownership, training-server scoped refresh, and both Paddle activation paths using training_options-only refresh with bootstrap=0.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, page/modal file-input beautification, and R20 scoped mutation ownership. Current accepted suite: **28/28** in run `34690924552`; this includes algorithm-version delete focused refresh, model-version publish authoritative-state ownership, training-server/Paddle scoped refresh, model-config/prompt local mutation ownership, and final M4 model-config save/edit local ownership.
 
 Do not weaken these tests.
 
@@ -600,3 +601,26 @@ deletePromptTemplateV35
 Permanent request contracts require zero bootstrap, model-config GET, or prompt-template GET fan-out from these actions. R20/global mutation refresh debt remains **IN PROGRESS** until the next source-order zero-point audit proves no additional live mutation success owner still uses global refresh.
 
 The full R20e Chrome run also logged one non-fatal `sqlite3.OperationalError: database is locked` while initializing the resource-discovery cache. All 27 browser contracts still passed. Treat that as a separate resource-discovery concurrency diagnostic, not as an R20e acceptance failure.
+
+
+### R20f — live M4 model-config save local ownership
+
+R20f closed the remaining broad refresh on the visible model-configuration save/edit path. The first static source-order audit targeted `saveModelConfig427`, but a temporary Real Chrome runtime diagnostic proved that function is shadowed in the actual UI. M4 first captures its modal owner in `window.__m4OpenModelConfig`; a later compatibility layer textually redefines `openModelConfigModalV35`; the file-tail **M4 final activation** then restores `window.openModelConfigModalV35 = window.__m4OpenModelConfig`. Therefore the final visible save button calls `saveVisionModelM4`, not `saveModelConfig427`.
+
+Before migration, `saveVisionModelM4` performed POST/PUT and then `loadRelated()`, producing the full project/datasets/materials/labels/algorithms/model-config request fan-out. It now treats the sanitized POST/PUT response as authoritative, upserts it into `state.modelConfigs`, closes the modal and renders locally with zero mutation-owned follow-up GETs.
+
+```text
+baseline:              dddcd3f1eecf27c5b7447a16939e53473ff1d745
+readiness alignment:   da3f3cee7565b75f0a2de926dfdbdb42f7b30ab9
+runtime diagnostic:    34690682894 → proved final M4 save owner + broad loadRelated fan-out
+product:               c9b7ab44192d38c37753643ee790fc2e089c8598
+validation:            94dbebb43d83b1d522ea4e3f6522154417f3e985
+full run:              34690924552
+frontend:              PASS
+Real Chrome:           28/28 PASS
+app.js:                42.25.82
+main.mjs:              42.25.87
+formal VERSION.txt:    42.24.0
+```
+
+Permanent proof is `tests/frontend/model-config-save-refresh-owner.test.mjs` plus the Chrome contract `model config save appears immediately without broad related refresh`. Future ownership audits must inspect capture/restore/final-activation semantics in addition to textual assignment order. R20/global mutation refresh debt remains **IN PROGRESS** pending the final-owner zero-point audit.

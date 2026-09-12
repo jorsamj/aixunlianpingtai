@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`89327ded9da924753f5f900fc3b79e6df353927f`**  
-> **Frontend Runtime Stabilization：run `34684119911`，frontend + Real Chrome 全绿，Real Chrome 27/27 passed。**  
+> **最近完整代码验收点：`94dbebb43d83b1d522ea4e3f6522154417f3e985`**  
+> **Frontend Runtime Stabilization：run `34690924552`，frontend + Real Chrome 全绿，Real Chrome 28/28 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -123,6 +123,7 @@ legacy baseRender + RAF page normalization wrapper
 | training-server create full reload | POST + training_options-only target refresh | **CLOSED (R20c)** |
 | Paddle environment activation full reload | `refreshPaddleTrainingTargets20d` + training_options-only target refresh | **CLOSED (R20d)** |
 | model-config / prompt-template mutation full reload + stale prompt UI | authoritative mutation result + local state patch | **CLOSED (R20e)** |
+| model-config save/edit broad related refresh | M4 `saveVisionModelM4` authoritative result + local `state.modelConfigs` upsert | **CLOSED (R20f)** |
 | resource-discovery SQLite concurrent cache initialization | lock-safe/single-owner cache initialization | **OPEN — R20e validation diagnostic** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
@@ -235,8 +236,8 @@ global reload / loadAll / loadRelated request ownership
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.81
-main.mjs cache                   42.25.86
+app.js cache                     42.25.82
+main.mjs cache                   42.25.87
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -274,6 +275,7 @@ tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/training-server-refresh-owner.test.mjs
 tests/frontend/paddle-resource-refresh-owner.test.mjs
 tests/frontend/model-config-prompt-refresh-owner.test.mjs
+tests/frontend/model-config-save-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -314,7 +316,7 @@ R12 永久要求：
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 已在 R18 退休，不得回归；startup/page normalization 均由 readiness-aware final render owner 承担。
 
-当前验收：run `34684119911`，frontend PASS，Real Chrome **27/27 passed**。
+当前验收：run `34690924552`，frontend PASS，Real Chrome **28/28 passed**。
 
 ### R16 — event-owned ZIP completion + page-scoped material summary
 
@@ -550,7 +552,7 @@ R15 startup render timer retirement
 
 ## 8. 下一批：global reload / request ownership audit
 
-R17–R19 已把 active normalization observers 清零。R20a 关闭算法版本删除的全量 reload；R20b 关闭模型发布后的全量 reload；R20c 收敛训练服务器接入刷新；R20d 又把手动/一键飞桨激活后的 bootstrap+extras 刷新收敛为 training_options 单域刷新。R20 下一步做 zero-point 审计，只将 proven-live mutation 计为剩余请求债；用户显式完整刷新与 shadowed/dead code 分开处理。
+R17–R19 已把 active normalization observers 清零。R20a–R20d 依次关闭算法版本删除、模型发布、训练服务器接入和 Paddle 激活的宽刷新；R20e 关闭模型配置删除与提示词 mutation 宽刷新并修复 stale UI；R20f 又关闭最终 M4 模型配置保存/编辑的 `loadRelated()` fan-out。R20 下一步做 final-owner zero-point 审计，只将 proven-live mutation 计为剩余请求债；用户显式完整刷新、shadowed/dead code，以及 capture/final-activation 恢复链必须分开处理。
 
 `oldRenderV39` 与 `render414Base` 已确认 live，不得因为版本号旧就直接删。
 
@@ -609,3 +611,28 @@ deletePromptTemplateV35  → DELETE → state.promptTemplates local filter → r
 三条永久 Chrome 合同均要求 action 期间 bootstrap=0、model-config GET=0、prompt-template GET=0。R20 mutation refresh debt 继续 **IN PROGRESS**，下一批必须做剩余 `reload/loadAll/loadRelated` 的 final-owner zero-point audit；历史 shadowed code 和用户显式“完整刷新”按钮不得误计为 mutation debt。
 
 附带诊断：full run 中 resource-discovery cache 初始化曾记录一次 `sqlite3.OperationalError: database is locked`，但 27/27 Chrome 全部通过。该问题单独列入 resource-discovery 并发技术债，不影响 R20e 验收结论。
+
+
+### R20f — 最终 M4 模型配置保存/编辑 local ownership
+
+R20f 最初按文本 source order 锁定 `saveModelConfig427`，但临时 Real Chrome runtime diagnostic 证明可见 modal 实际由 M4 capture/final-activation 机制恢复：M4 先保存 `window.__m4OpenModelConfig`，后续 427 compatibility 虽然文本上重写了 `openModelConfigModalV35`，文件尾的 M4 final activation 又恢复 captured owner。因此真正 live 的保存动作是 `saveVisionModelM4`。
+
+旧 live owner 在 POST/PUT 成功后调用 `loadRelated()`，会继续请求 project、datasets、materials、labels、algorithms、pending/test models、model configs、prompt templates 等一整套相关数据。最终 owner 改为直接接收后端 sanitized authoritative item，按 `id` upsert 到 `state.modelConfigs` 并本地 render。
+
+```text
+baseline:             dddcd3f1eecf27c5b7447a16939e53473ff1d745
+readiness alignment:  da3f3cee7565b75f0a2de926dfdbdb42f7b30ab9
+runtime diagnostic:   34690682894
+product:              c9b7ab44192d38c37753643ee790fc2e089c8598
+validation:           94dbebb43d83b1d522ea4e3f6522154417f3e985
+full run:             34690924552
+frontend:             PASS
+Real Chrome:          28/28 PASS
+app.js:               42.25.82
+main.mjs:             42.25.87
+formal VERSION.txt:   42.24.0
+```
+
+永久 owner guard：`tests/frontend/model-config-save-refresh-owner.test.mjs`。永久 Chrome 合同要求保存后立即可见且 mutation-owned broad GET fan-out 为零。R20f 还新增一条审计规则：**不能仅以“最后一个文本定义”认定最终 owner；必须同时检查 capture alias、restore 和 final activation。**
+
+R20/global reload debt 仍为 **IN PROGRESS**，下一步进入剩余 `reload/loadAll/loadRelated/loadCore412` 的 final-owner zero-point audit。

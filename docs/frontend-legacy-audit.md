@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       89327ded9da924753f5f900fc3b79e6df353927f
-run:          34684119911
+commit:       94dbebb43d83b1d522ea4e3f6522154417f3e985
+run:          34690924552
 frontend:     PASS
-Real Chrome:  PASS (27/27)
+Real Chrome:  PASS (28/28)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.81
-main.mjs                  42.25.86
+app.js                    42.25.82
+main.mjs                  42.25.87
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -448,6 +448,7 @@ tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/training-server-refresh-owner.test.mjs
 tests/frontend/paddle-resource-refresh-owner.test.mjs
+tests/frontend/model-config-save-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -465,7 +466,7 @@ cleanup(root) invokes window.beautifyFileInputs426?.(root)
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **27/27** in run `34684119911`.
+Current accepted Real Chrome suite: **28/28** in run `34690924552`.
 
 ## 9. Remaining technical-debt targets
 
@@ -549,3 +550,31 @@ Real Chrome:          27/27 PASS
 Live mutation topology is now local/authoritative: model-config delete filters `state.modelConfigs`; prompt save upserts the POST/PUT result into `state.promptTemplates`; prompt delete filters that collection. None of these actions may issue bootstrap/model-config/prompt-template follow-up GETs.
 
 The full run also emitted one non-fatal resource-discovery SQLite `database is locked` during cache initialization. Keep that as a separate concurrency audit target.
+
+
+### R20f — final M4 model-config save ownership
+
+The first R20f source-only audit selected `saveModelConfig427`, but runtime evidence showed that the visible modal is restored to the earlier M4 implementation by a capture/final-activation chain:
+
+```text
+M4 openModelConfigModalV35
+→ window.__m4OpenModelConfig capture
+→ later 427 compatibility overwrite
+→ file-tail M4 final activation
+→ openModelConfigModalV35 = __m4OpenModelConfig
+→ saveVisionModelM4
+```
+
+The old live M4 save owner POSTed/PUT the model configuration and then called `loadRelated()`. The accepted owner now upserts the authoritative saved item directly into `state.modelConfigs` and renders locally; no bootstrap/project/dataset/material/label/algorithm/model-config GET fan-out belongs to the mutation.
+
+```text
+baseline:            dddcd3f1eecf27c5b7447a16939e53473ff1d745
+readiness alignment: da3f3cee7565b75f0a2de926dfdbdb42f7b30ab9
+diagnostic run:      34690682894
+product:             c9b7ab44192d38c37753643ee790fc2e089c8598
+validation:          94dbebb43d83b1d522ea4e3f6522154417f3e985 / 34690924552
+frontend:            PASS
+Real Chrome:         28/28 PASS
+```
+
+Audit rule added by R20f: **textual last assignment is insufficient when a runtime capture/restore or final-activation layer exists**. Inspect capture aliases and end-of-file restorations before classifying a function as final/live. R20 remains **IN PROGRESS** for the remaining global-refresh zero-point audit.

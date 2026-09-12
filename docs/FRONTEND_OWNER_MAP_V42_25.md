@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `89327ded9da924753f5f900fc3b79e6df353927f` / run `34684119911`  
-> Real Chrome: 27/27 passed  
+> Latest fully accepted code point: `94dbebb43d83b1d522ea4e3f6522154417f3e985` / run `34690924552`  
+> Real Chrome: 28/28 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -69,6 +69,7 @@ initial bootstrap setPage                       CLOSED
 | R20c | training-server full reload → POST + training_options-only target refresh | `e3f23f59...` / `34681236515` |
 | R20d | Paddle activation full reload → training_options-only target refresh | `a21846c3...` / `34681966242` |
 | R20e | model-config/prompt full reload + stale prompt UI → authoritative local state ownership | `89327ded...` / `34684119911` |
+| R20f | final M4 model-config save/edit broad `loadRelated` → authoritative saved item + local `modelConfigs` upsert | `94dbebb4...` / `34690924552` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -209,6 +210,7 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Model-version publish | final `saveAssign` → authoritative POST result | one POST; local algorithm-version + pending-state patch; zero reload GETs | unit + Chrome request contract |
 | Training-server creation | final `saveServer` → training_options scoped refresh | POST server + GET training_options; replace targets; bootstrap=0 | unit + Chrome request contract |
 | Model-config deletion | `deleteModelConfigV35` | DELETE + local `state.modelConfigs` removal; no follow-up GET | unit + Chrome request contract |
+| Model-config save/edit | M4 final activation → `openModelConfigModalV35` → `saveVisionModelM4` | POST/PUT authoritative item + local `state.modelConfigs` upsert; zero broad follow-up GETs | unit + Chrome request contract |
 | Prompt-template save/edit | `savePromptTemplateV35` | authoritative POST/PUT item + local upsert; no follow-up GET | unit + Chrome request contract |
 | Prompt-template deletion | `deletePromptTemplateV35` | DELETE + local `state.promptTemplates` removal; no follow-up GET | unit + Chrome request contract |
 | Paddle environment activation | final `detectPaddle` / `quickPaddleDetect` → `refreshPaddleTrainingTargets20d` | required POSTs + one training_options GET per activation; bootstrap=0 | unit + Chrome request contract |
@@ -423,6 +425,7 @@ tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/training-server-refresh-owner.test.mjs
 tests/frontend/paddle-resource-refresh-owner.test.mjs
+tests/frontend/model-config-save-refresh-owner.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
@@ -435,9 +438,10 @@ modal file input beautification survives modal lifecycle ownership
 modal table wrapping and first-field focus survive normalization ownership
 base modal post-open content refresh stays functional
 algorithm version deletion uses focused refresh without full reload
+model config save appears immediately without broad related refresh
 ```
 
-Current accepted Real Chrome suite: **20/20** in run `34670989473`.
+Current accepted Real Chrome suite: **28/28** in run `34690924552`.
 
 ## 12. Per-batch checklist
 
@@ -492,3 +496,21 @@ Real Chrome:          27/27 PASS
 ```
 
 These mutation owners now have zero bootstrap/model-config/prompt-template follow-up GET fan-out. R20 remains open only pending final zero-point proof across the remaining source-order `reload/loadAll/loadRelated` sites.
+
+
+### R20f — M4 capture/final-activation model-config save owner
+
+The final model-configuration modal cannot be identified by textual assignment order alone. M4 captures its modal function in `window.__m4OpenModelConfig`, a later compatibility layer overwrites the public name, and the file-tail M4 final activation restores the captured function. The visible save button therefore reaches `saveVisionModelM4`.
+
+```text
+__m4OpenModelConfig capture
+→ later compatibility override
+→ M4 final activation restore
+→ saveVisionModelM4
+→ POST/PUT /api/v35/model-configs[...]
+→ authoritative saved item
+→ local state.modelConfigs upsert
+→ local render
+```
+
+Accepted at product `c9b7ab44192d38c37753643ee790fc2e089c8598`, validation `94dbebb43d83b1d522ea4e3f6522154417f3e985`, run `34690924552` with frontend PASS and Real Chrome **28/28**. The permanent owner guard checks the M4 capture + final activation chain and forbids `loadRelated/loadAll` inside the live save owner.
