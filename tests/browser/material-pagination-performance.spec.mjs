@@ -130,3 +130,111 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images/.test(row))).toBe(false);
   expect(pageErrors).toEqual([]);
 });
+
+
+test('v18 import completion uses scoped labels and material refresh without broad reload', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  const requests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) requests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
+
+  await page.route('**/api/v61/projects/*/materials**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/materials/ids')) return route.fallback();
+    const limit = Number(url.searchParams.get('limit') || 48);
+    const body = limit === 1
+      ? {items: [], total: 1, next_cursor: null}
+      : {items: [material('m-import-r20k', 'imported-r20k.jpg')], total: 1, next_cursor: null};
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(body)});
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
+  await page.evaluate(() => {
+    state.data412Tab = 'processed';
+    state.materialQuery61 = '';
+    window.setPage('数据集');
+  });
+  await expect(page.locator('.data426-shell')).toBeVisible({timeout: 10_000});
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.state?.().refreshBusy ?? null)).toBe(false);
+
+  const {projectId, datasetId} = await page.evaluate(() => ({
+    projectId: state.project?.id,
+    datasetId: state.datasetId,
+  }));
+  expect(projectId).toBeTruthy();
+  expect(datasetId).toBeTruthy();
+  const encodedProject = encodeURIComponent(projectId);
+  const encodedDataset = encodeURIComponent(datasetId);
+
+  await page.route(`**/api/v18/projects/${encodedProject}/datasets/${encodedDataset}/import`, async route => {
+    expect(route.request().method()).toBe('POST');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        detected_format: 'yolo',
+        imported_images: 2,
+        annotated_images: 1,
+        boxes: 3,
+        warnings: [],
+      }),
+    });
+  });
+  await page.route(`**/api/v12/projects/${encodedProject}/labels`, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: [{class_id: 0, code: 'smoke', display_name: '烟雾', color: '#ef4444'}]}),
+    });
+  });
+
+  await page.evaluate(() => window.importData());
+  await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#modalTitle')).toContainText('导入素材 / 标注');
+  await page.locator('#importFile').setInputFiles({
+    name: 'r20k-yolo.zip',
+    mimeType: 'application/zip',
+    buffer: Buffer.from('PK-r20k-test'),
+  });
+
+  requests.length = 0;
+  await page.locator('#zipImportPane').getByRole('button', {name: '开始导入'}).click();
+  await expect(page.locator('#importProgressText')).toHaveText('导入完成', {timeout: 10_000});
+  await expect(page.locator('#importResult')).toContainText('2');
+  await expect(page.locator('#toast')).toContainText('导入完成：2图，3框');
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.state?.().refreshBusy ?? null)).toBe(false);
+
+  const importRequest = `POST /api/v18/projects/${projectId}/datasets/${datasetId}/import`;
+  const labelsRequest = `GET /api/v12/projects/${projectId}/labels`;
+  expect(requests.filter(row => row === importRequest)).toEqual([importRequest]);
+  expect(requests.filter(row => row === labelsRequest)).toEqual([labelsRequest]);
+  expect(requests.some(row => row.startsWith(`GET /api/v61/projects/${projectId}/materials?`))).toBe(true);
+
+  const forbiddenBroadRefresh = requests.filter(row => {
+    const [method, rawPath] = row.split(' ', 2);
+    if (method !== 'GET') return false;
+    const path = rawPath.split('?')[0];
+    return path === '/api/projects'
+      || path === `/api/projects/${projectId}`
+      || path.startsWith(`/api/projects/${projectId}/datasets`)
+      || path.startsWith(`/api/projects/${projectId}/images`)
+      || path.startsWith(`/api/projects/${projectId}/jobs`)
+      || path.startsWith(`/api/v12/projects/${projectId}/algorithms`)
+      || path.startsWith(`/api/v12/projects/${projectId}/publish/pending`)
+      || path.startsWith(`/api/v12/projects/${projectId}/test_models`)
+      || path === '/api/training_options'
+      || path === '/api/v16/inference_envs'
+      || path === '/api/system/recommendation'
+      || path === '/api/local_models'
+      || path.includes('/bootstrap/snapshot');
+  });
+  expect(forbiddenBroadRefresh).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
