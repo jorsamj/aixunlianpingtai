@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       540c0944f45030ea198af2be153c1505f71e62f0
-run:          34668702371
+commit:       f5b8ff8789de0f51d2a03bcabe126191005ba24c
+run:          34669152742
 frontend:     PASS
 Real Chrome:  PASS (19/19)
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS (19/19)
 Current caches/builds:
 
 ```text
-app.js                    42.25.73
-main.mjs                  42.25.78
+app.js                    42.25.74
+main.mjs                  42.25.79
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -93,6 +93,8 @@ baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
 oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
+legacy baseRender + RAF page normalization wrapper
+#view post-render MutationObserver
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -266,6 +268,22 @@ Real Chrome:     19/19 PASS
 
 Permanent proof: `tests/frontend/lifecycle-event-ownership.test.mjs` plus the browser contract `ZIP import completion surfaces review action and auto-opens review`.
 
+### R17 — final page normalization ownership
+
+R17 removed the remaining page-side triple ownership (`baseRender` wrapper + page RAF cleanup + `#view` MutationObserver). Source-order proof showed the storage wrapper is the final `render` assignment in `static/app.js`, so page normalization now runs exactly once after the final render path through the named `PostRenderNormalizationRuntime`. Modal normalization remains independently owned by the `#modalBody` observer and was intentionally not changed in this batch.
+
+```text
+product:         4fc5d90a15ef2fc2dc22aa00f39967deba6f53f8
+validation:      c3301d065fa820539873a4fa2f739992ef63f3d2
+guard alignment: f5b8ff8789de0f51d2a03bcabe126191005ba24c
+full run:        34669152742
+frontend:        PASS (179/179)
+Real Chrome:     19/19 PASS
+```
+
+The first full validation correctly exposed one stale structure-bound storage-owner unit assertion; the product behavior was not reverted. The guard was tightened to require one storage route owner plus one final page-normalization call, then the full suite passed.
+
+
 ## 7. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
@@ -294,10 +312,11 @@ render414Base
   标签管理 route
 
 finalRender
-  素材存储配置 final route owner
+  素材存储配置 final route owner + final page normalization dispatch
 
-cleanup(root)
-  post-render DOM normalization
+PostRenderNormalizationRuntime.apply / cleanup(root)
+  final-render page normalization
+  modal observer normalization target
   table wrapping + page/modal file-input beautification
 
 base modal()
@@ -313,7 +332,7 @@ refreshSummary61
 Still under audit:
 
 ```text
-post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
+modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
 older base/global render generations reached through delegates
 ```
 
@@ -343,17 +362,17 @@ render426base absent
 modal426 absent
 old page/modal RAF beautification callbacks absent
 cleanup(root) invokes window.beautifyFileInputs426?.(root)
-view + modalBody observer wiring remains until explicit lifecycle migration
+#view observer remains retired; modalBody observer remains until explicit modal lifecycle migration
 测试发布 #predFile receives native-file426 + filepicker426
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **19/19** in run `34668702371`.
+Current accepted Real Chrome suite: **19/19** in run `34669152742`.
 
 ## 9. Remaining technical-debt targets
 
 ```text
-cleanup+observer lifecycle audit
+modal observer + bounded cleanup timer lifecycle audit
 loadAll / loadRelated / loadCore412 ownership
 proven dead app.js code
 global reload / duplicate requests
@@ -406,7 +425,7 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 ## 12. Work order
 
 ```text
-1. post-render cleanup wrapper + view/modalBody MutationObserver lifecycle audit
+1. modalBody MutationObserver + bounded 100ms cleanup timer lifecycle audit
 2. app.js dead code + global reload/request debt
 3. cache-busting unification
 4. zero-point observer/timer/fetch/render/setPage scan

@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`540c0944f45030ea198af2be153c1505f71e62f0`**  
-> **Frontend Runtime Stabilization：run `34668702371`，frontend + Real Chrome 全绿，Real Chrome 19/19 passed。**  
+> **最近完整代码验收点：`f5b8ff8789de0f51d2a03bcabe126191005ba24c`**  
+> **Frontend Runtime Stabilization：run `34669152742`，frontend 179/179 + Real Chrome 19/19 全绿。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -83,6 +83,8 @@ baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
 oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
+legacy baseRender + RAF page normalization wrapper
+#view post-render MutationObserver
 ```
 
 ## 2. 技术债状态
@@ -109,6 +111,7 @@ transport.mode-only material summary page guard / off-page summary request leaka
 | v35/v36/V37 startup render/version timers | final `queueMicrotask → __clInit` startup owner | **CLOSED (R15)** |
 | body-wide ZIP review observer / persisted result race | `completeZipImportReview412` explicit completion owner | **CLOSED (R16)** |
 | off-page material summary timer requests | page-scoped `refreshSummary61` | **CLOSED (R16)** |
+| page normalization baseRender/RAF/view observer | final `PostRenderNormalizationRuntime.apply` | **CLOSED (R17)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -174,7 +177,8 @@ internal metadata sink                document.documentElement.dataset.uiBuild
 
 ```text
 page render
-→ later post-render cleanup wrapper
+→ final render owner
+→ PostRenderNormalizationRuntime.apply(#view)
 → cleanup(#view)
    → window.beautifyFileInputs426?.(root)
 
@@ -198,8 +202,9 @@ renderBase427     → 自动标注及清洗
 renderBase424     → 质量中心 / 视频切帧
 oldRenderV39      → deployment conversion/artifact/resource/plugin/component
 render414Base     → 标签管理
-finalRender       → 素材存储配置
-cleanup(root)     → post-render normalization + table wrapping + page/modal file-input beautification
+finalRender       → 素材存储配置 + final page normalization dispatch
+PostRenderNormalizationRuntime.apply / cleanup(root)
+                  → page normalization + modal observer target + table/file-input cleanup
 base modal()       → modal first-editable-field autofocus
 completeZipImportReview412 → explicit successful ZIP completion review
 refreshSummary61           → paged 数据集-only material summary requests
@@ -208,7 +213,7 @@ refreshSummary61           → paged 数据集-only material summary requests
 Remaining audit candidates:
 
 ```text
-post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
+modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
 older base/global render generations still reachable through delegates
 ```
 
@@ -217,8 +222,8 @@ older base/global render generations still reachable through delegates
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.73
-main.mjs cache                   42.25.78
+app.js cache                     42.25.74
+main.mjs cache                   42.25.79
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -269,7 +274,8 @@ R10/R11 永久要求：
 - `modal426` 不得回归；
 - 两个历史 `requestAnimationFrame(...beautifyFileInputs426...)` callback 不得回归；
 - `cleanup(root)` 必须继续调用 `window.beautifyFileInputs426?.(root)`；
-- `view` 与 `modalBody` 的 cleanup observer contract 在生命周期重构完成前必须保持；
+- `#view` cleanup observer 已在 R17 退休，不得回归；页面 cleanup 必须保持 final-render-owned；
+- `modalBody` cleanup observer 暂时保留，待独立 modal lifecycle 迁移；
 - `测试发布` 的 `#predFile` 必须继续获得 `native-file426 + filepicker426` 行为；
 - 动态 modal 中普通 file input 必须继续获得同等 filepicker 行为。
 
@@ -290,7 +296,7 @@ R12 永久要求：
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 是独立 cleanup owner，不得与已退休 startup render timer 混淆。
 
-当前验收：run `34667776611`，**18/18 passed**。
+当前验收：run `34669152742`，frontend **179/179**，Real Chrome **19/19 passed**。
 
 ### R16 — event-owned ZIP completion + page-scoped material summary
 
@@ -314,6 +320,22 @@ Real Chrome:     19/19 PASS
 ```
 
 Permanent proof: `tests/frontend/lifecycle-event-ownership.test.mjs` plus the browser contract `ZIP import completion surfaces review action and auto-opens review`.
+
+### R17 — final page normalization ownership
+
+R17 removed the remaining page-side triple ownership (`baseRender` wrapper + page RAF cleanup + `#view` MutationObserver). Source-order proof showed the storage wrapper is the final `render` assignment in `static/app.js`, so page normalization now runs exactly once after the final render path through the named `PostRenderNormalizationRuntime`. Modal normalization remains independently owned by the `#modalBody` observer and was intentionally not changed in this batch.
+
+```text
+product:         4fc5d90a15ef2fc2dc22aa00f39967deba6f53f8
+validation:      c3301d065fa820539873a4fa2f739992ef63f3d2
+guard alignment: f5b8ff8789de0f51d2a03bcabe126191005ba24c
+full run:        34669152742
+frontend:        PASS (179/179)
+Real Chrome:     19/19 PASS
+```
+
+The first full validation correctly exposed one stale structure-bound storage-owner unit assertion; the product behavior was not reverted. The guard was tightened to require one storage route owner plus one final page-normalization call, then the full suite passed.
+
 
 
 ## 7. Recent render/lifecycle acceptance history

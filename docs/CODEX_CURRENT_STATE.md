@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 540c0944f45030ea198af2be153c1505f71e62f0
-Frontend Runtime run:        34668702371
+latest full code acceptance: f5b8ff8789de0f51d2a03bcabe126191005ba24c
+Frontend Runtime run:        34669152742
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.73
-main.mjs cache:              42.25.78
+app.js cache:                42.25.74
+main.mjs cache:              42.25.79
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,12 +23,12 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34668702371` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **19 tests and passed 19/19**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34669152742` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **19 tests and passed 19/19**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-cleanup+observer lifecycle audit
+modal observer + bounded cleanup timer lifecycle audit
 → app.js/global reload/request debt
 → cache-busting unification
 → zero-point lifecycle scan
@@ -121,6 +121,8 @@ baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
 oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
+legacy baseRender + RAF page normalization wrapper
+#view post-render MutationObserver
 ```
 
 ### R9 — version marker ownership consolidation
@@ -291,6 +293,22 @@ Real Chrome:     19/19 PASS
 
 Permanent proof: `tests/frontend/lifecycle-event-ownership.test.mjs` plus the browser contract `ZIP import completion surfaces review action and auto-opens review`.
 
+### R17 — final page normalization ownership
+
+R17 removed the remaining page-side triple ownership (`baseRender` wrapper + page RAF cleanup + `#view` MutationObserver). Source-order proof showed the storage wrapper is the final `render` assignment in `static/app.js`, so page normalization now runs exactly once after the final render path through the named `PostRenderNormalizationRuntime`. Modal normalization remains independently owned by the `#modalBody` observer and was intentionally not changed in this batch.
+
+```text
+product:         4fc5d90a15ef2fc2dc22aa00f39967deba6f53f8
+validation:      c3301d065fa820539873a4fa2f739992ef63f3d2
+guard alignment: f5b8ff8789de0f51d2a03bcabe126191005ba24c
+full run:        34669152742
+frontend:        PASS (179/179)
+Real Chrome:     19/19 PASS
+```
+
+The first full validation correctly exposed one stale structure-bound storage-owner unit assertion; the product behavior was not reverted. The guard was tightened to require one storage route owner plus one final page-normalization call, then the full suite passed.
+
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -318,9 +336,11 @@ render414Base
 
 finalRender
   素材存储配置 final route owner
+  final page normalization dispatch
 
-cleanup(root)
-  page/modal post-render normalization
+PostRenderNormalizationRuntime.apply / cleanup(root)
+  final-render page normalization
+  modal observer normalization target
   table wrapping + file-input beautification
 
 base modal()
@@ -336,7 +356,7 @@ refreshSummary61
 Still requiring independent liveness analysis:
 
 ```text
-post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
+modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
 older base/global render generations still reachable through delegates
 ```
 
@@ -366,7 +386,8 @@ auto-label-poll-runtime.test.mjs
 - `modal426` absent;
 - old page/modal RAF beautification callbacks absent;
 - `cleanup(root)` calls `beautifyFileInputs426`;
-- `view` and `modalBody` observer wiring remains until lifecycle ownership is explicitly migrated.
+- `#view` observer remains retired; page normalization must stay final-render-owned;
+- `#modalBody` observer remains until its modal lifecycle ownership is explicitly migrated.
 
 Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **19/19**.
 
@@ -405,7 +426,7 @@ live HEAD
 ## 9. Work order
 
 ```text
-1. post-render cleanup wrapper + view/modalBody MutationObserver lifecycle audit
+1. modalBody MutationObserver + bounded 100ms cleanup timer lifecycle audit
 2. proven dead app.js + global reload/request debt
 3. cache-busting unification
 4. zero-point MutationObserver/timer/fetch/render/setPage scan

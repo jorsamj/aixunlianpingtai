@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `540c0944f45030ea198af2be153c1505f71e62f0` / run `34668702371`  
+> Latest fully accepted code point: `f5b8ff8789de0f51d2a03bcabe126191005ba24c` / run `34669152742`  
 > Real Chrome: 19/19 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -61,6 +61,7 @@ initial bootstrap setPage                       CLOSED
 | R14 | `baseModalV37` autofocus compatibility wrapper | `8593516e...` / `34667341153` (rerun 18/18) |
 | R15 | v35/v36/V37 80/100/120ms startup render/version timers | `b6edea36...` / `34667776611` |
 | R16 | body-wide ZIP review observer + off-page material summary leakage | `540c0944...` / `34668702371` |
+| R17 | page baseRender/RAF wrapper + `#view` normalization observer | `f5b8ff87...` / `34669152742` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -73,7 +74,8 @@ R13 product: `928d2387d46a0472bd202bd4df84af8d1573b6c2`.
 R13 validation: `43e31c7e683fbda4b9c36a3d35188262b6a9ff1b` / run `34666985800`; **18/18 passed**.  
 R14 product: `6eafbe21c3c364a3e8099fd7ff3cdaf2a19e4829`; validation `8593516eb796f10fb43cea748bcc42b479e0a02e`. The first full pass exposed a lifecycle race at 17/18; rerunning the same run passed 18/18.  
 R15 product: `280a31bf365b1a6646a57213dfa2dff97e10e0b5`; validation `b6edea36296ab9548037457a124b4369776f6f5e` / run `34667776611`; focused training performance 5/5 and final Real Chrome **18/18 passed**.  
-R16 baseline: `540de6aef4ddbf82a6cf36994a31a73937abca73` / run `34668429941` exposed ZIP persisted-review loss and the remaining training-page `/materials` race. R16 product: `12df27e2af9155e3a1b9f745e46605396e321815`; focused run `34668639496` passed ZIP completion and training isolation 5/5; validation `540c0944f45030ea198af2be153c1505f71e62f0` / run `34668702371`; Real Chrome **19/19 passed**. All R16 one-shot migration artifacts were removed.
+R16 baseline: `540de6aef4ddbf82a6cf36994a31a73937abca73` / run `34668429941` exposed ZIP persisted-review loss and the remaining training-page `/materials` race. R16 product: `12df27e2af9155e3a1b9f745e46605396e321815`; focused run `34668639496` passed ZIP completion and training isolation 5/5; validation `540c0944f45030ea198af2be153c1505f71e62f0` / run `34668702371`; Real Chrome **19/19 passed**. All R16 one-shot migration artifacts were removed.  
+R17 product: `4fc5d90a15ef2fc2dc22aa00f39967deba6f53f8`; validation `c3301d065fa820539873a4fa2f739992ef63f3d2`; guard alignment `f5b8ff8789de0f51d2a03bcabe126191005ba24c` / run `34669152742`; frontend **179/179 passed**, Real Chrome **19/19 passed**. The early page normalization wrapper, RAF cleanup and `#view` observer are permanently retired; `#modalBody` remains independent.
 
 ## 4. Current final navigation owner
 
@@ -113,8 +115,8 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Video slicing route | `renderBase424 → renderVideo424()` | live route retained | guard |
 | Deployment routes | `oldRenderV39` | conversion/artifact/resource/plugin/component | liveness audit |
 | Label management route | `render414Base` | label management | liveness audit |
-| Storage configuration route | `finalRender` | `renderStorageSources61()` | dedicated Chrome contract |
-| Page post-render normalization | `cleanup(root)` + view observer | DOM cleanup + table wrapping + page file-input beautification | unit + Chrome |
+| Storage configuration route | `finalRender` | `renderStorageSources61()` + final page normalization dispatch | dedicated Chrome contract |
+| Page post-render normalization | `finalRender` → `PostRenderNormalizationRuntime.apply` → `cleanup(root)` | exactly one final-render cleanup; no view observer/RAF wrapper | unit + Chrome |
 | Modal post-render normalization | `cleanup(root)` + modalBody observer | table wrapping + dynamic modal file-input beautification | unit + Chrome |
 | Render-path formal versionInfo | later `V42` render owner | `state.versionInfo.version = 42.24.0` before delegate | unit + Chrome |
 | Modal autofocus | base `modal()` | first editable modal field autofocus | Chrome + unit guard |
@@ -161,8 +163,8 @@ render426base
 Final page ownership:
 
 ```text
-render chain
-→ cleanup wrapper
+final render chain
+→ PostRenderNormalizationRuntime.apply(#view)
 → cleanup(#view)
 → beautifyFileInputs426(root)
 ```
@@ -200,7 +202,8 @@ Retained:
 ```text
 beautifyFileInputs426 implementation/export
 cleanup(root)
-view + modalBody observer wiring
+PostRenderNormalizationRuntime final-render page dispatch
+modalBody observer wiring only
 ```
 
 The observer lifecycle itself is still a later audit target; current behavior is locked by permanent unit + Chrome contracts.
@@ -252,8 +255,9 @@ renderBase427     自动标注及清洗
 renderBase424     质量中心 / 视频切帧
 oldRenderV39      deployment routes
 render414Base     标签管理 route
-finalRender       素材存储配置
-cleanup(root)     post-render normalization + table wrapping + page/modal file-input beautification
+finalRender       素材存储配置 + final page normalization dispatch
+PostRenderNormalizationRuntime.apply / cleanup(root)
+                  page normalization + modal observer target + table/file-input cleanup
 base modal()       first editable modal field autofocus
 ```
 
@@ -277,6 +281,8 @@ baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
 oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
 transport.mode-only material summary page guard / off-page summary request leakage
+legacy baseRender + RAF page normalization wrapper
+#view post-render MutationObserver
 ```
 
 ## 10. Remaining render/lifecycle audit targets
@@ -284,7 +290,7 @@ transport.mode-only material summary page guard / off-page summary request leaka
 Independent proof is still required for:
 
 ```text
-post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
+modalBody MutationObserver lifecycle + bounded 100ms cleanup timer
 older base/global render generations still reachable through delegates
 ```
 
@@ -316,7 +322,7 @@ modal file input beautification survives modal lifecycle ownership
 modal table wrapping and first-field focus survive normalization ownership
 ```
 
-Current accepted Real Chrome suite: **19/19** in run `34668702371`.
+Current accepted Real Chrome suite: **19/19** in run `34669152742`.
 
 ## 12. Per-batch checklist
 
