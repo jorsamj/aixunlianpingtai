@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`6337f1a0379c7e60fbbc459668090504c0b6095b`**  
-> **Frontend Runtime Stabilization：run `34695825386`，frontend + Real Chrome 全绿，Real Chrome 30/30 passed。**  
+> **最近完整代码验收点：`210a9ad1f6271a8a8986db3f223f4813a6cce288`**  
+> **Frontend Runtime Stabilization：run `34696729028`，frontend + Real Chrome 全绿，Real Chrome 31/31 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -87,6 +87,10 @@ transport.mode-only material summary page guard / off-page summary request leaka
 legacy baseRender + RAF page normalization wrapper
 #view post-render MutationObserver
 #modalBody normalization MutationObserver
+base algorithm CRUD `window.newAlgorithm/saveAlgorithm/editAlgorithm/saveEditAlgorithm/viewAlgorithm`
+v30 `oldRenderAlgorithms` algorithm renderer wrapper
+v39 `oldViewAlgoV39` algorithm detail wrapper
+v42.2 `renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422` shadowed algorithm page generation
 ```
 
 ## 2. 技术债状态
@@ -126,6 +130,7 @@ legacy baseRender + RAF page normalization wrapper
 | model-config save/edit broad related refresh | M4 `saveVisionModelM4` authoritative result + local `state.modelConfigs` upsert | **CLOSED (R20f)** |
 | resource-discovery SQLite concurrent cache initialization | lock-safe/single-owner cache initialization | **OPEN — R20e validation diagnostic** |
 | ZIP / server-storage import completion broad refresh | scoped labels + paged material refresh | **CLOSED (R20g)** |
+| legacy algorithm CRUD + shadowed algorithm renderer generations | stable 414/423/429 owners + authoritative local `state.algorithms` patch | **CLOSED (R20h)** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -147,6 +152,37 @@ cleanup Chrome:   30/30 PASS
 ```
 
 R20 仍未整体 CLOSED；下一批继续做 global reload/request zero-point 与 proven-dead runtime shell 清理。
+
+## 2.2 R20h — legacy algorithm CRUD / shadowed renderer retirement
+
+R20h 证明并物理退休最早算法 CRUD owner、v30 算法 renderer wrapper、v39 `viewAlgorithm` wrapper 与 v42.2 已被最终路由遮蔽的算法页面 generation。最终算法列表仍由 `renderAlgorithms423` 负责；创建/编辑/删除由 414/423 稳定 action 直接使用服务端 authoritative result 更新 `state.algorithms`，不再触发 broad reload。
+
+保留边界：
+
+```text
+function renderAlgorithms() → 仅作为 bounded compatibility delegate 到 renderAlgorithms423
+后代 window.showReport owner → 仍被 viewAlgorithm423/versionRows423 使用，未误删
+```
+
+永久合同：
+
+```text
+tests/frontend/legacy-algorithm-crud-owner.test.mjs
+tests/browser/algorithm-list-performance.spec.mjs
+```
+
+```text
+product:        d58e690ffcc1523f213a65cfc0a57380ffdc571e
+focused run:    34696508446
+validation:     210a9ad1f6271a8a8986db3f223f4813a6cce288
+validation run: 34696729028
+frontend:       PASS
+Real Chrome:    31/31 PASS
+app.js cache:   42.25.84
+main.mjs cache: 42.25.88
+```
+
+一次性 migration helper/workflow 已物理删除。R20 尚未整体 CLOSED；下一批继续对 dataset/job/publish 等 mutation 做 liveness + request zero-point。
 
 ## 3. Canonical owners
 

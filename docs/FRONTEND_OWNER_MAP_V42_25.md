@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `6337f1a0379c7e60fbbc459668090504c0b6095b` / run `34695825386`  
-> Real Chrome: 30/30 passed  
+> Latest fully accepted code point: `210a9ad1f6271a8a8986db3f223f4813a6cce288` / run `34696729028`  
+> Real Chrome: 31/31 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -72,6 +72,9 @@ initial bootstrap setPage                       CLOSED
 | R20f | final M4 model-config save/edit broad `loadRelated` → authoritative saved item + local `modelConfigs` upsert | `94dbebb4...` / `34690924552` |
 | R20g | ZIP + server-storage import completion broad refresh → scoped labels/material refresh | `a2f4cb40...` / `34693503185` (30/30) |
 | R20g close | one-shot migration helper/workflow physical deletion | `6337f1a0...` / `34695825386` (30/30) |
+| R20h | legacy algorithm CRUD + v30/v39/v42.2 shadowed algorithm generations retired; stable 414/423/429 local-state owners remain | `210a9ad1...` / `34696729028` (31/31) |
+
+R20h product: `d58e690ffcc1523f213a65cfc0a57380ffdc571e`; focused run `34696508446`; validation `210a9ad1f6271a8a8986db3f223f4813a6cce288` / run `34696729028`; frontend PASS; Real Chrome **31/31 passed**. The bounded base `renderAlgorithms()` compatibility delegate remains until older global render maps are retired, and the later report compatibility owner remains live by contract. R20h one-shot migration artifacts were deleted.  
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  

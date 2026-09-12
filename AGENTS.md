@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 6337f1a0379c7e60fbbc459668090504c0b6095b
-Frontend Runtime run:        34695825386
+latest full code acceptance: 210a9ad1f6271a8a8986db3f223f4813a6cce288
+Frontend Runtime run:        34696729028
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.83
+app.js cache:                42.25.84
 main.mjs cache:              42.25.88
 NavigationStability:         422511
 ```
 
-`34695825386` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 30/30。
+`34696729028` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 31/31。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -87,29 +87,34 @@ NavigationStability
 
 ## 下一批准确范围：R20 final zero-point
 
-R20g 已 CLOSED。现在继续处理 `static/app.js` 中剩余的 global reload/request debt 与 proven-dead runtime shell；不回头重构已经 CLOSED 的 `setPage` / NavigationStability。
+R20g、R20h 已 CLOSED。R20h 已退休旧算法 CRUD 与 shadowed algorithm renderer generations；创建/编辑/删除现在由 414/423/429 稳定 owner 直接 patch authoritative `state.algorithms`，不得恢复 broad `reload()/loadAll()/loadRelated()`。
 
-重点枚举：
-
-```text
-reload() / loadAll() / loadRelated() mutation callers
-older base/global render generations reached through delegates
-proven-dead algorithm/data compatibility CRUD + renderer shells
-refresh handlers that still broaden request scope
-stale async completion side effects
-```
-
-规则：先建立 assignment/reference/liveness/semantic 表，再识别 dead generation；真实语义先补永久合同，再迁 owner / 局部 state patch / scoped refresh，最后物理删除。不得按版本号一把删。
-
-R20g 验收：
+下一批继续审计剩余 global reload/request debt，优先从数据集 mutation 家族开始，但必须先证明 current renderer/action liveness：
 
 ```text
-product:            a67778fd9b60384dbfffa2156e99670d244dadc9
-validation:         a2f4cb40abb6d70ad4faf89bde60c1ee39e4a179
-validation run:     34693503185 (frontend + Real Chrome 30/30 PASS)
-artifact cleanup:   6337f1a0379c7e60fbbc459668090504c0b6095b
-cleanup run:        34695825386 (frontend + Real Chrome 30/30 PASS)
+saveDataset / saveEditDataset / delDataset
+uploadImages / doImportData / autoSplit / setImageSplit
+stopJob / deleteJob
+saveAssign
+remaining loadAll().then(render) manual refresh handlers
 ```
+
+规则：先建立 assignment/reference/liveness/semantic 表；确认 live mutation 后，先补永久浏览器请求合同，再改成 authoritative result + local state patch / scoped refresh。被 later owner 完全 shadowed 的 generation 才允许整组物理删除。不得回头重构已经 CLOSED 的 `setPage` / NavigationStability。
+
+R20h 验收：
+
+```text
+product:          d58e690ffcc1523f213a65cfc0a57380ffdc571e
+focused run:      34696508446 (frontend unit + focused Real Chrome PASS)
+validation:       210a9ad1f6271a8a8986db3f223f4813a6cce288
+validation run:   34696729028
+frontend:         PASS
+Real Chrome:      31/31 PASS
+app.js cache:     42.25.84
+main.mjs cache:   42.25.88
+```
+
+一次性 R20h migration helper/workflow 已物理删除；永久 guard 位于 `tests/frontend/legacy-algorithm-crud-owner.test.mjs`，CRUD Real Chrome 合同已并入永久执行的 `tests/browser/algorithm-list-performance.spec.mjs`。
 
 ## 不得回退的核心合同
 

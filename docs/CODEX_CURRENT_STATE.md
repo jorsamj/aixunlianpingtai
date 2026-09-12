@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 6337f1a0379c7e60fbbc459668090504c0b6095b
-Frontend Runtime run:        34695825386
+latest full code acceptance: 210a9ad1f6271a8a8986db3f223f4813a6cce288
+Frontend Runtime run:        34696729028
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.83
+app.js cache:                42.25.84
 main.mjs cache:              42.25.88
 NavigationStability:         422511
 UI state runtime:            422500
@@ -23,16 +23,18 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34695825386` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **30 tests and passed 30/30**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34696729028` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **31 tests and passed 31/31**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
 app.js/global reload/request debt
+→ remaining dataset/job/publish mutation liveness audit + scoped refresh
 → proven dead app.js/runtime shell cleanup
+→ stale async action fencing / lifecycle zero-point
 → cache-busting unification
-→ zero-point lifecycle scan
 → semantic naming/dead-code cleanup
+→ unified task progress + durable queue productionization
 → A800 RC
 ```
 
@@ -55,6 +57,33 @@ main.mjs cache:     42.25.88
 ```
 
 Current exact next scope is **R20 final global reload/request zero-point** plus proven-dead `app.js` runtime-shell deletion. Do not reopen classic `setPage` ownership.
+
+### R20h — legacy algorithm CRUD / shadowed renderer retirement
+
+The original algorithm CRUD generation (`newAlgorithm/saveAlgorithm/editAlgorithm/saveEditAlgorithm/viewAlgorithm`), v30 `oldRenderAlgorithms`, v39 `oldViewAlgoV39`, and the shadowed v42.2 algorithm page generation were physically retired after proving that the final algorithm route is owned by `renderAlgorithms423` and stable 414/423/429 actions. The bounded base `renderAlgorithms()` symbol remains only as a compatibility delegate to `renderAlgorithms423` until older global render maps are retired. The later report compatibility owner is intentionally preserved because `viewAlgorithm423/versionRows423` still uses it.
+
+Stable mutations now remain:
+
+```text
+algorithm.create → openNewAlgorithm423 → saveNewAlgorithm414 → local state.algorithms prepend
+editAlgorithm423 → saveEditAlgorithm414 → local state.algorithms replace
+delAlgorithm → DELETE → local state.algorithms filter
+```
+
+All three paths are permanently guarded against `reload()/loadAll()/loadRelated()` fan-out. The permanent Real Chrome contract creates, edits and deletes through the UI and forbids broad project/dataset/image/job/label/algorithm/bootstrap refreshes while allowing unrelated runtime polling.
+
+```text
+product:          d58e690ffcc1523f213a65cfc0a57380ffdc571e
+focused run:      34696508446
+validation:       210a9ad1f6271a8a8986db3f223f4813a6cce288
+validation run:   34696729028
+frontend:         PASS
+Real Chrome:      31/31 PASS
+app.js cache:     42.25.84
+main.mjs cache:   42.25.88
+```
+
+One-shot R20h migration artifacts are physically deleted. Current exact next scope remains **R20 final global reload/request zero-point**, starting with a liveness audit of dataset mutation owners.
 
 Read in order:
 

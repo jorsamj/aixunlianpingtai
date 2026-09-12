@@ -7,16 +7,16 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       6337f1a0379c7e60fbbc459668090504c0b6095b
-run:          34695825386
+commit:       210a9ad1f6271a8a8986db3f223f4813a6cce288
+run:          34696729028
 frontend:     PASS
-Real Chrome:  PASS (30/30)
+Real Chrome:  PASS (31/31)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.83
+app.js                    42.25.84
 main.mjs                  42.25.88
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -97,6 +97,10 @@ transport.mode-only material summary page guard / off-page summary request leaka
 legacy baseRender + RAF page normalization wrapper
 #view post-render MutationObserver
 #modalBody normalization MutationObserver
+base algorithm CRUD new/save/edit/saveEdit/view globals
+v30 oldRenderAlgorithms wrapper
+v39 oldViewAlgoV39 wrapper
+v42.2 renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422 generation
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -387,6 +391,28 @@ artifact cleanup: 6337f1a0379c7e60fbbc459668090504c0b6095b
 cleanup run:      34695825386
 cleanup Chrome:   30/30 PASS
 ```
+
+### R20h — algorithm CRUD / shadowed generation retirement
+
+R20h removed the broad-reload algorithm CRUD generation and three later shadowed algorithm compatibility layers after proving final routing ownership. Current create/edit/delete mutations use stable 414/423 owners and patch authoritative `state.algorithms` locally.
+
+```text
+product:        d58e690ffcc1523f213a65cfc0a57380ffdc571e
+focused run:    34696508446
+validation:     210a9ad1f6271a8a8986db3f223f4813a6cce288
+validation run: 34696729028
+frontend:       PASS
+Real Chrome:    31/31 PASS
+```
+
+Permanent proof:
+
+```text
+tests/frontend/legacy-algorithm-crud-owner.test.mjs
+tests/browser/algorithm-list-performance.spec.mjs
+```
+
+Intentional survivors are explicit: base `renderAlgorithms()` is now only a bounded delegate to `renderAlgorithms423` because older global render maps still evaluate the symbol; the later `window.showReport` compatibility owner remains live because `viewAlgorithm423/versionRows423` still references it. One-shot R20h migration artifacts are physically deleted.
 
 ## 7. Current live render topology
 
