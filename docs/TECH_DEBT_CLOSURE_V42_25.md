@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`0dacf581da4acb52312f75eb7e85e6b334e060db`**  
-> **Frontend Runtime Stabilization：run `34665470320`，frontend + Real Chrome 全绿，Real Chrome 16/16 passed。**  
+> **最近完整代码验收点：`9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1`**  
+> **Frontend Runtime Stabilization：run `34665890699`，frontend + Real Chrome 全绿，Real Chrome 17/17 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -73,6 +73,8 @@ main.mjs applyBuildVersion visible-version owner
 main.mjs 80/500/1800/3600/8000ms visible-version writers
 render426base page-render file-input beautification wrapper
 render426base requestAnimationFrame page beautification callback
+modal426 modal file-input beautification wrapper
+modal426 requestAnimationFrame modal beautification callback
 ```
 
 ## 2. 技术债状态
@@ -92,7 +94,8 @@ render426base requestAnimationFrame page beautification callback
 | legacy AutoLabel424 no-op self-refresh timer | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
 | visible version multi-owner / delayed writers | formal display owners + internal build metadata split | **CLOSED (R9)** |
 | `render426base` page post-render wrapper | `cleanup(root)` page post-render owner | **CLOSED (R10)** |
-| remaining historical render/modal overrides | bounded semantic owners | **IN PROGRESS** |
+| `modal426` modal post-render wrapper | `cleanup(root)` + `modalBody` MutationObserver | **CLOSED (R11)** |
+| remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
 | cache-busting | single strategy | **OPEN** |
@@ -153,17 +156,21 @@ internal metadata sink                document.documentElement.dataset.uiBuild
 
 `UI_BUILD_VERSION` is not a user-visible version owner.
 
-### Page file-input beautification — R10 final owner
+### File-input beautification — R10/R11 final owner
 
 ```text
-render()
+page render
 → later post-render cleanup wrapper
 → cleanup(#view)
    → window.beautifyFileInputs426?.(root)
-   → other cleanup semantics
+
+modal body mutation
+→ modalBody MutationObserver
+→ cleanup(addedNode)
+   → window.beautifyFileInputs426?.(root)
 ```
 
-`render426base` is physically retired. `modal426` remains a distinct modal lifecycle owner pending its own audit.
+`render426base` 与 `modal426` 均已物理退休。文件选择器美化不再依赖两个历史 RAF compatibility wrapper。
 
 ## 4. Current live render / post-render owners
 
@@ -178,27 +185,26 @@ renderBase424     → 质量中心 / 视频切帧
 oldRenderV39      → deployment conversion/artifact/resource/plugin/component
 render414Base     → 标签管理
 finalRender       → 素材存储配置
-cleanup(root)     → post-render normalization + page file-input beautification
-modal426          → modal file-input beautification（待独立审计）
+cleanup(root)     → post-render normalization + page/modal file-input beautification
 ```
 
 Remaining audit candidates:
 
 ```text
-modal426
 baseRenderV37
-post-render cleanup wrapper + view/modalBody MutationObserver
+baseModalV37
+post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
-`baseRender417` 已在 R9 退役；`render426base` 已在 R10 退役，二者都不再是 live audit candidate。
+`baseRender417`、`render426base`、`modal426` 均已退休，不再是 live audit candidate。
 
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.67
-main.mjs cache                   42.25.71
+app.js cache                     42.25.68
+main.mjs cache                   42.25.72
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -239,19 +245,21 @@ R9 永久要求：
 - 初始可见版本必须是 `v42.24.0`；
 - internal UI build metadata 可保留 `42.25.0-dev`，但只能作为内部 metadata。
 
-R10 永久要求：
+R10/R11 永久要求：
 
 - `render426base` 不得回归；
-- old `requestAnimationFrame(()=>beautifyFileInputs426(#view))` page callback 不得回归；
+- `modal426` 不得回归；
+- 两个历史 `requestAnimationFrame(...beautifyFileInputs426...)` callback 不得回归；
 - `cleanup(root)` 必须继续调用 `window.beautifyFileInputs426?.(root)`；
+- `view` 与 `modalBody` 的 cleanup observer contract 在生命周期重构完成前必须保持；
 - `测试发布` 的 `#predFile` 必须继续获得 `native-file426 + filepicker426` 行为；
-- `modal426` 在独立迁移证明完成前必须保留，不能被 R10 顺带误删。
+- 动态 modal 中普通 file input 必须继续获得同等 filepicker 行为。
 
 Browser：
 
-Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、AutoLabel polling、素材存储、算法/训练/素材性能路径、formal version 稳定性，以及 page-render 文件选择器美化行为。
+Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、AutoLabel polling、素材存储、算法/训练/素材性能路径、formal version 稳定性，以及 page/modal 文件选择器美化行为。
 
-当前验收：run `34665470320`，**16/16 passed**。
+当前验收：run `34665890699`，**17/17 passed**。
 
 ## 7. Recent render/lifecycle acceptance history
 
@@ -283,11 +291,7 @@ legacy AutoLabel424 self-refresh timer retirement
   70b6f755... / 34663768606
   Chrome 14/14 PASS
 
-R9 version-marker failing baseline
-  50d72687... / 34664100285
-  frontend PASS / Chrome 14 PASS + 1 FAIL
-
-R9 final validation
+R9 version-marker final validation
   36fd25c48a2251d1b4a85583921c00dd98bf33fb / 34664755130
   frontend PASS / Real Chrome 15/15 PASS
 
@@ -301,18 +305,29 @@ R10 product
 R10 final validation
   0dacf581da4acb52312f75eb7e85e6b334e060db / 34665470320
   frontend PASS / Real Chrome 16/16 PASS
+
+R11 modal file-input behavior baseline
+  d2aa614870a52864e991502c2218134943afb14f
+  focused Chrome PASS
+
+R11 product
+  8ff8e7fd9dc055b6e413c273cc030e7f20a2f0c1
+
+R11 final validation
+  9bad939a70bc85c75b0897ee7b4d5a21fb2ab9d1 / 34665890699
+  frontend PASS / Real Chrome 17/17 PASS
 ```
 
 所有对应一次性 baseline/migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
 
-## 8. 下一批：remaining modal/render/lifecycle owner audit
+## 8. 下一批：remaining render/lifecycle owner audit
 
 优先独立审计：
 
 ```text
-modal426          modal file-input beautification
-baseRenderV37     requestAnimationFrame page enhancement
-cleanup wrapper   post-render cleanup + MutationObserver
+baseRenderV37     requestAnimationFrame page enhancement + versionInfo write
+baseModalV37      modal enhance/focus wrapper
+cleanup wrapper   post-render cleanup + view/modalBody MutationObserver lifecycle
 body observer     ZIP import review MutationObserver
 ```
 
@@ -330,7 +345,7 @@ body observer     ZIP import review MutationObserver
 ## 9. 后续顺序
 
 ```text
-A. modal426 / baseRenderV37 / cleanup+observer owner audit
+A. baseRenderV37 / baseModalV37 / cleanup+observer owner audit
 B. app.js dead code + global reload/request debt
 C. cache-busting unification
 D. MutationObserver/timer/fetch/render/setPage zero-point scan
