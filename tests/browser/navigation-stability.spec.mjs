@@ -235,3 +235,30 @@ test('storage configuration route is rendered by the final storage owner', async
 
   expect(pageErrors).toEqual([]);
 });
+
+test('formal version marker stays stable across final render owners and delayed legacy timers', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  const expectFormalVersion = async () => {
+    await expect(page.locator('#versionBadge')).toHaveText('v42.24.0');
+    await expect(page.locator('.nav-footer b')).toHaveText('v42.24.0');
+  };
+
+  await expectFormalVersion();
+  await page.waitForTimeout(1_800);
+  await expectFormalVersion();
+
+  for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '部署资源', '素材存储配置']) {
+    await page.evaluate(next => window.setPage(next), route);
+    await expect(page.locator('#title')).toContainText(route);
+    await expectFormalVersion();
+  }
+
+  await page.waitForTimeout(1_800);
+  await expectFormalVersion();
+  expect(pageErrors).toEqual([]);
+});
