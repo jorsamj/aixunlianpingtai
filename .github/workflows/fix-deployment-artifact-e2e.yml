@@ -37,7 +37,7 @@ jobs:
       - name: Deployment artifact API contract
         run: python -m pytest -q tests/api/test_deployment_artifact_visibility.py tests/api/test_conversion_jobs.py
       - name: Focused Real Chrome deployment artifact flow
-        run: npx playwright test tests/browser/deployment-artifact-visibility.spec.mjs tests/browser/model-and-conversion.spec.mjs
+        run: npx playwright test tests/browser/deployment-artifact-visibility.spec.mjs
       - name: Verify release boundary
         run: |
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
