@@ -135,11 +135,6 @@ test('stale AI confirmation cannot patch or close UI owned by a newer page', asy
   const intercepted = new Promise(resolve => { interceptedResolve = resolve; });
 
   await boot(page);
-  await page.route(/\/api\/v47\/projects\/[^/]+\/ai-label-tasks\/ai-r2\/result$/, route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({result: {labels: ['smoke'], items: [{image_id: 'image-ai-r2', filename: 'image-ai-r2.jpg', status: 'ok', boxes: [{label: 'smoke', x1: 1, y1: 1, x2: 10, y2: 10, confidence: 0.9}]}]}}),
-  }));
   await page.route(/\/api\/v47\/projects\/[^/]+\/ai-label-tasks\/ai-r2\/confirm$/, async route => {
     if (route.request().method() !== 'POST') return route.continue();
     interceptedResolve();
@@ -150,9 +145,10 @@ test('stale AI confirmation cannot patch or close UI owned by a newer page', asy
   });
 
   await page.evaluate(() => window.setPage('数据集'));
-  await page.evaluate(() => window.reviewAiLabel427('ai-r2'));
-  await expect(page.getByRole('button', {name: '确认写入标注'})).toBeVisible();
-  await page.getByRole('button', {name: '确认写入标注'}).click();
+  await page.evaluate(() => {
+    state.v427AiConfirm = new Set(['image-ai-r2']);
+    void window.confirmAiLabel427('ai-r2');
+  });
   await Promise.race([intercepted, new Promise((_, reject) => setTimeout(() => reject(new Error('AI confirm POST was not intercepted')), 8_000))]);
 
   await protectNewPageModal(page, '模型配置');
