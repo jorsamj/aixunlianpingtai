@@ -262,3 +262,20 @@ test('formal version marker stays stable across final render owners and delayed 
   await expectFormalVersion();
   expect(pageErrors).toEqual([]);
 });
+
+test('file input beautification survives page render lifecycle ownership', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+
+  await page.evaluate(() => window.setPage('测试发布'));
+  await expect(page.locator('#title')).toContainText('测试发布');
+  await expect(page.locator('#predFile')).toHaveClass(/native-file426/);
+  await expect(page.locator('#predFile + .filepicker426')).toBeVisible();
+  await expect(page.locator('#predFile + .filepicker426 .filepicker426-btn')).toContainText('选择图片');
+
+  expect(pageErrors).toEqual([]);
+});
+
