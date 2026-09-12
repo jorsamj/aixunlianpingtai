@@ -1553,7 +1553,7 @@ window.installUsability417=function(){
     await safe(api(id?`/api/v35/model-configs/${id}`:'/api/v35/model-configs',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
     closeModal();await loadAll();state.page='模型配置';render();toast('已保存模型配置');
   };
-  window.deleteModelConfigV35=async function(id){if(!confirm('确认删除这个模型配置？'))return;await safe(api(`/api/v35/model-configs/${id}`,{method:'DELETE'}));await loadAll();render();toast('已删除')};
+  window.deleteModelConfigV35=async function(id){if(!confirm('确认删除这个模型配置？'))return;const r=await safe(api(`/api/v35/model-configs/${id}`,{method:'DELETE'}));if(!r?.ok)return;state.modelConfigs=(state.modelConfigs||[]).filter(x=>String(x.id)!==String(id));render();toast('已删除')};
   window.testModelConfigV35=async function(id){const c=(state.modelConfigs||[]).find(x=>x.id===id);if(!c)return;const r=await safe(api('/api/v35/model-configs/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...c,api_key:''})}));if(r)modal('连接测试结果',`<pre class="log small-log">${esc(JSON.stringify(r,null,2))}</pre>`,true)};
 
   function promptTemplateListHtmlV35(){
@@ -1567,10 +1567,13 @@ window.installUsability417=function(){
   window.savePromptTemplateV35=async function(id=''){
     const labels=$('#ptLabels').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean);
     const body={name:$('#ptName').value,model_config_id:$('#ptModel').value,framework:$('#ptFramework').value,save_format:$('#ptSaveFormat').value,labels,prompt:$('#ptPrompt').value,threshold:parseFloat($('#ptThreshold').value||'0.5'),remark:$('#ptRemark').value,output_schema:'bbox_json'};
-    await safe(api(id?`/api/v35/prompt-templates/${id}`:'/api/v35/prompt-templates',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
-    closeModal();await loadAll();render();toast('已保存模型标注模板');
+    const item=await safe(api(id?`/api/v35/prompt-templates/${id}`:'/api/v35/prompt-templates',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+    if(!item?.id)return;
+    const current=state.promptTemplates||[],idx=current.findIndex(x=>String(x.id)===String(item.id));
+    if(idx>=0){state.promptTemplates=[...current];state.promptTemplates[idx]=item}else state.promptTemplates=[item,...current];
+    closeModal();render();toast('已保存模型标注模板');
   };
-  window.deletePromptTemplateV35=async function(id){if(!confirm('确认删除这个模板？'))return;await safe(api(`/api/v35/prompt-templates/${id}`,{method:'DELETE'}));await loadAll();render();toast('已删除')};
+  window.deletePromptTemplateV35=async function(id){if(!confirm('确认删除这个模板？'))return;const r=await safe(api(`/api/v35/prompt-templates/${id}`,{method:'DELETE'}));if(!r?.ok)return;state.promptTemplates=(state.promptTemplates||[]).filter(x=>String(x.id)!==String(id));render();toast('已删除')};
 
   // ---------- Auto labeling ----------
   window.renderAutoLabelPageV35=function(){

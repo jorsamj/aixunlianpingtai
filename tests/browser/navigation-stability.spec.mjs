@@ -637,9 +637,17 @@ test('model config delete keeps model configuration page consistent', async ({pa
   await expect(page.locator('#title')).toContainText('模型配置');
   await expect(page.locator('#view')).toContainText('R20e 模型配置');
 
+  const actionRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) actionRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
   await page.getByRole('button', {name: '删除'}).first().click();
   await expect(page.locator('#toast')).toContainText('已删除');
   await expect(page.locator('#view')).not.toContainText('R20e 模型配置');
+  expect(actionRequests.filter(row => row === 'DELETE /api/v35/model-configs/cfg-r20e')).toHaveLength(1);
+  expect(actionRequests.filter(row => row.startsWith('GET /api/v35/model-configs'))).toEqual([]);
+  expect(actionRequests.filter(row => row.includes('/bootstrap/snapshot'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
 
@@ -670,9 +678,19 @@ test('prompt template save appears immediately in model configuration', async ({
   await page.locator('#ptName').fill('R20e 新提示词');
   await page.locator('#ptLabels').fill('fire');
   await page.locator('#ptPrompt').fill('detect fire and return bbox json');
+  const actionRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) actionRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
   await page.getByRole('button', {name: '保存模板'}).click();
   await expect(page.locator('#toast')).toContainText('已保存模型标注模板');
   await expect(page.locator('#view')).toContainText('R20e 新提示词');
+  await expect.poll(async () => page.evaluate(() => state.promptTemplates.find(x => x.id === 'tpl-r20e-new')?.name || '')).toBe('R20e 新提示词');
+  expect(actionRequests.filter(row => row === 'POST /api/v35/prompt-templates')).toHaveLength(1);
+  expect(actionRequests.filter(row => row.startsWith('GET /api/v35/prompt-templates'))).toEqual([]);
+  expect(actionRequests.filter(row => row.startsWith('GET /api/v35/model-configs'))).toEqual([]);
+  expect(actionRequests.filter(row => row.includes('/bootstrap/snapshot'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
 
@@ -703,8 +721,18 @@ test('prompt template delete disappears immediately in model configuration', asy
   });
   await expect(page.locator('#view')).toContainText('R20e 旧提示词');
   const row = page.locator('tr').filter({hasText: 'R20e 旧提示词'});
+  const actionRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) actionRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
   await row.getByRole('button', {name: '删除'}).click();
   await expect(page.locator('#toast')).toContainText('已删除');
   await expect(page.locator('#view')).not.toContainText('R20e 旧提示词');
+  await expect.poll(async () => page.evaluate(() => state.promptTemplates.some(x => x.id === 'tpl-r20e-old'))).toBe(false);
+  expect(actionRequests.filter(row => row === 'DELETE /api/v35/prompt-templates/tpl-r20e-old')).toHaveLength(1);
+  expect(actionRequests.filter(row => row.startsWith('GET /api/v35/prompt-templates'))).toEqual([]);
+  expect(actionRequests.filter(row => row.startsWith('GET /api/v35/model-configs'))).toEqual([]);
+  expect(actionRequests.filter(row => row.includes('/bootstrap/snapshot'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
