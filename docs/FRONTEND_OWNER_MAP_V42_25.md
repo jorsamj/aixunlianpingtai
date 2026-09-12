@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `2d9bc0b30a72761d784cc57472eb50b158b8851f` / run `34663389819`  
+> Latest fully accepted code point: `70b6f755cd8633de3e8591ac2fee044efc770b97` / run `34663768606`  
 > Real Chrome: 14/14 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -41,7 +41,7 @@ initial bootstrap setPage                       CLOSED
 
 `static/app.js` now contains zero classic `window.setPage=` assignments.
 
-### Render
+### Render / lifecycle
 
 | Batch | Physically retired | Accepted code / run |
 |---|---|---|
@@ -52,8 +52,9 @@ initial bootstrap setPage                       CLOSED
 | R5 | shadowed `renderBase428` 算法列表 branch | `6be679b6...` / `34660269685` |
 | R6 | v42.2 + v42.4 legacy `自动标注` render route branches | `66339fc0...` / `34663089996` |
 | R7 | shadowed `renderBase424` 算法列表 / 数据集 / 训练任务 branches | `2d9bc0b3...` / `34663389819` |
+| R8 | legacy `renderAutoLabel424` old-page 1.8s self-refresh timer/predicate | `70b6f755...` / `34663768606` |
 
-Every accepted batch passed frontend unit + Real Chrome. R6 and R7 both ran 14 browser tests and passed 14/14. Temporary migration helpers/workflows were removed after success.
+Every accepted batch passed frontend unit + Real Chrome. R6–R8 each ran 14 browser tests and passed 14/14. Temporary migration helpers/workflows were removed after success.
 
 ## 4. Current final navigation owner
 
@@ -72,7 +73,7 @@ window.setPage = NavigationStability.stableSetPage
   → persistNavigationState
 ```
 
-Historical localStorage `自动标注` values are canonicalized at restore time and immediately written back as `自动标注及清洗`. Render no longer mutates route alias state. The older v42.2/v42.4 route branches keyed to `自动标注` are physically absent.
+Historical localStorage `自动标注` values are canonicalized at restore time and immediately written back as `自动标注及清洗`. Render no longer mutates route alias state. The older v42.2/v42.4 route branches are absent, and R8 removes the final `state.page==='自动标注'` predicate from `static/app.js`.
 
 ## 5. Current visible owner map
 
@@ -82,8 +83,8 @@ Historical localStorage `自动标注` values are canonicalized at restore time 
 | Training submit | `TrainingSubmitRuntime` | sole `/train/start`, canonical draft/readiness | unit + Chrome |
 | Training jobs request | `TrainingTaskRuntime` | focused `/jobs`, coalescing, force-fresh mutation | unit + browser performance |
 | Training jobs timer | `PollRegistry(training-jobs)` + `renderTraining423` activation | managed cadence + navigation cleanup | unit + Chrome |
-| AutoLabel route | `renderBase427 → renderOps427()` | canonical `自动标注及清洗`; no old-name render route owner | unit + Real Chrome alias contracts |
-| AutoLabel polling | `AutoLabelPollRuntime + PollRegistry` | explicit activate/deactivate | unit + Chrome |
+| AutoLabel route | `renderBase427 → renderOps427()` | canonical `自动标注及清洗`; no old-name route/predicate | unit + Real Chrome alias contracts |
+| AutoLabel polling | `AutoLabelPollRuntime + PollRegistry` | explicit activate/deactivate; no legacy 424 timeout | unit + Chrome |
 | Video | `PollRegistry(video-frames)` | one-shot row patch | unit + Chrome |
 | Sources | `PollRegistry(sources)` | managed interval | unit + Chrome |
 | Data/material route | `oldRender412 → renderDatasets424()` | stable outer data route; no fallback to renderBase424 | unit + browser performance |
@@ -91,6 +92,8 @@ Historical localStorage `自动标注` values are canonicalized at restore time 
 | Training task page route | `renderBase428 → renderTraining423()` | training-only route | browser performance + permanent guard |
 | Quality center route | `renderBase424 → renderQualityCenter424()` | live legacy route retained | permanent guard |
 | Video slicing route | `renderBase424 → renderVideo424()` | live legacy route retained | permanent guard |
+| Deployment routes | `oldRenderV39` | conversion/artifact/resource/plugin/component routes | liveness audit |
+| Label management route | `render414Base` | label management + post-route badge | liveness audit |
 | Storage configuration page route | `finalRender` | route to `renderStorageSources61` | dedicated Real Chrome contract |
 
 ## 6. Render topology — confirmed live / retired
@@ -115,6 +118,12 @@ renderBase427
 renderBase424
   质量中心 / 视频切帧 route owner only
 
+oldRenderV39
+  deployment route owner
+
+render414Base
+  标签管理 route owner
+
 finalRender
   素材存储配置 final route owner
 ```
@@ -131,19 +140,21 @@ v42.4 renderBase424 legacy 自动标注 route branch
 renderBase424 算法列表 branch
 renderBase424 数据集 branch
 renderBase424 训练任务 branch
+renderAutoLabel424 legacy 自动标注 1.8s self-refresh timeout/predicate
 ```
 
-R7 capture proof:
+R8 proof:
 
 ```text
-算法列表: final chain reaches oldRender412 first → stop
-数据集:   final chain reaches oldRender412 first → stop
-训练任务: oldRender412 delegates → renderBase428 stops → renderBase424 unreachable
-质量中心: no later owner intercepts → renderBase424 remains live
-视频切帧: no later owner intercepts → renderBase424 remains live
+NavigationStability request path → 自动标注 canonicalizes to 自动标注及清洗
+historical restore path          → 自动标注 canonicalizes + writes back 自动标注及清洗
+static/app.js direct old-page writer → none
+legacy timer condition           → required state.page === 自动标注
+therefore timer                  → scheduled work could only wake and no-op
+managed replacement              → AutoLabelPollRuntime + PollRegistry
 ```
 
-The historical `renderAutoLabel424()` function still contains an old-name self-refresh predicate. It is not a route owner and remains for a separate dead-code/lifecycle proof.
+`renderAutoLabel424()` itself remains referenced by historical actions and is not yet retired as a function.
 
 ## 7. Remaining render audit targets
 
@@ -154,23 +165,22 @@ baseRenderV37
   requestAnimationFrame page enhancement
 
 oldRenderV39
-  deploy conversion/artifact/resource/plugin routes
+  live deploy conversion/artifact/resource/plugin/component routes
 
 render426base
   post-render file input beautification
 
 render414Base
-  标签管理 route + version badge behavior
+  live 标签管理 route + version badge behavior
 
 baseRender417
-  version badge/footer correction
+  version badge/footer correction; later v42.6 nav/top wrappers appear semantically overlapping
 
 post-render cleanup wrapper + MutationObserver
 older base/global render generations still reachable through delegates
-renderAutoLabel424 old-page self-refresh condition
 ```
 
-Current bounded owners `renderBase424`, `renderBase427`, `renderBase428`, `oldRender412`, `finalRender` are not deletion candidates as whole wrappers without a new semantic migration proof.
+Current bounded owners `renderBase424`, `renderBase427`, `renderBase428`, `oldRender412`, `oldRenderV39`, `render414Base`, `finalRender` are not deletion candidates as whole wrappers without a new semantic migration proof.
 
 ## 8. Permanent proof currently active
 
@@ -182,10 +192,13 @@ tests/frontend/retired-pre-v424-setpage-guard.test.mjs
 tests/frontend/render-alias-restore.test.mjs
 tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/navigation-stability.test.mjs
+tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
 `render-owner-retirement.test.mjs` now explicitly requires:
 - legacy v42.2/v42.4 `自动标注` route branches stay absent;
+- `state.page==='自动标注'` stays absent from `static/app.js`;
+- legacy AutoLabel424 self-refresh timeout stays absent;
 - canonical `自动标注及清洗` keeps `renderBase427 → renderOps427()` ownership;
 - `renderBase428` stays training-only;
 - `oldRender412` stays authoritative for algorithm/data routes;
@@ -196,12 +209,13 @@ Browser:
 ```text
 tests/browser/navigation-stability.spec.mjs
 tests/browser/navigation-readiness.spec.mjs
+tests/browser/auto-label-polling.spec.mjs
 tests/browser/algorithm-list-performance.spec.mjs
 tests/browser/training-task-performance.spec.mjs
 tests/browser/material-pagination-performance.spec.mjs
 ```
 
-Current accepted Real Chrome suite: 14/14 passed in run `34663389819`.
+Current accepted Real Chrome suite: 14/14 passed in run `34663768606`.
 
 ## 9. Per-batch checklist
 
