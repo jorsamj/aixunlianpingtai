@@ -2,7 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `6be679b6b23f566d14434e2032b8af8015341ae4` / run `34660269685`  
+> Latest fully accepted code point: `66339fc0b8459328a68bf775230eae179a4d969d` / run `34663089996`  
+> Real Chrome: 14/14 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -49,8 +50,9 @@ initial bootstrap setPage                       CLOSED
 | R3 | `previousRender61` | `69732d9e...` / `34659543452` |
 | R4 | `render423Base` | `58ece59e...` / `34659775870` |
 | R5 | shadowed `renderBase428` 算法列表 branch | `6be679b6...` / `34660269685` |
+| R6 | v42.2 + v42.4 legacy `自动标注` render route branches | `66339fc0...` / `34663089996` |
 
-Each accepted batch passed frontend unit + Real Chrome. Temporary migration helpers/workflows were removed after success.
+Each accepted batch passed frontend unit + Real Chrome. R6 Real Chrome executed 14 tests and passed 14/14. Temporary migration helpers/workflows were removed after success.
 
 ## 4. Current final navigation owner
 
@@ -69,7 +71,7 @@ window.setPage = NavigationStability.stableSetPage
   → persistNavigationState
 ```
 
-Historical localStorage `自动标注` values are canonicalized at restore time and immediately written back as `自动标注及清洗`. Render no longer mutates route alias state.
+Historical localStorage `自动标注` values are canonicalized at restore time and immediately written back as `自动标注及清洗`. Render no longer mutates route alias state. The older v42.2/v42.4 route branches keyed to `自动标注` are now physically absent.
 
 ## 5. Current visible owner map
 
@@ -79,7 +81,8 @@ Historical localStorage `自动标注` values are canonicalized at restore time 
 | Training submit | `TrainingSubmitRuntime` | sole `/train/start`, canonical draft/readiness | unit + Chrome |
 | Training jobs request | `TrainingTaskRuntime` | focused `/jobs`, coalescing, force-fresh mutation | unit + browser performance |
 | Training jobs timer | `PollRegistry(training-jobs)` + `renderTraining423` activation | managed cadence + navigation cleanup | unit + Chrome |
-| AutoLabel | `AutoLabelPollRuntime + PollRegistry` | explicit activate/deactivate | unit + Chrome |
+| AutoLabel route | `renderBase427 → renderOps427()` | canonical `自动标注及清洗`; no old-name render route owner | unit + Real Chrome alias contracts |
+| AutoLabel polling | `AutoLabelPollRuntime + PollRegistry` | explicit activate/deactivate | unit + Chrome |
 | Video | `PollRegistry(video-frames)` | one-shot row patch | unit + Chrome |
 | Sources | `PollRegistry(sources)` | managed interval | unit + Chrome |
 | Data/material | `MaterialPaginationRuntime61` + `oldRender412`/current renderer | pagination/card patch/annotation stability | browser performance |
@@ -104,11 +107,15 @@ renderTraining423
   current training-page renderer
   directly activates PollRegistry training-jobs
 
+renderBase427
+  canonical 自动标注及清洗 route owner
+  delegates to renderOps427()
+
 finalRender
   素材存储配置 final route owner
 ```
 
-### Physically retired because fully shadowed
+### Physically retired because fully shadowed / unreachable
 
 ```text
 oldRender429
@@ -125,7 +132,15 @@ render423Base
 renderBase428 算法列表 branch
   oldRender412 handled 算法列表 first;
   only the training branch remains live inside the wrapper
+
+v42.2 render422 legacy 自动标注 route branch
+v42.4 renderBase424 legacy 自动标注 route branch
+  no reachable writer survives for the old route value;
+  NavigationStability + restore boundary canonicalize to 自动标注及清洗;
+  later renderBase427 owns the canonical route
 ```
+
+The historical `renderAutoLabel424()` function still contains an old-name self-refresh predicate. It is not a route owner and was deliberately left untouched for a separate dead-code/lifecycle proof.
 
 ## 7. Remaining render audit targets
 
@@ -139,13 +154,14 @@ oldRenderV39
   deploy conversion/artifact/resource/plugin routes
 
 renderBase424
-  quality/data/video/auto-label and related routes
+  quality/video live routes remain
+  算法列表 / 数据集 / 训练任务 branches are next shadowing candidates
 
 render426base
   post-render file input beautification
 
 renderBase427
-  自动标注及清洗 route
+  canonical 自动标注及清洗 route is live; do not delete whole wrapper
 
 renderBase428
   training-task route remains live; do not delete whole wrapper without semantic migration
@@ -160,7 +176,15 @@ post-render cleanup wrapper + MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
-Do not delete an entire wrapper because one branch is shadowed. Split dead branches from live behavior only after behavior coverage exists.
+Next bounded proof target:
+
+```text
+renderBase424 算法列表 → later oldRender412
+renderBase424 数据集   → later oldRender412
+renderBase424 训练任务 → later renderBase428
+```
+
+Do not delete `renderBase424` as a whole: its `质量中心` and `视频切帧` semantics are still live. Do not delete an entire wrapper because one branch is shadowed. Split dead branches from live behavior only after behavior coverage exists.
 
 ## 8. Permanent proof currently active
 
@@ -174,7 +198,12 @@ tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/navigation-stability.test.mjs
 ```
 
-`render-owner-retirement.test.mjs` now explicitly requires the old combined renderBase428 algorithm+training wrapper to stay absent, the training-only wrapper to remain present, and `oldRender412` to remain the sole outer algorithm-list route owner.
+`render-owner-retirement.test.mjs` now explicitly requires:
+- legacy v42.2/v42.4 `自动标注` route branches stay absent;
+- canonical `自动标注及清洗` keeps `renderBase427 → renderOps427()` ownership;
+- the old combined renderBase428 algorithm+training wrapper stays absent;
+- the training-only renderBase428 wrapper remains present;
+- `oldRender412` remains the sole outer algorithm-list route owner.
 
 Browser:
 
@@ -185,6 +214,8 @@ tests/browser/algorithm-list-performance.spec.mjs
 tests/browser/training-task-performance.spec.mjs
 tests/browser/material-pagination-performance.spec.mjs
 ```
+
+Current accepted Real Chrome suite: 14/14 passed in run `34663089996`.
 
 ## 9. Per-batch checklist
 
