@@ -252,6 +252,21 @@ export function installNavigationStability({
       return guard.token(normalizeNavigationPage(ownerPage || currentState().page));
     },
     wrapKnownFunctions,
+    action(ownerPage = currentState().page) {
+      const normalizedOwner = normalizeNavigationPage(ownerPage || currentState().page || '');
+      const token = guard.token(normalizedOwner);
+      const current = () => guard.isCurrent(token, normalizeNavigationPage(currentState().page || ''));
+      return Object.freeze({
+        token,
+        ownerPage: normalizedOwner,
+        isCurrent: current,
+        commit(effect) {
+          if (!current()) return false;
+          if (typeof effect === 'function') effect();
+          return true;
+        },
+      });
+    },
     repairCurrentPage() {
       notify?.('旧页面结果已被拦截');
       return false;

@@ -44,7 +44,7 @@ window.detectUltra=()=>{const root=$('#uroot')?.value.trim()||'';return window.R
 window.scanModels=()=>{const root=$('#scanRoot')?.value.trim()||'';if(!root)return toast('请先填写要扫描的模型目录');return window.ResourceDiscoveryRuntime?.scanModels({scope:'directory',roots:[root]})||toast('资源检测模块正在加载，请稍后重试')};
 window.addServer=()=>modal('新增训练服务器',`<div class="form"><div class="field"><label>服务器名称</label><input id="sname" class="input" placeholder="例如：GPU训练服务器"></div><div class="field"><label>服务地址</label><input id="surl" class="input" placeholder="http://192.168.1.10:8020"></div><button class="btn primary" onclick="saveServer()">保存</button></div>`);
 window.quickAddServer=()=>{const url=$('#quickServerUrl').value.trim();if(!url)return toast('请输入服务器地址');modal('确认接入服务器',`<div class="form"><div class="field"><label>服务器名称</label><input id="sname" class="input" value="训练服务器"></div><div class="field"><label>服务地址</label><input id="surl" class="input" value="${esc(url)}"></div><button class="btn primary" onclick="saveServer()">保存</button></div>`)};
-window.saveServer=async()=>{await safe(api('/api/train_servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#sname').value||'训练服务器',base_url:$('#surl').value})}));closeModal();const opts=await safe(api(`/api/training_options?project_id=${pid()}`));if(opts)state.targets=opts.targets||[];render();toast('已保存服务器')};
+window.saveServer=async()=>{const action=window.NavigationStability?.action?.(state.page);const saved=await safe(api('/api/train_servers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#sname').value||'训练服务器',base_url:$('#surl').value})}));if(!saved||(action&&!action.isCurrent()))return;closeModal();const opts=await safe(api(`/api/training_options?project_id=${pid()}`));if(action&&!action.isCurrent())return;if(opts)state.targets=opts.targets||[];render();toast('已保存服务器')};
 
 function renderDatasets(){return window.renderDatasets424?.()}
 
@@ -1465,23 +1465,33 @@ window.installUsability417=function(){
     return state.targets;
   }
   window.detectPaddle=async function(){
+    const action=window.NavigationStability?.action?.(state.page);
     const btn=window.event?.currentTarget; setBtnBusy(btn,true,'检测中'); state.resourceBusy=true;
     try{
       const body={name:'本机飞桨',python_path:$('#ppy')?.value||'',paddledet_dir:$('#pdet')?.value||'',paddlex_dir:$('#pxdir')?.value||''};
       const box=$('#paddleTestResult'); if(box)box.textContent='正在检测 Paddle / PaddleDetection，请稍候...';
       await api('/api/paddle_env/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(action&&!action.isCurrent())return;
       const r=await api('/api/paddle_env/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(action&&!action.isCurrent())return;
       if(box)box.textContent=`paddle=${r.modules?.paddle||'-'}，PaddleDetection=${r.paddledet_exists?'存在':'未找到'}`;
-      await refreshPaddleTrainingTargets20d(); state.page='训练资源'; render(); toast('飞桨环境已启用');
+      await refreshPaddleTrainingTargets20d();
+      if(action&&!action.isCurrent())return;
+      await window.setPage?.('训练资源'); toast('飞桨环境已启用');
     }catch(e){toast(e.message||'检测失败')}finally{state.resourceBusy=false; setBtnBusy(btn,false)}
   };
   window.quickPaddleDetect=async function(){
+    const action=window.NavigationStability?.action?.(state.page);
     const btn=window.event?.currentTarget; setBtnBusy(btn,true,'扫描中');
     try{
       const r=await api('/api/paddle_env/detect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      if(action&&!action.isCurrent())return;
       const env=(r?.candidates||[])[0]; if(!env)throw new Error('未检测到飞桨环境');
       await api('/api/paddle_env/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(env)});
-      await refreshPaddleTrainingTargets20d(); state.page='训练资源'; render(); toast('已启用飞桨环境');
+      if(action&&!action.isCurrent())return;
+      await refreshPaddleTrainingTargets20d();
+      if(action&&!action.isCurrent())return;
+      await window.setPage?.('训练资源'); toast('已启用飞桨环境');
     }catch(e){toast(e.message||'一键检测失败')}finally{setBtnBusy(btn,false)}
   };
 
@@ -1497,9 +1507,13 @@ window.installUsability417=function(){
     modal(id?'编辑模型配置':'新增模型配置',`<div class="form two"><div class="field"><label>模型名称</label><input id="mcName" class="input" value="${esc(c.name||'')}" placeholder="如：本地 Gemma 视觉检测"></div><div class="field"><label>模型类型</label><select id="mcProvider" class="select"><option value="local" ${c.provider_type!=='cloud'?'selected':''}>本地模型</option><option value="cloud" ${c.provider_type==='cloud'?'selected':''}>云端模型</option></select></div><div class="field"><label>检测接口地址</label><input id="mcUrl" class="input" value="${esc(c.detect_url||c.base_url||'')}" placeholder="http://127.0.0.1:9000/detect"></div><div class="field"><label>健康检查地址</label><input id="mcHealth" class="input" value="${esc(c.health_url||'')}" placeholder="可选"></div><div class="field"><label>模型名称/编码</label><input id="mcModel" class="input" value="${esc(c.model_name||'')}" placeholder="如 gemma4:12b"></div><div class="field"><label>请求方式</label><select id="mcMode" class="select"><option value="json_base64" ${c.request_mode!=='multipart_file'?'selected':''}>JSON Base64</option><option value="multipart_file" ${c.request_mode==='multipart_file'?'selected':''}>Multipart 文件</option></select></div><div class="field"><label>图片字段名</label><input id="mcImageField" class="input" value="${esc(c.image_field||'image')}"></div><div class="field"><label>提示词字段名</label><input id="mcPromptField" class="input" value="${esc(c.prompt_field||'prompt')}"></div><div class="field"><label>API Key</label><input id="mcApiKey" class="input" value="" placeholder="可选；留空保持原值"></div><div class="field"><label>备注</label><input id="mcRemark" class="input" value="${esc(c.remark||'')}"></div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveModelConfigV35('${esc(id)}')">保存</button></div>`,true);
   };
   window.saveModelConfigV35=async function(id=''){
+    const action=window.NavigationStability?.action?.(state.page);
     const body={name:$('#mcName').value,provider_type:$('#mcProvider').value,detect_url:$('#mcUrl').value,health_url:$('#mcHealth').value,model_name:$('#mcModel').value,request_mode:$('#mcMode').value,image_field:$('#mcImageField').value,prompt_field:$('#mcPromptField').value,api_key:$('#mcApiKey').value,remark:$('#mcRemark').value,model_kind:'vision_detect'};
-    await safe(api(id?`/api/v35/model-configs/${id}`:'/api/v35/model-configs',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
-    closeModal();await loadAll();state.page='模型配置';render();toast('已保存模型配置');
+    const saved=await safe(api(id?`/api/v35/model-configs/${id}`:'/api/v35/model-configs',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+    if(!saved||(action&&!action.isCurrent()))return;
+    closeModal();await loadAll();
+    if(action&&!action.isCurrent())return;
+    await window.setPage?.('模型配置');toast('已保存模型配置');
   };
   window.deleteModelConfigV35=async function(id){if(!confirm('确认删除这个模型配置？'))return;const r=await safe(api(`/api/v35/model-configs/${id}`,{method:'DELETE'}));if(!r?.ok)return;state.modelConfigs=(state.modelConfigs||[]).filter(x=>String(x.id)!==String(id));render();toast('已删除')};
   window.testModelConfigV35=async function(id){const c=(state.modelConfigs||[]).find(x=>x.id===id);if(!c)return;const r=await safe(api('/api/v35/model-configs/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...c,api_key:''})}));if(r)modal('连接测试结果',`<pre class="log small-log">${esc(JSON.stringify(r,null,2))}</pre>`,true)};
@@ -1897,7 +1911,7 @@ window.installUsability417=function(){
   };
 
   // Add deployment action to algorithm version management.
-  window.startDeployVersion=(aid,vid)=>{state.deployPresetSourceId=`version::${aid}::${vid}`;closeModal();state.page='部署转换';state.deployLoaded=false;render()};
+  window.startDeployVersion=(aid,vid)=>{state.deployPresetSourceId=`version::${aid}::${vid}`;closeModal();state.deployLoaded=false;return window.setPage?.('部署转换')};
   // Add deployment to dashboard without adding explanatory clutter.
   window.renderHomeDashboard=function(){
     const recent=(state.jobs||[]).slice(0,5),running=(state.jobs||[]).filter(j=>['running','queued'].includes(j.status)).length,done=(state.jobs||[]).filter(j=>['done','finished','completed'].includes(j.status)).length;
@@ -2305,7 +2319,7 @@ window.installUsability417=function(){
 
   const render422Base=render;
   render=function(){
-    if(state.page==='新建算法'||state.page==='自动迭代')state.page='算法列表';
+    if(state.page==='新建算法'||state.page==='自动迭代'){window.setPage?.('算法列表');return}
     if(state.page==='工作台'){renderNav();renderTop();renderSummary();renderDashboard422();if(!state.v42?.loaded)load42(true).then(()=>{if(state.page==='工作台')renderDashboard422()});return}
     if(state.page==='素材接入'){renderNav();renderTop();renderSummary();renderSources422();return}
     render422Base();
@@ -2654,7 +2668,7 @@ window.installUsability417=function(){
     </div>`,true);
     setTimeout(()=>{trainResource425();trainCounts425()},20)
   };
-  window.startAlgorithmTraining423=function(id){state.page='训练任务';render();setTimeout(()=>openTrain425(id),30)};
+  window.startAlgorithmTraining423=function(id){window.setPage?.('训练任务');setTimeout(()=>{if(state.page==='训练任务')openTrain425(id)},30)};
 
   window.trainResource425=function(){
     const t=target425(), sel=document.getElementById('tr425TrainAlg');if(!sel)return;
