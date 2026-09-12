@@ -1,0 +1,73 @@
+name: Migrate R20n Shadowed Model Config Generations
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/migrate_shadowed_model_config_r20n.py
+      - .github/workflows/migrate-shadowed-model-config-r20n.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install focused test dependencies
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm config set fetch-retries 3
+          npm config set fetch-retry-mintimeout 1000
+          npm config set fetch-retry-maxtimeout 10000
+          npm ci
+          python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Prove R20n source-order liveness before deletion
+        run: python tools/migrate_shadowed_model_config_r20n.py --check-only
+
+      - name: Baseline final M4 Model Config Real Chrome
+        run: npx playwright test tests/browser/navigation-action-fencing-r2.spec.mjs
+
+      - name: Apply guarded R20n retirement
+        run: python tools/migrate_shadowed_model_config_r20n.py
+
+      - name: Syntax check
+        run: node --check static/app.js
+
+      - name: Focused unit contracts
+        run: >-
+          node --test
+          tests/frontend/shadowed-model-config-generations-r20n.test.mjs
+          tests/frontend/navigation-action-fencing-r2.test.mjs
+          tests/frontend/model-config-mutation-owner.test.mjs
+
+      - name: Focused final M4 Model Config Real Chrome
+        run: npx playwright test tests/browser/navigation-action-fencing-r2.spec.mjs
+
+      - name: Verify formal version unchanged
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          grep -q '/static/app.js?v=42.25.93' static/index.html
+          grep -q 'v42.24.0' static/index.html
+
+      - name: Commit product retirement
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/app.js static/index.html tests/frontend/shadowed-model-config-generations-r20n.test.mjs
+          git diff --cached --check
+          git diff --cached --quiet && { echo "R20n produced no product diff"; exit 1; }
+          git commit -m "refactor(ui): retire shadowed model-config generations"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
