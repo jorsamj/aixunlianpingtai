@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       e3f23f59a4e1513b807490465e94c5558f805c14
-run:          34681236515
+commit:       a21846c33d79612f9ab4a47e2a69195da29caa3b
+run:          34681966242
 frontend:     PASS
-Real Chrome:  PASS (23/23)
+Real Chrome:  PASS (24/24)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.79
-main.mjs                  42.25.84
+app.js                    42.25.80
+main.mjs                  42.25.85
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -357,6 +357,23 @@ frontend:           PASS
 Real Chrome:        23/23 PASS
 ```
 
+### R20d — Paddle resource refresh ownership
+
+The final late resource-runtime overrides of `detectPaddle` and `quickPaddleDetect` were proven live. Both previously ended in `loadAll()`, whose final binding includes a bootstrap snapshot. The new named helper `refreshPaddleTrainingTargets20d()` fetches only `/api/training_options?project_id=...` and replaces `state.targets`; manual and quick Paddle activation both delegate to it after their required POST sequence.
+
+```text
+baseline:                53411a7d26bfd2a9e20f4fd9723d87e5b67a5920 / 34681755467 PASS
+first migration run:     34681841986 stopped before commit because the generated unit file had invalid JS newline escaping
+helper fix:              e90cfeeb927df7331aa5ca52631f6dd618068f9d
+product:                 d4cb8851de061436d030c2a677c009b43d208fc6
+focused migration:       34681905173 PASS
+validation:              a21846c33d79612f9ab4a47e2a69195da29caa3b / 34681966242
+frontend:                PASS
+Real Chrome:             24/24 PASS
+```
+
+No product was committed by the failed first migration run. Permanent proof now locks select/test/detect payload semantics, canonical target refresh, and bootstrap=0.
+
 ## 7. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
@@ -430,6 +447,7 @@ tests/frontend/modal-content-owner.test.mjs
 tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/training-server-refresh-owner.test.mjs
+tests/frontend/paddle-resource-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -447,7 +465,7 @@ cleanup(root) invokes window.beautifyFileInputs426?.(root)
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **23/23** in run `34681236515`.
+Current accepted Real Chrome suite: **24/24** in run `34681966242`.
 
 ## 9. Remaining technical-debt targets
 

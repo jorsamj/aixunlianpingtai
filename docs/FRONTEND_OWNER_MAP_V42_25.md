@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `e3f23f59a4e1513b807490465e94c5558f805c14` / run `34681236515`  
-> Real Chrome: 23/23 passed  
+> Latest fully accepted code point: `a21846c33d79612f9ab4a47e2a69195da29caa3b` / run `34681966242`  
+> Real Chrome: 24/24 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -67,6 +67,7 @@ initial bootstrap setPage                       CLOSED
 | R20a | algorithm version deletion full reload → `AlgorithmListRuntime.refresh` | `103d630b...` / `34677761599` |
 | R20b | model-version publish full reload → authoritative POST result + local state patch | `d18044d3...` / `34679069872` |
 | R20c | training-server full reload → POST + training_options-only target refresh | `e3f23f59...` / `34681236515` |
+| R20d | Paddle activation full reload → training_options-only target refresh | `a21846c3...` / `34681966242` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -154,6 +155,22 @@ frontend:           PASS
 Real Chrome:        23/23 PASS
 ```
 
+### R20d — Paddle environment activation owner
+
+The final `detectPaddle` / `quickPaddleDetect` owners now delegate their post-activation state refresh to `refreshPaddleTrainingTargets20d()`. Required Paddle POSTs remain unchanged; the only follow-up GET is `/api/training_options?project_id=...`, which replaces `state.targets`. A bootstrap snapshot is forbidden by the permanent browser contract.
+
+```text
+baseline:            53411a7d26bfd2a9e20f4fd9723d87e5b67a5920 / 34681755467 PASS
+first migration:     34681841986 stopped pre-commit on generated-unit escaping syntax error
+helper fix:          e90cfeeb927df7331aa5ca52631f6dd618068f9d
+product:             d4cb8851de061436d030c2a677c009b43d208fc6
+focused migration:   34681905173 PASS
+validation:          a21846c33d79612f9ab4a47e2a69195da29caa3b
+run:                 34681966242
+frontend:            PASS
+Real Chrome:         24/24 PASS
+```
+
 ## 4. Current final navigation owner
 
 ```text
@@ -190,6 +207,7 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Algorithm version delete refresh | `delVersion → AlgorithmListRuntime.refresh` | DELETE + algorithms/jobs scoped refresh; no global reload fan-out | unit + Chrome request contract |
 | Model-version publish | final `saveAssign` → authoritative POST result | one POST; local algorithm-version + pending-state patch; zero reload GETs | unit + Chrome request contract |
 | Training-server creation | final `saveServer` → training_options scoped refresh | POST server + GET training_options; replace targets; bootstrap=0 | unit + Chrome request contract |
+| Paddle environment activation | final `detectPaddle` / `quickPaddleDetect` → `refreshPaddleTrainingTargets20d` | required POSTs + one training_options GET per activation; bootstrap=0 | unit + Chrome request contract |
 | Training task page route | `renderBase428 → renderTraining423()` | training-only route | browser performance + guard |
 | Quality center route | `renderBase424 → renderQualityCenter424()` | live route retained | guard |
 | Video slicing route | `renderBase424 → renderVideo424()` | live route retained | guard |
@@ -400,6 +418,7 @@ tests/frontend/modal-content-owner.test.mjs
 tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/training-server-refresh-owner.test.mjs
+tests/frontend/paddle-resource-refresh-owner.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```

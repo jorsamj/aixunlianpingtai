@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`e3f23f59a4e1513b807490465e94c5558f805c14`**  
-> **Frontend Runtime Stabilization：run `34681236515`，frontend + Real Chrome 全绿，Real Chrome 23/23 passed。**  
+> **最近完整代码验收点：`a21846c33d79612f9ab4a47e2a69195da29caa3b`**  
+> **Frontend Runtime Stabilization：run `34681966242`，frontend + Real Chrome 全绿，Real Chrome 24/24 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -121,7 +121,8 @@ legacy baseRender + RAF page normalization wrapper
 | algorithm version delete full reload | `AlgorithmListRuntime.refresh` (algorithms + jobs) | **CLOSED (R20a)** |
 | model-version publish full reload | authoritative POST result + local state patch | **CLOSED (R20b)** |
 | training-server create full reload | POST + training_options-only target refresh | **CLOSED (R20c)** |
-| global reload / duplicate request | scoped refresh | **IN PROGRESS (R20)** |
+| Paddle environment activation full reload | `refreshPaddleTrainingTargets20d` + training_options-only target refresh | **CLOSED (R20d)** |
+| global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
 | version-number business naming | semantic names | **OPEN** |
@@ -232,8 +233,8 @@ global reload / loadAll / loadRelated request ownership
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.79
-main.mjs cache                   42.25.84
+app.js cache                     42.25.80
+main.mjs cache                   42.25.85
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -269,6 +270,7 @@ tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
 tests/frontend/training-server-refresh-owner.test.mjs
+tests/frontend/paddle-resource-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -309,7 +311,7 @@ R12 永久要求：
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 已在 R18 退休，不得回归；startup/page normalization 均由 readiness-aware final render owner 承担。
 
-当前验收：run `34681236515`，frontend PASS，Real Chrome **23/23 passed**。
+当前验收：run `34681966242`，frontend PASS，Real Chrome **24/24 passed**。
 
 ### R16 — event-owned ZIP completion + page-scoped material summary
 
@@ -433,6 +435,27 @@ main.mjs:            42.25.84
 
 R20 remains **IN PROGRESS** for other proven-live mutation owners.
 
+### R20d — Paddle environment activation scoped refresh
+
+最终资源运行时中的 `detectPaddle` 与 `quickPaddleDetect` 已证明 live。R20d 前，两条成功路径都会调用当前 `loadAll()`，从而重新请求 bootstrap snapshot。由于规范化训练资源仍必须由 `/api/training_options` 构造，R20d 新增 `refreshPaddleTrainingTargets20d()`，两条激活路径保留各自必要 POST，仅以 training_options GET 更新 `state.targets` 并本地 render；永久 Chrome 合同要求 bootstrap=0。
+
+```text
+baseline:                53411a7d26bfd2a9e20f4fd9723d87e5b67a5920 / 34681755467 PASS
+first migration run:     34681841986 STOPPED before product commit
+                         generated unit JS syntax error caused by helper string escaping
+helper-generator fix:    e90cfeeb927df7331aa5ca52631f6dd618068f9d
+product:                 d4cb8851de061436d030c2a677c009b43d208fc6
+focused migration:       34681905173 PASS
+validation:              a21846c33d79612f9ab4a47e2a69195da29caa3b
+full run:                34681966242
+frontend:                PASS
+Real Chrome:             24/24 PASS
+app.js:                  42.25.80
+main.mjs:                42.25.85
+```
+
+首轮失败发生在 product commit 之前，没有接受或落库产品代码。R20 下一步应做剩余全量刷新 owner 的 zero-point 审计：将 live mutation、用户显式“完整刷新”与 shadowed/dead code 分开证明。
+
 ## 7. Recent render/lifecycle acceptance history
 
 ```text
@@ -524,7 +547,7 @@ R15 startup render timer retirement
 
 ## 8. 下一批：global reload / request ownership audit
 
-R17–R19 已把 active normalization observers 清零。R20a 已关闭算法版本删除的全量 reload；R20b 关闭测试发布模型归属版本后的全量 reload；R20c 又把训练服务器接入后的 bootstrap+extras 刷新收敛为 training_options 单域刷新。R20 仍需继续审计其他 live mutation owner，并逐域迁移全量刷新债务；不允许靠缓存或测试放宽掩盖重复请求。
+R17–R19 已把 active normalization observers 清零。R20a 关闭算法版本删除的全量 reload；R20b 关闭模型发布后的全量 reload；R20c 收敛训练服务器接入刷新；R20d 又把手动/一键飞桨激活后的 bootstrap+extras 刷新收敛为 training_options 单域刷新。R20 下一步做 zero-point 审计，只将 proven-live mutation 计为剩余请求债；用户显式完整刷新与 shadowed/dead code 分开处理。
 
 `oldRenderV39` 与 `render414Base` 已确认 live，不得因为版本号旧就直接删。
 

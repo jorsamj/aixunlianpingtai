@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: e3f23f59a4e1513b807490465e94c5558f805c14
-Frontend Runtime run:        34681236515
+latest full code acceptance: a21846c33d79612f9ab4a47e2a69195da29caa3b
+Frontend Runtime run:        34681966242
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.79
-main.mjs cache:              42.25.84
+app.js cache:                42.25.80
+main.mjs cache:              42.25.85
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34681236515` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **23 tests and passed 23/23**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34681966242` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **24 tests and passed 24/24**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -394,6 +394,29 @@ main.mjs:            42.25.84
 
 R20/global reload debt remains **IN PROGRESS**; R20c closes only training-server creation refresh ownership.
 
+### R20d — Paddle environment activation scoped target refresh
+
+The final live `detectPaddle` and `quickPaddleDetect` owners are both reached from 训练资源. Before R20d, both successful activation paths called the final `loadAll()` binding after their Paddle POSTs, causing a bootstrap snapshot before the page-specific resource extras. `/api/paddle_env/select` returns the active environment, but canonical training-resource targets still come from `/api/training_options`, so the safe minimal refresh remains a training-options fetch rather than a hand-built local target.
+
+R20d introduces `refreshPaddleTrainingTargets20d()`: manual activation now runs select POST → test POST → training_options GET → replace `state.targets` → local render; quick activation runs detect POST → select POST → training_options GET → replace targets → local render. The permanent Chrome contract requires bootstrap=0 for both actions.
+
+```text
+baseline:                    53411a7d26bfd2a9e20f4fd9723d87e5b67a5920 / 34681755467 PASS
+first migration attempt:     34681841986 STOPPED before product commit
+                             generated unit had a JS syntax error from Python string escaping
+helper-generator fix:        e90cfeeb927df7331aa5ca52631f6dd618068f9d
+product:                     d4cb8851de061436d030c2a677c009b43d208fc6
+focused migration:           34681905173 PASS
+validation:                  a21846c33d79612f9ab4a47e2a69195da29caa3b
+full run:                    34681966242
+frontend:                    PASS
+Real Chrome:                 24/24 PASS
+app.js:                      42.25.80
+main.mjs:                    42.25.85
+```
+
+The failed first migration run did not commit product code; it exposed only the new unit generator escaping defect. R20 remains **IN PROGRESS** pending a zero-point audit of any other proven-live mutation full-refresh owners.
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -466,6 +489,7 @@ modal-content-owner.test.mjs
 algorithm-version-refresh-owner.test.mjs
 algorithm-version-publish-owner.test.mjs
 training-server-refresh-owner.test.mjs
+paddle-resource-refresh-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -481,7 +505,7 @@ auto-label-poll-runtime.test.mjs
 - `#view` observer remains retired; page normalization must stay final-render-owned;
 - `#modalBody` normalization observer is retired and must not return; modal content replacement must stay `ModalContentRuntime`-owned.
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **23/23**; this includes `base modal post-open content refresh stays functional`, algorithm-version delete focused refresh, model-version publish authoritative-state ownership, and training-server scoped target refresh with bootstrap=0.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **24/24**; this includes algorithm-version delete focused refresh, model-version publish authoritative-state ownership, training-server scoped refresh, and both Paddle activation paths using training_options-only refresh with bootstrap=0.
 
 Do not weaken these tests.
 
