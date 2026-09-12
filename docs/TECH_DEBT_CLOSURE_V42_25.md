@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`d18044d3d98231affc7488974e04623dab6d2b10`**  
-> **Frontend Runtime Stabilization：run `34679069872`，frontend + Real Chrome 全绿，Real Chrome 22/22 passed。**  
+> **最近完整代码验收点：`e3f23f59a4e1513b807490465e94c5558f805c14`**  
+> **Frontend Runtime Stabilization：run `34681236515`，frontend + Real Chrome 全绿，Real Chrome 23/23 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -120,6 +120,7 @@ legacy baseRender + RAF page normalization wrapper
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | algorithm version delete full reload | `AlgorithmListRuntime.refresh` (algorithms + jobs) | **CLOSED (R20a)** |
 | model-version publish full reload | authoritative POST result + local state patch | **CLOSED (R20b)** |
+| training-server create full reload | POST + training_options-only target refresh | **CLOSED (R20c)** |
 | global reload / duplicate request | scoped refresh | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -231,8 +232,8 @@ global reload / loadAll / loadRelated request ownership
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.78
-main.mjs cache                   42.25.83
+app.js cache                     42.25.79
+main.mjs cache                   42.25.84
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -267,6 +268,7 @@ tests/frontend/startup-render-owner.test.mjs
 tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
+tests/frontend/training-server-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -307,7 +309,7 @@ R12 永久要求：
 - startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 已在 R18 退休，不得回归；startup/page normalization 均由 readiness-aware final render owner 承担。
 
-当前验收：run `34679069872`，frontend PASS，Real Chrome **22/22 passed**。
+当前验收：run `34681236515`，frontend PASS，Real Chrome **23/23 passed**。
 
 ### R16 — event-owned ZIP completion + page-scoped material summary
 
@@ -411,6 +413,26 @@ main.mjs:            42.25.83
 
 R20 remains **IN PROGRESS** for other live mutation owners.
 
+### R20c — training-server scoped target refresh
+
+训练资源页的最终 `saveServer` owner 已证明 live。R20c 前，服务器保存成功后调用全局 `reload()`；当前 `reload()` 已重绑到 `refreshCurrentPage413`，因此该动作会重新请求 bootstrap snapshot，再加载训练资源页 extras。后端 `/api/train_servers` POST 只返回 server item，而规范化 `state.targets` 必须来自 `/api/training_options`，所以不能做不可靠的纯本地拼装。
+
+R20c 将该 mutation 收敛为：POST `/api/train_servers` → GET `/api/training_options?project_id=...` → 更新 `state.targets` → 本地 render。永久 Chrome 合同要求该动作 bootstrap snapshot 请求为 0。
+
+```text
+baseline:           63de3724ff794dd8712b359a806cd86eb5e3476b / 34679508471 PASS
+product:            b790c53e1a766d617c6b834ee69f1335b2e17010
+focused migration:  34679584971 PASS
+validation:         e3f23f59a4e1513b807490465e94c5558f805c14
+full run:           34681236515
+frontend:           PASS
+Real Chrome:        23/23 PASS
+app.js:             42.25.79
+main.mjs:            42.25.84
+```
+
+R20 remains **IN PROGRESS** for other proven-live mutation owners.
+
 ## 7. Recent render/lifecycle acceptance history
 
 ```text
@@ -502,7 +524,7 @@ R15 startup render timer retirement
 
 ## 8. 下一批：global reload / request ownership audit
 
-R17–R19 已把 active normalization observers 清零。R20a 已关闭算法版本删除的全量 reload；R20b 又关闭测试发布模型归属版本后的全量 reload，并改为使用 POST 返回值直接更新算法版本与 pending state。R20 仍需继续审计其他 live mutation owner，并逐域迁移 `reload() → loadAll() → loadRelated()` 全量刷新债务；不允许靠缓存或测试放宽掩盖重复请求。
+R17–R19 已把 active normalization observers 清零。R20a 已关闭算法版本删除的全量 reload；R20b 关闭测试发布模型归属版本后的全量 reload；R20c 又把训练服务器接入后的 bootstrap+extras 刷新收敛为 training_options 单域刷新。R20 仍需继续审计其他 live mutation owner，并逐域迁移全量刷新债务；不允许靠缓存或测试放宽掩盖重复请求。
 
 `oldRenderV39` 与 `render414Base` 已确认 live，不得因为版本号旧就直接删。
 

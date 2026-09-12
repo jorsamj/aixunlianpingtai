@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: d18044d3d98231affc7488974e04623dab6d2b10
-Frontend Runtime run:        34679069872
+latest full code acceptance: e3f23f59a4e1513b807490465e94c5558f805c14
+Frontend Runtime run:        34681236515
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.78
-main.mjs cache:              42.25.83
+app.js cache:                42.25.79
+main.mjs cache:              42.25.84
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34679069872` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **22 tests and passed 22/22**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34681236515` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **23 tests and passed 23/23**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -374,6 +374,26 @@ main.mjs:            42.25.83
 
 R20/global reload debt remains **IN PROGRESS**; R20b closes only the live model-version publish path.
 
+### R20c — training-server scoped target refresh
+
+The final live `saveServer` owner is still reached from 训练资源 → 接入服务器. Before R20c it POSTed `/api/train_servers` and then called global `reload()`, whose current final binding is `refreshCurrentPage413`: bootstrap snapshot plus current-page extras. On 训练资源 that meant an unnecessary bootstrap snapshot in addition to `/api/training_options`.
+
+The backend POST returns only the saved server item, while canonical `state.targets` is built by `/api/training_options`. R20c therefore keeps the necessary normalization request but removes the bootstrap fan-out: POST server → GET training_options → replace `state.targets` → local render. The permanent Chrome contract requires bootstrap=0 on this action.
+
+```text
+baseline:           63de3724ff794dd8712b359a806cd86eb5e3476b / run 34679508471 PASS
+product:            b790c53e1a766d617c6b834ee69f1335b2e17010
+focused migration:  34679584971 PASS
+validation:         e3f23f59a4e1513b807490465e94c5558f805c14
+run:                34681236515
+frontend:           PASS
+Real Chrome:        23/23 PASS
+app.js:             42.25.79
+main.mjs:            42.25.84
+```
+
+R20/global reload debt remains **IN PROGRESS**; R20c closes only training-server creation refresh ownership.
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -445,6 +465,7 @@ lifecycle-event-ownership.test.mjs
 modal-content-owner.test.mjs
 algorithm-version-refresh-owner.test.mjs
 algorithm-version-publish-owner.test.mjs
+training-server-refresh-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -460,7 +481,7 @@ auto-label-poll-runtime.test.mjs
 - `#view` observer remains retired; page normalization must stay final-render-owned;
 - `#modalBody` normalization observer is retired and must not return; modal content replacement must stay `ModalContentRuntime`-owned.
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **22/22**; this includes `base modal post-open content refresh stays functional`, `algorithm version deletion uses focused refresh without full reload`, and the model-version publish authoritative-state/request-boundary contract.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **23/23**; this includes `base modal post-open content refresh stays functional`, algorithm-version delete focused refresh, model-version publish authoritative-state ownership, and training-server scoped target refresh with bootstrap=0.
 
 Do not weaken these tests.
 

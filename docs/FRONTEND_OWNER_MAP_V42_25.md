@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `d18044d3d98231affc7488974e04623dab6d2b10` / run `34679069872`  
-> Real Chrome: 22/22 passed  
+> Latest fully accepted code point: `e3f23f59a4e1513b807490465e94c5558f805c14` / run `34681236515`  
+> Real Chrome: 23/23 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -66,6 +66,7 @@ initial bootstrap setPage                       CLOSED
 | R19 | `#modalBody` normalization observer → explicit `ModalContentRuntime` | `f60d0009...` / `34670989473` |
 | R20a | algorithm version deletion full reload → `AlgorithmListRuntime.refresh` | `103d630b...` / `34677761599` |
 | R20b | model-version publish full reload → authoritative POST result + local state patch | `d18044d3...` / `34679069872` |
+| R20c | training-server full reload → POST + training_options-only target refresh | `e3f23f59...` / `34681236515` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -139,6 +140,20 @@ frontend:           PASS
 Real Chrome:        22/22 PASS
 ```
 
+### R20c — training-server target refresh owner
+
+The live `saveServer` mutation no longer invokes global `reload()`. The server POST result is not sufficient to construct canonical training targets, so the owner performs the one required domain refresh: `/api/training_options?project_id=...`. `state.targets` is then replaced and the page rendered locally. The request contract forbids a bootstrap snapshot from this action.
+
+```text
+baseline:           63de3724ff794dd8712b359a806cd86eb5e3476b / 34679508471 PASS
+product:            b790c53e1a766d617c6b834ee69f1335b2e17010
+focused migration:  34679584971 PASS
+validation:         e3f23f59a4e1513b807490465e94c5558f805c14
+run:                34681236515
+frontend:           PASS
+Real Chrome:        23/23 PASS
+```
+
 ## 4. Current final navigation owner
 
 ```text
@@ -174,6 +189,7 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Algorithm list route | `oldRender412 → renderAlgorithms423()` | sole outer algorithm route | browser performance + guard |
 | Algorithm version delete refresh | `delVersion → AlgorithmListRuntime.refresh` | DELETE + algorithms/jobs scoped refresh; no global reload fan-out | unit + Chrome request contract |
 | Model-version publish | final `saveAssign` → authoritative POST result | one POST; local algorithm-version + pending-state patch; zero reload GETs | unit + Chrome request contract |
+| Training-server creation | final `saveServer` → training_options scoped refresh | POST server + GET training_options; replace targets; bootstrap=0 | unit + Chrome request contract |
 | Training task page route | `renderBase428 → renderTraining423()` | training-only route | browser performance + guard |
 | Quality center route | `renderBase424 → renderQualityCenter424()` | live route retained | guard |
 | Video slicing route | `renderBase424 → renderVideo424()` | live route retained | guard |
@@ -383,6 +399,7 @@ tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/modal-content-owner.test.mjs
 tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
+tests/frontend/training-server-refresh-owner.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```

@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       d18044d3d98231affc7488974e04623dab6d2b10
-run:          34679069872
+commit:       e3f23f59a4e1513b807490465e94c5558f805c14
+run:          34681236515
 frontend:     PASS
-Real Chrome:  PASS (22/22)
+Real Chrome:  PASS (23/23)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.78
-main.mjs                  42.25.83
+app.js                    42.25.79
+main.mjs                  42.25.84
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -344,6 +344,19 @@ Real Chrome:        22/22 PASS
 
 The initial baseline failure was only an incorrect test assertion against modal text; the model name is rendered as a disabled input value. No product fix was hidden by that correction.
 
+### R20c — training-server refresh ownership
+
+`saveServer` is a proven-live final owner from the training-resource server connection flow. Its former `await reload()` reached the final `refreshCurrentPage413` binding, so a server POST caused a bootstrap snapshot plus 训练资源 extras. Because canonical training targets come from `/api/training_options`, R20c narrows the mutation to exactly the required refresh domain: POST `/api/train_servers`, GET `/api/training_options?project_id=...`, replace `state.targets`, local render. No bootstrap snapshot belongs to this mutation.
+
+```text
+baseline:           63de3724ff794dd8712b359a806cd86eb5e3476b / 34679508471 PASS
+product:            b790c53e1a766d617c6b834ee69f1335b2e17010
+focused migration:  34679584971 PASS
+validation:         e3f23f59a4e1513b807490465e94c5558f805c14 / 34681236515
+frontend:           PASS
+Real Chrome:        23/23 PASS
+```
+
 ## 7. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
@@ -416,6 +429,7 @@ tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/modal-content-owner.test.mjs
 tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/algorithm-version-publish-owner.test.mjs
+tests/frontend/training-server-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -433,7 +447,7 @@ cleanup(root) invokes window.beautifyFileInputs426?.(root)
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **22/22** in run `34679069872`.
+Current accepted Real Chrome suite: **23/23** in run `34681236515`.
 
 ## 9. Remaining technical-debt targets
 
