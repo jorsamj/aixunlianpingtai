@@ -51,7 +51,7 @@ jobs:
           code=${PIPESTATUS[0]}
           set -e
           test "$code" -ne 0 || { echo 'Browser baseline unexpectedly green; stale mutation proof invalid'; exit 1; }
-          grep -Fq 'stale training-server save cannot close or redraw UI owned by the new page' /tmp/action-fence-browser-baseline.log
+          grep -Fq 'stale save completion closed or rewrote the new-page modal' /tmp/action-fence-browser-baseline.log
 
       - name: Apply guarded action fencing migration
         run: python tools/migrate_navigation_action_fencing_r1.py
