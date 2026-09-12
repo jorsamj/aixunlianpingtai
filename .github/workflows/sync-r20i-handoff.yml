@@ -1,0 +1,42 @@
+name: Sync R20i Handoff
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/sync_r20i_handoff.py
+      - .github/workflows/sync-r20i-handoff.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded handoff synchronization
+        run: python tools/sync_r20i_handoff.py
+      - name: Verify release boundary and accepted state
+        run: |
+          test "$(cat VERSION.txt)" = "42.24.0"
+          grep -Fq 'a7116811adb26ebe5f0f9e621bf23df1dd1f605f' AGENTS.md
+          grep -Fq '34698983278' docs/TECH_DEBT_CLOSURE_V42_25.md
+          grep -Fq '42.25.85' docs/CODEX_CURRENT_STATE.md
+          grep -Fq 'R20i' docs/frontend-legacy-audit.md
+          grep -Fq 'R20i' docs/FRONTEND_OWNER_MAP_V42_25.md
+      - name: Commit authority docs only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add AGENTS.md docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md
+          test "$(git diff --cached --name-only | wc -l)" -eq 5
+          git diff --cached --name-status
+          git commit -m 'docs: synchronize R20i accepted handoff'
+          git push
