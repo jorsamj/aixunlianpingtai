@@ -39,6 +39,8 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Install frontend dependencies
         run: npm ci
+      - name: Run temporary R20f runtime diagnostic
+        run: npx playwright test tests/browser/r20f-runtime-diagnostic.spec.mjs --reporter=line
       - name: Run focused R20f Chrome contract
         run: >-
           npx playwright test tests/browser/navigation-stability.spec.mjs
