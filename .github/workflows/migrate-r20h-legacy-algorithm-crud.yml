@@ -1,11 +1,10 @@
-name: Migrate R20h Legacy Algorithm CRUD Owners
+name: Close R20h Legacy Algorithm CRUD Owners
 
 on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
     paths:
-      - tools/migrate_r20h_legacy_algorithm_crud.py
       - .github/workflows/migrate-r20h-legacy-algorithm-crud.yml
   workflow_dispatch:
 
@@ -13,131 +12,82 @@ permissions:
   contents: write
 
 jobs:
-  migrate:
+  close:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Retire v39 legacy viewAlgorithm wrapper prerequisite
+      - name: Install permanent R20h guards
         run: |
           python - <<'PY'
           from pathlib import Path
-          path = Path('static/app.js')
-          app = path.read_text(encoding='utf-8')
-          start = app.find('  const oldViewAlgoV39=window.viewAlgorithm;')
-          end = app.find('  // Add deployment to dashboard', start)
-          if start < 0 or end < 0:
-              raise SystemExit('v39 viewAlgorithm wrapper anchors not found')
-          block = app[start:end]
-          if 'window.viewAlgorithm=id=>' not in block or 'oldViewAlgoV39' not in block:
-              raise SystemExit('v39 viewAlgorithm wrapper does not match expected legacy owner')
-          app = app[:start] + app[end:]
-          path.write_text(app, encoding='utf-8')
-          PY
-      - name: Preserve live report compatibility contract
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('tools/migrate_r20h_legacy_algorithm_crud.py')
+
+          path = Path('.github/workflows/frontend-runtime-stabilization.yml')
           text = path.read_text(encoding='utf-8')
-          marker = "    'window.showReport=',\n"
-          count = text.count(marker)
-          if count != 2:
-              raise SystemExit(f'expected showReport migration marker twice, got {count}')
-          path.write_text(text.replace(marker, ''), encoding='utf-8')
-          PY
-      - name: Apply guarded R20h migration
-        run: python tools/migrate_r20h_legacy_algorithm_crud.py
-      - name: Align generated permanent report compatibility guard
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('tests/frontend/legacy-algorithm-crud-owner.test.mjs')
-          text = path.read_text(encoding='utf-8')
-          marker = "  'window.showReport=',\n"
-          if text.count(marker) != 1:
-              raise SystemExit('generated report compatibility marker changed unexpectedly')
-          path.write_text(text.replace(marker, '', 1), encoding='utf-8')
-          PY
-      - name: Scope browser request guard to algorithm ownership
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('tests/browser/algorithm-crud-owner.spec.mjs')
-          text = path.read_text(encoding='utf-8')
-          start_marker = '  const unexpected = requests.filter(row => !expected.includes(row));'
-          end_marker = '  expect(pageErrors).toEqual([]);'
-          start = text.find(start_marker)
-          end = text.find(end_marker, start)
-          if start < 0 or end < 0:
-              raise SystemExit('browser request guard semantic anchors changed unexpectedly')
-          replacement = '''  const forbiddenBroadRefresh = requests.filter(row => {
-            if (expected.includes(row)) return false;
-            const [method, rawPath] = row.split(' ', 2);
-            const pathOnly = rawPath.split('?')[0];
-            if (method !== 'GET') return false;
-            return pathOnly === '/api/projects'
-              || pathOnly === `/api/projects/${projectId}`
-              || pathOnly.startsWith(`/api/projects/${projectId}/datasets`)
-              || pathOnly.startsWith(`/api/projects/${projectId}/images`)
-              || pathOnly.startsWith(`/api/projects/${projectId}/jobs`)
-              || pathOnly.startsWith(`/api/v12/projects/${projectId}/labels`)
-              || pathOnly.startsWith(`/api/v12/projects/${projectId}/algorithms`)
-              || pathOnly.includes('/bootstrap/snapshot');
-          });
-          expect(forbiddenBroadRefresh).toEqual([]);
+          if 'Retired legacy algorithm CRUD owner guard' in text:
+              raise SystemExit('R20h permanent guard already present unexpectedly')
+
+          unit_anchor = '      - name: Frontend unit tests\n        run: node --test tests/frontend/*.test.mjs\n'
+          if text.count(unit_anchor) != 1:
+              raise SystemExit('frontend unit-test anchor changed unexpectedly')
+
+          guard = '''      - name: Retired legacy algorithm CRUD owner guard
+            run: |
+              for token in \\
+                'window.newAlgorithm=' \\
+                'window.saveAlgorithm=' \\
+                'window.editAlgorithm=' \\
+                'window.saveEditAlgorithm=' \\
+                'window.viewAlgorithm=' \\
+                'const oldRenderAlgorithms = window.renderAlgorithms;' \\
+                'oldViewAlgoV39' \\
+                'window.renderAlgorithms422=' \\
+                'window.openNewAlgorithm422=' \\
+                'window.saveNewAlgorithm422='; do
+                if grep -F -n "$token" static/app.js; then
+                  echo "retired algorithm CRUD/render owner was reintroduced: $token" >&2
+                  exit 1
+                fi
+              done
+              grep -Fq 'function renderAlgorithms(){return window.renderAlgorithms423?.()}' static/app.js
+              grep -Fq "registerAction('algorithm.create'" static/main.mjs
+              grep -Fq 'window.saveNewAlgorithm414=async function()' static/app.js
+              grep -Fq 'window.saveEditAlgorithm414=async id=>' static/app.js
+              grep -Fq 'window.delAlgorithm=async id=>' static/app.js
           '''
-          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+          text = text.replace(unit_anchor, guard + unit_anchor, 1)
+
+          browser_anchor = '          tests/browser/algorithm-list-performance.spec.mjs\n'
+          if text.count(browser_anchor) != 1:
+              raise SystemExit('algorithm browser-test anchor changed unexpectedly')
+          text = text.replace(
+              browser_anchor,
+              browser_anchor + '          tests/browser/algorithm-crud-owner.spec.mjs\n',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
           PY
-      - name: Verify formal version unchanged
-        run: test "$(cat VERSION.txt)" = "42.24.0"
-      - name: Install frontend dependencies
-        run: npm ci
-      - name: Syntax check
-        run: node --check static/app.js && node --check static/main.mjs
-      - name: Run all frontend unit tests
-        run: node --test tests/frontend/*.test.mjs
-      - name: Install backend browser-test dependencies
-        run: >-
-          python -m pip install --disable-pip-version-check
-          fastapi uvicorn python-multipart pillow pyyaml requests
-          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
-      - name: Focused Real Chrome algorithm regressions
-        run: >-
-          npx playwright test
-          tests/browser/algorithm-crud-owner.spec.mjs
-          tests/browser/algorithm-list-performance.spec.mjs
-      - name: Verify retired owners absent
+      - name: Verify R20h product and formal version
         run: |
-          for token in \
-            'window.newAlgorithm=' \
-            'window.saveAlgorithm=' \
-            'window.editAlgorithm=' \
-            'window.saveEditAlgorithm=' \
-            'window.viewAlgorithm=' \
-            'const oldRenderAlgorithms = window.renderAlgorithms;' \
-            'oldViewAlgoV39' \
-            'window.renderAlgorithms422=' \
-            'window.openNewAlgorithm422=' \
-            'window.saveNewAlgorithm422='; do
-            if grep -F -n "$token" static/app.js; then
-              echo "retired algorithm owner survived: $token" >&2
-              exit 1
-            fi
-          done
-          grep -Fq 'function renderAlgorithms(){return window.renderAlgorithms423?.()}' static/app.js
+          test "$(cat VERSION.txt)" = "42.24.0"
+          test -f tests/frontend/legacy-algorithm-crud-owner.test.mjs
+          test -f tests/browser/algorithm-crud-owner.spec.mjs
           grep -Fq 'app.js?v=42.25.84' static/index.html
-      - name: Commit product migration
+          grep -Fq 'Retired legacy algorithm CRUD owner guard' .github/workflows/frontend-runtime-stabilization.yml
+          grep -Fq 'tests/browser/algorithm-crud-owner.spec.mjs' .github/workflows/frontend-runtime-stabilization.yml
+      - name: Remove one-shot R20h migration artifacts
+        run: |
+          rm -f tools/migrate_r20h_legacy_algorithm_crud.py
+          rm -f .github/workflows/migrate-r20h-legacy-algorithm-crud.yml
+      - name: Commit permanent validation surface
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add static/app.js static/index.html tests/frontend/legacy-algorithm-crud-owner.test.mjs tests/browser/algorithm-crud-owner.spec.mjs
-          test "$(git diff --cached --name-only | wc -l)" -eq 4
-          git commit -m 'refactor(ui): retire legacy algorithm CRUD owners'
+          git add -A .github/workflows/frontend-runtime-stabilization.yml .github/workflows/migrate-r20h-legacy-algorithm-crud.yml tools/migrate_r20h_legacy_algorithm_crud.py
+          test "$(git diff --cached --name-only | wc -l)" -eq 3
+          git diff --cached --name-status
+          git commit -m 'chore(ui): install R20h permanent guards'
           git push
