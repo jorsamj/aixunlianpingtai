@@ -2839,7 +2839,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     });
   }
   window.beautifyFileInputs426=beautifyFileInputs426;
-  const modal426=modal; modal=function(title,body,wide=false){const layer=modal426(title,body,wide);requestAnimationFrame(()=>beautifyFileInputs426(layer||document));return layer};window.modal=modal;
+
 
 
   // Annotation save: update the exact current image immediately; no full reload.

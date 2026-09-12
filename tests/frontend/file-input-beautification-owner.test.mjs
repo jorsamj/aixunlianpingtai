@@ -12,7 +12,7 @@ test('render426base page wrapper cannot return', () => {
   );
 });
 
-test('post-render cleanup owns page file-input beautification', () => {
+test('post-render cleanup owns file-input beautification', () => {
   assert.equal(app.includes('window.beautifyFileInputs426=beautifyFileInputs426;'), true);
   assert.equal(
     app.includes("function cleanup(root){\n    if(!root||!root.querySelectorAll)return;\n    window.beautifyFileInputs426?.(root);"),
@@ -20,10 +20,15 @@ test('post-render cleanup owns page file-input beautification', () => {
   );
 });
 
-test('modal426 remains live until modal lifecycle is separately audited', () => {
-  assert.equal(app.includes('const modal426=modal;'), true);
+test('modal426 wrapper cannot return after modalBody observer takeover', () => {
+  assert.equal(app.includes('const modal426=modal;'), false);
+  assert.equal(app.includes('requestAnimationFrame(()=>beautifyFileInputs426(layer||document))'), false);
   assert.equal(
-    app.includes('requestAnimationFrame(()=>beautifyFileInputs426(layer||document))'),
+    app.includes("const view=document.getElementById('view'),modalBody=document.getElementById('modalBody');"),
+    true,
+  );
+  assert.equal(
+    app.includes("if(view)observer.observe(view,{childList:true,subtree:true});if(modalBody)observer.observe(modalBody,{childList:true,subtree:true});"),
     true,
   );
 });
