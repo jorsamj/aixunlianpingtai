@@ -46,7 +46,14 @@ test('stale training-server save cannot close or redraw UI owned by the new page
 
   await page.evaluate(() => window.setPage('数据集'));
   await expect(page.locator('#title')).toContainText('数据集');
-  await page.evaluate(() => window.modal('新页面保护', '<div id="actionFenceSentinel">new-page-modal</div>', true));
+  await page.evaluate(() => {
+    const modal = document.getElementById('modal');
+    const title = document.getElementById('modalTitle');
+    const body = document.getElementById('modalBody');
+    title.textContent = '新页面保护';
+    window.ModalContentRuntime?.replace?.(body, '<div id="actionFenceSentinel">new-page-modal</div>');
+    modal.classList.remove('hidden');
+  });
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#modalTitle')).toHaveText('新页面保护');
   await expect(page.locator('#actionFenceSentinel')).toHaveText('new-page-modal');
@@ -54,11 +61,19 @@ test('stale training-server save cannot close or redraw UI owned by the new page
   releaseSave();
   await page.waitForTimeout(700);
 
-  await expect(page.locator('#title')).toContainText('数据集');
+  const ui = await page.evaluate(() => ({
+    page: window.state?.page || document.getElementById('title')?.textContent || '',
+    hidden: document.getElementById('modal')?.classList.contains('hidden') || false,
+    title: document.getElementById('modalTitle')?.textContent || '',
+    sentinel: document.getElementById('actionFenceSentinel')?.textContent || null,
+  }));
+  expect(ui, 'stale save completion closed or rewrote the new-page modal').toEqual({
+    page: '数据集',
+    hidden: false,
+    title: '新页面保护',
+    sentinel: 'new-page-modal',
+  });
   await expect(page.getByRole('button', {name: /数据集/})).toHaveClass(/active/);
-  await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#modalTitle')).toHaveText('新页面保护');
-  await expect(page.locator('#actionFenceSentinel')).toHaveText('new-page-modal');
   expect(postSaveTrainingOptions).toBe(0);
   expect(pageErrors).toEqual([]);
 });
