@@ -1,0 +1,29 @@
+name: Audit R20g Global Refresh Owners
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/audit_r20g_global_refresh_owners.py
+      - .github/workflows/audit-r20g-global-refresh-owners.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run authoritative full-file R20g audit
+        run: python tools/audit_r20g_global_refresh_owners.py
+      - name: Verify audit is read-only
+        run: |
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --exit-code
