@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       f60d00096a0929a63d0370494ef1f1d489f54ca3
-run:          34670989473
+commit:       103d630b24bd1aad77190149291c4c9f25e8ab75
+run:          34677761599
 frontend:     PASS
-Real Chrome:  PASS (20/20)
+Real Chrome:  PASS (21/21)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.76
-main.mjs                  42.25.81
+app.js                    42.25.77
+main.mjs                  42.25.82
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -312,6 +312,22 @@ Real Chrome: 20/20 PASS
 ```
 
 
+### R20a — algorithm version deletion scoped refresh
+
+R20 started the global `reload() → loadAll() → loadRelated()` request-debt migration with one proven-live mutation path. The algorithm version delete modal behavior was locked first. The final `delVersion` owner now performs the DELETE and delegates refresh to `AlgorithmListRuntime.refresh({render:true})`, which owns only algorithms + jobs. The browser contract permanently forbids the datasets/images/labels/training-environment/bootstrap request fan-out on this path while allowing unrelated background owners such as the import-job poll to run independently.
+
+```text
+baseline:   55f21733121d1280be66548ef4bb13c1c3810737
+product:    22c552d27928375dd51081eb152dc25b1554ec18
+validation: 103d630b24bd1aad77190149291c4c9f25e8ab75
+run:        34677761599
+frontend:   PASS
+Real Chrome: 21/21 PASS
+app.js:     42.25.77
+main.mjs:   42.25.82
+```
+
+This closes only the version-delete refresh path. R20/global reload debt remains **IN PROGRESS** and must continue mutation-domain by mutation-domain.
 
 ## 7. Current live render topology
 
@@ -383,6 +399,7 @@ tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/startup-render-owner.test.mjs
 tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/modal-content-owner.test.mjs
+tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -400,7 +417,7 @@ cleanup(root) invokes window.beautifyFileInputs426?.(root)
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **20/20** in run `34670989473`.
+Current accepted Real Chrome suite: **21/21** in run `34677761599`.
 
 ## 9. Remaining technical-debt targets
 
@@ -457,8 +474,8 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 ## 12. Work order
 
 ```text
-1. modalBody MutationObserver lifecycle audit
-2. app.js dead code + global reload/request debt
+1. continue R20 global reload/request mutation-domain migration
+2. app.js dead code/runtime-shell cleanup
 3. cache-busting unification
 4. zero-point observer/timer/fetch/render/setPage scan
 5. semantic naming + deterministic tests + docs

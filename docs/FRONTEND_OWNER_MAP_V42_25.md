@@ -2,8 +2,8 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `f60d00096a0929a63d0370494ef1f1d489f54ca3` / run `34670989473`  
-> Real Chrome: 20/20 passed  
+> Latest fully accepted code point: `103d630b24bd1aad77190149291c4c9f25e8ab75` / run `34677761599`  
+> Real Chrome: 21/21 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
 ## 1. Purpose
@@ -64,6 +64,7 @@ initial bootstrap setPage                       CLOSED
 | R17 | page baseRender/RAF wrapper + `#view` normalization observer | `f5b8ff87...` / `34669152742` |
 | R18 | bounded 100ms `renderTop/cleanup` startup wakeup | `954e9dba...` / `34670319479` |
 | R19 | `#modalBody` normalization observer → explicit `ModalContentRuntime` | `f60d0009...` / `34670989473` |
+| R20a | algorithm version deletion full reload → `AlgorithmListRuntime.refresh` | `103d630b...` / `34677761599` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -106,6 +107,23 @@ Real Chrome: 20/20 PASS
 ```
 
 
+### R20a — algorithm version deletion scoped refresh
+
+R20 started the global `reload() → loadAll() → loadRelated()` request-debt migration with one proven-live mutation path. The algorithm version delete modal behavior was locked first. The final `delVersion` owner now performs the DELETE and delegates refresh to `AlgorithmListRuntime.refresh({render:true})`, which owns only algorithms + jobs. The browser contract permanently forbids the datasets/images/labels/training-environment/bootstrap request fan-out on this path while allowing unrelated background owners such as the import-job poll to run independently.
+
+```text
+baseline:   55f21733121d1280be66548ef4bb13c1c3810737
+product:    22c552d27928375dd51081eb152dc25b1554ec18
+validation: 103d630b24bd1aad77190149291c4c9f25e8ab75
+run:        34677761599
+frontend:   PASS
+Real Chrome: 21/21 PASS
+app.js:     42.25.77
+main.mjs:   42.25.82
+```
+
+This closes only the version-delete refresh path. R20/global reload debt remains **IN PROGRESS** and must continue mutation-domain by mutation-domain.
+
 ## 4. Current final navigation owner
 
 ```text
@@ -139,6 +157,7 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Sources | `PollRegistry(sources)` | managed interval | unit + Chrome |
 | Data/material route | `oldRender412 → renderDatasets424()` | stable outer data route | unit + browser performance |
 | Algorithm list route | `oldRender412 → renderAlgorithms423()` | sole outer algorithm route | browser performance + guard |
+| Algorithm version delete refresh | `delVersion → AlgorithmListRuntime.refresh` | DELETE + algorithms/jobs scoped refresh; no global reload fan-out | unit + Chrome request contract |
 | Training task page route | `renderBase428 → renderTraining423()` | training-only route | browser performance + guard |
 | Quality center route | `renderBase424 → renderQualityCenter424()` | live route retained | guard |
 | Video slicing route | `renderBase424 → renderVideo424()` | live route retained | guard |
@@ -346,6 +365,7 @@ tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/startup-render-owner.test.mjs
 tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/modal-content-owner.test.mjs
+tests/frontend/algorithm-version-refresh-owner.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
@@ -357,6 +377,7 @@ file input beautification survives page render lifecycle ownership
 modal file input beautification survives modal lifecycle ownership
 modal table wrapping and first-field focus survive normalization ownership
 base modal post-open content refresh stays functional
+algorithm version deletion uses focused refresh without full reload
 ```
 
 Current accepted Real Chrome suite: **20/20** in run `34670989473`.

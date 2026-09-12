@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`f60d00096a0929a63d0370494ef1f1d489f54ca3`**  
-> **Frontend Runtime Stabilization：run `34670989473`，frontend + Real Chrome 全绿，Real Chrome 20/20 passed。**  
+> **最近完整代码验收点：`103d630b24bd1aad77190149291c4c9f25e8ab75`**  
+> **Frontend Runtime Stabilization：run `34677761599`，frontend + Real Chrome 全绿，Real Chrome 21/21 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -118,7 +118,8 @@ legacy baseRender + RAF page normalization wrapper
 | `#modalBody` normalization observer | `ModalContentRuntime.replace` + synchronous `PostRenderNormalizationRuntime` | **CLOSED (R19)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
-| global reload / duplicate request | scoped refresh | **OPEN** |
+| algorithm version delete full reload | `AlgorithmListRuntime.refresh` (algorithms + jobs) | **CLOSED (R20a)** |
+| global reload / duplicate request | scoped refresh | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
 | version-number business naming | semantic names | **OPEN** |
@@ -370,7 +371,22 @@ Real Chrome: 20/20 PASS
 ```
 
 
+### R20a — algorithm version deletion scoped refresh
 
+R20 started the global `reload() → loadAll() → loadRelated()` request-debt migration with one proven-live mutation path. The algorithm version delete modal behavior was locked first. The final `delVersion` owner now performs the DELETE and delegates refresh to `AlgorithmListRuntime.refresh({render:true})`, which owns only algorithms + jobs. The browser contract permanently forbids the datasets/images/labels/training-environment/bootstrap request fan-out on this path while allowing unrelated background owners such as the import-job poll to run independently.
+
+```text
+baseline:   55f21733121d1280be66548ef4bb13c1c3810737
+product:    22c552d27928375dd51081eb152dc25b1554ec18
+validation: 103d630b24bd1aad77190149291c4c9f25e8ab75
+run:        34677761599
+frontend:   PASS
+Real Chrome: 21/21 PASS
+app.js:     42.25.77
+main.mjs:   42.25.82
+```
+
+This closes only the version-delete refresh path. R20/global reload debt remains **IN PROGRESS** and must continue mutation-domain by mutation-domain.
 
 ## 7. Recent render/lifecycle acceptance history
 
@@ -463,7 +479,7 @@ R15 startup render timer retirement
 
 ## 8. 下一批：global reload / request ownership audit
 
-R17–R19 已把 active normalization observers 清零；下一批优先处理高频 mutation 后仍调用 `reload() → loadAll() → loadRelated()` 的全量刷新债务。目标是先量化调用面和网络请求，再按 mutation 语义迁移为 scoped refresh，不允许靠缓存或测试放宽掩盖重复请求。
+R17–R19 已把 active normalization observers 清零。R20a 已关闭算法版本删除的全量 reload：最终 owner 只做 DELETE + algorithms/jobs focused refresh。R20 仍需继续审计其他 live mutation owner，并逐域迁移 `reload() → loadAll() → loadRelated()` 全量刷新债务；不允许靠缓存或测试放宽掩盖重复请求。
 
 `oldRenderV39` 与 `render414Base` 已确认 live，不得因为版本号旧就直接删。
 
@@ -479,7 +495,7 @@ R17–R19 已把 active normalization observers 清零；下一批优先处理�
 ## 9. 后续顺序
 
 ```text
-A. global reload / loadAll / loadRelated duplicate-request ownership audit
+A. continue R20 global reload / loadAll / loadRelated mutation-domain migration
 B. proven dead app.js/runtime-shell cleanup
 C. cache-busting unification
 D. MutationObserver/timer/fetch/render/setPage zero-point scan

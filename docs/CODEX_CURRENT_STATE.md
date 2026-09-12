@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: f60d00096a0929a63d0370494ef1f1d489f54ca3
-Frontend Runtime run:        34670989473
+latest full code acceptance: 103d630b24bd1aad77190149291c4c9f25e8ab75
+Frontend Runtime run:        34677761599
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.76
-main.mjs cache:              42.25.81
+app.js cache:                42.25.77
+main.mjs cache:              42.25.82
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34670989473` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **20 tests and passed 20/20**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34677761599` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **21 tests and passed 21/21**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -337,6 +337,22 @@ Real Chrome: 20/20 PASS
 ```
 
 
+### R20a — algorithm version deletion scoped refresh
+
+R20 started the global `reload() → loadAll() → loadRelated()` request-debt migration with one proven-live mutation path. The algorithm version delete modal behavior was locked first. The final `delVersion` owner now performs the DELETE and delegates refresh to `AlgorithmListRuntime.refresh({render:true})`, which owns only algorithms + jobs. The browser contract permanently forbids the datasets/images/labels/training-environment/bootstrap request fan-out on this path while allowing unrelated background owners such as the import-job poll to run independently.
+
+```text
+baseline:   55f21733121d1280be66548ef4bb13c1c3810737
+product:    22c552d27928375dd51081eb152dc25b1554ec18
+validation: 103d630b24bd1aad77190149291c4c9f25e8ab75
+run:        34677761599
+frontend:   PASS
+Real Chrome: 21/21 PASS
+app.js:     42.25.77
+main.mjs:   42.25.82
+```
+
+This closes only the version-delete refresh path. R20/global reload debt remains **IN PROGRESS** and must continue mutation-domain by mutation-domain.
 
 ## 5. Current live render owners — do not delete without proof
 
@@ -407,6 +423,7 @@ post-render-normalization-owner.test.mjs
 startup-render-owner.test.mjs
 lifecycle-event-ownership.test.mjs
 modal-content-owner.test.mjs
+algorithm-version-refresh-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -422,7 +439,7 @@ auto-label-poll-runtime.test.mjs
 - `#view` observer remains retired; page normalization must stay final-render-owned;
 - `#modalBody` normalization observer is retired and must not return; modal content replacement must stay `ModalContentRuntime`-owned.
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **20/20**; this includes `base modal post-open content refresh stays functional`.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **21/21**; this includes `base modal post-open content refresh stays functional` and `algorithm version deletion uses focused refresh without full reload`.
 
 Do not weaken these tests.
 
@@ -459,7 +476,7 @@ live HEAD
 ## 9. Work order
 
 ```text
-1. global reload / loadAll / loadRelated duplicate-request ownership audit
+1. continue R20 global reload / loadAll / loadRelated mutation-domain migration
 2. proven dead app.js/runtime-shell cleanup
 3. cache-busting unification
 4. zero-point MutationObserver/timer/fetch/render/setPage scan
