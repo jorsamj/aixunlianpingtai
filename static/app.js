@@ -1612,7 +1612,6 @@ window.installUsability417=function(){
   };
 
   // Render now if already loaded
-  setTimeout(()=>{ if(state?.project){ state.versionInfo={...(state.versionInfo||{}),version:'42.24.0'}; render(); }},80);
 })();
 
 // ============================================================
@@ -1701,7 +1700,6 @@ window.installUsability417=function(){
   };
 
   // Keep the existing dataset page clean; the “导入标注” button now covers file upload and address reading.
-  setTimeout(()=>{ if(state?.project){ state.versionInfo={...(state.versionInfo||{}),version:'42.24.0'}; render(); }},100);
 })();
 
 // ============================================================
@@ -1792,7 +1790,6 @@ window.installUsability417=function(){
   const modalEl=document.getElementById('modal');if(modalEl)modalEl.addEventListener('mousedown',e=>{if(e.target===modalEl)closeModal()});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.getElementById('modal')?.classList.contains('hidden'))closeModal()});
 
-  setTimeout(()=>{if(state?.project){state.versionInfo={...(state.versionInfo||{}),version:V37_VERSION};render()}},120);
 })();
 
 // ============================================================
