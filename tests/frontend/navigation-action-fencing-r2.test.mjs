@@ -38,9 +38,11 @@ test('final clean confirmation alias owner fences stale completion and stays loc
   assert.match(app, /window\.confirmClean427=window\.confirmClean429;/, 'legacy confirmClean427 entrypoint must delegate to the final confirmClean429 owner');
 });
 
-test('final AI confirmation fences local annotation and modal effects', () => {
-  const owner = liveOwner('window.confirmAiLabel427=async function(id)', 5000);
-  assertFenceBefore(owner, 'const cmap=', 'confirmAiLabel427');
-  assert.ok(owner.indexOf('closeModal()') > owner.indexOf('action&&!action.isCurrent()'), 'AI confirm must not close a new-page modal after navigation');
-  assert.match(owner, /applied_image_ids/, 'AI confirmation must retain authoritative applied-image patching');
+test('v60 review completion is the final AI commit owner and fences stale UI effects', () => {
+  const owner = liveOwner('window.completeAiReview60=async mode=>', 4200);
+  assertFenceBefore(owner, 'applyTaskResult(result)', 'completeAiReview60');
+  assert.ok(owner.indexOf('closeModal()') > owner.indexOf('action&&!action.isCurrent()'), 'completeAiReview60 must not close a new-page modal after navigation');
+  assert.match(owner, /annotation-tasks/, 'v60 review completion must keep the durable annotation-task decisions endpoint');
+  assert.match(owner, /commit:true/, 'v60 review completion must preserve explicit commit semantics');
+  assert.match(app, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\);/, 'legacy confirmAiLabel427 must remain only as a v60 compatibility alias');
 });
