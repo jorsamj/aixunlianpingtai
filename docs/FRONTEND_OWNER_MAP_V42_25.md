@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `43e31c7e683fbda4b9c36a3d35188262b6a9ff1b` / run `34666985800`  
+> Latest fully accepted code point: `b6edea36296ab9548037457a124b4369776f6f5e` / run `34667776611`  
 > Real Chrome: 18/18 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -58,6 +58,8 @@ initial bootstrap setPage                       CLOSED
 | R11 | `modal426` modal file-input beautification wrapper | `9bad939a...` / `34665890699` |
 | R12 | `enhancePageV37` post-render normalization helper + RAF callbacks | `60d87751...` / `34666673017` |
 | R13 | `baseRenderV37` duplicate versionInfo render wrapper | `43e31c7e...` / `34666985800` |
+| R14 | `baseModalV37` autofocus compatibility wrapper | `8593516e...` / `34667341153` (rerun 18/18) |
+| R15 | v35/v36/V37 80/100/120ms startup render/version timers | `b6edea36...` / `34667776611` |
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  
@@ -67,7 +69,9 @@ R12 baseline: `6ae19dc79abbf690371a71162c97a2df6322518b`.
 R12 product: `202a5a82b0cb4629423ee0c6812f649031234daa`.  
 R12 final acceptance increased the browser suite to 18 tests; **18/18 passed**.  
 R13 product: `928d2387d46a0472bd202bd4df84af8d1573b6c2`.  
-R13 validation: `43e31c7e683fbda4b9c36a3d35188262b6a9ff1b` / run `34666985800`; **18/18 passed**. All one-shot migration helpers/workflows were removed after success.
+R13 validation: `43e31c7e683fbda4b9c36a3d35188262b6a9ff1b` / run `34666985800`; **18/18 passed**.  
+R14 product: `6eafbe21c3c364a3e8099fd7ff3cdaf2a19e4829`; validation `8593516eb796f10fb43cea748bcc42b479e0a02e`. The first full pass exposed a lifecycle race at 17/18; rerunning the same run passed 18/18.  
+R15 product: `280a31bf365b1a6646a57213dfa2dff97e10e0b5`; validation `b6edea36296ab9548037457a124b4369776f6f5e` / run `34667776611`; focused training performance 5/5 and final Real Chrome **18/18 passed**. All one-shot migration helpers/workflows were removed after success.
 
 ## 4. Current final navigation owner
 
@@ -111,7 +115,7 @@ Historical localStorage `自动标注` values canonicalize to `自动标注及�
 | Page post-render normalization | `cleanup(root)` + view observer | DOM cleanup + table wrapping + page file-input beautification | unit + Chrome |
 | Modal post-render normalization | `cleanup(root)` + modalBody observer | table wrapping + dynamic modal file-input beautification | unit + Chrome |
 | Render-path formal versionInfo | later `V42` render owner | `state.versionInfo.version = 42.24.0` before delegate | unit + Chrome |
-| V37 modal compatibility | `baseModalV37` | first editable modal field autofocus only | Chrome + unit guard |
+| Modal autofocus | base `modal()` | first editable modal field autofocus | Chrome + unit guard |
 | Visible top version | `top412 / V412` | formal `v42.24.0` | unit + Chrome |
 | Visible sidebar version | `nav426 / V426` | formal `v42.24.0` | unit + Chrome |
 | Internal UI build metadata | `UI_BUILD_VERSION` → `document.documentElement.dataset.uiBuild` | `42.25.0-dev`, non-visible | unit guard |
@@ -246,7 +250,7 @@ oldRenderV39      deployment routes
 render414Base     标签管理 route
 finalRender       素材存储配置
 cleanup(root)     post-render normalization + table wrapping + page/modal file-input beautification
-baseModalV37       first editable modal field autofocus only
+base modal()       first editable modal field autofocus
 ```
 
 ### Physically retired
@@ -265,6 +269,8 @@ render426base page-render wrapper
 modal426 modal wrapper
 enhancePageV37 normalization helper/RAF callbacks
 baseRenderV37 duplicate versionInfo wrapper
+baseModalV37 autofocus compatibility wrapper
+v35/v36/V37 80/100/120ms startup render/version timers
 ```
 
 ## 10. Remaining render/lifecycle audit targets
@@ -272,12 +278,6 @@ baseRenderV37 duplicate versionInfo wrapper
 Independent proof is still required for:
 
 ```text
-baseModalV37
-  initial-focus wrapper only
-
-V37 startup timer
-  120ms state.versionInfo + render compatibility timer
-
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
@@ -297,6 +297,7 @@ tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
 tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
+tests/frontend/startup-render-owner.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
@@ -309,7 +310,7 @@ modal file input beautification survives modal lifecycle ownership
 modal table wrapping and first-field focus survive normalization ownership
 ```
 
-Current accepted Real Chrome suite: **18/18** in run `34666985800`.
+Current accepted Real Chrome suite: **18/18** in run `34667776611`.
 
 ## 12. Per-batch checklist
 

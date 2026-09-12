@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`43e31c7e683fbda4b9c36a3d35188262b6a9ff1b`**  
-> **Frontend Runtime Stabilization：run `34666985800`，frontend + Real Chrome 全绿，Real Chrome 18/18 passed。**  
+> **最近完整代码验收点：`b6edea36296ab9548037457a124b4369776f6f5e`**  
+> **Frontend Runtime Stabilization：run `34667776611`，frontend + Real Chrome 全绿，Real Chrome 18/18 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -79,6 +79,8 @@ enhancePageV37 compatibility helper
 requestAnimationFrame(enhancePageV37) page callback
 enhancePageV37 modal normalization callback
 baseRenderV37 duplicate versionInfo wrapper
+baseModalV37 autofocus compatibility wrapper
+v35/v36/V37 80/100/120ms startup render/version timers
 ```
 
 ## 2. 技术债状态
@@ -101,6 +103,8 @@ baseRenderV37 duplicate versionInfo wrapper
 | `modal426` modal post-render wrapper | `cleanup(root)` + `modalBody` MutationObserver | **CLOSED (R11)** |
 | `enhancePageV37` post-render normalization helper | `cleanup(root)` table/panel normalization | **CLOSED (R12)** |
 | `baseRenderV37` duplicate versionInfo wrapper | later `V42` render versionInfo owner | **CLOSED (R13)** |
+| `baseModalV37` autofocus compatibility wrapper | base `modal()` autofocus | **CLOSED (R14)** |
+| v35/v36/V37 startup render/version timers | final `queueMicrotask → __clInit` startup owner | **CLOSED (R15)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -192,14 +196,12 @@ oldRenderV39      → deployment conversion/artifact/resource/plugin/component
 render414Base     → 标签管理
 finalRender       → 素材存储配置
 cleanup(root)     → post-render normalization + table wrapping + page/modal file-input beautification
-baseModalV37       → modal first-editable-field autofocus only
+base modal()       → modal first-editable-field autofocus
 ```
 
 Remaining audit candidates:
 
 ```text
-baseModalV37       autofocus only
-V37 120ms startup render/version timer
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
@@ -210,8 +212,8 @@ older base/global render generations still reachable through delegates
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.70
-main.mjs cache                   42.25.74
+app.js cache                     42.25.72
+main.mjs cache                   42.25.76
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -241,6 +243,7 @@ tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
 tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
+tests/frontend/startup-render-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -275,10 +278,12 @@ R12 永久要求：
 - `cleanup(root)` 必须继续移除“使用建议”等历史提示 panel；
 - `baseRenderV37` 已在 R13 退休，不得回归；
 - later `V42` render 继续承担 render-path formal `state.versionInfo.version=42.24.0`；
-- `baseModalV37` 当前只保留首个可编辑字段 autofocus，在独立证明前不得顺带删除；
-- V37 `120ms` startup render/version timer 仍存在，属于独立 timer/lifecycle 债，R13 未删除。
+- `baseModalV37` 已在 R14 退休；首个可编辑字段 autofocus 由 base `modal()` 唯一承担；
+- v35/v36/V37 的 80/100/120ms startup render/version timer 已在 R15 退休；
+- startup dispatch 必须继续由 `queueMicrotask(()=>{if(window.__clInit)window.__clInit()})` 与 final `__clInit` 路径承担；
+- bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 是独立 cleanup owner，不得与已退休 startup render timer 混淆。
 
-当前验收：run `34666985800`，**18/18 passed**。
+当前验收：run `34667776611`，**18/18 passed**。
 
 ## 7. Recent render/lifecycle acceptance history
 
@@ -353,6 +358,18 @@ R13 product
 R13 final validation
   43e31c7e683fbda4b9c36a3d35188262b6a9ff1b / 34666985800
   frontend PASS / Real Chrome 18/18 PASS
+
+R14 baseModalV37 retirement
+  product 6eafbe21c3c364a3e8099fd7ff3cdaf2a19e4829
+  validation 8593516eb796f10fb43cea748bcc42b479e0a02e / 34667341153
+  first full pass 17/18 due to training-task /materials race; rerun 18/18 PASS
+  focused race diagnostic 10/10 PASS with only GET /jobs on first refresh
+
+R15 startup render timer retirement
+  product 280a31bf365b1a6646a57213dfa2dff97e10e0b5
+  focused startup readiness PASS + training performance 5/5 PASS
+  validation b6edea36296ab9548037457a124b4369776f6f5e / 34667776611
+  frontend PASS / Real Chrome 18/18 PASS
 ```
 
 所有对应一次性 baseline/migration helper/workflow 均已在验收后物理删除；永久 tests 保留。
@@ -362,8 +379,6 @@ R13 final validation
 优先独立审计：
 
 ```text
-baseModalV37      modal first-field autofocus only
-V37 startup timer  120ms versionInfo + render compatibility timer
 cleanup wrapper   post-render cleanup + view/modalBody MutationObserver lifecycle
 body observer     ZIP import review MutationObserver
 ```
@@ -382,7 +397,7 @@ body observer     ZIP import review MutationObserver
 ## 9. 后续顺序
 
 ```text
-A. baseRenderV37 / baseModalV37 / cleanup+observer owner audit
+A. post-render cleanup wrapper + view/modalBody MutationObserver lifecycle audit
 B. app.js dead code + global reload/request debt
 C. cache-busting unification
 D. MutationObserver/timer/fetch/render/setPage zero-point scan

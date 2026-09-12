@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       43e31c7e683fbda4b9c36a3d35188262b6a9ff1b
-run:          34666985800
+commit:       b6edea36296ab9548037457a124b4369776f6f5e
+run:          34667776611
 frontend:     PASS
 Real Chrome:  PASS (18/18)
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS (18/18)
 Current caches/builds:
 
 ```text
-app.js                    42.25.70
-main.mjs                  42.25.74
+app.js                    42.25.72
+main.mjs                  42.25.76
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -89,6 +89,8 @@ render426base page-render file-input beautification wrapper
 modal426 modal file-input beautification wrapper
 enhancePageV37 post-render normalization helper
 baseRenderV37 duplicate versionInfo wrapper
+baseModalV37 autofocus compatibility wrapper
+v35/v36/V37 80/100/120ms startup render/version timers
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -202,7 +204,42 @@ run:        34666985800
 Chrome:     18/18 PASS
 ```
 
-`baseModalV37` autofocus remains live. The V37 120ms startup timer remains and was not part of R13.
+At R13, `baseModalV37` autofocus and the V37 120ms startup timer still remained; both were handled in the next two bounded batches.
+
+### R14 — modal autofocus owner consolidation
+
+The autofocus semantic moved into the base `modal()` function and `baseModalV37` was physically removed.
+
+```text
+product:    6eafbe21c3c364a3e8099fd7ff3cdaf2a19e4829
+validation: 8593516eb796f10fb43cea748bcc42b479e0a02e
+run:        34667341153
+first pass: 17/18 due to training-task /materials race
+rerun:      18/18 PASS
+```
+
+A dedicated diagnostic then repeated the focused training performance test 10 times. All 10 passed and each first refresh contained only `GET /jobs`, proving the training refresh owner itself was not issuing `/materials`.
+
+### R15 — startup render timer retirement
+
+Three historical startup compatibility wakeups were removed:
+
+```text
+v35  80ms  versionInfo + render
+v36 100ms  versionInfo + render
+V37 120ms  versionInfo + render
+```
+
+Final startup remains owned by `queueMicrotask → final __clInit`. The separate bounded cleanup timer that calls `renderTop(); cleanup(document);` at 100ms is intentionally retained.
+
+```text
+product:    280a31bf365b1a6646a57213dfa2dff97e10e0b5
+focused:    startup readiness PASS; training performance 5/5 PASS
+validation: b6edea36296ab9548037457a124b4369776f6f5e
+run:        34667776611
+frontend:   PASS
+Chrome:     18/18 PASS
+```
 
 ## 7. Current live render topology
 
@@ -238,21 +275,19 @@ cleanup(root)
   post-render DOM normalization
   table wrapping + page/modal file-input beautification
 
-baseModalV37
-  modal first-editable-field autofocus only
+base modal()
+  modal first-editable-field autofocus
 ```
 
 Still under audit:
 
 ```text
-baseModalV37 autofocus ownership
-V37 120ms startup render/version timer
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver lifecycle
 older base/global render generations reached through delegates
 ```
 
-`baseRender417`, `render426base`, `modal426`, `enhancePageV37`, and `baseRenderV37` are CLOSED and must not return.
+`baseRender417`, `render426base`, `modal426`, `enhancePageV37`, `baseRenderV37`, `baseModalV37`, and the v35/v36/V37 startup render timers are CLOSED and must not return.
 
 ## 8. Permanent contracts
 
@@ -264,6 +299,7 @@ tests/frontend/render-owner-retirement.test.mjs
 tests/frontend/version-marker-owner.test.mjs
 tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
+tests/frontend/startup-render-owner.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -281,12 +317,12 @@ view + modalBody observer wiring remains until explicit lifecycle migration
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **18/18** in run `34666985800`.
+Current accepted Real Chrome suite: **18/18** in run `34667776611`.
 
 ## 9. Remaining technical-debt targets
 
 ```text
-baseRenderV37 / baseModalV37 / cleanup+observer owner audit
+cleanup+observer lifecycle audit
 loadAll / loadRelated / loadCore412 ownership
 proven dead app.js code
 global reload / duplicate requests
@@ -327,7 +363,7 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 7. `renderBase428` remains training-only unless semantics move first.
 8. `renderBase424` remains quality/video-only unless semantics move first.
 9. AutoLabel remains PollRegistry-only.
-10. `baseRender417`, `render426base`, `modal426`, and delayed visible-version writers stay retired.
+10. `baseRender417`, `render426base`, `modal426`, `baseModalV37`, legacy startup render timers, and delayed visible-version writers stay retired.
 11. Internal build metadata must never become a visible formal-version owner.
 12. File-input page/modal behavior must stay covered while cleanup/observer lifecycle is refactored.
 13. No mother-model class inheritance on first training.
@@ -339,7 +375,7 @@ Do not delete by version suffix alone. Do not add a global render-repair loop. P
 ## 12. Work order
 
 ```text
-1. baseRenderV37 / baseModalV37 / cleanup+observer audit
+1. post-render cleanup wrapper + view/modalBody MutationObserver lifecycle audit
 2. app.js dead code + global reload/request debt
 3. cache-busting unification
 4. zero-point observer/timer/fetch/render/setPage scan

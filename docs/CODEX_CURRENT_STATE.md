@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 43e31c7e683fbda4b9c36a3d35188262b6a9ff1b
-Frontend Runtime run:        34666985800
+latest full code acceptance: b6edea36296ab9548037457a124b4369776f6f5e
+Frontend Runtime run:        34667776611
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.70
-main.mjs cache:              42.25.74
+app.js cache:                42.25.72
+main.mjs cache:              42.25.76
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,12 +23,12 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34666985800` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **18 tests and passed 18/18**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34667776611` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **18 tests and passed 18/18**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-baseRenderV37 / baseModalV37 / cleanup+observer owner audit
+cleanup+observer lifecycle audit
 → app.js/global reload/request debt
 → cache-busting unification
 → zero-point lifecycle scan
@@ -117,6 +117,8 @@ render426base page-render file-input beautification wrapper
 modal426 modal file-input beautification wrapper
 enhancePageV37 post-render normalization helper
 baseRenderV37 duplicate versionInfo wrapper
+baseModalV37 autofocus compatibility wrapper
+v35/v36/V37 80/100/120ms startup render/version timers
 ```
 
 ### R9 — version marker ownership consolidation
@@ -238,6 +240,32 @@ frontend:   PASS
 Chrome:     18/18 PASS
 ```
 
+### R14 — baseModalV37 retirement
+
+R14 moved the only live V37 modal semantic — first editable-field autofocus — into the base `modal()` owner, then physically removed the `baseModalV37` compatibility wrapper. The focused modal contracts passed. The first full suite exposed an unrelated low-probability `/materials` request race in `training-task-performance` (17/18); rerunning the same run passed 18/18, so the failure was retained as lifecycle evidence rather than dismissed.
+
+```text
+product:             6eafbe21c3c364a3e8099fd7ff3cdaf2a19e4829
+validation:          8593516eb796f10fb43cea748bcc42b479e0a02e
+initial full run:    34667341153 → 17/18, then rerun 18/18
+diagnostic repeat:   training performance 10/10 PASS; only GET /jobs observed
+```
+
+### R15 — legacy startup render timer retirement
+
+The race audit identified three historical startup compatibility timers as unowned render wakeups: v35 80ms, v36 100ms and V37 120ms. They were physically removed. Final startup dispatch remains `queueMicrotask → final __clInit`; the separate bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` cleanup timer remains intentionally live.
+
+```text
+product:             280a31bf365b1a6646a57213dfa2dff97e10e0b5
+focused acceptance:  startup readiness PASS + training performance 5/5 PASS
+validation:          b6edea36296ab9548037457a124b4369776f6f5e
+run:                 34667776611
+frontend:            PASS
+Real Chrome:         18/18 PASS
+```
+
+Permanent proof includes `tests/frontend/startup-render-owner.test.mjs` and the existing modal normalization/autofocus Chrome contract.
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -270,21 +298,19 @@ cleanup(root)
   page/modal post-render normalization
   table wrapping + file-input beautification
 
-baseModalV37
-  first editable modal field autofocus only
+base modal()
+  first editable modal field autofocus
 ```
 
 Still requiring independent liveness analysis:
 
 ```text
-baseModalV37 autofocus ownership
-V37 120ms startup render/version timer
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
 body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
-`baseRender417`, `render426base`, and `modal426` are permanently retired.
+`baseRender417`, `render426base`, `modal426`, `baseModalV37`, and the v35/v36/V37 startup render timers are permanently retired.
 
 ## 6. Permanent frontend/browser contracts
 
@@ -296,6 +322,7 @@ render-owner-retirement.test.mjs
 version-marker-owner.test.mjs
 file-input-beautification-owner.test.mjs
 post-render-normalization-owner.test.mjs
+startup-render-owner.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -347,7 +374,7 @@ live HEAD
 ## 9. Work order
 
 ```text
-1. baseRenderV37 / baseModalV37 / cleanup+observer owner audit
+1. post-render cleanup wrapper + view/modalBody MutationObserver lifecycle audit
 2. proven dead app.js + global reload/request debt
 3. cache-busting unification
 4. zero-point MutationObserver/timer/fetch/render/setPage scan
