@@ -128,55 +128,45 @@ test('stale clean confirmation cannot close newer UI or start broad project refr
   expect(broadGetsAfterRelease, 'stale clean confirm started broad GET fan-out').toBe(0);
 });
 
-test('stale AI confirmation cannot patch or close UI owned by a newer page', async ({page}) => {
+test('stale v60 AI review completion cannot patch or close UI owned by a newer page', async ({page}) => {
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   let interceptedResolve;
   const intercepted = new Promise(resolve => { interceptedResolve = resolve; });
 
   await boot(page);
-  await page.route('**/api/v47/projects/**', async route => {
+  await page.route('**/api/v60/projects/**', async route => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
-    if (request.method() !== 'POST' || !pathname.endsWith('/ai-label-tasks/ai-r2/confirm')) return route.continue();
+    if (request.method() !== 'POST' || !pathname.endsWith('/annotation-tasks/ai-r2/decisions')) return route.continue();
     interceptedResolve();
     await gate;
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      applied_images: 1, boxes_added: 1, applied_image_ids: ['image-ai-r2'],
+      applied_images: 1, boxes_added: 1, image_summaries: [],
     })});
   });
 
   await page.evaluate(() => window.setPage('数据集'));
-  const setup = await page.evaluate(() => {
-    state.v427AiConfirm = new Set(['image-ai-r2']);
-    const source = String(window.confirmAiLabel427);
-    void window.confirmAiLabel427('ai-r2');
-    return {size: state.v427AiConfirm.size, source: source.slice(0, 900)};
+  await page.evaluate(() => {
+    state.ai60Review = {
+      id: 'ai-r2',
+      decisions: new Map([['image-ai-r2', true]]),
+      edits: new Map(),
+      seen: new Map(),
+      items: [],
+      offset: 0,
+      total: 1,
+    };
+    void window.completeAiReview60('partial');
   });
-  expect(setup.size).toBe(1);
-
-  const interceptedOk = await Promise.race([
-    intercepted.then(() => true),
-    new Promise(resolve => setTimeout(() => resolve(false), 2500)),
-  ]);
-  if (!interceptedOk) {
-    const diag = await page.evaluate(() => ({
-      page: state.page,
-      confirmType: typeof window.confirmAiLabel427,
-      confirmSize: state.v427AiConfirm?.size,
-      confirmIterable: !!state.v427AiConfirm?.[Symbol.iterator],
-      toast: document.getElementById('toast')?.textContent || '',
-      source: String(window.confirmAiLabel427).slice(0, 1200),
-    }));
-    throw new Error(`AI confirm POST was not intercepted; diagnostics=${JSON.stringify(diag)}`);
-  }
+  await Promise.race([intercepted, new Promise((_, reject) => setTimeout(() => reject(new Error('v60 AI decisions POST was not intercepted')), 8_000))]);
 
   await protectNewPageModal(page, '模型配置');
   release();
   await page.waitForTimeout(700);
 
   await expect(page.locator('#title')).toContainText('模型配置');
-  await expect(page.locator('#modal'), 'stale AI confirm closed the newer page modal').not.toHaveClass(/hidden/);
-  await expect(page.locator('#modalTitle'), 'stale AI confirm replaced the newer page modal').toHaveText('R2新页面保护');
-  await expect(page.locator('#actionFenceR2Sentinel'), 'stale AI confirm destroyed the newer page modal body').toHaveText('new-page-r2');
+  await expect(page.locator('#modal'), 'stale v60 AI completion closed the newer page modal').not.toHaveClass(/hidden/);
+  await expect(page.locator('#modalTitle'), 'stale v60 AI completion replaced the newer page modal').toHaveText('R2新页面保护');
+  await expect(page.locator('#actionFenceR2Sentinel'), 'stale v60 AI completion destroyed the newer page modal body').toHaveText('new-page-r2');
 });
