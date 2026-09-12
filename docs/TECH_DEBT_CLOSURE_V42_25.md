@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`b6edea36296ab9548037457a124b4369776f6f5e`**  
-> **Frontend Runtime Stabilization：run `34667776611`，frontend + Real Chrome 全绿，Real Chrome 18/18 passed。**  
+> **最近完整代码验收点：`540c0944f45030ea198af2be153c1505f71e62f0`**  
+> **Frontend Runtime Stabilization：run `34668702371`，frontend + Real Chrome 全绿，Real Chrome 19/19 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -81,6 +81,8 @@ enhancePageV37 modal normalization callback
 baseRenderV37 duplicate versionInfo wrapper
 baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
+oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
+transport.mode-only material summary page guard / off-page summary request leakage
 ```
 
 ## 2. 技术债状态
@@ -105,6 +107,8 @@ v35/v36/V37 80/100/120ms startup render/version timers
 | `baseRenderV37` duplicate versionInfo wrapper | later `V42` render versionInfo owner | **CLOSED (R13)** |
 | `baseModalV37` autofocus compatibility wrapper | base `modal()` autofocus | **CLOSED (R14)** |
 | v35/v36/V37 startup render/version timers | final `queueMicrotask → __clInit` startup owner | **CLOSED (R15)** |
+| body-wide ZIP review observer / persisted result race | `completeZipImportReview412` explicit completion owner | **CLOSED (R16)** |
+| off-page material summary timer requests | page-scoped `refreshSummary61` | **CLOSED (R16)** |
 | remaining historical render/post-render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -197,13 +201,14 @@ render414Base     → 标签管理
 finalRender       → 素材存储配置
 cleanup(root)     → post-render normalization + table wrapping + page/modal file-input beautification
 base modal()       → modal first-editable-field autofocus
+completeZipImportReview412 → explicit successful ZIP completion review
+refreshSummary61           → paged 数据集-only material summary requests
 ```
 
 Remaining audit candidates:
 
 ```text
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
-body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
@@ -212,8 +217,8 @@ older base/global render generations still reachable through delegates
 ## 5. Current cache/build facts
 
 ```text
-app.js cache                     42.25.72
-main.mjs cache                   42.25.76
+app.js cache                     42.25.73
+main.mjs cache                   42.25.78
 visible formal version           42.24.0
 internal UI build metadata       42.25.0-dev
 navigation-stability.js          422511
@@ -222,6 +227,7 @@ poll-registry.js                 422511
 training-draft-runtime.js        422516
 training-labels.js               422513
 auto-label-poll-runtime.js       422501
+material-pagination-runtime.js   422206
 TrainingSubmitRuntime            training-submit-422504
 TrainingTaskRuntime              training-task-runtime-422503
 ```
@@ -244,6 +250,7 @@ tests/frontend/version-marker-owner.test.mjs
 tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/startup-render-owner.test.mjs
+tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 ```
 
@@ -284,6 +291,30 @@ R12 永久要求：
 - bounded `setTimeout(()=>{renderTop();cleanup(document);},100)` 是独立 cleanup owner，不得与已退休 startup render timer 混淆。
 
 当前验收：run `34667776611`，**18/18 passed**。
+
+### R16 — event-owned ZIP completion + page-scoped material summary
+
+R16 converted two asynchronous lifecycle guesses into explicit/scoped owners. The former body-wide ZIP review `MutationObserver` could fire after `pollImport411()` exposed `stage=导入完成` but before the final completion `resultHtml` write, so its persisted review action could be overwritten even though the DOM button and auto-open had already appeared. ZIP review is now invoked explicitly after the final successful completion state is written.
+
+The second failure source was `refreshSummary61()`: its 250/1200ms startup timers only checked stale `transport.mode==='paged'`. Because final navigation no longer uses the early material-aware `setPage` wrapper, those timers could issue `/materials` after navigation to 训练任务. `refreshSummary61()` is now strictly gated by the live paged 数据集 page both before and after its requests.
+
+```text
+baseline:        540de6aef4ddbf82a6cf36994a31a73937abca73
+baseline run:    34668429941 → 17/19
+                 ZIP persisted review false
+                 training-task unexpected /materials request
+product:         12df27e2af9155e3a1b9f745e46605396e321815
+focused run:     34668639496
+                 ZIP completion PASS
+                 training refresh isolation 5/5 PASS
+validation:      540c0944f45030ea198af2be153c1505f71e62f0
+full run:        34668702371
+frontend:        PASS
+Real Chrome:     19/19 PASS
+```
+
+Permanent proof: `tests/frontend/lifecycle-event-ownership.test.mjs` plus the browser contract `ZIP import completion surfaces review action and auto-opens review`.
+
 
 ## 7. Recent render/lifecycle acceptance history
 

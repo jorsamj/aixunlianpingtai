@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: b6edea36296ab9548037457a124b4369776f6f5e
-Frontend Runtime run:        34667776611
+latest full code acceptance: 540c0944f45030ea198af2be153c1505f71e62f0
+Frontend Runtime run:        34668702371
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.72
-main.mjs cache:              42.25.76
+app.js cache:                42.25.73
+main.mjs cache:              42.25.78
 NavigationStability:         422511
 UI state runtime:            422500
 PollRegistry:                422511
@@ -23,7 +23,7 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34667776611` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **18 tests and passed 18/18**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34668702371` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **19 tests and passed 19/19**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
@@ -119,6 +119,8 @@ enhancePageV37 post-render normalization helper
 baseRenderV37 duplicate versionInfo wrapper
 baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
+oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
+transport.mode-only material summary page guard / off-page summary request leakage
 ```
 
 ### R9 — version marker ownership consolidation
@@ -266,6 +268,29 @@ Real Chrome:         18/18 PASS
 
 Permanent proof includes `tests/frontend/startup-render-owner.test.mjs` and the existing modal normalization/autofocus Chrome contract.
 
+### R16 — event-owned ZIP completion + page-scoped material summary
+
+R16 converted two asynchronous lifecycle guesses into explicit/scoped owners. The former body-wide ZIP review `MutationObserver` could fire after `pollImport411()` exposed `stage=导入完成` but before the final completion `resultHtml` write, so its persisted review action could be overwritten even though the DOM button and auto-open had already appeared. ZIP review is now invoked explicitly after the final successful completion state is written.
+
+The second failure source was `refreshSummary61()`: its 250/1200ms startup timers only checked stale `transport.mode==='paged'`. Because final navigation no longer uses the early material-aware `setPage` wrapper, those timers could issue `/materials` after navigation to 训练任务. `refreshSummary61()` is now strictly gated by the live paged 数据集 page both before and after its requests.
+
+```text
+baseline:        540de6aef4ddbf82a6cf36994a31a73937abca73
+baseline run:    34668429941 → 17/19
+                 ZIP persisted review false
+                 training-task unexpected /materials request
+product:         12df27e2af9155e3a1b9f745e46605396e321815
+focused run:     34668639496
+                 ZIP completion PASS
+                 training refresh isolation 5/5 PASS
+validation:      540c0944f45030ea198af2be153c1505f71e62f0
+full run:        34668702371
+frontend:        PASS
+Real Chrome:     19/19 PASS
+```
+
+Permanent proof: `tests/frontend/lifecycle-event-ownership.test.mjs` plus the browser contract `ZIP import completion surfaces review action and auto-opens review`.
+
 ## 5. Current live render owners — do not delete without proof
 
 ```text
@@ -300,13 +325,18 @@ cleanup(root)
 
 base modal()
   first editable modal field autofocus
+
+completeZipImportReview412
+  explicit successful ZIP completion review owner
+
+refreshSummary61
+  material summary owner; live only on paged 数据集
 ```
 
 Still requiring independent liveness analysis:
 
 ```text
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
-body-wide ZIP-review MutationObserver
 older base/global render generations still reachable through delegates
 ```
 
@@ -323,6 +353,7 @@ version-marker-owner.test.mjs
 file-input-beautification-owner.test.mjs
 post-render-normalization-owner.test.mjs
 startup-render-owner.test.mjs
+lifecycle-event-ownership.test.mjs
 navigation-stability.test.mjs
 navigation-persistence.test.mjs
 retired-sidebar-setpage-guard.test.mjs
@@ -337,7 +368,7 @@ auto-label-poll-runtime.test.mjs
 - `cleanup(root)` calls `beautifyFileInputs426`;
 - `view` and `modalBody` observer wiring remains until lifecycle ownership is explicitly migrated.
 
-Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **18/18**.
+Real Chrome verifies navigation, readiness, stale-request fencing, managed polling, sidebar cleanup, current/historical auto-label canonicalization, persistence/reload, storage route, algorithm/training/material performance, formal-version stability, and page/modal file-input beautification. Current accepted suite: **19/19**.
 
 Do not weaken these tests.
 

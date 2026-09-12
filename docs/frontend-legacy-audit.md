@@ -7,17 +7,17 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       b6edea36296ab9548037457a124b4369776f6f5e
-run:          34667776611
+commit:       540c0944f45030ea198af2be153c1505f71e62f0
+run:          34668702371
 frontend:     PASS
-Real Chrome:  PASS (18/18)
+Real Chrome:  PASS (19/19)
 ```
 
 Current caches/builds:
 
 ```text
-app.js                    42.25.72
-main.mjs                  42.25.76
+app.js                    42.25.73
+main.mjs                  42.25.78
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422511
@@ -91,6 +91,8 @@ enhancePageV37 post-render normalization helper
 baseRenderV37 duplicate versionInfo wrapper
 baseModalV37 autofocus compatibility wrapper
 v35/v36/V37 80/100/120ms startup render/version timers
+oldZip412 ZIP completion capture + body-wide ZIP-review MutationObserver
+transport.mode-only material summary page guard / off-page summary request leakage
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -241,6 +243,29 @@ frontend:   PASS
 Chrome:     18/18 PASS
 ```
 
+### R16 — event-owned ZIP completion + page-scoped material summary
+
+R16 converted two asynchronous lifecycle guesses into explicit/scoped owners. The former body-wide ZIP review `MutationObserver` could fire after `pollImport411()` exposed `stage=导入完成` but before the final completion `resultHtml` write, so its persisted review action could be overwritten even though the DOM button and auto-open had already appeared. ZIP review is now invoked explicitly after the final successful completion state is written.
+
+The second failure source was `refreshSummary61()`: its 250/1200ms startup timers only checked stale `transport.mode==='paged'`. Because final navigation no longer uses the early material-aware `setPage` wrapper, those timers could issue `/materials` after navigation to 训练任务. `refreshSummary61()` is now strictly gated by the live paged 数据集 page both before and after its requests.
+
+```text
+baseline:        540de6aef4ddbf82a6cf36994a31a73937abca73
+baseline run:    34668429941 → 17/19
+                 ZIP persisted review false
+                 training-task unexpected /materials request
+product:         12df27e2af9155e3a1b9f745e46605396e321815
+focused run:     34668639496
+                 ZIP completion PASS
+                 training refresh isolation 5/5 PASS
+validation:      540c0944f45030ea198af2be153c1505f71e62f0
+full run:        34668702371
+frontend:        PASS
+Real Chrome:     19/19 PASS
+```
+
+Permanent proof: `tests/frontend/lifecycle-event-ownership.test.mjs` plus the browser contract `ZIP import completion surfaces review action and auto-opens review`.
+
 ## 7. Current live render topology
 
 Confirmed live; do not delete as whole layers without new proof:
@@ -277,13 +302,18 @@ cleanup(root)
 
 base modal()
   modal first-editable-field autofocus
+
+completeZipImportReview412
+  explicit successful ZIP completion review owner
+
+refreshSummary61
+  material summary owner scoped to paged 数据集
 ```
 
 Still under audit:
 
 ```text
 post-render cleanup wrapper + view/modalBody MutationObserver lifecycle
-body-wide ZIP-review MutationObserver lifecycle
 older base/global render generations reached through delegates
 ```
 
@@ -300,6 +330,7 @@ tests/frontend/version-marker-owner.test.mjs
 tests/frontend/file-input-beautification-owner.test.mjs
 tests/frontend/post-render-normalization-owner.test.mjs
 tests/frontend/startup-render-owner.test.mjs
+tests/frontend/lifecycle-event-ownership.test.mjs
 tests/frontend/auto-label-poll-runtime.test.mjs
 tests/frontend/navigation-stability.test.mjs
 tests/frontend/navigation-persistence.test.mjs
@@ -317,7 +348,7 @@ view + modalBody observer wiring remains until explicit lifecycle migration
 ordinary modal file input receives equivalent filepicker behavior
 ```
 
-Current accepted Real Chrome suite: **18/18** in run `34667776611`.
+Current accepted Real Chrome suite: **19/19** in run `34668702371`.
 
 ## 9. Remaining technical-debt targets
 
