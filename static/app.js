@@ -1789,17 +1789,11 @@ window.installUsability417=function(){
   };
 
 
-  function enhancePageV37(){
-    const view=document.getElementById('view');if(!view)return;
-    view.querySelectorAll('table.table').forEach(table=>{if(!table.parentElement.classList.contains('table-wrap')){const wrap=document.createElement('div');wrap.className='table-wrap';table.parentNode.insertBefore(wrap,table);wrap.appendChild(table)}});
-    view.querySelectorAll('.panel').forEach(panel=>{const title=panel.querySelector('.panel-title')?.textContent?.trim();if(title==='使用建议')panel.remove()});
-    document.querySelectorAll('.modal-body table.table').forEach(table=>{if(!table.parentElement.classList.contains('table-wrap')){const wrap=document.createElement('div');wrap.className='table-wrap';table.parentNode.insertBefore(wrap,table);wrap.appendChild(table)}});
-  }
   const baseRenderV37=render;
-  render=function(){state.versionInfo={...(state.versionInfo||{}),version:V37_VERSION};baseRenderV37();requestAnimationFrame(enhancePageV37)};
+  render=function(){state.versionInfo={...(state.versionInfo||{}),version:V37_VERSION};baseRenderV37()};
 
   const baseModalV37=modal;
-  modal=function(title,body,wide){baseModalV37(title,body,wide);requestAnimationFrame(()=>{enhancePageV37();const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})};
+  modal=function(title,body,wide){baseModalV37(title,body,wide);requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})};
   window.modal=modal;
   const modalEl=document.getElementById('modal');if(modalEl)modalEl.addEventListener('mousedown',e=>{if(e.target===modalEl)closeModal()});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.getElementById('modal')?.classList.contains('hidden'))closeModal()});
@@ -2207,6 +2201,9 @@ window.installUsability417=function(){
   function cleanup(root){
     if(!root||!root.querySelectorAll)return;
     window.beautifyFileInputs426?.(root);
+    const wrapTable=table=>{if(!table.parentElement?.classList.contains('table-wrap')){const wrap=document.createElement('div');wrap.className='table-wrap';table.parentNode?.insertBefore(wrap,table);wrap.appendChild(table)}};
+    if(root.matches?.('table.table'))wrapTable(root);
+    root.querySelectorAll('table.table').forEach(wrapTable);
     root.querySelectorAll('.subline,.compact-note,.callout,.import-box,.v42-stepbar,.v42-loopline,.v42-wizard-head').forEach(x=>x.remove());
     root.querySelectorAll('.v42-source-hero>div:first-child,.v42-quality-head>div:first-child,.v42-loop-hero>div:first-child').forEach(x=>x.remove());
     root.querySelectorAll('.panel').forEach(p=>{const t=p.querySelector('.panel-title')?.textContent?.trim();if(['接入方式','系统原则','一条主流程','快速入口','使用建议'].includes(t))p.remove()});
