@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `210a9ad1f6271a8a8986db3f223f4813a6cce288` / run `34696729028`  
+> Latest fully accepted code point: `a7116811adb26ebe5f0f9e621bf23df1dd1f605f` / run `34698983278`  
 > Real Chrome: 31/31 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -73,8 +73,11 @@ initial bootstrap setPage                       CLOSED
 | R20g | ZIP + server-storage import completion broad refresh → scoped labels/material refresh | `a2f4cb40...` / `34693503185` (30/30) |
 | R20g close | one-shot migration helper/workflow physical deletion | `6337f1a0...` / `34695825386` (30/30) |
 | R20h | legacy algorithm CRUD + v30/v39/v42.2 shadowed algorithm generations retired; stable 414/423/429 local-state owners remain | `210a9ad1...` / `34696729028` (31/31) |
+| R20i | legacy dataset-group CRUD + two shadowed dataset render generations + persistence wrapper retired; bounded delegate remains | `a7116811a...` / `34698983278` (31/31) |
 
 R20h product: `d58e690ffcc1523f213a65cfc0a57380ffdc571e`; focused run `34696508446`; validation `210a9ad1f6271a8a8986db3f223f4813a6cce288` / run `34696729028`; frontend PASS; Real Chrome **31/31 passed**. The bounded base `renderAlgorithms()` compatibility delegate remains until older global render maps are retired, and the later report compatibility owner remains live by contract. R20h one-shot migration artifacts were deleted.  
+
+R20i product: `feeb98f441bb1fe5d0f8f409a1509c66606e59ef`; validation `11131ca30c17809e016807aa6c75b0bf203fa6f8` / run `34698850495`; cleanup `a7116811adb26ebe5f0f9e621bf23df1dd1f605f` / run `34698983278`; frontend PASS; Real Chrome **31/31 passed**. Final dataset routing remains `renderDatasets424`; one bounded `renderDatasets()` delegate remains for historical render-map symbol compatibility. The dataset-group CRUD family, `oldSelectDataset`, `currentDataset()` and both shadowed dataset-group render bodies are physically retired and permanently guarded.  
 
 R10 product: `b9d25955c185aaabb4108f3d37cfecd9f876390a`.  
 R11 baseline: `d2aa614870a52864e991502c2218134943afb14f`.  

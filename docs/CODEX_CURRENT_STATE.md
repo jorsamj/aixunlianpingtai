@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 210a9ad1f6271a8a8986db3f223f4813a6cce288
-Frontend Runtime run:        34696729028
+latest full code acceptance: a7116811adb26ebe5f0f9e621bf23df1dd1f605f
+Frontend Runtime run:        34698983278
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.84
+app.js cache:                42.25.85
 main.mjs cache:              42.25.88
 NavigationStability:         422511
 UI state runtime:            422500
@@ -23,13 +23,14 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34696729028` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions. Browser navigation runs **31 tests and passed 31/31**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34698983278` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20i artifact cleanup. Browser navigation runs **31 tests and passed 31/31**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
 app.js/global reload/request debt
-→ remaining dataset/job/publish mutation liveness audit + scoped refresh
+→ legacy dataset action-generation liveness audit / dead-shell retirement
+→ live training stop/delete scoped refresh
 → proven dead app.js/runtime shell cleanup
 → stale async action fencing / lifecycle zero-point
 → cache-busting unification
@@ -84,6 +85,35 @@ main.mjs cache:   42.25.88
 ```
 
 One-shot R20h migration artifacts are physically deleted. Current exact next scope remains **R20 final global reload/request zero-point**, starting with a liveness audit of dataset mutation owners.
+
+### R20i — legacy dataset-group owner retirement
+
+The final dataset route already bypasses the historical dataset-group pages and directly owns the page through `renderDatasets424`. R20i proved two old `renderDatasets` generations plus dataset-group CRUD and the later `oldSelectDataset` persistence wrapper were unreachable compatibility debt. They were physically removed; one bounded `renderDatasets() → renderDatasets424()` delegate remains only because older global render maps still eagerly reference the symbol.
+
+Physically retired:
+
+```text
+selectDataset / newDataset / saveDataset / editDataset / saveEditDataset / delDataset
+oldSelectDataset persistence wrapper
+currentDataset helper
+two historical dataset-group render bodies
+```
+
+```text
+product:          feeb98f441bb1fe5d0f8f409a1509c66606e59ef
+focused run:      34698742036
+validation:       11131ca30c17809e016807aa6c75b0bf203fa6f8
+validation run:   34698850495
+validation Chrome: 31/31 PASS
+cleanup:          a7116811adb26ebe5f0f9e621bf23df1dd1f605f
+cleanup run:      34698983278
+cleanup Chrome:   31/31 PASS
+app.js cache:     42.25.85
+```
+
+Permanent proof: `tests/frontend/legacy-dataset-group-owner.test.mjs` plus the existing permanent material-pagination/navigation Chrome suite. One-shot R20i migration artifacts are physically deleted.
+
+Current exact next scope: prove liveness/source order for the remaining old dataset action generation (`uploadImages/autoSplit/buildYolo/checkDatasetQuality/setImageSplit` and historical `importData/doImportData`), then migrate the confirmed-live `stopJob/deleteJob` broad reload path with a focused browser request contract.
 
 Read in order:
 

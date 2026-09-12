@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 210a9ad1f6271a8a8986db3f223f4813a6cce288
-Frontend Runtime run:        34696729028
+latest full code acceptance: a7116811adb26ebe5f0f9e621bf23df1dd1f605f
+Frontend Runtime run:        34698983278
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.84
+app.js cache:                42.25.85
 main.mjs cache:              42.25.88
 NavigationStability:         422511
 ```
 
-`34696729028` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 31/31。
+`34698983278` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 31/31。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -87,34 +87,39 @@ NavigationStability
 
 ## 下一批准确范围：R20 final zero-point
 
-R20g、R20h 已 CLOSED。R20h 已退休旧算法 CRUD 与 shadowed algorithm renderer generations；创建/编辑/删除现在由 414/423/429 稳定 owner 直接 patch authoritative `state.algorithms`，不得恢复 broad `reload()/loadAll()/loadRelated()`。
+R20g、R20h、R20i 已 CLOSED。R20i 已物理退休旧 dataset-group CRUD、两代旧 dataset renderer body 与 `oldSelectDataset` persistence wrapper；最终数据集页面仍由 `renderDatasets424` 直接路由，历史 render map 只保留 bounded `renderDatasets() → renderDatasets424()` delegate。
 
-下一批继续审计剩余 global reload/request debt，优先从数据集 mutation 家族开始，但必须先证明 current renderer/action liveness：
+下一批继续做 **legacy dataset action generation liveness audit**，先证明 assignment/reference/source-order，再处理 proven-dead action；之后再迁移真实 live 的训练任务停止/删除 broad reload：
 
 ```text
-saveDataset / saveEditDataset / delDataset
-uploadImages / doImportData / autoSplit / setImageSplit
-stopJob / deleteJob
-saveAssign
-remaining loadAll().then(render) manual refresh handlers
+优先证明并清理的 dead-shell 候选：
+uploadImages / autoSplit / buildYolo / checkDatasetQuality / setImageSplit
+旧 importData / doImportData generations（必须先证明最终 owner，不得整名删除）
+旧 saveAssign generation（保留 R20b 后代 local-state owner）
+
+明确 live、不得直接删除：
+stopJob / deleteJob → 当前训练任务页面仍调用，后续改 scoped jobs refresh / local patch
+renderDatasets424 + MaterialPaginationRuntime61 → 当前数据页 owner
 ```
 
-规则：先建立 assignment/reference/liveness/semantic 表；确认 live mutation 后，先补永久浏览器请求合同，再改成 authoritative result + local state patch / scoped refresh。被 later owner 完全 shadowed 的 generation 才允许整组物理删除。不得回头重构已经 CLOSED 的 `setPage` / NavigationStability。
+规则：先建 assignment/reference/liveness/semantic 表；shadowed generation 才允许物理删。live mutation 必须先补 permanent request contract，再做 authoritative result + local state patch / scoped refresh。不得回头重构已经 CLOSED 的 `setPage` / NavigationStability。
 
-R20h 验收：
+R20i 验收：
 
 ```text
-product:          d58e690ffcc1523f213a65cfc0a57380ffdc571e
-focused run:      34696508446 (frontend unit + focused Real Chrome PASS)
-validation:       210a9ad1f6271a8a8986db3f223f4813a6cce288
-validation run:   34696729028
-frontend:         PASS
-Real Chrome:      31/31 PASS
-app.js cache:     42.25.84
+product:          feeb98f441bb1fe5d0f8f409a1509c66606e59ef
+focused run:      34698742036 (all frontend unit + focused Real Chrome PASS)
+validation:       11131ca30c17809e016807aa6c75b0bf203fa6f8
+validation run:   34698850495
+validation Chrome: 31/31 PASS
+cleanup:          a7116811adb26ebe5f0f9e621bf23df1dd1f605f
+cleanup run:      34698983278
+cleanup Chrome:   31/31 PASS
+app.js cache:     42.25.85
 main.mjs cache:   42.25.88
 ```
 
-一次性 R20h migration helper/workflow 已物理删除；永久 guard 位于 `tests/frontend/legacy-algorithm-crud-owner.test.mjs`，CRUD Real Chrome 合同已并入永久执行的 `tests/browser/algorithm-list-performance.spec.mjs`。
+永久 guard：`tests/frontend/legacy-dataset-group-owner.test.mjs`。一次性 R20i migration helper/workflow 已物理删除。
 
 ## 不得回退的核心合同
 

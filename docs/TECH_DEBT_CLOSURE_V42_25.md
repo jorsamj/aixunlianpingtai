@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`210a9ad1f6271a8a8986db3f223f4813a6cce288`**  
-> **Frontend Runtime Stabilization：run `34696729028`，frontend + Real Chrome 全绿，Real Chrome 31/31 passed。**  
+> **最近完整代码验收点：`a7116811adb26ebe5f0f9e621bf23df1dd1f605f`**  
+> **Frontend Runtime Stabilization：run `34698983278`，frontend + Real Chrome 全绿，Real Chrome 31/31 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -91,6 +91,10 @@ base algorithm CRUD `window.newAlgorithm/saveAlgorithm/editAlgorithm/saveEditAlg
 v30 `oldRenderAlgorithms` algorithm renderer wrapper
 v39 `oldViewAlgoV39` algorithm detail wrapper
 v42.2 `renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422` shadowed algorithm page generation
+legacy dataset-group `selectDataset/newDataset/saveDataset/editDataset/saveEditDataset/delDataset`
+`oldSelectDataset` persistence compatibility wrapper
+legacy `currentDataset()` helper
+two shadowed historical dataset-group render bodies
 ```
 
 ## 2. 技术债状态
@@ -131,6 +135,7 @@ v42.2 `renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422` shadowed alg
 | resource-discovery SQLite concurrent cache initialization | lock-safe/single-owner cache initialization | **OPEN — R20e validation diagnostic** |
 | ZIP / server-storage import completion broad refresh | scoped labels + paged material refresh | **CLOSED (R20g)** |
 | legacy algorithm CRUD + shadowed algorithm renderer generations | stable 414/423/429 owners + authoritative local `state.algorithms` patch | **CLOSED (R20h)** |
+| legacy dataset-group CRUD + shadowed dataset render generations | final `renderDatasets424` route + bounded compatibility delegate | **CLOSED (R20i)** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -183,6 +188,31 @@ main.mjs cache: 42.25.88
 ```
 
 一次性 migration helper/workflow 已物理删除。R20 尚未整体 CLOSED；下一批继续对 dataset/job/publish 等 mutation 做 liveness + request zero-point。
+
+## 2.3 R20i — legacy dataset-group owner retirement
+
+R20i 证明最终数据集路由已经直接执行 `renderDatasets424()`，不会再回落到两代旧 dataset-group renderer。旧分组 CRUD 与后续 `oldSelectDataset` persistence wrapper 因此是不可达 compatibility debt，已物理退休。为兼容仍会 eager-reference `renderDatasets` symbol 的旧 global render map，只保留一个 bounded delegate：
+
+```text
+function renderDatasets() → window.renderDatasets424?.()
+final 数据集 route → renderDatasets424()
+```
+
+永久 guard 禁止旧 `select/new/save/edit/delete dataset` owner、`oldSelectDataset`、`currentDataset()` 回归。
+
+```text
+product:          feeb98f441bb1fe5d0f8f409a1509c66606e59ef
+focused run:      34698742036
+validation:       11131ca30c17809e016807aa6c75b0bf203fa6f8
+validation run:   34698850495
+Real Chrome:      31/31 PASS
+cleanup:          a7116811adb26ebe5f0f9e621bf23df1dd1f605f
+cleanup run:      34698983278
+cleanup Chrome:   31/31 PASS
+app.js cache:     42.25.85
+```
+
+R20 仍未整体 CLOSED。下一批先完成 legacy dataset action generation 的 liveness/source-order 证明，再处理 proven-dead action shell；`stopJob/deleteJob` 已确认仍被当前训练页调用，属于 live mutation，后续必须以 scoped jobs refresh/local patch 方式迁移，不能直接删除。
 
 ## 3. Canonical owners
 

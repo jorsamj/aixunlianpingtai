@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       210a9ad1f6271a8a8986db3f223f4813a6cce288
-run:          34696729028
+commit:       a7116811adb26ebe5f0f9e621bf23df1dd1f605f
+run:          34698983278
 frontend:     PASS
 Real Chrome:  PASS (31/31)
 ```
@@ -16,7 +16,7 @@ Real Chrome:  PASS (31/31)
 Current caches/builds:
 
 ```text
-app.js                    42.25.84
+app.js                    42.25.85
 main.mjs                  42.25.88
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -101,6 +101,10 @@ base algorithm CRUD new/save/edit/saveEdit/view globals
 v30 oldRenderAlgorithms wrapper
 v39 oldViewAlgoV39 wrapper
 v42.2 renderAlgorithms422/openNewAlgorithm422/saveNewAlgorithm422 generation
+legacy dataset-group select/new/save/edit/delete CRUD generation
+oldSelectDataset persistence wrapper
+currentDataset helper
+two shadowed historical dataset-group render bodies
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -618,3 +622,21 @@ Real Chrome:         28/28 PASS
 ```
 
 Audit rule added by R20f: **textual last assignment is insufficient when a runtime capture/restore or final-activation layer exists**. Inspect capture aliases and end-of-file restorations before classifying a function as final/live. R20 remains **IN PROGRESS** for the remaining global-refresh zero-point audit.
+
+## R20i — legacy dataset-group owner retirement
+
+Source-order audit proved the late final route executes `renderDatasets424()` directly. Two older dataset-group page bodies and their CRUD/persistence helpers were therefore physically unreachable. R20i removed them while retaining one bounded `renderDatasets() → renderDatasets424()` delegate for historical render-map symbol compatibility.
+
+```text
+product:          feeb98f441bb1fe5d0f8f409a1509c66606e59ef
+validation:       11131ca30c17809e016807aa6c75b0bf203fa6f8
+validation run:   34698850495
+cleanup:          a7116811adb26ebe5f0f9e621bf23df1dd1f605f
+cleanup run:      34698983278
+frontend:         PASS
+Real Chrome:      31/31 PASS
+app.js cache:     42.25.85
+```
+
+Permanent proof: `tests/frontend/legacy-dataset-group-owner.test.mjs`. Next audit target is the remaining legacy dataset action block; do not conflate it with live `renderDatasets424` / MaterialPagination behavior.
+
