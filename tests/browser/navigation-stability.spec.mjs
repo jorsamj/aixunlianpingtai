@@ -543,6 +543,33 @@ test('paddle environment activation keeps manual and quick-detect behavior', asy
   await page.evaluate(() => window.setPage('训练资源'));
   await expect(page.locator('#title')).toContainText('训练资源');
 
+  const projectId = await page.evaluate(() => state.project?.id || '');
+  const actionRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) actionRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
+  await page.route(/\/api\/training_options(?:\?.*)?$/, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({targets: [{
+        id: 'local_paddle',
+        name: 'R20d 飞桨环境',
+        framework: 'paddle',
+        type: 'local',
+        version: '3.0.0',
+        status: 'ready',
+        python_path: '/opt/paddle/bin/python',
+        paddledet_dir: '/opt/PaddleDetection',
+        paddlex_dir: '/opt/PaddleX',
+        algorithms: [],
+        base_models: [],
+      }]}),
+    });
+  });
+
   const paddleCard = page.locator('.quick-card').filter({hasText: '本机飞桨'}).last();
   await expect(paddleCard).toBeVisible();
   await paddleCard.locator('#ppy').fill('/manual/paddle/python');
@@ -568,5 +595,12 @@ test('paddle environment activation keeps manual and quick-detect behavior', asy
     paddledet_dir: '/opt/PaddleDetection',
     paddlex_dir: '/opt/PaddleX',
   });
+  await expect.poll(async () => page.evaluate(() => state.targets.find(x => x.id === 'local_paddle')?.name || '')).toBe('R20d 飞桨环境');
+  const relevant = actionRequests.filter(row => row.includes('/api/paddle_env/') || row.includes('/api/training_options') || row.includes('/bootstrap/snapshot'));
+  expect(relevant.filter(row => row.startsWith('POST /api/paddle_env/select'))).toHaveLength(2);
+  expect(relevant.filter(row => row.startsWith('POST /api/paddle_env/test'))).toHaveLength(1);
+  expect(relevant.filter(row => row.startsWith('POST /api/paddle_env/detect'))).toHaveLength(1);
+  expect(relevant.filter(row => row === `GET /api/training_options?project_id=${projectId}`)).toHaveLength(2);
+  expect(relevant.filter(row => row.includes('/bootstrap/snapshot'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });

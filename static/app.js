@@ -1511,6 +1511,11 @@ window.installUsability417=function(){
     const root=$('#uroot')?.value.trim()||'';
     return window.ResourceDiscoveryRuntime?.detectEnvironment(root?{scope:'fast',roots:[root]}:{scope:'auto'})||toast('资源检测模块正在加载，请稍后重试');
   };
+  async function refreshPaddleTrainingTargets20d(){
+    const opts=await api(`/api/training_options?project_id=${pid()}`);
+    state.targets=opts?.targets||[];
+    return state.targets;
+  }
   window.detectPaddle=async function(){
     const btn=window.event?.currentTarget; setBtnBusy(btn,true,'检测中'); state.resourceBusy=true;
     try{
@@ -1519,7 +1524,7 @@ window.installUsability417=function(){
       await api('/api/paddle_env/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const r=await api('/api/paddle_env/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       if(box)box.textContent=`paddle=${r.modules?.paddle||'-'}，PaddleDetection=${r.paddledet_exists?'存在':'未找到'}`;
-      const cur='训练资源'; await loadAll(); state.page=cur; render(); toast('飞桨环境已启用');
+      await refreshPaddleTrainingTargets20d(); state.page='训练资源'; render(); toast('飞桨环境已启用');
     }catch(e){toast(e.message||'检测失败')}finally{state.resourceBusy=false; setBtnBusy(btn,false)}
   };
   window.quickPaddleDetect=async function(){
@@ -1528,7 +1533,7 @@ window.installUsability417=function(){
       const r=await api('/api/paddle_env/detect',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
       const env=(r?.candidates||[])[0]; if(!env)throw new Error('未检测到飞桨环境');
       await api('/api/paddle_env/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(env)});
-      state.page='训练资源'; await loadAll(); render(); toast('已启用飞桨环境');
+      await refreshPaddleTrainingTargets20d(); state.page='训练资源'; render(); toast('已启用飞桨环境');
     }catch(e){toast(e.message||'一键检测失败')}finally{setBtnBusy(btn,false)}
   };
 
