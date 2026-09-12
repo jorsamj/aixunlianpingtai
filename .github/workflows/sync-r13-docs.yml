@@ -29,3 +29,5 @@ jobs:
           git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md
           git commit -m 'docs(ui): close R13 baseRenderV37 retirement'
           git push
+
+# one-shot R13 handoff synchronization
