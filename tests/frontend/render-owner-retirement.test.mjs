@@ -28,12 +28,14 @@ test('shadowed early storage render wrapper cannot return', () => {
   );
 });
 
-test('final storage render owner remains the sole storage route wrapper', () => {
+test('final storage render owner remains the sole storage route wrapper and final page-normalization owner', () => {
   assert.equal(app.includes('const finalRender=render;'), true);
   assert.equal(
-    app.includes("render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61();return}finalRender()};"),
+    app.includes("render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};"),
     true,
   );
+  assert.equal(app.split("if(state.page==='素材存储配置')").length - 1, 1);
+  assert.equal(app.split("window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))").length - 1, 1);
 });
 
 test('fully shadowed render423 route wrapper cannot return', () => {
