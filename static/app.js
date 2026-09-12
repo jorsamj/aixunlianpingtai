@@ -1666,7 +1666,8 @@ window.installUsability417=function(){
       clearTimeout(window.__sourceImportTimerV36);
       window.__sourceImportTimerV36=setTimeout(refreshSourceImportTasksV36,1800);
     }else{
-      await loadRelated();
+      await window.refreshLabels414?.(false);
+      if(state.page==='数据集')await window.reloadMaterialPage61?.();
     }
   };
 
