@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: c6ac70b670a6297ccba065854779c10b8ca47cf3
-Frontend Runtime run:        34700984963
+latest full code acceptance: 7fcfcaec0b088a851dbcd580ac226b3dd892fa83
+Frontend Runtime run:        34702374386
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.87
-main.mjs cache:              42.25.88
-NavigationStability:         422511
+app.js cache:                42.25.88
+main.mjs cache:              42.25.89
+NavigationStability:         422512
 ```
 
-`34700984963` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 32/32。Resource Discovery SQLite 永久 workflow `34700900542` 已在 Ubuntu + Windows 双平台通过。
+`34702374386` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 32/32。Navigation Action Fencing 永久 workflow `34702374346` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
 
 **仍是技术债优先阶段；A800 RC 暂缓。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -85,45 +85,45 @@ NavigationStability
 
 永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
 
-## 下一批准确范围：Navigation Action Fencing
+## 下一批准确范围：Navigation Action Fencing R2
 
-R20g–R20k 已 CLOSED。Resource Discovery SQLite / FD 本批也已经完成 **代码级关闭**，但只覆盖 SQLite 初始化/连接生命周期，不等于整个 Resource Lifecycle Zero-Point 已关闭。
+### Navigation Action Fencing R1 — resource/Paddle mutation completion CLOSED
 
-Resource Discovery SQLite 本批验收：
-
-```text
-baseline / migration run: 34700801232
-old-code baseline:        2 failed / 2 passed
-  - repeated schema/WAL initialization: FAILED as expected
-  - _ModelManifest explicit close:      FAILED as expected (opened 6 / closed 0)
-  - concurrent generation allocation:   PASS
-  - Linux SQLite FD trend:               PASS
-product:                  8ba4e10db5958204aca3d87779711d8e95f5d83b
-post-migration focused:   6/6 PASS
-permanent guard:          5b66ee03e5aaa3af3a2f18a9092f12e303f69937
-permanent guard run:      34700900542
-Ubuntu:                   PASS (includes /proc SQLite FD trend)
-Windows:                  PASS (Linux-only FD test skipped by contract)
-cleanup:                  c6ac70b670a6297ccba065854779c10b8ca47cf3
-cleanup Frontend run:     34700984963
-cleanup Real Chrome:      32/32 PASS
-formal VERSION.txt:       42.24.0 unchanged
-```
-
-最终代码合同：
+真实旧代码 baseline 已在 Real Chrome 证明：训练资源页慢 `POST /api/train_servers` 发出后，用户切到数据集并打开属于新页面的 modal；旧 POST 完成会执行 `closeModal()`，把新页面 modal 关闭并清掉 sentinel。该行为不是测试推断，而是浏览器复现。
 
 ```text
-DiscoveryCache schema/WAL initialization → FileLock single owner + PRAGMA user_version gate
-ordinary DiscoveryCache connection       → no journal_mode transition; per-connection PRAGMA only
-DiscoveryCache transactions              → deterministic closing + explicit commit/rollback
-_ModelManifest connections/cursor        → deterministic closing
-permanent cross-platform CI              → .github/workflows/resource-discovery-sqlite-stability.yml
-permanent test                            → tests/unit/test_resource_discovery_sqlite_lifecycle.py
+baseline / focused migration run: 34701875185
+old Chrome failure: stale save completion closed or rewrote the new-page modal
+product:            8269eb0cca84ea310f48ee13af34ab09dd1bfeff
+follow-up:          01234ef186f3e57bef2d29ac19420952beef6c36
+cleanup:            7fcfcaec0b088a851dbcd580ac226b3dd892fa83
+Frontend Runtime:   34702374386
+full Real Chrome:   32/32 PASS
+permanent Action Fencing run: 34702374346 PASS
+formal VERSION.txt: 42.24.0 unchanged
+app.js cache:       42.25.88
+main.mjs cache:     42.25.89
+NavigationStability: 422512
 ```
 
-**仍 OPEN / NOT VERIFIED：** 30–60 分钟真实生产 soak；以及 ZIP/file/subprocess/socket/tempfile/directory iterator/mmap/GPU worker/thread/executor 等其他资源生命周期。本批不得被描述为整个 Resource Lifecycle Zero-Point CLOSED。
+R1 新增 `NavigationStability.action(ownerPage)`，通过 navigation epoch/token 暴露 `isCurrent()` / `commit()`；后台 mutation 可以完成，但 stale completion 不得再提交 modal、DOM、state 或 render side effect。`saveServer` 在 POST 后和 scoped `training_options` refresh 后都执行 stale fence。Paddle 手动/一键激活同样有 action fence；若用户仍在训练资源页，只做当前页 render + toast，不再冗余导航回自己。
 
-按用户授权，SQLite 代码级闭环到这里先停，不让生产 soak 阻塞主线。下一批切到 **Navigation Action Fencing**：审计 POST/PUT/DELETE、XHR upload、setTimeout 与业务 callback 的 stale completion，确保动作可在后台完成，但离开来源页后不得切页、重绘旧页、弹旧 modal 或改当前页 DOM。优先补 Real Chrome：A slow mutation → B/C navigation → mutation completes，最终页面必须保持用户最后选择。
+R1 还将目标范围内的 direct page write 清零：训练资源、模型配置、部署转换、训练任务以及旧“新建算法/自动迭代 → 算法列表”renderer rewrite 不再通过 `state.page='xxx'; render()` 导航；需要跳页时统一走 `NavigationStability`/`window.setPage`。
+
+永久合同：
+
+```text
+tests/frontend/navigation-action-fencing.test.mjs
+tests/frontend/training-server-refresh-owner.test.mjs
+tests/browser/navigation-action-fencing.spec.mjs
+.github/workflows/navigation-action-fencing.yml
+```
+
+一次性 R1 migration/follow-up helper 与 workflow 已物理删除。
+
+**边界：整个 Navigation Action Fencing 仍为 IN PROGRESS。** R1 只关闭训练服务器/Paddle 与本批 direct-page-write surface；最终 Model Config 427、AI 标注/清洗确认、图片/ZIP/XHR upload completion、deployment mutation、其他 timer/callback family 尚未全部迁移，不能宣称 stale async UI side effect 全局为 0。下一批为 **R2：最终 Model Config / AI 清洗与 modal mutation completion**。
+
+Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**；30–60 分钟生产 soak 和非 SQLite resource classes 不因本批改变状态。
 
 ## 不得回退的核心合同
 

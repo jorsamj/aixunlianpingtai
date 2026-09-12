@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       c6ac70b670a6297ccba065854779c10b8ca47cf3
-run:          34700984963
+commit:       7fcfcaec0b088a851dbcd580ac226b3dd892fa83
+run:          34702374386
 frontend:     PASS
 Real Chrome:  PASS (32/32)
 ```
@@ -16,11 +16,11 @@ Real Chrome:  PASS (32/32)
 Current caches/builds:
 
 ```text
-app.js                    42.25.87
-main.mjs                  42.25.88
+app.js                    42.25.88
+main.mjs                  42.25.89
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
-navigation-stability      422511
+navigation-stability      422512
 ui-state                  422500
 poll-registry             422511
 training-draft-runtime    422516
@@ -68,6 +68,8 @@ NavigationStability.stableSetPage
   → PollRegistry.afterNavigate
   → persistNavigationState
 ```
+
+R1 action fencing adds `NavigationStability.action(ownerPage) → token/isCurrent/commit` for mutation-completion ownership. Real Chrome proved the old `saveServer` could close a modal created after navigation; that stale side effect is now fenced. Product `8269eb0cca84ea310f48ee13af34ab09dd1bfeff`, follow-up `01234ef186f3e57bef2d29ac19420952beef6c36`, cleanup `7fcfcaec0b088a851dbcd580ac226b3dd892fa83`, full run `34702374386` **32/32**, permanent Action Fencing run `34702374346` PASS. R1 is closed; global stale-async zero-point is not. R2 targets final Model Config / AI-cleaning modal mutation families.
 
 ## 3. Render/lifecycle retirement completed so far
 

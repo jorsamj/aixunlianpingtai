@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`c6ac70b670a6297ccba065854779c10b8ca47cf3`**  
-> **Frontend Runtime Stabilization：run `34700984963`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**  
+> **最近完整代码验收点：`7fcfcaec0b088a851dbcd580ac226b3dd892fa83`**  
+> **Frontend Runtime Stabilization：run `34702374386`，frontend + Real Chrome 全绿，Real Chrome 32/32 passed；Navigation Action Fencing 永久 run `34702374346` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -110,6 +110,7 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | `setupPagePolling` / classic polling compatibility | direct managed owners | **CLOSED** |
 | classic `setPage` owner family | `NavigationStability` | **CLOSED** |
 | navigation alias/readiness/sidebar/apply/persistence | `NavigationStability` + `ui-state.js` | **CLOSED** |
+| Navigation Action Fencing R1 — training-server/Paddle + targeted direct page writes | `NavigationStability.action` + epoch/token fence | **CLOSED (R1); overall action fencing IN PROGRESS** |
 | historical persisted `自动标注` alias | restore-boundary canonicalization | **CLOSED** |
 | shadowed historical render generations/branches R2–R7 | bounded later render owners | **CLOSED** |
 | legacy AutoLabel424 no-op self-refresh timer | `AutoLabelPollRuntime + PollRegistry` | **CLOSED** |
@@ -144,6 +145,44 @@ zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQua
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
 | version-number business naming | semantic names | **OPEN** |
 | A800 RC | acceptance runbook | **DEFERRED** |
+
+## 2.0a Navigation Action Fencing R1
+
+### Navigation Action Fencing R1 — resource/Paddle mutation completion CLOSED
+
+真实旧代码 baseline 已在 Real Chrome 证明：训练资源页慢 `POST /api/train_servers` 发出后，用户切到数据集并打开属于新页面的 modal；旧 POST 完成会执行 `closeModal()`，把新页面 modal 关闭并清掉 sentinel。该行为不是测试推断，而是浏览器复现。
+
+```text
+baseline / focused migration run: 34701875185
+old Chrome failure: stale save completion closed or rewrote the new-page modal
+product:            8269eb0cca84ea310f48ee13af34ab09dd1bfeff
+follow-up:          01234ef186f3e57bef2d29ac19420952beef6c36
+cleanup:            7fcfcaec0b088a851dbcd580ac226b3dd892fa83
+Frontend Runtime:   34702374386
+full Real Chrome:   32/32 PASS
+permanent Action Fencing run: 34702374346 PASS
+formal VERSION.txt: 42.24.0 unchanged
+app.js cache:       42.25.88
+main.mjs cache:     42.25.89
+NavigationStability: 422512
+```
+
+R1 新增 `NavigationStability.action(ownerPage)`，通过 navigation epoch/token 暴露 `isCurrent()` / `commit()`；后台 mutation 可以完成，但 stale completion 不得再提交 modal、DOM、state 或 render side effect。`saveServer` 在 POST 后和 scoped `training_options` refresh 后都执行 stale fence。Paddle 手动/一键激活同样有 action fence；若用户仍在训练资源页，只做当前页 render + toast，不再冗余导航回自己。
+
+R1 还将目标范围内的 direct page write 清零：训练资源、模型配置、部署转换、训练任务以及旧“新建算法/自动迭代 → 算法列表”renderer rewrite 不再通过 `state.page='xxx'; render()` 导航；需要跳页时统一走 `NavigationStability`/`window.setPage`。
+
+永久合同：
+
+```text
+tests/frontend/navigation-action-fencing.test.mjs
+tests/frontend/training-server-refresh-owner.test.mjs
+tests/browser/navigation-action-fencing.spec.mjs
+.github/workflows/navigation-action-fencing.yml
+```
+
+一次性 R1 migration/follow-up helper 与 workflow 已物理删除。
+
+**边界：整个 Navigation Action Fencing 仍为 IN PROGRESS。** R1 只关闭训练服务器/Paddle 与本批 direct-page-write surface；最终 Model Config 427、AI 标注/清洗确认、图片/ZIP/XHR upload completion、deployment mutation、其他 timer/callback family 尚未全部迁移，不能宣称 stale async UI side effect 全局为 0。下一批为 **R2：最终 Model Config / AI 清洗与 modal mutation completion**。
 
 ## 2.1 R20g — import completion scoped refresh
 

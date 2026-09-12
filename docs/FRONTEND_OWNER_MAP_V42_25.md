@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: ACTIVE AUDIT  
-> Latest fully accepted code point: `c6ac70b670a6297ccba065854779c10b8ca47cf3` / run `34700984963`  
+> Latest fully accepted code point: `7fcfcaec0b088a851dbcd580ac226b3dd892fa83` / run `34702374386`  
 > Real Chrome: 32/32 passed  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -40,6 +40,8 @@ initial bootstrap setPage                       CLOSED
 ```
 
 `static/app.js` contains zero classic `window.setPage=` assignments.
+
+Navigation Action Fencing R1 is also accepted: `NavigationStability.action(ownerPage)` owns stale mutation commit checks for the migrated surface. `saveServer` no longer closes/redraws UI after leaving its owner page; targeted direct fixed-page business writes are zero. Product `8269eb0cca84ea310f48ee13af34ab09dd1bfeff`, follow-up `01234ef186f3e57bef2d29ac19420952beef6c36`, cleanup `7fcfcaec0b088a851dbcd580ac226b3dd892fa83`; permanent run `34702374346` PASS; full Real Chrome `34702374386` **32/32**. Overall async-action zero-point remains IN PROGRESS; R2 targets final Model Config / AI-cleaning modal mutations.
 
 ### Render / lifecycle
 

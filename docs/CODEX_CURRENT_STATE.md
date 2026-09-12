@@ -6,14 +6,14 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: c6ac70b670a6297ccba065854779c10b8ca47cf3
-Frontend Runtime run:        34700984963
+latest full code acceptance: 7fcfcaec0b088a851dbcd580ac226b3dd892fa83
+Frontend Runtime run:        34702374386
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.87
-main.mjs cache:              42.25.88
-NavigationStability:         422511
+app.js cache:                42.25.88
+main.mjs cache:              42.25.89
+NavigationStability:         422512
 UI state runtime:            422500
 PollRegistry:                422511
 TrainingDraftRuntime:        422516
@@ -23,12 +23,12 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34700984963` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after Resource Discovery SQLite migration-artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Permanent Resource Discovery SQLite workflow `34700900542` passed on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34702374386` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after Navigation Action Fencing R1 migration-artifact cleanup. Browser navigation runs **32 tests and passed 32/32**. Permanent Action Fencing workflow `34702374346` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
-Navigation Action Fencing / stale mutation UI side effects
+Navigation Action Fencing R2 — final Model Config / AI-cleaning modal mutations
 → resume R20 final global reload/request zero-point
 → external algorithm catalog read-only boundary
 → separate Resource Lifecycle production soak / non-SQLite resource classes
@@ -39,6 +39,42 @@ Navigation Action Fencing / stale mutation UI side effects
 ```
 
 A800 RC remains deferred.
+
+### Navigation Action Fencing R1 — resource/Paddle mutation completion CLOSED
+
+真实旧代码 baseline 已在 Real Chrome 证明：训练资源页慢 `POST /api/train_servers` 发出后，用户切到数据集并打开属于新页面的 modal；旧 POST 完成会执行 `closeModal()`，把新页面 modal 关闭并清掉 sentinel。该行为不是测试推断，而是浏览器复现。
+
+```text
+baseline / focused migration run: 34701875185
+old Chrome failure: stale save completion closed or rewrote the new-page modal
+product:            8269eb0cca84ea310f48ee13af34ab09dd1bfeff
+follow-up:          01234ef186f3e57bef2d29ac19420952beef6c36
+cleanup:            7fcfcaec0b088a851dbcd580ac226b3dd892fa83
+Frontend Runtime:   34702374386
+full Real Chrome:   32/32 PASS
+permanent Action Fencing run: 34702374346 PASS
+formal VERSION.txt: 42.24.0 unchanged
+app.js cache:       42.25.88
+main.mjs cache:     42.25.89
+NavigationStability: 422512
+```
+
+R1 新增 `NavigationStability.action(ownerPage)`，通过 navigation epoch/token 暴露 `isCurrent()` / `commit()`；后台 mutation 可以完成，但 stale completion 不得再提交 modal、DOM、state 或 render side effect。`saveServer` 在 POST 后和 scoped `training_options` refresh 后都执行 stale fence。Paddle 手动/一键激活同样有 action fence；若用户仍在训练资源页，只做当前页 render + toast，不再冗余导航回自己。
+
+R1 还将目标范围内的 direct page write 清零：训练资源、模型配置、部署转换、训练任务以及旧“新建算法/自动迭代 → 算法列表”renderer rewrite 不再通过 `state.page='xxx'; render()` 导航；需要跳页时统一走 `NavigationStability`/`window.setPage`。
+
+永久合同：
+
+```text
+tests/frontend/navigation-action-fencing.test.mjs
+tests/frontend/training-server-refresh-owner.test.mjs
+tests/browser/navigation-action-fencing.spec.mjs
+.github/workflows/navigation-action-fencing.yml
+```
+
+一次性 R1 migration/follow-up helper 与 workflow 已物理删除。
+
+**边界：整个 Navigation Action Fencing 仍为 IN PROGRESS。** R1 只关闭训练服务器/Paddle 与本批 direct-page-write surface；最终 Model Config 427、AI 标注/清洗确认、图片/ZIP/XHR upload completion、deployment mutation、其他 timer/callback family 尚未全部迁移，不能宣称 stale async UI side effect 全局为 0。下一批为 **R2：最终 Model Config / AI 清洗与 modal mutation completion**。
 
 ### R20g — import completion scoped refresh + mechanical close
 
