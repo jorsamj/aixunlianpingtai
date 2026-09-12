@@ -6,12 +6,12 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: a7116811adb26ebe5f0f9e621bf23df1dd1f605f
-Frontend Runtime run:        34698983278
+latest full code acceptance: 9c7a3497b9acf69364d83e5cf778ec4139bdbc69
+Frontend Runtime run:        34699599796
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.85
+app.js cache:                42.25.86
 main.mjs cache:              42.25.88
 NavigationStability:         422511
 UI state runtime:            422500
@@ -23,14 +23,15 @@ TrainingTaskRuntime:         training-task-runtime-422503
 AutoLabelPollRuntime:        422501
 ```
 
-Run `34698983278` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20i artifact cleanup. Browser navigation runs **31 tests and passed 31/31**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+Run `34699599796` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after R20j artifact cleanup. Browser navigation runs **31 tests and passed 31/31**. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
 ## 2. Current priority
 
 ```text
 app.js/global reload/request debt
-→ legacy dataset action-generation liveness audit / dead-shell retirement
+→ live v18 doImportData completion scoped refresh
 → live training stop/delete scoped refresh
+→ historical import/saveAssign generation liveness cleanup
 → proven dead app.js/runtime shell cleanup
 → stale async action fencing / lifecycle zero-point
 → cache-busting unification
@@ -114,6 +115,38 @@ app.js cache:     42.25.85
 Permanent proof: `tests/frontend/legacy-dataset-group-owner.test.mjs` plus the existing permanent material-pagination/navigation Chrome suite. One-shot R20i migration artifacts are physically deleted.
 
 Current exact next scope: prove liveness/source order for the remaining old dataset action generation (`uploadImages/autoSplit/buildYolo/checkDatasetQuality/setImageSplit` and historical `importData/doImportData`), then migrate the confirmed-live `stopJob/deleteJob` broad reload path with a focused browser request contract.
+
+### R20j — zero-reference legacy dataset action retirement
+
+Source-wide assignment/reference audit proved five old dataset actions had exactly one assignment and zero call sites. They were physically removed without touching the final dataset route, MaterialPagination runtime or the live import flow.
+
+Physically retired:
+
+```text
+uploadImages
+autoSplit
+buildYolo
+checkDatasetQuality
+setImageSplit
+```
+
+Important boundary: `doImportData` is **live** and intentionally preserved. The final v36 `importData` modal calls it; its success path still broad-refreshes through `await reload()` and is the next migration target.
+
+```text
+product:            e6398f7d8ae665079c82d64217c434af4a73073c
+focused run:        34699354229
+validation:         693a2fa2c3d39378782ac2270a95924eff5ca5ec
+validation run:     34699442423
+validation Chrome:  31/31 PASS
+cleanup:            9c7a3497b9acf69364d83e5cf778ec4139bdbc69
+cleanup run:        34699599796
+cleanup Chrome:     31/31 PASS
+app.js cache:       42.25.86
+```
+
+Permanent proof: `tests/frontend/legacy-dataset-action-shell.test.mjs`. R20j one-shot migration artifacts are physically deleted.
+
+Current exact next scope is **R20k: live v18 `doImportData` success-path scoped refresh**. Preserve its modal/progress/result semantics, replace broad reload with label refresh plus paged-material refresh only while on 数据集, and lock the request boundary in Real Chrome.
 
 Read in order:
 

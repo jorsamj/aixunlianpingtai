@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       a7116811adb26ebe5f0f9e621bf23df1dd1f605f
-run:          34698983278
+commit:       9c7a3497b9acf69364d83e5cf778ec4139bdbc69
+run:          34699599796
 frontend:     PASS
 Real Chrome:  PASS (31/31)
 ```
@@ -16,7 +16,7 @@ Real Chrome:  PASS (31/31)
 Current caches/builds:
 
 ```text
-app.js                    42.25.85
+app.js                    42.25.86
 main.mjs                  42.25.88
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
@@ -105,6 +105,7 @@ legacy dataset-group select/new/save/edit/delete CRUD generation
 oldSelectDataset persistence wrapper
 currentDataset helper
 two shadowed historical dataset-group render bodies
+zero-reference uploadImages / autoSplit / buildYolo / checkDatasetQuality / setImageSplit owners
 ```
 
 `renderAutoLabel424()` itself remains referenced by historical action functions and is not yet retired as a function.
@@ -639,4 +640,22 @@ app.js cache:     42.25.85
 ```
 
 Permanent proof: `tests/frontend/legacy-dataset-group-owner.test.mjs`. Next audit target is the remaining legacy dataset action block; do not conflate it with live `renderDatasets424` / MaterialPagination behavior.
+
+## R20j — zero-reference legacy dataset actions
+
+The current-source liveness audit found exactly one assignment and no caller for each of `uploadImages`, `autoSplit`, `buildYolo`, `checkDatasetQuality` and `setImageSplit`. They were physically removed and permanently guarded. The audit deliberately excluded `doImportData`: final v36 `importData()` still calls that unique v18 XHR owner.
+
+```text
+product:            e6398f7d8ae665079c82d64217c434af4a73073c
+focused run:        34699354229
+validation:         693a2fa2c3d39378782ac2270a95924eff5ca5ec
+validation run:     34699442423
+cleanup:            9c7a3497b9acf69364d83e5cf778ec4139bdbc69
+cleanup run:        34699599796
+frontend:           PASS
+Real Chrome:        31/31 PASS
+app.js cache:       42.25.86
+```
+
+Permanent proof: `tests/frontend/legacy-dataset-action-shell.test.mjs`. Next audit/migration target: live `doImportData` completion request scope; do not delete it as historical shell.
 

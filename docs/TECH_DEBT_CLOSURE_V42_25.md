@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`a7116811adb26ebe5f0f9e621bf23df1dd1f605f`**  
-> **Frontend Runtime Stabilization：run `34698983278`，frontend + Real Chrome 全绿，Real Chrome 31/31 passed。**  
+> **最近完整代码验收点：`9c7a3497b9acf69364d83e5cf778ec4139bdbc69`**  
+> **Frontend Runtime Stabilization：run `34699599796`，frontend + Real Chrome 全绿，Real Chrome 31/31 passed。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -95,6 +95,7 @@ legacy dataset-group `selectDataset/newDataset/saveDataset/editDataset/saveEditD
 `oldSelectDataset` persistence compatibility wrapper
 legacy `currentDataset()` helper
 two shadowed historical dataset-group render bodies
+zero-reference dataset actions `uploadImages/autoSplit/buildYolo/checkDatasetQuality/setImageSplit`
 ```
 
 ## 2. 技术债状态
@@ -136,6 +137,8 @@ two shadowed historical dataset-group render bodies
 | ZIP / server-storage import completion broad refresh | scoped labels + paged material refresh | **CLOSED (R20g)** |
 | legacy algorithm CRUD + shadowed algorithm renderer generations | stable 414/423/429 owners + authoritative local `state.algorithms` patch | **CLOSED (R20h)** |
 | legacy dataset-group CRUD + shadowed dataset render generations | final `renderDatasets424` route + bounded compatibility delegate | **CLOSED (R20i)** |
+| zero-reference legacy dataset actions | physically retired, final `renderDatasets424` / import owners preserved | **CLOSED (R20j)** |
+| live v18 `doImportData` success broad reload | labels + paged materials only | **OPEN — R20k** |
 | global reload / duplicate request | scoped refresh / zero-point proof | **IN PROGRESS (R20)** |
 | cache-busting | single strategy | **OPEN** |
 | observer/timer/fetch/render lifecycle | explicit owner + destroy | **OPEN** |
@@ -213,6 +216,34 @@ app.js cache:     42.25.85
 ```
 
 R20 仍未整体 CLOSED。下一批先完成 legacy dataset action generation 的 liveness/source-order 证明，再处理 proven-dead action shell；`stopJob/deleteJob` 已确认仍被当前训练页调用，属于 live mutation，后续必须以 scoped jobs refresh/local patch 方式迁移，不能直接删除。
+
+## 2.4 R20j — zero-reference legacy dataset actions
+
+R20j 对旧 dataset action generation 做了全局 assignment/reference proof。以下函数在当前 `static/app.js` 中均只有一个 assignment、且调用形式为 0，因此属于 proven-dead action shell，并已物理删除：
+
+```text
+window.uploadImages
+window.autoSplit
+window.buildYolo
+window.checkDatasetQuality
+window.setImageSplit
+```
+
+边界刻意保留：`window.doImportData` 只有一个 owner，但最终 v36 `importData()` 仍真实调用它，因此它不是 dead code。其 v18 XHR 成功路径中的 `await reload()` 留给 R20k 做 scoped refresh。
+
+```text
+product:            e6398f7d8ae665079c82d64217c434af4a73073c
+focused run:        34699354229
+validation:         693a2fa2c3d39378782ac2270a95924eff5ca5ec
+validation run:     34699442423
+Real Chrome:        31/31 PASS
+cleanup:            9c7a3497b9acf69364d83e5cf778ec4139bdbc69
+cleanup run:        34699599796
+cleanup Chrome:     31/31 PASS
+app.js cache:       42.25.86
+```
+
+永久 guard：`tests/frontend/legacy-dataset-action-shell.test.mjs`。一次性 R20j migration helper/workflow 已物理删除。R20 尚未整体 CLOSED；下一批 R20k 先迁 live `doImportData`，之后再处理 `stopJob/deleteJob`。
 
 ## 3. Canonical owners
 
