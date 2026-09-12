@@ -36,6 +36,7 @@ jobs:
           needles = (
               'f8356bcf5ec1ea128fb38db2820df38146b48cfd',
               '> Real Chrome: 33/33 passed',
+              'Frontend Runtime Stabilization：run `34723808299`',
               'One-shot R20l migration artifacts are physically deleted.',
           )
           for path in targets:
