@@ -1,0 +1,83 @@
+name: Migrate Navigation Action Fencing R2
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install focused test dependencies
+        run: |
+          npm ci
+          python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Baseline unit must prove R2 is RED
+        shell: bash
+        run: |
+          set +e
+          node --test tests/frontend/navigation-action-fencing-r2.test.mjs > /tmp/r2-unit.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/r2-unit.log
+          if [ "$code" -eq 0 ]; then
+            echo 'R2 baseline unexpectedly green before migration' >&2
+            exit 1
+          fi
+          grep -q 'must capture NavigationStability action fence' /tmp/r2-unit.log
+
+      - name: Baseline Real Chrome must prove stale mutation UI pollution
+        shell: bash
+        run: |
+          set +e
+          npx playwright test tests/browser/navigation-action-fencing-r2.spec.mjs > /tmp/r2-chrome.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/r2-chrome.log
+          if [ "$code" -eq 0 ]; then
+            echo 'R2 Chrome baseline unexpectedly green before migration' >&2
+            exit 1
+          fi
+          grep -Eq 'stale M4 save|stale model test|stale clean confirm' /tmp/r2-chrome.log
+
+      - name: Apply guarded R2 migration
+        run: python tools/migrate_navigation_action_fencing_r2.py
+
+      - name: Syntax check
+        run: node --check static/app.js
+
+      - name: Focused unit contracts
+        run: node --test tests/frontend/navigation-action-fencing.test.mjs tests/frontend/navigation-action-fencing-r2.test.mjs tests/frontend/navigation-stability.test.mjs tests/frontend/model-config-mutation-owner.test.mjs
+
+      - name: Focused Real Chrome R2 plus R1
+        run: npx playwright test tests/browser/navigation-action-fencing-r2.spec.mjs tests/browser/navigation-action-fencing.spec.mjs
+
+      - name: Verify formal version unchanged
+        run: test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+
+      - name: Commit product migration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/app.js static/index.html
+          git diff --cached --quiet && { echo 'R2 migration produced no product diff' >&2; exit 1; }
+          git commit -m "fix(navigation): fence model and review mutation completions"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
