@@ -254,6 +254,12 @@ test('publishing a pending model as an algorithm version keeps the live publish 
   await expect(page.locator('#algoSel')).toHaveValue('algo-publish-r20b');
   await page.locator('#verName').fill('R20B-PUBLISH');
   await page.locator('#verRemark').fill('发布行为基线');
+  await expect.poll(async () => page.evaluate(() => !state.__extras412)).toBe(true);
+  const requests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/')) requests.push(`${request.method()} ${url.pathname}${url.search}`);
+  });
   await page.locator('#modalBody').getByRole('button', {name: '发布为算法版本'}).click();
 
   await expect(page.locator('#modal')).toHaveClass(/hidden/);
@@ -265,5 +271,28 @@ test('publishing a pending model as an algorithm version keeps the live publish 
     remark: '发布行为基线',
     job_id: 'job-publish-r20b',
   });
+  await expect.poll(async () => page.evaluate(() => state.algorithms.find(x => x.id === 'algo-publish-r20b')?.versions?.[0]?.id || null)).toBe('version-publish-r20b');
+  await expect.poll(async () => page.evaluate(() => state.pending.some(x => x.name === 'publish-r20b.pt'))).toBe(false);
+  const publishRequest = `POST /api/v12/projects/${projectId}/algorithms/algo-publish-r20b/versions`;
+  expect(requests.filter(row => row === publishRequest)).toEqual([publishRequest]);
+  const forbiddenReloadRequests = requests.filter(row => {
+    const path = row.slice(row.indexOf(' ') + 1).split('?')[0];
+    return path === '/api/projects'
+      || path === `/api/projects/${projectId}`
+      || path.startsWith(`/api/projects/${projectId}/datasets`)
+      || path.startsWith(`/api/projects/${projectId}/images`)
+      || path.startsWith(`/api/projects/${projectId}/jobs`)
+      || path.startsWith(`/api/projects/${projectId}/models`)
+      || path.startsWith(`/api/v12/projects/${projectId}/labels`)
+      || path.startsWith(`/api/v12/projects/${projectId}/algorithms`) && path !== `/api/v12/projects/${projectId}/algorithms/algo-publish-r20b/versions`
+      || path.startsWith(`/api/v12/projects/${projectId}/publish/pending`)
+      || path.startsWith(`/api/v12/projects/${projectId}/test_models`)
+      || path === '/api/training_options'
+      || path === '/api/v16/inference_envs'
+      || path === '/api/system/recommendation'
+      || path === '/api/local_models'
+      || path.includes('/bootstrap/snapshot');
+  });
+  expect(forbiddenReloadRequests).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
