@@ -33,7 +33,7 @@ jobs:
             grep -Fq '34670319479' "$f"
             grep -Fq 'R18' "$f"
           done
-          grep -Fq 'bounded 100ms startup cleanup timer' docs/CODEX_CURRENT_STATE.md
+          grep -Fq 'bounded 100ms renderTop/cleanup startup timer' docs/CODEX_CURRENT_STATE.md
           test "$(cat VERSION.txt)" = "42.24.0"
           git diff --exit-code -- VERSION.txt
       - name: Commit R18 ledgers
