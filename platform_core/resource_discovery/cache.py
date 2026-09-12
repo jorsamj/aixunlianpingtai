@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from filelock import FileLock
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache_meta (
@@ -61,6 +63,9 @@ ON model_files(name COLLATE NOCASE, normalized_path);
 CREATE INDEX IF NOT EXISTS ix_model_files_scan
 ON model_files(scan_id);
 """
+
+_SCHEMA_VERSION = 1
+_INIT_LOCK_TIMEOUT = 30
 
 _KIND_ALIASES = {
     "environment": "environment",
@@ -252,18 +257,12 @@ class DiscoveryCache:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
-            database.executemany(
-                "INSERT OR IGNORE INTO cache_meta(cache_kind) VALUES (?)",
-                (("environment",), ("models",)),
-            )
+        self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         try:
             database.row_factory = sqlite3.Row
-            database.execute("PRAGMA journal_mode=WAL")
             database.execute("PRAGMA foreign_keys=ON")
             database.execute("PRAGMA busy_timeout=30000")
             return database
@@ -271,16 +270,44 @@ class DiscoveryCache:
             database.close()
             raise
 
+    def _initialize(self) -> None:
+        # journal_mode is persistent database state. Reasserting WAL on every
+        # connection can participate in startup lock races, so schema/WAL setup
+        # has one cross-process owner and is version-gated.
+        lock = FileLock(f"{self.path}.init.lock", timeout=_INIT_LOCK_TIMEOUT)
+        with lock:
+            with closing(self._connect()) as database:
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"resource discovery cache schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                if version == _SCHEMA_VERSION:
+                    return
+                mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(database.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(f"resource discovery cache requires WAL mode, got {mode}")
+                database.executescript(_SCHEMA)
+                database.executemany(
+                    "INSERT OR IGNORE INTO cache_meta(cache_kind) VALUES (?)",
+                    (("environment",), ("models",)),
+                )
+                database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 yield database
-                database.execute("COMMIT")
             except BaseException:
-                database.execute("ROLLBACK")
+                if database.in_transaction:
+                    database.rollback()
                 raise
+            else:
+                database.commit()
 
     def journal_mode(self) -> str:
         with closing(self._connect()) as database:

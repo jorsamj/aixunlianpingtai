@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -46,11 +47,12 @@ class _ModelManifest:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._pending: list[dict[str, Any]] = []
-        with self._connect() as database:
-            database.execute(
-                "CREATE TABLE IF NOT EXISTS models "
-                "(path_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL)"
-            )
+        with closing(self._connect()) as database:
+            with database:
+                database.execute(
+                    "CREATE TABLE IF NOT EXISTS models "
+                    "(path_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL)"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=30)
@@ -58,8 +60,9 @@ class _ModelManifest:
         return database
 
     def reset(self) -> None:
-        with self._connect() as database:
-            database.execute("DELETE FROM models")
+        with closing(self._connect()) as database:
+            with database:
+                database.execute("DELETE FROM models")
 
     def add(self, row: Mapping[str, Any]) -> None:
         self._pending.append(dict(row))
@@ -71,31 +74,32 @@ class _ModelManifest:
             return
         rows = self._pending
         self._pending = []
-        with self._connect() as database:
-            database.executemany(
-                "INSERT OR REPLACE INTO models(path_key,payload_json) VALUES (?,?)",
-                (
+        with closing(self._connect()) as database:
+            with database:
+                database.executemany(
+                    "INSERT OR REPLACE INTO models(path_key,payload_json) VALUES (?,?)",
                     (
-                        _path_key(str(row.get("path") or "")),
-                        json.dumps(row, ensure_ascii=False, sort_keys=True),
-                    )
-                    for row in rows
-                ),
-            )
+                        (
+                            _path_key(str(row.get("path") or "")),
+                            json.dumps(row, ensure_ascii=False, sort_keys=True),
+                        )
+                        for row in rows
+                    ),
+                )
 
     def count(self) -> int:
         self.flush()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return int(database.execute("SELECT COUNT(*) FROM models").fetchone()[0])
 
     def rows(self) -> Iterable[dict[str, Any]]:
         self.flush()
-        with self._connect() as database:
-            cursor = database.execute(
+        with closing(self._connect()) as database:
+            with closing(database.execute(
                 "SELECT payload_json FROM models ORDER BY path_key"
-            )
-            for row in cursor:
-                yield dict(json.loads(row[0]))
+            )) as cursor:
+                for row in cursor:
+                    yield dict(json.loads(row[0]))
 
 
 class ResourceDiscoveryHandler:
