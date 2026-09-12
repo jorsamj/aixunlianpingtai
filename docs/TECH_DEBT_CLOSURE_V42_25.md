@@ -3,8 +3,8 @@
 > **状态：ACTIVE / 技术债优先阶段**  
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`58ece59e95722437069c7e03277363197e564136`**  
-> **Frontend Runtime Stabilization：run `34659775870`，frontend + Real Chrome 全绿。**  
+> **最近完整代码验收点：`6be679b6b23f566d14434e2032b8af8015341ae4`**  
+> **Frontend Runtime Stabilization：run `34660269685`，frontend + Real Chrome 全绿。**  
 > **更新日期：2026-09-12**
 
 ## 0. 接手入口
@@ -60,6 +60,7 @@ v42.7 render-level state.page 自动标注 → 自动标注及清洗 mutation
 oldRender429
 previousRender61
 render423Base
+renderBase428 的 shadowed 算法列表 branch
 ```
 
 ## 2. 技术债状态
@@ -76,6 +77,7 @@ render423Base
 | navigation alias/readiness/sidebar/apply/persistence | `NavigationStability` + `ui-state.js` | **CLOSED** |
 | historical persisted `自动标注` alias | restore-boundary canonicalization | **CLOSED** |
 | fully shadowed render generations (`oldRender429`, `previousRender61`, `render423Base`) | later bounded render owners | **CLOSED** |
+| shadowed `renderBase428` 算法列表 branch | `oldRender412` sole algorithm-list route owner | **CLOSED** |
 | remaining historical render overrides | bounded semantic owners | **IN PROGRESS** |
 | `app.js` dead code | bounded shell + named runtimes | **IN PROGRESS** |
 | global reload / duplicate request | scoped refresh | **OPEN** |
@@ -132,7 +134,7 @@ window.setPage = NavigationStability.stableSetPage
 
 ```text
 oldRender412   → 算法列表 / 数据集稳定路由 owner
-renderBase428  → 训练任务路由 owner（算法分支已被 oldRender412 遮蔽，但训练分支仍活跃）
+renderBase428  → 仅保留训练任务路由 owner
 renderTraining423 → 当前训练页 renderer，并直接调用 PollRegistry.replaceTrainingJobTimer()
 finalRender    → 素材存储配置最终路由 owner
 ```
@@ -141,16 +143,17 @@ finalRender    → 素材存储配置最终路由 owner
 
 ```text
 v42.7 render alias state mutation
-oldRender429    （算法/数据分支被 oldRender412 完全遮蔽）
-previousRender61（素材存储配置被 finalRender 完全遮蔽）
-render423Base   （算法被 oldRender412、训练被 renderBase428 完全遮蔽）
+oldRender429
+previousRender61
+render423Base
+renderBase428 中被 oldRender412 完全遮蔽的 算法列表 branch
 ```
 
 ## 4. Current cache/build facts
 
 ```text
-app.js cache                     42.25.61
-main.mjs cache                   42.25.64
+app.js cache                     42.25.62
+main.mjs cache                   42.25.65
 navigation-stability.js          422511
 ui-state.js                      422500
 poll-registry.js                 422511
@@ -181,8 +184,10 @@ tests/frontend/render-owner-retirement.test.mjs
 - `static/app.js` 不得出现任何 classic `window.setPage=` owner；
 - render 不得重新承担 `自动标注` route canonicalization；
 - `oldRender429` / `previousRender61` / `render423Base` 不得回归；
-- `oldRender412`、`renderBase428`、`finalRender` 当前仍是 live owner，不得在无 liveness proof 时删除；
-- `renderTraining423()` 必须保持 direct PollRegistry training-job ownership。
+- `renderBase428` 不得重新出现其 shadowed 算法列表 branch，只允许保留训练任务 branch；
+- `oldRender412` 仍是唯一 outer 算法列表 route owner；
+- `renderTraining423()` 必须保持 direct PollRegistry training-job ownership；
+- `finalRender` 当前仍是 live storage owner，不得无证明删除。
 
 Browser：
 
@@ -191,7 +196,7 @@ tests/browser/navigation-stability.spec.mjs
 tests/browser/navigation-readiness.spec.mjs
 ```
 
-Real Chrome 当前锁定 14 个以上核心场景，包括 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、新旧 localStorage 冷启动 canonicalization，以及 `素材存储配置` 最终 render owner 页面。
+Real Chrome 当前锁定 stale request fencing、managed polling、sidebar、页面持久化、legacy alias、新旧 localStorage 冷启动 canonicalization、素材存储配置最终 owner，以及算法列表/训练任务/素材分页性能路径。
 
 ## 6. Recent render acceptance history
 
@@ -208,7 +213,6 @@ alias restore-boundary fix + render mutation retirement:
   frontend PASS / Real Chrome PASS
 
 oldRender429 retirement:
-  bot    5b8a20b54ab21918b5336bb7d2f534bd11fb22f1
   final  0455eeef696f19457b0f1a2b79e229a7e381b3db
   run    34659041402
   frontend PASS / Real Chrome PASS
@@ -219,23 +223,28 @@ storage final-owner browser baseline:
   frontend PASS / Real Chrome PASS
 
 previousRender61 retirement:
-  bot    78543cedd0d154d4337d52c504dd7af4ca44f591
   final  69732d9ed659a62a3a1e92b36d07b912e141b8c9
   run    34659543452
   frontend PASS / Real Chrome PASS
 
 render423Base retirement:
-  bot    ca5c757f13649d487e0f9ffd4f8c1fb69654b948
   final  58ece59e95722437069c7e03277363197e564136
   run    34659775870
   frontend PASS / Real Chrome PASS
+
+renderBase428 shadowed algorithm branch retirement:
+  product da238c7aa3bdc29cb3cc9cd4657dd6e4945f1afc
+  validation 60b14108c4477b44912bfc37e945580f627f50c9
+  cleaned HEAD 6be679b6b23f566d14434e2032b8af8015341ae4
+  run    34660269685
+  frontend PASS / Real Chrome PASS
 ```
 
-所有对应一次性 migration helper/workflow 均在验收后物理删除；永久 tests 保留。
+对应一次性 migration helper/workflow 已在验收后物理删除；永久 tests 保留。
 
 ## 7. 下一批：remaining render owner audit
 
-不要按版本号批量删除。下一阶段只做 capture/liveness 证明，重点审计：
+本轮到此停止，不继续开启下一刀。后续恢复时仍按 capture/liveness 证明推进，重点审计：
 
 ```text
 baseRenderV37       页面增强 requestAnimationFrame owner
@@ -254,7 +263,7 @@ cleanup MutationObserver / post-render cleanup wrapper
 执行规则：
 1. 先证明 exact source order、capture/reference 和 page coverage；
 2. 对 live 语义先补 unit/Chrome；
-3. 只删除 fully shadowed generation；
+3. 只删除 fully shadowed generation/branch；
 4. 语义迁移必须先 double-owner equivalence；
 5. 每刀 full frontend + Real Chrome；
 6. 不允许通过放宽测试换取删除成功。
