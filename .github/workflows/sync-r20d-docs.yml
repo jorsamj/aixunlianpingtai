@@ -1,0 +1,38 @@
+name: Sync R20d Ledgers
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/sync_r20d_docs.py
+      - .github/workflows/sync-r20d-docs.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Sync R20d ledgers
+        run: python tools/sync_r20d_docs.py
+      - name: Verify formal version unchanged
+        run: |
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --exit-code -- VERSION.txt
+      - name: Commit synchronized ledgers
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md
+          git diff --cached --quiet && { echo 'No ledger changes'; exit 1; }
+          git commit -m 'docs(ui): close R20d scoped reload batch'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
