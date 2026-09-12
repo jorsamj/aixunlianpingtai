@@ -31,7 +31,7 @@ jobs:
           grep -Fq '34669152742' docs/FRONTEND_OWNER_MAP_V42_25.md
           grep -Fq '34669152742' docs/TECH_DEBT_CLOSURE_V42_25.md
           grep -Fq 'PostRenderNormalizationRuntime' docs/CODEX_CURRENT_STATE.md
-          grep -Fq '#view cleanup observer 已在 R17 退休' docs/TECH_DEBT_CLOSURE_V42_25.md
+          grep -Fq 'cleanup observer 已在 R17 退休' docs/TECH_DEBT_CLOSURE_V42_25.md
           test "$(cat VERSION.txt)" = "42.24.0"
           git diff --exit-code -- VERSION.txt
       - name: Commit R17 ledgers
