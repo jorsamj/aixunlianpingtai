@@ -1,0 +1,44 @@
+name: Sync R17 Docs
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/sync_r17_docs.py
+      - .github/workflows/sync-r17-docs.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Synchronize R17 handoff ledgers
+        run: python tools/sync_r17_docs.py
+      - name: Validate docs and formal version
+        run: |
+          grep -Fq '34669152742' docs/CODEX_CURRENT_STATE.md
+          grep -Fq '34669152742' docs/frontend-legacy-audit.md
+          grep -Fq '34669152742' docs/FRONTEND_OWNER_MAP_V42_25.md
+          grep -Fq '34669152742' docs/TECH_DEBT_CLOSURE_V42_25.md
+          grep -Fq 'PostRenderNormalizationRuntime' docs/CODEX_CURRENT_STATE.md
+          grep -Fq '#view cleanup observer 已在 R17 退休' docs/TECH_DEBT_CLOSURE_V42_25.md
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --exit-code -- VERSION.txt
+      - name: Commit R17 ledgers
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md docs/TECH_DEBT_CLOSURE_V42_25.md
+          git diff --cached --quiet && { echo 'No docs changes'; exit 1; }
+          git commit -m 'docs(ui): close R17 page normalization debt'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
