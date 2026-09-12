@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
+// R20j permanent contract: these old dataset actions have no callers and must not return.
 const app = fs.readFileSync('static/app.js', 'utf8');
 const index = fs.readFileSync('static/index.html', 'utf8');
 
