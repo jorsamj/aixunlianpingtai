@@ -1817,8 +1817,10 @@ window.installUsability417=function(){
     if(!force){
       try{
         const cached=JSON.parse(localStorage.getItem(cacheKey)||'null');
-        if(cached){
-          state.deployResources=cached.resources||[];state.deploySources=cached.sources||[];state.deployJobs=cached.jobs||[];state.deployArtifacts=cached.artifacts||[];state.deployLoaded=true;return;
+        if(cached&&Date.now()-Number(cached.ts||0)<ttl){
+          state.deployResources=cached.resources||[];state.deploySources=cached.sources||[];state.deployJobs=cached.jobs||[];state.deployArtifacts=cached.artifacts||[];state.deployLoaded=true;
+          await refreshDeployArtifactsV39();
+          return;
         }
       }catch(e){}
     }
@@ -1828,10 +1830,21 @@ window.installUsability417=function(){
       safe(api(`/api/v39/projects/${pid()}/deploy/jobs`)),
       safe(api(`/api/v39/projects/${pid()}/deploy/artifacts`)),
     ]);
-    state.deployResources=rr?.items||[];state.deploySources=ss?.items||[];state.deployJobs=jj?.items||[];state.deployArtifacts=aa?.items||[];state.deployLoaded=true;
+    state.deployResources=rr?.items||[];state.deploySources=ss?.items||[];state.deployJobs=jj?.items||[];state.deployArtifacts=aa?.items||[];state.deployLoaded=true;state.deployArtifactsRefreshedAt=Date.now();
     try{localStorage.setItem(cacheKey,JSON.stringify({ts:Date.now(),resources:state.deployResources,sources:state.deploySources,jobs:state.deployJobs,artifacts:state.deployArtifacts}))}catch(e){}
   }
   window.loadDeployData=loadDeployData;
+
+  async function refreshDeployArtifactsV39(){
+    if(!pid())return false;
+    const aa=await safe(api(`/api/v39/projects/${pid()}/deploy/artifacts`));
+    if(!aa)return false;
+    state.deployArtifacts=aa.items||[];
+    state.deployArtifactsRefreshedAt=Date.now();
+    const cacheKey=`cl_algo_deploy_cache_${pid()}`;
+    try{localStorage.setItem(cacheKey,JSON.stringify({ts:Date.now(),resources:state.deployResources||[],sources:state.deploySources||[],jobs:state.deployJobs||[],artifacts:state.deployArtifacts||[]}))}catch(e){}
+    return true;
+  }
 
   function deployResourceCard(r){
     const targetHtml=(r.targets||[]).map(x=>`<span class="chip-tag">${esc(targetName(x))}</span>`).join('')||'<span class="muted-line">暂无可用转换能力</span>';
@@ -1879,7 +1892,22 @@ window.installUsability417=function(){
   }
   function jobRow(j){const params=j.params||{};const chip=params.chip||params.soc_version||'';const isRun=['queued','running'].includes(j.status);return `<div class="deploy-job"><div class="deploy-job-main"><div class="deploy-job-icon">${TARGETS[j.target]?.icon||'→'}</div><div class="grow"><div class="item-title">${esc(j.source_name||'模型')} → ${esc(targetName(j.target))}${chip?' / '+esc(chip):''}</div><div class="item-sub">${esc(j.resource?.name||'-')} · ${esc(j.stage||'')}</div></div>${statusPill(j.status)}</div><div class="deploy-progress"><div class="progress-bar"><i style="width:${Math.max(0,Math.min(100,j.progress||0))}%"></i></div><span>${Math.round(j.progress||0)}%</span></div>${j.error?`<div class="alert err">${esc(j.error)}</div>`:''}<div class="row end"><button class="btn mini" onclick="openDeployLog('${j.id}')">日志</button>${isRun?`<button class="btn mini danger" onclick="stopDeployJob('${j.id}')">停止</button>`:''}${j.status==='done'?`<a class="btn mini primary" href="/api/v39/projects/${pid()}/deploy/jobs/${j.id}/package">下载部署包</a>`:''}${!isRun?`<button class="btn mini danger" onclick="deleteDeployJob('${j.id}')">删除</button>`:''}</div></div>`}
   function renderDeployJobsOnly(){const box=document.getElementById('deployJobList');if(!box)return;box.innerHTML=(state.deployJobs||[]).map(jobRow).join('')||'<div class="empty">暂无转换任务</div>'}
-  async function pollDeployJobs(){if(state.page!=='部署转换')return;const r=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs`));if(r){state.deployJobs=r.items||[];renderDeployJobsOnly()}if((state.deployJobs||[]).some(j=>['queued','running'].includes(j.status))){clearTimeout(window.__deployPollV39);window.__deployPollV39=setTimeout(pollDeployJobs,1800)}}
+  async function pollDeployJobs(){
+    if(state.page!=='部署转换')return;
+    const previous=new Map((state.deployJobs||[]).map(j=>[String(j.id),String(j.status||'')]));
+    const r=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs`));
+    if(r){
+      const next=r.items||[];
+      const artifactChanged=next.some(j=>{
+        const current=String(j.status||''),before=previous.get(String(j.id))||'';
+        return ['done','blocked_by_hardware'].includes(current)&&!['done','blocked_by_hardware'].includes(before);
+      });
+      state.deployJobs=next;
+      if(artifactChanged)await refreshDeployArtifactsV39();
+      renderDeployJobsOnly();
+    }
+    if((state.deployJobs||[]).some(j=>['queued','running'].includes(j.status))){clearTimeout(window.__deployPollV39);window.__deployPollV39=setTimeout(pollDeployJobs,1800)}
+  }
   window.renderDeployCenter=function(){
     if(!state.deployLoaded){document.getElementById('view').innerHTML='<div class="loading">正在读取模型与部署资源...</div>';loadDeployData().then(renderDeployCenter);return}
     document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">创建部署转换</div><div class="subline">训练模型和部署模型分离；任务会调用真实厂商工具链</div></div><button class="btn small" onclick="setPage('部署资源')">配置部署资源</button></div><div class="panel-body" id="deployCreateBox"></div></section><section class="panel"><div class="panel-head"><div class="panel-title">转换任务</div><button class="btn small" onclick="loadDeployData(true).then(()=>{renderDeployJobsOnly()})">刷新</button></div><div class="panel-body"><div id="deployJobList" class="deploy-job-list"></div></div></section>`;
@@ -1893,7 +1921,11 @@ window.installUsability417=function(){
   window.refreshDeployLog=async id=>{const txt=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs/${id}/log`))||'';const p=document.getElementById('deployLogText');if(p){p.textContent=txt;p.scrollTop=p.scrollHeight}};
 
   window.renderDeployArtifacts=function(){
-    if(!state.deployLoaded){document.getElementById('view').innerHTML='<div class="loading">正在读取部署产物...</div>';loadDeployData().then(renderDeployArtifacts);return}
+    if(!state.deployLoaded){document.getElementById('view').innerHTML='<div class="loading">正在读取部署产物...</div>';loadDeployData(true).then(renderDeployArtifacts);return}
+    if(!state.deployArtifactsRefreshing&&Date.now()-Number(state.deployArtifactsRefreshedAt||0)>1000){
+      state.deployArtifactsRefreshing=true;
+      refreshDeployArtifactsV39().finally(()=>{state.deployArtifactsRefreshing=false;if(state.page==='部署产物')window.renderDeployArtifacts()});
+    }
     const rows=(state.deployArtifacts||[]).map(a=>`<tr><td>${targetBadge(a.target)} <b>${esc(a.name)}</b><div class="muted-line">${esc(a.source_name||'')}</div></td><td>${esc(targetName(a.target))}</td><td>${esc(a.params?.chip||a.params?.soc_version||'-')}</td><td>${esc((a.params?.precision||'-').toUpperCase())}</td><td>${a.size_mb||0} MB</td><td>${esc(a.created_at||'')}</td><td><a class="btn mini primary" href="${esc(a.download_url)}">下载</a><button class="btn mini" onclick="openDeployLog('${a.job_id}')">日志</button></td></tr>`).join('')||'<tr><td colspan="7">暂无部署产物</td></tr>';
     document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署产物</div><div class="subline">每个文件都来自真实转换任务，可追溯源模型、芯片和参数</div></div><button class="btn primary small" onclick="setPage('部署转换')">创建转换</button></div><div class="panel-body"><table class="table"><thead><tr><th>产物</th><th>目标</th><th>芯片</th><th>精度</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
   };
