@@ -62,7 +62,7 @@ def migrate_existing_contract() -> None:
     text = replace_once(
         text,
         "    assert resumed.progress == 0\n",
-        "    assert resumed.progress == 50\n",
+        "    assert resumed.progress == 75\n",
         label="legacy confirmation progress contract",
     )
     REPOSITORY_TEST.write_text(text, encoding="utf-8")
