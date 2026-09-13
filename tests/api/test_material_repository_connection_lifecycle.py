@@ -1,5 +1,6 @@
 import gc
 import sqlite3
+import traceback
 
 import pytest
 
@@ -27,6 +28,7 @@ def test_material_repository_explicitly_closes_connections_without_gc(tmp_path, 
     def tracked_connect(*args, **kwargs):
         kwargs['factory'] = _TrackedConnection
         connection = real_connect(*args, **kwargs)
+        connection._test_origin = ''.join(traceback.format_stack(limit=10))
         opened.append(connection)
         return connection
 
@@ -48,7 +50,12 @@ def test_material_repository_explicitly_closes_connections_without_gc(tmp_path, 
 
     assert opened, 'test must observe real MaterialRepository SQLite connections'
     leaked = [connection for connection in opened if not _connection_is_closed(connection)]
-    assert leaked == [], f'{len(leaked)} MaterialRepository SQLite connections were left open'
+    leaked_origins = '\n--- leaked connection ---\n'.join(
+        getattr(connection, '_test_origin', '<unknown>') for connection in leaked
+    )
+    assert leaked == [], (
+        f'{len(leaked)} MaterialRepository SQLite connections were left open\n{leaked_origins}'
+    )
 
 
 def test_material_repository_repeated_reads_do_not_depend_on_gc_for_fd_recovery(tmp_path):
