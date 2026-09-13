@@ -5,6 +5,8 @@ admission is supported. Resource samples and reservations live in tasks.sqlite3.
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import csv
 import io
 import os
@@ -168,7 +170,7 @@ def update_reservation_evidence(repository, lease, metrics):
     eligible = bool(known and diagnostic.get("cpu_bottleneck") is False and
                     diagnostic.get("io_bottleneck") is False and
                     diagnostic.get("code") not in {"memory_pressure", "memory_pressure_oom"})
-    with repository._connect() as database:
+    with closing(repository._connect()) as database:
         database.execute("BEGIN IMMEDIATE")
         row = database.execute("SELECT * FROM gpu_reservations WHERE task_id=? AND lease_token=? AND worker_id=?",
                                (lease.task.task_id, lease.lease_token, lease.worker_id)).fetchone()
@@ -202,7 +204,7 @@ class GPUResourceManager:
             if time.monotonic() - self._last_refresh < 2:
                 return
             rows = self.sampler(self.python_executable)
-            with self.repository._connect() as database:
+            with closing(self.repository._connect()) as database:
                 database.execute("BEGIN IMMEDIATE")
                 database.execute("UPDATE gpu_inventory SET healthy=0")
                 for row in rows:
@@ -299,7 +301,7 @@ class GPUResourceManager:
         if requested == "cpu":
             return {"requested_device": "cpu", "assigned_device": "cpu", "lease_token": lease.lease_token,
                     "worker_id": lease.worker_id}
-        with self.repository._connect() as database:
+        with closing(self.repository._connect()) as database:
             row = database.execute("SELECT * FROM gpu_reservations WHERE task_id=? AND lease_token=?",
                                    (lease.task.task_id, lease.lease_token)).fetchone()
         if row is None:
@@ -309,7 +311,7 @@ class GPUResourceManager:
     def summary(self):
         now = datetime.now(timezone.utc).isoformat()
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.config.sample_max_age_seconds)).isoformat()
-        with self.repository._connect() as database:
+        with closing(self.repository._connect()) as database:
             rows = database.execute("SELECT g.*, COUNT(r.task_id) AS active_tasks, "
                                     "COALESCE(SUM(r.reserved_bytes),0) AS reserved_bytes FROM gpu_inventory g "
                                     "LEFT JOIN gpu_reservations r ON r.gpu_uuid=g.uuid AND r.expires_at>? "
