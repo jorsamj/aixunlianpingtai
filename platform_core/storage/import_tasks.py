@@ -600,6 +600,8 @@ class StorageImportHandler:
         )
         if not isinstance(confirmation, dict) or confirmation.get("accepted") is not True:
             raise ValueError("material import confirmation is missing")
+        if context.cancel_requested():
+            return TaskStatus.CANCELLED, None
         store = ImportCandidateStore(
             context.artifacts.artifact_path(context.task.task_id, MANIFEST_REF)
         )
@@ -622,7 +624,11 @@ class StorageImportHandler:
             ):
                 store.confirm(row["object_key"] for row in store.iter_status("IMPORTABLE"))
 
+        if context.cancel_requested():
+            return TaskStatus.CANCELLED, None
         store.assign_image_ids(context.task.task_id, batch_size=BATCH_SIZE)
+        if context.cancel_requested():
+            return TaskStatus.CANCELLED, None
         materials = MaterialRepository(
             self.data_dir / "projects" / context.task.project_id
         )
@@ -647,9 +653,13 @@ class StorageImportHandler:
             by_reference = materials.get_by_storage_references(
                 (row["storage_source_id"], row["object_key"]) for row in batch
             )
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             existing_hashes = materials.find_existing_content_hashes(
                 row["content_sha256"] for row in batch
             )
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             resolved: list[dict[str, Any]] = []
             duplicate_rows: list[dict[str, Any]] = []
             accepted_hashes: set[str] = set()
@@ -666,10 +676,14 @@ class StorageImportHandler:
                     continue
                 accepted_hashes.add(content_hash)
                 resolved.append(row)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             store.bind_index_batch(resolved)
             by_id = {r['id']: r for r in materials.get_many(row['image_id'] for row in resolved)}
             imported_annotations = store.annotations_for_keys(row['object_key'] for row in resolved)
             skipped = store.skipped_boxes_for_keys(row['object_key'] for row in resolved)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             records, annotation_rows = [], []
             for row in resolved:
                 current = by_id.get(row['image_id'])
@@ -707,9 +721,17 @@ class StorageImportHandler:
                 records.append(record)
             # Material identity is durable before annotation writes. Replaying the
             # same deterministic boxes preserves annotation version/content digest.
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             materials.upsert_many(records)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             annotations.upsert_many(annotation_rows)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             store.record_annotation_outcomes(resolved)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             store.mark_indexed(batch)
             index_duplicates += len(duplicate_rows)
             for row in resolved:
