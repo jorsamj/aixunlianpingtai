@@ -1,10 +1,12 @@
 import gc
 import sqlite3
 import traceback
+from pathlib import Path
 
 import pytest
 
 from platform_core import material_repository as material_repository_module
+from platform_core import material_repository_batch as material_repository_batch_module
 from platform_core.material_repository import MaterialRepository
 
 
@@ -18,6 +20,22 @@ def _connection_is_closed(connection: sqlite3.Connection) -> bool:
     except sqlite3.ProgrammingError as error:
         return 'closed' in str(error).lower()
     return False
+
+
+def _record(image_id: str) -> dict:
+    return {
+        'id': image_id,
+        'filename': f'{image_id}.jpg',
+        'object_key': f'uploads/{image_id}.jpg',
+        'storage_source_id': 'default_local',
+    }
+
+
+def test_material_repository_sources_require_explicit_connection_owners():
+    forbidden = 'with self._connect() as database:'
+    for module in (material_repository_module, material_repository_batch_module):
+        source = Path(module.__file__).read_text(encoding='utf-8')
+        assert forbidden not in source, f'{Path(module.__file__).name} still relies on sqlite transaction context for close()'
 
 
 def test_material_repository_explicitly_closes_connections_without_gc(tmp_path, monkeypatch):
@@ -37,16 +55,18 @@ def test_material_repository_explicitly_closes_connections_without_gc(tmp_path, 
     repository.current_revision()
     repository.summary()
     repository.count_filtered({})
-    repository.upsert({
-        'id': 'image-1',
-        'filename': 'image-1.jpg',
-        'object_key': 'uploads/image-1.jpg',
-        'storage_source_id': 'default_local',
-    })
+    repository.upsert(_record('image-1'))
+    repository.upsert_many([_record('image-2')])
     repository.get('image-1')
     repository.patch({'image-1': {'processing_status': 'ready'}})
-    repository.get_many(['image-1'])
+    repository.patch_many(['image-1'], {'processing_status': 'reviewed'})
+    repository.add_labels_many(['image-1'], ['object'])
+    repository.remove_labels_many(['image-1'], ['object'])
+    repository.get_many(['image-1', 'image-2'])
     repository.read()
+    repository.mutate(lambda rows: len(rows))
+    repository.remove_many(['image-2'])
+    repository.remove(['image-1'])
 
     assert opened, 'test must observe real MaterialRepository SQLite connections'
     leaked = [connection for connection in opened if not _connection_is_closed(connection)]

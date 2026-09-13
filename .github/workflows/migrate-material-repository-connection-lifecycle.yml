@@ -36,14 +36,18 @@ jobs:
           set -e
           cat /tmp/material-fd-red.log
           test "$rc" = "1"
-          grep -Eq "FAILED|left open|FD/handle growth" /tmp/material-fd-red.log
+          grep -Eq "FAILED|left open|FD/handle growth|transaction context" /tmp/material-fd-red.log
 
       - name: Apply precise connection lifecycle migration
         run: python tools/migrate_material_repository_connection_lifecycle.py
 
       - name: Syntax and diff hygiene
         run: |
-          python -m py_compile platform_core/material_repository.py tools/migrate_material_repository_connection_lifecycle.py tests/api/test_material_repository_connection_lifecycle.py
+          python -m py_compile \
+            platform_core/material_repository.py \
+            platform_core/material_repository_batch.py \
+            tools/migrate_material_repository_connection_lifecycle.py \
+            tests/api/test_material_repository_connection_lifecycle.py
           git diff --check
 
       - name: Focused MaterialRepository lifecycle contracts
@@ -75,7 +79,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add platform_core/material_repository.py
+          git add platform_core/material_repository.py platform_core/material_repository_batch.py
           git diff --cached --check
           git commit -m "fix(material): close SQLite connections deterministically"
           git push origin HEAD:refactor/frontend-runtime-stabilization
