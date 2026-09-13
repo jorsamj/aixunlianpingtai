@@ -16,6 +16,7 @@ on:
       - tests/api/test_annotation_flow.py
       - tests/api/test_v19_import_scalability.py
       - tests/api/test_zip_processing_p1.py
+      - tests/api/test_zip_processing_p2a_annotation_connections.py
 
 jobs:
   annotation-material-contracts:
@@ -42,6 +43,7 @@ jobs:
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
           tests/api/test_material_batching.py
           tests/api/test_material_selection_atomicity.py
+          tests/api/test_zip_processing_p2a_annotation_connections.py
       - name: Annotation and ZIP import regressions
         run: >-
           python -m pytest -q
