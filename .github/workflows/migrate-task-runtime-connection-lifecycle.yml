@@ -1,0 +1,74 @@
+name: Migrate Task Runtime Connection Lifecycle
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/migrate-task-runtime-connection-lifecycle.yml
+      - tools/migrate_task_runtime_connection_lifecycle.py
+      - tests/unit/task_runtime/test_connection_lifecycle.py
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Baseline task-runtime connection lifecycle contract must be RED
+        run: |
+          set +e
+          python -m pytest -q tests/unit/task_runtime/test_connection_lifecycle.py > /tmp/task-runtime-fd-red.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/task-runtime-fd-red.log
+          test "$rc" = "1"
+          grep -Eq "FAILED|left open|FD/handle growth|plain_connection_contexts" /tmp/task-runtime-fd-red.log
+      - name: Apply precise task-runtime connection lifecycle migration
+        run: python tools/migrate_task_runtime_connection_lifecycle.py
+      - name: Syntax and diff hygiene
+        run: |
+          python -m py_compile platform_core/task_runtime/repository.py platform_core/task_runtime/fenced_repository.py tools/migrate_task_runtime_connection_lifecycle.py tests/unit/task_runtime/test_connection_lifecycle.py
+          git diff --check
+      - name: Focused task-runtime lifecycle contracts
+        run: python -m pytest -q tests/unit/task_runtime/test_connection_lifecycle.py
+      - name: Task runtime and API regressions
+        run: >-
+          python -m pytest -q
+          tests/unit/task_runtime/test_repository.py
+          tests/unit/task_runtime/test_progress_monotonicity.py
+          tests/unit/task_runtime/test_fenced_progress_monotonicity.py
+          tests/unit/task_runtime/test_scheduler.py
+          tests/unit/task_runtime/test_process_control.py
+          tests/unit/task_runtime/test_fencing.py
+          tests/unit/task_runtime/test_resource_fencing.py
+          tests/unit/task_runtime/test_gpu_recovery_fencing.py
+          tests/unit/task_runtime/test_artifact_fencing.py
+          tests/api/test_unified_task_runtime.py
+          tests/api/test_training_unified_task_overlay.py
+          tests/api/test_annotation_unified_task_truth.py
+          tests/api/test_conversion_unified_task_truth.py
+      - name: Verify release boundary
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit validated product change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add platform_core/task_runtime/repository.py platform_core/task_runtime/fenced_repository.py
+          git diff --cached --check
+          git commit -m "fix(tasks): close task runtime SQLite connections"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
