@@ -58,12 +58,25 @@ class AnnotationBatch:
                     image["path"] = str(self.manager.materialize(image).path)
                     with Image.open(image["path"]) as decoded:
                         image["width"], image["height"] = decoded.size
+                    # Materialization/decoding can be slow. Re-prove ownership and
+                    # cancellation immediately before starting a potentially billable
+                    # provider request.
+                    check_active(context, "AI_ANNOTATION", image_id)
                     generated = annotate_one(self.runtime, image)
+                    # The user may cancel, or this Worker may lose its lease, while the
+                    # provider call is in flight. Never publish that late result into
+                    # candidate truth after cancellation/fencing became durable.
+                    check_active(context, "AI_ANNOTATION", image_id)
                     item.update(generated)
                     item.update({"status": "success" if generated.get("boxes") else "empty",
                                  "width": image["width"], "height": image["height"]})
                     self.store.append_items([item])
                     manifest.transition([image_id], "succeeded")
+                except (PermissionError, InterruptedError):
+                    # Cancellation / lease loss is task control flow, not an inference
+                    # failure. Do not persist a failed candidate for work we no longer
+                    # own or the user explicitly stopped.
+                    raise
                 except Exception as error:
                     reason = self.public_error(error)
                     item.update({"status": "failed", "boxes": [], "error": reason})
