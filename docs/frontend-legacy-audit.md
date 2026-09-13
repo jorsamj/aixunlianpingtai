@@ -943,3 +943,16 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Durable/UI truth: normal training remains 20..90; AI continuation advances 90..95 with cumulative Epoch/Batch truth instead of resetting to 1/N; continuation YOLO instances rebind epoch, batch, resource and device callbacks; 95..100 remains reserved for artifact verification/final evaluation.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, or A800 RC was performed.
 
+### 2026-09-13 — Deployment queued resource-position truth CLOSED
+
+- RED contract commit: `11b39b96ee28107e222bf9204ffd5f986e72e9fc`.
+- RED→GREEN workflow: `34758458780` — legacy RED proven, focused deployment GREEN, syntax/diff checks PASS, formal version boundary PASS.
+- Product commit: `46cc645ac6d47e0b02a3440c2a3000062b19ba05`; precise product diff is one `static/app.js` queue-meta condition replacement only.
+- One-shot migration assets removed by `f1e6dad93adee5a8ead763294c5d4aa6b27d147f`.
+- Permanentized clean HEAD: `caaeae70098fce7a90a5cd2fbfce481b6f84c332`; Release trigger boundary now includes `static/app.js` and the permanent conversion queue-truth frontend contract.
+- Release Regression `34758615703`: runtime-contracts PASS and training-data-contracts PASS.
+- Navigation Action Fencing `34758615733`: PASS including Real Chrome stale-mutation contract.
+- Frontend Runtime Stabilization `34758615696`: frontend unit tests PASS, including `conversion-unified-task-truth.test.mjs`, and full Real Chrome runtime regressions PASS.
+- Queue semantics remain server-owned and resource-scoped. Both `queued` and `waiting_resource` deployment conversion rows now display the live durable `resource_queue_position`; `resource_wait_reason` remains shown only for `waiting_resource`. Existing 1.8s full polling and backend ordering/claim semantics were not changed.
+- `VERSION.txt` remains exactly `42.24.0`; migration helper/workflow are physically absent; no main merge, tag, release, or A800 RC was performed.
+
