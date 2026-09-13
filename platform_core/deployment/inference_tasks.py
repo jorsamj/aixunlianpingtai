@@ -7,7 +7,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from platform_core.task_runtime import TaskKind, TaskStatus
+from platform_core.task_runtime import (
+    ExecutionFencedError,
+    ProcessController,
+    TaskKind,
+    TaskStatus,
+    launch_process,
+)
 from platform_core.task_runtime.scheduler import HardwareUnavailableError
 from platform_core.resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 
@@ -63,22 +69,38 @@ def run_deployment_test(context) -> tuple[TaskStatus, str]:
     log_path = context.artifacts.artifact_path(context.task.task_id, log_ref)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [python_path, str(runner), "--model", model_argument, "--input", str(image), "--output", str(output), "--conf", str(float(request.get("conf") or 0.25))]
-    context.repository.heartbeat(context.task.task_id, context.lease.lease_token, progress=5, stage="LOADING_RUNTIME", current_item=image.name)
+    context.heartbeat(progress=5, stage="LOADING_RUNTIME", current_item=image.name)
     started = time.perf_counter()
+    controller = ProcessController()
     with log_path.open("w", encoding="utf-8", errors="ignore") as log:
-        process = subprocess.Popen(command, cwd=str(runner.parent), stdout=log, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore")
-        while process.poll() is None:
-            if context.cancel_requested():
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                raise InterruptedError("deployment test cancelled")
-            time.sleep(0.2)
+        launched = launch_process(
+            command,
+            cwd=runner.parent,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        try:
+            context.bind_process(launched.identity)
+            while launched.process.poll() is None:
+                if context.cancel_requested():
+                    controller.terminate_tree(launched.identity)
+                    raise InterruptedError("deployment test cancelled")
+                time.sleep(0.2)
+        except ExecutionFencedError:
+            controller.terminate_tree(launched.identity)
+            raise
+        except Exception:
+            if context.lease_lost:
+                controller.terminate_tree(launched.identity)
+            raise
+
+    context.assert_current_execution()
     text = log_path.read_text(encoding="utf-8", errors="ignore")
-    if process.returncode != 0:
-        message = text[-2000:] or f"推理进程退出码 {process.returncode}"
+    if launched.process.returncode != 0:
+        message = text[-2000:] or f"推理进程退出码 {launched.process.returncode}"
         if suffix in {".engine"}:
             raise HardwareUnavailableError(message)
         raise RuntimeError(message)
@@ -99,8 +121,9 @@ def run_deployment_test(context) -> tuple[TaskStatus, str]:
         "output_size_bytes": output.stat().st_size,
     }
     result_ref = "result.json"
+    context.assert_current_execution()
     context.artifacts.atomic_write_json(context.task.task_id, result_ref, result)
-    context.repository.heartbeat(context.task.task_id, context.lease.lease_token, progress=100, stage="RUNTIME_VERIFIED", current_item=image.name)
+    context.heartbeat(progress=100, stage="RUNTIME_VERIFIED", current_item=image.name)
     return TaskStatus.SUCCEEDED, result_ref
 
 
