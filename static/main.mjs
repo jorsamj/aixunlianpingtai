@@ -17,7 +17,7 @@ import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainin
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422501';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
-import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
+import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422001';
 import {applyCleanConfirmation} from './modules/cleaning.js?v=421800';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
@@ -32,7 +32,7 @@ import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntim
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422401';
 import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422400';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422400';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();

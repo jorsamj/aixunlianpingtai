@@ -13312,6 +13312,8 @@ def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelCon
 
 def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) -> Dict[str, Any]:
     progress_summary = summary or {}
+    repository = shared_task_repository()
+    truth = task_to_public(task, repository)
     request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
     checkpoint = shared_task_artifacts().read_json(task.task_id, "checkpoints/worker.json", default={})
     is_batch = task.kind is TaskKind.MATERIAL_BATCH and request.get("operation") == "AI_ANNOTATE"
@@ -13336,11 +13338,19 @@ def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) 
         "id": task.task_id,
         "project_id": task.project_id,
         "kind": task.kind.value,
-        "status": task.status.value,
-        "priority": task.priority,
-        "progress": task.progress,
-        "stage": task.stage,
-        "current_item": task.current_item,
+        "status": truth["status"],
+        "persisted_status": truth["persisted_status"],
+        "priority": truth["priority"],
+        "queue_rank": truth["queue_rank"],
+        "resource_queue_position": truth["resource_queue_position"],
+        "resource_wait_reason": truth["resource_wait_reason"],
+        "worker_id": truth["worker_id"],
+        "lease_expires_at": truth["lease_expires_at"],
+        "progress": truth["progress_percent"],
+        "progress_percent": truth["progress_percent"],
+        "stage": truth["phase"],
+        "phase": truth["phase"],
+        "current_item": truth["current_item"],
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "finished_at": task.finished_at,

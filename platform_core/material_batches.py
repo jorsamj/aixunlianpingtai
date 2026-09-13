@@ -22,7 +22,7 @@ from .storage.errors import redact_storage_error
 from .storage.import_tasks import _provider
 from .storage.manager import StorageManager
 from .storage.source_repository import StorageSource, StorageSourceRepository
-from .task_runtime import TaskKind, TaskRecord, TaskStatus
+from .task_runtime import TaskKind, TaskRecord, TaskStatus, task_to_public
 from .task_runtime.models import utc_now
 from .task_runtime.task_logs import append_task_log
 
@@ -464,17 +464,30 @@ class MaterialBatchHandler:
         return self.run(context)
 
 
-def public_batch(task, artifacts):
+def public_batch(task, artifacts, repository=None):
     checkpoint = artifacts.read_json(task.task_id, CHECKPOINT_REF, default={})
     request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    truth = task_to_public(task, repository) if repository is not None else None
     frozen = bool(checkpoint.get("selection_frozen"))
     error_examples = checkpoint.get("error_examples", [])[:10]
     if task.error and not error_examples:
         error_examples = [{"error": redact_storage_error(task.error)}]
     available = artifacts.artifact_path(task.task_id, task.log_ref).is_file()
     return {"id": task.task_id, "task_id": task.task_id, "project_id": task.project_id,
-            "kind": task.kind.value, "operation": request.get("operation"), "status": task.status.value,
-            "stage": task.stage, "total": checkpoint.get("total") if frozen else None,
+            "kind": task.kind.value, "operation": request.get("operation"),
+            "status": truth["status"] if truth else task.status.value,
+            "persisted_status": truth["persisted_status"] if truth else task.status.value,
+            "priority": truth["priority"] if truth else task.priority,
+            "queue_rank": truth["queue_rank"] if truth else task.queue_rank,
+            "resource_queue_position": truth["resource_queue_position"] if truth else None,
+            "resource_wait_reason": truth["resource_wait_reason"] if truth else task.resource_wait_reason,
+            "worker_id": truth["worker_id"] if truth else task.worker_id,
+            "lease_expires_at": truth["lease_expires_at"] if truth else task.lease_expires_at,
+            "progress_percent": truth["progress_percent"] if truth else task.progress,
+            "stage": truth["phase"] if truth else task.stage,
+            "phase": truth["phase"] if truth else task.stage,
+            "current_item": truth["current_item"] if truth else task.current_item,
+            "total": checkpoint.get("total") if frozen else None,
             "processed": checkpoint.get("processed", 0), "succeeded": checkpoint.get("succeeded", 0),
             "failed": checkpoint.get("failed", 0), "current_image_id": checkpoint.get("current_image_id"),
             "flagged": checkpoint.get("flagged", 0),
@@ -519,16 +532,16 @@ def material_batch_router(get_project, material_store, task_repository, task_art
     def create(project_id: str, payload: dict = Body(...)):
         get_project(project_id)
         task = invoke(create_batch, project_id, material_store(project_id), task_repository(), task_artifacts(), payload)
-        return public_batch(task, task_artifacts())
+        return public_batch(task, task_artifacts(), task_repository())
 
     @router.get("/{task_id}")
     def get(project_id: str, task_id: str):
-        return public_batch(require_task(project_id, task_id), task_artifacts())
+        return public_batch(require_task(project_id, task_id), task_artifacts(), task_repository())
 
     @router.post("/{task_id}/cancel")
     def cancel(project_id: str, task_id: str):
         require_task(project_id, task_id)
-        return public_batch(task_repository().request_cancel(task_id), task_artifacts())
+        return public_batch(task_repository().request_cancel(task_id), task_artifacts(), task_repository())
 
     @router.get("/{task_id}/results")
     def results(project_id: str, task_id: str, cursor: str = "", limit: int = 100):
@@ -560,7 +573,7 @@ def material_batch_router(get_project, material_store, task_repository, task_art
         if task.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.CANCELLED,
                                TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE}:
             raise HTTPException(409, detail="only incomplete terminal batches can be retried")
-        return public_batch(task_repository().retry(task_id), task_artifacts())
+        return public_batch(task_repository().retry(task_id), task_artifacts(), task_repository())
 
     @router.get("/{task_id}/log")
     def log(project_id: str, task_id: str):
