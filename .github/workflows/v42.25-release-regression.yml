@@ -10,6 +10,7 @@ on:
       - a800_rc_acceptance.py
       - app.py
       - static/app.js
+      - static/modules/auto-label-poll-runtime.js
       - train_worker.py
       - platform_core/annotation_batches.py
       - platform_core/annotation_candidates.py
@@ -29,6 +30,7 @@ on:
       - tests/api/test_training_unified_task_overlay.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
+      - tests/frontend/auto-label-poll-runtime.test.mjs
       - tests/frontend/conversion-unified-task-truth.test.mjs
       - tests/frontend/image-upload-overall-progress.test.mjs
       - tests/frontend/zip-import-overall-progress.test.mjs
@@ -72,6 +74,7 @@ on:
 # ZIP whole-task progress guard: upload owns 0..35, validation reaches 38, backend processing is projected monotonically through 38..99, and only terminal success reaches 100.
 # Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
 # AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
+# AI-annotation queue-display guard: polling rows must preserve durable resource_queue_position/resource_wait_reason instead of erasing runtimeText.
 # Storage-scan guard: cancellation during a remote object read must stop follow-up I/O and terminal scan publication.
 # Storage-index guard: once cancellation is durable truth, indexing must not start later material/annotation writes.
 # Storage-progress guard: confirmation is partial progress, resume never regresses, and indexing advances 50..99 before success=100.
