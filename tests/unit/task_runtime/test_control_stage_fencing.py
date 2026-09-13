@@ -1,3 +1,5 @@
+import pytest
+
 from platform_core.task_runtime import FencedTaskRepository, TaskKind, TaskRecord, TaskRepository
 
 
@@ -105,3 +107,23 @@ def test_fenced_worker_heartbeat_cannot_override_control_plane_stage(tmp_path):
     assert stale_after_cancel.status.value == "CANCEL_REQUESTED"
     assert stale_after_cancel.stage == "cancelling"
     assert stale_after_cancel.progress == 63
+
+
+def test_explicit_stage_change_cannot_resume_cancel_requested_task(tmp_path):
+    for repository_type, filename in (
+        (TaskRepository, "base-cancel-stage.sqlite3"),
+        (FencedTaskRepository, "fenced-cancel-stage.sqlite3"),
+    ):
+        repository = repository_type(tmp_path / filename)
+        lease = _claim(repository, f"cancel-stage-{repository_type.__name__}")
+        cancelling = repository.request_cancel(lease.task.task_id)
+        assert cancelling.status.value == "CANCEL_REQUESTED"
+        assert cancelling.stage == "cancelling"
+
+        with pytest.raises(ValueError):
+            repository.set_stage(lease.task.task_id, "training")
+
+        current = repository.get(lease.task.task_id)
+        assert current is not None
+        assert current.status.value == "CANCEL_REQUESTED"
+        assert current.stage == "cancelling"
