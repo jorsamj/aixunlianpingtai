@@ -13,9 +13,11 @@ on:
       - platform_core/task_runtime/repository.py
       - platform_core/task_runtime/fenced_repository.py
       - platform_core/task_runtime/process_control.py
+      - platform_core/task_runtime/public.py
       - platform_core/task_runtime/worker_instances.py
       - platform_core/training_metrics.py
       - tests/api/test_unified_task_process_cancel.py
+      - tests/api/test_unified_task_paused_public_status.py
       - tests/unit/test_gpu_resource_connection_lifecycle.py
       - tests/unit/task_runtime/test_connection_lifecycle.py
       - tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
@@ -23,6 +25,7 @@ on:
       - tests/unit/task_runtime/test_fenced_progress_monotonicity.py
       - tests/unit/task_runtime/test_control_stage_fencing.py
       - tests/unit/task_runtime/test_process_control.py
+      - tests/unit/task_runtime/test_public_projection.py
       - tests/unit/test_a800_rc_acceptance.py
       - tests/unit/test_training_metrics_fd.py
 
@@ -44,6 +47,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_unified_task_process_cancel.py
+          tests/api/test_unified_task_paused_public_status.py
           tests/unit/test_gpu_resource_connection_lifecycle.py
           tests/unit/task_runtime/test_repository.py
           tests/unit/task_runtime/test_connection_lifecycle.py
@@ -53,6 +57,7 @@ jobs:
           tests/unit/task_runtime/test_control_stage_fencing.py
           tests/unit/task_runtime/test_scheduler.py
           tests/unit/task_runtime/test_process_control.py
+          tests/unit/task_runtime/test_public_projection.py
           tests/unit/task_runtime/test_fencing.py
           tests/unit/task_runtime/test_resource_fencing.py
           tests/unit/task_runtime/test_gpu_recovery_fencing.py
