@@ -1,0 +1,45 @@
+name: Connect Storage Import Unified Progress
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/connect_storage_import_to_unified_task_progress.py
+      - .github/workflows/connect-storage-import-unified-progress.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Apply storage import progress integration
+        run: python tools/connect_storage_import_to_unified_task_progress.py
+      - name: Syntax
+        run: |
+          node --check static/modules/task-poller.js
+          node --check static/modules/storage-import-progress.js
+          node --check static/main.mjs
+      - name: Focused frontend contracts
+        run: node --test tests/frontend/task-poller.test.mjs tests/frontend/storage-import-progress.test.mjs
+      - name: Verify release boundary
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          grep -q '/static/main.mjs?v=42.25.90' static/index.html
+          git diff --check
+      - name: Commit validated UI integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/modules/task-poller.js static/modules/storage-import-progress.js static/main.mjs static/index.html tests/frontend/task-poller.test.mjs tests/frontend/storage-import-progress.test.mjs
+          git diff --cached --check
+          git commit -m "feat(tasks): show unified storage import progress"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
