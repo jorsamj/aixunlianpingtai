@@ -1,0 +1,45 @@
+name: Temporary Cleaning Execution Truth Migration
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-migrate-clean-execution-truth.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Apply exact migration
+        run: python scripts/_tmp_migrate_clean_execution_truth.py
+      - name: Syntax guard
+        run: python -m py_compile app.py platform_core/material_batches.py
+      - name: Focused durable cleaning contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_clean_unified_execution_truth.py
+          tests/unit/test_material_batch_public_truth.py
+      - name: Existing upload-batch regression
+        run: python -m pytest -q tests/api/test_upload_batch_decisions.py
+      - name: Commit product migration and self-clean
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/_tmp_migrate_clean_execution_truth.py .github/workflows/_tmp-migrate-clean-execution-truth.yml .github/workflows/_tmp-clean-unified-truth-red.yml || true
+          git add app.py platform_core/material_batches.py .github/workflows/v42.25-release-regression.yml tests/api/test_clean_unified_execution_truth.py
+          git commit -m "fix(cleaning): unify execution on durable material batches"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
