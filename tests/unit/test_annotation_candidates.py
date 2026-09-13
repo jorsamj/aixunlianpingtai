@@ -39,19 +39,22 @@ def test_candidate_pages_default_to_unreviewed_and_keep_explicit_false(tmp_path:
         CandidateDecision(image_id="b", accepted=False),
     ])
     assert [item["accepted"] for item in store.read_page(cursor=None, limit=2).items] == [False, False]
+    # Failed provider generations have no candidate decision for a human to make,
+    # so they must not inflate the public pending-review count.
     assert store.summary() == {
         "total": 3, "success": 1, "empty": 1, "failed": 1,
-        "accepted": 0, "rejected": 2, "unreviewed": 1, "boxes": 1,
+        "accepted": 0, "rejected": 2, "unreviewed": 0, "boxes": 1,
     }
 
 
 def test_candidate_artifact_rejects_path_traversal(tmp_path: Path):
-    store = CandidateStore(ArtifactStore(tmp_path), task_id="../outside", page_size=2)
+    # ArtifactStore now rejects an unsafe task id before CandidateStore can even
+    # create a database path; keep the guard at the earliest security boundary.
     with pytest.raises(ValueError, match="task id"):
-        store.initialize(labels=["fire"], total_images=0)
+        CandidateStore(ArtifactStore(tmp_path), task_id="../outside", page_size=2)
 
 
-def test_all_rejected_is_not_interpreted_as_all_selected(tmp_path):
+def test_all_rejected_is_not_interpreted_as_all_selected(tmp_path: Path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="reject-all", page_size=50)
     store.initialize(labels=["fire"], total_images=2)
     store.append_items([
@@ -64,7 +67,7 @@ def test_all_rejected_is_not_interpreted_as_all_selected(tmp_path):
     assert store.summary()["unreviewed"] == 0
 
 
-def test_review_can_replace_candidate_boxes_before_acceptance(tmp_path):
+def test_review_can_replace_candidate_boxes_before_acceptance(tmp_path: Path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="edit-candidate", page_size=50)
     store.initialize(labels=["fire", "smoke"], total_images=1)
     store.append_items([{"image_id": "one", "status": "success", "boxes": [{"label": "fire"}]}])
