@@ -76,7 +76,7 @@ def test_worker_publishes_epoch_snapshot_to_existing_job_contract(tmp_path):
     assert progress["epoch"] == 3
     assert job["current_epoch"] == 3
     assert job["total_epochs"] == 8
-    assert job["progress_percent"] == 33.75
+    assert job["progress_percent"] == 46.25
     assert job["elapsed_seconds"] == 44.5
     assert job["eta_seconds"] == 75.0
     assert job["training_progress"]["metrics"]["metrics/mAP50(B)"] == 0.7

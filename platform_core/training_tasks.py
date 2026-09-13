@@ -664,7 +664,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     update_reservation_evidence(context.repository, context.lease, metrics)
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
-                current = str(job.get("current_epoch") or "") or None
+                current = str(job.get("current_item") or job.get("current_epoch") or "") or None
                 context.repository.heartbeat(
                     context.task.task_id,
                     context.lease.lease_token,
