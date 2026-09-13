@@ -60,6 +60,20 @@ function priorityValue(job) {
   return legacy[raw] ?? Math.max(1, Math.min(999, 101 - (Number.isFinite(raw) ? raw : 50)));
 }
 
+function queueRuntimeMeta(job) {
+  const parts = [];
+  const position = Number(job?.resource_queue_position || 0);
+  if (position > 0 && ['queued', 'waiting'].includes(String(job?.status || ''))) parts.push(`队列第 ${position} 位`);
+  const reason = String(job?.resource_wait_reason || '').trim();
+  if (reason && job?.status === 'waiting') parts.push(reason);
+  return parts.join(' · ');
+}
+
+function workerRuntimeMeta(job) {
+  const worker = String(job?.task_worker_id || '').trim();
+  return worker ? `执行节点 ${worker}` : '';
+}
+
 function actions(job) {
   const id = esc(job.id);
   if (job.status === 'queued') return `<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
@@ -71,7 +85,9 @@ function actions(job) {
 export function trainingTaskRow(job) {
   const percent = Math.max(0, Math.min(100, Number(job?.progress_percent || 0)));
   const totalEpochs = job?.total_epochs || job?.epochs || '-';
-  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(job.status)}">${esc(statusText(job.status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small></td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span></div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${job.current_epoch || 0}/${esc(totalEpochs)} · ${percent.toFixed(0)}%</span></td><td>${esc(duration(job.elapsed_seconds))}</td><td>${esc(duration(job.eta_seconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
+  const queueMeta = queueRuntimeMeta(job);
+  const workerMeta = workerRuntimeMeta(job);
+  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(job.status)}">${esc(statusText(job.status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${job.current_epoch || 0}/${esc(totalEpochs)} · ${percent.toFixed(0)}%${job.current_item ? ` · ${esc(job.current_item)}` : ''}</span></td><td>${esc(duration(job.elapsed_seconds))}</td><td>${esc(duration(job.eta_seconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
 }
 
 export function visibleTrainingJobs(jobs, tab = 'active') {

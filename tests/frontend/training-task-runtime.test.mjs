@@ -247,3 +247,27 @@ test('deleting an active task stops it, deletes it, then refreshes only jobs', a
   runtime.destroy();
   cleanup();
 });
+
+
+test('training row exposes real queue wait position reason and worker without a second request', () => {
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  // trainingTaskRow is pure and does not require runtime installation.
+  cleanup();
+  return import('../../static/modules/training-task-runtime.js').then(({trainingTaskRow}) => {
+    const html = trainingTaskRow({
+      id: 'wait-1', status: 'waiting', queue_priority: 1, priority_scheme: 'lower_number_first',
+      resource_queue_position: 2, resource_wait_reason: 'GPU_MEMORY_BUSY',
+      task_worker_id: 'a800-worker-01', progress_percent: 18, current_item: '准备训练环境',
+      framework: 'ultralytics', total_epochs: 30,
+    });
+    assert.match(html, /等待中/);
+    assert.match(html, /优先级 1/);
+    assert.match(html, /队列第 2 位/);
+    assert.match(html, /GPU_MEMORY_BUSY/);
+    assert.match(html, /执行节点 a800-worker-01/);
+    assert.match(html, /18% · 准备训练环境/);
+    if (previousWindow !== undefined) globalThis.window = previousWindow;
+    if (previousDocument !== undefined) globalThis.document = previousDocument;
+  });
+});

@@ -774,13 +774,22 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             TaskStatus.BLOCKED_BY_ENVIRONMENT: "failed",
             TaskStatus.BLOCKED_BY_HARDWARE: "failed",
         }.get(durable.status, str(job.get("status") or "queued"))
+        public_runtime = task_to_public(durable, shared_task_repository())
+        if public_runtime["status"] == "WAITING_RESOURCE":
+            mapped = "waiting"
         job.update(
             status=mapped,
             progress_percent=float(durable.progress),
             task_stage=durable.stage,
-            task_status=durable.status.value,
+            task_status=public_runtime["status"],
             current_item=durable.current_item,
             result_ref=durable.result_ref or job.get("result_ref"),
+            queue_priority=int(durable.priority),
+            priority_scheme="lower_number_first",
+            resource_queue_position=public_runtime["resource_queue_position"],
+            resource_wait_reason=public_runtime["resource_wait_reason"],
+            task_worker_id=public_runtime["worker_id"],
+            task_lease_expires_at=public_runtime["lease_expires_at"],
         )
         if durable.error:
             job["error"] = durable.error
