@@ -105,23 +105,26 @@ class AnnotationRepository:
     def _default_negative_scope(self) -> list[str]:
         return _active_project_labels(self.project_path) or ["*"]
 
+    def _decode_persisted_row(self, row):
+        result = dict(row)
+        result['boxes'] = json.loads(result.pop('boxes_json'))
+        result['annotation_scope'] = _normalize_scope(
+            json.loads(result.pop('scope_json', '[]') or '[]')
+        )
+        if result['annotation_state'] == 'annotated' and not result['annotation_scope']:
+            result['annotation_scope'] = _normalize_scope(
+                box.get('label') or box.get('code') for box in result['boxes']
+            )
+        if result['annotation_state'] == 'confirmed_empty' and not result['annotation_scope']:
+            result['annotation_scope'] = self._default_negative_scope()
+        return result
+
     def get(self, image_id):
         image_id = self._id(image_id)
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
         if row:
-            result = dict(row)
-            result['boxes'] = json.loads(result.pop('boxes_json'))
-            result['annotation_scope'] = _normalize_scope(
-                json.loads(result.pop('scope_json', '[]') or '[]')
-            )
-            if result['annotation_state'] == 'annotated' and not result['annotation_scope']:
-                result['annotation_scope'] = _normalize_scope(
-                    box.get('label') or box.get('code') for box in result['boxes']
-                )
-            if result['annotation_state'] == 'confirmed_empty' and not result['annotation_scope']:
-                result['annotation_scope'] = self._default_negative_scope()
-            return result
+            return self._decode_persisted_row(row)
         path = self.project_path / 'annotations' / f'{image_id}.json'
         legacy = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
         boxes = legacy.get('boxes') or []
@@ -151,8 +154,11 @@ class AnnotationRepository:
         counts.update({row['annotation_state']: int(row['total']) for row in rows})
         return {**counts, 'total': sum(counts.values())}
 
-    def upsert_many(self, rows, *, project_material: bool = True):
+    def upsert_many(
+        self, rows, *, project_material: bool = True, return_rows: bool = False,
+    ):
         written = []
+        persisted_rows = []
         projections = {}
         with closing(self._connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
@@ -220,6 +226,13 @@ class AnnotationRepository:
                         now,
                     ),
                 )
+                if return_rows:
+                    persisted = db.execute(
+                        "SELECT * FROM annotations WHERE image_id=?", (image_id,)
+                    ).fetchone()
+                    if persisted is None:
+                        raise RuntimeError("annotation upsert did not persist a row")
+                    persisted_rows.append(self._decode_persisted_row(persisted))
                 projections[image_id] = {
                     'annotation_state': state,
                     'annotation_scope': scope,
@@ -241,19 +254,21 @@ class AnnotationRepository:
             # Repository remains the ground-truth authority.
             from .material_repository import MaterialRepository
             MaterialRepository(self.project_path).patch(projections)
-        return written
+        return persisted_rows if return_rows else written
 
     def upsert(
         self, image_id, boxes, annotation_state=None, annotation_scope=None,
         *, project_material: bool = True,
     ):
-        self.upsert_many([{
+        persisted = self.upsert_many([{
             'image_id': image_id,
             'boxes': boxes,
             'annotation_state': annotation_state,
             'annotation_scope': annotation_scope,
-        }], project_material=project_material)
-        return self.get(image_id)
+        }], project_material=project_material, return_rows=True)
+        if not persisted:
+            raise RuntimeError("annotation upsert did not return a persisted row")
+        return persisted[0]
 
     def exists(self, image_id) -> bool:
         image_id = self._id(image_id)

@@ -1670,7 +1670,23 @@ def _v50_begin_image_batch(project_id: str):
         "project_id": project_id,
         "records": {},
         "patches": {},
+        # Lazily reused for all annotation writes in this import batch. The
+        # repository is stateless between calls; each write still owns its
+        # SQLite transaction, preserving current durability semantics.
+        "annotation_repository": None,
     }
+
+
+def _v50_annotation_repository(project_id: str) -> AnnotationRepository:
+    batch = _v50_active_image_batch(project_id)
+    if batch is not None:
+        repository = batch.get("annotation_repository")
+        if repository is None:
+            repository = AnnotationRepository(project_dir(project_id))
+            batch["annotation_repository"] = repository
+        return repository
+    return AnnotationRepository(project_dir(project_id))
+
 
 def _v50_queue_image_patch(project_id: str, image_id: str, patch: Dict[str, Any]) -> bool:
     batch = _v50_active_image_batch(project_id)
@@ -1800,7 +1816,7 @@ def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]
     # App-level writes own the material projection so annotation truth and searchable
     # material metadata are projected exactly once. Direct repository callers keep
     # the legacy/default projection behavior via project_material=True.
-    saved = AnnotationRepository(project_dir(project_id)).upsert(
+    saved = _v50_annotation_repository(project_id).upsert(
         image_id, boxes, annotation_state, project_material=False
     )
     updated = saved['updated_at']
@@ -1820,7 +1836,7 @@ def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]]
 
 
 def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
-    return AnnotationRepository(project_dir(project_id)).get(image_id)
+    return _v50_annotation_repository(project_id).get(image_id)
 
 
 def add_image_record(
@@ -1892,7 +1908,7 @@ def add_image_record(
                 write_annotation(project_id, img_id, [], 'unannotated')
     except Exception:
         annotation_path.unlink(missing_ok=True)
-        AnnotationRepository(p).remove([img_id])
+        _v50_annotation_repository(project_id).remove([img_id])
         try:
             storage_manager(project_id).delete_source_file(record)
         except Exception:
