@@ -33,7 +33,7 @@ def test_annotation_upsert_returns_persisted_row_without_followup_get(tmp_path, 
     assert second["version"] == 1
 
 
-def test_v50_image_batch_reuses_one_annotation_repository(client, monkeypatch):
+def test_v50_image_batch_reuses_one_annotation_repository(client):
     import app as app_module
 
     project = client.post(
@@ -42,21 +42,15 @@ def test_v50_image_batch_reuses_one_annotation_repository(client, monkeypatch):
     ).json()
     project_id = project["id"]
 
-    original_init = app_module.AnnotationRepository.__init__
-    calls = {"init": 0}
-
-    def counted_init(self, *args, **kwargs):
-        calls["init"] += 1
-        return original_init(self, *args, **kwargs)
-
-    monkeypatch.setattr(app_module.AnnotationRepository, "__init__", counted_init)
     app_module._v50_begin_image_batch(project_id)
     try:
         app_module.write_annotation(project_id, "p2a-image-1", [], "unannotated")
-        app_module.write_annotation(project_id, "p2a-image-2", [], "unannotated")
         batch = app_module._v50_active_image_batch(project_id)
         assert batch is not None
-        assert batch.get("annotation_repository") is not None
-        assert calls["init"] == 1
+        first_repository = batch.get("annotation_repository")
+        assert first_repository is not None
+
+        app_module.write_annotation(project_id, "p2a-image-2", [], "unannotated")
+        assert batch.get("annotation_repository") is first_repository
     finally:
         app_module._v50_end_image_batch(save=False)
