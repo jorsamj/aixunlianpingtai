@@ -17,11 +17,14 @@ on:
       - platform_core/task_runtime/public.py
       - platform_core/task_runtime/worker_instances.py
       - platform_core/training_metrics.py
+      - platform_core/video_tasks.py
       - tests/api/test_durable_training_controls.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
+      - tests/integration/test_video_task_worker.py
       - tests/unit/test_deployment_inference_process_fencing.py
       - tests/unit/test_gpu_resource_connection_lifecycle.py
+      - tests/unit/test_video_commit_fencing.py
       - tests/unit/task_runtime/test_connection_lifecycle.py
       - tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
       - tests/unit/task_runtime/test_progress_monotonicity.py
@@ -35,6 +38,7 @@ on:
 # Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
 # Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
 # Deployment-test guard: inference runners must bind exact process identity and terminate the tree on execution fencing.
+# Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
 jobs:
   runtime-contracts:
     runs-on: ubuntu-24.04
@@ -55,8 +59,10 @@ jobs:
           tests/api/test_durable_training_controls.py
           tests/api/test_unified_task_process_cancel.py
           tests/api/test_unified_task_paused_public_status.py
+          tests/integration/test_video_task_worker.py
           tests/unit/test_deployment_inference_process_fencing.py
           tests/unit/test_gpu_resource_connection_lifecycle.py
+          tests/unit/test_video_commit_fencing.py
           tests/unit/task_runtime/test_repository.py
           tests/unit/task_runtime/test_connection_lifecycle.py
           tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
