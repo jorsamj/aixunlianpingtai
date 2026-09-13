@@ -16,6 +16,7 @@ on:
       - platform_core/task_runtime/public.py
       - platform_core/task_runtime/worker_instances.py
       - platform_core/training_metrics.py
+      - tests/api/test_durable_training_controls.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
       - tests/unit/test_gpu_resource_connection_lifecycle.py
@@ -30,6 +31,7 @@ on:
       - tests/unit/test_training_metrics_fd.py
 
 # Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
+# Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
 jobs:
   runtime-contracts:
     runs-on: ubuntu-24.04
@@ -47,6 +49,7 @@ jobs:
       - name: Runtime, resource and conversion contracts
         run: >-
           python -m pytest -q
+          tests/api/test_durable_training_controls.py
           tests/api/test_unified_task_process_cancel.py
           tests/api/test_unified_task_paused_public_status.py
           tests/unit/test_gpu_resource_connection_lifecycle.py
