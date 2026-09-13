@@ -9,6 +9,9 @@ on:
       - .github/workflows/v42.25-release-regression.yml
       - a800_rc_acceptance.py
       - app.py
+      - platform_core/annotation_batches.py
+      - platform_core/annotation_candidates.py
+      - platform_core/annotation_task_service.py
       - platform_core/deployment/inference_tasks.py
       - platform_core/gpu_resources.py
       - platform_core/task_runtime/repository.py
@@ -22,8 +25,12 @@ on:
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
       - tests/integration/test_video_task_worker.py
+      - tests/unit/test_annotation_batch_cancel_fencing.py
+      - tests/unit/test_annotation_candidates.py
+      - tests/unit/test_annotation_task_service.py
       - tests/unit/test_deployment_inference_process_fencing.py
       - tests/unit/test_gpu_resource_connection_lifecycle.py
+      - tests/unit/test_material_batch_public_truth.py
       - tests/unit/test_video_commit_fencing.py
       - tests/unit/task_runtime/test_connection_lifecycle.py
       - tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
@@ -39,6 +46,7 @@ on:
 # Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
 # Deployment-test guard: inference runners must bind exact process identity and terminate the tree on execution fencing.
 # Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
+# AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
 jobs:
   runtime-contracts:
     runs-on: ubuntu-24.04
@@ -60,8 +68,12 @@ jobs:
           tests/api/test_unified_task_process_cancel.py
           tests/api/test_unified_task_paused_public_status.py
           tests/integration/test_video_task_worker.py
+          tests/unit/test_annotation_batch_cancel_fencing.py
+          tests/unit/test_annotation_candidates.py
+          tests/unit/test_annotation_task_service.py
           tests/unit/test_deployment_inference_process_fencing.py
           tests/unit/test_gpu_resource_connection_lifecycle.py
+          tests/unit/test_material_batch_public_truth.py
           tests/unit/test_video_commit_fencing.py
           tests/unit/task_runtime/test_repository.py
           tests/unit/task_runtime/test_connection_lifecycle.py
