@@ -1,0 +1,57 @@
+name: Connect Annotation Material Unified Task Truth
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/connect_annotation_material_unified_task_truth.py
+      - .github/workflows/connect-annotation-material-unified-task-truth.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply annotation and material task truth integration
+        run: python tools/connect_annotation_material_unified_task_truth.py
+      - name: Syntax
+        run: |
+          python -m py_compile app.py platform_core/material_batches.py
+          node --check static/modules/annotation-task-view.js
+          node --check static/modules/material-batches.js
+          node --check static/app.js
+          node --check static/main.mjs
+      - name: Focused frontend contracts
+        run: node --test tests/frontend/annotation-task-view.test.mjs tests/frontend/phase2-task-truth.test.mjs
+      - name: Material batch public truth unit contract
+        run: python -m pytest -q tests/unit/test_material_batch_public_truth.py
+      - name: Install focused API dependencies
+        run: python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest httpx
+      - name: Annotation durable truth regression
+        run: python -m pytest -q tests/api/test_annotation_task_runtime.py tests/api/test_annotation_unified_task_truth.py
+      - name: Material batch API regression
+        run: python -m pytest -q tests/api/test_material_batching.py
+      - name: Verify release boundary
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit validated product slice
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py platform_core/material_batches.py static/modules/annotation-task-view.js static/modules/material-batches.js static/app.js static/main.mjs tests/api/test_annotation_unified_task_truth.py tests/unit/test_material_batch_public_truth.py tests/frontend/phase2-task-truth.test.mjs
+          git diff --cached --check
+          git commit -m "feat(tasks): unify annotation and material task truth"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
