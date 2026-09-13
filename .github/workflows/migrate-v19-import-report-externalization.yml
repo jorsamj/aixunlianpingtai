@@ -1,0 +1,77 @@
+name: Migrate v19 Import Report Externalization
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/migrate-v19-import-report-externalization.yml
+      - tools/migrate_v19_import_report_externalization.py
+      - tests/api/test_v19_import_report_externalization.py
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Baseline hot-job report contract must be RED
+        run: |
+          set +e
+          python -m pytest -q tests/api/test_v19_import_report_externalization.py > /tmp/v19-report-red.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/v19-report-red.log
+          test "$rc" = "1"
+          grep -Eq "FAILED|AssertionError|assert" /tmp/v19-report-red.log
+
+      - name: Apply precise report externalization migration
+        run: python tools/migrate_v19_import_report_externalization.py
+
+      - name: Syntax and diff hygiene
+        run: |
+          python -m py_compile app.py tools/migrate_v19_import_report_externalization.py tests/api/test_v19_import_report_externalization.py
+          git diff --check
+
+      - name: Focused report durability and review contract
+        run: python -m pytest -q tests/api/test_v19_import_report_externalization.py
+
+      - name: Import durability and processing regressions
+        run: >-
+          python -m pytest -q
+          tests/api/test_v19_import_failure_rollback.py
+          tests/api/test_v19_job_atomic_persistence.py
+          tests/api/test_v19_import_scalability.py
+          tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
+          tests/api/test_material_batching.py
+          tests/api/test_zip_processing_p1.py
+          tests/api/test_zip_processing_p2a_annotation_connections.py
+          tests/api/test_zip_processing_p2b_single_final_annotation.py
+          tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
+
+      - name: Verify release boundary
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+      - name: Commit validated product change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          git diff --cached --check
+          git commit -m "fix(import): externalize durable v19 import reports"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
