@@ -11,6 +11,7 @@ on:
       - platform_core/task_runtime/repository.py
       - platform_core/task_runtime/fenced_repository.py
       - platform_core/training_metrics.py
+      - tests/unit/task_runtime/test_connection_lifecycle.py
       - tests/unit/task_runtime/test_progress_monotonicity.py
       - tests/unit/task_runtime/test_fenced_progress_monotonicity.py
       - tests/unit/test_a800_rc_acceptance.py
@@ -34,6 +35,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/unit/task_runtime/test_repository.py
+          tests/unit/task_runtime/test_connection_lifecycle.py
           tests/unit/task_runtime/test_progress_monotonicity.py
           tests/unit/task_runtime/test_fenced_progress_monotonicity.py
           tests/unit/task_runtime/test_scheduler.py
