@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
+import {annotationTaskView} from '../../static/modules/annotation-task-view.js';
 import {
   hasActiveAutoLabelTask,
   installAutoLabelPollRuntime,
@@ -46,6 +47,28 @@ test('auto-label task rows render label names and task actions without page mark
   assert.match(html, /详情/);
   assert.match(html, /重试/);
   assert.doesNotMatch(html, /<section/);
+});
+
+test('polling row preserves durable AI annotation resource queue position and wait reason', () => {
+  const html = renderAutoLabelTaskRows([{
+    id: 'queued-2',
+    name: '排队中的AI标注',
+    status: 'WAITING_RESOURCE',
+    resource_queue_position: 2,
+    resource_wait_reason: '等待 vision_provider 资源',
+    requested_labels: ['fire'],
+    created_at: '2026-09-14T00:00:00Z',
+    updated_at: '2026-09-14T00:00:02Z',
+    progress: {completed: 0, total: 20, percent: 0, failed: 0},
+    summary: {total: 20, completed: 0, boxes: 0},
+  }], {
+    state: {labels: [{code: 'fire', display_name: '明火'}]},
+    annotationTaskView,
+  });
+
+  assert.match(html, /等待资源/);
+  assert.match(html, /资源队列第 2 位/);
+  assert.match(html, /等待 vision_provider 资源/);
 });
 
 test('active detection follows annotation task view contract', () => {
