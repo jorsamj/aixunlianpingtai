@@ -1,0 +1,135 @@
+name: Migrate ZIP Processing P2c
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/migrate-zip-processing-p2c.yml
+      - tools/migrate_zip_processing_p2c_structured_single_final_annotation.py
+      - tools/profile_zip_processing_p2c.py
+      - tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Baseline P2c COCO and VOC contracts must be RED
+        run: |
+          set +e
+          python -m pytest -q tests/api/test_zip_processing_p2c_structured_single_final_annotation.py > /tmp/p2c-red.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/p2c-red.log
+          test "$rc" = "1"
+          grep -Eq "assert|AssertionError" /tmp/p2c-red.log
+
+      - name: Baseline 1000-image COCO and VOC profiles
+        run: |
+          python tools/profile_zip_processing_p2c.py --format coco --images 1000 | tee /tmp/p2c-coco-before.log
+          python tools/profile_zip_processing_p2c.py --format voc --images 1000 | tee /tmp/p2c-voc-before.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          for fmt in ('coco', 'voc'):
+              path = Path(f'/tmp/p2c-{fmt}-before.log')
+              line = next(x for x in path.read_text().splitlines() if x.startswith('P2C_PROFILE='))
+              value = json.loads(line.split('=', 1)[1])
+              assert value['format'] == fmt, value
+              assert value['report_imported_images'] == 1000, value
+              assert value['report_boxes'] == 1000, value
+              assert value['metrics']['write_annotation']['count'] == 2000, value
+              assert value['metrics']['annotation_upsert_many']['count'] == 2000, value
+              Path(f'/tmp/p2c-{fmt}-before.json').write_text(json.dumps(value), encoding='utf-8')
+              print(f'P2C_{fmt.upper()}_BEFORE', json.dumps(value, sort_keys=True))
+          PY
+
+      - name: Apply P2c migration
+        run: python tools/migrate_zip_processing_p2c_structured_single_final_annotation.py
+
+      - name: Syntax and diff hygiene
+        run: |
+          python -m py_compile app.py tools/migrate_zip_processing_p2c_structured_single_final_annotation.py tools/profile_zip_processing_p2c.py tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
+          git diff --check
+
+      - name: P2c focused contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
+          tests/api/test_zip_processing_p2b_single_final_annotation.py
+          tests/api/test_zip_processing_p2a_annotation_connections.py
+          tests/api/test_zip_processing_p1.py
+
+      - name: Annotation material and import regressions
+        run: >-
+          python -m pytest -q
+          tests/api/test_annotation_flow.py
+          tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
+          tests/api/test_material_batching.py
+          tests/api/test_material_selection_atomicity.py
+          tests/api/test_v19_import_scalability.py
+
+      - name: Post-change 1000-image COCO and VOC profiles
+        run: |
+          python tools/profile_zip_processing_p2c.py --format coco --images 1000 | tee /tmp/p2c-coco-after.log
+          python tools/profile_zip_processing_p2c.py --format voc --images 1000 | tee /tmp/p2c-voc-after.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          for fmt in ('coco', 'voc'):
+              before = json.loads(Path(f'/tmp/p2c-{fmt}-before.json').read_text())
+              line = next(
+                  x for x in Path(f'/tmp/p2c-{fmt}-after.log').read_text().splitlines()
+                  if x.startswith('P2C_PROFILE=')
+              )
+              after = json.loads(line.split('=', 1)[1])
+              for key in (
+                  'report_imported_images', 'report_boxes', 'material_total',
+                  'material_boxes', 'annotation_total', 'annotation_annotated'
+              ):
+                  assert after[key] == before[key], (fmt, key, before[key], after[key])
+              assert before['metrics']['write_annotation']['count'] == 2000, before
+              assert before['metrics']['annotation_upsert_many']['count'] == 2000, before
+              assert after['metrics']['write_annotation']['count'] == 1000, after
+              assert after['metrics']['annotation_upsert_many']['count'] == 1000, after
+              print(f'P2C_{fmt.upper()}_AFTER', json.dumps(after, sort_keys=True))
+              print(
+                  f'P2C_{fmt.upper()}_TRANSACTION_REDUCTION',
+                  before['metrics']['annotation_upsert_many']['count'] / after['metrics']['annotation_upsert_many']['count'],
+              )
+              print(
+                  f'P2C_{fmt.upper()}_WALL_SPEEDUP',
+                  before['wall_seconds'] / max(0.0001, after['wall_seconds']),
+              )
+          PY
+
+      - name: Verify release boundary
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+      - name: Commit validated P2c product change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          git diff --cached --check
+          git commit -m "perf(import): write final COCO VOC annotations once"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
