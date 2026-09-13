@@ -292,10 +292,12 @@ class VideoFrameHandler:
         source = context.artifacts.artifact_path(context.task.task_id, source_ref)
         frames_dir = context.artifacts.artifact_path(context.task.task_id, "frames")
 
+        def ensure_active() -> None:
+            if context.cancel_requested():
+                raise InterruptedError("video frame task cancelled")
+
         def report_progress(done: int, total: int, current: int) -> None:
-            context.repository.heartbeat(
-                context.task.task_id,
-                context.lease.lease_token,
+            context.heartbeat(
                 progress=round(done / max(1, total) * 90, 2),
                 stage="extracting",
                 current_item=str(current),
@@ -309,6 +311,7 @@ class VideoFrameHandler:
             progress=report_progress,
             cancelled=context.cancel_requested,
         )
+        ensure_active()
         context.save_checkpoint(
             {
                 "stage": "extracted",
@@ -329,7 +332,9 @@ class VideoFrameHandler:
         records = []
         result_materials = []
         created_at = context.task.created_at or datetime.now(timezone.utc).isoformat()
+        total_frames = max(1, extraction.extracted_frames)
         for extracted in extraction.frames:
+            ensure_active()
             image_id = self._material_id(
                 context.task.task_id,
                 extracted.source_frame_index,
@@ -342,11 +347,17 @@ class VideoFrameHandler:
                 Path(extracted.path),
                 content_type="image/jpeg",
             )
+            # Uploads can be slow remote side effects. Re-check ownership and
+            # cancellation immediately after each one before publishing any
+            # annotation/material truth for that object.
+            ensure_active()
             if metadata.sha256 != extracted.sha256:
                 raise OSError("stored frame checksum mismatch")
             annotation_path = annotations / f"{image_id}.json"
             if not annotation_path.exists() and annotation_repository.get(image_id)['version'] == 0:
+                ensure_active()
                 annotation_repository.upsert(image_id, [], 'unannotated')
+                ensure_active()
             records.append(
                 {
                     "id": image_id,
@@ -383,6 +394,13 @@ class VideoFrameHandler:
                     "source_frame_index": extracted.source_frame_index,
                 }
             )
+            ensure_active()
+            context.heartbeat(
+                progress=round(90 + len(records) / total_frames * 7, 2),
+                stage="publishing_frames",
+                current_item=str(extracted.source_frame_index),
+            )
+        ensure_active()
         if records:
             first_image = cv2.imread(str(Path(extraction.frames[0].path)))
             if first_image is None:
@@ -391,10 +409,10 @@ class VideoFrameHandler:
             for record in records:
                 record["width"] = int(width)
                 record["height"] = int(height)
+        ensure_active()
         materials_repository.upsert_many(records)
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        ensure_active()
+        context.heartbeat(
             progress=98,
             stage="committing",
             current_item=str(len(records)),
@@ -408,6 +426,7 @@ class VideoFrameHandler:
             "output_ref": "frames",
             "materials": result_materials,
         }
+        ensure_active()
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         context.save_checkpoint(
             {
