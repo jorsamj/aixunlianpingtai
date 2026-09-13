@@ -170,7 +170,7 @@ class MaterialRepository:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "materials.sqlite3"
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.executescript(_SCHEMA)
         self._migrate_legacy_json()
 
@@ -183,11 +183,11 @@ class MaterialRepository:
         return database
 
     def journal_mode(self) -> str:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
     def current_revision(self) -> int:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return self._revision(database)
 
     @staticmethod
@@ -256,7 +256,7 @@ class MaterialRepository:
             return
         stat = legacy.stat()
         signature = f"{stat.st_size}:{stat.st_mtime_ns}"
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             migrated = database.execute(
                 "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
             ).fetchone()
@@ -267,7 +267,7 @@ class MaterialRepository:
         rows = value.get("items", []) if isinstance(value, dict) else value
         if not isinstance(rows, list):
             raise ValueError("images.json 必须是数组")
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 for source in rows:
@@ -284,13 +284,13 @@ class MaterialRepository:
                 raise
 
     def read(self) -> MaterialSnapshot:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             revision = self._revision(database)
             rows = database.execute("SELECT payload_json FROM materials ORDER BY created_at, id").fetchall()
         return MaterialSnapshot(revision=revision, rows=[self._row_payload(row) for row in rows])
 
     def get(self, image_id: str) -> dict[str, Any] | None:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
         return self._row_payload(row) if row else None
 
@@ -299,7 +299,7 @@ class MaterialRepository:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 f"SELECT id, payload_json FROM materials WHERE id IN ({placeholders})", ids
             ).fetchall()
@@ -465,7 +465,7 @@ class MaterialRepository:
 
     def summary(self) -> dict[str, int]:
         """Read indexed counters without hydrating material payloads or files."""
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute("""SELECT COUNT(*) AS total,
                 COALESCE(SUM(annotated), 0) AS annotated,
                 COALESCE(SUM(box_count), 0) AS boxes
@@ -476,7 +476,7 @@ class MaterialRepository:
     def count_filtered(self, filters: MaterialFilters | Mapping[str, Any] | None = None) -> int:
         clauses, params = self._filters(filters)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
 
     def list_page(
@@ -497,7 +497,7 @@ class MaterialRepository:
             clauses.append("(m.created_at > ? OR (m.created_at = ? AND m.id > ?))")
             params.extend((created_at, created_at, image_id))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 "SELECT m.id, m.created_at, m.payload_json FROM materials m" + where + " ORDER BY m.created_at, m.id LIMIT ?",
                 [*params, bounded + 1],
@@ -523,7 +523,7 @@ class MaterialRepository:
             clauses.append("(m.created_at > ? OR (m.created_at = ? AND m.id > ?))")
             params.extend((created_at, created_at, image_id))
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 "SELECT m.id, m.created_at FROM materials m" + where
                 + " ORDER BY m.created_at, m.id LIMIT ?",
@@ -544,7 +544,7 @@ class MaterialRepository:
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         image_id = str(record.get("id") or "")
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 existing = database.execute("SELECT payload_json FROM materials WHERE id = ?", (image_id,)).fetchone()
@@ -563,7 +563,7 @@ class MaterialRepository:
         if not incoming:
             return []
         persisted = []
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 for record in incoming:
@@ -581,7 +581,7 @@ class MaterialRepository:
 
     def patch(self, patches: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
         changed = []
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 for image_id, patch in patches.items():
@@ -604,7 +604,7 @@ class MaterialRepository:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 rows = database.execute(f"SELECT id, payload_json FROM materials WHERE id IN ({placeholders})", ids).fetchall()
@@ -619,7 +619,7 @@ class MaterialRepository:
         return [by_id[image_id] for image_id in ids if image_id in by_id]
 
     def reference_count(self, storage_source_id: str) -> int:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return int(database.execute("SELECT COUNT(*) FROM materials WHERE storage_source_id = ?", (str(storage_source_id),)).fetchone()[0])
 
     def snapshot_storage_references(self, manifest_path, source_id):
@@ -704,7 +704,7 @@ class MaterialRepository:
             return result
 
     def find_by_storage_reference(self, storage_source_id: str, object_key: str) -> dict[str, Any] | None:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 "SELECT payload_json FROM materials WHERE storage_source_id = ? AND object_key = ? LIMIT 1",
                 (str(storage_source_id), str(object_key)),
@@ -718,7 +718,7 @@ class MaterialRepository:
         paths. This compatibility layer now diffs the callback result and persists only rows that
         actually changed, were added, or were removed.
         """
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 stored = database.execute(

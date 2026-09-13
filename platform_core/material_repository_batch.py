@@ -95,7 +95,7 @@ def _transform_many(
     changed_count = 0
     for batch in _id_batches(image_ids, batch_size):
         placeholders = ",".join("?" for _ in batch)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 stored = database.execute(
@@ -264,7 +264,7 @@ def _remove_many(
     removed = 0
     for batch in _id_batches(image_ids, batch_size):
         placeholders = ",".join("?" for _ in batch)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 cursor = database.execute(
@@ -287,7 +287,7 @@ def _chunked_get_many(self: MaterialRepository, image_ids: Iterable[str]) -> lis
     if not ids:
         return []
     by_id: dict[str, dict[str, Any]] = {}
-    with self._connect() as database:
+    with closing(self._connect()) as database:
         for batch in _chunks(ids):
             placeholders = ",".join("?" for _ in batch)
             rows = database.execute(
@@ -304,7 +304,7 @@ def _chunked_remove(self: MaterialRepository, image_ids: Iterable[str]) -> list[
     if not ids:
         return []
     by_id: dict[str, dict[str, Any]] = {}
-    with self._connect() as database:
+    with closing(self._connect()) as database:
         database.execute("BEGIN IMMEDIATE")
         try:
             for batch in _chunks(ids):
@@ -334,7 +334,7 @@ def _chunked_mutate(self: MaterialRepository, fn):
     The callback still receives all rows for legacy compatibility, so callers that scan every row
     should continue migrating to set-based APIs. Persisting changes is bounded and incremental.
     """
-    with self._connect() as database:
+    with closing(self._connect()) as database:
         database.execute("BEGIN IMMEDIATE")
         try:
             stored = database.execute(
