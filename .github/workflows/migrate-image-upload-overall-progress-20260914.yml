@@ -1,0 +1,85 @@
+name: Migrate Image Upload Overall Progress 20260914
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/migrate-image-upload-overall-progress-20260914.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Apply exact live-owner migration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('static/app.js')
+          text = path.read_text(encoding='utf-8')
+          capture = 'window.__storageDoUploadImages61=window.doUploadImages426;'
+          capture_index = text.index(capture)
+          start = text.rfind('window.doUploadImages426=function(input){', 0, capture_index)
+          if start < 0:
+              raise SystemExit('live storage61 image uploader not found')
+
+          region = text[start:capture_index]
+          replacements = [
+              (
+                  "const percent=event.loaded/event.total*100,bar=document.getElementById('up411Bar')",
+                  "const percent=event.loaded/event.total*85,bar=document.getElementById('up411Bar')",
+              ),
+              (
+                  "if(text)text.textContent=`${Math.round(event.loaded/1024)} KB / ${Math.round((event.total||total)/1024)} KB`",
+                  "if(text)text.textContent=event.loaded>=event.total?'文件已上传，正在服务器入库':`${Math.round(event.loaded/1024)} KB / ${Math.round((event.total||total)/1024)} KB`",
+              ),
+              (
+                  "return}const uploaded=response.uploaded||[];",
+                  "return}const bar=document.getElementById('up411Bar'),label=document.getElementById('up411Pct'),text=document.getElementById('up411Text');if(bar)bar.style.width='100%';if(label)label.textContent='100%';if(text)text.textContent='服务器入库完成';const uploaded=response.uploaded||[];",
+              ),
+          ]
+          for old, new in replacements:
+              count = region.count(old)
+              if count != 1:
+                  raise SystemExit(f'exact migration anchor count must be 1, got {count}: {old[:80]}')
+              region = region.replace(old, new, 1)
+
+          updated = text[:start] + region + text[capture_index:]
+          if updated == text:
+              raise SystemExit('migration produced no product diff')
+          path.write_text(updated, encoding='utf-8')
+          PY
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Focused GREEN
+        run: node --test tests/frontend/image-upload-overall-progress.test.mjs
+      - name: Full frontend unit regression
+        run: node --test tests/frontend/*.test.mjs
+      - name: Syntax and version boundary
+        run: |
+          node --check static/app.js
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit product fix and remove one-off workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/migrate-image-upload-overall-progress-20260914.yml
+          git add static/app.js
+          git diff --cached --check
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git commit -m "fix(v42.25): keep image upload terminal progress truthful"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
