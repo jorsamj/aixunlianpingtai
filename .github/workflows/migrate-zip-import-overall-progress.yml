@@ -6,6 +6,8 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - .github/workflows/migrate-zip-import-overall-progress.yml
+      - tools/migrate_zip_import_overall_progress.py
+      - tests/frontend/zip-import-overall-progress.test.mjs
 
 permissions:
   contents: write
