@@ -3,9 +3,41 @@
 > **状态：PAUSED / 非阻断技术债清理按用户要求暂停**
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`60305921402204e77b8e7ed4ec8e576d9f857c4b`**
+> **最近完整代码验收点：`bae90eae4b3768d365d20344c1f2db9a75795ac8`**
 > **Frontend Runtime Stabilization：run `34733035739`，frontend + Real Chrome 全绿，Real Chrome 33/33 passed；Navigation Action Fencing 永久 run `34733035761` 全绿；Resource Discovery SQLite 永久跨平台 run `34700900542` Ubuntu + Windows 全绿。**
-> **更新日期：2026-09-13**
+> **更新日期：2026-09-14**
+
+## Product closure — Plain image upload whole-task progress truth CLOSED
+
+The final live ordinary-image upload owner is the storage61 `doUploadImages426` path posting to `/api/projects/{project_id}/images`. The endpoint is synchronous HTTP, but after browser request bytes are sent the server still performs temporary-file handling, image validation, selected-storage object write, SHA256 calculation and material record commit. Therefore browser `xhr.upload` byte completion is not whole-task completion.
+
+Closed semantics:
+
+```text
+browser byte transfer: 0% -> 85%
+byte transfer complete: hold at 85%, show “文件已上传，正在服务器入库”
+server-side synchronous commit: no fabricated percentage animation
+successful HTTP completion after material commit: 100%, show “服务器入库完成”
+network/non-2xx failure: never claims terminal 100%
+```
+
+This batch deliberately does **not** invent a durable background task, fake queue, or fake server progress for a synchronous endpoint. Terminal 100% is fenced to the authoritative successful HTTP completion. Permanent behavior guard: `tests/frontend/image-upload-overall-progress.test.mjs`; Release Regression includes that test in its permanent path scope.
+
+Evidence:
+
+```text
+valid RED commit:          03be0050644af80709bddb97321f1a4ec0b1528c
+valid RED run:             34788264443 (237 existing tests PASS; 2 intended new assertions RED)
+focused migration/GREEN:   34788320142 PASS
+product commit:            259d76d753993f2dd10e1963ee1a9a13887209ad
+accepted clean code point: bae90eae4b3768d365d20344c1f2db9a75795ac8
+Release Regression:        34788383779 PASS
+Navigation Action Fencing: 34788383742 PASS (Real Chrome PASS)
+Frontend Runtime:          34788383772 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:        42.24.0 unchanged
+```
+
+The one-shot product migration workflow was removed in the product commit. No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
 
 ## 0. 接手入口
 
@@ -31,7 +63,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Current next product scope: genuine 10,000-image processing-phase acceptance. P2c is CLOSED; P2d is not opened because the post-P2c profiler no longer shows duplicate per-image fan-out. Create P2d only if the 10k acceptance or a new profiler proves another structural hotspot.**
+**Current next product scope: horizontal audit of real queue-position/progress truth across AI annotation, video, cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 1. 永久退休 surface
 
