@@ -1,0 +1,42 @@
+name: Temporary Video Queue Truth Migration
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-fix-video-queue-truth.yml
+      - scripts/_tmp_fix_video_queue_truth.py
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Apply exact video queue truth migration
+        run: python scripts/_tmp_fix_video_queue_truth.py
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Syntax check
+        run: node --check static/app.js && node --check static/modules/video-tasks.js
+      - name: Focused video behavior tests
+        run: node --test tests/frontend/video-tasks.test.mjs
+      - name: Full frontend regression
+        run: node --test tests/frontend/*.test.mjs
+      - name: Commit product fix and remove migration assets
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/_tmp-fix-video-queue-truth.yml scripts/_tmp_fix_video_queue_truth.py
+          git add static/app.js static/modules/video-tasks.js tests/frontend/video-tasks.test.mjs
+          git commit -m "fix(frontend): preserve video resource queue truth"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
