@@ -1737,7 +1737,7 @@ def _v50_cleanup_buffered_image_batch_files(
 def _v50_end_image_batch(save: bool = True):
     batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
     _IMAGE_BATCH_CTX.batch = None
-    if not save or not batch:
+    if not batch:
         return []
     project_id = str(batch.get("project_id") or "")
     records = [dict(record) for record in batch.get("records", {}).values()]
@@ -1745,6 +1745,13 @@ def _v50_end_image_batch(save: bool = True):
         str(image_id): dict(patch)
         for image_id, patch in batch.get("patches", {}).items()
     }
+    if not save:
+        cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
+        if cleanup_errors:
+            raise RuntimeError(
+                "批量导入回滚失败：" + "; ".join(cleanup_errors)
+            )
+        return []
     if not records and not patches:
         return []
 
@@ -8567,7 +8574,15 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 if report.get("skipped_images", 0):
                     report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
                 report["labels"] = get_project(project_id).get("labels", [])
-            finally:
+            except BaseException:
+                # Importers persist image bytes and annotation truth before the
+                # buffered material projection is committed. A failed import must
+                # remove those durable side effects instead of publishing a partial
+                # dataset under a failed job.
+                if _v50_active_image_batch(project_id):
+                    _v50_end_image_batch(save=False)
+                raise
+            else:
                 # 图片与摘要先按 ID 缓冲，在这里基于最新索引一次性提交。
                 _v50_end_image_batch(save=True)
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
@@ -8578,13 +8593,11 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
             message=f"导入完成：{report.get('imported_images',0)} 图，{report.get('annotated_images',0)} 张带标注，{report.get('boxes',0)} 框",
         )
     except HTTPException as e:
-        _v50_end_image_batch(save=True)
         v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
                        error=str(e.detail), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
                        finished_at=now_iso(), message=str(e.detail))
     except Exception as e:
-        _v50_end_image_batch(save=True)
         v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
                        error=str(e), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
