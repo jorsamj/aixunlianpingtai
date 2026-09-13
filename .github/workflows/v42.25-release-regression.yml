@@ -12,9 +12,11 @@ on:
       - platform_core/task_runtime/repository.py
       - platform_core/task_runtime/fenced_repository.py
       - platform_core/task_runtime/process_control.py
+      - platform_core/task_runtime/worker_instances.py
       - platform_core/training_metrics.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/unit/task_runtime/test_connection_lifecycle.py
+      - tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
       - tests/unit/task_runtime/test_progress_monotonicity.py
       - tests/unit/task_runtime/test_fenced_progress_monotonicity.py
       - tests/unit/task_runtime/test_process_control.py
@@ -41,6 +43,7 @@ jobs:
           tests/api/test_unified_task_process_cancel.py
           tests/unit/task_runtime/test_repository.py
           tests/unit/task_runtime/test_connection_lifecycle.py
+          tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
           tests/unit/task_runtime/test_progress_monotonicity.py
           tests/unit/task_runtime/test_fenced_progress_monotonicity.py
           tests/unit/task_runtime/test_scheduler.py
