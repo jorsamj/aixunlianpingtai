@@ -1,0 +1,38 @@
+name: Sync ZIP P2a P2b Handoff
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/sync-zip-p2ab-handoff.yml
+      - tools/sync_zip_p2ab_handoff.py
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Sync verified P2a P2b handoff evidence
+        run: python tools/sync_zip_p2ab_handoff.py
+      - name: Verify release boundary and diff
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+          git diff -- docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md docs/codex-handoff-v42.25.md
+      - name: Commit handoff sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md docs/codex-handoff-v42.25.md
+          git diff --cached --check
+          git commit -m "docs(v42.25): record ZIP Processing P2a P2b evidence"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
