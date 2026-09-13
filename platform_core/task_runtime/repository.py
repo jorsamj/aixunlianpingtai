@@ -400,7 +400,7 @@ class TaskRepository:
         now = datetime.now(timezone.utc)
         parameters: list[object] = [now.isoformat(), (now + timedelta(seconds=30)).isoformat()]
         if progress is not None:
-            updates.append("progress=?")
+            updates.append("progress=MAX(progress, ?)")
             parameters.append(max(0.0, min(100.0, float(progress))))
         if stage is not None:
             updates.append("stage=?")
