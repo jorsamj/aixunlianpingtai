@@ -134,7 +134,7 @@ class FencedTaskRepository(TaskRepository):
         updates = ["updated_at=?", "lease_expires_at=?"]
         parameters: list[object] = [now_text, expires_at]
         if progress is not None:
-            updates.append("progress=?")
+            updates.append("progress=MAX(progress, ?)")
             parameters.append(max(0.0, min(100.0, float(progress))))
         if stage is not None:
             updates.append("stage=?")
