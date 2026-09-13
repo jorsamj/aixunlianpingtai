@@ -55,7 +55,9 @@ def test_v19_terminal_report_externalizes_imported_image_ids_without_breaking_re
     durable_report = json.loads(report_path.read_text(encoding='utf-8'))
     assert durable_report['imported_image_ids'] == image_ids
 
-    review = app_module.v52_import_review(project_id, job_id)
+    review_response = client.get(f'/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
+    review_response.raise_for_status()
+    review = review_response.json()
     assert review['image_ids'] == image_ids
     assert review['report']['imported_image_ids'] == image_ids
     assert review['job']['status'] == 'done'
