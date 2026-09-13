@@ -1,0 +1,50 @@
+name: Material Annotation Atomicity
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/material-annotation-atomicity.yml
+      - app.py
+      - platform_core/annotation_repository.py
+      - platform_core/material_repository.py
+      - tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
+      - tests/api/test_material_batching.py
+      - tests/api/test_material_selection_atomicity.py
+      - tests/api/test_annotation_flow.py
+      - tests/api/test_v19_import_scalability.py
+      - tests/api/test_zip_processing_p1.py
+
+jobs:
+  annotation-material-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Syntax and release boundary
+        run: |
+          python -m py_compile app.py platform_core/annotation_repository.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Annotation SQLite and material atomicity contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
+          tests/api/test_material_batching.py
+          tests/api/test_material_selection_atomicity.py
+      - name: Annotation and ZIP import regressions
+        run: >-
+          python -m pytest -q
+          tests/api/test_annotation_flow.py
+          tests/api/test_v19_import_scalability.py
+          tests/api/test_zip_processing_p1.py
