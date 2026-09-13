@@ -1,7 +1,8 @@
-const ACTIVE = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED']);
+const ACTIVE = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'CANCEL_REQUESTED']);
 
 const STATUS_TEXT = {
   QUEUED: '排队中',
+  WAITING_RESOURCE: '等待资源',
   RUNNING: '处理中',
   AWAITING_CONFIRMATION: '待确认',
   PARTIAL_SUCCESS: '部分成功',
@@ -39,10 +40,19 @@ export function normalizeVideoTask(task = {}) {
   if (task.mode === 'fixed_count') samplingText = `固定抽取 ${Number(task.fixed_count || 0)} 帧`;
   else if (task.mode === 'fps') samplingText = `每秒 ${Number(task.extract_fps || 0)} 帧`;
   else if (task.mode === 'interval_seconds') samplingText = `每 ${Number(task.interval_seconds || 0)} 秒 1 帧`;
+  const queuePosition = Math.max(0, Number(task.resource_queue_position) || 0);
+  const waitReason = String(task.resource_wait_reason || '').trim();
+  const queuedRuntime = queuePosition
+    ? `资源队列第 ${queuePosition} 位${waitReason ? ` · ${waitReason}` : ''}`
+    : (waitReason ? `等待资源 · ${waitReason}` : '');
+  const runtimeText = ['QUEUED', 'WAITING_RESOURCE'].includes(status) ? queuedRuntime : '';
   return {
     ...task,
     status,
     statusText: STATUS_TEXT[status] || status,
+    queuePosition,
+    waitReason,
+    runtimeText,
     samplingText,
     extractedFrames: Number(task.result?.extracted_frames ?? task.extracted_frames ?? 0),
   };
