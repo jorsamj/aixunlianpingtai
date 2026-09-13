@@ -132,7 +132,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 });
 
 
-test('v18 import completion uses scoped labels and material refresh without broad reload', async ({page}) => {
+test('v19 background import completion uses scoped labels and material refresh without broad reload', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -171,20 +171,65 @@ test('v18 import completion uses scoped labels and material refresh without broa
   expect(datasetId).toBeTruthy();
   const encodedProject = encodeURIComponent(projectId);
   const encodedDataset = encodeURIComponent(datasetId);
+  const importJobId = 'zip-r20k-job';
+  let importStarted = false;
+  let listReads = 0;
 
-  await page.route(`**/api/v18/projects/${encodedProject}/datasets/${encodedDataset}/import`, async route => {
+  const selectingJob = {
+    id: importJobId,
+    project_id: projectId,
+    dataset_id: datasetId,
+    status: 'selecting',
+    stage: '上传与校验完成',
+    progress: 0,
+    image_count: 2,
+    file_count: 4,
+    uncompressed_size_mb: 1,
+    format_hints: ['YOLO'],
+    images: [
+      {path: 'images/train/a.jpg', name: 'a.jpg', split: 'train', size_kb: 1},
+      {path: 'images/train/b.jpg', name: 'b.jpg', split: 'train', size_kb: 1},
+    ],
+    images_truncated: false,
+  };
+  const runningJob = {
+    ...selectingJob,
+    images: undefined,
+    status: 'running',
+    stage: '正在解析 YOLO / 原始图片',
+    progress: 70,
+    processed: 1,
+    total_selected: 2,
+  };
+  const doneJob = {
+    ...runningJob,
+    status: 'done',
+    stage: '导入完成',
+    progress: 100,
+    processed: 2,
+    report: {
+      detected_format: 'YOLO',
+      imported_images: 2,
+      annotated_images: 1,
+      boxes: 3,
+      warnings: [],
+    },
+  };
+
+  await page.route(`**/api/v19/projects/${encodedProject}/datasets/${encodedDataset}/import/jobs`, async route => {
     expect(route.request().method()).toBe('POST');
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        detected_format: 'yolo',
-        imported_images: 2,
-        annotated_images: 1,
-        boxes: 3,
-        warnings: [],
-      }),
-    });
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(selectingJob)});
+  });
+  await page.route(`**/api/v19/projects/${encodedProject}/import/jobs/${importJobId}/start`, async route => {
+    expect(route.request().method()).toBe('POST');
+    importStarted = true;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(runningJob)});
+  });
+  await page.route(`**/api/v19/projects/${encodedProject}/import/jobs`, async route => {
+    expect(route.request().method()).toBe('GET');
+    listReads += 1;
+    const job = !importStarted ? selectingJob : (listReads <= 2 ? runningJob : doneJob);
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, items: [job]})});
   });
   await page.route(`**/api/v12/projects/${encodedProject}/labels`, async route => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -206,16 +251,24 @@ test('v18 import completion uses scoped labels and material refresh without broa
 
   requests.length = 0;
   await page.locator('#zipImportPane').getByRole('button', {name: '开始导入'}).click();
-  await expect(page.locator('#importProgressText')).toHaveText('导入完成', {timeout: 10_000});
-  await expect(page.locator('#importResult')).toContainText('2');
-  await expect(page.locator('#toast')).toContainText('导入完成：2图，3框');
+  await expect(page.locator('#importProgressText')).toHaveText('扫描完成', {timeout: 10_000});
+  await expect(page.locator('#importResult')).toContainText('候选格式');
+  await page.locator('#importResult').getByRole('button', {name: '解析全部并缩到后台'}).click();
+  await expect(page.locator('#modal')).toHaveClass(/hidden/);
+  await expect(page.locator('#toast')).toContainText('后台导入完成：2 张图片', {timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.state?.().refreshBusy ?? null)).toBe(false);
+  await expect(page.locator('#data412Grid')).toContainText('imported-r20k.jpg');
 
-  const importRequest = `POST /api/v18/projects/${projectId}/datasets/${datasetId}/import`;
+  const createRequest = `POST /api/v19/projects/${projectId}/datasets/${datasetId}/import/jobs`;
+  const startRequest = `POST /api/v19/projects/${projectId}/import/jobs/${importJobId}/start`;
+  const listRequest = `GET /api/v19/projects/${projectId}/import/jobs`;
   const labelsRequest = `GET /api/v12/projects/${projectId}/labels`;
-  expect(requests.filter(row => row === importRequest)).toEqual([importRequest]);
+  expect(requests.filter(row => row === createRequest)).toEqual([createRequest]);
+  expect(requests.filter(row => row === startRequest)).toEqual([startRequest]);
+  expect(requests.filter(row => row === listRequest).length).toBeGreaterThanOrEqual(2);
   expect(requests.filter(row => row === labelsRequest)).toEqual([labelsRequest]);
   expect(requests.some(row => row.startsWith(`GET /api/v61/projects/${projectId}/materials?`))).toBe(true);
+  expect(requests.some(row => row.includes('/api/v18/'))).toBe(false);
 
   const forbiddenBroadRefresh = requests.filter(row => {
     const [method, rawPath] = row.split(' ', 2);
