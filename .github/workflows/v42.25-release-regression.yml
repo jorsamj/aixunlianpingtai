@@ -30,6 +30,7 @@ on:
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
       - tests/frontend/conversion-unified-task-truth.test.mjs
+      - tests/frontend/image-upload-overall-progress.test.mjs
       - tests/frontend/zip-import-overall-progress.test.mjs
       - tests/integration/test_storage_import_progress_truth.py
       - tests/integration/test_storage_import_worker.py
@@ -67,6 +68,7 @@ on:
 # Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
 # Deployment-test guard: inference runners must bind exact process identity and terminate the tree on execution fencing.
 # Deployment queue-display guard: queued and waiting-resource rows consume durable resource_queue_position; UI-only changes still run this backend regression gate.
+# Plain-image upload progress guard: browser byte transfer must stay below terminal 100%; successful server commit owns 100%.
 # ZIP whole-task progress guard: upload owns 0..35, validation reaches 38, backend processing is projected monotonically through 38..99, and only terminal success reaches 100.
 # Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
 # AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
