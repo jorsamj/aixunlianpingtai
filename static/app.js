@@ -166,13 +166,33 @@ function updateImportDock(){
   dock.classList.toggle('running',!!running);
 }
 function statusImportName(s){return ({selecting:'待选择',running:'解析中',done:'已完成',failed:'失败'}[s]||s||'-')}
-function startImportPolling(){
+function startImportPolling(seedJobId){
   ensureImportDock();
   if(state.importPollTimer)return;
+  const tracked=new Set((state.importJobs||[]).filter(j=>j.status==='running').map(j=>j.id));
+  if(seedJobId)tracked.add(seedJobId);
   state.importPollTimer=setInterval(async()=>{
-    await loadImportJobs();
-    const hasRunning=(state.importJobs||[]).some(j=>j.status==='running');
-    if(!hasRunning && state.importPollTimer){clearInterval(state.importPollTimer);state.importPollTimer=null;}
+    if(state.importPollBusy)return;
+    state.importPollBusy=true;
+    try{
+      await loadImportJobs();
+      const jobs=state.importJobs||[],byId=new Map(jobs.map(j=>[j.id,j]));
+      for(const id of [...tracked]){
+        const job=byId.get(id);
+        if(!job||!['done','failed'].includes(job.status))continue;
+        tracked.delete(id);
+        if(job.status==='done'){
+          window.completeZipImportReview412?.(id);
+          window.invalidateQuality411?.();
+          await window.refreshLabels414?.(false);
+          if(state.page==='数据集')await window.reloadMaterialPage61?.();
+          toast(`后台导入完成：${job.report?.imported_images||0} 张图片`);
+        }else toast(`后台导入失败：${job.error||job.message||'请查看任务记录'}`);
+      }
+      jobs.filter(j=>j.status==='running').forEach(j=>tracked.add(j.id));
+      const hasRunning=jobs.some(j=>j.status==='running');
+      if(!hasRunning&&state.importPollTimer){clearInterval(state.importPollTimer);state.importPollTimer=null;}
+    }finally{state.importPollBusy=false;}
   },1200);
 }
 window.openImportDock=async()=>{
@@ -214,7 +234,8 @@ window.doImportUploadV19=()=>{
 function renderImportPicker(job){
   const imgs=job.images||[];
   const shown=imgs.slice(0,500);
-  const more=imgs.length>shown.length?`<div class="alert warn">当前只显示前 ${shown.length} 张，点击“解析全部”会解析压缩包内全部 ${imgs.length} 张图片。</div>`:'';
+  const total=Math.max(shown.length,Number(job.image_count||0));
+  const more=total>shown.length?`<div class="alert warn">当前只显示前 ${shown.length} 张，点击“解析全部”会解析压缩包内全部 ${total} 张图片。</div>`:'';
   return `<div class="divider"></div><div class="import-result"><div class="stat"><div class="k">候选格式</div><div class="v">${esc((job.format_hints||[]).join('/'))}</div></div><div class="stat"><div class="k">图片数</div><div class="v">${job.image_count||0}</div></div><div class="stat"><div class="k">文件数</div><div class="v">${job.file_count||0}</div></div><div class="stat"><div class="k">解压后</div><div class="v">${job.uncompressed_size_mb||0}MB</div></div></div>${more}<div class="row between"><div class="item-sub">可先勾选少量图片试解析，确认标签和框正常后再导入全部。</div><div class="row"><button class="btn small" onclick="toggleImportChecks(true)">全选当前页</button><button class="btn small" onclick="toggleImportChecks(false)">清空</button></div></div><div class="import-select-list">${shown.map((im,i)=>`<label class="import-select-row"><input type="checkbox" class="impChk" value="${esc(im.path)}" ${i<20?'checked':''}><span>${esc(im.name)}</span><em>${esc(splitName(im.split))}</em><small>${esc(im.path)}</small></label>`).join('')}</div><div class="row end"><button class="btn soft" onclick="closeModal()">稍后处理</button><button class="btn" onclick="startImportJobV19(false)">解析勾选图片</button><button class="btn primary" onclick="startImportJobV19(true)">解析全部并缩到后台</button></div>`;
 }
 window.toggleImportChecks=(checked)=>{$$('.impChk').forEach(x=>x.checked=checked)};
@@ -223,7 +244,7 @@ window.startImportJobV19=async(all)=>{
   const selected=all?[]:$$('.impChk').filter(x=>x.checked).map(x=>x.value);
   if(!all&&!selected.length)return toast('请选择至少一张图片，或点击解析全部');
   const r=await safe(api(`/api/v19/projects/${pid()}/import/jobs/${job.id}/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selected_paths:selected})}));
-  if(r){toast('已缩放到后台解析，右下角可查看进度');closeModal();await loadImportJobs();startImportPolling();}
+  if(r){toast('已缩放到后台解析，右下角可查看进度');closeModal();await loadImportJobs();startImportPolling(job.id);}
 };
 
 // 页面启动后加载一次后台导入任务；有运行任务时继续轮询。
@@ -1595,7 +1616,7 @@ window.installUsability417=function(){
         <div class="field"><label>选择压缩包</label><input id="importFile" type="file" class="file" accept=".zip"></div>
         <div id="importProgressWrap" class="progress-wrap hidden"><div class="progress-line"><span id="importProgressText">准备上传</span><b id="importProgressPercent">0%</b></div><div class="progress-bar"><i id="importProgressBar" style="width:0%"></i></div></div>
         <div id="importResult"></div>
-        <div class="row end"><button class="btn primary" onclick="doImportData()">开始导入</button></div>
+        <div class="row end"><button class="btn primary" onclick="doImportUploadV19()">开始导入</button></div>
       </div>
       <div id="sourceImportPane" class="hidden">
         <div class="field"><label>本机路径或服务器URL</label><input id="sourcePathV36" class="input" placeholder="本机目录、共享目录或 https://server/dataset.zip"></div>

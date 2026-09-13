@@ -8293,6 +8293,27 @@ def v19_job_file(project_id: str, job_id: str) -> Path:
     return v19_job_dir(project_id, job_id) / "job.json"
 
 
+def v19_scan_images_file(project_id: str, job_id: str) -> Path:
+    return v19_job_dir(project_id, job_id) / "scan-images.json"
+
+
+def v19_write_scan_images(project_id: str, job_id: str, images: List[Dict[str, Any]]):
+    path = v19_scan_images_file(project_id, job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, list(images or []))
+
+
+def v19_read_scan_images(project_id: str, job_id: str) -> List[Dict[str, Any]]:
+    path = v19_scan_images_file(project_id, job_id)
+    if path.is_file():
+        value = read_json(path, [])
+        return value if isinstance(value, list) else []
+    # Backward compatibility for historical jobs created before the manifest split.
+    legacy = read_json(v19_job_file(project_id, job_id), {})
+    value = legacy.get("images") if isinstance(legacy, dict) else []
+    return value if isinstance(value, list) else []
+
+
 def v19_normalize_zip_path(name: str) -> str:
     return str(name or "").replace("\\", "/").lstrip("/")
 
@@ -8308,7 +8329,23 @@ def v19_write_job(project_id: str, job: Dict[str, Any]):
     job["updated_at"] = now_iso()
     f = v19_job_file(project_id, job["id"])
     f.parent.mkdir(parents=True, exist_ok=True)
-    write_json(f, job)
+    persisted = dict(job)
+    images = persisted.pop("images", None)
+    if isinstance(images, list):
+        v19_write_scan_images(project_id, str(job["id"]), images)
+        persisted["scan_images_ref"] = "scan-images.json"
+    write_json(f, persisted)
+
+
+def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
+    result = dict(job or {})
+    result.pop("images", None)
+    limit = max(0, min(500, int(image_limit or 0)))
+    if limit:
+        images = v19_read_scan_images(project_id, str(result.get("id") or ""))
+        result["images"] = images[:limit]
+        result["images_truncated"] = len(images) > limit
+    return result
 
 
 def v19_update_job(project_id: str, job_id: str, **kwargs):
@@ -8527,6 +8564,8 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
     if scan.get("image_count", 0) == 0:
         shutil.rmtree(jd, ignore_errors=True)
         raise HTTPException(status_code=400, detail="ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
+    scan_images = list(scan.pop("images", []) or [])
+    v19_write_scan_images(project_id, job_id, scan_images)
     job = {
         "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
         "batch_id": job_id,
@@ -8534,10 +8573,11 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
         "status": "selecting", "stage": "上传与校验完成", "progress": 0,
         "message": "上传与ZIP校验完成，等待开始后台导入",
+        "scan_images_ref": "scan-images.json",
         "created_at": now_iso(), "uploaded_at": now_iso(), "updated_at": now_iso(), **scan,
     }
     v19_write_job(project_id, job)
-    return job
+    return v19_public_job(project_id, job, image_limit=500)
 
 
 @app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/start")
@@ -8549,7 +8589,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
         raise HTTPException(status_code=400, detail="当前导入任务状态不允许重新开始")
     selected_paths = payload.selected_paths or []
     if selected_paths:
-        allowed = {x.get("path") for x in job.get("images", [])}
+        allowed = {x.get("path") for x in v19_read_scan_images(project_id, job_id)}
         selected_paths = [x for x in selected_paths if x in allowed]
         if not selected_paths:
             raise HTTPException(status_code=400, detail="没有选择有效图片")
@@ -8557,7 +8597,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
     v19_update_job(project_id, job_id, status="running", stage="准备后台解析", progress=3, selected_count=len(selected_paths) or job.get("image_count", 0), message="已缩放到后台解析")
     th = threading.Thread(target=v19_import_worker, args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths), daemon=True)
     th.start()
-    return v19_read_job(project_id, job_id)
+    return v19_public_job(project_id, v19_read_job(project_id, job_id))
 
 
 @app.get("/api/v19/projects/{project_id}/import/jobs")
@@ -8568,17 +8608,17 @@ def v19_list_import_jobs(project_id: str):
     for jf in d.glob("*/job.json"):
         job = read_json(jf, {})
         if job:
-            # 列表里最多返回前 300 个图片候选，避免巨大 JSON 卡页面；详情接口返回完整。
-            if isinstance(job.get("images"), list) and len(job["images"]) > 300:
-                job = {**job, "images": job["images"][:300], "images_truncated": True}
-            jobs.append(job)
+            # Selecting jobs keep a bounded preview for compatibility. Running/terminal polling stays O(1).
+            preview = 300 if job.get("status") == "selecting" else 0
+            jobs.append(v19_public_job(project_id, job, image_limit=preview))
     jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return {"ok": True, "items": jobs}
 
 
 @app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}")
-def v19_get_import_job(project_id: str, job_id: str):
-    return v19_read_job(project_id, job_id)
+def v19_get_import_job(project_id: str, job_id: str, include_images: bool = False, image_limit: int = 500):
+    job = v19_read_job(project_id, job_id)
+    return v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
 
 
 @app.delete("/api/v19/projects/{project_id}/import/jobs/{job_id}")
