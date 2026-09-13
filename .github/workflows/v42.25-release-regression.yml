@@ -14,6 +14,7 @@ on:
       - platform_core/annotation_task_service.py
       - platform_core/deployment/inference_tasks.py
       - platform_core/gpu_resources.py
+      - platform_core/storage/import_tasks.py
       - platform_core/task_runtime/repository.py
       - platform_core/task_runtime/fenced_repository.py
       - platform_core/task_runtime/process_control.py
@@ -24,7 +25,11 @@ on:
       - tests/api/test_durable_training_controls.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
+      - tests/integration/test_storage_import_worker.py
       - tests/integration/test_video_task_worker.py
+      - tests/unit/storage/test_import_candidates.py
+      - tests/unit/storage/test_import_scan_cancel_fencing.py
+      - tests/unit/storage/test_yolo_import.py
       - tests/unit/test_annotation_batch_cancel_fencing.py
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
@@ -47,6 +52,7 @@ on:
 # Deployment-test guard: inference runners must bind exact process identity and terminate the tree on execution fencing.
 # Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
 # AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
+# Storage-scan guard: cancellation during a remote object read must stop follow-up I/O and terminal scan publication.
 jobs:
   runtime-contracts:
     runs-on: ubuntu-24.04
@@ -67,7 +73,11 @@ jobs:
           tests/api/test_durable_training_controls.py
           tests/api/test_unified_task_process_cancel.py
           tests/api/test_unified_task_paused_public_status.py
+          tests/integration/test_storage_import_worker.py
           tests/integration/test_video_task_worker.py
+          tests/unit/storage/test_import_candidates.py
+          tests/unit/storage/test_import_scan_cancel_fencing.py
+          tests/unit/storage/test_yolo_import.py
           tests/unit/test_annotation_batch_cancel_fencing.py
           tests/unit/test_annotation_candidates.py
           tests/unit/test_annotation_task_service.py
