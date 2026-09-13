@@ -8375,6 +8375,26 @@ def v19_scan_images_file(project_id: str, job_id: str) -> Path:
     return v19_job_dir(project_id, job_id) / "scan-images.json"
 
 
+def v19_report_file(project_id: str, job_id: str) -> Path:
+    return v19_job_dir(project_id, job_id) / "report.json"
+
+
+def v19_write_import_report(project_id: str, job_id: str, report: Dict[str, Any]):
+    path = v19_report_file(project_id, job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, dict(report or {}))
+
+
+def v19_read_import_report(project_id: str, job_id: str, job: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    current = dict(job or v19_read_job(project_id, job_id) or {})
+    if current.get("report_ref"):
+        value = read_json(v19_report_file(project_id, job_id), {})
+        if isinstance(value, dict):
+            return value
+    value = current.get("report")
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def v19_write_scan_images(project_id: str, job_id: str, images: List[Dict[str, Any]]):
     path = v19_scan_images_file(project_id, job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -8412,6 +8432,13 @@ def v19_write_job(project_id: str, job: Dict[str, Any]):
     if isinstance(images, list):
         v19_write_scan_images(project_id, str(job["id"]), images)
         persisted["scan_images_ref"] = "scan-images.json"
+    report = persisted.get("report")
+    if isinstance(report, dict) and "imported_image_ids" in report:
+        v19_write_import_report(project_id, str(job["id"]), report)
+        compact_report = dict(report)
+        compact_report.pop("imported_image_ids", None)
+        persisted["report"] = compact_report
+        persisted["report_ref"] = "report.json"
     # v19 job.json is the browser-visible progress truth. Never expose a
     # truncated JSON document while the worker is updating progress.
     atomic_write_json(f, persisted)
@@ -13875,7 +13902,7 @@ def v52_mark_ready(project_id: str, payload: V52ReadyReq):
 @app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
 def v52_import_review(project_id: str, job_id: str):
     job = v19_read_job(project_id, job_id)
-    report = job.get('report') or {}
+    report = v19_read_import_report(project_id, job_id, job)
     ids = [str(x) for x in (report.get('imported_image_ids') or [])]
     wanted = set(ids)
     images = [x for x in load_images(project_id) if str(x.get('id')) in wanted]
