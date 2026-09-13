@@ -25,7 +25,8 @@ test('ZIP processing progress is projected into the whole-task 38..99 range', ()
 test('active ZIP polling uses whole-task progress instead of raw backend phase progress', () => {
   assert.match(source, /progress:mapImportProcessingProgress411\(j\.progress\)/);
   assert.doesNotMatch(source, /progress:Number\(j\.progress\|\|0\)/);
-  assert.match(source, /progress:e\.loaded\/e\.total\*35/);
+  assert.match(source, /const p=e\.loaded\/e\.total\*35/);
+  assert.match(source, /progress:p,eta,uploadSeconds:elapsed/);
   assert.match(source, /progress:38,uploadSeconds:job\.upload_seconds/);
   assert.match(source, /stage:'导入完成'.*progress:100/);
 });
