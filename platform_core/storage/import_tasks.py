@@ -42,9 +42,11 @@ ERROR_RESULT_REF = "scan/error.json"
 BATCH_SIZE = 500
 
 
-def _sha256_stream(stream) -> str:
+def _sha256_stream(stream, *, cancelled=None) -> str:
     digest = hashlib.sha256()
     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        if cancelled is not None and cancelled():
+            raise InterruptedError("storage scan cancelled")
         digest.update(chunk)
     return digest.hexdigest()
 
@@ -124,8 +126,14 @@ class StorageImportHandler:
         return source, provider
 
     @staticmethod
-    def _inspect(provider, source, item) -> dict[str, Any]:
+    def _inspect(provider, source, item, *, cancelled=None) -> dict[str, Any]:
         key = str(item.key)
+
+        def ensure_active() -> None:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("storage scan cancelled")
+
+        ensure_active()
         base = {
             "filename": Path(key).name,
             "storage_source_id": source.id,
@@ -147,12 +155,17 @@ class StorageImportHandler:
                 with Image.open(stream) as image:
                     width, height = image.size
                     image.verify()
+            # A remote image read/decode may take seconds. Re-check before any
+            # follow-up reader (for example SHA calculation) so Stop does not
+            # start more remote I/O after cancellation became durable.
+            ensure_active()
             content_sha256 = str(item.sha256 or "").strip().lower()
             if len(content_sha256) != 64 or any(
                 character not in "0123456789abcdef" for character in content_sha256
             ):
                 with closing(provider.open_reader(key)) as stream:
-                    content_sha256 = _sha256_stream(stream)
+                    content_sha256 = _sha256_stream(stream, cancelled=cancelled)
+            ensure_active()
             if int(item.size_bytes or 0) <= 0:
                 raise ValueError("image object is empty")
             base.update({
@@ -161,6 +174,8 @@ class StorageImportHandler:
                 "height": int(height),
                 "status": "IMPORTABLE",
             })
+        except InterruptedError:
+            raise
         except (UnidentifiedImageError, OSError, ValueError) as error:
             base.update({"status": "INVALID", "error": redact_storage_error(error)})
         except Exception as error:
@@ -280,7 +295,23 @@ class StorageImportHandler:
                 self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
                 return TaskStatus.CANCELLED, None
             current_key = str(item.key)
-            batch.append(self._inspect(provider, source, item))
+            try:
+                inspected = self._inspect(
+                    provider, source, item, cancelled=context.cancel_requested,
+                )
+            except InterruptedError:
+                # Preserve only work that completed before the cancelled object.
+                # The in-flight object itself must never enter the candidate truth.
+                self._flush_scan_batch(
+                    store, materials, batch, import_format == "yolo",
+                )
+                return TaskStatus.CANCELLED, None
+            if context.cancel_requested():
+                self._flush_scan_batch(
+                    store, materials, batch, import_format == "yolo",
+                )
+                return TaskStatus.CANCELLED, None
+            batch.append(inspected)
             if len(batch) >= BATCH_SIZE:
                 self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
                 self._checkpoint_scan(context, store, current_key)
