@@ -1,5 +1,6 @@
 name: ZIP Processing 10k Acceptance
 
+# One-shot acceptance rerun after deterministic SQLite connection lifecycle closure.
 on:
   workflow_dispatch:
   push:
