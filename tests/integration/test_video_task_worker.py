@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_store import MaterialStore
 from platform_core.task_runtime import (
     ArtifactStore,
@@ -87,13 +88,22 @@ def test_worker_extracts_real_video_into_material_library_and_recovers_idempoten
     assert rows.revision == 1
     assert len(rows.rows) == 5
     assert all((project_dir / "uploads" / row["stored_name"]).stat().st_size > 0 for row in rows.rows)
-    assert all((project_dir / "annotations" / f"{row['id']}.json").is_file() for row in rows.rows)
+
+    annotations = AnnotationRepository(project_dir)
+    first_annotations = [annotations.get(row["id"]) for row in rows.rows]
+    assert all(item["annotation_state"] == "unannotated" for item in first_annotations)
+    assert all(item["version"] == 1 for item in first_annotations)
+    assert list((project_dir / "annotations").glob("*.json")) == []
 
     repository.retry(task_id)
     assert scheduler.run_once() is True
     recovered = MaterialStore(project_dir / "images.json").read()
     assert recovered.revision == 1
     assert {row["id"] for row in recovered.rows} == {row["id"] for row in rows.rows}
+    recovered_annotations = [annotations.get(row["id"]) for row in recovered.rows]
+    assert all(item["annotation_state"] == "unannotated" for item in recovered_annotations)
+    assert all(item["version"] == 1 for item in recovered_annotations)
+    assert list((project_dir / "annotations").glob("*.json")) == []
 
 
 def test_corrupt_video_task_is_failed_with_no_material_rows(tmp_path):
