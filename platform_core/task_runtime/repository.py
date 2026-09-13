@@ -466,11 +466,11 @@ class TaskRepository:
         now = utc_now()
         with closing(self._connect()) as database:
             changed = database.execute(
-                "UPDATE tasks SET stage=?, updated_at=? WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                "UPDATE tasks SET stage=?, updated_at=? WHERE task_id=? AND status='RUNNING'",
                 (value, now, str(task_id)),
             ).rowcount
         if changed != 1:
-            raise ValueError("only active tasks can change stage")
+            raise ValueError("only running tasks can change stage")
         result = self.get(task_id)
         if result is None:
             raise KeyError(task_id)
