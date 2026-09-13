@@ -9,6 +9,7 @@ on:
       - tests/api/test_unified_task_paused_public_status.py
       - platform_core/task_runtime/public.py
 
+# RED evidence rerun after the contract was attached to the permanent release gate.
 jobs:
   paused-public-status-contract:
     runs-on: ubuntu-24.04
