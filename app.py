@@ -8106,26 +8106,33 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             if not src or not src.exists():
                 report['missing_images'] += 1
                 continue
-            rec = add_image_record(project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id)
+            boxes=[]
+            image_annotations = anns_by_img.get(int(im.get('id')), [])
+
+            def build_final_annotation(record):
+                for a in image_annotations:
+                    cid = int(a.get('category_id', -1))
+                    if cid not in cat_to_class:
+                        continue
+                    bbox = a.get('bbox') or []
+                    if len(bbox) < 4:
+                        continue
+                    x,y,w,h = [float(v) for v in bbox[:4]]
+                    if w < 2 or h < 2:
+                        report['invalid_boxes'] += 1
+                        continue
+                    cls = cat_to_class[cid]
+                    boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(record['width'],x+w),2), 'y2':round(min(record['height'],y+h),2)})
+                return boxes
+
+            rec = add_image_record(
+                project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
+                annotation_builder=build_final_annotation,
+            )
             if not rec:
                 report['skipped_images'] += 1
                 continue
             _v18_set_image_split(project_id, rec['id'], split)
-            boxes=[]
-            for a in anns_by_img.get(int(im.get('id')), []):
-                cid = int(a.get('category_id', -1))
-                if cid not in cat_to_class:
-                    continue
-                bbox = a.get('bbox') or []
-                if len(bbox) < 4:
-                    continue
-                x,y,w,h = [float(v) for v in bbox[:4]]
-                if w < 2 or h < 2:
-                    report['invalid_boxes'] += 1
-                    continue
-                cls = cat_to_class[cid]
-                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(rec['width'],x+w),2), 'y2':round(min(rec['height'],y+h),2)})
-            write_annotation(project_id, rec['id'], boxes)
             report.setdefault('imported_image_ids', []).append(rec['id'])
             for _b in boxes:
                 _lab = str(_b.get('label') or '').strip()
@@ -8158,28 +8165,36 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         if not src:
             report['missing_images'] += 1
             continue
-        rec = add_image_record(project_id, src, src.name, 'imported_voc', dataset_id)
+        split = _v18_split_from_path(xp)
+        boxes=[]
+        objects = list(r.findall('object'))
+
+        def build_final_annotation(record):
+            for obj in objects:
+                label = normalize_label(obj.findtext('name') or 'object')
+                if not label: continue
+                cls = ensure_label(project, label)
+                bb = obj.find('bndbox')
+                if bb is None: continue
+                try:
+                    x1=float(bb.findtext('xmin')); y1=float(bb.findtext('ymin')); x2=float(bb.findtext('xmax')); y2=float(bb.findtext('ymax'))
+                except Exception:
+                    report['invalid_boxes'] += 1
+                    continue
+                if x2-x1<2 or y2-y1<2:
+                    report['invalid_boxes'] += 1
+                    continue
+                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x1),2), 'y1':round(max(0,y1),2), 'x2':round(min(record['width'],x2),2), 'y2':round(min(record['height'],y2),2)})
+            return boxes
+
+        rec = add_image_record(
+            project_id, src, src.name, 'imported_voc', dataset_id,
+            annotation_builder=build_final_annotation,
+        )
         if not rec:
             report['skipped_images'] += 1
             continue
-        _v18_set_image_split(project_id, rec['id'], _v18_split_from_path(xp))
-        boxes=[]
-        for obj in r.findall('object'):
-            label = normalize_label(obj.findtext('name') or 'object')
-            if not label: continue
-            cls = ensure_label(project, label)
-            bb = obj.find('bndbox')
-            if bb is None: continue
-            try:
-                x1=float(bb.findtext('xmin')); y1=float(bb.findtext('ymin')); x2=float(bb.findtext('xmax')); y2=float(bb.findtext('ymax'))
-            except Exception:
-                report['invalid_boxes'] += 1
-                continue
-            if x2-x1<2 or y2-y1<2:
-                report['invalid_boxes'] += 1
-                continue
-            boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x1),2), 'y1':round(max(0,y1),2), 'x2':round(min(rec['width'],x2),2), 'y2':round(min(rec['height'],y2),2)})
-        write_annotation(project_id, rec['id'], boxes)
+        _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
         for _b in boxes:
             _lab = str(_b.get('label') or '').strip()
