@@ -34,6 +34,10 @@ def _single_image_zip() -> bytes:
     return buffer.getvalue()
 
 
+def _local_stored_path(app_module, project_id: str, record):
+    return app_module.project_dir(project_id) / "uploads" / record["stored_name"]
+
+
 def test_v19_worker_failure_rolls_back_partial_durable_import(client, monkeypatch):
     import app as app_module
 
@@ -97,7 +101,7 @@ def test_v19_worker_failure_rolls_back_partial_durable_import(client, monkeypatc
         str(row.get("id")) != image_id
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not app_module.storage_manager(project_id).resolve_source_file(record).exists()
+    assert not _local_stored_path(app_module, project_id, record).exists()
     assert not AnnotationRepository(app_module.project_dir(project_id)).exists(image_id)
     assert app_module._v50_active_image_batch(project_id) is None
 
@@ -130,7 +134,7 @@ def test_save_false_discards_new_batch_files_and_sqlite_annotation(client, tmp_p
         ],
     )
     assert record is not None
-    stored_path = app_module.storage_manager(project_id).resolve_source_file(record)
+    stored_path = _local_stored_path(app_module, project_id, record)
     repository = AnnotationRepository(app_module.project_dir(project_id))
     assert stored_path.exists()
     assert repository.exists(record["id"])
