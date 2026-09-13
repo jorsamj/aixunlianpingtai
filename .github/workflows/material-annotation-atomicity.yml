@@ -10,8 +10,10 @@ on:
       - app.py
       - platform_core/annotation_repository.py
       - platform_core/material_repository.py
+      - platform_core/material_repository_batch.py
       - tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
       - tests/api/test_material_batching.py
+      - tests/api/test_material_repository_connection_lifecycle.py
       - tests/api/test_material_selection_atomicity.py
       - tests/api/test_annotation_flow.py
       - tests/api/test_v19_import_scalability.py
@@ -40,7 +42,11 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Syntax and release boundary
         run: |
-          python -m py_compile app.py platform_core/annotation_repository.py
+          python -m py_compile \
+            app.py \
+            platform_core/annotation_repository.py \
+            platform_core/material_repository.py \
+            platform_core/material_repository_batch.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
       - name: Annotation SQLite and material atomicity contracts
@@ -48,6 +54,7 @@ jobs:
           python -m pytest -q
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
           tests/api/test_material_batching.py
+          tests/api/test_material_repository_connection_lifecycle.py
           tests/api/test_material_selection_atomicity.py
           tests/api/test_v19_import_failure_rollback.py
           tests/api/test_v19_job_atomic_persistence.py
