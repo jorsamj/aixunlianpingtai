@@ -1,0 +1,149 @@
+name: Sync ZIP Processing P2c Handoff
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/sync-zip-processing-p2c-handoff.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-handoff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Sync four authority documents
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          docs = [
+              Path('docs/TECH_DEBT_CLOSURE_V42_25.md'),
+              Path('docs/CODEX_CURRENT_STATE.md'),
+              Path('docs/frontend-legacy-audit.md'),
+              Path('docs/FRONTEND_OWNER_MAP_V42_25.md'),
+          ]
+
+          marker = 'ZIP Processing P2c — COCO/VOC structured-import single-write CLOSED'
+          block = r'''
+
+          ## ZIP Processing P2c — COCO/VOC structured-import single-write CLOSED
+
+          P2c is CLOSED with independent COCO and VOC RED → migration → GREEN → permanent-guard evidence; the YOLO P2b conclusion was not assumed to apply automatically.
+
+          ```text
+          baseline + migration run: 34742240350
+          old COCO RED:             6 images -> 12 annotation upserts
+          old VOC RED:              6 images -> 12 annotation upserts
+          product:                  02ce1845d36dfa59e69e2a600d03a31b4da05d13
+          permanentization/cleanup: 233248847797023bc98bf0974490430139be3641
+
+          1000 COCO before:
+            annotation writes/upserts: 2000
+            annotation connections:    2001
+            wall:                      13.599580s
+            throughput:                73.532 images/s
+
+          1000 COCO after:
+            annotation writes/upserts: 1000
+            annotation connections:    1001
+            wall:                      6.922337s
+            throughput:                144.460 images/s
+            wall speedup:              1.9646x
+
+          1000 VOC before:
+            annotation writes/upserts: 2000
+            annotation connections:    2001
+            wall:                      10.693482s
+            throughput:                93.515 images/s
+
+          1000 VOC after:
+            annotation writes/upserts: 1000
+            annotation connections:    1001
+            wall:                      10.427986s
+            throughput:                95.896 images/s
+            wall speedup:              1.0255x
+          ```
+
+          Both formats preserve `1000 material / 1000 annotation / 1000 boxes` truth. COCO and VOC now create the image record with the final annotation builder, so structured import no longer persists a temporary `unannotated` row and then rewrites the final GT. Plain image upload still retains immediate durable `unannotated` semantics; mixed structured imports retain `annotated` and `confirmed_empty` state/version contracts.
+
+          Permanent cleaned-head gates on `233248847797023bc98bf0974490430139be3641`:
+
+          ```text
+          Material Annotation Atomicity: 34742373484 PASS
+            atomicity/import contracts: 22 passed
+            annotation/ZIP regressions:  7 passed
+
+          Navigation Action Fencing:     34742373492 PASS
+
+          Frontend Runtime Stabilization:34742373480 PASS
+            Real Chrome:                 33/33 PASS (1.1m)
+          ```
+
+          One-shot P2c migration workflow, migration helper and profiler were physically deleted after permanentization. The permanent P2c contract remains under `tests/api/test_zip_processing_p2c_structured_single_final_annotation.py` and `Material Annotation Atomicity`.
+
+          Post-P2c profiler decision: no new P2d is justified at this checkpoint. After single-write, COCO/VOC have one annotation upsert per image, one storage upload per image, one dataset-writable check per image, `get_project=1`, and one buffered material mutate; the remaining dominant timings are necessary per-image storage/annotation work rather than a newly demonstrated duplicate fan-out. Do not create P2d without new measured evidence.
+
+          **NEXT:** genuine 10,000-image processing-phase acceptance. Full 10k processing acceptance remains OPEN until wall time, throughput, resource/FD/SQLite behavior, progress cadence, rollback/recovery and final material/annotation/box truth are measured on a real annotated dataset.
+
+          Formal `VERSION.txt` remains `42.24.0`. No merge to `main`, no tag, no release. Technical-debt mainline remains PAUSED; A800 RC remains DEFERRED.
+          '''
+          block = '\n'.join(line[10:] if line.startswith('          ') else line for line in block.splitlines())
+
+          for path in docs:
+              text = path.read_text(encoding='utf-8')
+
+              if path.name == 'CODEX_CURRENT_STATE.md':
+                  text = re.sub(
+                      r'(?m)^latest full code acceptance:\s*[0-9a-f]+$',
+                      'latest full code acceptance: 233248847797023bc98bf0974490430139be3641',
+                      text,
+                  )
+                  text = re.sub(
+                      r'(?m)^Frontend Runtime run:\s*\d+$',
+                      'Frontend Runtime run:        34742373480',
+                      text,
+                  )
+
+              text = text.replace(
+                  '→ NEXT: ZIP 10k processing-phase benchmark and measured worker-hotspot optimization',
+                  '→ ZIP Processing P2c COCO/VOC structured single-write CLOSED\n→ NEXT: genuine 10,000-image processing-phase acceptance; P2d only if new profiler evidence proves another structural hotspot',
+              )
+              text = re.sub(
+                  r'\*\*Current next product scope:[^\n]*\*\*',
+                  '**Current next product scope: genuine 10,000-image processing-phase acceptance. P2c is CLOSED; P2d is not opened because the post-P2c profiler no longer shows duplicate per-image fan-out. Create P2d only if the 10k acceptance or a new profiler proves another structural hotspot.**',
+                  text,
+              )
+
+              if marker not in text:
+                  text = text.rstrip() + block + '\n'
+              path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Verify handoff and release boundary
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          for f in docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md; do
+            grep -Fq 'ZIP Processing P2c — COCO/VOC structured-import single-write CLOSED' "$f"
+            grep -Fq 'genuine 10,000-image processing-phase acceptance' "$f"
+          done
+          git diff --check
+
+      - name: Remove one-shot workflow and commit docs
+        run: |
+          rm .github/workflows/sync-zip-processing-p2c-handoff.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md .github/workflows/sync-zip-processing-p2c-handoff.yml
+          git diff --cached --check
+          git commit -m "docs(v42.25): close ZIP Processing P2c"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
