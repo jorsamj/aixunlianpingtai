@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -103,7 +105,7 @@ class FencedTaskRepository(TaskRepository):
         execution_generation: int,
     ):
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 """
                 SELECT * FROM tasks
@@ -144,7 +146,7 @@ class FencedTaskRepository(TaskRepository):
             parameters.append(str(current_item))
         generation_sql, generation_parameters = self._generation_clause(execution_generation)
         parameters.extend([str(task_id), str(lease_token), now_text, *generation_parameters])
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 f"UPDATE tasks SET {','.join(updates)} "
                 "WHERE task_id=? AND lease_token=? "
@@ -170,7 +172,7 @@ class FencedTaskRepository(TaskRepository):
     ):
         now = utc_now()
         generation_sql, generation_parameters = self._generation_clause(execution_generation)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET process_pid=?, process_create_time=?,
@@ -219,7 +221,7 @@ class FencedTaskRepository(TaskRepository):
             TaskStatus.SUCCEEDED,
         } else None
         generation_sql, generation_parameters = self._generation_clause(execution_generation)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET status=?, result_ref=?, error=?, accepted=?, stage=?,
@@ -381,7 +383,7 @@ class FencedTaskRepository(TaskRepository):
         until an operator or a later Worker can prove process identity.
         """
         now_text = _iso(now)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 """
                 SELECT * FROM tasks

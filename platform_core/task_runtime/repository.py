@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import base64
 import json
 import sqlite3
@@ -149,7 +151,7 @@ class TaskRepository:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.executescript(SCHEMA)
             columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
             if "queue_rank" not in columns:
@@ -167,7 +169,7 @@ class TaskRepository:
         return database
 
     def journal_mode(self) -> str:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
     def create(self, record: TaskRecord, *, artifacts=None) -> TaskRecord:
@@ -179,7 +181,7 @@ class TaskRepository:
         values = _to_values(record)
         columns = ",".join(values)
         placeholders = ",".join("?" for _ in values)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             database.execute(
                 f"INSERT INTO tasks ({columns}) VALUES ({placeholders})",
@@ -195,7 +197,7 @@ class TaskRepository:
         return created
 
     def get(self, task_id: str) -> TaskRecord | None:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 "SELECT * FROM tasks WHERE task_id=?",
                 (str(task_id),),
@@ -208,7 +210,7 @@ class TaskRepository:
         This is intentionally resource-scoped rather than a fake global queue position:
         different worker roles/capabilities may consume independent queues concurrently.
         """
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 "SELECT task_id,status,priority,queue_rank,resource_key,created_at FROM tasks WHERE task_id=?",
                 (str(task_id),),
@@ -265,7 +267,7 @@ class TaskRepository:
             clauses.append("(created_at < ? OR (created_at = ? AND task_id < ?))")
             parameters.extend([created_at, created_at, task_id])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 f"SELECT * FROM tasks {where} ORDER BY created_at DESC, task_id DESC LIMIT ?",
                 (*parameters, bounded_limit + 1),
@@ -301,7 +303,7 @@ class TaskRepository:
 
     def release_expired(self, now: datetime | str | None = None) -> int:
         now_text = _iso(now)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             count = self._release_expired_in(database, now_text)
             database.commit()
@@ -326,7 +328,7 @@ class TaskRepository:
         expires_at = (now + timedelta(seconds=max(1, int(lease_seconds)))).isoformat()
         token = uuid.uuid4().hex
         placeholders = ",".join("?" for _ in kind_values)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             self._release_expired_in(database, now_text)
             rows = database.execute(
@@ -409,7 +411,7 @@ class TaskRepository:
             updates.append("current_item=?")
             parameters.append(str(current_item))
         parameters.extend([str(task_id), str(lease_token)])
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 f"UPDATE tasks SET {','.join(updates)} "
                 "WHERE task_id=? AND lease_token=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
@@ -429,7 +431,7 @@ class TaskRepository:
         identity: ProcessIdentity,
     ) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET process_pid=?, process_create_time=?,
@@ -458,7 +460,7 @@ class TaskRepository:
         if not value:
             raise ValueError("task stage cannot be empty")
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 "UPDATE tasks SET stage=?, updated_at=? WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
                 (value, now, str(task_id)),
@@ -472,7 +474,7 @@ class TaskRepository:
 
     def promote(self, task_id: str) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT status, resource_key FROM tasks WHERE task_id=?",
@@ -504,7 +506,7 @@ class TaskRepository:
 
     def request_cancel(self, task_id: str) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT status FROM tasks WHERE task_id=?",
@@ -553,7 +555,7 @@ class TaskRepository:
             TaskStatus.PARTIAL_SUCCESS,
             TaskStatus.SUCCEEDED,
         } else None
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET status=?, result_ref=?, error=?, accepted=?, stage=?,
@@ -593,7 +595,7 @@ class TaskRepository:
         if status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
             raise ValueError("review must finish as success or partial success")
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT * FROM tasks WHERE task_id=?",
@@ -641,7 +643,7 @@ class TaskRepository:
 
     def resume_after_confirmation(self, task_id: str) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT * FROM tasks WHERE task_id=?",
@@ -687,7 +689,7 @@ class TaskRepository:
         now = utc_now()
         terminal_values = tuple(status.value for status in TERMINAL_STATUSES)
         placeholders = ",".join("?" for _ in terminal_values)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 f"""
                 UPDATE tasks SET status='QUEUED', stage='queued', progress=0,
