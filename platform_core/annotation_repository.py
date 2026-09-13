@@ -67,6 +67,16 @@ class AnnotationRepository:
                 );
                 CREATE INDEX IF NOT EXISTS ix_annotations_state ON annotations(annotation_state, image_id);
                 CREATE INDEX IF NOT EXISTS ix_annotations_updated ON annotations(updated_at);
+                CREATE TABLE IF NOT EXISTS annotation_delete_backup (
+                    token TEXT NOT NULL, image_id TEXT NOT NULL,
+                    annotation_state TEXT NOT NULL, version INTEGER NOT NULL,
+                    content_digest TEXT NOT NULL, boxes_json TEXT NOT NULL,
+                    scope_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(token, image_id)
+                );
+                CREATE INDEX IF NOT EXISTS ix_annotation_delete_backup_token
+                    ON annotation_delete_backup(token, image_id);
             """)
             columns = {
                 str(row[1])
@@ -244,6 +254,128 @@ class AnnotationRepository:
             'annotation_scope': annotation_scope,
         }], project_material=project_material)
         return self.get(image_id)
+
+    def exists(self, image_id) -> bool:
+        image_id = self._id(image_id)
+        with closing(self._connect()) as db:
+            return db.execute(
+                "SELECT 1 FROM annotations WHERE image_id=?", (image_id,)
+            ).fetchone() is not None
+
+    @staticmethod
+    def _delete_token(token) -> str:
+        token = str(token or "").strip()
+        if (
+            not token
+            or len(token) > 128
+            or any(character in token for character in "/\\:\x00")
+            or token in {".", ".."}
+        ):
+            raise ValueError("invalid annotation delete token")
+        return token
+
+    def delete_backup_count(self, token) -> int:
+        token = self._delete_token(token)
+        with closing(self._connect()) as db:
+            return int(db.execute(
+                "SELECT COUNT(*) FROM annotation_delete_backup WHERE token=?",
+                (token,),
+            ).fetchone()[0])
+
+    def prepare_delete(self, token, image_ids) -> int:
+        """Persist an idempotent SQLite backup before dataset deletion can remove GT."""
+        token = self._delete_token(token)
+        ids = list(dict.fromkeys(self._id(value) for value in image_ids))
+        if not ids:
+            return 0
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.executemany(
+                    """INSERT OR IGNORE INTO annotation_delete_backup
+                       (token, image_id, annotation_state, version, content_digest,
+                        boxes_json, scope_json, created_at, updated_at)
+                       SELECT ?, image_id, annotation_state, version, content_digest,
+                              boxes_json, scope_json, created_at, updated_at
+                       FROM annotations WHERE image_id=?""",
+                    ((token, image_id) for image_id in ids),
+                )
+                count = int(db.execute(
+                    "SELECT COUNT(*) FROM annotation_delete_backup WHERE token=?",
+                    (token,),
+                ).fetchone()[0])
+                db.execute("COMMIT")
+                return count
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def finalize_delete(self, token) -> int:
+        """Delete only annotation rows that still match the durable backup snapshot."""
+        token = self._delete_token(token)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                expected = int(db.execute(
+                    "SELECT COUNT(*) FROM annotation_delete_backup WHERE token=?",
+                    (token,),
+                ).fetchone()[0])
+                cursor = db.execute(
+                    """DELETE FROM annotations
+                       WHERE EXISTS (
+                         SELECT 1 FROM annotation_delete_backup backup
+                         WHERE backup.token=?
+                           AND backup.image_id=annotations.image_id
+                           AND backup.content_digest=annotations.content_digest
+                       )""",
+                    (token,),
+                )
+                deleted = max(0, int(cursor.rowcount))
+                if deleted != expected:
+                    raise RuntimeError(
+                        "annotation changed during dataset deletion; refusing stale delete"
+                    )
+                db.execute("COMMIT")
+                return deleted
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def restore_delete(self, token) -> int:
+        """Restore missing GT from backup without overwriting a newer concurrent annotation."""
+        token = self._delete_token(token)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = db.execute(
+                    """SELECT image_id, annotation_state, version, content_digest,
+                              boxes_json, scope_json, created_at, updated_at
+                       FROM annotation_delete_backup WHERE token=? ORDER BY image_id""",
+                    (token,),
+                ).fetchall()
+                db.executemany(
+                    """INSERT OR IGNORE INTO annotations
+                       (image_id, annotation_state, version, content_digest, boxes_json,
+                        scope_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (tuple(row) for row in rows),
+                )
+                db.execute(
+                    "DELETE FROM annotation_delete_backup WHERE token=?", (token,)
+                )
+                db.execute("COMMIT")
+                return len(rows)
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+
+    def complete_delete(self, token) -> int:
+        token = self._delete_token(token)
+        with closing(self._connect()) as db, db:
+            cursor = db.execute(
+                "DELETE FROM annotation_delete_backup WHERE token=?", (token,)
+            )
+            return max(0, int(cursor.rowcount))
 
     def remove(self, image_ids):
         with closing(self._connect()) as db, db:

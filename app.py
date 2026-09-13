@@ -1705,6 +1705,16 @@ def _v50_cleanup_buffered_image_batch_files(
                 path.unlink(missing_ok=True)
             except OSError as error:
                 errors.append(f"{path.name}: {error}")
+    image_ids = [
+        str(record.get("id") or "")
+        for record in records
+        if str(record.get("id") or "")
+    ]
+    if image_ids:
+        try:
+            AnnotationRepository(p).remove(image_ids)
+        except Exception as error:
+            errors.append(f"annotation sqlite cleanup: {error}")
     return errors
 
 
@@ -2473,6 +2483,9 @@ def _v50_finish_absent_dataset_deletion(
 def _v50_cleanup_dataset_delete_artifacts(journal: Dict[str, Any]):
     project_id = str(journal.get("project_id") or "")
     token = str(journal.get("token") or "")
+    # The SQLite backup is part of the deletion journal. Clear it before
+    # removing filesystem recovery evidence so a DB failure leaves the journal.
+    AnnotationRepository(project_dir(project_id)).complete_delete(token)
     staging_dir = _v50_dataset_delete_staging_dir(project_id, token)
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
@@ -2500,12 +2513,15 @@ def _v50_recover_one_dataset_deletion(
         dataset_present = any(
             str(item.get("id") or "") == dataset_id for item in datasets
         )
+        annotation_repository = AnnotationRepository(project_dir(project_id))
         if dataset_present:
             _v50_restore_dataset_delete_files(project_id, journal)
             _v50_restore_dataset_delete_rows(project_id, journal)
+            annotation_repository.restore_delete(token)
             journal["status"] = "recovered"
         else:
             _v50_finish_absent_dataset_deletion(project_id, journal)
+            annotation_repository.finalize_delete(token)
             journal["status"] = "deletion_finished"
         _v50_write_dataset_delete_journal(journal)
         _v50_cleanup_dataset_delete_artifacts(journal)
@@ -2723,6 +2739,10 @@ def delete_dataset(project_id: str, dataset_id: str):
             )
             journal["status"] = "claimed"
             _v50_write_dataset_delete_journal(journal)
+            AnnotationRepository(project_dir(project_id)).prepare_delete(
+                claim_token,
+                [str(row.get("id")) for row in journal["claimed_rows"]],
+            )
 
         journal["status"] = "staging"
         _v50_write_dataset_delete_journal(journal)
@@ -2749,6 +2769,9 @@ def delete_dataset(project_id: str, dataset_id: str):
                 _v50_restore_dataset_delete_files(project_id, journal)
                 with coordination_lock:
                     _v50_restore_dataset_delete_rows(project_id, journal)
+                    AnnotationRepository(project_dir(project_id)).restore_delete(
+                        claim_token
+                    )
                     journal["status"] = "rolled_back"
                     _v50_write_dataset_delete_journal(journal)
                 _v50_cleanup_dataset_delete_artifacts(journal)
@@ -2797,6 +2820,7 @@ def delete_dataset(project_id: str, dataset_id: str):
             finalized = material_store(project_id).mutate(finalize_dataset_rows)
             if len(finalized) != len(journal["claimed_rows"]):
                 raise RuntimeError("数据集删除锁定的素材数量已变化")
+            AnnotationRepository(project_dir(project_id)).finalize_delete(claim_token)
             journal["status"] = "finalized"
             _v50_write_dataset_delete_journal(journal)
             datasets = _v50_read_datasets_strict(project_id)

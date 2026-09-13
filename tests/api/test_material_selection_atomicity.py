@@ -142,7 +142,7 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
     )
 
     def fail_locked_file(source, destination):
-        if source.name == f"{locked['id']}.json":
+        if source.name == locked["stored_name"]:
             raise PermissionError("simulated Windows file lock")
         return original_stage(source, destination)
 
@@ -168,9 +168,10 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
     assert (
         app_module.project_dir(project_id) / "uploads" / locked["stored_name"]
     ).exists()
-    assert (
-        app_module.project_dir(project_id) / "annotations" / f"{locked['id']}.json"
-    ).exists()
+    annotation_repository = app_module.AnnotationRepository(
+        app_module.project_dir(project_id)
+    )
+    assert annotation_repository.exists(locked["id"])
     assert not list(
         (app_module.project_dir(project_id) / "imports").glob("dataset_delete_*")
     )

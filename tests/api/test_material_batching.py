@@ -137,9 +137,9 @@ def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
     )
     project_path = app_module.project_dir(project_id)
     upload_path = project_path / "uploads" / record["stored_name"]
-    annotation_path = project_path / "annotations" / f"{record['id']}.json"
+    annotation_repository = app_module.AnnotationRepository(project_path)
     assert upload_path.exists()
-    assert annotation_path.exists()
+    assert annotation_repository.exists(record["id"])
     assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
 
     try:
@@ -155,7 +155,7 @@ def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
         for row in app_module.material_store(project_id).read().rows
     )
     assert not upload_path.exists()
-    assert not annotation_path.exists()
+    assert not annotation_repository.exists(record["id"])
 
 
 def test_rejected_multi_dataset_batch_cleans_all_buffered_files(
@@ -229,6 +229,7 @@ def test_rejected_multi_dataset_batch_cleans_all_buffered_files(
         {seed["id"], first["id"], second["id"]}
     )
     project_path = app_module.project_dir(project_id)
+    annotation_repository = app_module.AnnotationRepository(project_path)
     for record in (first, second):
         assert not (project_path / "uploads" / record["stored_name"]).exists()
-        assert not (project_path / "annotations" / f"{record['id']}.json").exists()
+        assert not annotation_repository.exists(record["id"])
