@@ -43,8 +43,9 @@ test('video form supports interval fps and exact fixed count', () => {
 });
 
 
-test('persistent uppercase statuses drive polling and result counts', () => {
+test('persistent public statuses drive polling and result counts', () => {
   assert.equal(isActiveVideoTask({status: 'QUEUED'}), true);
+  assert.equal(isActiveVideoTask({status: 'WAITING_RESOURCE'}), true);
   assert.equal(isActiveVideoTask({status: 'RUNNING'}), true);
   assert.equal(isActiveVideoTask({status: 'SUCCEEDED'}), false);
   const task = normalizeVideoTask({
@@ -69,13 +70,15 @@ test('queued video row preserves durable resource queue position', () => {
 });
 
 
-test('waiting-resource video row preserves durable wait reason', () => {
+test('WAITING_RESOURCE video row remains active and preserves durable wait reason', () => {
   const task = normalizeVideoTask({
-    id: 'vq2', status: 'QUEUED', stage: 'waiting_resource', progress: 0,
+    id: 'vq2', status: 'WAITING_RESOURCE', phase: 'resource_waiting', progress: 0,
     video_name: 'waiting.mp4', mode: 'fixed_count', fixed_count: 12,
     resource_queue_position: 2,
     resource_wait_reason: 'GPU 资源占用中',
   });
+  assert.equal(isActiveVideoTask(task), true);
+  assert.equal(task.statusText, '等待资源');
   assert.equal(task.runtimeText, '资源队列第 2 位 · GPU 资源占用中');
   const html = finalVideoRowRenderer()(task);
   assert.match(html, /资源队列第 2 位/);
