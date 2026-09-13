@@ -1,0 +1,70 @@
+name: Sync Training AI Continuation Progress Closure 20260913
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/sync-training-ai-continuation-progress-closure-20260913.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Append verified closure evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          marker = "2026-09-13 — AI continuation realtime progress CLOSED"
+          common = """
+          - RED contract commit: `084923474bdb0627756560c40f1b1a23a0543c14`.
+          - RED→GREEN workflow: `34757329068` — legacy RED proven, focused continuation GREEN, training runtime regressions PASS, formal version boundary PASS.
+          - Product commit: `57c698ad318110e9e825a7e80e7a1ad9be073369`.
+          - Permanentized clean HEAD: `c354d60e319b6fa195d70e175185c3b9cabec792`; one-shot migration helper/workflow removed.
+          - Release Regression `34758049699`: runtime-contracts PASS and training-data-contracts PASS; permanent `tests/unit/test_training_ai_continuation_progress.py` is in the release gate.
+          - Navigation Action Fencing `34758049728`: PASS including Real Chrome stale-mutation contract.
+          - Frontend Runtime Stabilization `34758049698`: frontend unit PASS and full Real Chrome runtime regressions PASS.
+          - Durable/UI truth: normal training remains 20..90; AI continuation advances 90..95 with cumulative Epoch/Batch truth instead of resetting to 1/N; continuation YOLO instances rebind epoch, batch, resource and device callbacks; 95..100 remains reserved for artifact verification/final evaluation.
+          - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, or A800 RC was performed.
+          """.strip()
+
+          blocks = {
+              Path("docs/TECH_DEBT_CLOSURE_V42_25.md"): f"\n\n## {marker}\n\n{common}\n",
+              Path("docs/CODEX_CURRENT_STATE.md"): f"\n\n### {marker}\n\n{common}\n",
+              Path("docs/frontend-legacy-audit.md"): f"\n\n### {marker}\n\n{common}\n",
+              Path("docs/FRONTEND_OWNER_MAP_V42_25.md"): f"\n\n### {marker}\n\n{common}\n",
+          }
+          for path, block in blocks.items():
+              text = path.read_text(encoding="utf-8")
+              if marker not in text:
+                  path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+          PY
+      - name: Verify authority marker and version boundary
+        run: |
+          for f in docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md; do
+            grep -q 'AI continuation realtime progress CLOSED' "$f"
+          done
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit authority doc sync
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md
+          if git diff --cached --quiet; then
+            echo 'Authority docs already synchronized.'
+            exit 0
+          fi
+          git commit -m 'docs(v42.25): record AI continuation progress closure'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
