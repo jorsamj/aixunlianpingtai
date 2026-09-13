@@ -11,8 +11,8 @@ Frontend Runtime run:        34725907423
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.93
-main.mjs cache:              42.25.89
+app.js cache:                42.25.94
+main.mjs cache:              42.25.91
 NavigationStability:         422512
 UI state runtime:            422500
 PollRegistry:                422511
@@ -29,9 +29,10 @@ Run `34725907423` passed syntax, all permanent owner guards, all frontend unit t
 
 ```text
 TECH-DEBT CLEANUP PAUSED BY USER REQUEST
-→ resume only for real functional/performance/data-integrity/release-blocking evidence
-→ Unified Task Progress + Durable Queue Runtime productionization (product work, when requested)
-→ Navigation Action Fencing final scan DEFERRED unless a real stale-async defect appears
+→ PRODUCT MAINLINE: Deployment Artifact E2E CLOSED
+→ Unified Task Progress Phase 1 CLOSED (public truth + Storage Import + Training UI)
+→ NEXT: Unified Task Progress Phase 2 (AI annotation / cleaning / conversion), then event-stream evaluation
+→ non-blocking Navigation Action Fencing final scan remains DEFERRED
 → external algorithm catalog read-only boundary
 → separate Resource Lifecycle production soak / non-SQLite resource classes
 → ZIP 10k / training progress / GPU tuner / deployment artifact E2E
@@ -41,6 +42,17 @@ TECH-DEBT CLEANUP PAUSED BY USER REQUEST
 ```
 
 A800 RC remains deferred unless the next product/acceptance task explicitly resumes it.
+
+### 当前产品主线 — Deployment E2E + Unified Task Progress Phase 1
+
+技术债暂停后已经转入真实功能生产化。当前完成：
+
+- **Deployment Artifact E2E CLOSED**：转换任务从 `running → done` 后会立即刷新真实部署产物；部署产物页进入时重新校验服务端真值；成功 job + 真实文件才能出现在 artifacts API，失败或缺失文件不会生成假产物。product `b75b7d09780f691b01e4207c3107977b0500d8aa`，focused run `34726749756`，cleanup `8f3d3e394ceed73e5f522cba512622286fead7a5`。
+- **Unified Task Truth API Phase 1 CLOSED**：新增 `/api/v62/projects/{project_id}/tasks`、单任务查询、真实 promote/cancel；公开 `priority / queue_rank / resource_queue_position / resource_wait_reason / worker_id / lease_expires_at / phase / progress_percent`。`WAITING_RESOURCE` 是真实 `QUEUED + resource_waiting` 的只读投影，不改变 Scheduler 可调度语义。product `aa5b82ebd2140d3a9f03dc6ae6754c9b7a55afcc`，focused run `34727100684`，cleanup `6de0758e9f0c0cd45d79c48bf7fb022dde8f9ca6`。
+- **Storage Import 已接统一进度**：执行期间从 v62 Task Truth 读取排队、等待资源、阶段、百分比、当前项、Worker；完成后只回业务 API 读取最终扫描结果。product `1855e2bebefe0dd7cab662cda012abba352a000d`，focused run `34727261869`，cleanup `70db2577458ae9197c36f057e714c0bbd3d7716b`。
+- **Training durable queue truth 已接 UI**：不增加第二个请求；现有 `/jobs` durable overlay 直接带出 `WAITING_RESOURCE / resource_queue_position / wait reason / worker / lease / progress`，训练列表显示真实队列和执行节点。product `7ecd56dd308f595d7cc23e921f80ef49ee8163d5`，focused run `34727367920`，cleanup `4d05036398014dffde8c52a86d46fa16ca73447f`。
+
+**下一批：Unified Task Progress Phase 2。** 优先把 AI 标注/清洗/模型转换等现有 durable task 的页面状态统一到同一 Task Truth；之后再评估 SSE/event stream。不得重写现有 Scheduler/lease/GPU admission；现有 durable queue 已是真实执行底座。
 
 ### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
 
