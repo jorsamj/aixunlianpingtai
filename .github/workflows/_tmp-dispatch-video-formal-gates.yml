@@ -1,0 +1,42 @@
+name: Temporary Video Formal Gate Dispatcher
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-dispatch-video-formal-gates.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  dispatch-clean-head:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Remove dispatcher and publish clean gate head
+        id: clean
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/_tmp-dispatch-video-formal-gates.yml
+          git commit -m "chore: clean video formal gate dispatcher"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Dispatch formal gates on cleaned branch head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ steps.clean.outputs.sha }}
+        shell: bash
+        run: |
+          actual=$(gh api repos/${GITHUB_REPOSITORY}/git/ref/heads/refactor/frontend-runtime-stabilization --jq .object.sha)
+          test "$actual" = "$EXPECTED_SHA"
+          gh workflow run v42.25-release-regression.yml --ref refactor/frontend-runtime-stabilization
+          gh workflow run navigation-action-fencing.yml --ref refactor/frontend-runtime-stabilization
+          gh workflow run frontend-runtime-stabilization.yml --ref refactor/frontend-runtime-stabilization
+          echo "formal gate head: $EXPECTED_SHA"
