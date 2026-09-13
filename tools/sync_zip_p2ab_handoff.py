@@ -55,4 +55,4 @@ for rel in FILES:
     text = path.read_text(encoding="utf-8")
     if MARKER in text:
         continue
-    path.write_text(text.rstrip() + BLOCK + "\n", encoding="utf-8")
+    path.write_text(text.rstrip() + BLOCK.rstrip() + "\n", encoding="utf-8")
