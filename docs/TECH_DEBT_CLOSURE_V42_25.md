@@ -31,7 +31,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Current next product scope: ZIP 10k processing-phase scalability audit. The UI/background-state amplification is closed, but this does not yet prove that importing 10,000 valid images with annotations is fast enough. Benchmark the real worker path and inspect per-image image decode/copy, AnnotationRepository writes, progress cadence, v50 buffered material commit, label/project writes and finalization. Optimize only measured hotspots; preserve YOLO/COCO/VOC semantics, project serialization, data integrity and cross-platform behavior.**
+**Current next product scope: genuine 10,000-image processing-phase acceptance. P2c is CLOSED; P2d is not opened because the post-P2c profiler no longer shows duplicate per-image fan-out. Create P2d only if the 10k acceptance or a new profiler proves another structural hotspot.**
 
 ## 1. 永久退休 surface
 
@@ -1052,3 +1052,64 @@ R20/global reload debt 仍为 **IN PROGRESS**，下一步进入剩余 `reload/lo
 ### Next measured candidate
 
 当前源码确认 `_v18_import_coco()` 与 `_v18_import_voc()` 仍存在 `add_image_record()` 后再 `write_annotation()` 的双 durable write 结构。下一批若继续，应作为 **P2c COCO/VOC structured-import single-write** 独立建立 RED、原子性合同与真实 benchmark；不要直接复用 YOLO 结论。
+
+## ZIP Processing P2c — COCO/VOC structured-import single-write CLOSED
+
+P2c is CLOSED with independent COCO and VOC RED → migration → GREEN → permanent-guard evidence; the YOLO P2b conclusion was not assumed to apply automatically.
+
+```text
+baseline + migration run: 34742240350
+old COCO RED:             6 images -> 12 annotation upserts
+old VOC RED:              6 images -> 12 annotation upserts
+product:                  02ce1845d36dfa59e69e2a600d03a31b4da05d13
+permanentization/cleanup: 233248847797023bc98bf0974490430139be3641
+
+1000 COCO before:
+  annotation writes/upserts: 2000
+  annotation connections:    2001
+  wall:                      13.599580s
+  throughput:                73.532 images/s
+
+1000 COCO after:
+  annotation writes/upserts: 1000
+  annotation connections:    1001
+  wall:                      6.922337s
+  throughput:                144.460 images/s
+  wall speedup:              1.9646x
+
+1000 VOC before:
+  annotation writes/upserts: 2000
+  annotation connections:    2001
+  wall:                      10.693482s
+  throughput:                93.515 images/s
+
+1000 VOC after:
+  annotation writes/upserts: 1000
+  annotation connections:    1001
+  wall:                      10.427986s
+  throughput:                95.896 images/s
+  wall speedup:              1.0255x
+```
+
+Both formats preserve `1000 material / 1000 annotation / 1000 boxes` truth. COCO and VOC now create the image record with the final annotation builder, so structured import no longer persists a temporary `unannotated` row and then rewrites the final GT. Plain image upload still retains immediate durable `unannotated` semantics; mixed structured imports retain `annotated` and `confirmed_empty` state/version contracts.
+
+Permanent cleaned-head gates on `233248847797023bc98bf0974490430139be3641`:
+
+```text
+Material Annotation Atomicity: 34742373484 PASS
+  atomicity/import contracts: 22 passed
+  annotation/ZIP regressions:  7 passed
+
+Navigation Action Fencing:     34742373492 PASS
+
+Frontend Runtime Stabilization:34742373480 PASS
+  Real Chrome:                 33/33 PASS (1.1m)
+```
+
+One-shot P2c migration workflow, migration helper and profiler were physically deleted after permanentization. The permanent P2c contract remains under `tests/api/test_zip_processing_p2c_structured_single_final_annotation.py` and `Material Annotation Atomicity`.
+
+Post-P2c profiler decision: no new P2d is justified at this checkpoint. After single-write, COCO/VOC have one annotation upsert per image, one storage upload per image, one dataset-writable check per image, `get_project=1`, and one buffered material mutate; the remaining dominant timings are necessary per-image storage/annotation work rather than a newly demonstrated duplicate fan-out. Do not create P2d without new measured evidence.
+
+**NEXT:** genuine 10,000-image processing-phase acceptance. Full 10k processing acceptance remains OPEN until wall time, throughput, resource/FD/SQLite behavior, progress cadence, rollback/recovery and final material/annotation/box truth are measured on a real annotated dataset.
+
+Formal `VERSION.txt` remains `42.24.0`. No merge to `main`, no tag, no release. Technical-debt mainline remains PAUSED; A800 RC remains DEFERRED.
