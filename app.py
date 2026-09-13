@@ -8412,7 +8412,9 @@ def v19_write_job(project_id: str, job: Dict[str, Any]):
     if isinstance(images, list):
         v19_write_scan_images(project_id, str(job["id"]), images)
         persisted["scan_images_ref"] = "scan-images.json"
-    write_json(f, persisted)
+    # v19 job.json is the browser-visible progress truth. Never expose a
+    # truncated JSON document while the worker is updating progress.
+    atomic_write_json(f, persisted)
 
 
 def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
