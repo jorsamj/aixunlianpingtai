@@ -1,0 +1,56 @@
+name: Sync Training Realtime Progress Closure 20260913
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/sync_training_realtime_progress_closure_20260913.py
+      - .github/workflows/sync-training-realtime-progress-closure-20260913.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Append verified closure evidence
+        run: python tools/sync_training_realtime_progress_closure_20260913.py
+      - name: Verify authority marker and version boundary
+        run: |
+          for f in \
+            docs/TECH_DEBT_CLOSURE_V42_25.md \
+            docs/CODEX_CURRENT_STATE.md \
+            docs/frontend-legacy-audit.md \
+            docs/FRONTEND_OWNER_MAP_V42_25.md; do
+            grep -q 'TRAINING_REALTIME_PROGRESS_CLOSED_20260913' "$f"
+          done
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit authority doc sync
+        run: |
+          if git diff --quiet -- \
+            docs/TECH_DEBT_CLOSURE_V42_25.md \
+            docs/CODEX_CURRENT_STATE.md \
+            docs/frontend-legacy-audit.md \
+            docs/FRONTEND_OWNER_MAP_V42_25.md; then
+            echo 'Authority docs already synchronized.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            docs/TECH_DEBT_CLOSURE_V42_25.md \
+            docs/CODEX_CURRENT_STATE.md \
+            docs/frontend-legacy-audit.md \
+            docs/FRONTEND_OWNER_MAP_V42_25.md
+          git commit -m 'docs(v42.25): record training realtime progress closure'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
