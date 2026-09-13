@@ -29,6 +29,7 @@ on:
       - tests/unit/test_a800_rc_acceptance.py
       - tests/unit/test_training_metrics_fd.py
 
+# Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
 jobs:
   runtime-contracts:
     runs-on: ubuntu-24.04
