@@ -364,6 +364,25 @@ def stage_gate_random_eval(trainer, args, epoch):
         return dict(getattr(trainer,'metrics',{}) or {}),[x.name for x in chosen],'random_fallback',str(e)
 
 
+def publish_epoch_progress(job_file, telemetry, trainer, requested_total_epochs):
+    telemetry.on_epoch_end(trainer)
+    progress = dict(telemetry.latest_epoch or {})
+    epoch = int(progress.get("epoch") or (int(getattr(trainer, "epoch", 0)) + 1))
+    total = max(epoch, int(progress.get("total_epochs") or requested_total_epochs or epoch))
+    percent = round(min(90.0, epoch / max(1, total) * 90.0), 2)
+    update_job(
+        job_file,
+        current_epoch=epoch,
+        total_epochs=total,
+        progress_percent=percent,
+        training_progress=progress,
+        elapsed_seconds=progress.get("elapsed_seconds"),
+        eta_seconds=progress.get("eta_seconds"),
+        message=f"训练中 · Epoch {epoch}/{total}",
+    )
+    return progress
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
@@ -540,14 +559,8 @@ def main():
         ai_cfg=read_json(Path(args.ai_config),{}) if ai_enabled and args.ai_config else {}
         def on_fit_epoch_end(trainer):
             nonlocal gate_reason, ai_plan, ai_rounds
-            epoch=int(getattr(trainer,"epoch",0))+1
-            update_job(
-                job_file,
-                current_epoch=epoch,
-                total_epochs=int(args.epochs),
-                progress_percent=round(min(90.0, epoch / max(1, int(args.epochs)) * 90.0), 2),
-                message=f"训练中 · Epoch {epoch}/{int(args.epochs)}",
-            )
+            progress = publish_epoch_progress(job_file, telemetry, trainer, int(args.epochs))
+            epoch = int(progress.get("epoch") or (int(getattr(trainer,"epoch",0))+1))
             if ai_enabled and epoch in ai_epochs and ai_rounds < max(1,int(args.ai_max_rounds or 1)) and ai_cfg:
                 try:
                     decision=_run_ai_intervention(ai_cfg,trainer,args,epoch,project_dir)
@@ -590,7 +603,6 @@ def main():
                 update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=train_args)
             target.add_callback("on_train_start", verify_runtime)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
-            target.add_callback("on_fit_epoch_end", telemetry.on_epoch_end)
         attach_resource_callbacks(model)
         retries = 0
         while True:

@@ -25,6 +25,53 @@ function duration(value) {
   return `${seconds}s`;
 }
 
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function metricValue(values, aliases) {
+  if (!values || typeof values !== 'object') return null;
+  const normalized = new Map(Object.entries(values).map(([key, value]) => [String(key).toLowerCase().replace(/\s+/g, ''), value]));
+  for (const alias of aliases) {
+    const value = finiteNumber(normalized.get(String(alias).toLowerCase().replace(/\s+/g, '')));
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function metricText(value, digits = 3) {
+  return value === null ? '' : Number(value).toFixed(digits);
+}
+
+export function trainingProgressView(job = {}) {
+  const progress = job.training_progress && typeof job.training_progress === 'object' ? job.training_progress : {};
+  const epoch = finiteNumber(progress.epoch) ?? finiteNumber(job.current_epoch) ?? 0;
+  const totalEpochs = finiteNumber(progress.total_epochs) ?? finiteNumber(job.total_epochs) ?? finiteNumber(job.epochs);
+  const elapsedSeconds = finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
+  const etaSeconds = finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
+  const throughput = finiteNumber(progress.images_per_second);
+  const losses = progress.losses || {};
+  const metrics = progress.metrics || {};
+  const learningRates = progress.learning_rates || {};
+  const boxLoss = metricValue(losses, ['box_loss', 'train/box_loss']);
+  const clsLoss = metricValue(losses, ['cls_loss', 'train/cls_loss']);
+  const dflLoss = metricValue(losses, ['dfl_loss', 'train/dfl_loss']);
+  const map50 = metricValue(metrics, ['metrics/map50(b)', 'metrics/map50', 'map50']);
+  const map5095 = metricValue(metrics, ['metrics/map50-95(b)', 'metrics/map50-95', 'map50-95', 'map']);
+  const primaryLr = Object.values(learningRates).map(finiteNumber).find(value => value !== null) ?? null;
+  const parts = [];
+  if (map50 !== null) parts.push(`mAP50 ${metricText(map50)}`);
+  if (map5095 !== null) parts.push(`mAP50-95 ${metricText(map5095)}`);
+  if (boxLoss !== null) parts.push(`box loss ${metricText(boxLoss, 4)}`);
+  if (clsLoss !== null) parts.push(`cls loss ${metricText(clsLoss, 4)}`);
+  if (dflLoss !== null) parts.push(`dfl loss ${metricText(dflLoss, 4)}`);
+  if (throughput !== null) parts.push(`${metricText(throughput, 1)} img/s`);
+  if (primaryLr !== null) parts.push(`LR ${Number(primaryLr).toPrecision(3)}`);
+  return {epoch, totalEpochs, elapsedSeconds, etaSeconds, metricLine: parts.join(' · ')};
+}
+
 function dateText(value) {
   if (!value) return '-';
   return String(value).replace('T', ' ').replace('Z', '').slice(0, 19);
@@ -84,10 +131,12 @@ function actions(job) {
 
 export function trainingTaskRow(job) {
   const percent = Math.max(0, Math.min(100, Number(job?.progress_percent || 0)));
-  const totalEpochs = job?.total_epochs || job?.epochs || '-';
+  const progress = trainingProgressView(job);
+  const totalEpochs = progress.totalEpochs ?? '-';
   const queueMeta = queueRuntimeMeta(job);
   const workerMeta = workerRuntimeMeta(job);
-  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(job.status)}">${esc(statusText(job.status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${job.current_epoch || 0}/${esc(totalEpochs)} · ${percent.toFixed(0)}%${job.current_item ? ` · ${esc(job.current_item)}` : ''}</span></td><td>${esc(duration(job.elapsed_seconds))}</td><td>${esc(duration(job.eta_seconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
+  const currentItem = job.current_item && String(job.current_item) !== String(progress.epoch) ? ` · ${esc(job.current_item)}` : '';
+  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(job.status)}">${esc(statusText(job.status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${progress.epoch}/${esc(totalEpochs)} · ${percent.toFixed(0)}%${currentItem}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td>${esc(duration(progress.elapsedSeconds))}</td><td>${esc(duration(progress.etaSeconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
 }
 
 export function visibleTrainingJobs(jobs, tab = 'active') {

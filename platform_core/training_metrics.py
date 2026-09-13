@@ -6,6 +6,7 @@ telemetry is retained as null and never treated as evidence for GPU sharing.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -272,6 +273,78 @@ def read_metrics(path):
         return {}
 
 
+def _finite_float(value):
+    try:
+        if hasattr(value, "item"):
+            value = value.item()
+        number = float(value)
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _numeric_mapping(value):
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key, raw in value.items():
+        number = _finite_float(raw)
+        if number is not None:
+            result[str(key)] = round(number, 6)
+    return result
+
+
+def _loss_snapshot(trainer):
+    names = [str(value) for value in (getattr(trainer, "loss_names", ()) or ())]
+    raw = getattr(trainer, "tloss", None)
+    if raw is None:
+        return {}
+    try:
+        if hasattr(raw, "detach"):
+            raw = raw.detach()
+        if hasattr(raw, "cpu"):
+            raw = raw.cpu()
+        if hasattr(raw, "tolist"):
+            raw = raw.tolist()
+        values = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    except (TypeError, RuntimeError):
+        return {}
+    result = {}
+    for index, value in enumerate(values):
+        number = _finite_float(value)
+        if number is None:
+            continue
+        key = names[index] if index < len(names) else f"loss_{index}"
+        result[key] = round(number, 6)
+    return result
+
+
+def _learning_rate_snapshot(trainer):
+    current = _numeric_mapping(getattr(trainer, "lr", None))
+    if current:
+        return current
+    optimizer = getattr(trainer, "optimizer", None)
+    groups = getattr(optimizer, "param_groups", ()) if optimizer is not None else ()
+    result = {}
+    for index, group in enumerate(groups or ()):
+        if not isinstance(group, dict):
+            continue
+        number = _finite_float(group.get("lr"))
+        if number is not None:
+            result[f"lr/pg{index}"] = round(number, 10)
+    return result
+
+
+def _trainer_total_epochs(trainer, completed):
+    total = getattr(trainer, "epochs", None)
+    if total is None:
+        total = getattr(getattr(trainer, "args", None), "epochs", None)
+    try:
+        return max(int(completed), int(total))
+    except (TypeError, ValueError):
+        return int(completed)
+
+
 class TrainingMetrics:
     def __init__(self, path, resolved, gpu_uuid=None, interval=5):
         self.path = Path(path)
@@ -282,6 +355,8 @@ class TrainingMetrics:
         self.started = time.monotonic()
         self.epoch_started = self.started
         self.epoch_duration = self.images_per_second = None
+        self.epoch_durations = []
+        self.latest_epoch = None
         self.oom = False
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -331,6 +406,7 @@ class TrainingMetrics:
             rows = [json.loads(row[0]) for row in db.execute("SELECT value FROM samples ORDER BY id DESC LIMIT 6")]
             summary = dict(self.resolved, latest=sample, diagnostic=diagnose_window(rows, self.oom),
                            epoch_duration_seconds=self.epoch_duration, images_per_second=self.images_per_second,
+                           latest_epoch=self.latest_epoch,
                            total_duration_seconds=round(time.monotonic() - self.started, 3),
                            sampled_at=sample["sampled_at"], interval_seconds=self.interval)
             db.execute("INSERT OR REPLACE INTO summary VALUES (1,?)", (json.dumps(summary),))
@@ -352,15 +428,53 @@ class TrainingMetrics:
             raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: runtime changed batch; explicit worker retry required")
 
     def on_epoch_end(self, trainer):
-        duration = max(0.001, time.monotonic() - self.epoch_started)
+        now = time.monotonic()
+        duration = max(0.001, now - self.epoch_started)
         count = len(trainer.train_loader.dataset)
+        completed = int(trainer.epoch) + 1
+        total = _trainer_total_epochs(trainer, completed)
+        sampled_at = datetime.now(timezone.utc).isoformat()
         with self.lock, closing(self.connect()) as db, db:
             self.epoch_duration = round(duration, 3)
             self.images_per_second = round(count / duration, 3)
-            db.execute("INSERT INTO epochs(value) VALUES (?)", (json.dumps(dict(
-                epoch=int(trainer.epoch) + 1, duration_seconds=self.epoch_duration,
-                images_per_second=self.images_per_second, images=count)),))
+            self.epoch_durations.append(self.epoch_duration)
+            self.epoch_durations = self.epoch_durations[-20:]
+            window = self.epoch_durations[-5:]
+            average_duration = round(sum(window) / len(window), 3)
+            eta_seconds = round(average_duration * max(0, total - completed), 3)
+            epoch = {
+                "epoch": completed,
+                "total_epochs": total,
+                "duration_seconds": self.epoch_duration,
+                "average_epoch_duration_seconds": average_duration,
+                "elapsed_seconds": round(now - self.started, 3),
+                "eta_seconds": eta_seconds,
+                "images_per_second": self.images_per_second,
+                "images": count,
+                "losses": _loss_snapshot(trainer),
+                "metrics": _numeric_mapping(getattr(trainer, "metrics", None)),
+                "learning_rates": _learning_rate_snapshot(trainer),
+                "eta_basis": "rolling_last_5_epochs",
+                "sampled_at": sampled_at,
+            }
+            self.latest_epoch = epoch
+            db.execute("INSERT INTO epochs(value) VALUES (?)", (json.dumps(epoch),))
             db.execute("DELETE FROM epochs WHERE id NOT IN (SELECT id FROM epochs ORDER BY id DESC LIMIT 1000)")
+            row = db.execute("SELECT value FROM summary WHERE id=1").fetchone()
+            try:
+                summary = json.loads(row[0]) if row else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                summary = {}
+            summary.update(self.resolved)
+            summary.update({
+                "epoch_duration_seconds": self.epoch_duration,
+                "images_per_second": self.images_per_second,
+                "latest_epoch": epoch,
+                "total_duration_seconds": epoch["elapsed_seconds"],
+                "sampled_at": sampled_at,
+                "interval_seconds": self.interval,
+            })
+            db.execute("INSERT OR REPLACE INTO summary VALUES (1,?)", (json.dumps(summary),))
 
     def close(self):
         self.stop_event.set()
