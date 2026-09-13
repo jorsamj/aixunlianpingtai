@@ -1,0 +1,75 @@
+name: Sync ZIP Overall Progress Closure 20260914
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/sync-zip-overall-progress-closure-20260914.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Append verified closure evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          marker = "2026-09-14 — ZIP whole-task progress monotonicity CLOSED"
+          common = """
+          - Permanent RED contract commit: `ee0e944ff654869c99c115d38b537e55acafd23f` (`tests/frontend/zip-import-overall-progress.test.mjs`).
+          - First migration run `34764744365`: legacy RED was proven; GREEN intentionally remained open because the first mapper had a floating-point edge (`95 -> 95.9`) and the source contract was too syntactically narrow for the existing equivalent upload expression.
+          - Successful RED→GREEN run: `34785810840` — legacy RED PASS, precise migration PASS, focused GREEN PASS, full frontend unit regression PASS, formal version boundary PASS.
+          - Product commit: `4140a8fa17eb949c26f3c2ec9e5b2b1d3e615f50`; product diff is limited to `static/app.js` (+2/-1): add the processing-to-whole-task mapper and consume it from active v19 ZIP polling.
+          - One-shot migration helper/workflow were physically removed before permanentization.
+          - Permanentized clean HEAD: `c6c28b9ed6bf2bfbe3a6cefbde9cdf2609dc2c46`; Release trigger boundary includes the permanent ZIP whole-task progress frontend contract.
+          - Release Regression `34786028127`: runtime-contracts PASS and training-data-contracts PASS.
+          - Navigation Action Fencing `34786028132`: PASS including Real Chrome stale-mutation contract.
+          - Frontend Runtime Stabilization `34786028178`: frontend unit tests PASS (including ZIP whole-task progress contract) and full Real Chrome runtime regressions PASS.
+          - Active v19 ZIP UI truth is now one monotonic whole-task scale: browser upload `0..35`, upload/validation baseline `38`, backend processing phase projected to `38..99`, terminal success only `100`. Raw backend phase progress is no longer allowed to overwrite the whole-task percentage and cause `38 -> 8` regressions.
+          - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
+          - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
+          """.strip()
+
+          blocks = {
+              Path("docs/TECH_DEBT_CLOSURE_V42_25.md"): f"\n\n## {marker}\n\n{common}\n",
+              Path("docs/CODEX_CURRENT_STATE.md"): f"\n\n### {marker}\n\n{common}\n",
+              Path("docs/frontend-legacy-audit.md"): f"\n\n### {marker}\n\n{common}\n",
+              Path("docs/FRONTEND_OWNER_MAP_V42_25.md"): f"\n\n### {marker}\n\n{common}\n",
+          }
+          for path, block in blocks.items():
+              text = path.read_text(encoding="utf-8")
+              if marker not in text:
+                  path.write_text(text.rstrip() + block + "\n", encoding="utf-8")
+          PY
+      - name: Verify authority marker and version boundary
+        run: |
+          for f in docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md; do
+            grep -q 'ZIP whole-task progress monotonicity CLOSED' "$f"
+          done
+          test "$(cat VERSION.txt)" = "42.24.0"
+          test ! -e tools/migrate_zip_import_overall_progress.py
+          test ! -e .github/workflows/migrate-zip-import-overall-progress.yml
+          git diff --check
+      - name: Commit authority doc sync
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md
+          if git diff --cached --quiet; then
+            echo 'Authority docs already synchronized.'
+            exit 0
+          fi
+          git commit -m 'docs(v42.25): close ZIP whole-task progress regression'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
