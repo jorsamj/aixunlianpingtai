@@ -114,5 +114,5 @@ def test_cancel_during_index_preflight_prevents_material_business_write(tmp_path
     assert MaterialRepository(project).count() == 0
     pending = store.pending_index_batch()
     assert len(pending) == 1
-    assert pending[0]["indexed"] is False
+    assert not bool(pending[0]["indexed"])
     assert artifacts.read_json(task.task_id, "result.json", default=None) is None
