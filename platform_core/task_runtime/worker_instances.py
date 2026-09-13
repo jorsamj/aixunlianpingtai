@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import hashlib
 import json
 import os
@@ -86,7 +88,7 @@ class WorkerInstanceService:
         now = datetime.now(timezone.utc)
         now_text = now.isoformat()
         expires_at = (now + timedelta(seconds=seconds)).isoformat()
-        with self.repository._connect() as database:
+        with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT worker_id, pid, expires_at FROM worker_instances WHERE instance_key=?",
@@ -114,7 +116,7 @@ class WorkerInstanceService:
         now = datetime.now(timezone.utc)
         now_text = now.isoformat()
         expires_at = (now + timedelta(seconds=max(3, int(lease_seconds)))).isoformat()
-        with self.repository._connect() as database:
+        with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             changed = database.execute(
                 "UPDATE worker_instances SET heartbeat_at=?, expires_at=? WHERE instance_key=? AND owner_token=?",
@@ -127,7 +129,7 @@ class WorkerInstanceService:
         return expires_at
 
     def release(self, instance_key: str, owner_token: str) -> bool:
-        with self.repository._connect() as database:
+        with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             changed = database.execute(
                 "DELETE FROM worker_instances WHERE instance_key=? AND owner_token=?",
