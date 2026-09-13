@@ -25,6 +25,7 @@ on:
       - tests/api/test_durable_training_controls.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
+      - tests/integration/test_storage_import_progress_truth.py
       - tests/integration/test_storage_import_worker.py
       - tests/integration/test_storage_index_cancel_fencing.py
       - tests/integration/test_video_task_worker.py
@@ -47,6 +48,7 @@ on:
       - tests/unit/task_runtime/test_progress_monotonicity.py
       - tests/unit/task_runtime/test_fenced_progress_monotonicity.py
       - tests/unit/task_runtime/test_control_stage_fencing.py
+      - tests/unit/task_runtime/test_material_import_progress_phases.py
       - tests/unit/task_runtime/test_process_control.py
       - tests/unit/task_runtime/test_public_projection.py
       - tests/unit/test_a800_rc_acceptance.py
@@ -59,6 +61,7 @@ on:
 # AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
 # Storage-scan guard: cancellation during a remote object read must stop follow-up I/O and terminal scan publication.
 # Storage-index guard: once cancellation is durable truth, indexing must not start later material/annotation writes.
+# Storage-progress guard: confirmation is partial progress, resume never regresses, and indexing advances 50..99 before success=100.
 # Release-path guard: every explicit tests/*.py reference in this workflow must exist on the checked-out head.
 jobs:
   runtime-contracts:
@@ -90,6 +93,7 @@ jobs:
           tests/api/test_durable_training_controls.py
           tests/api/test_unified_task_process_cancel.py
           tests/api/test_unified_task_paused_public_status.py
+          tests/integration/test_storage_import_progress_truth.py
           tests/integration/test_storage_import_worker.py
           tests/integration/test_storage_index_cancel_fencing.py
           tests/integration/test_video_task_worker.py
@@ -112,6 +116,7 @@ jobs:
           tests/unit/task_runtime/test_progress_monotonicity.py
           tests/unit/task_runtime/test_fenced_progress_monotonicity.py
           tests/unit/task_runtime/test_control_stage_fencing.py
+          tests/unit/task_runtime/test_material_import_progress_phases.py
           tests/unit/task_runtime/test_scheduler.py
           tests/unit/task_runtime/test_process_control.py
           tests/unit/task_runtime/test_public_projection.py
