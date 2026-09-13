@@ -17,11 +17,11 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 4f0ac51b28d3e62da183e82e01a55bedf7fc9e16
-Frontend Runtime run:        34730512607
+latest full code acceptance: 60305921402204e77b8e7ed4ec8e576d9f857c4b
+Frontend Runtime run:        34733035739
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
-app.js cache:                42.25.94
+app.js cache:                42.25.95
 main.mjs cache:              42.25.92
 NavigationStability:         422512
 ```
@@ -89,20 +89,20 @@ NavigationStability
 
 除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，不再继续 dead-code / zero-point / 命名 / cache-busting 类清理。剩余债务保留为 OPEN/DEFERRED，不影响当前功能使用时不主动扩展。
 
-### 当前产品主线 — Unified Task Progress Phase 2 + Training Progress v2 CLOSED
+### 当前产品主线 — ZIP 10k import scalability CLOSED
 
 Technical-debt cleanup remains paused by user request. Product productionization is the active line.
 
 - **Deployment Artifact E2E CLOSED** — successful conversion jobs surface only verified, existing deployment artifacts. Product `b75b7d09780f691b01e4207c3107977b0500d8aa`, focused run `34726749756`, cleanup `8f3d3e394ceed73e5f522cba512622286fead7a5`.
 - **Unified Task Truth API Phase 1 CLOSED** — `/api/v62/projects/{project_id}/tasks` remains the durable public truth for queue/resource/worker/progress metadata. Product `aa5b82ebd2140d3a9f03dc6ae6754c9b7a55afcc`, focused run `34727100684`, cleanup `6de0758e9f0c0cd45d79c48bf7fb022dde8f9ca6`.
-- **Storage Import + Training queue truth CLOSED** — Storage Import consumes unified task truth during execution; Training `/jobs` overlays durable queue truth without a second polling request. Products `1855e2bebefe0dd7cab662cda012abba352a000d` / `7ecd56dd308f595d7cc23e921f80ef49ee8163d5`.
-- **Unified Task Progress Phase 2 CLOSED — model conversion**: durable conversion overlay now exposes effective `WAITING_RESOURCE`, queue position/reason, worker/lease and progress; waiting-resource jobs remain actively polled. Product `9817f450b3fbd20256279c3c861b0938ffdcef16`, focused run `34728701060`, cleanup `d02691f47c7e72d1a7726c1fb536113ffed90a7d`.
-- **Unified Task Progress Phase 2 CLOSED — AI annotation + cleaning/material batch**: existing business endpoints now expose the same Task Truth without adding a second polling request. AI annotation and `MATERIAL_BATCH(operation=CLEAN)` both surface `WAITING_RESOURCE / queue position / reason / worker / lease / progress`. Product `ff31f879b6d501a501188fed8bc78426d9eb31ea`, focused run `34729292492`, cleanup `17a52fbb8c9f83d92986da9cedb92c603ccf98d8`.
-- **Existing v50 material-batching red test is not a Phase 2 regression**: independent unchanged-code baseline run `34729197821` reproduces `test_image_batch_rejects_dataset_deleted_before_commit` failing at `annotation_path.exists()`. The original test remains unchanged and must not be weakened or deleted.
-- **SSE/event stream evaluation DEFERRED**: current AI/material/conversion polling is page-scoped, approximately 1.5–1.8s, and already lifecycle-managed. The repository has no EventSource/SSE replay/reconnect base; introducing it now would add more complexity than demonstrated benefit.
-- **Training Progress v2 CLOSED**: existing `training-metrics.sqlite3` now persists a truthful `latest_epoch` snapshot in the same epoch SQLite transaction: epoch/total, duration, rolling-last-5 ETA, elapsed time, images/sec, numeric losses, numeric trainer metrics (including mAP when Ultralytics supplies it), and LR. The Worker publishes that snapshot into existing `job.json`; `/jobs` requires no extra metrics request and the detail API continues to expose full `runtime_metrics`. Missing metrics are omitted rather than manufactured as zero. Product `70110f9668e593215bc77c8614dd9d6dd55b7601`, focused run `34730431744`, cleanup/accepted HEAD `4f0ac51b28d3e62da183e82e01a55bedf7fc9e16`, Frontend Runtime `34730512607` with Real Chrome **33/33 PASS**, Action Fencing `34730512602` PASS. Existing SQLite FD regression remained green.
+- **Unified Task Progress Phase 2 CLOSED** — model conversion, AI annotation and cleaning/material-batch business surfaces expose durable waiting-resource/queue/worker/progress truth without parallel polling owners. Products `9817f450b3fbd20256279c3c861b0938ffdcef16` and `ff31f879b6d501a501188fed8bc78426d9eb31ea`.
+- **SSE/event stream evaluation DEFERRED** — current page-scoped polling remains lifecycle-managed; no EventSource/replay/reconnect base is introduced without demonstrated need.
+- **Training Progress v2 CLOSED** — existing `training-metrics.sqlite3` persists truthful latest-epoch duration, rolling ETA, throughput, losses, trainer metrics/mAP when supplied, LR and elapsed time; Worker mirrors the compact snapshot into `job.json` without extra list requests. Product `70110f9668e593215bc77c8614dd9d6dd55b7601`, focused run `34730431744`.
+- **ZIP 10k import scalability CLOSED — hot-state/candidate split + live v19 owner**: baseline proved the final v36 visible ZIP action still delegated to synchronous `doImportData()` / `/api/v18/.../import`, and a synthetic 10,000-candidate v19 `job.json` was **1,370,177 bytes**. The product now routes final v36 ZIP upload through existing v19 background jobs and stores the full candidate manifest once in `scan-images.json`; hot `job.json`, running list polling and detail polling no longer carry the 10k candidate array. Create response is bounded to 500 candidates for the picker; selecting-job list preview is bounded to 300; running/terminal task state stays O(1) in candidate count. Selected-path validation reads the cold manifest. Product `b4875ada5ff084fd4e21d7c5f026f5b09128033b`, focused run `34731027723`, cleanup `e819a35c71f6aa20f7739281ddfc75e8502104ce`.
+- **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
+- **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Current next product scope: ZIP 10k import scalability. Liveness audit shows the final browser `window.doImportData` still POSTs synchronously to `/api/v18/projects/{project_id}/datasets/{dataset_id}/import`, while the backend already contains the v19 background import job path with staged progress, per-project serialization and v50 buffered image commit. First priority is to prove and migrate the live UI to the existing background owner before micro-optimizing per-image loops. Do not rewrite Scheduler/GPU admission or resume broad technical-debt cleanup.**
+**Current next product scope: ZIP 10k processing-phase scalability audit. The UI/background-state amplification is closed, but this does not yet prove that importing 10,000 valid images with annotations is fast enough. Benchmark the real worker path and inspect per-image image decode/copy, AnnotationRepository writes, progress cadence, v50 buffered material commit, label/project writes and finalization. Optimize only measured hotspots; preserve YOLO/COCO/VOC semantics, project serialization, data integrity and cross-platform behavior.**
 
 ### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
 
@@ -117,8 +117,8 @@ Frontend Runtime:         34725907423
 full Real Chrome:         33/33 PASS
 Navigation Action Fencing:34725907404 PASS
 formal VERSION.txt:       42.24.0 unchanged
-app.js cache:             42.25.93
-main.mjs cache:           42.25.89
+app.js cache:                42.25.95
+main.mjs cache:              42.25.92
 ```
 
 永久 source contract：`tests/frontend/shadowed-model-config-generations-r20n.test.mjs`；最终 M4 行为继续由 `tests/browser/navigation-action-fencing-r2.spec.mjs` 与现有 Action Fencing workflow 覆盖。一次性 R20n migration helper/workflow 已物理删除。
@@ -138,8 +138,8 @@ Frontend Runtime:          34724354775
 full Real Chrome:          33/33 PASS
 Navigation Action Fencing: 34724354790 PASS
 formal VERSION.txt:        42.24.0 unchanged
-app.js cache:              42.25.92
-main.mjs cache:            42.25.89
+app.js cache:                42.25.95
+main.mjs cache:              42.25.92
 ```
 
 永久 source contract：`tests/frontend/shadowed-algorithm-crud-r20m.test.mjs`；行为合同复用现有 `tests/browser/algorithm-list-performance.spec.mjs`。一次性 migration helper/workflow 已物理删除。**R20m CLOSED；R20 全局 reload/request zero-point 仍为 IN PROGRESS。**
@@ -157,8 +157,8 @@ Frontend Runtime:         34723808299
 full Real Chrome:         33/33 PASS
 Navigation Action Fencing:34723808298 PASS
 formal VERSION.txt:       42.24.0 unchanged
-app.js cache:             42.25.91
-main.mjs cache:           42.25.89
+app.js cache:                42.25.95
+main.mjs cache:              42.25.92
 ```
 
 永久合同：`tests/frontend/source-import-completion-scope.test.mjs` + `tests/browser/source-import-completion-scope.spec.mjs`；browser spec 已进入唯一长期 `Frontend Runtime Stabilization` Chrome 清单。一次性 R20l migration helper/workflow 已物理删除。**这只关闭 source-import terminal completion；R20 全局 reload/request zero-point 仍为 IN PROGRESS。**
@@ -177,8 +177,8 @@ Frontend Runtime:   34702374386
 full Real Chrome:   32/32 PASS
 permanent Action Fencing run: 34702374346 PASS
 formal VERSION.txt: 42.24.0 unchanged
-app.js cache:       42.25.88
-main.mjs cache:     42.25.89
+app.js cache:                42.25.95
+main.mjs cache:              42.25.92
 NavigationStability: 422512
 ```
 
