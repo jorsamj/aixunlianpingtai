@@ -44,6 +44,7 @@ on:
       - tests/unit/test_deployment_inference_process_fencing.py
       - tests/unit/test_gpu_resource_connection_lifecycle.py
       - tests/unit/test_material_batch_public_truth.py
+      - tests/unit/test_training_ai_continuation_progress.py
       - tests/unit/test_training_progress_v2.py
       - tests/unit/test_training_realtime_progress.py
       - tests/unit/test_training_resource_contract.py
@@ -68,6 +69,7 @@ on:
 # Storage-index guard: once cancellation is durable truth, indexing must not start later material/annotation writes.
 # Storage-progress guard: confirmation is partial progress, resume never regresses, and indexing advances 50..99 before success=100.
 # Training-progress guard: preparation owns 0..20, active training advances 20..90 with throttled per-batch durable truth.
+# AI-continuation progress guard: a new continuation YOLO instance must rebind epoch/batch/resource callbacks and advance cumulative epoch truth through 90..95.
 # Release-path guard: every explicit tests/*.py reference in this workflow must exist on the checked-out head.
 jobs:
   runtime-contracts:
@@ -116,6 +118,7 @@ jobs:
           tests/unit/test_deployment_inference_process_fencing.py
           tests/unit/test_gpu_resource_connection_lifecycle.py
           tests/unit/test_material_batch_public_truth.py
+          tests/unit/test_training_ai_continuation_progress.py
           tests/unit/test_training_progress_v2.py
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_video_commit_fencing.py
