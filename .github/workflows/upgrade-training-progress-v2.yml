@@ -34,8 +34,8 @@ jobs:
           node --check tests/frontend/training-progress-v2.test.mjs
       - name: Frontend training progress contracts
         run: node --test tests/frontend/training-task-runtime.test.mjs tests/frontend/training-progress-v2.test.mjs
-      - name: Install focused Python test dependency
-        run: python -m pip install --disable-pip-version-check pytest pillow
+      - name: Install repository test dependencies
+        run: python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest httpx
       - name: Training metrics and worker progress contracts
         run: python -m pytest -q tests/unit/test_training_progress_v2.py tests/unit/test_training_metrics_fd.py tests/unit/test_training_resource_contract.py
       - name: Verify release and cache boundaries
