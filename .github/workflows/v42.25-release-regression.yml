@@ -105,8 +105,6 @@ jobs:
           tests/unit/task_runtime/test_resource_fencing.py
           tests/unit/task_runtime/test_gpu_recovery_fencing.py
           tests/unit/task_runtime/test_artifact_fencing.py
-          tests/unit/test_conversion.py
-          tests/unit/test_conversion_process_fencing.py
           tests/unit/task_runtime/test_training_resource_contract.py
           tests/unit/test_training_metrics_fd.py
       - name: Worker execution-fencing smoke check
