@@ -13878,7 +13878,7 @@ def v52_import_review(project_id: str, job_id: str):
     report = job.get('report') or {}
     ids = [str(x) for x in (report.get('imported_image_ids') or [])]
     wanted = set(ids)
-    images = [x for x in list_images(project_id) if str(x.get('id')) in wanted]
+    images = [x for x in load_images(project_id) if str(x.get('id')) in wanted]
     counts: Dict[str, int] = {}
     for img in images:
         ann = read_annotation(project_id, str(img.get('id')))
