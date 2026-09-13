@@ -123,6 +123,9 @@ def _from_row(row: sqlite3.Row) -> TaskRecord:
         updated_at=str(row["updated_at"]),
         finished_at=row["finished_at"],
         resource_wait_reason=row["resource_wait_reason"],
+        queue_rank=int(row["queue_rank"] or 0),
+        worker_id=row["worker_id"],
+        lease_expires_at=row["lease_expires_at"],
     )
 
 
@@ -198,6 +201,42 @@ class TaskRepository:
                 (str(task_id),),
             ).fetchone()
         return _from_row(row) if row is not None else None
+
+    def resource_queue_position(self, task_id: str) -> int | None:
+        """Return the truthful ordering position among queued peers sharing a resource key.
+
+        This is intentionally resource-scoped rather than a fake global queue position:
+        different worker roles/capabilities may consume independent queues concurrently.
+        """
+        with self._connect() as database:
+            row = database.execute(
+                "SELECT task_id,status,priority,queue_rank,resource_key,created_at FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            if str(row["status"]) != TaskStatus.QUEUED.value:
+                return None
+            ahead = database.execute(
+                """
+                SELECT COUNT(*) FROM tasks
+                 WHERE status='QUEUED' AND resource_key=? AND task_id<>?
+                   AND (
+                        priority < ?
+                        OR (priority = ? AND queue_rank > ?)
+                        OR (priority = ? AND queue_rank = ? AND created_at < ?)
+                        OR (priority = ? AND queue_rank = ? AND created_at = ? AND task_id < ?)
+                   )
+                """,
+                (
+                    str(row["resource_key"]), str(row["task_id"]),
+                    int(row["priority"]),
+                    int(row["priority"]), int(row["queue_rank"] or 0),
+                    int(row["priority"]), int(row["queue_rank"] or 0), str(row["created_at"]),
+                    int(row["priority"]), int(row["queue_rank"] or 0), str(row["created_at"]), str(row["task_id"]),
+                ),
+            ).fetchone()[0]
+        return int(ahead) + 1
 
     def list(
         self,

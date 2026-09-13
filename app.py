@@ -98,6 +98,7 @@ from platform_core.task_runtime import (
     TaskRecord,
     TaskRepository,
     TaskStatus,
+    task_to_public,
 )
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
@@ -261,6 +262,67 @@ def system_version():
         "base_dir": str(BASE_DIR),
         "persistent": True,
     }
+
+def _runtime_task_for_project(project_id: str, task_id: str) -> TaskRecord:
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+@app.get("/api/v62/projects/{project_id}/tasks")
+def list_unified_runtime_tasks(
+    project_id: str,
+    kind: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+):
+    get_project(project_id)
+    kinds = None
+    if kind:
+        try:
+            kinds = (TaskKind(str(kind).strip().upper()),)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=f"未知任务类型：{kind}") from error
+    repository = shared_task_repository()
+    try:
+        page = repository.list(project_id=project_id, kinds=kinds, limit=limit, cursor=cursor)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        "items": [task_to_public(task, repository) for task in page.items],
+        "next_cursor": page.next_cursor,
+    }
+
+
+@app.get("/api/v62/projects/{project_id}/tasks/{task_id}")
+def get_unified_runtime_task(project_id: str, task_id: str):
+    repository = shared_task_repository()
+    return task_to_public(_runtime_task_for_project(project_id, task_id), repository)
+
+
+@app.post("/api/v62/projects/{project_id}/tasks/{task_id}/promote")
+def promote_unified_runtime_task(project_id: str, task_id: str):
+    _runtime_task_for_project(project_id, task_id)
+    repository = shared_task_repository()
+    try:
+        task = repository.promote(task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return task_to_public(task, repository)
+
+
+@app.post("/api/v62/projects/{project_id}/tasks/{task_id}/cancel")
+def cancel_unified_runtime_task(project_id: str, task_id: str):
+    _runtime_task_for_project(project_id, task_id)
+    repository = shared_task_repository()
+    try:
+        task = repository.request_cancel(task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return task_to_public(task, repository)
+
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 LABEL_EXTS = {".txt"}

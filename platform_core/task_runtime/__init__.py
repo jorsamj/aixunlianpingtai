@@ -10,6 +10,7 @@ from .process_control import (
     launch_process,
 )
 from .repository import TaskRepository
+from .public import effective_task_status, task_to_public
 from .scheduler import HardwareUnavailableError, Scheduler
 from .worker import ExecutionFencedError, TaskHandler, WorkerContext
 from .worker_instances import (
@@ -36,6 +37,8 @@ __all__ = [
     "TaskRecord",
     "TaskRepository",
     "TaskStatus",
+    "effective_task_status",
+    "task_to_public",
     "WorkerContext",
     "DuplicateWorkerInstance",
     "WorkerInstanceLease",

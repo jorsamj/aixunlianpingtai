@@ -60,6 +60,9 @@ class TaskRecord:
     updated_at: str = field(default_factory=utc_now)
     finished_at: str | None = None
     resource_wait_reason: str | None = None
+    queue_rank: int = 0
+    worker_id: str | None = None
+    lease_expires_at: str | None = None
 
     @classmethod
     def new(
