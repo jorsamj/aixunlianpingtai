@@ -9,6 +9,8 @@ from .repository import TaskRepository
 def effective_task_status(task: TaskRecord) -> str:
     if task.status is TaskStatus.QUEUED and task.stage == "resource_waiting":
         return "WAITING_RESOURCE"
+    if task.status is TaskStatus.RUNNING and task.stage == "paused":
+        return "PAUSED"
     return task.status.value
 
 
