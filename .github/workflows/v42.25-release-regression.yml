@@ -26,6 +26,7 @@ on:
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
       - tests/integration/test_storage_import_worker.py
+      - tests/integration/test_storage_index_cancel_fencing.py
       - tests/integration/test_video_task_worker.py
       - tests/unit/storage/test_import_candidates.py
       - tests/unit/storage/test_import_scan_cancel_fencing.py
@@ -53,6 +54,7 @@ on:
 # Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
 # AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
 # Storage-scan guard: cancellation during a remote object read must stop follow-up I/O and terminal scan publication.
+# Storage-index guard: once cancellation is durable truth, indexing must not start later material/annotation writes.
 jobs:
   runtime-contracts:
     runs-on: ubuntu-24.04
@@ -74,6 +76,7 @@ jobs:
           tests/api/test_unified_task_process_cancel.py
           tests/api/test_unified_task_paused_public_status.py
           tests/integration/test_storage_import_worker.py
+          tests/integration/test_storage_index_cancel_fencing.py
           tests/integration/test_video_task_worker.py
           tests/unit/storage/test_import_candidates.py
           tests/unit/storage/test_import_scan_cancel_fencing.py
@@ -98,9 +101,9 @@ jobs:
           tests/unit/task_runtime/test_resource_fencing.py
           tests/unit/task_runtime/test_gpu_recovery_fencing.py
           tests/unit/task_runtime/test_artifact_fencing.py
-          tests/unit/test_conversion_tasks.py
-          tests/unit/test_conversion_process_fencing.py
-          tests/unit/test_training_resource_contract.py
+          tests/unit/task_runtime/test_conversion_tasks.py
+          tests/unit/task_runtime/test_conversion_process_fencing.py
+          tests/unit/task_runtime/test_training_resource_contract.py
           tests/unit/test_training_metrics_fd.py
       - name: Worker execution-fencing smoke check
         run: >-
