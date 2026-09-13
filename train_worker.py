@@ -390,21 +390,32 @@ def _training_phase_percent(completed_epochs, total_epochs, *, phase_start=20.0,
 
 def publish_batch_progress(
     job_file, trainer, requested_total_epochs, completed_batches, total_batches,
-    *, phase_start=20.0, phase_end=90.0,
+    *, phase_start=20.0, phase_end=90.0, epoch_offset=0,
+    display_total_epochs=None, item_prefix="",
 ):
     epoch_index = max(0, int(getattr(trainer, "epoch", 0)))
-    current_epoch = epoch_index + 1
+    phase_current_epoch = epoch_index + 1
+    phase_total_epochs = max(
+        phase_current_epoch,
+        int(getattr(trainer, "epochs", 0) or requested_total_epochs or phase_current_epoch),
+    )
+    offset = max(0, int(epoch_offset or 0))
+    current_epoch = offset + phase_current_epoch
     total_epochs = max(
         current_epoch,
-        int(getattr(trainer, "epochs", 0) or requested_total_epochs or current_epoch),
+        int(display_total_epochs) if display_total_epochs is not None
+        else offset + phase_total_epochs,
     )
     batches = max(1, int(total_batches or 1))
     completed = max(0, min(batches, int(completed_batches or 0)))
     epoch_fraction = epoch_index + completed / batches
     percent = _training_phase_percent(
-        epoch_fraction, total_epochs, phase_start=phase_start, phase_end=phase_end,
+        epoch_fraction, phase_total_epochs, phase_start=phase_start, phase_end=phase_end,
     )
-    current_item = f"Epoch {current_epoch}/{total_epochs} · Batch {completed}/{batches}"
+    prefix = f"{str(item_prefix).strip()} · " if str(item_prefix).strip() else ""
+    current_item = (
+        f"{prefix}Epoch {current_epoch}/{total_epochs} · Batch {completed}/{batches}"
+    )
     update_job(
         job_file,
         current_epoch=current_epoch,
@@ -420,7 +431,8 @@ def publish_batch_progress(
 
 def attach_training_batch_progress(
     model, job_file, requested_total_epochs, *, min_interval=0.25,
-    phase_start=20.0, phase_end=90.0,
+    phase_start=20.0, phase_end=90.0, epoch_offset=0,
+    display_total_epochs=None, item_prefix="",
 ):
     state = {"epoch": None, "completed_batches": 0, "last_write": None}
 
@@ -444,6 +456,8 @@ def attach_training_batch_progress(
             job_file, trainer, requested_total_epochs,
             state["completed_batches"], total_batches,
             phase_start=phase_start, phase_end=phase_end,
+            epoch_offset=epoch_offset, display_total_epochs=display_total_epochs,
+            item_prefix=item_prefix,
         )
         state["last_write"] = now
 
@@ -472,6 +486,69 @@ def publish_epoch_progress(job_file, telemetry, trainer, requested_total_epochs)
         message=f"训练中 · Epoch {epoch}/{total}",
     )
     return progress
+
+
+def publish_ai_continuation_epoch_progress(
+    job_file, telemetry, trainer, *, base_completed_epochs, extra_epochs,
+):
+    telemetry.on_epoch_end(trainer)
+    progress = dict(telemetry.latest_epoch or {})
+    phase_epoch = int(
+        progress.get("epoch") or (int(getattr(trainer, "epoch", 0)) + 1)
+    )
+    phase_total = max(
+        phase_epoch,
+        int(progress.get("total_epochs") or extra_epochs or phase_epoch),
+    )
+    base = max(0, int(base_completed_epochs or 0))
+    epoch = base + phase_epoch
+    total = max(epoch, base + phase_total)
+    percent = _training_phase_percent(
+        phase_epoch, phase_total, phase_start=90.0, phase_end=95.0,
+    )
+    progress.update(
+        phase_epoch=phase_epoch,
+        phase_total_epochs=phase_total,
+        epoch=epoch,
+        total_epochs=total,
+    )
+    update_job(
+        job_file,
+        current_epoch=epoch,
+        total_epochs=total,
+        current_batch=None,
+        total_batches=None,
+        progress_percent=percent,
+        training_progress=progress,
+        elapsed_seconds=progress.get("elapsed_seconds"),
+        eta_seconds=progress.get("eta_seconds"),
+        current_item=f"AI追加训练 · Epoch {epoch}/{total}",
+        message=f"AI追加训练 · Epoch {epoch}/{total}",
+    )
+    return progress
+
+
+def attach_ai_continuation_callbacks(
+    model, job_file, telemetry, *, base_completed_epochs, extra_epochs,
+    attach_resource_callbacks,
+):
+    base = max(0, int(base_completed_epochs or 0))
+    extra = max(1, int(extra_epochs or 1))
+    total = base + extra
+
+    def on_fit_epoch_end(trainer):
+        return publish_ai_continuation_epoch_progress(
+            job_file, telemetry, trainer,
+            base_completed_epochs=base, extra_epochs=extra,
+        )
+
+    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+    attach_training_batch_progress(
+        model, job_file, extra, phase_start=90.0, phase_end=95.0,
+        epoch_offset=base, display_total_epochs=total, item_prefix="AI追加训练",
+    )
+    attach_resource_callbacks(model)
+    return on_fit_epoch_end
 
 
 def main():
@@ -685,13 +762,14 @@ def main():
             model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
         except Exception as cb_err:
             print(f"[WARN] 阶段质量门禁回调未启用: {cb_err}",flush=True)
-        def attach_resource_callbacks(target):
+        def attach_resource_callbacks(target, effective_args=None):
+            runtime_args = dict(effective_args or train_args)
             def verify_runtime(trainer):
                 telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
-                evidence.update(runtime_device=str(trainer.device), effective_args=dict(train_args))
-                update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=train_args)
+                evidence.update(runtime_device=str(trainer.device), effective_args=dict(runtime_args))
+                update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=runtime_args)
             target.add_callback("on_train_start", verify_runtime)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
         attach_resource_callbacks(model)
@@ -739,11 +817,18 @@ def main():
                 if ai_plan.get("action")=="supplement_and_retrain":
                     next_data,supplemented=_supplement_snapshot(project_dir,args.data,ai_plan.get("target_labels") or [],max(1,int(args.supplement_count or 50)),ai_rounds)
                 extra=max(1,int(ai_plan.get("extra_epochs") or args.ai_extra_epochs or 20))
-                phase={"action":ai_plan.get("action"),"reason":ai_plan.get("reason"),"target_labels":ai_plan.get("target_labels") or [],"supplemented_image_ids":supplemented,"extra_epochs":extra,"data_yaml":next_data,"started_at":now_iso()}
-                update_job(job_file,ai_continuation=phase,message="AI建议已执行，进入追加训练")
+                current_job=read_json(job_file,{})
+                base_completed_epochs=max(0,int(current_job.get("current_epoch") or 0))
+                cumulative_total_epochs=base_completed_epochs+extra
+                phase={"action":ai_plan.get("action"),"reason":ai_plan.get("reason"),"target_labels":ai_plan.get("target_labels") or [],"supplemented_image_ids":supplemented,"extra_epochs":extra,"base_completed_epochs":base_completed_epochs,"total_epochs":cumulative_total_epochs,"data_yaml":next_data,"started_at":now_iso()}
+                update_job(job_file,ai_continuation=phase,progress_percent=max(90.0,float(current_job.get("progress_percent") or 0.0)),current_epoch=base_completed_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item=f"AI追加训练准备 · Epoch {base_completed_epochs}/{cumulative_total_epochs}",message="AI建议已执行，进入追加训练")
                 print(f"[AI执行] {phase['action']} · 追加 {extra} 轮 · 补充数据 {len(supplemented)} 张",flush=True)
                 cont_args=dict(train_args);cont_args.update({"data":next_data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
-                model=YOLO(str(resume_model)); train_result=model.train(**cont_args); phase["finished_at"]=now_iso(); update_job(job_file,ai_continuation=phase)
+                model=YOLO(str(resume_model))
+                attach_ai_continuation_callbacks(model,job_file,telemetry,base_completed_epochs=base_completed_epochs,extra_epochs=extra,attach_resource_callbacks=lambda target: attach_resource_callbacks(target,cont_args))
+                train_result=model.train(**cont_args)
+                phase["finished_at"]=now_iso()
+                update_job(job_file,ai_continuation=phase,progress_percent=95.0,current_epoch=cumulative_total_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item="AI追加训练完成，正在校验模型产物",message="AI追加训练完成，正在校验模型产物")
         run_dir = Path(getattr(model.trainer,"save_dir",runs_dir/args.run_name))
         best = run_dir / "weights" / "best.pt"
         last = run_dir / "weights" / "last.pt"
