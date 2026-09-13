@@ -6,8 +6,8 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: bae90eae4b3768d365d20344c1f2db9a75795ac8
-Frontend Runtime run:        34788383772
+latest full code acceptance: 2bc6f72fddd878a7e2d4802c5affd3d640f807e7
+Frontend Runtime run:        34788824849
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
@@ -57,6 +57,37 @@ formal VERSION.txt:        42.24.0 unchanged
 
 The one-shot product migration workflow was removed in the product commit. No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
 
+## Product closure — AI annotation polling queue metadata truth CLOSED
+
+The durable v60 AI annotation backend/public projection already exposes real `resource_queue_position` and `resource_wait_reason`, and `annotationTaskView()` already turns that truth into `runtimeText`. Initial page rendering consumed `runtimeText`, but `AutoLabelPollRuntime` used a separate row renderer during polling refresh and omitted it. Result: a task could initially show `资源队列第 N 位` / resource wait reason and then lose that truthful metadata after the first managed poll refresh even though durable truth had not changed.
+
+Closed semantics:
+
+```text
+initial render: durable status + progress + runtimeText
+managed polling refresh: the same durable status + progress + runtimeText
+QUEUED / WAITING_RESOURCE: resource queue position remains visible after every refresh
+resource wait reason: remains visible when projected by annotationTaskView
+no frontend queue simulation, no claim/order/resource-fencing changes
+```
+
+The fix is intentionally narrow: `static/modules/auto-label-poll-runtime.js` now renders existing `view.runtimeText` beside the status pill. No backend queue ordering, task claim, execution fencing, polling cadence, or progress semantics changed. Permanent behavior guard lives in `tests/frontend/auto-label-poll-runtime.test.mjs`; Release Regression path scope now includes both the polling runtime and its guard.
+
+Evidence:
+
+```text
+valid RED commit:          186005b428f361e88553555b3a86013d206f11b3
+valid RED run:             34788748122 (239 existing tests PASS; 1 intended queue-metadata assertion RED)
+product commit:            ddb1168a8f3457fef3d875ceec79e618b75acee9
+accepted clean code point: 2bc6f72fddd878a7e2d4802c5affd3d640f807e7
+Release Regression:        34788824842 PASS
+Navigation Action Fencing: 34788824910 PASS (Real Chrome PASS)
+Frontend Runtime:          34788824849 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:        42.24.0 unchanged
+```
+
+No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
+
 ## 2. Current priority
 
 ```text
@@ -90,7 +121,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Current next product scope: horizontal audit of real queue-position/progress truth across AI annotation, video, cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Current next product scope: continue the horizontal real queue-position/progress audit across video, cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
 
