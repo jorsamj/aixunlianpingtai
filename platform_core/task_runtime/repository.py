@@ -563,7 +563,12 @@ class TaskRepository:
             changed = database.execute(
                 """
                 UPDATE tasks SET status=?, result_ref=?, error=?, accepted=?, stage=?,
-                    progress=COALESCE(?, progress), finished_at=?, updated_at=?,
+                    progress=CASE
+                        WHEN ?='AWAITING_CONFIRMATION' AND kind='MATERIAL_IMPORT'
+                            THEN MAX(progress, 50.0)
+                        ELSE COALESCE(?, progress)
+                    END,
+                    finished_at=?, updated_at=?,
                     worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
@@ -574,6 +579,7 @@ class TaskRepository:
                     error,
                     None if accepted is None else int(accepted),
                     stage,
+                    status.value,
                     progress,
                     finished_at,
                     now,
@@ -666,7 +672,7 @@ class TaskRepository:
             if current.status is TaskStatus.AWAITING_CONFIRMATION:
                 database.execute(
                     """
-                    UPDATE tasks SET status='QUEUED', stage='indexing_queued', progress=0,
+                    UPDATE tasks SET status='QUEUED', stage='indexing_queued', progress=MAX(progress, 50.0),
                         current_item=NULL, error=NULL, accepted=1, finished_at=NULL,
                         updated_at=?, worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                      WHERE task_id=? AND status='AWAITING_CONFIRMATION'

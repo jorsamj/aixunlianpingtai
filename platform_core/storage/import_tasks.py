@@ -351,7 +351,7 @@ class StorageImportHandler:
         context.repository.heartbeat(
             context.task.task_id,
             context.lease.lease_token,
-            progress=99,
+            progress=50,
             stage="FINALIZING",
             current_item=(
                 f"扫描完成：{scanned} 个对象，可导入 {counts.get('IMPORTABLE', 0)} 张"
@@ -752,9 +752,15 @@ class StorageImportHandler:
                 **progress_counts,
             }
             context.save_checkpoint(checkpoint)
+            indexing_progress = (
+                50.0
+                if selected_count <= 0
+                else min(99.0, 50.0 + 49.0 * indexed_at_least / selected_count)
+            )
             context.repository.heartbeat(
                 context.task.task_id,
                 context.lease.lease_token,
+                progress=indexing_progress,
                 stage="indexing",
                 current_item=f"正在建立素材索引：已处理 {checkpoint['indexed_at_least']} / {selected_count}",
             )
