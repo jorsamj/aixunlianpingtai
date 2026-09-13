@@ -2,7 +2,7 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: PAUSED AUDIT — non-blocking technical-debt cleanup deferred by user request
-> Latest fully accepted code point: `2bc6f72fddd878a7e2d4802c5affd3d640f807e7` / run `34788824849`
+> Latest fully accepted code point: `cb81ca39016aea0fc53ed52090f0b0199d39109a` / run `34789704610`
 > Real Chrome: PASS
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
 
@@ -37,6 +37,26 @@ formal VERSION.txt:        42.24.0 unchanged
 ```
 
 The one-shot product migration workflow was removed in the product commit. No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
+
+## Product closure — Video resource queue truth CLOSED
+
+Final owner chain:
+
+```text
+/api/v33/projects/{project_id}/video-tasks
+→ shared TaskRepository / task_to_public
+→ _public_video_task
+→ PlatformCore.video.normalizeVideoTask
+→ videoTaskRow424
+→ patchVideoRows424 / renderVideo424
+→ PollRegistry(video-frames)
+```
+
+`resource_queue_position` and `resource_wait_reason` remain server-derived dynamic truth. `WAITING_RESOURCE` is a public active status and must continue polling. The v424 row displays `runtimeText`; it does not compute queue order locally. No alternate timer, frontend queue model, or shadow progress owner was introduced.
+
+Permanent guard: `tests/frontend/video-tasks.test.mjs` executes the actual final row renderer and locks queued / waiting-resource visibility plus active-state polling semantics.
+
+Evidence: RED `32284a8972faec46775144b8c47406e67edee014` / run `34789541200`; GREEN `34789628840`; product `c0fee2b7c8dfbf03481cbc6dfb1019f922293576`; accepted clean HEAD `cb81ca39016aea0fc53ed52090f0b0199d39109a`; Release `34789701814` PASS; Navigation `34789703315` PASS with Real Chrome; Frontend `34789704610` PASS with unit + full Real Chrome. `VERSION.txt` remains `42.24.0`.
 
 ## Product closure — AI annotation polling queue metadata truth CLOSED
 
@@ -86,7 +106,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Current next product scope: continue the horizontal real queue-position/progress audit across video, cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Video resource queue truth is CLOSED. Current next product scope: continue the horizontal real queue-position/progress audit across cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 2. Runtime ownership
 

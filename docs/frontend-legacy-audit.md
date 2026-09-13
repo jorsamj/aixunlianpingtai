@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       2bc6f72fddd878a7e2d4802c5affd3d640f807e7
-run:          34788824849
+commit:       cb81ca39016aea0fc53ed52090f0b0199d39109a
+run:          34789704610
 frontend:     PASS
 Real Chrome:  PASS
 ```
@@ -28,6 +28,39 @@ training-labels           422513
 training-task-runtime     training-task-runtime-422503 (cache 422505)
 auto-label-poll-runtime   422501
 ```
+
+## Product closure — Video resource queue truth CLOSED
+
+The live v424 video task page already reads `/api/v33/projects/{project_id}/video-tasks`, whose public projection is backed by the shared durable `TaskRepository`. `task_to_public()` dynamically exposes resource-scoped `resource_queue_position` / `resource_wait_reason`; a durable queued task in the `resource_waiting` phase is publicly projected as `WAITING_RESOURCE`. The frontend previously dropped that queue metadata and also failed to classify `WAITING_RESOURCE` as an active video task, so a genuinely resource-waiting task could lose timely managed polling and never show its real queue position/reason.
+
+Closed semantics:
+
+```text
+QUEUED: remains active under PollRegistry and shows real resource_queue_position when available
+WAITING_RESOURCE: remains active, shows “等待资源”, real queue position and resource wait reason
+initial render + delta polling: both use the same v424 row projection and preserve runtimeText
+progress: continues to come from durable server/worker truth; no frontend progress simulation
+queue ordering / claim / queue_rank / resource fencing: unchanged
+cancel / stale-worker / publish fencing: unchanged
+```
+
+The fix is intentionally narrow. `static/modules/video-tasks.js` now projects the existing durable queue metadata into `runtimeText` and treats public `WAITING_RESOURCE` as active; the final v424 `videoTaskRow424()` renders that view-model text. `PollRegistry` remains the sole video polling lifecycle owner. Permanent behavior guard: `tests/frontend/video-tasks.test.mjs`, which executes the real final row renderer and verifies both queued and waiting-resource behavior.
+
+Evidence:
+
+```text
+final permanent RED commit: 32284a8972faec46775144b8c47406e67edee014
+valid RED run:              34789541200 (242 total; 239 PASS; only 3 intended video truth assertions RED)
+focused/full GREEN run:     34789628840 PASS
+product/self-cleanup:       c0fee2b7c8dfbf03481cbc6dfb1019f922293576
+formal clean HEAD:          cb81ca39016aea0fc53ed52090f0b0199d39109a
+Release Regression:         34789701814 PASS
+Navigation Action Fencing:  34789703315 PASS (Real Chrome PASS)
+Frontend Runtime:           34789704610 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
+```
+
+No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP processing acceptance was performed. One-shot product/gate migration assets were physically deleted before formal gate acceptance.
 
 ## Product closure — AI annotation polling queue metadata truth CLOSED
 
@@ -105,7 +138,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Current next product scope: continue the horizontal real queue-position/progress audit across video, cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Video resource queue truth is CLOSED. Current next product scope: continue the horizontal real queue-position/progress audit across cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 2. Closed owner surfaces
 
