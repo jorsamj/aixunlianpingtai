@@ -693,3 +693,7 @@ Post-P2c profiler decision: no new P2d is justified at this checkpoint. After si
 **NEXT:** genuine 10,000-image processing-phase acceptance. Full 10k processing acceptance remains OPEN until wall time, throughput, resource/FD/SQLite behavior, progress cadence, rollback/recovery and final material/annotation/box truth are measured on a real annotated dataset.
 
 Formal `VERSION.txt` remains `42.24.0`. No merge to `main`, no tag, no release. Technical-debt mainline remains PAUSED; A800 RC remains DEFERRED.
+
+### 2026-09-13 training control truth boundary — CLOSED
+
+`v48_pause_job` / `v48_resume_job` / `v48_stop_job` remain API control owners, but task lifecycle truth is owned by the durable repository. `TaskRepository.set_stage()` is now valid only for persisted `RUNNING`; `CANCEL_REQUESTED + cancelling` cannot be resumed by a stale control request. The permanent v48 API regression proves normal pause→resume still works and stop→late-resume is rejected. Product `7cab9413185d0bfbc8052d978685ee7a2e8b46d0`; permanentization `dfa9623ad75eab9d7e0945cd45051688492e87f8`; cleaned gates `34749914123` / `34749914114` / `34749914211` all PASS.

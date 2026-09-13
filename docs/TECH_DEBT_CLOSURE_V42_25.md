@@ -1113,3 +1113,14 @@ Post-P2c profiler decision: no new P2d is justified at this checkpoint. After si
 **NEXT:** genuine 10,000-image processing-phase acceptance. Full 10k processing acceptance remains OPEN until wall time, throughput, resource/FD/SQLite behavior, progress cadence, rollback/recovery and final material/annotation/box truth are measured on a real annotated dataset.
 
 Formal `VERSION.txt` remains `42.24.0`. No merge to `main`, no tag, no release. Technical-debt mainline remains PAUSED; A800 RC remains DEFERRED.
+
+## 2026-09-13 — Durable task cancel→resume fencing CLOSED
+
+A real control-plane race was proven: after `request_cancel()` had persisted `CANCEL_REQUESTED` + `stage=cancelling`, a stale/late explicit resume path could still call `TaskRepository.set_stage(..., "training")` because `set_stage()` accepted both `RUNNING` and `CANCEL_REQUESTED`. This violated monotonic durable task truth.
+
+- RED contract: `a7d70f7b3106d32c62f01c45de89e8a4c3fb0807`; Release Regression `34748866897` failed only the new cancel→resume fencing contract while the rest of runtime contracts remained green.
+- Product fix: `7cab9413185d0bfbc8052d978685ee7a2e8b46d0` — `set_stage()` now accepts only persisted `RUNNING`; `CANCEL_REQUESTED` remains `cancelling` until worker/lease convergence to a terminal state.
+- Focused migration GREEN: `34749215356` PASS.
+- Permanent guard/cleanup: `dfa9623ad75eab9d7e0945cd45051688492e87f8`; permanent repository race contract retained, real v48 durable training pause→resume→stop API regression added, late resume after stop must be rejected, temporary migration helper/workflow removed.
+- Cleaned HEAD gates: Release Regression `34749914123` PASS; Frontend Runtime `34749914114` PASS including Real Chrome; Navigation Action Fencing `34749914211` PASS including Real Chrome stale-mutation contract.
+- Release boundary unchanged: `VERSION.txt = 42.24.0`; no merge/tag/release; A800 RC remains deferred.

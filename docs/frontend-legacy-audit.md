@@ -826,3 +826,7 @@ Post-P2c profiler decision: no new P2d is justified at this checkpoint. After si
 **NEXT:** genuine 10,000-image processing-phase acceptance. Full 10k processing acceptance remains OPEN until wall time, throughput, resource/FD/SQLite behavior, progress cadence, rollback/recovery and final material/annotation/box truth are measured on a real annotated dataset.
 
 Formal `VERSION.txt` remains `42.24.0`. No merge to `main`, no tag, no release. Technical-debt mainline remains PAUSED; A800 RC remains DEFERRED.
+
+### 2026-09-13 cross-layer guard — durable cancel/resume truth CLOSED
+
+Frontend/API control semantics are now fenced by durable server truth: ordinary v48 resume already rejects non-`RUNNING+paused`; the repository additionally rejects `set_stage()` once persisted status is `CANCEL_REQUESTED`, closing the concurrent stop/resume race rather than relying on the browser or an earlier API read. Real API regression is permanently included in `v42.25 Release Regression`; product `7cab9413185d0bfbc8052d978685ee7a2e8b46d0`, permanentization `dfa9623ad75eab9d7e0945cd45051688492e87f8`, Release `34749914123` PASS, Frontend Real Chrome `34749914114` PASS, Navigation Real Chrome `34749914211` PASS.
