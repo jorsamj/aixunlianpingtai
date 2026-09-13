@@ -30,6 +30,7 @@ jobs:
           git diff --check
       - name: Real HTTP 10k YOLO processing acceptance
         run: |
+          set -o pipefail
           python tools/accept_zip_processing_10k.py --output /tmp/zip-processing-10k-acceptance.json | tee /tmp/zip-processing-10k-acceptance.log
       - name: Verify acceptance artifact
         run: |
