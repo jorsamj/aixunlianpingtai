@@ -1842,7 +1842,7 @@ def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
 def add_image_record(
     project_id: str, src: Path, original_name: str,
     source_type: str = "raw", dataset_id: str = "default",
-    storage_source_id: str = "default_local",
+    storage_source_id: str = "default_local", annotation_builder=None,
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
     ext = src.suffix.lower()
@@ -1892,6 +1892,9 @@ def add_image_record(
     annotation_path = p / "annotations" / f"{img_id}.json"
     batch = None
     try:
+        prepared_annotation_boxes = None
+        if annotation_builder is not None:
+            prepared_annotation_boxes = list(annotation_builder(dict(record)) or [])
         with _v50_dataset_locks(project_id, [target_dataset_id]):
             _v50_assert_dataset_writable_locked(project_id, target_dataset_id)
             batch = _v50_active_image_batch(project_id)
@@ -1904,7 +1907,11 @@ def add_image_record(
                 batch["records"][image_id] = buffered
             else:
                 record = material_store(project_id).upsert(record)
-            if not annotation_path.exists():
+            if prepared_annotation_boxes is not None:
+                # Structured import paths already know the final GT. Persist it once
+                # before returning instead of durable unannotated -> final double writes.
+                write_annotation(project_id, img_id, prepared_annotation_boxes)
+            elif not annotation_path.exists():
                 write_annotation(project_id, img_id, [], 'unannotated')
     except Exception:
         annotation_path.unlink(missing_ok=True)
@@ -8207,45 +8214,50 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
     any_imported = False
     total_expected=max(1,len(image_files)); progress_done=0
     for img in image_files:
-        rec = add_image_record(project_id, img, img.name, 'imported_yolo', dataset_id)
-        if not rec:
-            report['skipped_images'] += 1
-            continue
         split = _v18_split_from_path(img)
-        _v18_set_image_split(project_id, rec['id'], split)
         cands = label_by_stem.get(img.stem, [])
         label_file = None
         if cands:
             # 优先选与图片同 split 且路径包含 labels 的 txt
-            img_split = _v18_split_from_path(img)
-            same_split = [x for x in cands if _v18_split_from_path(x) == img_split]
+            same_split = [x for x in cands if _v18_split_from_path(x) == split]
             label_file = next((x for x in same_split if any(part.lower()=='labels' for part in x.parts)), same_split[0] if same_split else cands[0])
         boxes=[]
-        if label_file and label_file.exists():
-            for line in label_file.read_text(encoding='utf-8', errors='ignore').splitlines():
-                box = yolo_line_to_box(line, rec['width'], rec['height'])
-                if not box:
-                    report['invalid_boxes'] += 1
-                    continue
-                old_cls = int(box.get('class_id', -1))
-                if old_cls < 0:
-                    report['invalid_boxes'] += 1
-                    continue
-                if old_cls < len(imported_names):
-                    label = normalize_label(imported_names[old_cls])
-                    new_cls = get_label_id(project, label)
-                elif old_cls < len(project.get('labels', [])):
-                    new_cls = old_cls
-                else:
-                    report['skipped_labels'] += 1
-                    continue
-                box['class_id'] = new_cls
-                box['label'] = project['labels'][new_cls]
-                box['id'] = uuid.uuid4().hex[:10]
-                boxes.append(box)
-        else:
-            report['unmatched_labels'] += 1
-        write_annotation(project_id, rec['id'], boxes)
+
+        def build_final_annotation(record):
+            if label_file and label_file.exists():
+                for line in label_file.read_text(encoding='utf-8', errors='ignore').splitlines():
+                    box = yolo_line_to_box(line, record['width'], record['height'])
+                    if not box:
+                        report['invalid_boxes'] += 1
+                        continue
+                    old_cls = int(box.get('class_id', -1))
+                    if old_cls < 0:
+                        report['invalid_boxes'] += 1
+                        continue
+                    if old_cls < len(imported_names):
+                        label = normalize_label(imported_names[old_cls])
+                        new_cls = get_label_id(project, label)
+                    elif old_cls < len(project.get('labels', [])):
+                        new_cls = old_cls
+                    else:
+                        report['skipped_labels'] += 1
+                        continue
+                    box['class_id'] = new_cls
+                    box['label'] = project['labels'][new_cls]
+                    box['id'] = uuid.uuid4().hex[:10]
+                    boxes.append(box)
+            else:
+                report['unmatched_labels'] += 1
+            return boxes
+
+        rec = add_image_record(
+            project_id, img, img.name, 'imported_yolo', dataset_id,
+            annotation_builder=build_final_annotation,
+        )
+        if not rec:
+            report['skipped_images'] += 1
+            continue
+        _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
         for _b in boxes:
             _lab = str(_b.get('label') or '').strip()

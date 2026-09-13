@@ -125,8 +125,8 @@ def test_yolo_batch_processing_bounds_project_reads_and_material_patches(monkeyp
     assert report['imported_images'] == 100
     assert report['boxes'] == 100
     assert get_project_calls <= 3
-    # P1 intentionally preserves the initial unannotated write plus final annotation write.
-    assert annotation_upserts == 200
+    # P2b persists the final YOLO truth before add_image_record returns, in one write.
+    assert annotation_upserts == 100
     summary = app_module.material_store(project_id).summary()
     assert summary['total'] == 100
     assert summary['annotated'] == 100
