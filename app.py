@@ -1787,12 +1787,19 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
         material_store(project_id).patch({str(image_id): patch})
 
 def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
-    saved = AnnotationRepository(project_dir(project_id)).upsert(image_id, boxes, annotation_state)
+    # App-level writes own the material projection so annotation truth and searchable
+    # material metadata are projected exactly once. Direct repository callers keep
+    # the legacy/default projection behavior via project_material=True.
+    saved = AnnotationRepository(project_dir(project_id)).upsert(
+        image_id, boxes, annotation_state, project_material=False
+    )
     updated = saved['updated_at']
-    # v42.11：把标注摘要同步进 images.json。列表页/首次启动无需逐张再次读取 annotation json，
+    # v42.11：把标注摘要同步进 material index。列表页/首次启动无需逐张再次读取 annotation SQLite，
     # 同时保留前 32 个框用于数据卡片和预览叠加显示。
     patch = {
         **annotation_summary(boxes, saved['annotation_state']),
+        "annotation_scope": list(saved.get("annotation_scope") or []),
+        "annotation_hash": str(saved.get("content_digest") or ""),
         "annotation_summary_at": updated,
     }
     if saved['annotation_state'] in {'annotated', 'confirmed_empty'}:
@@ -8038,7 +8045,6 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             label = normalize_label(c.get('name') or f'class_{c.get("id")}')
             cid = int(c.get('id'))
             cat_to_class[cid] = ensure_label(project, label)
-            project = get_project(project_id)
         anns_by_img: Dict[int, List[Dict[str, Any]]] = {}
         for a in coco.get('annotations', []):
             try:
@@ -8071,7 +8077,7 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
                     report['invalid_boxes'] += 1
                     continue
                 cls = cat_to_class[cid]
-                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':get_project(project_id)['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(rec['width'],x+w),2), 'y2':round(min(rec['height'],y+h),2)})
+                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(rec['width'],x+w),2), 'y2':round(min(rec['height'],y+h),2)})
             write_annotation(project_id, rec['id'], boxes)
             report.setdefault('imported_image_ids', []).append(rec['id'])
             for _b in boxes:
@@ -8114,7 +8120,7 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         for obj in r.findall('object'):
             label = normalize_label(obj.findtext('name') or 'object')
             if not label: continue
-            cls = ensure_label(project, label); project = get_project(project_id)
+            cls = ensure_label(project, label)
             bb = obj.find('bndbox')
             if bb is None: continue
             try:
@@ -8151,9 +8157,8 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
     if names:
         for n in names:
             ensure_label(project, n)
-        project = get_project(project_id)
     elif not project.get('labels'):
-        ensure_label(project, 'object'); project = get_project(project_id)
+        ensure_label(project, 'object')
         names = ['object']
     imported_names = names or project.get('labels', [])
     label_by_stem: Dict[str, List[Path]] = {}
@@ -8189,14 +8194,13 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
                 if old_cls < len(imported_names):
                     label = normalize_label(imported_names[old_cls])
                     new_cls = get_label_id(project, label)
-                    project = get_project(project_id)
                 elif old_cls < len(project.get('labels', [])):
                     new_cls = old_cls
                 else:
                     report['skipped_labels'] += 1
                     continue
                 box['class_id'] = new_cls
-                box['label'] = get_project(project_id)['labels'][new_cls]
+                box['label'] = project['labels'][new_cls]
                 box['id'] = uuid.uuid4().hex[:10]
                 boxes.append(box)
         else:

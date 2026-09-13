@@ -141,7 +141,7 @@ class AnnotationRepository:
         counts.update({row['annotation_state']: int(row['total']) for row in rows})
         return {**counts, 'total': sum(counts.values())}
 
-    def upsert_many(self, rows):
+    def upsert_many(self, rows, *, project_material: bool = True):
         written = []
         projections = {}
         with closing(self._connect()) as db, db:
@@ -223,7 +223,7 @@ class AnnotationRepository:
                     }),
                 }
                 written.append(image_id)
-        if projections and (
+        if project_material and projections and (
             (self.project_path / 'materials.sqlite3').exists()
             or (self.project_path / 'images.json').exists()
         ):
@@ -233,13 +233,16 @@ class AnnotationRepository:
             MaterialRepository(self.project_path).patch(projections)
         return written
 
-    def upsert(self, image_id, boxes, annotation_state=None, annotation_scope=None):
+    def upsert(
+        self, image_id, boxes, annotation_state=None, annotation_scope=None,
+        *, project_material: bool = True,
+    ):
         self.upsert_many([{
             'image_id': image_id,
             'boxes': boxes,
             'annotation_state': annotation_state,
             'annotation_scope': annotation_scope,
-        }])
+        }], project_material=project_material)
         return self.get(image_id)
 
     def remove(self, image_ids):
