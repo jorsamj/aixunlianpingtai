@@ -28,6 +28,17 @@ training-labels           422513
 auto-label-poll-runtime   422501
 ```
 
+## Product mainline checkpoint — Deployment E2E + Unified Task Progress Phase 1
+
+Technical-debt cleanup remains paused by user request. Product productionization is now the active line:
+
+- **Deployment Artifact E2E CLOSED** — real conversion outputs refresh on terminal completion; artifacts are listed only for successful jobs with existing files. Product `b75b7d09780f691b01e4207c3107977b0500d8aa`, focused run `34726749756`, cleanup `8f3d3e394ceed73e5f522cba512622286fead7a5`.
+- **Unified Task Truth API Phase 1 CLOSED** — `/api/v62/projects/{project_id}/tasks`, task detail, real promote/cancel, and durable `priority / queue_rank / resource_queue_position / resource_wait_reason / worker_id / lease_expires_at / phase / progress_percent`. `WAITING_RESOURCE` is a read-only projection of persisted `QUEUED + resource_waiting`; Scheduler semantics are unchanged. Product `aa5b82ebd2140d3a9f03dc6ae6754c9b7a55afcc`, focused run `34727100684`, cleanup `6de0758e9f0c0cd45d79c48bf7fb022dde8f9ca6`.
+- **Storage Import consumes unified task truth** during execution and returns to its business API only for the final scan result. Product `1855e2bebefe0dd7cab662cda012abba352a000d`, focused run `34727261869`, cleanup `70db2577458ae9197c36f057e714c0bbd3d7716b`.
+- **Training UI consumes durable queue truth without a second polling request** through the existing `/jobs` overlay, including waiting-resource state, resource queue position, wait reason, worker, lease and progress. Product `7ecd56dd308f595d7cc23e921f80ef49ee8163d5`, focused run `34727367920`, cleanup `4d05036398014dffde8c52a86d46fa16ca73447f`.
+
+**Next: Unified Task Progress Phase 2 — AI annotation / cleaning / model conversion first; event-stream/SSE evaluation only after those existing durable-task pages share the same truth contract. Do not rewrite Scheduler, lease recovery, or GPU admission.**
+
 ## 2. Closed owner surfaces
 
 ### Training
