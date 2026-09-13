@@ -931,3 +931,15 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - One-shot migration helper/workflow were deleted in the permanentization commit before cleaned-head gates.
 - Formal version boundary remains `VERSION.txt = 42.24.0`; no merge, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
 
+### 2026-09-13 — AI continuation realtime progress CLOSED
+
+- RED contract commit: `084923474bdb0627756560c40f1b1a23a0543c14`.
+- RED→GREEN workflow: `34757329068` — legacy RED proven, focused continuation GREEN, training runtime regressions PASS, formal version boundary PASS.
+- Product commit: `57c698ad318110e9e825a7e80e7a1ad9be073369`.
+- Permanentized clean HEAD: `c354d60e319b6fa195d70e175185c3b9cabec792`; one-shot migration helper/workflow removed.
+- Release Regression `34758049699`: runtime-contracts PASS and training-data-contracts PASS; permanent `tests/unit/test_training_ai_continuation_progress.py` is in the release gate.
+- Navigation Action Fencing `34758049728`: PASS including Real Chrome stale-mutation contract.
+- Frontend Runtime Stabilization `34758049698`: frontend unit PASS and full Real Chrome runtime regressions PASS.
+- Durable/UI truth: normal training remains 20..90; AI continuation advances 90..95 with cumulative Epoch/Batch truth instead of resetting to 1/N; continuation YOLO instances rebind epoch, batch, resource and device callbacks; 95..100 remains reserved for artifact verification/final evaluation.
+- `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, or A800 RC was performed.
+
