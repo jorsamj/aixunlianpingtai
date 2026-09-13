@@ -18,6 +18,7 @@ on:
       - tests/api/test_zip_processing_p1.py
       - tests/api/test_zip_processing_p2a_annotation_connections.py
       - tests/api/test_zip_processing_p2b_single_final_annotation.py
+      - tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
 
 jobs:
   annotation-material-contracts:
@@ -46,6 +47,7 @@ jobs:
           tests/api/test_material_selection_atomicity.py
           tests/api/test_zip_processing_p2a_annotation_connections.py
           tests/api/test_zip_processing_p2b_single_final_annotation.py
+          tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
       - name: Annotation and ZIP import regressions
         run: >-
           python -m pytest -q
