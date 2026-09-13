@@ -1,0 +1,53 @@
+name: Sync ZIP P1 Annotation Atomicity Handoff
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/sync-zip-p1-annotation-atomicity-handoff.yml
+      - tools/sync_zip_p1_annotation_atomicity_handoff.py
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply handoff sync
+        run: python tools/sync_zip_p1_annotation_atomicity_handoff.py
+      - name: Validate handoff markers and release boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          marker='<!-- V42_25_ZIP_P1_ANNOTATION_SQLITE_ATOMICITY_20260913 -->'
+          docs=[
+            'docs/TECH_DEBT_CLOSURE_V42_25.md',
+            'docs/CODEX_CURRENT_STATE.md',
+            'docs/frontend-legacy-audit.md',
+            'docs/FRONTEND_OWNER_MAP_V42_25.md',
+            'docs/codex-handoff-v42.25.md',
+          ]
+          for name in docs:
+              text=Path(name).read_text(encoding='utf-8')
+              assert text.count(marker)==1, (name,text.count(marker))
+          PY
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit handoff docs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md \
+            docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md \
+            docs/codex-handoff-v42.25.md
+          git diff --cached --check
+          git commit -m "docs(v42.25): record ZIP P1 and annotation atomicity closure"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
