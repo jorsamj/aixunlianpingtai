@@ -17,16 +17,16 @@
 ```text
 stable branch:               main
 active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: b83b2bf360b891265157e602f622d409d1d2332f
-Frontend Runtime run:        34725907423
+latest full code acceptance: 4f0ac51b28d3e62da183e82e01a55bedf7fc9e16
+Frontend Runtime run:        34730512607
 formal VERSION.txt:          42.24.0
 frontend badge:              v42.24.0
 app.js cache:                42.25.94
-main.mjs cache:              42.25.91
+main.mjs cache:              42.25.92
 NavigationStability:         422512
 ```
 
-`34725907423` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34725907404` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
+`34730512607` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34730512602` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
 
 **技术债清理主线已按用户要求暂停；后续优先真实功能、性能、数据完整性与生产验收。A800 RC 是否推进由后续任务决定。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
 
@@ -89,16 +89,20 @@ NavigationStability
 
 除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，不再继续 dead-code / zero-point / 命名 / cache-busting 类清理。剩余债务保留为 OPEN/DEFERRED，不影响当前功能使用时不主动扩展。
 
-### 当前产品主线 — Deployment E2E + Unified Task Progress Phase 1
+### 当前产品主线 — Unified Task Progress Phase 2 + Training Progress v2 CLOSED
 
-技术债暂停后已经转入真实功能生产化。当前完成：
+Technical-debt cleanup remains paused by user request. Product productionization is the active line.
 
-- **Deployment Artifact E2E CLOSED**：转换任务从 `running → done` 后会立即刷新真实部署产物；部署产物页进入时重新校验服务端真值；成功 job + 真实文件才能出现在 artifacts API，失败或缺失文件不会生成假产物。product `b75b7d09780f691b01e4207c3107977b0500d8aa`，focused run `34726749756`，cleanup `8f3d3e394ceed73e5f522cba512622286fead7a5`。
-- **Unified Task Truth API Phase 1 CLOSED**：新增 `/api/v62/projects/{project_id}/tasks`、单任务查询、真实 promote/cancel；公开 `priority / queue_rank / resource_queue_position / resource_wait_reason / worker_id / lease_expires_at / phase / progress_percent`。`WAITING_RESOURCE` 是真实 `QUEUED + resource_waiting` 的只读投影，不改变 Scheduler 可调度语义。product `aa5b82ebd2140d3a9f03dc6ae6754c9b7a55afcc`，focused run `34727100684`，cleanup `6de0758e9f0c0cd45d79c48bf7fb022dde8f9ca6`。
-- **Storage Import 已接统一进度**：执行期间从 v62 Task Truth 读取排队、等待资源、阶段、百分比、当前项、Worker；完成后只回业务 API 读取最终扫描结果。product `1855e2bebefe0dd7cab662cda012abba352a000d`，focused run `34727261869`，cleanup `70db2577458ae9197c36f057e714c0bbd3d7716b`。
-- **Training durable queue truth 已接 UI**：不增加第二个请求；现有 `/jobs` durable overlay 直接带出 `WAITING_RESOURCE / resource_queue_position / wait reason / worker / lease / progress`，训练列表显示真实队列和执行节点。product `7ecd56dd308f595d7cc23e921f80ef49ee8163d5`，focused run `34727367920`，cleanup `4d05036398014dffde8c52a86d46fa16ca73447f`。
+- **Deployment Artifact E2E CLOSED** — successful conversion jobs surface only verified, existing deployment artifacts. Product `b75b7d09780f691b01e4207c3107977b0500d8aa`, focused run `34726749756`, cleanup `8f3d3e394ceed73e5f522cba512622286fead7a5`.
+- **Unified Task Truth API Phase 1 CLOSED** — `/api/v62/projects/{project_id}/tasks` remains the durable public truth for queue/resource/worker/progress metadata. Product `aa5b82ebd2140d3a9f03dc6ae6754c9b7a55afcc`, focused run `34727100684`, cleanup `6de0758e9f0c0cd45d79c48bf7fb022dde8f9ca6`.
+- **Storage Import + Training queue truth CLOSED** — Storage Import consumes unified task truth during execution; Training `/jobs` overlays durable queue truth without a second polling request. Products `1855e2bebefe0dd7cab662cda012abba352a000d` / `7ecd56dd308f595d7cc23e921f80ef49ee8163d5`.
+- **Unified Task Progress Phase 2 CLOSED — model conversion**: durable conversion overlay now exposes effective `WAITING_RESOURCE`, queue position/reason, worker/lease and progress; waiting-resource jobs remain actively polled. Product `9817f450b3fbd20256279c3c861b0938ffdcef16`, focused run `34728701060`, cleanup `d02691f47c7e72d1a7726c1fb536113ffed90a7d`.
+- **Unified Task Progress Phase 2 CLOSED — AI annotation + cleaning/material batch**: existing business endpoints now expose the same Task Truth without adding a second polling request. AI annotation and `MATERIAL_BATCH(operation=CLEAN)` both surface `WAITING_RESOURCE / queue position / reason / worker / lease / progress`. Product `ff31f879b6d501a501188fed8bc78426d9eb31ea`, focused run `34729292492`, cleanup `17a52fbb8c9f83d92986da9cedb92c603ccf98d8`.
+- **Existing v50 material-batching red test is not a Phase 2 regression**: independent unchanged-code baseline run `34729197821` reproduces `test_image_batch_rejects_dataset_deleted_before_commit` failing at `annotation_path.exists()`. The original test remains unchanged and must not be weakened or deleted.
+- **SSE/event stream evaluation DEFERRED**: current AI/material/conversion polling is page-scoped, approximately 1.5–1.8s, and already lifecycle-managed. The repository has no EventSource/SSE replay/reconnect base; introducing it now would add more complexity than demonstrated benefit.
+- **Training Progress v2 CLOSED**: existing `training-metrics.sqlite3` now persists a truthful `latest_epoch` snapshot in the same epoch SQLite transaction: epoch/total, duration, rolling-last-5 ETA, elapsed time, images/sec, numeric losses, numeric trainer metrics (including mAP when Ultralytics supplies it), and LR. The Worker publishes that snapshot into existing `job.json`; `/jobs` requires no extra metrics request and the detail API continues to expose full `runtime_metrics`. Missing metrics are omitted rather than manufactured as zero. Product `70110f9668e593215bc77c8614dd9d6dd55b7601`, focused run `34730431744`, cleanup/accepted HEAD `4f0ac51b28d3e62da183e82e01a55bedf7fc9e16`, Frontend Runtime `34730512607` with Real Chrome **33/33 PASS**, Action Fencing `34730512602` PASS. Existing SQLite FD regression remained green.
 
-**下一批：Unified Task Progress Phase 2。** 优先把 AI 标注/清洗/模型转换等现有 durable task 的页面状态统一到同一 Task Truth；之后再评估 SSE/event stream。不得重写现有 Scheduler/lease/GPU admission；现有 durable queue 已是真实执行底座。
+**Current next product scope: ZIP 10k import scalability. Liveness audit shows the final browser `window.doImportData` still POSTs synchronously to `/api/v18/projects/{project_id}/datasets/{dataset_id}/import`, while the backend already contains the v19 background import job path with staged progress, per-project serialization and v50 buffered image commit. First priority is to prove and migrate the live UI to the existing background owner before micro-optimizing per-image loops. Do not rewrite Scheduler/GPU admission or resume broad technical-debt cleanup.**
 
 ### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
 
