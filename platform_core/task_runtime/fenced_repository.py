@@ -139,8 +139,12 @@ class FencedTaskRepository(TaskRepository):
             updates.append("progress=MAX(progress, ?)")
             parameters.append(max(0.0, min(100.0, float(progress))))
         if stage is not None:
-            updates.append("stage=?")
-            parameters.append(str(stage))
+            stage_value = str(stage)
+            updates.append(
+                "stage=CASE WHEN stage IN ('paused','cancelling') AND stage<>? "
+                "THEN stage ELSE ? END"
+            )
+            parameters.extend([stage_value, stage_value])
         if current_item is not None:
             updates.append("current_item=?")
             parameters.append(str(current_item))
