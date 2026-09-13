@@ -10873,12 +10873,28 @@ def _read_deploy_job(project_id: str, job_id: str) -> Dict[str, Any]:
 def _overlay_durable_deploy_job(job: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(job or {})
     task_id = str(result.get("task_id") or "")
-    durable = shared_task_repository().get(task_id) if task_id else None
+    repository = shared_task_repository()
+    durable = repository.get(task_id) if task_id else None
     if not durable or durable.kind is not TaskKind.MODEL_CONVERSION:
         return result
-    result["durable_status"] = durable.status.value
-    if durable.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
-        result.update(status="queued" if durable.status is TaskStatus.QUEUED else "running", progress=durable.progress, stage=durable.stage)
+    truth = task_to_public(durable, repository)
+    result.update(
+        durable_status=durable.status.value,
+        task_status=truth["status"],
+        progress=truth["progress_percent"],
+        stage=truth["phase"],
+        current_item=truth["current_item"],
+        priority=truth["priority"],
+        queue_rank=truth["queue_rank"],
+        resource_queue_position=truth["resource_queue_position"],
+        resource_wait_reason=truth["resource_wait_reason"],
+        worker_id=truth["worker_id"],
+        lease_expires_at=truth["lease_expires_at"],
+    )
+    if durable.status is TaskStatus.QUEUED:
+        result["status"] = "waiting_resource" if truth["status"] == "WAITING_RESOURCE" else "queued"
+    elif durable.status in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+        result["status"] = "running"
     elif durable.status is TaskStatus.BLOCKED_BY_HARDWARE:
         result["status"] = "blocked_by_hardware"
     elif durable.status is TaskStatus.BLOCKED_BY_ENVIRONMENT:
