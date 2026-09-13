@@ -315,12 +315,30 @@ def promote_unified_runtime_task(project_id: str, task_id: str):
 
 @app.post("/api/v62/projects/{project_id}/tasks/{task_id}/cancel")
 def cancel_unified_runtime_task(project_id: str, task_id: str):
-    _runtime_task_for_project(project_id, task_id)
+    current = _runtime_task_for_project(project_id, task_id)
     repository = shared_task_repository()
     try:
         task = repository.request_cancel(task_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    if (
+        current.status is TaskStatus.RUNNING
+        and current.process_pid is not None
+        and current.process_create_time is not None
+        and str(current.process_command_hash or "").strip()
+    ):
+        identity = ProcessIdentity(
+            pid=int(current.process_pid),
+            create_time=float(current.process_create_time),
+            command_hash=str(current.process_command_hash),
+        )
+        try:
+            ProcessController().terminate_tree(identity)
+        except PermissionError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=f"取消请求已记录，但任务进程无法安全终止：{error}",
+            ) from error
     return task_to_public(task, repository)
 
 
