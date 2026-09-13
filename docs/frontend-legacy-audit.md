@@ -830,3 +830,22 @@ Formal `VERSION.txt` remains `42.24.0`. No merge to `main`, no tag, no release. 
 ### 2026-09-13 cross-layer guard — durable cancel/resume truth CLOSED
 
 Frontend/API control semantics are now fenced by durable server truth: ordinary v48 resume already rejects non-`RUNNING+paused`; the repository additionally rejects `set_stage()` once persisted status is `CANCEL_REQUESTED`, closing the concurrent stop/resume race rather than relying on the browser or an earlier API read. Real API regression is permanently included in `v42.25 Release Regression`; product `7cab9413185d0bfbc8052d978685ee7a2e8b46d0`, permanentization `dfa9623ad75eab9d7e0945cd45051688492e87f8`, Release `34749914123` PASS, Frontend Real Chrome `34749914114` PASS, Navigation Real Chrome `34749914211` PASS.
+
+<!-- deployment-inference-process-fencing-closed-2026-09-13 -->
+## Deployment test inference process fencing — CLOSED (2026-09-13)
+
+Deployment-test subprocesses are now part of the durable execution fence instead of being invisible raw `subprocess.Popen` children. The runner is launched through the shared cross-platform process controller, binds exact `PID + create_time + command_hash` to the durable task, terminates the exact process tree on user cancellation or execution/lease fencing, and re-checks the current execution generation before result persistence.
+
+Evidence:
+- valid RED: GitHub Actions `34752083670` — real runner PID existed while durable `process_pid` was `None`;
+- product: `97efe23ce2d587027150032f71906f03a75fcc51` (`fix(deployment): fence inference runner process`);
+- focused GREEN: `34752147610`;
+- permanentization: `fbbacad583a8f5ad50b27b1fcb6624b31255658e`;
+- cleaned v42.25 Release Regression: `34752225736` PASS (runtime + training-data);
+- cleaned Navigation Action Fencing: `34752225727` PASS including Real Chrome stale-mutation;
+- cleaned Frontend Runtime Stabilization: `34752225677` PASS including Real Chrome runtime regressions;
+- one-shot deployment process-fencing workflow removed during permanentization;
+- formal `VERSION.txt` remains `42.24.0`; no merge/tag/release.
+
+Genuine 10k processing acceptance and A800 RC remain deferred and are not closed by this batch.
+
