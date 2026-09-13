@@ -4,10 +4,12 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
-test('deployment conversion UI keeps waiting-resource tasks live and visible', () => {
+test('deployment conversion UI keeps queued and waiting-resource tasks live and visible', () => {
+  assert.match(source, /queued:'排队中'/);
   assert.match(source, /waiting_resource:'等待资源'/);
   assert.match(source, /\['queued','waiting_resource','running'\]\.includes\(j\.status\)/);
+  assert.match(source, /\['queued','waiting_resource'\]\.includes\(j\.status\)/);
   assert.match(source, /资源队列第 \$\{Number\(j\.resource_queue_position\|\|0\)\|\|'-'\} 位/);
-  assert.match(source, /j\.resource_wait_reason\|\|'等待可用资源'/);
+  assert.match(source, /j\.status==='waiting_resource'&&j\.resource_wait_reason/);
   assert.match(source, /j\.worker_id\?` · Worker/);
 });
