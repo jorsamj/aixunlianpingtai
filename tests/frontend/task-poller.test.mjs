@@ -5,6 +5,8 @@ import {createTaskPoller, isTaskActive, taskProgress} from '../../static/modules
 
 test('only genuine backend running states continue polling', () => {
   assert.equal(isTaskActive('QUEUED'), true);
+  assert.equal(isTaskActive('WAITING_RESOURCE'), true);
+  assert.equal(isTaskActive('RETRYING'), true);
   assert.equal(isTaskActive('RUNNING'), true);
   assert.equal(isTaskActive('CANCEL_REQUESTED'), true);
   assert.equal(isTaskActive('AWAITING_CONFIRMATION'), false);
@@ -17,6 +19,7 @@ test('task progress uses backend counts and never invents completion', () => {
     percent: 31.7, completed: 38, total: 120, failed: 7
   });
   assert.equal(taskProgress({progress: 180}).percent, 100);
+  assert.deepEqual(taskProgress({progress_percent: 42, completed_units: 21, total_units: 50, failed_units: 2}), {percent: 42, completed: 21, total: 50, failed: 2});
 });
 
 test('poller stops after a terminal backend state', async () => {

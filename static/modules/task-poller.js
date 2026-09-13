@@ -1,4 +1,4 @@
-const ACTIVE = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED']);
+const ACTIVE = new Set(['QUEUED', 'WAITING_RESOURCE', 'PREPARING', 'RUNNING', 'PAUSING', 'PAUSED', 'RESUMING', 'CANCEL_REQUESTED', 'RETRYING']);
 
 export function normalizeTaskStatus(value) {
   return String(value || '').trim().toUpperCase();
@@ -11,10 +11,10 @@ export function isTaskActive(value) {
 export function taskProgress(task = {}) {
   const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
   return {
-    percent: clamp(task.progress),
-    completed: Math.max(0, Number(task.completed_count) || 0),
-    total: Math.max(0, Number(task.total_count) || 0),
-    failed: Math.max(0, Number(task.failed_count) || 0)
+    percent: clamp(task.progress_percent ?? task.progress),
+    completed: Math.max(0, Number(task.completed_units ?? task.completed_count) || 0),
+    total: Math.max(0, Number(task.total_units ?? task.total_count) || 0),
+    failed: Math.max(0, Number(task.failed_units ?? task.failed_count) || 0)
   };
 }
 

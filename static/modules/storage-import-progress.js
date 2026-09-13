@@ -1,10 +1,27 @@
+import {isTaskActive, taskProgress} from './task-poller.js?v=422001';
+
 export function storageImportProgressText(task = {}) {
-  const stage = String(task.stage || task.status || 'SCANNING');
+  const status = String(task.status || '').toUpperCase();
+  const stage = String(task.phase || task.stage || status || 'SCANNING');
   const current = String(task.current_item || '').trim();
-  if (current) return `${stage} · ${current}`;
-  if (stage === 'QUEUED') return '已进入扫描队列';
-  if (stage === 'FINALIZING') return '正在整理扫描结果';
-  return `${stage} · 正在扫描对象`;
+  const {percent} = taskProgress(task);
+  const queuePosition = Number(task.resource_queue_position || 0);
+  const priority = Number(task.priority || 0);
+  const worker = String(task.worker_id || '').trim();
+  const waitReason = String(task.resource_wait_reason || '').trim();
+  if (status === 'WAITING_RESOURCE') {
+    return ['等待资源', queuePosition > 0 ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
+  }
+  if (status === 'QUEUED') {
+    return ['排队中', queuePosition > 0 ? `队列第 ${queuePosition} 位` : '', priority > 0 ? `优先级 ${priority}` : ''].filter(Boolean).join(' · ');
+  }
+  if (stage === 'FINALIZING') return percent > 0 ? `正在整理扫描结果 · ${percent.toFixed(0)}%` : '正在整理扫描结果';
+  const parts = [stage];
+  if (percent > 0) parts.push(`${percent.toFixed(0)}%`);
+  if (current) parts.push(current);
+  if (worker) parts.push(`执行节点 ${worker}`);
+  if (parts.length === 1) parts.push('正在扫描对象');
+  return parts.join(' · ');
 }
 
 async function responseJson(response) {
@@ -52,12 +69,12 @@ export function installStorageImportProgressRuntime() {
       if (status) status.textContent = '扫描任务已进入 Storage Worker 队列';
 
       let current = task;
-      while (['QUEUED', 'RUNNING'].includes(String(current.status || '').toUpperCase())) {
+      while (isTaskActive(current.status)) {
         await new Promise(resolve => setTimeout(resolve, 1200));
         // Closing the dialog only stops browser polling; the durable worker task keeps running.
         if (status && !status.isConnected) return;
         current = await responseJson(await fetch(
-          `/api/v61/projects/${encodeURIComponent(projectId)}/storage-imports/${encodeURIComponent(task.task_id)}`,
+          `/api/v62/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.task_id)}`,
         ));
         if (status) status.textContent = storageImportProgressText(current);
       }
@@ -65,7 +82,10 @@ export function installStorageImportProgressRuntime() {
       if (String(current.status || '').toUpperCase() !== 'SUCCEEDED') {
         throw new Error(current.error || `扫描未成功：${current.status || 'UNKNOWN'}`);
       }
-      const result = current.result || {};
+      const completed = await responseJson(await fetch(
+        `/api/v61/projects/${encodeURIComponent(projectId)}/storage-imports/${encodeURIComponent(task.task_id)}`,
+      ));
+      const result = completed.result || {};
       const scanned = Number(result.scanned_files ?? result.scanned ?? 0);
       const importable = Number(result.importable_images ?? result.importable ?? 0);
       const duplicates = Number(result.duplicates ?? 0);
