@@ -11,9 +11,11 @@ on:
       - platform_core/annotation_repository.py
       - platform_core/material_repository.py
       - platform_core/material_repository_batch.py
+      - platform_core/storage/source_repository.py
       - tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
       - tests/api/test_material_batching.py
       - tests/api/test_material_repository_connection_lifecycle.py
+      - tests/api/test_storage_source_repository_connection_lifecycle.py
       - tests/api/test_material_selection_atomicity.py
       - tests/api/test_annotation_flow.py
       - tests/api/test_v19_import_scalability.py
@@ -46,7 +48,8 @@ jobs:
             app.py \
             platform_core/annotation_repository.py \
             platform_core/material_repository.py \
-            platform_core/material_repository_batch.py
+            platform_core/material_repository_batch.py \
+            platform_core/storage/source_repository.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
       - name: Annotation SQLite and material atomicity contracts
@@ -55,6 +58,7 @@ jobs:
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
           tests/api/test_material_batching.py
           tests/api/test_material_repository_connection_lifecycle.py
+          tests/api/test_storage_source_repository_connection_lifecycle.py
           tests/api/test_material_selection_atomicity.py
           tests/api/test_v19_import_failure_rollback.py
           tests/api/test_v19_job_atomic_persistence.py
@@ -68,4 +72,6 @@ jobs:
           python -m pytest -q
           tests/api/test_annotation_flow.py
           tests/api/test_v19_import_scalability.py
+          tests/api/test_storage_sources.py
+          tests/api/test_storage_upload.py
           tests/api/test_zip_processing_p1.py
