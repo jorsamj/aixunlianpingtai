@@ -21,6 +21,7 @@ on:
       - tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
       - tests/unit/task_runtime/test_progress_monotonicity.py
       - tests/unit/task_runtime/test_fenced_progress_monotonicity.py
+      - tests/unit/task_runtime/test_control_stage_fencing.py
       - tests/unit/task_runtime/test_process_control.py
       - tests/unit/test_a800_rc_acceptance.py
       - tests/unit/test_training_metrics_fd.py
@@ -49,6 +50,7 @@ jobs:
           tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
           tests/unit/task_runtime/test_progress_monotonicity.py
           tests/unit/task_runtime/test_fenced_progress_monotonicity.py
+          tests/unit/task_runtime/test_control_stage_fencing.py
           tests/unit/task_runtime/test_scheduler.py
           tests/unit/task_runtime/test_process_control.py
           tests/unit/task_runtime/test_fencing.py
