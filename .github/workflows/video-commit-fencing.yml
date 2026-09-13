@@ -1,0 +1,30 @@
+name: Video Commit Cancellation Fencing RED-GREEN
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - platform_core/video_tasks.py
+      - tests/unit/test_video_commit_fencing.py
+      - .github/workflows/video-commit-fencing.yml
+
+jobs:
+  video-commit-fencing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Video commit cancellation and stale-execution contracts
+        run: python -m pytest -q tests/unit/test_video_commit_fencing.py
+      - name: Formal version boundary
+        run: test "$(cat VERSION.txt)" = "42.24.0"
