@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from collections import Counter
 from pathlib import Path
 from statistics import median
 
@@ -60,15 +61,19 @@ def build_yolo_zip(path: Path) -> dict[str, float | int]:
     }
 
 
-def process_resources(process: psutil.Process) -> tuple[float, int]:
-    rss = 0
-    fd = 0
+def process_tree(process: psutil.Process) -> list[psutil.Process]:
     processes = [process]
     try:
         processes.extend(process.children(recursive=True))
     except (psutil.Error, OSError):
         pass
-    for current in processes:
+    return processes
+
+
+def process_resources(process: psutil.Process) -> tuple[float, int]:
+    rss = 0
+    fd = 0
+    for current in process_tree(process):
         try:
             rss += current.memory_info().rss
             if hasattr(current, "num_fds"):
@@ -76,6 +81,76 @@ def process_resources(process: psutil.Process) -> tuple[float, int]:
         except (psutil.Error, OSError):
             continue
     return rss / 1024 / 1024, fd
+
+
+def classify_fd_target(target: str) -> str:
+    lowered = target.lower()
+    if "materials.sqlite3" in lowered:
+        return "materials_sqlite"
+    if "annotations.sqlite3" in lowered:
+        return "annotations_sqlite"
+    if lowered.endswith(".sqlite3") or ".sqlite3-" in lowered:
+        return "other_sqlite"
+    if target.startswith("socket:"):
+        return "socket"
+    if target.startswith("pipe:"):
+        return "pipe"
+    if target.startswith("anon_inode:"):
+        return "anon_inode"
+    if "ten-thousand-yolo.zip" in lowered:
+        return "source_zip"
+    if "/import_jobs/" in lowered:
+        return "import_job_file"
+    if "/uploads/" in lowered:
+        return "uploaded_material"
+    if target.startswith("/"):
+        return "regular_file"
+    return "other"
+
+
+def fd_snapshot(process: psutil.Process) -> dict[str, object]:
+    if os.name != "posix" or not Path("/proc").is_dir():
+        return {"supported": False, "processes": [], "target_counts": {}, "category_counts": {}}
+    rows: list[dict[str, object]] = []
+    target_counts: Counter[str] = Counter()
+    category_counts: Counter[str] = Counter()
+    for current in process_tree(process):
+        try:
+            pid = current.pid
+            name = current.name()
+        except (psutil.Error, OSError):
+            continue
+        fd_root = Path(f"/proc/{pid}/fd")
+        entries: list[dict[str, object]] = []
+        try:
+            children = sorted(fd_root.iterdir(), key=lambda path: int(path.name))
+        except (OSError, ValueError):
+            children = []
+        for entry in children:
+            try:
+                target = os.readlink(entry)
+            except OSError as error:
+                target = f"<unreadable:{type(error).__name__}>"
+            category = classify_fd_target(target)
+            entries.append({"fd": int(entry.name), "target": target, "category": category})
+            target_counts[target] += 1
+            category_counts[category] += 1
+        rows.append({"pid": pid, "name": name, "fds": entries})
+    return {
+        "supported": True,
+        "processes": rows,
+        "target_counts": dict(sorted(target_counts.items())),
+        "category_counts": dict(sorted(category_counts.items())),
+    }
+
+
+def positive_counter_delta(end: dict[str, int], start: dict[str, int]) -> dict[str, int]:
+    keys = set(end) | set(start)
+    return {
+        key: end.get(key, 0) - start.get(key, 0)
+        for key in sorted(keys)
+        if end.get(key, 0) - start.get(key, 0) > 0
+    }
 
 
 def timed_get(session: requests.Session, url: str, timeout: float = 10.0):
@@ -189,8 +264,10 @@ def main() -> None:
     try:
         wait_for_server(session, base_url, server)
         rss_baseline_mb, fd_baseline = process_resources(process)
+        fd_baseline_snapshot = fd_snapshot(process)
         result["rss_baseline_mb"] = round(rss_baseline_mb, 3)
         result["fd_baseline"] = fd_baseline
+        result["fd_baseline_snapshot"] = fd_baseline_snapshot
 
         create_project = session.post(
             f"{base_url}/api/projects",
@@ -309,6 +386,11 @@ def main() -> None:
             raise TimeoutError(f"10k import did not finish within {args.timeout}s")
         worker_wall_seconds = time.perf_counter() - worker_started
         rss_end_mb, fd_end = process_resources(process)
+        fd_end_snapshot = fd_snapshot(process)
+        baseline_targets = dict(fd_baseline_snapshot.get("target_counts") or {})
+        end_targets = dict(fd_end_snapshot.get("target_counts") or {})
+        baseline_categories = dict(fd_baseline_snapshot.get("category_counts") or {})
+        end_categories = dict(fd_end_snapshot.get("category_counts") or {})
         result.update(
             {
                 "worker_wall_seconds": round(worker_wall_seconds, 6),
@@ -329,6 +411,9 @@ def main() -> None:
                 "fd_peak_growth": fd_peak - fd_baseline,
                 "fd_end": fd_end,
                 "fd_end_growth": fd_end - fd_baseline,
+                "fd_end_snapshot": fd_end_snapshot,
+                "fd_positive_target_delta": positive_counter_delta(end_targets, baseline_targets),
+                "fd_positive_category_delta": positive_counter_delta(end_categories, baseline_categories),
                 "terminal_tail_seconds": round(time.perf_counter() - first_94_at, 6) if first_94_at else None,
                 "stage_first_seen_seconds": {key: round(value, 6) for key, value in stage_first_seen.items()},
                 "stage_last_seen_seconds": {key: round(value, 6) for key, value in stage_last_seen.items()},
