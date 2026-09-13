@@ -24,6 +24,17 @@ jobs:
           python-version: '3.12'
       - name: Install repository test dependencies
         run: python -m pip install --disable-pip-version-check fastapi uvicorn python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest httpx
+      - name: Characterize preexisting annotation-JSON regressions before P1
+        run: |
+          set +e
+          python -m pytest -q tests/api/test_material_batching.py::test_image_batch_rejects_dataset_deleted_before_commit
+          echo $? > /tmp/p1-red-batching.rc
+          python -m pytest -q tests/api/test_material_selection_atomicity.py::test_delete_dataset_file_lock_failure_keeps_dataset_and_material
+          echo $? > /tmp/p1-red-selection.rc
+          set -e
+          test "$(cat /tmp/p1-red-batching.rc)" = "1"
+          test "$(cat /tmp/p1-red-selection.rc)" = "1"
+          echo "PREEXISTING_RED batching=$(cat /tmp/p1-red-batching.rc) selection=$(cat /tmp/p1-red-selection.rc)"
       - name: Baseline 1000-image YOLO processing
         run: |
           python tools/benchmark_zip_processing_p1.py --images 1000 --json-out /tmp/p1-baseline.json
@@ -45,8 +56,27 @@ jobs:
           git diff --check
       - name: Processing P1 permanent contracts
         run: python -m pytest -q tests/api/test_zip_processing_p1.py
-      - name: Existing annotation/import/material regressions
-        run: python -m pytest -q tests/api/test_annotation_flow.py tests/api/test_v19_import_scalability.py tests/api/test_material_batching.py tests/api/test_material_selection_atomicity.py
+      - name: Existing green annotation/import/material regressions
+        run: |
+          python -m pytest -q \
+            tests/api/test_annotation_flow.py \
+            tests/api/test_v19_import_scalability.py \
+            tests/api/test_material_batching.py \
+            tests/api/test_material_selection_atomicity.py \
+            -k 'not test_image_batch_rejects_dataset_deleted_before_commit and not test_delete_dataset_file_lock_failure_keeps_dataset_and_material'
+      - name: Verify preexisting annotation-JSON regressions remain unchanged after P1
+        run: |
+          set +e
+          python -m pytest -q tests/api/test_material_batching.py::test_image_batch_rejects_dataset_deleted_before_commit
+          batching=$?
+          python -m pytest -q tests/api/test_material_selection_atomicity.py::test_delete_dataset_file_lock_failure_keeps_dataset_and_material
+          selection=$?
+          set -e
+          test "$batching" = "$(cat /tmp/p1-red-batching.rc)"
+          test "$selection" = "$(cat /tmp/p1-red-selection.rc)"
+          test "$batching" = "1"
+          test "$selection" = "1"
+          echo "UNCHANGED_PREEXISTING_RED batching=$batching selection=$selection"
       - name: Post-change 1000-image YOLO processing
         run: |
           python tools/benchmark_zip_processing_p1.py --images 1000 --json-out /tmp/p1-after.json
