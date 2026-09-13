@@ -19,8 +19,8 @@ def migrate_worker() -> None:
     text = replace_once(
         text,
         "import sys\nimport traceback\n",
-        "import sys\nimport tempfile\nimport traceback\n",
-        label="tempfile import",
+        "import sys\nimport tempfile\nimport time\nimport traceback\n",
+        label="realtime progress imports",
     )
     text = replace_once(
         text,
