@@ -2,9 +2,47 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: PAUSED AUDIT — non-blocking technical-debt cleanup deferred by user request
-> Latest fully accepted code point: `736b2acdbf2560be657011035de173cde67517d0` / run `34793457920`
+> Latest fully accepted code point: `1c3fa7f2b5cb826c0998f249637241a59134f053` / run `34794630837`
 > Real Chrome: PASS
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
+
+## Product closure — Deployment-test durable queue/progress truth CLOSED
+
+The deployment-test business surface now preserves the same durable task truth as the unified v62 task API. Previously the v61 compatibility projection flattened a resource-waiting durable task back to persisted `QUEUED`, dropped queue/resource/worker metadata, and the final `benchPredictOne` loop only considered `QUEUED / RUNNING / CANCEL_REQUESTED` active. That combination could make a real `WAITING_RESOURCE` deployment test appear terminal or fail without showing why it was waiting.
+
+Closed semantics:
+
+```text
+v61 business projection: delegates durable task fields to task_to_public()
+compatibility aliases: id / progress / stage / result remain for the existing deployment surface
+WAITING_RESOURCE: remains active and visible instead of being flattened to QUEUED
+queue truth: resource_queue_position + resource_wait_reason are server-derived and visible
+worker/progress truth: worker_id / phase / progress_percent come from durable public truth
+active polling: after v61 creation, benchPredictOne reads /api/v62/projects/{project_id}/tasks/{task_id} while the task is active
+terminal success: v61 is read once after SUCCEEDED to obtain deployment-specific result payload
+frontend projection: PlatformCore.deployment.deploymentTaskView reuses taskPoller active/progress semantics
+queue order / resource admission / worker claim / progress generation / process fencing: unchanged
+```
+
+Permanent guards include `tests/api/test_deployment_test_runtime.py`, `tests/frontend/deployment-runtime-source.test.mjs`, `tests/frontend/deployment-task-view.test.mjs`, `tests/unit/task_runtime/test_public_projection.py`, and `tests/unit/test_deployment_inference_process_fencing.py`. Release Regression now permanently runs the deployment business-projection contract and is triggered by the deployment task view/wiring guards. The frontend does not invent queue order or percentage; it only renders unified durable truth.
+
+Evidence:
+
+```text
+valid RED head:             5748a89155e653a49c8a8c743cdd3de7a9fa67cf
+valid RED run:              34794353496 (backend v61 QUEUED vs v62 WAITING_RESOURCE; final frontend unified-truth wiring RED)
+focused/full GREEN run:     34794490531 PASS (API + frontend + public projection + deployment fencing + full frontend unit)
+product commit:             0b800a54ae64507314a5f9199734759250691cb6
+formal accepted clean HEAD: 1c3fa7f2b5cb826c0998f249637241a59134f053
+Release Regression:         34794630826 PASS
+Navigation Action Fencing:  34794630808 PASS (Real Chrome PASS)
+Frontend Runtime:           34794630837 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
+```
+
+All temporary deployment RED/migration helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
+
+Next product batch: **storage import polling owner / lifecycle-managed polling truth**. Storage import already preserves durable queue/progress display truth, but its action runtime still owns a direct `while + setTimeout(1200)` polling loop; that owner must be audited separately without mixing it into this deployment closure.
 
 ## Product closure — Cleaning frontend queue/progress truth CLOSED
 
@@ -23,7 +61,7 @@ The browser does not compute queue order or progress. `status_text`, `progress`,
 
 Permanent guards: `tests/frontend/clean-task-view.test.mjs`, `tests/frontend/poll-registry.test.mjs`, and the v47 queue-field assertions in `tests/api/test_clean_unified_execution_truth.py`. Evidence: RED `cf3f2c4fec639903435379b3419dbaadad82c949` / run `34793075909`; GREEN `34793282831`; product `9f6f329393018623807cb4fea04707f3b5350676`; accepted `736b2acdbf2560be657011035de173cde67517d0`; Release `34793457861` PASS; Navigation `34793457872` PASS with Real Chrome; Frontend `34793457920` PASS with unit + full Real Chrome. `VERSION.txt` remains `42.24.0`.
 
-Next owner audit: storage import and deployment-test queue/progress truth. No frontend queue simulation or alternate progress owner should be introduced.
+Deployment-test durable queue/progress truth is CLOSED. Next owner audit: storage import polling owner / lifecycle-managed polling truth. No frontend queue simulation or alternate progress owner should be introduced.
 
 ## Product closure — Cleaning durable execution truth CLOSED
 
@@ -41,7 +79,7 @@ v47 manual clean / v55 upload-batch clean decision
 
 The compatibility projection is display-only: an unconfirmed successful clean may appear as `awaiting_confirmation / review`, while the underlying durable task remains `SUCCEEDED / succeeded`. Legacy Web daemon workers and Web startup recovery are retired as execution owners. Queue/resource/progress metadata remains server/worker-derived. Permanent backend guard: `tests/api/test_clean_unified_execution_truth.py`; formal acceptance `3931a9a2d529845f9e698b22f62fe950a7a8b42f`, Release `34792673327` PASS, Navigation `34792673293` PASS with Real Chrome, Frontend `34792673296` PASS with unit + full Real Chrome. `VERSION.txt` remains `42.24.0`.
 
-Following owner audit status: cleaning frontend row/poll truth is CLOSED. Next: storage import and deployment-test queue/progress truth.
+Following owner audit status: cleaning frontend row/poll truth and deployment-test durable queue/progress truth are CLOSED. Next: storage import polling owner / lifecycle-managed polling truth.
 
 ## Product closure — Plain image upload whole-task progress truth CLOSED
 
@@ -143,7 +181,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.96`; `main.mjs` cache is `42.25.93`. No merge/tag/release.
 
-**Video resource queue truth, cleaning durable execution truth, and cleaning frontend queue/progress truth are CLOSED. Current next product scope: storage import and deployment-test queue/progress truth. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Video resource queue truth, cleaning durable execution truth, and cleaning frontend queue/progress truth are CLOSED. Current next product scope: storage import polling owner / lifecycle-managed polling truth. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 2. Runtime ownership
 

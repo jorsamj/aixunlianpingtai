@@ -6,13 +6,13 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 736b2acdbf2560be657011035de173cde67517d0
-Frontend Runtime run:        34793457920
+latest full code acceptance: 1c3fa7f2b5cb826c0998f249637241a59134f053
+Frontend Runtime run:        34794630837
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.96
-main.mjs cache:              42.25.93
+app.js cache:                42.25.97
+main.mjs cache:              42.25.94
 NavigationStability:         422512
 UI state runtime:            422500
 PollRegistry:                422517
@@ -24,6 +24,44 @@ AutoLabelPollRuntime:        422501
 ```
 
 Run `34733035739` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after ZIP 10k owner/manifest migration. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34733035761` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+
+## Product closure — Deployment-test durable queue/progress truth CLOSED
+
+The deployment-test business surface now preserves the same durable task truth as the unified v62 task API. Previously the v61 compatibility projection flattened a resource-waiting durable task back to persisted `QUEUED`, dropped queue/resource/worker metadata, and the final `benchPredictOne` loop only considered `QUEUED / RUNNING / CANCEL_REQUESTED` active. That combination could make a real `WAITING_RESOURCE` deployment test appear terminal or fail without showing why it was waiting.
+
+Closed semantics:
+
+```text
+v61 business projection: delegates durable task fields to task_to_public()
+compatibility aliases: id / progress / stage / result remain for the existing deployment surface
+WAITING_RESOURCE: remains active and visible instead of being flattened to QUEUED
+queue truth: resource_queue_position + resource_wait_reason are server-derived and visible
+worker/progress truth: worker_id / phase / progress_percent come from durable public truth
+active polling: after v61 creation, benchPredictOne reads /api/v62/projects/{project_id}/tasks/{task_id} while the task is active
+terminal success: v61 is read once after SUCCEEDED to obtain deployment-specific result payload
+frontend projection: PlatformCore.deployment.deploymentTaskView reuses taskPoller active/progress semantics
+queue order / resource admission / worker claim / progress generation / process fencing: unchanged
+```
+
+Permanent guards include `tests/api/test_deployment_test_runtime.py`, `tests/frontend/deployment-runtime-source.test.mjs`, `tests/frontend/deployment-task-view.test.mjs`, `tests/unit/task_runtime/test_public_projection.py`, and `tests/unit/test_deployment_inference_process_fencing.py`. Release Regression now permanently runs the deployment business-projection contract and is triggered by the deployment task view/wiring guards. The frontend does not invent queue order or percentage; it only renders unified durable truth.
+
+Evidence:
+
+```text
+valid RED head:             5748a89155e653a49c8a8c743cdd3de7a9fa67cf
+valid RED run:              34794353496 (backend v61 QUEUED vs v62 WAITING_RESOURCE; final frontend unified-truth wiring RED)
+focused/full GREEN run:     34794490531 PASS (API + frontend + public projection + deployment fencing + full frontend unit)
+product commit:             0b800a54ae64507314a5f9199734759250691cb6
+formal accepted clean HEAD: 1c3fa7f2b5cb826c0998f249637241a59134f053
+Release Regression:         34794630826 PASS
+Navigation Action Fencing:  34794630808 PASS (Real Chrome PASS)
+Frontend Runtime:           34794630837 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
+```
+
+All temporary deployment RED/migration helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
+
+Next product batch: **storage import polling owner / lifecycle-managed polling truth**. Storage import already preserves durable queue/progress display truth, but its action runtime still owns a direct `while + setTimeout(1200)` polling loop; that owner must be audited separately without mixing it into this deployment closure.
 
 ## Product closure — Cleaning frontend queue/progress truth CLOSED
 
@@ -82,7 +120,7 @@ formal VERSION.txt:         42.24.0 unchanged
 
 The temporary frontend migration helper/workflow were physically deleted before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-Next product scope: continue the horizontal **storage import / deployment-test queue and progress truth audit**. Genuine 10,000-image processing acceptance remains explicitly deferred.
+Deployment-test durable queue/progress truth is now CLOSED. Next product scope: **storage import polling owner / lifecycle-managed polling truth**. Genuine 10,000-image processing acceptance remains explicitly deferred.
 
 ## Product closure — Cleaning durable execution truth CLOSED
 

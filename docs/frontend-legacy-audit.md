@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       736b2acdbf2560be657011035de173cde67517d0
-run:          34793457920
+commit:       1c3fa7f2b5cb826c0998f249637241a59134f053
+run:          34794630837
 frontend:     PASS
 Real Chrome:  PASS
 ```
@@ -16,8 +16,8 @@ Real Chrome:  PASS
 Current caches/builds:
 
 ```text
-app.js                  42.25.96
-main.mjs                  42.25.93
+app.js                  42.25.97
+main.mjs                  42.25.94
 visible formal version    42.24.0
 internal UI build         42.25.0-dev
 navigation-stability      422512
@@ -28,6 +28,44 @@ training-labels           422513
 training-task-runtime     training-task-runtime-422503 (cache 422505)
 auto-label-poll-runtime   422501
 ```
+
+## Product closure — Deployment-test durable queue/progress truth CLOSED
+
+The deployment-test business surface now preserves the same durable task truth as the unified v62 task API. Previously the v61 compatibility projection flattened a resource-waiting durable task back to persisted `QUEUED`, dropped queue/resource/worker metadata, and the final `benchPredictOne` loop only considered `QUEUED / RUNNING / CANCEL_REQUESTED` active. That combination could make a real `WAITING_RESOURCE` deployment test appear terminal or fail without showing why it was waiting.
+
+Closed semantics:
+
+```text
+v61 business projection: delegates durable task fields to task_to_public()
+compatibility aliases: id / progress / stage / result remain for the existing deployment surface
+WAITING_RESOURCE: remains active and visible instead of being flattened to QUEUED
+queue truth: resource_queue_position + resource_wait_reason are server-derived and visible
+worker/progress truth: worker_id / phase / progress_percent come from durable public truth
+active polling: after v61 creation, benchPredictOne reads /api/v62/projects/{project_id}/tasks/{task_id} while the task is active
+terminal success: v61 is read once after SUCCEEDED to obtain deployment-specific result payload
+frontend projection: PlatformCore.deployment.deploymentTaskView reuses taskPoller active/progress semantics
+queue order / resource admission / worker claim / progress generation / process fencing: unchanged
+```
+
+Permanent guards include `tests/api/test_deployment_test_runtime.py`, `tests/frontend/deployment-runtime-source.test.mjs`, `tests/frontend/deployment-task-view.test.mjs`, `tests/unit/task_runtime/test_public_projection.py`, and `tests/unit/test_deployment_inference_process_fencing.py`. Release Regression now permanently runs the deployment business-projection contract and is triggered by the deployment task view/wiring guards. The frontend does not invent queue order or percentage; it only renders unified durable truth.
+
+Evidence:
+
+```text
+valid RED head:             5748a89155e653a49c8a8c743cdd3de7a9fa67cf
+valid RED run:              34794353496 (backend v61 QUEUED vs v62 WAITING_RESOURCE; final frontend unified-truth wiring RED)
+focused/full GREEN run:     34794490531 PASS (API + frontend + public projection + deployment fencing + full frontend unit)
+product commit:             0b800a54ae64507314a5f9199734759250691cb6
+formal accepted clean HEAD: 1c3fa7f2b5cb826c0998f249637241a59134f053
+Release Regression:         34794630826 PASS
+Navigation Action Fencing:  34794630808 PASS (Real Chrome PASS)
+Frontend Runtime:           34794630837 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
+```
+
+All temporary deployment RED/migration helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
+
+Next product batch: **storage import polling owner / lifecycle-managed polling truth**. Storage import already preserves durable queue/progress display truth, but its action runtime still owns a direct `while + setTimeout(1200)` polling loop; that owner must be audited separately without mixing it into this deployment closure.
 
 ## Product closure — Cleaning frontend queue/progress truth CLOSED
 
@@ -86,7 +124,7 @@ formal VERSION.txt:         42.24.0 unchanged
 
 The temporary frontend migration helper/workflow were physically deleted before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-Next product scope: continue the horizontal **storage import / deployment-test queue and progress truth audit**. Genuine 10,000-image processing acceptance remains explicitly deferred.
+Deployment-test durable queue/progress truth is now CLOSED. Next product scope: **storage import polling owner / lifecycle-managed polling truth**. Genuine 10,000-image processing acceptance remains explicitly deferred.
 
 ## Product closure — Cleaning durable execution truth CLOSED
 
@@ -236,7 +274,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Video resource queue truth is CLOSED. Current next product scope: continue the horizontal real queue-position/progress audit across storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Video resource queue truth is CLOSED. Current next product scope: continue the horizontal real queue-position/progress audit across storage import polling owner / lifecycle-managed polling surface. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 2. Closed owner surfaces
 
