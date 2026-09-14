@@ -184,6 +184,60 @@ test('video polling is a direct PollRegistry-managed one-shot and re-arms only w
   delete globalThis.window;
 });
 
+test('clean task polling is a direct PollRegistry-managed one-shot and stops at terminal truth', async () => {
+  const state = {
+    page: '自动标注及清洗',
+    project: {id: 'p1'},
+    jobs: [],
+    v427OpsTab: 'clean',
+    clean427: [{id: 'c1', status: 'queued', status_text: '等待资源'}],
+  };
+  const timeouts = new Map();
+  let nextTimer = 240;
+  let refreshes = 0;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+
+  let runtime;
+  globalThis.window = {
+    PlatformCore: {cleaning: {isActiveCleanTask: task => ['queued', 'running'].includes(String(task?.status || '').toLowerCase())}},
+    refreshCleanOps427Delta: async () => {
+      refreshes += 1;
+      runtime.replaceCleanTaskTimer();
+    },
+  };
+
+  runtime = installPollRegistry({getState: () => state});
+  const first = runtime.snapshot().find(row => row.key === 'clean-tasks-v47');
+  assert.deepEqual(first, {
+    key: 'clean-tasks-v47', owners: ['自动标注及清洗'], active: true, managed: true, delay: 2200,
+  });
+  const firstTimer = [...timeouts.keys()][0];
+  await timeouts.get(firstTimer).callback();
+  assert.equal(refreshes, 1);
+  assert.equal(runtime.snapshot().some(row => row.key === 'clean-tasks-v47'), true);
+
+  state.clean427 = [{id: 'c1', status: 'awaiting_confirmation'}];
+  const secondTimer = [...timeouts.keys()][0];
+  await timeouts.get(secondTimer).callback();
+  assert.equal(refreshes, 2);
+  assert.equal(runtime.snapshot().some(row => row.key === 'clean-tasks-v47'), false);
+
+  runtime.beforeNavigate('数据集');
+  assert.equal(runtime.snapshot().some(row => row.key === 'clean-tasks-v47'), false);
+
+  runtime.destroy();
+  globalThis.setTimeout = originalSetTimeout;
+  globalThis.clearTimeout = originalClearTimeout;
+  delete globalThis.window;
+});
+
 test('source polling is a direct PollRegistry-managed interval and stops on leave', async () => {
   const state = {
     page: '素材接入',
