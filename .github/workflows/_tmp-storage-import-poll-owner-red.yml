@@ -1,0 +1,23 @@
+name: Temporary Storage Import Poll Owner RED
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-storage-import-poll-owner-red.yml
+
+jobs:
+  red:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Storage import managed polling RED
+        run: >-
+          node --test
+          tests/frontend/storage-import-progress.test.mjs
+          tests/frontend/server-material-import.test.mjs
