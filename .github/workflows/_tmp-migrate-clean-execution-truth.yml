@@ -31,7 +31,7 @@ jobs:
       - name: Syntax guard
         run: python -m py_compile app.py platform_core/material_batches.py tests/api/test_upload_clean_flow.py scripts/_tmp_debug_clean_worker.py
       - name: Diagnose real materials worker
-        run: python scripts/_tmp_debug_clean_worker.py
+        run: PYTHONPATH=. python scripts/_tmp_debug_clean_worker.py
       - name: Focused durable cleaning contracts
         run: >-
           python -m pytest -q
