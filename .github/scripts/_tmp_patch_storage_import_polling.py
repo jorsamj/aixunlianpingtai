@@ -31,9 +31,9 @@ new_poll = """    window.renderStorageImportTask61=renderImportTask;
     async function pollTask(taskId,initialTask){
       if(!taskId)return null;
       try{
-        const runtime=window.StorageImportProgressRuntime;
-        if(!runtime?.track)throw new Error('素材导入进度模块未加载，请刷新页面后重试');
-        return await runtime.track(taskId,initialTask);
+        const tracked=window.StorageImportProgressRuntime?.track?.(taskId,initialTask);
+        if(!tracked)throw new Error('素材导入进度模块未加载，请刷新页面后重试');
+        return await tracked;
       }
       catch(error){if(!isAbort(error)){const status=document.getElementById('si61Status');if(status)status.innerHTML=`<div class=\"alert err\">${esc(error?.message||error||'导入任务读取失败')}</div>`}return null}
     }
@@ -45,8 +45,7 @@ old_open = '      abortPolling();pollController=new AbortController();\n      mo
 assert old_open in app, 'legacy modal polling setup not found'
 app = app.replace(old_open, "      abortPolling();\n      modal('从存储导入素材',", 1)
 assert 'pollController' not in app, 'legacy storage pollController remains'
-assert 'const runtime=window.StorageImportProgressRuntime;' in app, 'managed runtime lookup missing'
-assert 'return await runtime.track(taskId,initialTask);' in app, 'managed track wiring missing'
+assert 'StorageImportProgressRuntime?.track' in app, 'managed track wiring missing'
 assert 'StorageImportProgressRuntime?.stop' in app, 'managed stop wiring missing'
 
 old_import = "import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422400';"
