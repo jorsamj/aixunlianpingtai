@@ -81,6 +81,7 @@ export function installPollRegistry({getState} = {}) {
   const trainingOwners = ['训练任务', '检测台'];
   const videoOwner = '视频切帧';
   const sourceOwner = '素材接入';
+  const cleanOwner = '自动标注及清洗';
 
   function state() { return getState?.() || {}; }
 
@@ -153,6 +154,36 @@ export function installPollRegistry({getState} = {}) {
     return s.video424Timer;
   }
 
+
+  function cleanTaskActive(task) {
+    const helper = window.PlatformCore?.cleaning?.isActiveCleanTask;
+    if (typeof helper === 'function') return Boolean(helper(task));
+    return ['queued', 'running'].includes(String(task?.status || '').toLowerCase());
+  }
+
+  function replaceCleanTaskTimer() {
+    const s = state();
+    registry.clear('clean-tasks-v47');
+    if (String(s.page || '') !== cleanOwner) return null;
+    if (String(s.v427OpsTab || 'label') !== 'clean') return null;
+    if (!(s.clean427 || []).some(cleanTaskActive)) return null;
+
+    return registry.startTimeout(
+      'clean-tasks-v47',
+      cleanOwner,
+      async () => {
+        const current = state();
+        if (String(current.page || '') !== cleanOwner) return;
+        if (String(current.v427OpsTab || 'label') !== 'clean') return;
+        if (!current.project?.id) return;
+        if (typeof window.refreshCleanOps427Delta === 'function') {
+          await window.refreshCleanOps427Delta();
+        }
+      },
+      2200,
+    );
+  }
+
   function replaceSourceTimer() {
     const s = state();
     registry.clear('sources');
@@ -183,6 +214,7 @@ export function installPollRegistry({getState} = {}) {
     clear(key) { return registry.clear(key); },
     replaceTrainingJobTimer,
     replaceVideo424Timer,
+    replaceCleanTaskTimer,
     replaceSourceTimer,
     beforeNavigate(nextPage) {
       registry.leave(nextPage);
@@ -202,6 +234,7 @@ export function installPollRegistry({getState} = {}) {
   window.__pollRegistryInstalled = true;
   replaceTrainingJobTimer();
   replaceVideo424Timer();
+  replaceCleanTaskTimer();
   replaceSourceTimer();
   return runtime;
 }

@@ -7,7 +7,7 @@ import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422513
 import {installNavigationStability} from './modules/navigation-stability.js?v=422512';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
-import {installPollRegistry} from './modules/poll-registry.js?v=422511';
+import {installPollRegistry} from './modules/poll-registry.js?v=422517';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422505';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422506';
@@ -18,7 +18,7 @@ import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422001';
-import {applyCleanConfirmation} from './modules/cleaning.js?v=421800';
+import {applyCleanConfirmation, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422517';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
 import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
@@ -86,7 +86,7 @@ window.PlatformCore = {
   annotationWorkbench: {createAnnotationWorkbench, queueWindow},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
-  cleaning: {applyCleanConfirmation},
+  cleaning: {applyCleanConfirmation, cleanTaskView, isActiveCleanTask},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},
   upload: {uploadBatchFromResponse},
