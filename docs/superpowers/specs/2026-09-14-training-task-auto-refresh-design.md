@@ -17,10 +17,11 @@ This batch closes only the training task list auto-refresh lifecycle. It does no
 - A successful refresh replaces the in-memory job list with the latest complete backend response and patches only the training table and tab counts.
 - After each one-shot completes, re-arm only from the newly returned backend state.
 - A transient request failure may re-arm while the last known state still contains a non-terminal task, so one network error does not permanently disable live updates.
-- If only `paused` tasks remain, keep them in the activity tab but re-arm at a lower 5-second cadence rather than the 2-second active cadence.
-- Existing resume behavior performs an immediate forced jobs refresh after the mutation. That refreshed state then restores the appropriate one-shot cadence.
+- If only `paused` tasks remain, keep them in the activity tab but do not leave a pending training jobs timer. Paused work cannot produce progress by itself.
+- Existing resume behavior performs an immediate forced jobs refresh after the mutation. If that response contains `queued`, `waiting`, `pending`, or `running`, PollRegistry restores the 2-second one-shot.
 - If all tasks are terminal, do not re-arm. Terminal states are `done`, `finished`, `completed`, `failed`, `stopped`, `cancelled`, and `canceled`.
 - Training polling is owned only by the `训练任务` page. Navigation to any other module clears its pending timer through the existing PollRegistry navigation lifecycle. Re-entering the page uses the normal page data load and render to start polling again when required.
+- All training timer creation, clearing, and re-arming remains inside `PollRegistry`. `TrainingTaskRuntime` must not call `setTimeout` or `setInterval`; it only requests `/jobs`, commits current state, and patches the table.
 
 ## Truthfulness rules
 
@@ -41,7 +42,7 @@ Focused frontend tests will prove:
 
 1. Successive real API responses update status, progress, epoch, and elapsed display without a full-page render.
 2. A transition from running to every supported terminal class is treated as terminal, with a representative completed transition proving the stale running row is replaced.
-3. Active tasks re-arm at 2 seconds, paused-only state re-arms at 5 seconds, and terminal-only state does not re-arm.
+3. `queued`, `waiting`, `pending`, and `running` tasks re-arm at 2 seconds; paused-only and terminal-only states leave no pending `training-jobs` timer.
 4. Leaving the training task page clears the pending one-shot.
 5. Resume still performs an immediate forced jobs refresh and returns polling to the cadence implied by the refreshed backend state.
 
