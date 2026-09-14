@@ -45,7 +45,8 @@ old_open = '      abortPolling();pollController=new AbortController();\n      mo
 assert old_open in app, 'legacy modal polling setup not found'
 app = app.replace(old_open, "      abortPolling();\n      modal('从存储导入素材',", 1)
 assert 'pollController' not in app, 'legacy storage pollController remains'
-assert 'StorageImportProgressRuntime?.track' in app, 'managed track wiring missing'
+assert 'const runtime=window.StorageImportProgressRuntime;' in app, 'managed runtime lookup missing'
+assert 'return await runtime.track(taskId,initialTask);' in app, 'managed track wiring missing'
 assert 'StorageImportProgressRuntime?.stop' in app, 'managed stop wiring missing'
 
 old_import = "import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422400';"
