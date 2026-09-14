@@ -29,7 +29,9 @@ jobs:
           python scripts/_tmp_migrate_clean_execution_truth.py
           python scripts/_tmp_finalize_clean_execution_truth.py
       - name: Syntax guard
-        run: python -m py_compile app.py platform_core/material_batches.py tests/api/test_upload_clean_flow.py
+        run: python -m py_compile app.py platform_core/material_batches.py tests/api/test_upload_clean_flow.py scripts/_tmp_debug_clean_worker.py
+      - name: Diagnose real materials worker
+        run: python scripts/_tmp_debug_clean_worker.py
       - name: Focused durable cleaning contracts
         run: >-
           python -m pytest -q
@@ -44,7 +46,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm scripts/_tmp_migrate_clean_execution_truth.py scripts/_tmp_finalize_clean_execution_truth.py .github/workflows/_tmp-migrate-clean-execution-truth.yml .github/workflows/_tmp-clean-unified-truth-red.yml || true
+          git rm scripts/_tmp_migrate_clean_execution_truth.py scripts/_tmp_finalize_clean_execution_truth.py scripts/_tmp_debug_clean_worker.py .github/workflows/_tmp-migrate-clean-execution-truth.yml .github/workflows/_tmp-clean-unified-truth-red.yml || true
           git add app.py platform_core/material_batches.py .github/workflows/v42.25-release-regression.yml tests/api/test_clean_unified_execution_truth.py tests/api/test_upload_clean_flow.py tests/unit/test_upload_batches.py
           git commit -m "fix(cleaning): unify execution on durable material batches"
           git push origin HEAD:refactor/frontend-runtime-stabilization
