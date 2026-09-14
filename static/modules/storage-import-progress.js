@@ -59,12 +59,11 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
   function render(task) {
     currentTask = task || currentTask;
     if (!currentTask) return;
-    if (typeof window.renderStorageImportTask61 === 'function') {
-      window.renderStorageImportTask61(currentTask);
-      return;
-    }
     const status = statusElement();
     if (status) status.textContent = storageImportProgressText(currentTask);
+    if (typeof window.renderStorageImportTask61 === 'function') {
+      window.renderStorageImportTask61(currentTask);
+    }
   }
 
   function finish(task) {
