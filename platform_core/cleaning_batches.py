@@ -14,8 +14,9 @@ def _save_result(manifest, image_id, result, index, near_indexed=False):
     # Result and hash publication are atomic. On recovery a published result is
     # reused, preventing an image from matching itself or changing its group.
     with manifest.transaction():
-        if result["status"] == "succeeded":
-            index.remember(image_id, result["metrics"], near_indexed)
+        metrics = result.get("metrics") or {}
+        if result["status"] == "succeeded" and metrics.get("sha256") is not None and metrics.get("dhash") is not None:
+            index.remember(image_id, metrics, near_indexed)
         manifest.database.execute(
             "INSERT INTO clean_results(image_id,result_json,flagged) VALUES (?,?,?) "
             "ON CONFLICT(image_id) DO UPDATE SET result_json=excluded.result_json,flagged=excluded.flagged",
@@ -64,28 +65,41 @@ def clean_batch(context, manifest, materials, batch, options, manager, index, ch
         except InterruptedError:
             raise
         except Exception as error:
-            # A lost lease raises here before any writes. Ordinary file access
-            # errors belong to this image and must not stop the remaining batch.
+            # A lost lease raises here before any writes. A decoder failure is a
+            # valid cleaning finding when corrupt_check is enabled; provider/I/O
+            # and runtime failures remain retryable item failures.
             check_active(context, "saving_clean_error", image_id)
             public_error = redact_storage_error(error)
-            if result is None:
-                # A storage outage or missing blur engine is not a corrupt image.
-                corrupt = isinstance(error, ImageDecodeError) and options["corrupt_check"]
+            corrupt_finding = isinstance(error, ImageDecodeError) and options["corrupt_check"]
+            if corrupt_finding:
                 result = {"image_id": image_id, "filename": (indexed.get(image_id) or {}).get("filename"),
-                          "status": "failed", "error": public_error, "metrics": {},
-                          "issues": [{"code": "corrupt", "name": "图片损坏", "detail": public_error}] if corrupt else [],
-                          "suggest_delete": False, "inspected_at": utc_now()}
+                          "status": "succeeded", "metrics": {},
+                          "issues": [{"code": "corrupt", "name": "图片损坏", "detail": public_error}],
+                          "suggest_delete": True, "inspected_at": utc_now()}
                 _save_result(manifest, image_id, result, index)
-            check_active(context, "saving_clean_error", image_id)
-            try:
+                check_active(context, "saving_clean_result", image_id)
                 _transform_many(materials, [image_id], lambda row: {
-                    **row, "clean_status": "failed", "clean_result_task_id": context.task.task_id,
+                    **row, "clean_status": "needs_review", "clean_result_task_id": context.task.task_id,
                     "clean_checked_at": result["inspected_at"], "clean_issues": result["issues"],
                 }, batch_size=1)
-            except Exception as save_error:
-                append_task_log(context, "clean_status_error", f"image_id={image_id} {redact_storage_error(save_error)}")
-            manifest.transition([image_id], "failed", public_error)
-            append_task_log(context, "clean_error", f"image_id={image_id} {public_error}")
+                manifest.transition([image_id], "succeeded")
+                append_task_log(context, "clean_flagged", f"image_id={image_id} issues=corrupt")
+            else:
+                if result is None:
+                    result = {"image_id": image_id, "filename": (indexed.get(image_id) or {}).get("filename"),
+                              "status": "failed", "error": public_error, "metrics": {},
+                              "issues": [], "suggest_delete": False, "inspected_at": utc_now()}
+                    _save_result(manifest, image_id, result, index)
+                check_active(context, "saving_clean_error", image_id)
+                try:
+                    _transform_many(materials, [image_id], lambda row: {
+                        **row, "clean_status": "failed", "clean_result_task_id": context.task.task_id,
+                        "clean_checked_at": result["inspected_at"], "clean_issues": result["issues"],
+                    }, batch_size=1)
+                except Exception as save_error:
+                    append_task_log(context, "clean_status_error", f"image_id={image_id} {redact_storage_error(save_error)}")
+                manifest.transition([image_id], "failed", public_error)
+                append_task_log(context, "clean_error", f"image_id={image_id} {public_error}")
         summary = manifest.summary(image_id)
         check_active(context, "cleaning", image_id,
                      progress=int(summary["processed"] * 100 / max(1, summary["total"])))

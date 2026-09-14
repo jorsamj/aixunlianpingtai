@@ -1,4 +1,5 @@
 import io
+import hashlib
 import threading
 import time
 import uuid
@@ -20,20 +21,55 @@ def image_bytes(kind: str) -> bytes:
     return output.getvalue()
 
 
-def wait_for_clean_result(client, pid: str, task_id: str, timeout: float = 15):
+def _material_scheduler():
+    import app as app_module
+    from platform_core.task_runtime import ArtifactStore, FencedTaskRepository, Scheduler
+    from platform_core.worker_registry import build_worker_registration
+
+    runtime = app_module.DATA_DIR / "task_runtime"
+    repository = FencedTaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    handlers, capabilities = build_worker_registration(app_module.DATA_DIR, {"materials"})
+    return Scheduler(
+        repository,
+        artifacts,
+        f"pytest-material-{uuid.uuid4().hex[:8]}",
+        handlers,
+        capabilities,
+        lease_seconds=5,
+        poll_seconds=0.01,
+    )
+
+
+def drive_clean_task(task_id: str, timeout: float = 15):
+    import app as app_module
+
+    scheduler = _material_scheduler()
+    terminal = {
+        "SUCCEEDED", "FAILED", "PARTIAL_SUCCESS", "CANCELLED",
+        "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE", "LOST",
+    }
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        response = client.get(f"/api/v47/projects/{pid}/clean-tasks/{task_id}/result")
-        response.raise_for_status()
-        body = response.json()
-        status = body["task"].get("status")
-        if status == "awaiting_confirmation":
-            return body
-        if status == "failed":
-            raise AssertionError(body["task"])
-        time.sleep(0.05)
-    raise AssertionError(f"clean task {task_id} timed out")
+        current = app_module.shared_task_repository().get(task_id)
+        if current is None:
+            raise AssertionError(f"durable clean task {task_id} is missing")
+        if current.status.value in terminal:
+            return current
+        if not scheduler.run_once():
+            time.sleep(0.01)
+    raise AssertionError(f"durable clean task {task_id} timed out")
 
+
+def wait_for_clean_result(client, pid: str, task_id: str, timeout: float = 15):
+    drive_clean_task(task_id, timeout)
+    response = client.get(f"/api/v47/projects/{pid}/clean-tasks/{task_id}/result")
+    response.raise_for_status()
+    body = response.json()
+    status = body["task"].get("status")
+    if status == "awaiting_confirmation":
+        return body
+    raise AssertionError(body["task"])
 
 def upload_png(client, project_id: str, filename: str) -> dict:
     response = client.post(
@@ -158,12 +194,8 @@ def test_retry_after_prepared_task_before_batch_publication_completes_once(clien
     ).json()["id"]
     uploaded = upload_many_png(client, pid, ["clean.png"])
     image_id = uploaded["uploaded"][0]["id"]
-    task_id = app_module._v55_upload_clean_task_id(
-        pid,
-        uploaded["batch_id"],
-        [image_id],
-    )
-    task, created = app_module._v47_prepare_clean_task_record(
+    task_id = app_module._v55_upload_clean_task_id(pid, uploaded["batch_id"], [image_id])
+    task, created = app_module._v62_prepare_clean_compat(
         pid,
         app_module.V47CleanReq(
             image_ids=[image_id],
@@ -172,7 +204,8 @@ def test_retry_after_prepared_task_before_batch_publication_completes_once(clien
         task_id=task_id,
     )
     assert created is True
-    assert task["status"] == "prepared"
+    assert task["id"] == task_id
+    assert app_module.shared_task_repository().get(task_id) is None
 
     response = client.post(
         f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
@@ -181,9 +214,11 @@ def test_retry_after_prepared_task_before_batch_publication_completes_once(clien
     response.raise_for_status()
 
     assert response.json()["clean_task_id"] == task_id
+    durable = app_module.shared_task_repository().get(task_id)
+    assert durable is not None
+    assert durable.kind.value == "MATERIAL_BATCH"
     tasks = client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]
     assert [item["id"] for item in tasks].count(task_id) == 1
-
 
 def test_retry_recreates_missing_task_from_published_batch_association(client):
     import app as app_module
@@ -216,7 +251,7 @@ def test_retry_recreates_missing_task_from_published_batch_association(client):
     assert tasks[0]["status"] != "prepared"
 
 
-def test_retry_starts_existing_prepared_task_exactly_once(client, monkeypatch):
+def test_retry_starts_existing_prepared_task_exactly_once(client):
     import app as app_module
 
     pid = client.post(
@@ -230,43 +265,28 @@ def test_retry_starts_existing_prepared_task_exactly_once(client, monkeypatch):
         image_ids=[image_id],
         task_name=f"上传批次 {uploaded['batch_id']} 清洗",
     )
-    app_module._v47_prepare_clean_task_record(pid, payload, task_id=task_id)
-    seed_published_clean_intent(
-        app_module,
-        pid,
-        uploaded["batch_id"],
-        image_id,
-        task_id,
+    _, created = app_module._v62_prepare_clean_compat(pid, payload, task_id=task_id)
+    assert created is True
+    assert app_module.shared_task_repository().get(task_id) is None
+    seed_published_clean_intent(app_module, pid, uploaded["batch_id"], image_id, task_id)
+
+    first = client.post(
+        f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
     )
-    started = threading.Event()
-    release = threading.Event()
-    calls = []
+    first.raise_for_status()
+    second = client.post(
+        f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
+    )
+    second.raise_for_status()
 
-    def blocking_worker(project_id, started_task_id, data):
-        calls.append((project_id, started_task_id))
-        started.set()
-        assert release.wait(5)
+    assert first.json()["clean_task_id"] == second.json()["clean_task_id"] == task_id
+    assert app_module.shared_task_repository().get(task_id) is not None
+    tasks = client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]
+    assert [item["id"] for item in tasks].count(task_id) == 1
 
-    monkeypatch.setattr(app_module, "_v47_run_clean_task", blocking_worker)
-    try:
-        first = client.post(
-            f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
-            json={"clean_image_ids": [image_id], "ready_image_ids": []},
-        )
-        first.raise_for_status()
-        assert started.wait(5)
-        second = client.post(
-            f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
-            json={"clean_image_ids": [image_id], "ready_image_ids": []},
-        )
-        second.raise_for_status()
-        assert first.json()["clean_task_id"] == second.json()["clean_task_id"] == task_id
-        assert calls == [(pid, task_id)]
-    finally:
-        release.set()
-
-
-def test_concurrent_identical_decisions_spawn_one_task_worker(client, monkeypatch):
+def test_concurrent_identical_decisions_spawn_one_task_worker(client):
     import app as app_module
 
     pid = client.post(
@@ -275,30 +295,21 @@ def test_concurrent_identical_decisions_spawn_one_task_worker(client, monkeypatc
     ).json()["id"]
     uploaded = upload_many_png(client, pid, ["clean.png"])
     image_id = uploaded["uploaded"][0]["id"]
-    started = threading.Event()
-    release = threading.Event()
-    calls = []
-
-    def blocking_worker(project_id, task_id, data):
-        calls.append((project_id, task_id))
-        started.set()
-        assert release.wait(5)
-
-    monkeypatch.setattr(app_module, "_v47_run_clean_task", blocking_worker)
     url = f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions"
     body = {"clean_image_ids": [image_id], "ready_image_ids": []}
-    try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            responses = list(executor.map(lambda _: client.post(url, json=body), range(2)))
-        for response in responses:
-            response.raise_for_status()
-        assert started.wait(5)
-        assert len({response.json()["clean_task_id"] for response in responses}) == 1
-        assert len(calls) == 1
-        assert len(client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]) == 1
-    finally:
-        release.set()
 
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _: client.post(url, json=body), range(2)))
+    for response in responses:
+        response.raise_for_status()
+    task_ids = {response.json()["clean_task_id"] for response in responses}
+    assert len(task_ids) == 1
+    task_id = next(iter(task_ids))
+    durable = app_module.shared_task_repository().get(task_id)
+    assert durable is not None
+    assert durable.kind.value == "MATERIAL_BATCH"
+    tasks = client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]
+    assert [item["id"] for item in tasks].count(task_id) == 1
 
 def test_upload_batch_rejects_overlap_without_changing_state(client):
     pid = client.post(
@@ -346,15 +357,6 @@ def test_upload_batch_rejects_image_from_another_batch(client):
     assert rows[foreign_id]["processing_status"] == "pending_decision"
 
 
-def _set_clean_task_status(app_module, project_id: str, task_id: str, status: str):
-    task_path = app_module._v33_tasks_file(project_id, "clean_tasks")
-    tasks = app_module.read_json(task_path, [])
-    for task in tasks:
-        if str(task.get("id")) == str(task_id):
-            task.update({"status": status, "status_text": status})
-            app_module.write_json(task_path, tasks)
-            return
-    raise AssertionError(f"task {task_id} not found")
 
 
 def test_replaying_clean_after_terminal_task_preserves_material_state(client):
@@ -366,15 +368,14 @@ def test_replaying_clean_after_terminal_task_preserves_material_state(client):
     uploaded = upload_many_png(client, pid, ["clean.png", "ready.png"])
     image_id = uploaded["uploaded"][0]["id"]
     batch_id = uploaded["batch_id"]
-    task_id = app_module._v55_upload_clean_task_id(pid, batch_id, [image_id])
-    app_module._v47_prepare_clean_task_record(
-        pid,
-        app_module.V47CleanReq(
-            image_ids=[image_id], task_name=f"上传批次 {batch_id} 清洗"
-        ),
-        task_id=task_id,
+    first = client.post(
+        f"/api/v55/projects/{pid}/upload-batches/{batch_id}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
     )
-    seed_published_clean_intent(app_module, pid, batch_id, image_id, task_id)
+    first.raise_for_status()
+    task_id = first.json()["clean_task_id"]
+    wait_for_clean_result(client, pid, task_id)
+
     app_module.material_store(pid).patch(
         {
             image_id: {
@@ -384,64 +385,56 @@ def test_replaying_clean_after_terminal_task_preserves_material_state(client):
             }
         }
     )
-    _set_clean_task_status(app_module, pid, task_id, "done")
-
     response = client.post(
         f"/api/v55/projects/{pid}/upload-batches/{batch_id}/decisions",
         json={"clean_image_ids": [image_id], "ready_image_ids": []},
     )
     response.raise_for_status()
-    row = {item["id"]: item for item in client.get(f"/api/projects/{pid}/images").json()}[
-        image_id
-    ]
+    assert response.json()["clean_task_id"] == task_id
+    row = {item["id"]: item for item in client.get(f"/api/projects/{pid}/images").json()}[image_id]
     assert row["processing_status"] == "processed"
     assert row["cleaned_at"] == "sentinel-cleaned"
     assert row["updated_at"] == "sentinel-updated"
     assert len(client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]) == 1
 
-
-def test_failed_clean_task_can_be_retried_with_same_task_id(client, monkeypatch):
+def test_failed_clean_task_can_be_retried_with_same_task_id(client):
     import app as app_module
 
     pid = client.post(
         "/api/projects", json={"name": "failed-retry", "labels": []}
     ).json()["id"]
     uploaded = upload_many_png(client, pid, ["clean.png"])
-    image_id = uploaded["uploaded"][0]["id"]
+    record = uploaded["uploaded"][0]
+    image_id = record["id"]
     batch_id = uploaded["batch_id"]
-    task_id = app_module._v55_upload_clean_task_id(pid, batch_id, [image_id])
-    app_module._v47_prepare_clean_task_record(
-        pid,
-        app_module.V47CleanReq(
-            image_ids=[image_id], task_name=f"上传批次 {batch_id} 清洗"
-        ),
-        task_id=task_id,
+    source_path = app_module.project_dir(pid) / "uploads" / record["stored_name"]
+    original_bytes = source_path.read_bytes()
+
+    first = client.post(
+        f"/api/v55/projects/{pid}/upload-batches/{batch_id}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
     )
-    seed_published_clean_intent(app_module, pid, batch_id, image_id, task_id)
-    _set_clean_task_status(app_module, pid, task_id, "failed")
-    started = threading.Event()
-    release = threading.Event()
+    first.raise_for_status()
+    task_id = first.json()["clean_task_id"]
+    source_path.unlink()
+    failed = drive_clean_task(task_id)
+    assert failed.status.value == "FAILED"
 
-    def blocking_worker(project_id, started_task_id, data):
-        assert started_task_id == task_id
-        started.set()
-        assert release.wait(5)
+    source_path.write_bytes(original_bytes)
+    retry = client.post(
+        f"/api/v55/projects/{pid}/upload-batches/{batch_id}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
+    )
+    retry.raise_for_status()
+    assert retry.json()["clean_task_id"] == task_id
+    retried = app_module.shared_task_repository().get(task_id)
+    assert retried is not None
+    assert retried.status.value == "QUEUED"
+    result = wait_for_clean_result(client, pid, task_id)
+    assert result["task"]["status"] == "awaiting_confirmation"
+    assert [item["id"] for item in client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]].count(task_id) == 1
 
-    monkeypatch.setattr(app_module, "_v47_run_clean_task", blocking_worker)
-    try:
-        response = client.post(
-            f"/api/v55/projects/{pid}/upload-batches/{batch_id}/decisions",
-            json={"clean_image_ids": [image_id], "ready_image_ids": []},
-        )
-        response.raise_for_status()
-        assert started.wait(5)
-        tasks = client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]
-        assert [item["id"] for item in tasks].count(task_id) == 1
-    finally:
-        release.set()
-
-
-def test_running_clean_task_is_recovered_when_worker_registry_is_empty(client, monkeypatch):
+def test_clean_task_recovery_is_owned_by_durable_worker_not_web_registry(client):
     import app as app_module
 
     pid = client.post(
@@ -449,27 +442,20 @@ def test_running_clean_task_is_recovered_when_worker_registry_is_empty(client, m
     ).json()["id"]
     uploaded = upload_many_png(client, pid, ["clean.png"])
     image_id = uploaded["uploaded"][0]["id"]
-    task_id = "c1d2e3f4a5b6"
-    payload = app_module.V47CleanReq(image_ids=[image_id], task_name="恢复清洗")
-    app_module._v47_prepare_clean_task_record(pid, payload, task_id=task_id)
-    _set_clean_task_status(app_module, pid, task_id, "running")
-    app_module._V47_ACTIVE_CLEAN_WORKERS.clear()
-    started = threading.Event()
-    release = threading.Event()
+    response = client.post(
+        f"/api/v55/projects/{pid}/upload-batches/{uploaded['batch_id']}/decisions",
+        json={"clean_image_ids": [image_id], "ready_image_ids": []},
+    )
+    response.raise_for_status()
+    task_id = response.json()["clean_task_id"]
+    before = app_module.shared_task_repository().get(task_id)
+    assert before is not None and before.status.value == "QUEUED"
 
-    def blocking_worker(project_id, started_task_id, data):
-        assert started_task_id == task_id
-        started.set()
-        assert release.wait(5)
-
-    monkeypatch.setattr(app_module, "_v47_run_clean_task", blocking_worker)
-    try:
-        app_module._v47_recover_clean_tasks(pid)
-        assert started.wait(5)
-        assert (pid, task_id) in app_module._V47_ACTIVE_CLEAN_WORKERS
-    finally:
-        release.set()
-
+    assert app_module._v47_recover_clean_tasks(pid) == []
+    after = app_module.shared_task_repository().get(task_id)
+    assert after is not None and after.status.value == "QUEUED"
+    result = wait_for_clean_result(client, pid, task_id)
+    assert result["task"]["status"] == "awaiting_confirmation"
 
 def test_clean_decision_rollback_preserves_concurrent_updated_at(client, monkeypatch):
     import app as app_module
@@ -481,7 +467,7 @@ def test_clean_decision_rollback_preserves_concurrent_updated_at(client, monkeyp
     image_id = uploaded["uploaded"][0]["id"]
     batch_id = uploaded["batch_id"]
 
-    def fail_start(project_id, task_id):
+    def fail_publish(project_id, task_id):
         app_module.material_store(project_id).patch(
             {
                 image_id: {
@@ -490,9 +476,9 @@ def test_clean_decision_rollback_preserves_concurrent_updated_at(client, monkeyp
                 }
             }
         )
-        raise RuntimeError("simulated worker start failure")
+        raise RuntimeError("simulated durable publication failure")
 
-    monkeypatch.setattr(app_module, "_v47_start_clean_task_record", fail_start)
+    monkeypatch.setattr(app_module, "_v62_publish_clean_compat", fail_publish)
     response = client.post(
         f"/api/v55/projects/{pid}/upload-batches/{batch_id}/decisions",
         json={"clean_image_ids": [image_id], "ready_image_ids": []},
@@ -500,13 +486,10 @@ def test_clean_decision_rollback_preserves_concurrent_updated_at(client, monkeyp
     assert response.status_code == 500
     batch = client.get(f"/api/v55/projects/{pid}/upload-batches/{batch_id}").json()
     assert batch["items"][0]["decision"] == "pending"
-    row = {item["id"]: item for item in client.get(f"/api/projects/{pid}/images").json()}[
-        image_id
-    ]
+    row = {item["id"]: item for item in client.get(f"/api/projects/{pid}/images").json()}[image_id]
     assert row["processing_status"] == "pending_decision"
     assert row["filename"] == "concurrent-name.png"
     assert row["updated_at"] == "concurrent-updated"
-
 
 def test_corrupt_clean_input_reaches_review_with_explicit_issue(client):
     import app as app_module
@@ -516,9 +499,17 @@ def test_corrupt_clean_input_reaches_review_with_explicit_issue(client):
     ).json()["id"]
     uploaded = upload_many_png(client, pid, ["normal.png", "corrupt.png"])
     corrupt = uploaded["uploaded"][1]
-    (app_module.project_dir(pid) / "uploads" / corrupt["stored_name"]).write_bytes(
-        b"broken-image"
-    )
+    broken = b"broken-image"
+    (app_module.project_dir(pid) / "uploads" / corrupt["stored_name"]).write_bytes(broken)
+    # This case exercises a corrupt object that is itself the indexed source
+    # truth. External mutation after indexing is a distinct SOURCE_CONTENT_CHANGED
+    # integrity failure and must not be disguised as image corruption.
+    app_module.material_store(pid).patch({
+        corrupt["id"]: {
+            "content_sha256": hashlib.sha256(broken).hexdigest(),
+            "size_bytes": len(broken),
+        }
+    })
     task = client.post(
         f"/api/v47/projects/{pid}/clean-tasks",
         json={

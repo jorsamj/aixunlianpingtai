@@ -108,7 +108,8 @@ def estimate_batch(project_id, materials, payload):
     return result
 
 
-def create_batch(project_id, materials, repository, artifacts, payload):
+def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
+    """Freeze a batch selection durably without publishing executable queue truth yet."""
     operation, selection, options = parse_request(payload)
     if operation is BatchOperation.AI_ANNOTATE:
         from .annotation_runtime import prepare_request
@@ -119,9 +120,25 @@ def create_batch(project_id, materials, repository, artifacts, payload):
         project_id, operation, selection, options,
     ):
         raise BatchRequestError("DELETE_SOURCE_CONFIRMATION_REQUIRED", "confirm source deletion using the estimate confirmation_token", 409)
-    task_id = uuid.uuid4().hex
+    task_id = str(task_id or uuid.uuid4().hex)
+    request_payload = {
+        "operation": operation.value,
+        "selection_spec": selection.as_dict(),
+        "options": options,
+    }
+    selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+    existing_request = artifacts.read_json(task_id, "request.json", default=None)
+    if existing_request is not None:
+        if existing_request != request_payload:
+            raise BatchRequestError("BATCH_TASK_ID_CONFLICT", "task id is already prepared for a different material batch", 409)
+        with closing(BatchSelection(selection_path)) as manifest:
+            if not manifest.frozen():
+                raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "prepared batch selection is incomplete", 409)
+        return TaskRecord.new(
+            task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+            f"materials:{project_id}", required_capabilities=("materials.batch",),
+        )
     try:
-        selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
         # Prepare the schema before taking the material lock. No task exists yet.
         with closing(BatchSelection(selection_path)):
             pass
@@ -133,9 +150,6 @@ def create_batch(project_id, materials, repository, artifacts, payload):
             database.execute("BEGIN IMMEDIATE")
             if materials._revision(database) != selection.repository_revision:
                 raise BatchRequestError("MATERIAL_REVISION_CHANGED", "material repository changed; re-estimate before confirming", 409)
-            # Revision and membership use this single consistent transaction.
-            # Only the attached manifest is written, so correctness does not
-            # depend on cross-database atomic commits (unsupported with WAL).
             inserted = database.execute(
                 "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
                 params,
@@ -147,27 +161,50 @@ def create_batch(project_id, materials, repository, artifacts, payload):
                 (("frozen", utc_now()), ("repository_revision", str(selection.repository_revision))),
             )
             database.commit()
-        # Every prerequisite is durable before publishing the executable row.
-        # A failure here leaves only unqueued artifacts, never a partial task.
-        artifacts.atomic_write_json(task_id, "request.json", {
-            "operation": operation.value, "selection_spec": selection.as_dict(), "options": options,
-        })
+        artifacts.atomic_write_json(task_id, "request.json", request_payload)
         with closing(BatchSelection(selection_path)) as manifest:
             artifacts.atomic_write_json(task_id, CHECKPOINT_REF, manifest.summary())
-        return repository.create(TaskRecord.new(
+        return TaskRecord.new(
             task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
             f"materials:{project_id}", required_capabilities=("materials.batch",),
-        ), artifacts=artifacts)
+        )
     except Exception as error:
         try:
             artifacts.atomic_write_json(task_id, "creation_failure.json", {
                 "task_id": task_id, "status": "CREATION_FAILED", "error": redact_storage_error(error),
             })
         except Exception:
-            pass  # An unavailable artifact volume must not hide the submit error.
+            pass
         if isinstance(error, BatchRequestError):
             raise
         raise BatchRequestError("BATCH_CREATION_FAILED", f"material batch creation failed: {redact_storage_error(error)}", 500) from error
+
+
+def publish_prepared_batch(task, repository, artifacts):
+    """Publish one previously frozen batch exactly once into TaskRepository."""
+    existing = repository.get(task.task_id)
+    if existing is not None:
+        if existing.project_id != task.project_id or existing.kind is not TaskKind.MATERIAL_BATCH:
+            raise BatchRequestError("BATCH_TASK_ID_CONFLICT", "task id is already owned by another durable task", 409)
+        return existing
+    request = artifacts.read_json(task.task_id, task.payload_ref, default=None)
+    selection_path = artifacts.artifact_path(task.task_id, SELECTION_REF)
+    if not isinstance(request, dict) or not selection_path.is_file():
+        raise BatchRequestError("BATCH_NOT_PREPARED", "material batch artifacts are incomplete", 409)
+    with closing(BatchSelection(selection_path)) as manifest:
+        if not manifest.frozen():
+            raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "material batch selection is incomplete", 409)
+    try:
+        return repository.create(task, artifacts=artifacts)
+    except Exception as error:
+        if isinstance(error, BatchRequestError):
+            raise
+        raise BatchRequestError("BATCH_PUBLICATION_FAILED", f"material batch publication failed: {redact_storage_error(error)}", 500) from error
+
+
+def create_batch(project_id, materials, repository, artifacts, payload):
+    task = prepare_batch(project_id, materials, artifacts, payload)
+    return publish_prepared_batch(task, repository, artifacts)
 
 
 _SCHEMA = """
@@ -303,8 +340,18 @@ class MaterialBatchHandler:
     def _run(self, context, manifest):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
         operation, selection, options = parse_request(payload)
-        project = context.artifacts._validate_task_id(context.task.project_id)
-        materials = MaterialRepository(self.data_dir / "projects" / project)
+        project = str(context.task.project_id or '').strip()
+        if (
+            not project
+            or any(character in project for character in ('/', '\\'))
+            or not all(character.isalnum() or character in {'_', '-'} for character in project)
+        ):
+            raise ValueError('project id must be one safe path component')
+        projects_root = (self.data_dir / 'projects').resolve()
+        project_path = (projects_root / project).resolve()
+        if project_path.parent != projects_root:
+            raise ValueError('project id escaped projects root')
+        materials = MaterialRepository(project_path)
         confirmed_revision = manifest.database.execute("SELECT value FROM meta WHERE key='repository_revision'").fetchone()
         if not manifest.frozen() or confirmed_revision is None or confirmed_revision[0] != str(selection.repository_revision):
             raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "batch has no confirmed immutable selection; create and confirm a new batch", 409)

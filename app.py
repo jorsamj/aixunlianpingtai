@@ -104,6 +104,14 @@ from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
 from platform_core.gpu_resources import GPUResourceManager
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
+from platform_core.material_batches import (
+    BatchOperation as MaterialBatchOperation,
+    SELECTION_REF as MATERIAL_BATCH_SELECTION_REF,
+    estimate_batch as estimate_material_batch,
+    prepare_batch as prepare_material_batch,
+    publish_prepared_batch as publish_prepared_material_batch,
+    public_batch as public_material_batch,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 def _read_app_version() -> str:
@@ -9234,6 +9242,8 @@ def _v33_tasks_file(project_id: str, kind: str) -> Path:
 
 
 def _v33_load_tasks(project_id: str, kind: str) -> List[Dict[str, Any]]:
+    if kind == 'clean_tasks' and '_v47_list_durable_clean_tasks' in globals():
+        return _v47_list_durable_clean_tasks(project_id)
     with _v33_task_lock:
         return read_json(_v33_tasks_file(project_id, kind), [])
 
@@ -12729,6 +12739,160 @@ def v47_list_clean_tasks(project_id: str):
     return {'items': _v33_load_tasks(project_id, 'clean_tasks')}
 
 
+
+def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[str, Any]:
+    data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
+    image_ids = list(dict.fromkeys(str(x) for x in (data.pop('image_ids', None) or []) if str(x)))
+    selection: Dict[str, Any]
+    if image_ids:
+        selection = {'scope': 'SELECTED', 'image_ids': image_ids}
+    else:
+        selection = {'scope': 'FILTERED', 'filters': {}}
+    draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data}
+    estimate = estimate_material_batch(project_id, material_store(project_id), draft)
+    draft['selection_spec'] = estimate['selection_spec']
+    return draft
+
+
+def _v47_material_batch_request(task_id: str) -> Dict[str, Any]:
+    return shared_task_artifacts().read_json(task_id, 'request.json', default={}) or {}
+
+
+def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    body = public_material_batch(task, artifacts, repository if repository.get(task.task_id) is not None else None)
+    request = _v47_material_batch_request(task.task_id)
+    options = dict(request.get('options') or {})
+    selection = dict(request.get('selection_spec') or {})
+    request_payload = {**options, 'image_ids': list(selection.get('image_ids') or [])}
+    confirmed = artifacts.read_json(task.task_id, 'clean_confirmation.json', default=None)
+    public_status = str(body.get('status') or task.status.value)
+    if public_status in {'QUEUED', 'WAITING_RESOURCE'}:
+        status = 'queued'
+        status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
+    elif public_status == 'RUNNING':
+        status, status_text = 'running', '清洗中'
+    elif public_status == 'CANCEL_REQUESTED':
+        status, status_text = 'running', '正在停止'
+    elif public_status == 'CANCELLED':
+        status, status_text = 'cancelled', '已停止'
+    elif public_status == 'SUCCEEDED':
+        status, status_text = ('done', '已确认') if confirmed else ('awaiting_confirmation', '待确认')
+    elif public_status == 'PARTIAL_SUCCESS':
+        status, status_text = 'failed', '部分失败，请重试'
+    elif public_status in {'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE'}:
+        status, status_text = 'failed', '运行环境不可用'
+    else:
+        status, status_text = 'failed', '失败'
+    return {
+        'id': task.task_id,
+        'name': options.get('task_name') or '自动清洗任务',
+        'status': status,
+        'status_text': status_text,
+        'stage': 'review' if status == 'awaiting_confirmation' else body.get('phase'),
+        'progress': body.get('progress_percent') or 0,
+        'processed_images': body.get('processed') or 0,
+        'total_images': body.get('total') or 0,
+        'flagged_images': body.get('flagged') or 0,
+        'created_at': body.get('created_at'),
+        'finished_at': body.get('finished_at'),
+        'request_payload': request_payload,
+        'resource_queue_position': body.get('resource_queue_position'),
+        'resource_wait_reason': body.get('resource_wait_reason'),
+        'worker_id': body.get('worker_id'),
+        'lease_expires_at': body.get('lease_expires_at'),
+        'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
+    }
+
+
+def _v47_list_durable_clean_tasks(project_id: str) -> List[Dict[str, Any]]:
+    repository = shared_task_repository()
+    page = repository.list(project_id=project_id, kinds={TaskKind.MATERIAL_BATCH}, limit=100)
+    rows = []
+    for task in page.items:
+        request = _v47_material_batch_request(task.task_id)
+        if request.get('operation') == MaterialBatchOperation.CLEAN.value:
+            rows.append(_v47_clean_compat_task(task))
+    return rows
+
+
+def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Optional[str] = None) -> Tuple[Dict[str, Any], bool]:
+    get_project(project_id)
+    requested_id = str(task_id or uuid.uuid4().hex[:12])
+    repository = shared_task_repository()
+    existing = repository.get(requested_id)
+    if existing is not None:
+        if existing.project_id != project_id or existing.kind is not TaskKind.MATERIAL_BATCH:
+            raise ValueError('清洗任务 ID 已被其他任务占用')
+        request = _v47_material_batch_request(requested_id)
+        if request.get('operation') != MaterialBatchOperation.CLEAN.value:
+            raise ValueError('清洗任务 ID 已被其他批处理占用')
+        return _v47_clean_compat_task(existing), False
+
+    batch_payload = _v47_material_batch_payload(project_id, payload)
+    prepared_request = _v47_material_batch_request(requested_id)
+    if prepared_request:
+        def semantic_request(value: Dict[str, Any]) -> Dict[str, Any]:
+            value = dict(value or {})
+            selection = dict(value.get('selection_spec') or {})
+            selection.pop('repository_revision', None)
+            return {
+                'operation': value.get('operation'),
+                'selection_spec': selection,
+                'options': dict(value.get('options') or {}),
+            }
+
+        if semantic_request(prepared_request) != semantic_request(batch_payload):
+            raise ValueError('清洗任务 ID 已关联不同请求')
+        prepared = TaskRecord.new(
+            requested_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
+            f'materials:{project_id}', required_capabilities=('materials.batch',),
+        )
+        return _v47_clean_compat_task(prepared), False
+
+    prepared = prepare_material_batch(
+        project_id,
+        material_store(project_id),
+        shared_task_artifacts(),
+        batch_payload,
+        task_id=requested_id,
+    )
+    return _v47_clean_compat_task(prepared), True
+
+def _v62_publish_clean_compat(project_id: str, task_id: str) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    existing = repository.get(task_id)
+    if existing is not None:
+        compat = _v47_clean_compat_task(existing)
+        if compat.get('status') == 'failed':
+            existing = repository.retry(task_id)
+        return _v47_clean_compat_task(existing)
+    request = _v47_material_batch_request(task_id)
+    if request.get('operation') != MaterialBatchOperation.CLEAN.value:
+        raise ValueError('清洗任务尚未准备完成')
+    prepared = TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
+        f'materials:{project_id}', required_capabilities=('materials.batch',),
+    )
+    published = publish_prepared_material_batch(prepared, repository, shared_task_artifacts())
+    return _v47_clean_compat_task(published)
+
+
+def _v47_durable_clean_results(task_id: str) -> Dict[str, Any]:
+    artifacts = shared_task_artifacts()
+    path = artifacts.artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+    if not path.is_file():
+        return {'items': []}
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+        if database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clean_results'").fetchone() is None:
+            return {'items': []}
+        rows = database.execute(
+            'SELECT r.result_json,s.state,s.error FROM clean_results r '
+            'JOIN selection s ON s.image_id=r.image_id ORDER BY r.image_id'
+        ).fetchall()
+    return {'items': [{**json.loads(row[0]), 'item_state': row[1], 'item_error': row[2]} for row in rows]}
+
 _V47_ACTIVE_CLEAN_WORKERS: set[Tuple[str, str]] = set()
 
 
@@ -12867,24 +13031,8 @@ def _v47_start_clean_task_record(project_id: str, task_id: str) -> Dict[str, Any
 
 
 def _v47_recover_clean_tasks(project_id: str) -> list[str]:
-    """Restart persisted clean tasks whose process-local worker was lost."""
-    tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
-    recovered = []
-    for task in tasks:
-        status = str(task.get('status') or '')
-        if status not in {'prepared', 'queued', 'running'}:
-            continue
-        task_id = str(task.get('id') or '')
-        if not task_id:
-            continue
-        try:
-            _v47_start_clean_task_record(project_id, task_id)
-            recovered.append(task_id)
-        except Exception:
-            # Keep the durable task record for a later explicit retry; startup
-            # recovery must not prevent the rest of the platform from loading.
-            continue
-    return recovered
+    get_project(project_id)
+    return []
 
 
 def _v47_create_clean_task_record(
@@ -12898,7 +13046,8 @@ def _v47_create_clean_task_record(
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks')
 def v47_create_clean_task(project_id: str, payload: V47CleanReq):
-    return _v47_create_clean_task_record(project_id, payload)
+    task, _ = _v62_prepare_clean_compat(project_id, payload)
+    return _v62_publish_clean_compat(project_id, str(task['id']))
 
 
 class V55UploadDecisionsReq(BaseModel):
@@ -13035,7 +13184,7 @@ def v55_apply_upload_batch_decisions(
                 failed_task_snapshot = dict(existing_task or {})
                 _v47_reset_failed_clean_task_record(project_id, clean_task_id)
             try:
-                _, prepared_created = _v47_prepare_clean_task_record(
+                _, prepared_created = _v62_prepare_clean_compat(
                     project_id,
                     clean_request,
                     task_id=clean_task_id,
@@ -13100,7 +13249,7 @@ def v55_apply_upload_batch_decisions(
             store._write_unlocked(batch_id, updated)
             material_store(project_id).mutate(apply_material_decisions)
             if clean_task_id:
-                _v47_start_clean_task_record(project_id, clean_task_id)
+                _v62_publish_clean_compat(project_id, clean_task_id)
         except Exception as error:
             store._write_unlocked(batch_id, original)
             if backups:
@@ -13136,9 +13285,10 @@ def v55_apply_upload_batch_decisions(
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/stop')
 def v47_stop_clean_task(project_id: str, task_id: str):
-    if not _v33_get_task(project_id, 'clean_tasks', task_id):
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_BATCH:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    _v33_update_task(project_id, 'clean_tasks', task_id, stop_requested=True, status_text='正在停止')
+    shared_task_repository().request_cancel(task_id)
     return {'ok': True}
 
 
@@ -13147,7 +13297,7 @@ def v47_clean_result(project_id: str, task_id: str):
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    return {'task': task, 'result': read_json(_v47_file_for(project_id, 'clean_results', task_id), {'items': []})}
+    return {'task': task, 'result': _v47_durable_clean_results(task_id)}
 
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm')
@@ -13155,7 +13305,7 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    allowed = {str(x.get('image_id')) for x in read_json(_v47_file_for(project_id, 'clean_results', task_id), {'items': []}).get('items', [])}
+    allowed = {str(x.get('image_id')) for x in _v47_durable_clean_results(task_id).get('items', [])}
     ids = {str(x) for x in payload.delete_ids if str(x) in allowed}
     deleted = 0
     deleted_images = []
@@ -13182,7 +13332,10 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
         return processed_ids
     processed_ids = material_store(project_id).mutate(mark_confirmed)
     deleted_ids = [str(item.get('id')) for item in deleted_images]
-    _v33_update_task(project_id, 'clean_tasks', task_id, status='done', status_text='已确认', deleted_images=deleted, delete_failures=len(failed_items), processed_confirmed=len(processed_ids), confirmed_at=now_iso(), finished_at=now_iso())
+    shared_task_artifacts().atomic_write_json(task_id, 'clean_confirmation.json', {
+        'confirmed_at': now_iso(), 'deleted': deleted, 'deleted_ids': deleted_ids,
+        'delete_failures': len(failed_items), 'processed_ids': processed_ids,
+    })
     return {'ok': not failed_items, 'deleted': deleted, 'deleted_ids': deleted_ids, 'deleted_images': deleted_images, 'failed_items': failed_items, 'processed_ids': processed_ids}
 
 
