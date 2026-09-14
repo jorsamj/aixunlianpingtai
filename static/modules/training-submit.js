@@ -3,6 +3,26 @@ function required(value, message) {
   return value;
 }
 
+function integerParameter(value, fallback, label) {
+  const raw = value === null || value === undefined || value === '' ? fallback : value;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) throw new Error(`${label}必须是整数`);
+  return parsed;
+}
+
+export function formatTrainingValidationError(body = {}) {
+  let detail = body?.detail;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch (_) { return detail; }
+  }
+  if (!Array.isArray(detail)) return '';
+  return detail.map(item => {
+    const path = (item?.loc || []).filter(part => String(part) !== 'body').join('.');
+    const message = String(item?.msg || '格式不正确');
+    return `${path || '请求参数'}：${message}`;
+  }).join('；');
+}
+
 export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
   required(target?.id, '请选择可用训练资源');
@@ -17,11 +37,11 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     model: config.model || algorithm.base_model || '',
     epochs: config.epochs ?? algorithm.default_epochs ?? 100,
     imgsz: config.imgsz ?? algorithm.default_imgsz ?? 640,
-    batch: draft.resource?.batch ?? config.batch ?? algorithm.default_batch ?? 8,
+    batch: integerParameter(draft.resource?.batch ?? config.batch ?? algorithm.default_batch, 8, 'Batch'),
     device: draft.resource?.device || config.device || 'auto',
     include_empty: false,
     patience: config.patience ?? 100,
-    workers: draft.resource?.workers ?? config.workers ?? 0,
+    workers: integerParameter(draft.resource?.workers ?? config.workers, 0, 'Workers'),
     optimizer: config.optimizer || 'auto',
     lr0: config.lr0 ?? .01,
     lrf: config.lrf ?? .01,
@@ -186,7 +206,8 @@ export function installTrainingSubmitRuntime({
         let body = {};
         try { body = JSON.parse(raw); } catch (_) { body = {detail: raw}; }
         const message = body.message || body.detail || `训练任务创建失败（HTTP ${response.status}）`;
-        throw new Error(String(message));
+        const validationDetail = body.code === 'VALIDATION_ERROR' ? formatTrainingValidationError(body) : '';
+        throw new Error(validationDetail ? `${message}：${validationDetail}` : String(message));
       }
       const body = await response.json();
       lastStage = 'created';
@@ -218,7 +239,7 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422504',
+    build: 'training-submit-422505',
     submit,
     updateReadiness,
     isSubmitting: () => submitting,
