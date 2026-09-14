@@ -1,0 +1,54 @@
+name: Temporary Cleaning Frontend Truth Migration
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-patch-clean-frontend-truth.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply exact frontend migration
+        run: python .github/scripts/_tmp_patch_clean_frontend_truth.py
+      - name: Syntax guard
+        run: |
+          node --check static/app.js
+          node --check static/main.mjs
+          node --check static/modules/cleaning.js
+          node --check static/modules/poll-registry.js
+      - name: Focused cleaning frontend contracts
+        run: >-
+          node --test
+          tests/frontend/clean-task-view.test.mjs
+          tests/frontend/poll-registry.test.mjs
+      - name: Full frontend unit regression
+        run: node --test tests/frontend/*.test.mjs
+      - name: Wiring guard
+        run: |
+          grep -q "cleanTaskView427" static/app.js
+          grep -q "replaceCleanTaskTimer" static/app.js
+          grep -q "clean-tasks-v47" static/modules/poll-registry.js
+          grep -q "export function cleanTaskView" static/modules/cleaning.js
+          if grep -Fq "setTimeout(()=>{if(state.page==='自动标注及清洗')renderOps427()},2200)" static/app.js; then
+            echo "legacy recursive clean-list timer remains"
+            exit 1
+          fi
+      - name: Commit product files only
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add static/app.js static/index.html static/main.mjs static/modules/cleaning.js static/modules/poll-registry.js
+          git diff --cached --check
+          git commit -m "fix(cleaning): preserve queue and progress truth in clean tab"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
