@@ -11,6 +11,7 @@ on:
       - app.py
       - static/app.js
       - static/modules/auto-label-poll-runtime.js
+      - static/modules/deployment-tests.js
       - train_worker.py
       - platform_core/annotation_batches.py
       - platform_core/annotation_candidates.py
@@ -30,12 +31,15 @@ on:
       - platform_core/video_tasks.py
       - tests/api/test_durable_training_controls.py
       - tests/api/test_clean_unified_execution_truth.py
+      - tests/api/test_deployment_test_runtime.py
       - tests/api/test_upload_clean_flow.py
       - tests/api/test_training_unified_task_overlay.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
       - tests/frontend/auto-label-poll-runtime.test.mjs
       - tests/frontend/conversion-unified-task-truth.test.mjs
+      - tests/frontend/deployment-runtime-source.test.mjs
+      - tests/frontend/deployment-task-view.test.mjs
       - tests/frontend/image-upload-overall-progress.test.mjs
       - tests/frontend/zip-import-overall-progress.test.mjs
       - tests/integration/test_storage_import_progress_truth.py
@@ -73,7 +77,7 @@ on:
 # Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
 # Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
 # Deployment-test guard: inference runners must bind exact process identity and terminate the tree on execution fencing.
-# Deployment queue-display guard: queued and waiting-resource rows consume durable resource_queue_position; UI-only changes still run this backend regression gate.
+# Deployment queue-display guard: v61 business projection must preserve the same WAITING_RESOURCE/queue/worker/progress truth as v62; deployment UI-only changes still run this backend regression gate.
 # Plain-image upload progress guard: browser byte transfer must stay below terminal 100%; successful server commit owns 100%.
 # ZIP whole-task progress guard: upload owns 0..35, validation reaches 38, backend processing is projected monotonically through 38..99, and only terminal success reaches 100.
 # Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
@@ -115,6 +119,7 @@ jobs:
           python -m pytest -q
           tests/api/test_durable_training_controls.py
           tests/api/test_clean_unified_execution_truth.py
+          tests/api/test_deployment_test_runtime.py
           tests/api/test_upload_clean_flow.py
           tests/api/test_training_unified_task_overlay.py
           tests/api/test_unified_task_process_cancel.py
