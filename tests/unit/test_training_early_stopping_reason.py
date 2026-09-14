@@ -6,7 +6,7 @@ from train_worker import derive_training_completion_metadata
 def test_patience_early_stop_records_exact_reason_and_best_epoch():
     trainer = SimpleNamespace(
         epoch=179,
-        stopper=SimpleNamespace(patience=100, best_epoch=79, possible_stop=True),
+        stopper=SimpleNamespace(patience=100, best_epoch=80, possible_stop=True),
     )
 
     result = derive_training_completion_metadata(
@@ -28,7 +28,7 @@ def test_patience_early_stop_records_exact_reason_and_best_epoch():
 def test_quality_gate_reason_has_priority_over_patience_inference():
     trainer = SimpleNamespace(
         epoch=179,
-        stopper=SimpleNamespace(patience=100, best_epoch=79, possible_stop=True),
+        stopper=SimpleNamespace(patience=100, best_epoch=80, possible_stop=True),
     )
 
     result = derive_training_completion_metadata(
