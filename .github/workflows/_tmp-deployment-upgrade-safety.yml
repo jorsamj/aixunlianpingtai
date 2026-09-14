@@ -1,0 +1,48 @@
+name: Temporary Deployment Upgrade Safety
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - tools/_tmp_deployment_upgrade_safety_patch.py
+      - .github/workflows/_tmp-deployment-upgrade-safety.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply focused deployment patch
+        run: python tools/_tmp_deployment_upgrade_safety_patch.py
+      - name: Install focused test dependency
+        run: python -m pip install -q pytest
+      - name: Run deployment upgrade contracts
+        run: python -m pytest -q tests/unit/test_deployment_upgrade_safety.py
+      - name: Compile touched Python
+        run: python -m py_compile app.py launcher.py task_worker.py remote_train_server.py platform_core/build_identity.py platform_core/upgrade_guard.py platform_core/training_devices.py
+      - name: Guard formal version
+        run: test "$(cat VERSION.txt | tr -d '\r\n')" = "42.24.0"
+      - name: Commit product changes after green
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py launcher.py task_worker.py remote_train_server.py \
+            platform_core/build_identity.py platform_core/upgrade_guard.py platform_core/training_devices.py \
+            tests/unit/test_deployment_upgrade_safety.py
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No product changes to commit"
+            exit 1
+          fi
+          git commit -m "fix(deploy): guard cross-build task takeover"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
