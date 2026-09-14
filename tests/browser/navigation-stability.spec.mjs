@@ -37,10 +37,9 @@ test('delayed request from previous page cannot jump back over the current page'
   ]);
   expect(delayedUrl).toContain('/api/');
 
-  await expect.poll(async () => page.evaluate(() => {
-    const row = window.PollRegistryRuntime?.snapshot?.().find(item => item.key === 'training-jobs');
-    return row ? {managed: row.managed, owners: row.owners, delay: row.delay} : null;
-  })).toMatchObject({managed: true, owners: ['训练任务', '检测台']});
+  await expect.poll(async () => page.evaluate(() => (
+    window.PollRegistryRuntime?.snapshot?.().some(item => item.key === 'training-jobs') || false
+  ))).toBe(false);
 
   await page.getByRole('button', {name: /数据集/}).click();
   await expect(page.locator('#title')).toContainText('数据集');
