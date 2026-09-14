@@ -6,16 +6,16 @@
 
 ```text
 branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 3931a9a2d529845f9e698b22f62fe950a7a8b42f
-Frontend Runtime run:        34792673296
+latest full code acceptance: 736b2acdbf2560be657011035de173cde67517d0
+Frontend Runtime run:        34793457920
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.95
-main.mjs cache:              42.25.92
+app.js cache:                42.25.96
+main.mjs cache:              42.25.93
 NavigationStability:         422512
 UI state runtime:            422500
-PollRegistry:                422511
+PollRegistry:                422517
 TrainingDraftRuntime:        422516
 TrainingLabelRuntime:        422513
 TrainingSubmitRuntime:       training-submit-422504
@@ -24,6 +24,65 @@ AutoLabelPollRuntime:        422501
 ```
 
 Run `34733035739` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after ZIP 10k owner/manifest migration. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34733035761` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+
+## Product closure — Cleaning frontend queue/progress truth CLOSED
+
+The final cleaning tab now subscribes to the durable v47 cleaning projection instead of flattening server truth into a generic local row. The backend already exposed `status_text`, `progress`, `processed_images`, `total_images`, `flagged_images`, `resource_queue_position`, `resource_wait_reason`, and worker identity; this batch makes the final visible clean-tab owner preserve those values through both initial rendering and managed refresh.
+
+Closed semantics:
+
+```text
+status text: consume server status_text; WAITING_RESOURCE compatibility projection remains “等待资源” instead of being flattened to “排队中”
+queue metadata: show real resource_queue_position + resource_wait_reason when present
+progress: use server progress / processed_images / total_images only; no browser-simulated percentage
+worker metadata: running rows may show the real worker_id supplied by the server
+polling owner: PollRegistry owns clean-tasks-v47 as a page/tab-scoped 2200 ms one-shot
+refresh owner: refreshCleanOps427Delta refreshes only the cleaning task list and patches clean rows
+terminal truth: awaiting_confirmation is terminal for list polling; the clean timer is not re-armed
+navigation/tab change: PollRegistry clears the clean timer; switching back to AI annotation also clears it immediately
+legacy recursive setTimeout(renderOps427, 2200): retired
+backend queue order / claim / progress generation / worker execution: unchanged
+```
+
+`static/modules/cleaning.js` now owns the pure `cleanTaskView()` / `isActiveCleanTask()` projection. `static/main.mjs` exposes those helpers through `PlatformCore.cleaning`. `static/modules/poll-registry.js` owns `clean-tasks-v47`, and the final v427 clean branch in `static/app.js` consumes that view-model. The v47 public compatibility contract permanently requires the queue metadata fields to exist; their values remain dynamic server truth (for example, an immediately queued task may legitimately report position `1`).
+
+Permanent guards:
+
+```text
+tests/frontend/clean-task-view.test.mjs
+  - waiting-resource status/queue/progress truth
+  - running worker/progress truth
+  - final app.js wiring consumes cleanTaskView + PollRegistry
+  - retired direct recursive clean-list timer cannot return
+
+tests/frontend/poll-registry.test.mjs
+  - clean-tasks-v47 one-shot lifecycle
+  - re-arm only while active
+  - stop at awaiting_confirmation
+  - clear on navigation
+
+tests/api/test_clean_unified_execution_truth.py
+  - v47 public queue metadata fields are permanent
+  - dynamic queue position is accepted as server truth, never forced to a frontend assumption
+```
+
+Evidence:
+
+```text
+valid RED commit:           cf3f2c4fec639903435379b3419dbaadad82c949
+valid RED run:              34793075909 (245 frontend tests: 242 PASS; exactly 3 intended cleaning truth assertions RED)
+focused/full GREEN run:     34793282831 PASS (focused cleaning contracts + full frontend unit + wiring guard)
+product commit:             9f6f329393018623807cb4fea04707f3b5350676
+formal accepted clean HEAD: 736b2acdbf2560be657011035de173cde67517d0
+Release Regression:         34793457861 PASS
+Navigation Action Fencing:  34793457872 PASS (Real Chrome PASS)
+Frontend Runtime:           34793457920 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
+```
+
+The temporary frontend migration helper/workflow were physically deleted before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
+
+Next product scope: continue the horizontal **storage import / deployment-test queue and progress truth audit**. Genuine 10,000-image processing acceptance remains explicitly deferred.
 
 ## Product closure — Cleaning durable execution truth CLOSED
 
@@ -62,7 +121,7 @@ formal VERSION.txt:         42.24.0 unchanged
 
 All one-shot cleaning migration/diagnostic helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-Next product batch: audit the **cleaning frontend queue/progress truth**. The backend now exposes durable `resource_queue_position` / `resource_wait_reason`; the final clean-tab renderer/poll lifecycle must preserve that truth and must not create a frontend queue or simulated progress owner.
+Following batch status: **cleaning frontend queue/progress truth is now CLOSED**. Current next product scope is the storage import / deployment-test queue and progress truth audit.
 
 ## Product closure — Plain image upload whole-task progress truth CLOSED
 
@@ -173,7 +232,8 @@ TECH-DEBT CLEANUP PAUSED BY USER REQUEST
 → AI annotation polling queue metadata truth CLOSED
 → Video resource queue truth CLOSED
 → Cleaning durable execution truth CLOSED
-→ NEXT: cleaning frontend queue/progress truth, then continue storage import and deployment-test horizontal truth audit
+→ Cleaning frontend queue/progress truth CLOSED
+→ NEXT: storage import and deployment-test horizontal queue/progress truth audit
 → genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction
 → SSE/event stream evaluation DEFERRED
 → non-blocking Navigation Action Fencing final scan remains DEFERRED

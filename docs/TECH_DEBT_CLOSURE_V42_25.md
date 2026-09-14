@@ -3,9 +3,68 @@
 > **状态：PAUSED / 非阻断技术债清理按用户要求暂停**
 > **分支：`refactor/frontend-runtime-stabilization`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`3931a9a2d529845f9e698b22f62fe950a7a8b42f`**
-> **最新正式门：Release Regression `34792673327` PASS；Navigation Action Fencing `34792673293` PASS（Real Chrome）；Frontend Runtime Stabilization `34792673296` PASS（unit + full Real Chrome）。Resource Discovery SQLite 永久跨平台 run `34700900542` 仍保持 Ubuntu + Windows 全绿。**
+> **最近完整代码验收点：`736b2acdbf2560be657011035de173cde67517d0`**
+> **最新正式门：Release Regression `34793457861` PASS；Navigation Action Fencing `34793457872` PASS（Real Chrome）；Frontend Runtime Stabilization `34793457920` PASS（unit + full Real Chrome）。Resource Discovery SQLite 永久跨平台 run `34700900542` 仍保持 Ubuntu + Windows 全绿。**
 > **更新日期：2026-09-14**
+
+## Product closure — Cleaning frontend queue/progress truth CLOSED
+
+The final cleaning tab now subscribes to the durable v47 cleaning projection instead of flattening server truth into a generic local row. The backend already exposed `status_text`, `progress`, `processed_images`, `total_images`, `flagged_images`, `resource_queue_position`, `resource_wait_reason`, and worker identity; this batch makes the final visible clean-tab owner preserve those values through both initial rendering and managed refresh.
+
+Closed semantics:
+
+```text
+status text: consume server status_text; WAITING_RESOURCE compatibility projection remains “等待资源” instead of being flattened to “排队中”
+queue metadata: show real resource_queue_position + resource_wait_reason when present
+progress: use server progress / processed_images / total_images only; no browser-simulated percentage
+worker metadata: running rows may show the real worker_id supplied by the server
+polling owner: PollRegistry owns clean-tasks-v47 as a page/tab-scoped 2200 ms one-shot
+refresh owner: refreshCleanOps427Delta refreshes only the cleaning task list and patches clean rows
+terminal truth: awaiting_confirmation is terminal for list polling; the clean timer is not re-armed
+navigation/tab change: PollRegistry clears the clean timer; switching back to AI annotation also clears it immediately
+legacy recursive setTimeout(renderOps427, 2200): retired
+backend queue order / claim / progress generation / worker execution: unchanged
+```
+
+`static/modules/cleaning.js` now owns the pure `cleanTaskView()` / `isActiveCleanTask()` projection. `static/main.mjs` exposes those helpers through `PlatformCore.cleaning`. `static/modules/poll-registry.js` owns `clean-tasks-v47`, and the final v427 clean branch in `static/app.js` consumes that view-model. The v47 public compatibility contract permanently requires the queue metadata fields to exist; their values remain dynamic server truth (for example, an immediately queued task may legitimately report position `1`).
+
+Permanent guards:
+
+```text
+tests/frontend/clean-task-view.test.mjs
+  - waiting-resource status/queue/progress truth
+  - running worker/progress truth
+  - final app.js wiring consumes cleanTaskView + PollRegistry
+  - retired direct recursive clean-list timer cannot return
+
+tests/frontend/poll-registry.test.mjs
+  - clean-tasks-v47 one-shot lifecycle
+  - re-arm only while active
+  - stop at awaiting_confirmation
+  - clear on navigation
+
+tests/api/test_clean_unified_execution_truth.py
+  - v47 public queue metadata fields are permanent
+  - dynamic queue position is accepted as server truth, never forced to a frontend assumption
+```
+
+Evidence:
+
+```text
+valid RED commit:           cf3f2c4fec639903435379b3419dbaadad82c949
+valid RED run:              34793075909 (245 frontend tests: 242 PASS; exactly 3 intended cleaning truth assertions RED)
+focused/full GREEN run:     34793282831 PASS (focused cleaning contracts + full frontend unit + wiring guard)
+product commit:             9f6f329393018623807cb4fea04707f3b5350676
+formal accepted clean HEAD: 736b2acdbf2560be657011035de173cde67517d0
+Release Regression:         34793457861 PASS
+Navigation Action Fencing:  34793457872 PASS (Real Chrome PASS)
+Frontend Runtime:           34793457920 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
+```
+
+The temporary frontend migration helper/workflow were physically deleted before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
+
+Next product scope: continue the horizontal **storage import / deployment-test queue and progress truth audit**. Genuine 10,000-image processing acceptance remains explicitly deferred.
 
 ## Product closure — Cleaning durable execution truth CLOSED
 
@@ -44,7 +103,7 @@ formal VERSION.txt:         42.24.0 unchanged
 
 All one-shot cleaning migration/diagnostic helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-Next product batch: audit the **cleaning frontend queue/progress truth**. The backend now exposes durable `resource_queue_position` / `resource_wait_reason`; the final clean-tab renderer/poll lifecycle must preserve that truth and must not create a frontend queue or simulated progress owner.
+Following batch status: **cleaning frontend queue/progress truth is now CLOSED**. Current next product scope is the storage import / deployment-test queue and progress truth audit.
 
 ## Product closure — Plain image upload whole-task progress truth CLOSED
 

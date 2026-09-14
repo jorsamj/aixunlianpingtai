@@ -2,9 +2,28 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: PAUSED AUDIT — non-blocking technical-debt cleanup deferred by user request
-> Latest fully accepted code point: `3931a9a2d529845f9e698b22f62fe950a7a8b42f` / run `34792673296`
+> Latest fully accepted code point: `736b2acdbf2560be657011035de173cde67517d0` / run `34793457920`
 > Real Chrome: PASS
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
+
+## Product closure — Cleaning frontend queue/progress truth CLOSED
+
+Final clean-tab owner chain:
+
+```text
+/api/v47/projects/{project_id}/clean-tasks
+→ v47 compatibility projection backed by durable MATERIAL_BATCH/CLEAN truth
+→ PlatformCore.cleaning.cleanTaskView
+→ cleanTaskView427 / cleanTaskRow427
+→ refreshCleanOps427Delta
+→ PollRegistry(clean-tasks-v47)
+```
+
+The browser does not compute queue order or progress. `status_text`, `progress`, processed/total/flagged counts, `resource_queue_position`, `resource_wait_reason`, and worker identity remain server-derived. `PollRegistry` is the sole clean-list timer owner; the historical recursive `setTimeout(...renderOps427...,2200)` is retired. `awaiting_confirmation` is terminal for list polling, and navigation/tab changes clear the timer.
+
+Permanent guards: `tests/frontend/clean-task-view.test.mjs`, `tests/frontend/poll-registry.test.mjs`, and the v47 queue-field assertions in `tests/api/test_clean_unified_execution_truth.py`. Evidence: RED `cf3f2c4fec639903435379b3419dbaadad82c949` / run `34793075909`; GREEN `34793282831`; product `9f6f329393018623807cb4fea04707f3b5350676`; accepted `736b2acdbf2560be657011035de173cde67517d0`; Release `34793457861` PASS; Navigation `34793457872` PASS with Real Chrome; Frontend `34793457920` PASS with unit + full Real Chrome. `VERSION.txt` remains `42.24.0`.
+
+Next owner audit: storage import and deployment-test queue/progress truth. No frontend queue simulation or alternate progress owner should be introduced.
 
 ## Product closure — Cleaning durable execution truth CLOSED
 
@@ -22,7 +41,7 @@ v47 manual clean / v55 upload-batch clean decision
 
 The compatibility projection is display-only: an unconfirmed successful clean may appear as `awaiting_confirmation / review`, while the underlying durable task remains `SUCCEEDED / succeeded`. Legacy Web daemon workers and Web startup recovery are retired as execution owners. Queue/resource/progress metadata remains server/worker-derived. Permanent backend guard: `tests/api/test_clean_unified_execution_truth.py`; formal acceptance `3931a9a2d529845f9e698b22f62fe950a7a8b42f`, Release `34792673327` PASS, Navigation `34792673293` PASS with Real Chrome, Frontend `34792673296` PASS with unit + full Real Chrome. `VERSION.txt` remains `42.24.0`.
 
-Next owner audit: the final cleaning frontend row/poll owner must preserve durable queue position/wait reason and use lifecycle-managed polling without a parallel frontend truth model.
+Following owner audit status: cleaning frontend row/poll truth is CLOSED. Next: storage import and deployment-test queue/progress truth.
 
 ## Product closure — Plain image upload whole-task progress truth CLOSED
 
@@ -122,9 +141,9 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **Training Progress v2 CLOSED** — existing `training-metrics.sqlite3` persists truthful latest-epoch duration, rolling ETA, throughput, losses, trainer metrics/mAP when supplied, LR and elapsed time; Worker mirrors the compact snapshot into `job.json` without extra list requests. Product `70110f9668e593215bc77c8614dd9d6dd55b7601`, focused run `34730431744`.
 - **ZIP 10k import scalability CLOSED — hot-state/candidate split + live v19 owner**: baseline proved the final v36 visible ZIP action still delegated to synchronous `doImportData()` / `/api/v18/.../import`, and a synthetic 10,000-candidate v19 `job.json` was **1,370,177 bytes**. The product now routes final v36 ZIP upload through existing v19 background jobs and stores the full candidate manifest once in `scan-images.json`; hot `job.json`, running list polling and detail polling no longer carry the 10k candidate array. Create response is bounded to 500 candidates for the picker; selecting-job list preview is bounded to 300; running/terminal task state stays O(1) in candidate count. Selected-path validation reads the cold manifest. Product `b4875ada5ff084fd4e21d7c5f026f5b09128033b`, focused run `34731027723`, cleanup `e819a35c71f6aa20f7739281ddfc75e8502104ce`.
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
-- **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
+- **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.96`; `main.mjs` cache is `42.25.93`. No merge/tag/release.
 
-**Video resource queue truth and cleaning durable execution truth are CLOSED. Current next product scope: cleaning frontend queue/progress truth, then continue storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Video resource queue truth, cleaning durable execution truth, and cleaning frontend queue/progress truth are CLOSED. Current next product scope: storage import and deployment-test queue/progress truth. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 2. Runtime ownership
 
