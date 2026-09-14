@@ -1,0 +1,55 @@
+name: Temporary Patch Training Blind Test
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-patch-training-blind-test.yml
+      - .github/scripts/_tmp_patch_training_blind_test.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply product patch
+        run: python .github/scripts/_tmp_patch_training_blind_test.py
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest pyyaml pillow psutil filelock requests keyring boto3 oss2
+      - name: Compile patched runtime
+        run: python -m py_compile train_worker.py platform_core/training_tasks.py platform_core/training_evaluation.py
+      - name: Run focused blind-test contracts
+        run: python -m pytest --noconftest -q tests/unit/test_training_blind_test_contract.py tests/unit/test_training_evaluation.py tests/unit/test_portable_dataset.py
+      - name: Guard worker integration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('train_worker.py').read_text(encoding='utf-8')
+          assert 'evaluate_blind_detection(' in text
+          assert 'best_model.val(data=args.data, split="test"' not in text
+          print('blind-test worker integration guard passed')
+          PY
+      - name: Version guard
+        run: test "$(cat VERSION.txt)" = "42.24.0"
+      - name: Commit product patch
+        run: |
+          git config user.name "jorsamj"
+          git config user.email "50445927+jorsamj@users.noreply.github.com"
+          git add platform_core/training_tasks.py platform_core/training_evaluation.py train_worker.py tests/unit/test_training_blind_test_contract.py tests/unit/test_training_evaluation.py tests/unit/test_portable_dataset.py
+          if git diff --cached --quiet; then
+            echo "No product changes to commit"
+            exit 0
+          fi
+          git commit -m "fix(training): isolate independent test ground truth"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
