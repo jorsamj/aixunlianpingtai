@@ -23,8 +23,8 @@ jobs:
           python-version: '3.12'
       - name: Apply focused deployment patch
         run: python tools/_tmp_deployment_upgrade_safety_patch.py
-      - name: Install focused test dependency
-        run: python -m pip install -q pytest
+      - name: Install focused test dependencies
+        run: python -m pip install -q pytest pillow
       - name: Run deployment upgrade contracts
         run: python -m pytest -q tests/unit/test_deployment_upgrade_safety.py
       - name: Compile touched Python
