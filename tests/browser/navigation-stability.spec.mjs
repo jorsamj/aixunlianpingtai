@@ -496,10 +496,11 @@ test('server storage import confirmation avoids broad related refresh', async ({
       task_id: 'storage-r20g', status: 'RUNNING', stage: 'IMPORTING', result: {},
     })});
   });
-  await page.route(/\/api\/v61\/projects\/[^/]+\/storage-imports\/storage-r20g$/, async route => {
+  await page.route(/\/api\/v62\/projects\/[^/]+\/tasks\/storage-r20g$/, async route => {
     requests.push(`GET ${new URL(route.request().url()).pathname}`);
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      task_id: 'storage-r20g', status: 'SUCCEEDED', stage: 'DONE', result: {imported: 3, indexed: 3},
+      task_id: 'storage-r20g', status: 'SUCCEEDED', persisted_status: 'SUCCEEDED',
+      phase: 'DONE', progress_percent: 100, result: {imported: 3, indexed: 3},
     })});
   });
   await page.route(/\/api\/v12\/projects\/[^/]+\/labels$/, async route => {
@@ -551,7 +552,7 @@ test('server storage import confirmation avoids broad related refresh', async ({
 
   expect(requests.filter(row => row.includes('storage-r20g'))).toEqual([
     expect.stringMatching(/^POST \/api\/v61\/projects\/[^/]+\/storage-imports\/storage-r20g\/confirm$/),
-    expect.stringMatching(/^GET \/api\/v61\/projects\/[^/]+\/storage-imports\/storage-r20g$/),
+    expect.stringMatching(/^GET \/api\/v62\/projects\/[^/]+\/tasks\/storage-r20g$/),
   ]);
   expect(requests.some(row => row.startsWith('GET /api/v12/projects/') && row.endsWith('/labels'))).toBe(true);
   expect(broad).toEqual([]);
