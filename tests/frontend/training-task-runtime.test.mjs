@@ -303,7 +303,7 @@ test('deleting an active task stops it, deletes it, then refreshes only jobs', a
 });
 
 
-test('training row exposes real queue wait position reason and worker without a second request', () => {
+test('training row prioritizes waiting-resource truth and suppresses an unproved rank', () => {
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;
   // trainingTaskRow is pure and does not require runtime installation.
@@ -312,18 +312,38 @@ test('training row exposes real queue wait position reason and worker without a 
     const html = trainingTaskRow({
       id: 'wait-1', status: 'waiting', queue_priority: 1, priority_scheme: 'lower_number_first',
       resource_queue_position: 2, resource_wait_reason: 'GPU_MEMORY_BUSY',
+      resource_queue_position_exact: false, resource_pool_label: 'GPU 自动',
       task_worker_id: 'a800-worker-01', progress_percent: 18, current_item: '准备训练环境',
       framework: 'ultralytics', total_epochs: 30,
     });
-    assert.match(html, /等待中/);
+    assert.match(html, /等待资源/);
     assert.match(html, /优先级 1/);
-    assert.match(html, /队列第 2 位/);
+    assert.match(html, /GPU 自动/);
     assert.match(html, /GPU_MEMORY_BUSY/);
+    assert.doesNotMatch(html, /队列第 2 位/);
     assert.match(html, /执行节点 a800-worker-01/);
     assert.match(html, /18% · 准备训练环境/);
     if (previousWindow !== undefined) globalThis.window = previousWindow;
     if (previousDocument !== undefined) globalThis.document = previousDocument;
   });
+});
+
+test('training row shows a numeric position only when the backend proves it exact', async () => {
+  const {trainingTaskRow} = await import('../../static/modules/training-task-runtime.js');
+  const exact = trainingTaskRow({
+    id: 'cpu-2', status: 'queued', resource_pool_label: 'CPU',
+    resource_queue_position: 2, resource_queue_position_exact: true,
+    framework: 'ultralytics', total_epochs: 10,
+  });
+  const uncertain = trainingTaskRow({
+    id: 'gpu-auto', status: 'queued', resource_pool_label: 'GPU 自动',
+    resource_queue_position: 3, resource_queue_position_exact: false,
+    framework: 'ultralytics', total_epochs: 10,
+  });
+
+  assert.match(exact, /CPU · 队列第 2 位/);
+  assert.match(uncertain, /GPU 自动 · 排队中/);
+  assert.doesNotMatch(uncertain, /队列第 3 位/);
 });
 
 test('completed training below requested epochs is shown as early completion instead of stuck running', async () => {

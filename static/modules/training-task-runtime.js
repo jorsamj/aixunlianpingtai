@@ -79,7 +79,7 @@ function dateText(value) {
 
 function statusText(status) {
   return ({
-    queued: '排队中', running: '训练中', waiting: '等待中', pending: '等待中', paused: '已暂停',
+    queued: '排队中', running: '训练中', waiting: '等待资源', pending: '等待中', paused: '已暂停',
     done: '已完成', finished: '已完成', completed: '已完成', failed: '失败', stopped: '已停止',
     cancelled: '已取消', canceled: '已取消',
   })[status] || status || '-';
@@ -108,11 +108,18 @@ function priorityValue(job) {
 }
 
 function queueRuntimeMeta(job) {
-  const parts = [];
+  const status = String(job?.status || '');
+  if (!['queued', 'waiting'].includes(status)) return '';
+  const pool = String(job?.resource_pool_label || '').trim();
   const position = Number(job?.resource_queue_position || 0);
-  if (position > 0 && ['queued', 'waiting'].includes(String(job?.status || ''))) parts.push(`队列第 ${position} 位`);
   const reason = String(job?.resource_wait_reason || '').trim();
-  if (reason && job?.status === 'waiting') parts.push(reason);
+  const parts = pool ? [pool] : [];
+  if (status === 'waiting') {
+    if (reason) parts.push(reason);
+    return parts.join(' · ');
+  }
+  if (position > 0 && job?.resource_queue_position_exact === true) parts.push(`队列第 ${position} 位`);
+  else parts.push('排队中');
   return parts.join(' · ');
 }
 

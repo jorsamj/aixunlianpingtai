@@ -101,6 +101,7 @@ from platform_core.task_runtime import (
     TaskStatus,
     WorkerInstanceService,
     task_to_public,
+    training_queue_truth,
 )
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
@@ -804,11 +805,19 @@ def _terminate_pid_tree(pid: Any) -> bool:
         return False
 
 
-def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
+def enrich_job_runtime(
+    project_id: str,
+    job: Dict[str, Any],
+    *,
+    repository=None,
+    worker_runtime=None,
+    queued_candidates=None,
+) -> Dict[str, Any]:
     if not job:
         return job
+    repository = repository or shared_task_repository()
     job_id = job.get("id") or ""
-    durable = shared_task_repository().get(str(job_id)) if job_id else None
+    durable = repository.get(str(job_id)) if job_id else None
     if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
         mapped = {
             TaskStatus.QUEUED: "queued",
@@ -821,7 +830,16 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             TaskStatus.BLOCKED_BY_ENVIRONMENT: "failed",
             TaskStatus.BLOCKED_BY_HARDWARE: "failed",
         }.get(durable.status, str(job.get("status") or "queued"))
-        public_runtime = task_to_public(durable, shared_task_repository())
+        public_runtime = task_to_public(durable, repository)
+        if durable.status is TaskStatus.QUEUED:
+            public_runtime.update(
+                training_queue_truth(
+                    durable,
+                    repository,
+                    worker_runtime=worker_runtime,
+                    queued_candidates=queued_candidates,
+                )
+            )
         if public_runtime["status"] == "WAITING_RESOURCE":
             mapped = "waiting"
         job.update(
@@ -835,6 +853,9 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             priority_scheme="lower_number_first",
             resource_queue_position=public_runtime["resource_queue_position"],
             resource_wait_reason=public_runtime["resource_wait_reason"],
+            resource_queue_position_exact=public_runtime.get("resource_queue_position_exact", False),
+            resource_pool_key=public_runtime.get("resource_pool_key", durable.resource_key),
+            resource_pool_label=public_runtime.get("resource_pool_label", "训练资源"),
             task_worker_id=public_runtime["worker_id"],
             task_lease_expires_at=public_runtime["lease_expires_at"],
         )
@@ -5715,11 +5736,20 @@ def list_jobs(project_id: str):
     except Exception: pass
     sync_jobs_index(project_id)
     rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    repository = shared_task_repository()
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
     out=[]
     for row in rows:
         jf=project_dir(project_id)/"jobs"/str(row.get("id") or "")/"job.json"
         full=read_json(jf,row) if jf.exists() else row
-        full=enrich_job_runtime(project_id,full)
+        full=enrich_job_runtime(
+            project_id,
+            full,
+            repository=repository,
+            worker_runtime=worker_runtime,
+            queued_candidates=queued_candidates,
+        )
         if jf.exists(): write_json(jf,full)
         out.append(full)
     return out

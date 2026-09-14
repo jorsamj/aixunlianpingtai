@@ -258,6 +258,23 @@ class TaskRepository:
             ).fetchone()[0]
         return int(ahead) + 1
 
+    def queued_candidates(self) -> tuple[TaskRecord, ...]:
+        """Return the current durable claim-order candidates for read projections.
+
+        This does not apply Worker capability or admission rules. Callers may use
+        the rows to prove a narrower view, but must not treat them as a second
+        Scheduler or mutate queue state from a GET path.
+        """
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT * FROM tasks
+                 WHERE status='QUEUED'
+                 ORDER BY priority ASC, queue_rank DESC, created_at ASC, task_id ASC
+                """
+            ).fetchall()
+        return tuple(_from_row(row) for row in rows)
+
     def list(
         self,
         project_id: str | None = None,

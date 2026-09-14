@@ -1,4 +1,11 @@
-from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository
+import os
+
+from platform_core.task_runtime import (
+    TaskKind,
+    TaskRecord,
+    TaskRepository,
+    WorkerInstanceService,
+)
 
 
 def test_training_job_overlay_uses_unified_resource_waiting_truth(tmp_path, monkeypatch):
@@ -9,6 +16,17 @@ def test_training_job_overlay_uses_unified_resource_waiting_truth(tmp_path, monk
         "train-wait", "project-1", TaskKind.TRAINING, "payload.json", "training:gpu:0",
         priority=7, required_capabilities=("training.ultralytics",),
     ))
+    WorkerInstanceService(repository).acquire(
+        tmp_path,
+        {"training"},
+        "default",
+        "a800-worker",
+        pid=os.getpid(),
+        hostname="a800-worker.example",
+        build_id="build-current",
+        task_kinds={TaskKind.TRAINING.value},
+        capabilities={"training.ultralytics"},
+    )
 
     def deny(database, candidate, worker_id, token, expires_at, now):
         return False, "GPU_MEMORY_BUSY"
@@ -30,6 +48,43 @@ def test_training_job_overlay_uses_unified_resource_waiting_truth(tmp_path, monk
     assert job["resource_queue_position"] == 1
     assert job["resource_wait_reason"] == "GPU_MEMORY_BUSY"
     assert job["task_worker_id"] is None
+
+
+def test_training_job_overlay_derives_worker_waiting_and_pool_metadata(tmp_path, monkeypatch):
+    import app as app_module
+
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task = repository.create(TaskRecord.new(
+        "train-worker-wait", "project-1", TaskKind.TRAINING, "payload.json", "training:auto",
+        priority=7, required_capabilities=("training.ultralytics",),
+    ))
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: repository)
+
+    waiting = app_module.enrich_job_runtime("project-1", {"id": task.task_id, "status": "queued"})
+
+    assert waiting["status"] == "waiting"
+    assert waiting["task_status"] == "WAITING_RESOURCE"
+    assert waiting["resource_wait_reason"] == "当前没有在线 Worker"
+    assert waiting["resource_pool_key"] == "training:auto"
+    assert waiting["resource_pool_label"] == "GPU 自动"
+    assert waiting["resource_queue_position_exact"] is False
+
+    WorkerInstanceService(repository).acquire(
+        tmp_path,
+        {"training"},
+        "default",
+        "training-worker",
+        pid=os.getpid(),
+        hostname="training-worker.example",
+        build_id="build-current",
+        task_kinds={TaskKind.TRAINING.value},
+        capabilities={"training.ultralytics"},
+    )
+    queued = app_module.enrich_job_runtime("project-1", waiting)
+
+    assert queued["status"] == "queued"
+    assert queued["task_status"] == "QUEUED"
+    assert queued["resource_wait_reason"] is None
 
 
 def test_training_job_overlay_exposes_worker_and_lease_for_running_task(tmp_path, monkeypatch):
