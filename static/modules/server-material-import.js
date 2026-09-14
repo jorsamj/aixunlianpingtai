@@ -3,6 +3,18 @@ function count(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
+const ACTIVE_IMPORT_STATUSES = new Set([
+  'QUEUED',
+  'WAITING_RESOURCE',
+  'PREPARING',
+  'RUNNING',
+  'PAUSING',
+  'PAUSED',
+  'RESUMING',
+  'CANCEL_REQUESTED',
+  'RETRYING',
+]);
+
 export function buildServerImportRequest(values = {}) {
   const mode = String(values.mode || 'directory_scan');
   const storageSourceId = String(values.storageSourceId || '').trim();
@@ -54,9 +66,13 @@ export function serverImportView(task = {}) {
   const stage = String(task.stage || '').toLowerCase();
   const metrics = task.metrics || {};
   const current = String(metrics.current_file || task.current_item || '-');
+  const queuePosition = count(task.resource_queue_position);
+  const waitReason = String(task.resource_wait_reason || '').trim();
   let text;
 
-  if (stage === 'extracting') {
+  if (status === 'WAITING_RESOURCE') {
+    text = ['等待 Storage Worker 资源', queuePosition ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
+  } else if (stage === 'extracting') {
     text = `已解压 ${count(metrics.extracted_files)} 个文件 · ${count(metrics.extracted_bytes)} 字节 · 当前 ${current}`;
   } else if (stage === 'scanning') {
     text = `已扫描 ${count(metrics.scanned_files)} · 可导入 ${count(metrics.importable_images)} · 重复 ${count(metrics.duplicates)} · 失败 ${count(metrics.failed) + count(metrics.invalid_images)} · 当前 ${current}`;
@@ -65,7 +81,7 @@ export function serverImportView(task = {}) {
   } else if (status === 'AWAITING_CONFIRMATION') {
     text = '扫描完成，等待确认建立素材索引';
   } else if (status === 'QUEUED') {
-    text = '任务已进入 Storage Worker 队列';
+    text = queuePosition ? `任务已进入 Storage Worker 队列 · 第 ${queuePosition} 位` : '任务已进入 Storage Worker 队列';
   } else if (status === 'SUCCEEDED') {
     text = `导入完成，共建立 ${count(task.result?.imported)} 条素材索引`;
   } else if (status === 'FAILED' || status === 'CANCELLED') {
@@ -78,42 +94,9 @@ export function serverImportView(task = {}) {
     status,
     stage,
     text,
-    active: ['QUEUED', 'RUNNING'].includes(status),
+    active: ACTIVE_IMPORT_STATUSES.has(status),
     canConfirm: status === 'AWAITING_CONFIRMATION',
     showPercent: stage === 'extracting' && count(metrics.declared_bytes) > 0,
-    terminal: ['SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED', 'BLOCKED_BY_ENVIRONMENT'].includes(status),
+    terminal: ['SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE'].includes(status),
   };
-}
-
-function abortError(signal) {
-  return signal?.reason instanceof Error
-    ? signal.reason
-    : new DOMException('Polling stopped', 'AbortError');
-}
-
-function waitForNextPoll(delay, signal) {
-  if (signal?.aborted) return Promise.reject(abortError(signal));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, delay);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(abortError(signal));
-    };
-    signal?.addEventListener('abort', onAbort, {once: true});
-  });
-}
-
-export async function pollServerImport({initialTask, load, render, signal, delay = 1200}) {
-  if (typeof load !== 'function') throw new TypeError('load must be a function');
-  let task = initialTask || await load();
-  while (true) {
-    if (signal?.aborted) throw abortError(signal);
-    render?.(task);
-    if (!serverImportView(task).active) return task;
-    await waitForNextPoll(delay, signal);
-    task = await load();
-  }
 }
