@@ -33,6 +33,7 @@ on:
       - tests/api/test_durable_training_controls.py
       - tests/api/test_clean_unified_execution_truth.py
       - tests/api/test_deployment_test_runtime.py
+      - tests/api/test_training_terminal_runtime.py
       - tests/api/test_upload_clean_flow.py
       - tests/api/test_training_unified_task_overlay.py
       - tests/api/test_unified_task_process_cancel.py
@@ -63,6 +64,7 @@ on:
       - tests/unit/test_material_batch_public_truth.py
       - tests/unit/test_training_ai_continuation_progress.py
       - tests/unit/test_training_blind_test_contract.py
+      - tests/unit/test_training_early_stopping_reason.py
       - tests/unit/test_training_evaluation.py
       - tests/unit/test_training_progress_v2.py
       - tests/unit/test_training_realtime_progress.py
@@ -97,6 +99,7 @@ on:
 # Storage-browser guard: confirmation must follow v62 durable task truth through terminal success while preserving narrow refresh scope.
 # Training-progress guard: preparation owns 0..20, active training advances 20..90 with throttled per-batch durable truth.
 # Training blind-test guard: independent test GT stays outside Ultralytics labels/data.yaml; all image-only predictions finish before hidden GT scoring begins.
+# Training-terminal guard: terminal completion preserves actual epoch count, freezes elapsed time, and exposes the explicit stop reason.
 # AI-continuation progress guard: a new continuation YOLO instance must rebind epoch/batch/resource callbacks and advance cumulative epoch truth through 90..95.
 # Release-path guard: every explicit tests/*.py reference in this workflow must exist on the checked-out head.
 jobs:
@@ -129,6 +132,7 @@ jobs:
           tests/api/test_durable_training_controls.py
           tests/api/test_clean_unified_execution_truth.py
           tests/api/test_deployment_test_runtime.py
+          tests/api/test_training_terminal_runtime.py
           tests/api/test_upload_clean_flow.py
           tests/api/test_training_unified_task_overlay.py
           tests/api/test_unified_task_process_cancel.py
@@ -151,6 +155,7 @@ jobs:
           tests/unit/test_gpu_resource_connection_lifecycle.py
           tests/unit/test_material_batch_public_truth.py
           tests/unit/test_training_ai_continuation_progress.py
+          tests/unit/test_training_early_stopping_reason.py
           tests/unit/test_training_progress_v2.py
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_video_commit_fencing.py
