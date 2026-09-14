@@ -27,7 +27,7 @@ Run `34733035739` passed syntax, all permanent owner guards, all frontend unit t
 
 ## Product closure — Worker Runtime Truth CLOSED
 
-Worker Runtime Truth is complete at implementation HEAD `347df61819430c0bae16a638c405010feae8ddb5`. The existing `worker_instances` lease row now durably records `worker_id`, `hostname`, `pid`, the running Worker's resolved `build_id`, expanded roles, registered task kinds, registered capabilities, `started_at`, `heartbeat_at`, and `expires_at`. SQLite migration is additive and gives existing rows safe defaults; it does not rebuild or discard the table.
+Worker Runtime Truth is complete at implementation HEAD `a5acc6bf9b3de3bab0bd2231a40c9fe8436f1816`. The existing `worker_instances` lease row now durably records `worker_id`, `hostname`, `pid`, the running Worker's resolved `build_id`, actually registered roles, registered task kinds, registered capabilities, `started_at`, `heartbeat_at`, and `expires_at`. SQLite migration is additive and gives existing rows safe defaults; it does not rebuild or discard the table.
 
 Durable truth remains single-owner: `task_worker.py` obtains handlers and capabilities from the existing `worker_registry`, then writes that actual registration into `worker_instances` through `WorkerInstanceService.acquire()`. The existing lease renewal remains the only heartbeat. `WorkerInstanceService.list_runtime()` derives `online` only when a valid heartbeat exists and `expires_at` is later than the query's UTC time; it never uses PID liveness to judge remote Worker availability. `GET /api/v62/workers` returns the sanitized durable runtime list and does not expose `owner_token` or `instance_key`.
 
@@ -36,16 +36,18 @@ Modified files:
 ```text
 app.py
 task_worker.py
+platform_core/worker_registry.py
 platform_core/task_runtime/repository.py
 platform_core/task_runtime/worker_instances.py
 tests/unit/task_runtime/test_worker_runtime_truth.py
+tests/unit/task_runtime/test_worker_registry.py
 tests/api/test_worker_runtime_truth.py
 docs/superpowers/specs/2026-09-14-worker-runtime-truth-design.md
 docs/superpowers/plans/2026-09-14-worker-runtime-truth.md
 docs/CODEX_CURRENT_STATE.md
 ```
 
-Minimum verification passed: affected Python modules compiled successfully; focused Worker Runtime Truth, read-only API, and existing Worker lease connection-lifecycle tests passed `5/5`. Linux/A800 deployment and real distributed Worker heartbeat behavior were not executed in this Windows development environment and remain **NOT VERIFIED**. Formal `VERSION.txt` remains `42.24.0`.
+Minimum verification passed: affected Python modules compiled successfully; focused Worker Runtime Truth, actual registry metadata, read-only API, and existing Worker lease connection-lifecycle tests passed `7/7`. Linux/A800 deployment and real distributed Worker heartbeat behavior were not executed in this Windows development environment and remain **NOT VERIFIED**. Formal `VERSION.txt` remains `42.24.0`.
 
 > Build claim fencing、Worker readiness admission、training 503 拦截和前端 Worker readiness 尚未实现，留待后续独立批次。
 
