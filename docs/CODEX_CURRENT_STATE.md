@@ -25,6 +25,30 @@ AutoLabelPollRuntime:        422501
 
 Run `34733035739` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after ZIP 10k owner/manifest migration. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34733035761` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
+## Product closure — Worker Runtime Truth CLOSED
+
+Worker Runtime Truth is complete at implementation HEAD `347df61819430c0bae16a638c405010feae8ddb5`. The existing `worker_instances` lease row now durably records `worker_id`, `hostname`, `pid`, the running Worker's resolved `build_id`, expanded roles, registered task kinds, registered capabilities, `started_at`, `heartbeat_at`, and `expires_at`. SQLite migration is additive and gives existing rows safe defaults; it does not rebuild or discard the table.
+
+Durable truth remains single-owner: `task_worker.py` obtains handlers and capabilities from the existing `worker_registry`, then writes that actual registration into `worker_instances` through `WorkerInstanceService.acquire()`. The existing lease renewal remains the only heartbeat. `WorkerInstanceService.list_runtime()` derives `online` only when a valid heartbeat exists and `expires_at` is later than the query's UTC time; it never uses PID liveness to judge remote Worker availability. `GET /api/v62/workers` returns the sanitized durable runtime list and does not expose `owner_token` or `instance_key`.
+
+Modified files:
+
+```text
+app.py
+task_worker.py
+platform_core/task_runtime/repository.py
+platform_core/task_runtime/worker_instances.py
+tests/unit/task_runtime/test_worker_runtime_truth.py
+tests/api/test_worker_runtime_truth.py
+docs/superpowers/specs/2026-09-14-worker-runtime-truth-design.md
+docs/superpowers/plans/2026-09-14-worker-runtime-truth.md
+docs/CODEX_CURRENT_STATE.md
+```
+
+Minimum verification passed: affected Python modules compiled successfully; focused Worker Runtime Truth, read-only API, and existing Worker lease connection-lifecycle tests passed `5/5`. Linux/A800 deployment and real distributed Worker heartbeat behavior were not executed in this Windows development environment and remain **NOT VERIFIED**. Formal `VERSION.txt` remains `42.24.0`.
+
+> Build claim fencing、Worker readiness admission、training 503 拦截和前端 Worker readiness 尚未实现，留待后续独立批次。
+
 ## Product closure — Deployment-test durable queue/progress truth CLOSED
 
 The deployment-test business surface now preserves the same durable task truth as the unified v62 task API. Previously the v61 compatibility projection flattened a resource-waiting durable task back to persisted `QUEUED`, dropped queue/resource/worker metadata, and the final `benchPredictOne` loop only considered `QUEUED / RUNNING / CANCEL_REQUESTED` active. That combination could make a real `WAITING_RESOURCE` deployment test appear terminal or fail without showing why it was waiting.
