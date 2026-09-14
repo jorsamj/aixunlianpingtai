@@ -21,4 +21,4 @@ jobs:
           python -m pip install --disable-pip-version-check
           pytest pillow pyyaml psutil keyring filelock boto3 oss2
       - name: Completed training recovery RED
-        run: python -m pytest -q tests/integration/test_training_completed_job_recovery.py
+        run: python -m pytest --noconftest -q tests/integration/test_training_completed_job_recovery.py
