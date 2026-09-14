@@ -9,6 +9,9 @@ on:
       - .github/workflows/v42.25-release-regression.yml
       - a800_rc_acceptance.py
       - app.py
+      - launcher.py
+      - task_worker.py
+      - remote_train_server.py
       - static/app.js
       - static/modules/auto-label-poll-runtime.js
       - static/modules/deployment-tests.js
@@ -16,6 +19,7 @@ on:
       - platform_core/annotation_batches.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
+      - platform_core/build_identity.py
       - platform_core/cleaning_batches.py
       - platform_core/deployment/inference_tasks.py
       - platform_core/gpu_resources.py
@@ -26,9 +30,11 @@ on:
       - platform_core/task_runtime/process_control.py
       - platform_core/task_runtime/public.py
       - platform_core/task_runtime/worker_instances.py
+      - platform_core/training_devices.py
       - platform_core/training_metrics.py
       - platform_core/training_evaluation.py
       - platform_core/training_tasks.py
+      - platform_core/upgrade_guard.py
       - platform_core/video_tasks.py
       - tests/api/test_durable_training_controls.py
       - tests/api/test_clean_unified_execution_truth.py
@@ -60,6 +66,7 @@ on:
       - tests/unit/test_conversion_tasks.py
       - tests/unit/test_conversion_process_fencing.py
       - tests/unit/test_deployment_inference_process_fencing.py
+      - tests/unit/test_deployment_upgrade_safety.py
       - tests/unit/test_gpu_resource_connection_lifecycle.py
       - tests/unit/test_material_batch_public_truth.py
       - tests/unit/test_training_ai_continuation_progress.py
@@ -85,6 +92,7 @@ on:
 # Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
 # Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
 # Deployment-test guard: inference runners must bind exact process identity and terminate the tree on execution fencing.
+# Deployment-upgrade guard: same VERSION must still match Build identity; a new Build must not silently take over active durable tasks, and legacy remote training must satisfy the explicit device-assignment contract.
 # Completed-work recovery guard: conversion/deployment recovery must reuse durable success evidence instead of rerunning completed work after worker restart.
 # Deployment queue-display guard: v61 business projection must preserve the same WAITING_RESOURCE/queue/worker/progress truth as v62; deployment UI-only changes still run this backend regression gate.
 # Plain-image upload progress guard: browser byte transfer must stay below terminal 100%; successful server commit owns 100%.
@@ -152,6 +160,7 @@ jobs:
           tests/unit/test_conversion_tasks.py
           tests/unit/test_conversion_process_fencing.py
           tests/unit/test_deployment_inference_process_fencing.py
+          tests/unit/test_deployment_upgrade_safety.py
           tests/unit/test_gpu_resource_connection_lifecycle.py
           tests/unit/test_material_batch_public_truth.py
           tests/unit/test_training_ai_continuation_progress.py
