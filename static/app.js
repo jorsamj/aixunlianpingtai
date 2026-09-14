@@ -4152,9 +4152,18 @@ window.installUsability417?.();
     const format=String(model.runtime_format||String(model.path||'').split('.').pop()||'').toLowerCase(),vendor=['rknn','om','bmodel'].includes(format),framework=model.framework||'ultralytics';
     const env=vendor?{}:(state.inferenceEnvs||[]).find(item=>item.framework===framework&&item.status==='ready');if(!vendor&&!env)throw new Error(`当前没有可用的${framework==='paddle'?'Paddle':'Ultralytics'} Runtime`);
     const form=new FormData();form.append('file',file);form.append('model_name',model.model_name||model.path||'');form.append('model_source',model.model_source||'project');form.append('local_path',model.path||'');form.append('algorithm_id',model.algorithm_id||'');form.append('version_id',model.version_id||'');form.append('conf',conf||.25);form.append('inference_framework',framework);form.append('inference_env_id',env?.id||'');
-    let task=await api(`/api/v61/projects/${pid()}/deployment-tests`,{method:'POST',body:form}),attempt=0;
-    while(['QUEUED','RUNNING','CANCEL_REQUESTED'].includes(task.status)&&attempt++<700){const output=document.getElementById('benchResult');if(output)output.innerHTML=`<div class="loading">真实 Runtime 测试中 · ${esc(task.stage||task.status)} · ${Number(task.progress||0).toFixed(1)}%</div>`;await new Promise(resolve=>setTimeout(resolve,900));task=await api(`/api/v61/projects/${pid()}/deployment-tests/${task.id}`)}
-    if(task.status!=='SUCCEEDED')throw new Error(task.error||`部署测试未通过：${task.status}`);return {r:task.result||{},m:model,env};
+    let task=await api(`/api/v61/projects/${pid()}/deployment-tests`,{method:'POST',body:form}),attempt=0;const taskId=task.id||task.task_id;
+    const active=()=>window.PlatformCore?.taskPoller?.isTaskActive?.(task.status)??['QUEUED','WAITING_RESOURCE','PREPARING','RUNNING','PAUSING','PAUSED','RESUMING','CANCEL_REQUESTED','RETRYING'].includes(String(task.status||'').toUpperCase());
+    while(active()&&attempt++<700){
+      const view=window.PlatformCore?.deployment?.deploymentTaskView?.(task)||{statusText:task.status,phase:task.phase||task.stage||'',percent:Number(task.progress_percent??task.progress??0),runtimeText:''};
+      const output=document.getElementById('benchResult'),details=[view.statusText,view.runtimeText,view.phase,`${Number(view.percent||0).toFixed(1)}%`].filter(Boolean);
+      if(output)output.innerHTML=`<div class="loading">真实 Runtime 测试中 · ${details.map(esc).join(' · ')}</div>`;
+      await new Promise(resolve=>setTimeout(resolve,900));
+      task=await api(`/api/v62/projects/${pid()}/tasks/${taskId}`);
+    }
+    if(task.status!=='SUCCEEDED')throw new Error(task.error||`部署测试未通过：${task.status}`);
+    const completed=await api(`/api/v61/projects/${pid()}/deployment-tests/${taskId}`);
+    return {r:completed.result||{},m:model,env};
   };
 })();
 

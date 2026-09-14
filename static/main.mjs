@@ -19,6 +19,7 @@ import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workb
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422001';
 import {applyCleanConfirmation, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422517';
+import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
 import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
@@ -87,6 +88,7 @@ window.PlatformCore = {
   taskPoller: {createTaskPoller, isTaskActive, taskProgress},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation, cleanTaskView, isActiveCleanTask},
+  deployment: {deploymentTaskView},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},
   upload: {uploadBatchFromResponse},

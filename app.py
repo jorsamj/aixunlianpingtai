@@ -13927,13 +13927,16 @@ def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: s
 
 
 def public_deployment_test(task: TaskRecord) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    truth = task_to_public(task, repository)
     result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
     return {
-        "id": task.task_id, "project_id": task.project_id, "kind": task.kind.value,
-        "status": task.status.value, "progress": task.progress, "stage": task.stage,
-        "current_item": task.current_item, "created_at": task.created_at,
-        "updated_at": task.updated_at, "finished_at": task.finished_at,
-        "error": task.error, "result": result or {},
+        **truth,
+        # v61 compatibility aliases remain for the existing deployment UI/API contract.
+        "id": task.task_id,
+        "progress": truth.get("progress_percent", task.progress),
+        "stage": truth.get("phase", task.stage),
+        "result": result or {},
     }
 
 
