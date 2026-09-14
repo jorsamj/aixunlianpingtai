@@ -23,7 +23,7 @@ def _iou(a: Sequence[float], b: Sequence[float]) -> float:
 
 def _read_ground_truth(path: Path, width: int, height: int, image_name: str) -> list[dict[str, Any]]:
     if not path.is_file():
-        return []
+        raise FileNotFoundError(f"hidden blind-test ground truth is missing: {path.name}")
     rows: list[dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         parts = line.strip().split()

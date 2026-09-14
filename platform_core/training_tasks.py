@@ -387,7 +387,11 @@ def materialize_portable_dataset(
         source_path = Path(item["source_path"])
         size_bytes = int(item["size_bytes"])
         image_ref = f"dataset/images/{role}/{stored_name}"
-        label_ref = f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
+        label_ref = (
+            f"evaluation/ground_truth/test/{Path(stored_name).stem}.txt"
+            if role == "test"
+            else f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
+        )
         destination = _bundle_output_path(root, image_ref)
         _check_bundle_disk_space(root, remaining_bytes, size_bytes, reserve_bytes)
         _copy_verified_isolated(source_path, destination, expected_hash, bundle_root=root)
@@ -412,11 +416,13 @@ def materialize_portable_dataset(
                 "label_sha256": _sha256(label_path),
             }
         )
+    # Independent test images stay portable, but their hidden answers are deliberately
+    # absent from the Ultralytics training YAML. Final evaluation is image-only inference
+    # followed by a separate scorer that opens evaluation/ground_truth/test afterwards.
     data_yaml = {
         "path": ".",
         "train": "images/train",
         "val": "images/validation",
-        "test": "images/test",
         "names": names,
     }
     _atomic_text(

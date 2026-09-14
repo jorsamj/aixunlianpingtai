@@ -861,13 +861,68 @@ def main():
             val_metrics=best_model.val(data=args.data, split="val", verbose=False)
             training_report.update(build_report_from_metrics(val_metrics,getattr(best_model,"names",None)))
             try:
-                test_metrics=best_model.val(data=args.data, split="test", verbose=False)
-                test_values=(build_report_from_metrics(test_metrics,getattr(best_model,"names",None)).get("metrics") or {})
-                training_report["test_metrics"]=test_values
-                training_report["test_result"]={"status":"succeeded","metrics":test_values}
+                import yaml
+                from platform_core.training_evaluation import evaluate_blind_detection
+
+                runtime_spec=yaml.safe_load(Path(args.data).read_text(encoding="utf-8")) or {}
+                dataset_root=Path(str(runtime_spec.get("path") or "."))
+                if not dataset_root.is_absolute():
+                    dataset_root=(Path(args.data).resolve().parent/dataset_root).resolve()
+                else:
+                    dataset_root=dataset_root.resolve()
+                test_images_dir=dataset_root/"images"/"test"
+                hidden_ground_truth_dir=dataset_root.parent/"evaluation"/"ground_truth"/"test"
+                current_job=read_json(job_file,{})
+                update_job(
+                    job_file,
+                    progress_percent=max(96.0,float(current_job.get("progress_percent") or 0.0)),
+                    current_item="独立试验集盲测",
+                    message="训练完成，正在对无标注试验图片执行盲测",
+                )
+
+                def blind_predict(image_path):
+                    results=best_model.predict(
+                        source=str(image_path),
+                        conf=0.001,
+                        iou=0.7,
+                        device=args.device,
+                        verbose=False,
+                    )
+                    result=results[0] if results else None
+                    rows=[]
+                    if result is not None and getattr(result,"boxes",None) is not None:
+                        boxes=result.boxes
+                        xyxy=boxes.xyxy.detach().cpu().tolist()
+                        classes=boxes.cls.detach().cpu().tolist()
+                        confidences=boxes.conf.detach().cpu().tolist()
+                        rows=[
+                            {
+                                "class_id":int(class_id),
+                                "confidence":float(confidence),
+                                "box":list(map(float,box)),
+                            }
+                            for box,class_id,confidence in zip(xyxy,classes,confidences)
+                        ]
+                    return rows
+
+                blind_result=evaluate_blind_detection(
+                    test_images_dir,
+                    hidden_ground_truth_dir,
+                    blind_predict,
+                    names=getattr(best_model,"names",None),
+                )
+                training_report["test_metrics"]=blind_result.get("metrics") or {}
+                training_report["test_result"]=blind_result
+                training_report["test_per_class"]=blind_result.get("per_class") or []
+                training_report["test_protocol"]=blind_result.get("protocol") or {}
             except Exception as te:
-                training_report["test_note"]="评测集为空或无法评测："+str(te)
-                training_report["test_result"]={"status":"failed","metrics":{},"error":str(te)}
+                training_report["test_note"]="独立试验集盲测失败："+str(te)
+                training_report["test_result"]={
+                    "status":"failed",
+                    "metrics":{},
+                    "error":str(te),
+                    "protocol":{"mode":"blind_image_only_inference_then_hidden_ground_truth_scoring"},
+                }
         except Exception as ve:
             training_report["validation_error"]=str(ve)
             training_report["test_result"]={"status":"failed","metrics":{},"error":"验证阶段失败，未执行最终试验集评估："+str(ve)}
