@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS worker_instances (
     owner_token TEXT NOT NULL,
     worker_id TEXT NOT NULL,
     pid INTEGER NOT NULL,
+    hostname TEXT NOT NULL DEFAULT '',
+    build_id TEXT NOT NULL DEFAULT '',
+    roles TEXT NOT NULL DEFAULT '[]',
+    task_kinds TEXT NOT NULL DEFAULT '[]',
+    capabilities TEXT NOT NULL DEFAULT '[]',
     started_at TEXT NOT NULL,
     heartbeat_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
@@ -158,6 +163,19 @@ class TaskRepository:
                 database.execute("ALTER TABLE tasks ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0")
             if "resource_wait_reason" not in columns:
                 database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
+            worker_columns = {
+                str(row[1]) for row in database.execute("PRAGMA table_info(worker_instances)").fetchall()
+            }
+            additive_worker_columns = (
+                ("hostname", "TEXT NOT NULL DEFAULT ''"),
+                ("build_id", "TEXT NOT NULL DEFAULT ''"),
+                ("roles", "TEXT NOT NULL DEFAULT '[]'"),
+                ("task_kinds", "TEXT NOT NULL DEFAULT '[]'"),
+                ("capabilities", "TEXT NOT NULL DEFAULT '[]'"),
+            )
+            for name, definition in additive_worker_columns:
+                if name not in worker_columns:
+                    database.execute(f"ALTER TABLE worker_instances ADD COLUMN {name} {definition}")
             database.executescript(GPU_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:

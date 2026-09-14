@@ -99,6 +99,7 @@ from platform_core.task_runtime import (
     TaskRecord,
     TaskRepository,
     TaskStatus,
+    WorkerInstanceService,
     task_to_public,
 )
 from platform_core.training_splits import SplitMode, SplitRequest
@@ -273,6 +274,12 @@ def system_version():
         "base_dir": str(BASE_DIR),
         "persistent": True,
     }
+
+
+@app.get("/api/v62/workers")
+def list_worker_runtime():
+    return {"items": WorkerInstanceService(shared_task_repository()).list_runtime()}
+
 
 def _runtime_task_for_project(project_id: str, task_id: str) -> TaskRecord:
     get_project(project_id)

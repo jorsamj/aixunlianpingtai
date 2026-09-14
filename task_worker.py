@@ -98,7 +98,14 @@ def main(argv=None) -> int:
 
     try:
         instance_lease = WorkerInstanceService(repository).acquire(
-            data_dir, instance_roles, instance_slot, worker_id
+            data_dir,
+            instance_roles,
+            instance_slot,
+            worker_id,
+            hostname=socket.gethostname(),
+            build_id=build_id,
+            task_kinds=(kind.value for kind in handlers),
+            capabilities=capabilities,
         )
     except DuplicateWorkerInstance as error:
         print(

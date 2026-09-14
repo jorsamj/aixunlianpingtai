@@ -50,6 +50,39 @@ def _pid_is_definitely_dead(pid: int) -> bool:
         return False
 
 
+def _normalized_values(values: Iterable[object]) -> list[str]:
+    normalized = {
+        str(getattr(value, "value", value)).strip()
+        for value in values
+        if str(getattr(value, "value", value)).strip()
+    }
+    return sorted(normalized)
+
+
+def _json_values(value: object) -> list[str]:
+    try:
+        decoded = json.loads(str(value or "[]"))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return _normalized_values(decoded)
+
+
+def _utc_datetime(value: datetime | str) -> datetime | None:
+    try:
+        parsed = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        )
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 @dataclass
 class WorkerInstanceLease:
     service: "WorkerInstanceService"
@@ -80,8 +113,16 @@ class WorkerInstanceService:
         *,
         pid: int | None = None,
         lease_seconds: int = 30,
+        hostname: str | None = None,
+        build_id: str = "",
+        task_kinds: Iterable[object] = (),
+        capabilities: Iterable[object] = (),
     ) -> WorkerInstanceLease:
-        instance_key = worker_instance_key(data_dir, roles, slot)
+        normalized_roles = _normalized_values(roles)
+        normalized_task_kinds = _normalized_values(task_kinds)
+        normalized_capabilities = _normalized_values(capabilities)
+        runtime_hostname = str(hostname or "").strip() or socket.gethostname()
+        instance_key = worker_instance_key(data_dir, normalized_roles, slot, hostname=runtime_hostname)
         owner_token = uuid.uuid4().hex
         process_id = int(pid if pid is not None else os.getpid())
         seconds = max(3, int(lease_seconds))
@@ -100,17 +141,67 @@ class WorkerInstanceService:
             database.execute(
                 """
                 INSERT INTO worker_instances
-                    (instance_key, owner_token, worker_id, pid, started_at, heartbeat_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (instance_key, owner_token, worker_id, pid, hostname, build_id,
+                     roles, task_kinds, capabilities, started_at, heartbeat_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(instance_key) DO UPDATE SET
                     owner_token=excluded.owner_token, worker_id=excluded.worker_id,
-                    pid=excluded.pid, started_at=excluded.started_at,
+                    pid=excluded.pid, hostname=excluded.hostname, build_id=excluded.build_id,
+                    roles=excluded.roles, task_kinds=excluded.task_kinds,
+                    capabilities=excluded.capabilities, started_at=excluded.started_at,
                     heartbeat_at=excluded.heartbeat_at, expires_at=excluded.expires_at
                 """,
-                (instance_key, owner_token, str(worker_id), process_id, now_text, now_text, expires_at),
+                (
+                    instance_key,
+                    owner_token,
+                    str(worker_id),
+                    process_id,
+                    runtime_hostname,
+                    str(build_id).strip(),
+                    json.dumps(normalized_roles, ensure_ascii=False, separators=(",", ":")),
+                    json.dumps(normalized_task_kinds, ensure_ascii=False, separators=(",", ":")),
+                    json.dumps(normalized_capabilities, ensure_ascii=False, separators=(",", ":")),
+                    now_text,
+                    now_text,
+                    expires_at,
+                ),
             )
             database.commit()
         return WorkerInstanceLease(self, instance_key, owner_token, str(worker_id), process_id, seconds, expires_at)
+
+    def list_runtime(self, now: datetime | str | None = None) -> list[dict[str, object]]:
+        current = _utc_datetime(now or datetime.now(timezone.utc))
+        if current is None:
+            raise ValueError("invalid runtime query timestamp")
+        with closing(self.repository._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT worker_id, hostname, pid, build_id, roles, task_kinds, capabilities,
+                       started_at, heartbeat_at, expires_at
+                  FROM worker_instances
+                 ORDER BY worker_id ASC, instance_key ASC
+                """
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            heartbeat = _utc_datetime(str(row["heartbeat_at"]))
+            expiry = _utc_datetime(str(row["expires_at"]))
+            result.append(
+                {
+                    "worker_id": str(row["worker_id"]),
+                    "hostname": str(row["hostname"]),
+                    "pid": int(row["pid"]),
+                    "build_id": str(row["build_id"]),
+                    "roles": _json_values(row["roles"]),
+                    "task_kinds": _json_values(row["task_kinds"]),
+                    "capabilities": _json_values(row["capabilities"]),
+                    "started_at": str(row["started_at"]),
+                    "heartbeat_at": str(row["heartbeat_at"]),
+                    "expires_at": str(row["expires_at"]),
+                    "online": heartbeat is not None and expiry is not None and expiry > current,
+                }
+            )
+        return result
 
     def renew(self, instance_key: str, owner_token: str, lease_seconds: int = 30) -> str:
         now = datetime.now(timezone.utc)
