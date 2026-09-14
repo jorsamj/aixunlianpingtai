@@ -36,3 +36,13 @@ test('server material import view uses real counters and distinct confirmation s
   assert.equal(serverImportView({status: 'AWAITING_CONFIRMATION'}).canConfirm, true);
   assert.equal(serverImportView({status: 'RUNNING', stage: 'indexing'}).canConfirm, false);
 });
+
+test('resource-waiting storage import remains active until durable truth changes', () => {
+  const waiting = serverImportView({
+    status: 'WAITING_RESOURCE',
+    resource_queue_position: 2,
+    resource_wait_reason: 'STORAGE_WORKER_BUSY',
+  });
+  assert.equal(waiting.active, true);
+  assert.equal(waiting.terminal, false);
+});
