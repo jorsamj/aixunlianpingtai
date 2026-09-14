@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as cleaning from '../../static/modules/cleaning.js';
@@ -45,4 +46,13 @@ test('clean task view does not invent queue or progress truth', () => {
   assert.equal(view.progressText, '7/20');
   assert.equal(view.runtimeText, 'Worker worker-materials-1');
   assert.equal(view.active, true);
+});
+
+test('final clean tab consumes the clean task view and PollRegistry lifecycle', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /function cleanTaskView427\(t\)/);
+  assert.match(source, /PlatformCore\?\.cleaning\?\.cleanTaskView\?\.\(t\)/);
+  assert.match(source, /window\.PollRegistryRuntime\?\.replaceCleanTaskTimer\?\.\(\)/);
+  assert.match(source, /id="clean427TaskRows"/);
+  assert.doesNotMatch(source, /setTimeout\(\(\)=>\{if\(state\.page==='自动标注及清洗'\)renderOps427\(\)\},2200\)/);
 });
