@@ -1,0 +1,28 @@
+name: Temporary Deployment Queue Truth RED
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-deployment-queue-truth-red.yml
+
+jobs:
+  red:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend test dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Deployment durable business projection RED
+        run: python -m pytest -q tests/api/test_deployment_test_runtime.py
+      - name: Deployment final frontend queue truth RED
+        if: always()
+        run: node --test tests/frontend/deployment-runtime-source.test.mjs
