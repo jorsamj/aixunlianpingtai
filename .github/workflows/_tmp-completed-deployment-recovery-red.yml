@@ -17,6 +17,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest psutil
+        run: python -m pip install --disable-pip-version-check pytest psutil filelock pyyaml
       - name: Reproduce completed deployment recovery gap
         run: python -m pytest --noconftest -q tests/integration/test_completed_deployment_recovery.py
