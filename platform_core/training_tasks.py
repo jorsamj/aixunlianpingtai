@@ -682,6 +682,47 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
     return job
 
 
+def _completion_int(*values: Any) -> int:
+    for value in values:
+        try:
+            number = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if number >= 0:
+            return number
+    return 0
+
+
+def _training_completion_metadata(job: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
+    completed_epochs = _completion_int(progress.get("epoch"), job.get("current_epoch"))
+    requested_epochs = _completion_int(
+        progress.get("total_epochs"), job.get("total_epochs"), job.get("epochs"), payload.get("epochs")
+    )
+    outcome = str(job.get("training_outcome") or "completed").strip() or "completed"
+    report = job.get("training_report") if isinstance(job.get("training_report"), dict) else {}
+    quality_gate_reason = str(job.get("quality_gate_reason") or report.get("quality_gate_reason") or "").strip()
+    if outcome == "target_reached":
+        completion_reason = "quality_target_reached"
+    elif outcome == "needs_optimization":
+        completion_reason = "quality_gate_below_continue_threshold"
+    elif completed_epochs > 0 and requested_epochs > 0 and completed_epochs < requested_epochs:
+        completion_reason = "early_stopping"
+    elif completed_epochs > 0 and requested_epochs > 0:
+        completion_reason = "requested_epochs_completed"
+    else:
+        completion_reason = "completed"
+    return {
+        "completed_epochs": completed_epochs,
+        "requested_epochs": requested_epochs,
+        "training_outcome": outcome,
+        "completion_reason": completion_reason,
+        "quality_gate_reason": quality_gate_reason or None,
+        "training_finished_at": job.get("finished_at"),
+        "training_message": job.get("message"),
+    }
+
+
 class TrainingHandler:
     def __init__(
         self,
@@ -700,6 +741,118 @@ class TrainingHandler:
             if not path.is_file() or path.stat().st_size <= 0 or _sha256(path) != model.get("sha256"):
                 return None
         return "result.json"
+
+    def _finalize_completed_job(self, context, payload: Mapping[str, Any], project: Path, job: Mapping[str, Any]):
+        if str(job.get("status") or "").lower() != "done":
+            raise RuntimeError("training recovery requires a terminal project job")
+        if job.get("artifact_verified") is not True:
+            raise RuntimeError("training reported done but model verification was not completed")
+        job_task_id = str(job.get("task_id") or job.get("id") or "").strip()
+        if job_task_id and job_task_id != context.task.task_id:
+            raise RuntimeError("completed training job belongs to a different task")
+
+        snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
+        if not isinstance(snapshot, dict) or not str(snapshot.get("snapshot_id") or ""):
+            raise RuntimeError("completed training is missing its durable dataset snapshot")
+        snapshot_id = str(snapshot["snapshot_id"])
+        if job.get("snapshot_id") and str(job.get("snapshot_id")) != snapshot_id:
+            raise RuntimeError("completed training snapshot does not match durable task snapshot")
+        manifest_ref = "work/bundle/manifest.json"
+        verification = verify_portable_dataset(context.artifacts.artifact_path(context.task.task_id, manifest_ref))
+        if str(verification.get("snapshot_id") or "") != snapshot_id:
+            raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
+
+        algorithms_path = project / "algorithms.json"
+        algorithms = list_algorithms(algorithms_path)
+        algorithm_id = str(job.get("asset_algorithm_id") or payload.get("algorithm_asset_id") or "")
+        algorithm = next((row for row in algorithms if str(row.get("id")) == algorithm_id), None)
+        if algorithm is None:
+            raise RuntimeError("completed training algorithm no longer exists")
+
+        source_values = list(job.get("verified_models") or [])
+        if not source_values:
+            raise RuntimeError("training reported done without verified model paths")
+        models_root = (project / "models").resolve()
+        verified_models = []
+        for index, source_value in enumerate(source_values):
+            source = Path(str(source_value)).resolve()
+            try:
+                source.relative_to(models_root)
+            except ValueError as error:
+                raise RuntimeError("completed training model is outside the project model directory") from error
+            if not source.is_file() or source.stat().st_size <= 0:
+                raise RuntimeError(f"verified training model is missing: {source.name}")
+            ref = f"outputs/{index:02d}_{source.name}"
+            destination = context.artifacts.artifact_path(context.task.task_id, ref)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            verified_models.append({
+                "ref": ref,
+                "sha256": _sha256(destination),
+                "size_bytes": destination.stat().st_size,
+            })
+        if not verified_models:
+            raise RuntimeError("training recovery found no deliverable model")
+
+        training_report = job.get("training_report") if isinstance(job.get("training_report"), dict) else {}
+        partial = (training_report.get("test_result") or {}).get("status") == "failed"
+        final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
+        requested = snapshot.get("requested") if isinstance(snapshot.get("requested"), dict) else {}
+        result = {
+            "schema_version": 1,
+            "requested_device": job.get("requested_device") or payload.get("requested_device") or payload.get("device"),
+            "assigned_device": job.get("assigned_device"),
+            "actual_device": job.get("actual_device"),
+            "device_evidence": job.get("device_evidence"),
+            "device_validation": job.get("device_validation") or {},
+            "actual_train_params": job.get("actual_train_params"),
+            **_training_completion_metadata(job, payload),
+            "snapshot_id": snapshot_id,
+            "snapshot_ref": "snapshot.json",
+            "dataset_manifest_ref": manifest_ref,
+            "counts": snapshot.get("counts") or {},
+            "actual_ratios": snapshot.get("actual_ratios") or {},
+            "test_source": requested.get("test_source"),
+            "test_seed": snapshot.get("test_seed"),
+            "validation_seed": snapshot.get("validation_seed"),
+            "base_version_id": job.get("base_version_id"),
+            "base_version_name": job.get("base_version_name"),
+            "base_selection_reason": job.get("base_selection_reason"),
+            "verified_models": verified_models,
+            "training_report": training_report,
+            "dataset_verification": verification,
+            "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
+            "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
+            "recovered_from_completed_job": True,
+        }
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        existing = next(
+            (version for version in algorithm.get("versions") or [] if version.get("task_id") == context.task.task_id),
+            None,
+        )
+        if existing is None:
+            primary = context.artifacts.artifact_path(context.task.task_id, verified_models[0]["ref"])
+            attach_version(
+                algorithms_path,
+                str(algorithm.get("id")),
+                {
+                    "id": uuid.uuid4().hex[:12],
+                    "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+                    "stored_path": str(primary),
+                    "model_name": primary.name,
+                    "training_status": final_status.value,
+                    "artifact_verified": True,
+                    "trainable": True,
+                    "framework": "ultralytics",
+                    "snapshot_id": snapshot_id,
+                    "result_ref": "result.json",
+                    "task_id": context.task.task_id,
+                    "job_id": context.task.task_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot_id, "result_ref": "result.json"})
+        return final_status, "result.json"
 
     def run(self, context):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
@@ -884,6 +1037,7 @@ class TrainingHandler:
             "device_evidence": job.get("device_evidence"),
             "device_validation": device_evidence,
             "actual_train_params": job.get("actual_train_params"),
+            **_training_completion_metadata(job, payload),
             "snapshot_id": snapshot["snapshot_id"],
             "snapshot_ref": "snapshot.json",
             "dataset_manifest_ref": "work/bundle/manifest.json",
@@ -936,6 +1090,13 @@ class TrainingHandler:
             result = context.artifacts.read_json(context.task.task_id, committed, default={})
             partial = ((result.get("training_report") or {}).get("test_result") or {}).get("status") == "failed"
             return (TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED), committed
+        project = self.data_dir / "projects" / context.task.project_id
+        job = _json(project / "jobs" / context.task.task_id / "job.json", {})
+        if isinstance(job, dict) and str(job.get("status") or "").lower() == "done":
+            payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+            if not isinstance(payload, dict):
+                raise RuntimeError("completed training task payload is invalid")
+            return self._finalize_completed_job(context, payload, project, job)
         return self.run(context)
 
 

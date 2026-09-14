@@ -121,6 +121,19 @@ function workerRuntimeMeta(job) {
   return worker ? `执行节点 ${worker}` : '';
 }
 
+function completionRuntimeMeta(job, progress) {
+  if (!['done', 'finished', 'completed'].includes(String(job?.status || ''))) return '';
+  const completed = finiteNumber(progress?.epoch);
+  const requested = finiteNumber(progress?.totalEpochs);
+  if (!(completed > 0 && requested > 0 && completed < requested)) return '';
+  const outcome = String(job?.training_outcome || '').trim();
+  const reason = String(job?.completion_reason || '').trim();
+  if (outcome === 'target_reached' || reason === 'quality_target_reached') return '达到质量目标，提前完成';
+  if (outcome === 'needs_optimization' || reason === 'quality_gate_below_continue_threshold') return '提前结束（需继续优化）';
+  if (reason === 'early_stopping') return 'Early Stopping，提前完成';
+  return '提前完成';
+}
+
 function actions(job) {
   const id = esc(job.id);
   if (job.status === 'queued') return `<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
@@ -135,8 +148,9 @@ export function trainingTaskRow(job) {
   const totalEpochs = progress.totalEpochs ?? '-';
   const queueMeta = queueRuntimeMeta(job);
   const workerMeta = workerRuntimeMeta(job);
+  const completionMeta = completionRuntimeMeta(job, progress);
   const currentItem = job.current_item && String(job.current_item) !== String(progress.epoch) ? ` · ${esc(job.current_item)}` : '';
-  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(job.status)}">${esc(statusText(job.status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${progress.epoch}/${esc(totalEpochs)} · ${percent.toFixed(0)}%${currentItem}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td>${esc(duration(progress.elapsedSeconds))}</td><td>${esc(duration(progress.etaSeconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
+  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(job.status)}">${esc(statusText(job.status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${completionMeta ? `${esc(completionMeta)} · ` : ''}${progress.epoch}/${esc(totalEpochs)} · ${percent.toFixed(0)}%${currentItem}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td>${esc(duration(progress.elapsedSeconds))}</td><td>${esc(duration(progress.etaSeconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
 }
 
 export function visibleTrainingJobs(jobs, tab = 'active') {

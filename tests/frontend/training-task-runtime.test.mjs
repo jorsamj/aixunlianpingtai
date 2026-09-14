@@ -271,3 +271,21 @@ test('training row exposes real queue wait position reason and worker without a 
     if (previousDocument !== undefined) globalThis.document = previousDocument;
   });
 });
+
+test('completed training below requested epochs is shown as early completion instead of stuck running', async () => {
+  const {trainingTaskRow} = await import('../../static/modules/training-task-runtime.js');
+  const html = trainingTaskRow({
+    id: 'done-180',
+    status: 'done',
+    current_epoch: 180,
+    total_epochs: 300,
+    progress_percent: 100,
+    training_outcome: 'completed',
+    completion_reason: 'early_stopping',
+    framework: 'ultralytics',
+  });
+  assert.match(html, /已完成/);
+  assert.match(html, /Early Stopping，提前完成/);
+  assert.match(html, /180\/300 · 100%/);
+  assert.doesNotMatch(html, /训练中/);
+});
