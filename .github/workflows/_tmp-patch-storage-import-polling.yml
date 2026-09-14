@@ -6,6 +6,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - .github/workflows/_tmp-patch-storage-import-polling.yml
+      - .github/scripts/_tmp_patch_storage_import_polling.py
 
 permissions:
   contents: write
