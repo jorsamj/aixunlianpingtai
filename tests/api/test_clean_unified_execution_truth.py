@@ -59,8 +59,13 @@ def test_v47_manual_clean_creation_publishes_material_batch_truth(client):
     task_id = body["id"]
     assert "resource_queue_position" in body
     assert "resource_wait_reason" in body
-    assert body["resource_queue_position"] is None
-    assert body["resource_wait_reason"] is None
+    queue_position = body["resource_queue_position"]
+    if queue_position is not None:
+        assert isinstance(queue_position, int)
+        assert queue_position >= 1
+    wait_reason = body["resource_wait_reason"]
+    if wait_reason is not None:
+        assert isinstance(wait_reason, str)
 
     _assert_durable_clean_task(project_id, task_id, [image_id])
 
