@@ -100,7 +100,7 @@ test('start payload is derived from canonical TrainingDraft instead of legacy id
   assert.equal(payload.device, '0');
   assert.equal(payload.batch, 16);
   assert.equal(payload.workers, 4);
-  assert.equal(payload.cache, false);
+  assert.equal(payload.cache, 'False');
   assert.equal(payload.model, 'custom.pt');
 });
 
@@ -181,6 +181,7 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   assert.deepEqual(sent.train_image_ids, ['img-1', 'img-2']);
   assert.deepEqual(sent.train_labels, ['fire']);
   assert.equal(sent.queue_priority, 7);
+  assert.equal(sent.cache, 'False');
   assert.equal(reloaded, 1);
   assert.equal(rendered, 1);
   assert.equal(closed, 1);

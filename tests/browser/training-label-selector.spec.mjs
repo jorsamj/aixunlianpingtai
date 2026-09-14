@@ -224,7 +224,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.epochs).toBe(30);
   expect(submitted.batch).toBe(16);
   expect(submitted.workers).toBe(4);
-  expect(submitted.cache).toBe(false);
+  expect(submitted.cache).toBe('False');
   expect(submitted.optimizer).toBe('AdamW');
   expect(submitted.framework).toBe('ultralytics');
   expect(submitted.algorithm).toBe('yolo_detect');

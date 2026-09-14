@@ -7,6 +7,16 @@ function numberOr(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function trainingCacheRequestValue(value) {
+  if (value === true) return 'True';
+  if (value === false || value === null || value === undefined || value === '') return 'False';
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return 'True';
+  if (['false', '0', 'no', 'off', 'none'].includes(normalized)) return 'False';
+  if (normalized === 'ram' || normalized === 'disk') return normalized;
+  throw new Error('Cache 只支持 False / True / ram / disk');
+}
+
 function successfulVersion(version) {
   const status = String(version?.training_status || '').trim().toUpperCase();
   return ['SUCCEEDED', 'PARTIAL_SUCCESS', 'DONE', 'FINISHED', 'COMPLETED'].includes(status)
@@ -121,5 +131,6 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   if (normalized.resource.batch != null) request.batch = normalized.resource.batch;
   if (normalized.resource.workers != null) request.workers = normalized.resource.workers;
   if (normalized.resource.cache != null) request.cache = normalized.resource.cache;
+  if (Object.hasOwn(request, 'cache')) request.cache = trainingCacheRequestValue(request.cache);
   return request;
 }

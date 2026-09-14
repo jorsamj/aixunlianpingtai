@@ -5171,7 +5171,10 @@ class TrainReq(BaseModel):
         if isinstance(value, dict) and (value.get("train_dataset_ids") or value.get("test_dataset_ids")):
             raise ValueError("训练任务只按素材 image_id 选择，不能提交数据集分组")
         if isinstance(value, dict):
-            value = {**value, "device": normalize_training_device(value.get("device", "auto"))}
+            value = dict(value)
+            if isinstance(value.get("cache"), bool):
+                value["cache"] = "True" if value["cache"] else "False"
+            value["device"] = normalize_training_device(value.get("device", "auto"))
         return value
 
     framework: str = "ultralytics"  # ultralytics / paddle

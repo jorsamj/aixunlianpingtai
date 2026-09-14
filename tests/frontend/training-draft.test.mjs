@@ -87,9 +87,17 @@ test('request uses new labels for the task while inherited labels remain in effe
   assert.deepEqual(request.train_labels, ['person']);
   assert.equal(request.batch, 16);
   assert.equal(request.workers, 4);
-  assert.equal(request.cache, false);
+  assert.equal(request.cache, 'False');
   assert.equal(request.queue_priority, 30);
   assert.equal('priority' in request, false);
+});
+
+test('request serializes cache into the backend string contract', () => {
+  const base = {algorithmId: 'alg-1', materialIds: ['a', 'b'], newLabelCodes: ['fire']};
+  for (const [cache, expected] of [[false, 'False'], [true, 'True'], ['False', 'False'], ['True', 'True'], ['ram', 'ram'], ['disk', 'disk']]) {
+    const request = trainingDraftToRequest(createTrainingDraft({...base, resource: {cache}}));
+    assert.equal(request.cache, expected);
+  }
 });
 
 test('legacy inherited schema pending allows backend snapshot recovery without frontend guessing', () => {
