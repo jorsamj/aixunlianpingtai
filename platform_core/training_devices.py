@@ -21,6 +21,26 @@ def normalize_training_device(value: Any = "auto") -> str:
     raise ValueError("device must be auto, cpu, or cuda:N (legacy numeric GPU indices are accepted)")
 
 
+def resolve_direct_training_assignment(
+    value: Any,
+    *,
+    cuda_available: bool,
+    cuda_devices: int,
+) -> tuple[str, str]:
+    """Resolve a direct/legacy training request into the explicit worker device contract."""
+    requested = normalize_training_device(value)
+    count = max(0, int(cuda_devices or 0))
+    if requested == "auto":
+        assigned = "cuda:0" if bool(cuda_available) and count > 0 else "cpu"
+    else:
+        assigned = requested
+    if assigned.startswith("cuda:"):
+        index = int(assigned[5:])
+        if not bool(cuda_available) or index >= count:
+            raise ValueError(f"requested CUDA device is unavailable: {assigned}")
+    return requested, assigned
+
+
 def training_python(data_dir: str | Path) -> str:
     path = Path(data_dir) / "ultralytics_env.json"
     try:

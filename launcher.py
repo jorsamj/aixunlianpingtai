@@ -14,8 +14,10 @@ import webbrowser
 from pathlib import Path
 
 from platform_core.runtime_paths import resolve_data_dir
+from platform_core.build_identity import resolve_build_id, service_matches_build
 
 BASE_DIR = Path(__file__).resolve().parent
+BUILD_ID = resolve_build_id(BASE_DIR)
 def _read_platform_version() -> str:
     vf = BASE_DIR / "VERSION.txt"
     try:
@@ -477,18 +479,23 @@ def ensure_runtime() -> Path:
 def main():
     say("===============================================")
     say(f"Changlian Cloud Algorithm Training v{VERSION}")
+    say(f"Build: {BUILD_ID[:16]}")
     say("===============================================")
     say()
 
     url = f"http://127.0.0.1:{PORT}"
     if port_open(PORT):
-        ver, _ = get_version(url)
-        if ver == VERSION:
-            say(f"[INFO] v{VERSION} 已在运行：{url}")
+        ver, info = get_version(url)
+        if service_matches_build(VERSION, BUILD_ID, ver, info):
+            say(f"[INFO] v{VERSION} / Build {BUILD_ID[:16]} 已在运行：{url}")
             wait_bootstrap(url, proc=None)
-            webbrowser.open(url + f"/?v={VERSION}")
+            webbrowser.open(url + f"/?v={VERSION}-{BUILD_ID[:12]}")
             return 0
-        if ver:
+        if ver == VERSION:
+            remote_build = str((info or {}).get("build_id") or "legacy/unknown")
+            say(f"[ERROR] 端口 {PORT} 上虽然也是 v{VERSION}，但运行的是不同 Build：{remote_build[:32]}。")
+            say("请先停止旧进程再启动当前代码，避免误以为新修复已经生效。")
+        elif ver:
             say(f"[ERROR] 端口 {PORT} 正被旧平台 v{ver} 占用。")
             say("请关闭旧版启动窗口后重新运行本版本，避免浏览器看到旧界面。")
         else:
@@ -500,6 +507,7 @@ def main():
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["MC_PLATFORM_VERSION"] = VERSION
+    env["MC_BUILD_REVISION"] = BUILD_ID
 
     say(f"[4/5] 启动服务：{url}")
     say("转换入口：左侧菜单 → 部署中心 → 部署转换")
@@ -508,11 +516,11 @@ def main():
         deadline = time.time() + 35
         mismatch_seen = 0
         while time.time() < deadline:
-            ver, _ = get_version(url, timeout=1.0)
-            if ver == VERSION:
-                say(f"[OK] 服务已启动：{url}")
+            ver, info = get_version(url, timeout=1.0)
+            if service_matches_build(VERSION, BUILD_ID, ver, info):
+                say(f"[OK] 服务已启动：{url} · Build {BUILD_ID[:16]}")
                 wait_bootstrap(url, proc=proc)
-                webbrowser.open(url + f"/?v={VERSION}")
+                webbrowser.open(url + f"/?v={VERSION}-{BUILD_ID[:12]}")
                 break
             if ver:
                 mismatch_seen += 1

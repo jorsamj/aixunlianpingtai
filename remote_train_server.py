@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
+from platform_core.training_devices import resolve_direct_training_assignment
+
 BASE_DIR = Path(__file__).resolve().parent
 REMOTE_DIR = Path(os.environ.get("MC_REMOTE_DATA_DIR") or (BASE_DIR / "remote_data")).expanduser().resolve()
 JOBS_DIR = REMOTE_DIR / "jobs"
@@ -154,6 +156,14 @@ async def remote_train(
     rt = training_runtime_info()
     if not rt.get("ok"):
         raise HTTPException(status_code=400, detail="远程训练 Python 不可用：" + str(rt.get("error") or "未知错误"))
+    try:
+        requested_device, assigned_device = resolve_direct_training_assignment(
+            device,
+            cuda_available=bool(rt.get("cuda")),
+            cuda_devices=int(rt.get("cuda_devices") or 0),
+        )
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=f"训练设备不可用：{error}") from error
     if model_file is not None and model_file.filename:
         model_dir = job_dir / "input_model"
         model_dir.mkdir(exist_ok=True)
@@ -172,7 +182,9 @@ async def remote_train(
         "epochs": int(epochs),
         "imgsz": int(imgsz),
         "batch": int(batch),
-        "device": device,
+        "device": assigned_device,
+        "requested_device": requested_device,
+        "assigned_device": assigned_device,
         "run_name": run_name,
         "advanced_params": {"patience":patience,"workers":workers,"optimizer":optimizer,"lr0":lr0,"lrf":lrf,"weight_decay":weight_decay,"close_mosaic":close_mosaic,"mosaic":mosaic,"cache":cache,"single_cls":single_cls,"pretrained":pretrained,"rect":rect,"amp":amp,"cos_lr":cos_lr,"freeze":freeze},
         "quality_gate": {"eval_interval":int(eval_interval),"metric":eval_metric,"continue_threshold":float(continue_threshold),"stop_threshold":float(stop_threshold),"stage_eval_samples":int(val_max_samples)},
@@ -192,7 +204,9 @@ async def remote_train(
         "--epochs", str(max(1, int(epochs))),
         "--imgsz", str(max(128, int(imgsz))),
         "--batch", str(int(batch)),
-        "--device", device,
+        "--device", assigned_device,
+        "--assigned-device", assigned_device,
+        "--requested-device", requested_device,
         "--job-id", job_id, "--run-name", run_name,
         "--patience", str(patience), "--workers", str(workers), "--optimizer", optimizer or "auto",
         "--lr0", str(lr0), "--lrf", str(lrf), "--weight-decay", str(weight_decay),

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 import uuid
+from pathlib import Path
 
 from platform_core.runtime_paths import resolve_data_dir
+from platform_core.build_identity import resolve_build_id
+from platform_core.upgrade_guard import ensure_worker_build_compatible, write_worker_build_marker
 from platform_core.task_runtime import (
     ArtifactStore,
     DuplicateWorkerInstance,
@@ -37,6 +41,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     data_dir = resolve_data_dir(args.data_dir)
+    build_id = resolve_build_id(Path(__file__).resolve().parent)
+    if not args.check:
+        try:
+            ensure_worker_build_compatible(
+                data_dir,
+                build_id,
+                allow_active_upgrade=os.environ.get("MC_ALLOW_ACTIVE_TASK_UPGRADE", "").strip() == "1",
+            )
+        except RuntimeError as error:
+            print(f"Worker 启动被升级保护拒绝：{error}", file=sys.stderr)
+            return 4
     runtime_dir = data_dir / "task_runtime"
     repository = FencedTaskRepository(runtime_dir / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime_dir / "artifacts")
@@ -71,6 +86,7 @@ def main(argv=None) -> int:
                     "training_slot": args.training_slot or "default",
                     "worker_slot": instance_slot,
                     "execution_fencing": True,
+                    "build_id": build_id,
                 },
                 ensure_ascii=False,
             )
@@ -94,6 +110,7 @@ def main(argv=None) -> int:
         return 3
 
     try:
+        write_worker_build_marker(data_dir, build_id)
         scheduler = Scheduler(
             repository,
             artifacts,

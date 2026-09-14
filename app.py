@@ -46,6 +46,7 @@ from platform_core.annotation_candidates import CandidateDecision, CandidateStor
 from platform_core.annotation_task_service import commit_candidate_decisions
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
+from platform_core.build_identity import resolve_build_id
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
@@ -114,6 +115,7 @@ from platform_core.material_batches import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+BUILD_ID = resolve_build_id(BASE_DIR)
 def _read_app_version() -> str:
     env_v = os.environ.get("MC_PLATFORM_VERSION", "").strip()
     if env_v:
@@ -265,6 +267,7 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
 def system_version():
     return {
         "version": APP_VERSION,
+        "build_id": BUILD_ID,
         "name": "畅联云算法训练",
         "data_dir": str(DATA_DIR),
         "base_dir": str(BASE_DIR),
