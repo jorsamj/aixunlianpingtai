@@ -26,4 +26,4 @@ jobs:
       - name: Deployment final frontend queue truth RED
         if: always()
         run: node --test tests/frontend/deployment-runtime-source.test.mjs
-      # Corrected RED targets the existing PlatformCore.taskPoller owner.
+      # RED targets existing taskPoller and accepts dynamic durable queue position.
