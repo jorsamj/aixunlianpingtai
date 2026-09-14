@@ -1,0 +1,58 @@
+name: Temporary Patch Training Terminal Truth
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-patch-training-terminal-truth.yml
+      - .github/scripts/_tmp_patch_training_terminal_truth.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-green:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Apply product patch
+        run: python .github/scripts/_tmp_patch_training_terminal_truth.py
+      - name: Syntax and diff guard
+        run: |
+          python -m py_compile app.py train_worker.py platform_core/training_tasks.py
+          node --check static/modules/training-task-runtime.js
+          git diff --check
+      - name: Training terminal GREEN contracts
+        run: |
+          python -m pytest --noconftest -q tests/api/test_training_terminal_runtime.py
+          python -m pytest --noconftest -q tests/unit/test_training_early_stopping_reason.py
+          node --test tests/frontend/training-terminal-completion.test.mjs
+      - name: Existing training business regression
+        run: |
+          python -m pytest --noconftest -q tests/unit/test_training_realtime_progress.py tests/unit/test_training_progress_v2.py
+          node --test tests/frontend/training-task-runtime.test.mjs
+      - name: Version guard
+        run: test "$(cat VERSION.txt)" = "42.24.0"
+      - name: Commit product fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py train_worker.py platform_core/training_tasks.py static/modules/training-task-runtime.js
+          git diff --cached --quiet && exit 1
+          git commit -m "fix(training): preserve terminal epoch and stop reason"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
