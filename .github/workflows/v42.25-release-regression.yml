@@ -27,6 +27,7 @@ on:
       - platform_core/task_runtime/public.py
       - platform_core/task_runtime/worker_instances.py
       - platform_core/training_metrics.py
+      - platform_core/training_evaluation.py
       - platform_core/training_tasks.py
       - platform_core/video_tasks.py
       - tests/api/test_durable_training_controls.py
@@ -61,9 +62,12 @@ on:
       - tests/unit/test_gpu_resource_connection_lifecycle.py
       - tests/unit/test_material_batch_public_truth.py
       - tests/unit/test_training_ai_continuation_progress.py
+      - tests/unit/test_training_blind_test_contract.py
+      - tests/unit/test_training_evaluation.py
       - tests/unit/test_training_progress_v2.py
       - tests/unit/test_training_realtime_progress.py
       - tests/unit/test_training_resource_contract.py
+      - tests/unit/test_portable_dataset.py
       - tests/unit/test_video_commit_fencing.py
       - tests/unit/task_runtime/test_connection_lifecycle.py
       - tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
@@ -92,6 +96,7 @@ on:
 # Storage-progress guard: confirmation is partial progress, resume never regresses, and indexing advances 50..99 before success=100.
 # Storage-browser guard: confirmation must follow v62 durable task truth through terminal success while preserving narrow refresh scope.
 # Training-progress guard: preparation owns 0..20, active training advances 20..90 with throttled per-batch durable truth.
+# Training blind-test guard: independent test GT stays outside Ultralytics labels/data.yaml; all image-only predictions finish before hidden GT scoring begins.
 # AI-continuation progress guard: a new continuation YOLO instance must rebind epoch/batch/resource callbacks and advance cumulative epoch truth through 90..95.
 # Release-path guard: every explicit tests/*.py reference in this workflow must exist on the checked-out head.
 jobs:
@@ -204,6 +209,8 @@ jobs:
           tests/unit/test_training_components.py
           tests/unit/test_snapshots.py
           tests/unit/test_portable_dataset.py
+          tests/unit/test_training_blind_test_contract.py
+          tests/unit/test_training_evaluation.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_launcher_workers.py
           tests/unit/test_a800_rc_acceptance.py
