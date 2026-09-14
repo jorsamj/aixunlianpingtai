@@ -36,12 +36,14 @@
 ### Task 3: Wire actual worker registration and expose the query API
 
 **Files:**
+- Modify: `platform_core/worker_registry.py`
 - Modify: `task_worker.py`
 - Modify: `app.py`
 
-1. Pass the running worker's resolved build ID, hostname, expanded roles, registered handler task kinds, and registered capabilities into the existing lease acquisition.
-2. Add a read-only endpoint at `GET /api/v62/workers` backed by `WorkerInstanceService.list_runtime()`.
-3. Run the focused unit/API tests.
+1. Have the existing worker registry report which requested role modules actually loaded while keeping its existing two-value helper compatible.
+2. Pass the running worker's resolved build ID, hostname, actually registered roles, registered handler task kinds, and registered capabilities into the existing lease acquisition.
+3. Add a read-only endpoint at `GET /api/v62/workers` backed by `WorkerInstanceService.list_runtime()`.
+4. Run the focused unit/API tests.
 
 ### Task 4: Close the batch and verify only affected surfaces
 

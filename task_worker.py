@@ -20,7 +20,7 @@ from platform_core.task_runtime import (
 )
 from platform_core.gpu_resources import GPUResourceManager
 from platform_core.training_devices import training_python
-from platform_core.worker_registry import ROLE_MODULES, build_worker_registration
+from platform_core.worker_registry import resolve_worker_registration
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,9 +66,11 @@ def main(argv=None) -> int:
     if args.training_slot is not None and (roles != {"training"} or not args.training_slot.strip() or args.training_slot == "default"):
         print("--training-slot requires --roles training and a non-default, non-empty slot name", file=sys.stderr)
         return 2
-    handlers, capabilities = build_worker_registration(data_dir, roles)
+    registration = resolve_worker_registration(data_dir, roles)
+    handlers = registration.handlers
+    capabilities = registration.capabilities
     worker_id = args.worker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-    instance_roles = sorted(set(ROLE_MODULES) if "all" in roles else roles)
+    instance_roles = sorted(registration.roles)
     instance_slot = worker_slot if args.allow_parallel else "default"
 
     if args.check:
@@ -79,7 +81,7 @@ def main(argv=None) -> int:
                     "data_dir": str(data_dir),
                     "database": str(repository.path),
                     "artifact_dir": str(artifacts.root),
-                    "roles": sorted(set(ROLE_MODULES) if "all" in roles else roles),
+                    "roles": instance_roles,
                     "handlers": sorted(kind.value for kind in handlers),
                     "capabilities": sorted(capabilities),
                     "web_imported": "app" in sys.modules,
