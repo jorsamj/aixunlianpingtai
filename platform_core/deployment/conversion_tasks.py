@@ -20,6 +20,14 @@ ENVIRONMENT_ERROR_CODES = {
     "TENSORRT_NOT_FOUND", "ATC_NOT_FOUND", "RKNN_TOOLKIT_NOT_FOUND",
     "ONNX_VALIDATION_FAILED",
 }
+TERMINAL_CONVERSION_STATUSES = {
+    "done",
+    "failed",
+    "stopped",
+    "cancelled",
+    "blocked_by_hardware",
+    "blocked_by_environment",
+}
 
 
 def _read(path: Path) -> dict:
@@ -34,15 +42,67 @@ def _write(path: Path, value: dict) -> None:
 
 
 def conversion_outcome(job: dict) -> TaskStatus:
-    if str(job.get("status")) == "done":
+    job_status = str(job.get("status") or "").strip().lower()
+    if job_status == "blocked_by_hardware":
+        return TaskStatus.BLOCKED_BY_HARDWARE
+    if job_status == "blocked_by_environment":
+        return TaskStatus.BLOCKED_BY_ENVIRONMENT
+    if job_status == "done":
         if str(job.get("target")) in VENDOR_TARGETS and not bool(job.get("hardware_verified")):
             return TaskStatus.BLOCKED_BY_HARDWARE
         return TaskStatus.SUCCEEDED
-    if str(job.get("status")) in {"stopped", "cancelled"}:
+    if job_status in {"stopped", "cancelled"}:
         return TaskStatus.CANCELLED
     if str(job.get("error_code")) in ENVIRONMENT_ERROR_CODES:
         return TaskStatus.BLOCKED_BY_ENVIRONMENT
     return TaskStatus.FAILED
+
+
+def _finalize_conversion_job(
+    context,
+    job_file: Path,
+    job: dict,
+    *,
+    recovered_from_completed_work: bool,
+) -> tuple[TaskStatus, str]:
+    status = conversion_outcome(job)
+    if status is TaskStatus.BLOCKED_BY_HARDWARE and str(job.get("status") or "").lower() != "blocked_by_hardware":
+        job.update({
+            "status": "blocked_by_hardware",
+            "conversion_status": "converted",
+            "stage": "等待目标硬件验证",
+            "message": "转换产物已生成，但当前环境无法用目标 Runtime/芯片真实加载，不能标记为通过。",
+            "hardware_verified": False,
+        })
+    if status is TaskStatus.BLOCKED_BY_ENVIRONMENT and str(job.get("status") or "").lower() == "failed":
+        job["conversion_status"] = job.get("conversion_status") or "blocked_by_environment"
+
+    context.assert_current_execution()
+    _write(job_file, job)
+    result = {
+        "job_id": job.get("id"),
+        "status": job.get("status"),
+        "target": job.get("target"),
+        "exit_code": job.get("exit_code"),
+        "duration_seconds": job.get("duration_seconds"),
+        "manifest_path": job.get("manifest_path"),
+        "outputs": job.get("outputs") or [],
+        "error": job.get("error") or "",
+        "error_code": job.get("error_code") or "",
+        "hardware_verified": bool(job.get("hardware_verified")),
+        "recovered_from_completed_work": bool(recovered_from_completed_work),
+    }
+    result_ref = "conversion/result.json"
+    context.artifacts.atomic_write_json(context.task.task_id, result_ref, result)
+    progress = float(job.get("progress") or 0)
+    if status in {TaskStatus.SUCCEEDED, TaskStatus.BLOCKED_BY_HARDWARE}:
+        progress = 100.0
+    context.heartbeat(
+        progress=progress,
+        stage=str(job.get("stage") or ("RECOVERED" if recovered_from_completed_work else "FINISHED")),
+        current_item=str(job.get("source_name") or ""),
+    )
+    return status, result_ref
 
 
 def run_conversion(context) -> tuple[TaskStatus, str]:
@@ -100,26 +160,12 @@ def run_conversion(context) -> tuple[TaskStatus, str]:
         "worker_command": command,
         "stdout_path": str(stdout_path),
     })
-    status = conversion_outcome(job)
-    if status is TaskStatus.BLOCKED_BY_HARDWARE:
-        job.update({
-            "status": "blocked_by_hardware", "conversion_status": "converted",
-            "stage": "等待目标硬件验证",
-            "message": "转换产物已生成，但当前环境无法用目标 Runtime/芯片真实加载，不能标记为通过。",
-            "hardware_verified": False,
-        })
-    context.assert_current_execution()
-    _write(job_file, job)
-    result = {
-        "job_id": job.get("id"), "status": job.get("status"), "target": job.get("target"),
-        "exit_code": job.get("exit_code"), "duration_seconds": job.get("duration_seconds"),
-        "manifest_path": job.get("manifest_path"), "outputs": job.get("outputs") or [],
-        "error": job.get("error") or "", "error_code": job.get("error_code") or "",
-        "hardware_verified": bool(job.get("hardware_verified")),
-    }
-    result_ref = "conversion/result.json"
-    context.artifacts.atomic_write_json(context.task.task_id, result_ref, result)
-    return status, result_ref
+    return _finalize_conversion_job(
+        context,
+        job_file,
+        job,
+        recovered_from_completed_work=False,
+    )
 
 
 class ConversionHandler:
@@ -127,6 +173,17 @@ class ConversionHandler:
         return run_conversion(context)
 
     def recover(self, context):
+        request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+        job_dir = Path(str(request.get("job_dir") or "")).resolve()
+        job_file = job_dir / "job.json"
+        job = _read(job_file) if job_file.is_file() else {}
+        if str(job.get("status") or "").strip().lower() in TERMINAL_CONVERSION_STATUSES:
+            return _finalize_conversion_job(
+                context,
+                job_file,
+                job,
+                recovered_from_completed_work=True,
+            )
         return run_conversion(context)
 
 
