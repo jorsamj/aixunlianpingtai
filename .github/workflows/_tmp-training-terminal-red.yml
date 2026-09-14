@@ -27,10 +27,24 @@ jobs:
           python -m pip install --disable-pip-version-check
           pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
-      - name: Terminal backend contracts
-        run: python -m pytest --noconftest -q tests/api/test_training_terminal_runtime.py tests/unit/test_training_early_stopping_reason.py
-      - name: Terminal frontend contract
+      - name: Terminal elapsed and durable-state RED
+        id: runtime
+        continue-on-error: true
+        run: python -m pytest --noconftest -q tests/api/test_training_terminal_runtime.py
+      - name: Explicit patience stop-reason RED
+        id: reason
+        continue-on-error: true
+        run: python -m pytest --noconftest -q tests/unit/test_training_early_stopping_reason.py
+      - name: Terminal frontend RED
+        id: frontend
+        continue-on-error: true
         run: node --test tests/frontend/training-terminal-completion.test.mjs
+      - name: Confirm RED coverage
+        run: |
+          echo "runtime=${{ steps.runtime.outcome }} reason=${{ steps.reason.outcome }} frontend=${{ steps.frontend.outcome }}"
+          test "${{ steps.runtime.outcome }}" = "failure"
+          test "${{ steps.reason.outcome }}" = "failure"
+          test "${{ steps.frontend.outcome }}" = "failure"
       - name: Version guard
         if: always()
         run: test "$(cat VERSION.txt)" = "42.24.0"
