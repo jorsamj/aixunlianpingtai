@@ -1,0 +1,43 @@
+name: Temporary Finalize Training Blind Test
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-finalize-training-blind-test.yml
+      - .github/scripts/_tmp_finalize_training_blind_test.py
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Permanently wire release guard
+        run: python .github/scripts/_tmp_finalize_training_blind_test.py
+      - name: Version guard
+        run: test "$(cat VERSION.txt)" = "42.24.0"
+      - name: Remove temporary assets and commit clean head
+        run: |
+          git config user.name "jorsamj"
+          git config user.email "50445927+jorsamj@users.noreply.github.com"
+          git rm -f \
+            .github/workflows/_tmp-training-blind-test-red.yml \
+            .github/workflows/_tmp-patch-training-blind-test.yml \
+            .github/workflows/_tmp-finalize-training-blind-test.yml \
+            .github/scripts/_tmp_patch_training_blind_test.py \
+            .github/scripts/_tmp_finalize_training_blind_test.py
+          git add .github/workflows/v42.25-release-regression.yml
+          git diff --cached --check
+          git commit -m "test(training): guard blind independent test evaluation"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
