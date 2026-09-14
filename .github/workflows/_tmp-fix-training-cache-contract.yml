@@ -1,0 +1,51 @@
+name: Temporary Training Cache Contract Fix
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - '.github/scripts/_tmp_fix_training_cache_contract.py'
+      - '.github/workflows/_tmp-fix-training-cache-contract.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply focused patch
+        run: python .github/scripts/_tmp_fix_training_cache_contract.py
+      - name: Python syntax
+        run: python -m py_compile app.py
+      - name: Frontend cache contract tests
+        run: node --test tests/frontend/training-draft.test.mjs tests/frontend/training-submit.test.mjs
+      - name: Install focused backend test dependencies
+        run: python -m pip install -q pytest fastapi uvicorn httpx python-multipart pillow requests pyyaml psutil filelock
+      - name: Backend compatibility contract
+        run: python -m pytest -q tests/api/test_training_request.py -k 'normalizes_legacy_boolean_cache'
+      - name: Diff and version guards
+        run: |
+          git diff --check
+          test "$(tr -d '\r\n ' < VERSION.txt)" = "42.24.0"
+      - name: Commit product fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py static/modules/training-draft.js static/main.mjs static/index.html \
+            tests/frontend/training-draft.test.mjs tests/frontend/training-submit.test.mjs \
+            tests/browser/training-label-selector.spec.mjs tests/api/test_training_request.py
+          git diff --cached --exit-code && { echo 'No product changes to commit'; exit 1; } || true
+          git commit -m 'fix(training): normalize cache request contract'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
