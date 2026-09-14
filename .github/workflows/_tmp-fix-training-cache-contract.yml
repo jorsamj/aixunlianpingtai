@@ -32,7 +32,7 @@ jobs:
       - name: Frontend cache contract tests
         run: node --test tests/frontend/training-draft.test.mjs tests/frontend/training-submit.test.mjs
       - name: Install focused backend test dependencies
-        run: python -m pip install -q pytest fastapi uvicorn httpx python-multipart pillow requests pyyaml psutil filelock
+        run: python -m pip install -q pytest fastapi uvicorn httpx python-multipart pillow requests pyyaml psutil filelock opencv-python-headless
       - name: Backend compatibility contract
         run: python -m pytest -q tests/api/test_training_request.py -k 'normalizes_legacy_boolean_cache'
       - name: Diff and version guards
