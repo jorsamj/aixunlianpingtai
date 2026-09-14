@@ -12,6 +12,7 @@ def test_completed_training_elapsed_time_is_frozen_at_finished_at(tmp_path, monk
         "status": "done",
         "started_at": "2026-09-14 10:00:00",
         "finished_at": "2026-09-14 10:10:00",
+        "epochs": 300,
         "current_epoch": 180,
         "total_epochs": 300,
         "progress_percent": 100,
@@ -51,6 +52,7 @@ def test_durable_terminal_truth_closes_legacy_running_job(tmp_path, monkeypatch)
         "id": "train-terminal",
         "status": "running",
         "started_at": terminal.created_at,
+        "epochs": 300,
         "current_epoch": 180,
         "total_epochs": 300,
         "progress_percent": 95,
@@ -60,4 +62,6 @@ def test_durable_terminal_truth_closes_legacy_running_job(tmp_path, monkeypatch)
     assert job["task_status"] == "SUCCEEDED"
     assert job["progress_percent"] == 100
     assert job["finished_at"] == terminal.finished_at
+    assert job["current_epoch"] == 180
+    assert job["total_epochs"] == 300
     assert job["eta_seconds"] == 0
