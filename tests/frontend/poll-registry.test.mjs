@@ -72,53 +72,143 @@ test('managed timeout unregisters itself before callback so recursive polling ca
   assert.deepEqual(cleared, []);
 });
 
-test('training polling is a direct PollRegistry-managed interval and stops on leave', async () => {
+test('training polling is a PollRegistry-managed one-shot that follows latest backend state', async () => {
   const state = {
     page: '训练任务',
     project: {id: 'p1'},
     jobs: [{id: 'j1', status: 'running'}],
   };
-  const callbacks = new Map();
-  const cleared = [];
+  const timeouts = new Map();
+  const intervals = new Map();
   let nextTimer = 100;
   let refreshes = 0;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;
-  globalThis.setInterval = (callback, delay) => {
+  globalThis.setTimeout = (callback, delay) => {
     const id = ++nextTimer;
-    callbacks.set(id, {callback, delay});
+    timeouts.set(id, {callback, delay});
     return id;
   };
-  globalThis.clearInterval = id => {
-    cleared.push(id);
-    callbacks.delete(id);
+  globalThis.clearTimeout = id => timeouts.delete(id);
+  globalThis.setInterval = (callback, delay) => {
+    const id = ++nextTimer;
+    intervals.set(id, {callback, delay});
+    return id;
   };
+  globalThis.clearInterval = id => intervals.delete(id);
   globalThis.window = {
     TrainingTaskRuntime: {refresh: async ({source}) => {
       assert.equal(source, 'poll');
       refreshes += 1;
+      state.jobs = refreshes === 1
+        ? [{id: 'j1', status: 'running', current_epoch: 4, progress_percent: 4}]
+        : [{id: 'j1', status: 'completed', current_epoch: 100, progress_percent: 100}];
     }},
   };
 
-  const runtime = installPollRegistry({getState: () => state});
-  const managed = runtime.snapshot().find(row => row.key === 'training-jobs');
-  assert.deepEqual(managed, {
-    key: 'training-jobs', owners: ['训练任务', '检测台'], active: true, managed: true, delay: 2000,
-  });
-  const timerId = [...callbacks.keys()][0];
-  assert.equal(callbacks.get(timerId)?.delay, 2000);
+  let runtime;
+  try {
+    runtime = installPollRegistry({getState: () => state});
+    assert.deepEqual(runtime.snapshot().find(row => row.key === 'training-jobs'), {
+      key: 'training-jobs', owners: ['训练任务'], active: true, managed: true, delay: 2000,
+    });
+    assert.equal(intervals.size, 0);
+    const firstTimer = Math.max(...timeouts.keys());
+    await timeouts.get(firstTimer).callback();
+    assert.equal(refreshes, 1);
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), true);
 
-  await callbacks.get(timerId).callback();
-  assert.equal(refreshes, 1);
+    const secondTimer = Math.max(...timeouts.keys());
+    assert.notEqual(secondTimer, firstTimer);
+    await timeouts.get(secondTimer).callback();
+    assert.equal(refreshes, 2);
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), false);
+  } finally {
+    runtime?.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+    delete globalThis.window;
+  }
+});
 
-  runtime.beforeNavigate('数据集');
-  assert.equal(callbacks.has(timerId), false);
-  assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), false);
+test('paused-only and every supported terminal training state leave no pending timer', () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nextTimer = 400;
+  const timeouts = new Map();
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+  globalThis.window = {};
 
-  runtime.destroy();
-  globalThis.setInterval = originalSetInterval;
-  globalThis.clearInterval = originalClearInterval;
-  delete globalThis.window;
+  const stoppedStatuses = ['paused', 'done', 'finished', 'completed', 'failed', 'stopped', 'cancelled', 'canceled'];
+  let runtime;
+  try {
+    const state = {page: '训练任务', project: {id: 'p1'}, jobs: []};
+    runtime = installPollRegistry({getState: () => state});
+    for (const status of stoppedStatuses) {
+      state.jobs = [{id: status, status}];
+      runtime.replaceTrainingJobTimer();
+      assert.equal(
+        runtime.snapshot().some(row => row.key === 'training-jobs'),
+        false,
+        `${status} must not keep training polling alive`,
+      );
+    }
+  } finally {
+    runtime?.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    delete globalThis.window;
+  }
+});
+
+test('leaving training clears its timer and resume lifecycle can restore it from refreshed state', () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nextTimer = 500;
+  const timeouts = new Map();
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [{id: 'j1', status: 'running'}]};
+  globalThis.window = {};
+
+  let runtime;
+  try {
+    runtime = installPollRegistry({getState: () => state});
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), true);
+
+    state.page = '检测台';
+    runtime.beforeNavigate('检测台');
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), false);
+
+    state.page = '训练任务';
+    state.jobs = [{id: 'j1', status: 'paused'}];
+    runtime.afterNavigate('训练任务');
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), false);
+
+    state.jobs = [{id: 'j1', status: 'running'}];
+    runtime.afterNavigate('训练任务');
+    assert.deepEqual(runtime.snapshot().find(row => row.key === 'training-jobs'), {
+      key: 'training-jobs', owners: ['训练任务'], active: true, managed: true, delay: 2000,
+    });
+  } finally {
+    runtime?.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    delete globalThis.window;
+  }
 });
 
 test('video polling is a direct PollRegistry-managed one-shot and re-arms only while a task is active', async () => {

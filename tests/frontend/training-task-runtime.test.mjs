@@ -46,6 +46,60 @@ test('focused training refresh fetches jobs only and patches the task table', as
   cleanup();
 });
 
+test('successive jobs responses replace status progress epoch and elapsed row truth without full render', async () => {
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], train428Tab: 'active', __navigationEpoch: 4};
+  const body = {innerHTML: ''};
+  const activeCount = {textContent: ''};
+  const historyCount = {textContent: ''};
+  const buttons = [
+    {querySelector: selector => selector === 'span' ? activeCount : null},
+    {querySelector: selector => selector === 'span' ? historyCount : null},
+  ];
+  const root = {
+    querySelector: selector => selector === '.train428-table tbody' ? body : null,
+    querySelectorAll: selector => selector === '.train428-tabs button' ? buttons : [],
+  };
+  const backendRows = [
+    [{id: 'j1', status: 'running', current_epoch: 3, total_epochs: 100, progress_percent: 3, elapsed_seconds: 30}],
+    [{id: 'j1', status: 'running', current_epoch: 4, total_epochs: 100, progress_percent: 4, elapsed_seconds: 45}],
+    [{id: 'j1', status: 'completed', current_epoch: 100, total_epochs: 100, progress_percent: 100, elapsed_seconds: 600}],
+  ];
+  let fullRenders = 0;
+  globalThis.document = {
+    querySelector: selector => selector === '.train428-page' ? root : null,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.window = {
+    async fetch() { return response(backendRows.shift()); },
+    updateTrainingJobTable() { fullRenders += 1; },
+  };
+
+  const runtime = installTrainingTaskRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+  await runtime.refresh({source: 'poll'});
+  assert.match(body.innerHTML, /3\/100 · 3%/);
+  assert.match(body.innerHTML, />30s</);
+
+  await runtime.refresh({source: 'poll'});
+  assert.match(body.innerHTML, /4\/100 · 4%/);
+  assert.match(body.innerHTML, />45s</);
+
+  state.train428Tab = 'history';
+  await runtime.refresh({source: 'poll'});
+  assert.match(body.innerHTML, /已完成/);
+  assert.match(body.innerHTML, /100\/100 · 100%/);
+  assert.doesNotMatch(body.innerHTML, /训练中/);
+  assert.equal(activeCount.textContent, '0');
+  assert.equal(historyCount.textContent, '1');
+  assert.equal(fullRenders, 0);
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('concurrent training refreshes share one jobs request', async () => {
   const state = {page: '训练任务', project: {id: 'p1'}, jobs: [], __navigationEpoch: 1};
   let requests = 0;
