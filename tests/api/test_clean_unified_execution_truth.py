@@ -55,7 +55,12 @@ def test_v47_manual_clean_creation_publishes_material_batch_truth(client):
         json={"image_ids": [image_id], "task_name": "manual durable clean"},
     )
     response.raise_for_status()
-    task_id = response.json()["id"]
+    body = response.json()
+    task_id = body["id"]
+    assert "resource_queue_position" in body
+    assert "resource_wait_reason" in body
+    assert body["resource_queue_position"] is None
+    assert body["resource_wait_reason"] is None
 
     _assert_durable_clean_task(project_id, task_id, [image_id])
 
