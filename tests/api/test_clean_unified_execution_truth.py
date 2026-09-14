@@ -117,13 +117,19 @@ def test_clean_executes_through_real_fenced_material_worker(client):
     current = app_module.shared_task_repository().get(task_id)
     assert current is not None
     assert current.status is TaskStatus.SUCCEEDED, current.error
+    assert current.stage == "succeeded"
     assert current.progress == 100
 
     result_response = client.get(f"/api/v47/projects/{project_id}/clean-tasks/{task_id}/result")
     result_response.raise_for_status()
     body = result_response.json()
     assert body["task"]["status"] == "awaiting_confirmation"
+    assert body["task"]["stage"] == "review"
     assert body["task"]["processed_images"] == 1
     assert body["task"]["progress"] == 100
     assert [item["image_id"] for item in body["result"]["items"]] == [image_id]
 
+    durable_after_projection = app_module.shared_task_repository().get(task_id)
+    assert durable_after_projection is not None
+    assert durable_after_projection.status is TaskStatus.SUCCEEDED
+    assert durable_after_projection.stage == "succeeded"
