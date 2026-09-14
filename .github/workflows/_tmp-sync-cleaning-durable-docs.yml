@@ -1,0 +1,28 @@
+name: Temporary Cleaning Durable Docs Sync
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/_tmp-sync-cleaning-durable-docs.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync authority docs
+        run: python .github/scripts/_tmp_sync_cleaning_durable_docs.py
+      - name: Commit authority docs only
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/TECH_DEBT_CLOSURE_V42_25.md docs/CODEX_CURRENT_STATE.md docs/frontend-legacy-audit.md docs/FRONTEND_OWNER_MAP_V42_25.md
+          git diff --cached --check
+          git commit -m "docs: close cleaning durable execution truth"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
