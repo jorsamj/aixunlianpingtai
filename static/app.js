@@ -553,11 +553,10 @@ window.__resourceDiscoveryDependencies={
     if(window.__serverMaterialImport61Installed)return true;
     window.__serverMaterialImport61Installed=true;
     const serverApi=()=>window.PlatformCore?.serverMaterialImport;
-    let pollController=null;
     const taskKey=()=>`mc_server_material_import_${String(pid()||'default')}`;
     const getSavedTask=()=>{try{return localStorage.getItem(taskKey())||''}catch(_){return ''}};
     const saveTask=taskId=>{state.serverMaterialImportTaskId61=taskId||'';try{taskId?localStorage.setItem(taskKey(),taskId):localStorage.removeItem(taskKey())}catch(_){}};
-    const abortPolling=()=>{if(pollController&&!pollController.signal.aborted)pollController.abort();pollController=null};
+    const abortPolling=()=>window.StorageImportProgressRuntime?.stop?.();
     const isAbort=error=>error?.name==='AbortError';
     const taskUrl=taskId=>`/api/v61/projects/${encodeURIComponent(pid())}/storage-imports/${encodeURIComponent(taskId)}`;
     const safeCount=value=>{const number=Number(value);return Number.isFinite(number)&&number>0?number:0};
@@ -585,10 +584,15 @@ window.__resourceDiscoveryDependencies={
       status.querySelectorAll('input').forEach(input=>input.addEventListener('input',updateConfirm));updateConfirm();
     }
 
+    window.renderStorageImportTask61=renderImportTask;
+
     async function pollTask(taskId,initialTask){
       if(!taskId)return null;
-      abortPolling();pollController=new AbortController();const signal=pollController.signal;
-      try{return await serverApi().pollServerImport({initialTask,signal,load:()=>importRequest(taskUrl(taskId),{signal}),render:renderImportTask})}
+      try{
+        const tracked=window.StorageImportProgressRuntime?.track?.(taskId,initialTask);
+        if(!tracked)throw new Error('素材导入进度模块未加载，请刷新页面后重试');
+        return await tracked;
+      }
       catch(error){if(!isAbort(error)){const status=document.getElementById('si61Status');if(status)status.innerHTML=`<div class="alert err">${esc(error?.message||error||'导入任务读取失败')}</div>`}return null}
     }
 
@@ -603,7 +607,7 @@ window.__resourceDiscoveryDependencies={
     window.openStorageImport61=async function(){
       try{await loadStorageSources61()}catch(error){return toast(error.message||error)}
       const localSources=storageApi().enabledStorageSources(state.storageSources61).filter(source=>source.type==='local'),options=localSources.map(source=>`<option value="${esc(source.id)}">${esc(source.name)}</option>`).join(''),disabled=localSources.length?'':'disabled',initialMode=localSources.length?'directory_scan':'browser_upload';
-      abortPolling();pollController=new AbortController();
+      abortPolling();
       modal('从存储导入素材',`<div id="si61ImportShell" class="storage61-import"><div class="storage61-import-modes" role="tablist" aria-label="素材导入方式"><button class="btn" data-import-mode="browser_upload" onclick="setStorageImportMode61('browser_upload')">浏览器上传</button><button class="btn" data-import-mode="directory_scan" onclick="setStorageImportMode61('directory_scan')">服务器本地目录</button><button class="btn" data-import-mode="server_zip" onclick="setStorageImportMode61('server_zip')">服务器 ZIP</button></div><section data-import-panel="browser_upload"><div class="storage61-import-help"><b>从当前电脑上传</b><span>继续使用现有图片 / ZIP 上传流程。</span></div><button class="btn primary" onclick="openBrowserMaterialUpload61()">打开浏览器上传</button></section><section data-import-panel="directory_scan"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61Source" class="select" ${disabled}>${options||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>目录（相对于存储源根目录）</label><input id="si61Prefix" class="input" placeholder="例如 incoming/2026"></div></div><label class="field check"><input id="si61Recursive" type="checkbox" checked> 递归扫描子目录</label><button class="btn primary" onclick="startStorageImport61('directory_scan')" ${disabled}>开始扫描</button></section><section data-import-panel="server_zip"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61ZipSource" class="select" ${disabled}>${options||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>服务器 ZIP（导入目录下的相对路径）</label><input id="si61ZipPath" class="input" placeholder="例如 fire.zip"></div><div class="field"><label>解压目标（相对于存储源根目录）</label><input id="si61TargetPrefix" class="input" placeholder="例如 fire/2026"></div></div><div class="storage61-import-help"><span>目标目录已存在且非空时会拒绝导入，不会覆盖原文件。</span></div><button class="btn primary" onclick="startStorageImport61('server_zip')" ${disabled}>校验并解压扫描</button></section><div id="si61Status" class="storage61-import-status">扫描和建立索引由后台 Worker 执行；关闭此窗口不会取消任务。</div><div class="row end"><button class="btn" onclick="closeStorageImport61()">关闭</button></div></div>`,true);
       setStorageImportMode61(initialMode);
       document.getElementById('si61Status')?.insertAdjacentHTML('beforebegin','<div class="form two storage61-import-format"><div class="field"><label>数据格式</label><select id="si61Format" class="select"><option value="auto">自动识别</option><option value="yolo">YOLO 检测标注</option><option value="images">仅图片</option><option disabled>COCO / VOC（暂不支持）</option></select></div><div class="field"><label>数据集 YAML（可选，相对存储源根目录）</label><input id="si61DatasetYaml" class="input" placeholder="例如 incoming/data.yaml"></div></div>');

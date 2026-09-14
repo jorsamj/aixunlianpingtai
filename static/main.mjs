@@ -30,8 +30,8 @@ import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422206';
-import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422401';
-import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422400';
+import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422520';
+import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422520';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
 
@@ -102,7 +102,7 @@ window.PlatformCore = {
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   storageImport: {storageImportProgressText},
-  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView},
+  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, serverImportView},
   runtime: {pageRequestScope, pollRegistry, trainingDraftRuntime, trainingDraftControlsRuntime},
   uiBuildVersion: UI_BUILD_VERSION,
 };
@@ -168,8 +168,9 @@ installMaterialBatchRuntime({
     if (state.page === '数据集') await window.reloadMaterialPage61?.();
   },
 });
-installStorageImportProgressRuntime();
 window.installServerMaterialImport61?.();
+const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRegistry, getState: () => state});
+window.PlatformCore.runtime.storageImportProgressRuntime = storageImportProgressRuntime;
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 
 installNavigationStability({
