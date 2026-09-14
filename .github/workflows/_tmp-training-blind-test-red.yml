@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest pyyaml pillow psutil filelock
+        run: python -m pip install --disable-pip-version-check pytest pyyaml pillow psutil filelock requests keyring boto3 oss2
       - name: Blind independent test contract
         run: python -m pytest --noconftest -q tests/unit/test_training_blind_test_contract.py
       - name: Version guard
