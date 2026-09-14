@@ -2,9 +2,27 @@
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: PAUSED AUDIT — non-blocking technical-debt cleanup deferred by user request
-> Latest fully accepted code point: `cb81ca39016aea0fc53ed52090f0b0199d39109a` / run `34789704610`
+> Latest fully accepted code point: `3931a9a2d529845f9e698b22f62fe950a7a8b42f` / run `34792673296`
 > Real Chrome: PASS
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`
+
+## Product closure — Cleaning durable execution truth CLOSED
+
+Final backend owner chain for cleaning execution:
+
+```text
+v47 manual clean / v55 upload-batch clean decision
+→ prepare_material_batch / publish_prepared_material_batch
+→ shared TaskRepository: MATERIAL_BATCH / CLEAN
+→ materials worker registration
+→ FencedTaskRepository + Scheduler / WorkerContext
+→ durable result/checkpoint truth
+→ v47 compatibility projection for legacy clean UI
+```
+
+The compatibility projection is display-only: an unconfirmed successful clean may appear as `awaiting_confirmation / review`, while the underlying durable task remains `SUCCEEDED / succeeded`. Legacy Web daemon workers and Web startup recovery are retired as execution owners. Queue/resource/progress metadata remains server/worker-derived. Permanent backend guard: `tests/api/test_clean_unified_execution_truth.py`; formal acceptance `3931a9a2d529845f9e698b22f62fe950a7a8b42f`, Release `34792673327` PASS, Navigation `34792673293` PASS with Real Chrome, Frontend `34792673296` PASS with unit + full Real Chrome. `VERSION.txt` remains `42.24.0`.
+
+Next owner audit: the final cleaning frontend row/poll owner must preserve durable queue position/wait reason and use lifecycle-managed polling without a parallel frontend truth model.
 
 ## Product closure — Plain image upload whole-task progress truth CLOSED
 
@@ -106,7 +124,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Video resource queue truth is CLOSED. Current next product scope: continue the horizontal real queue-position/progress audit across cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Video resource queue truth and cleaning durable execution truth are CLOSED. Current next product scope: cleaning frontend queue/progress truth, then continue storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 2. Runtime ownership
 

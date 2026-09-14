@@ -7,8 +7,8 @@
 ## 1. Latest accepted code point
 
 ```text
-commit:       cb81ca39016aea0fc53ed52090f0b0199d39109a
-run:          34789704610
+commit:       3931a9a2d529845f9e698b22f62fe950a7a8b42f
+run:          34792673296
 frontend:     PASS
 Real Chrome:  PASS
 ```
@@ -28,6 +28,45 @@ training-labels           422513
 training-task-runtime     training-task-runtime-422503 (cache 422505)
 auto-label-poll-runtime   422501
 ```
+
+## Product closure — Cleaning durable execution truth CLOSED
+
+The active v47 manual-clean and v55 upload-batch clean entry points now publish one durable `MATERIAL_BATCH/CLEAN` task into the shared `TaskRepository`. The Web/API process no longer owns cleaning execution through legacy daemon threads, and Web startup no longer resurrects those retired workers. Real execution is owned by the registered `materials` worker through `FencedTaskRepository` / `Scheduler` truth.
+
+Closed semantics:
+
+```text
+manual v47 create -> prepare + publish one MATERIAL_BATCH/CLEAN durable task
+v55 upload-batch decision -> the deterministic clean_task_id points to that same durable task truth
+real execution -> materials Scheduler / fenced WorkerContext, never Web daemon execution
+prepare -> publish crash window -> reuse the already-frozen semantic request without treating its freeze-time repository_revision as a new user intent
+FAILED retry -> same task id is re-queued through TaskRepository retry; no duplicate task identity
+successful scan awaiting confirmation -> durable task remains SUCCEEDED/succeeded; v47 compatibility alone projects awaiting_confirmation/review
+corrupt image with corrupt_check -> successful flagged cleaning finding for review
+source content changed after indexing -> remains SOURCE_CONTENT_CHANGED storage-integrity failure, not disguised as image corruption
+```
+
+A real-worker defect was also closed: `MaterialBatchHandler` had called a private artifact validation method that does not exist on the real `FencedArtifactStore`, causing Scheduler execution to fail before processing any material. The handler now validates `project_id` as a safe single path component while preserving fenced artifact access. Corrupt findings are excluded from the hash/dedup index unless real `sha256` and `dhash` metrics exist.
+
+Permanent guards include `tests/api/test_clean_unified_execution_truth.py`, `tests/api/test_upload_clean_flow.py`, `tests/unit/test_material_batch_public_truth.py`, and the Release Regression path/test scope. The final guard explicitly proves that reading the v47 compatibility result may show `awaiting_confirmation / review` while the underlying durable record remains `SUCCEEDED / succeeded`.
+
+Evidence:
+
+```text
+valid RED commit:           3f41cdae0d4234bf5171f2aa80111513c223407c
+valid RED run:              34790397474 (intended durable-clean execution assertions RED)
+focused durable migration:  34792422835 PASS (4 durable contracts + 32 upload-clean regressions)
+product commit:             f43631e16a51167cf75bb8e2ec545566f226609f
+formal accepted clean HEAD: 3931a9a2d529845f9e698b22f62fe950a7a8b42f
+Release Regression:         34792673327 PASS
+Navigation Action Fencing:  34792673293 PASS (Real Chrome PASS)
+Frontend Runtime:           34792673296 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
+```
+
+All one-shot cleaning migration/diagnostic helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
+
+Next product batch: audit the **cleaning frontend queue/progress truth**. The backend now exposes durable `resource_queue_position` / `resource_wait_reason`; the final clean-tab renderer/poll lifecycle must preserve that truth and must not create a frontend queue or simulated progress owner.
 
 ## Product closure — Video resource queue truth CLOSED
 
@@ -138,7 +177,7 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
 - **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
 
-**Video resource queue truth is CLOSED. Current next product scope: continue the horizontal real queue-position/progress audit across cleaning, storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
+**Video resource queue truth is CLOSED. Current next product scope: cleaning frontend queue/progress truth first, then continue the horizontal real queue-position/progress audit across storage import and deployment-test surfaces. Genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction.**
 
 ## 2. Closed owner surfaces
 
