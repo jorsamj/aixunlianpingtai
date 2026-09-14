@@ -7,23 +7,112 @@
 ```text
 branch:                      refactor/frontend-runtime-stabilization
 latest full code acceptance: 1c3fa7f2b5cb826c0998f249637241a59134f053
+latest scoped product implementation: bfe9f7d (training queue/resource-wait truth)
 Frontend Runtime run:        34794630837
 formal VERSION.txt:          42.24.0
 visible frontend version:    v42.24.0
 internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.97
-main.mjs cache:              42.25.94
+app.js cache:                42.25.99
+main.mjs cache:              42.25.99
 NavigationStability:         422512
 UI state runtime:            422500
 PollRegistry:                422518
 TrainingDraftRuntime:        422516
 TrainingLabelRuntime:        422513
 TrainingSubmitRuntime:       training-submit-422504
-TrainingTaskRuntime:         training-task-runtime-422503
+TrainingTaskRuntime:         training-task-runtime-422522
 AutoLabelPollRuntime:        422501
 ```
 
 Run `34733035739` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after ZIP 10k owner/manifest migration. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34733035761` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+
+## Product closure — Training queue / waiting-resource truth CLOSED
+
+Training task queue readiness is closed at scoped product implementation
+`bfe9f7d`. This batch consumes the already-closed Worker Runtime Truth and the
+existing durable TaskRepository/Scheduler state; it does not add another queue,
+Worker registry, Scheduler, durable task status, or frontend polling owner.
+
+For a local durable `TRAINING` task whose persisted status is `QUEUED`, the GET
+projection now evaluates the current `worker_instances` lease snapshot. No
+online Worker returns `WAITING_RESOURCE / 当前没有在线 Worker`; online Workers
+without the `TRAINING` task kind return `当前没有可执行训练任务的 Worker`; online
+Training Workers missing any required capability return
+`当前在线 Training Worker 不支持 <capability>`. A provably compatible Worker with
+an existing Scheduler/GPU admission wait preserves the authoritative
+`resource_wait_reason`. Otherwise the public state remains `QUEUED`. The read
+path never writes `tasks.status`, `stage`, or wait reasons.
+
+The current compatible local pool is deliberately limited to durable Worker
+truth that is already proven: online lease, registered `TRAINING` task kind,
+and a capability superset of the task's `required_capabilities`. The requested
+`resource_key` remains the resource boundary. `training:remote:<server_id>` is
+not matched to an arbitrary local Training Worker because current Worker truth
+does not store server binding or resource affinity and the current handler
+rejects non-local targets. Remote tasks therefore expose
+`指定远程服务器的 Worker 路由尚未建立` until a later Worker/server-binding batch.
+
+`resource_queue_position` remains the existing resource-scoped numeric value;
+it is not represented as a universally exact Scheduler rank. The backend now
+returns `resource_queue_position_exact`. Exactness is conservative and is only
+proved for a single compatible CPU Worker when its current claimable queue has
+no cross-resource candidate and the Scheduler scan position equals the
+resource-scoped position. GPU auto/concrete GPU, multiple compatible Workers,
+cross-resource competition, and remote routing remain non-exact. The training
+UI displays `队列第 N 位` only when this proof flag is true; otherwise it shows
+the backend pool label plus `排队中` without a fabricated number.
+
+Backend-owned display metadata is:
+
+```text
+resource_pool_key
+resource_pool_label
+resource_queue_position_exact
+
+training:cpu      -> CPU
+training:auto     -> GPU 自动
+training:cuda:N   -> GPU N
+training:remote:* -> 指定远程服务器
+```
+
+The training UI now renders public `waiting` as `等待资源`, prioritizes the
+server-provided wait reason, and never parses `resource_key` to infer resource
+availability. Worker recovery and queue changes continue to arrive through the
+already-closed page-scoped two-second PollRegistry one-shot; no new timer or
+request endpoint was added. The jobs-list path reuses one Worker runtime and
+queued-candidate snapshot for the response rather than issuing those full
+queries once per visible task.
+
+Core files:
+
+```text
+app.py
+platform_core/task_runtime/__init__.py
+platform_core/task_runtime/public.py
+platform_core/task_runtime/repository.py
+static/modules/training-task-runtime.js
+static/main.mjs
+static/index.html
+tests/unit/task_runtime/test_public_projection.py
+tests/api/test_training_unified_task_overlay.py
+tests/frontend/training-task-runtime.test.mjs
+docs/superpowers/specs/2026-09-14-training-queue-resource-truth-design.md
+docs/superpowers/plans/2026-09-14-training-queue-resource-truth.md
+```
+
+Minimum verification passed: focused backend queue/Worker/admission contracts
+`13/13`; focused TrainingTaskRuntime rendering and existing list-refresh
+contracts `12/12`; affected Python compilation and JavaScript syntax checks.
+The first backend run was blocked before test setup by the known Windows global
+Temp permission issue; the identical focused tests passed with a worktree-local
+temporary directory, which was removed afterward.
+
+This batch did **not** implement GPU Runtime Truth, GPU automatic scheduling,
+GPU memory/affinity changes, Worker/server binding, remote affinity, designated
+GPU/machine selection, Scheduler claim changes, Worker registration schema
+changes, ETA, pause/resume changes, SSE, or a new polling owner. Linux/A800,
+real multi-Worker concurrency, and remote-server routing remain **NOT
+VERIFIED**. Formal `VERSION.txt` remains `42.24.0`.
 
 ## Product closure — Worker Runtime Truth CLOSED
 
