@@ -696,9 +696,20 @@ def now_iso() -> str:
 def _parse_dt_value(value: Any) -> Optional[datetime]:
     if not value:
         return None
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        # Runtime jobs historically store local naive timestamps while durable tasks
+        # use UTC offsets. Normalize aware values to the server local clock before
+        # mixing the two representations.
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except Exception:
+        pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
         try:
-            return datetime.strptime(str(value)[:26], fmt)
+            return datetime.strptime(text[:26], fmt)
         except Exception:
             pass
     return None
@@ -821,7 +832,9 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             job["error"] = durable.error
             job["message"] = durable.error
         if durable.finished_at:
-            job["finished_at"] = durable.finished_at
+            # Keep the worker's own finished_at when present so started/finished use
+            # the same clock representation; durable UTC is the recovery fallback.
+            job.setdefault("finished_at", durable.finished_at)
     proc = PROCESS_REGISTRY.get(job_id) if job_id else None
     status = job.get("status") or "queued"
     if proc:
@@ -858,18 +871,29 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             status = "failed"
             job["message"] = "训练进程已结束，但没有写入成功结果，请查看训练日志"
             job.setdefault("finished_at", now_iso())
-    total = int(job.get("epochs") or 0)
+    training_progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
+    try:
+        total = int(float(training_progress.get("total_epochs") or job.get("total_epochs") or job.get("epochs") or 0))
+    except (TypeError, ValueError):
+        total = 0
+    try:
+        persisted_cur = int(float(training_progress.get("epoch") or job.get("current_epoch") or 0))
+    except (TypeError, ValueError):
+        persisted_cur = 0
     log_text = _job_log_text(project_id, job_id)
-    cur = _infer_epoch_from_log(log_text, total)
-    if status in {"done", "finished"}:
-        cur = total or cur
+    cur = max(persisted_cur, _infer_epoch_from_log(log_text, total))
+    if status in {"done", "finished", "completed"}:
+        # 100% means the task lifecycle is terminal. It must not fabricate 300/300
+        # when Ultralytics legitimately stopped at 180/300.
         progress = 100
     elif status in {"failed", "stopped"}:
         progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
     else:
         progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
     started = _parse_dt_value(job.get("started_at") or job.get("created_at"))
-    elapsed = int((datetime.now() - started).total_seconds()) if started else 0
+    finished = _parse_dt_value(job.get("finished_at")) if status in {"done", "finished", "completed", "failed", "stopped"} else None
+    clock = finished or datetime.now()
+    elapsed = int((clock - started).total_seconds()) if started else 0
     # 暂停期间不计入真实训练耗时/ETA。
     paused_seconds = int(job.get("paused_seconds") or 0)
     if status == "paused" and job.get("paused_at"):

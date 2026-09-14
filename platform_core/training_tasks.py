@@ -701,14 +701,17 @@ def _completion_int(*values: Any) -> int:
 
 def _training_completion_metadata(job: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
     progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
-    completed_epochs = _completion_int(progress.get("epoch"), job.get("current_epoch"))
+    completed_epochs = _completion_int(job.get("completed_epochs"), progress.get("epoch"), job.get("current_epoch"))
     requested_epochs = _completion_int(
-        progress.get("total_epochs"), job.get("total_epochs"), job.get("epochs"), payload.get("epochs")
+        job.get("requested_epochs"), progress.get("total_epochs"), job.get("total_epochs"), job.get("epochs"), payload.get("epochs")
     )
     outcome = str(job.get("training_outcome") or "completed").strip() or "completed"
     report = job.get("training_report") if isinstance(job.get("training_report"), dict) else {}
     quality_gate_reason = str(job.get("quality_gate_reason") or report.get("quality_gate_reason") or "").strip()
-    if outcome == "target_reached":
+    explicit_reason = str(job.get("completion_reason") or "").strip()
+    if explicit_reason:
+        completion_reason = explicit_reason
+    elif outcome == "target_reached":
         completion_reason = "quality_target_reached"
     elif outcome == "needs_optimization":
         completion_reason = "quality_gate_below_continue_threshold"
@@ -724,6 +727,10 @@ def _training_completion_metadata(job: Mapping[str, Any], payload: Mapping[str, 
         "training_outcome": outcome,
         "completion_reason": completion_reason,
         "quality_gate_reason": quality_gate_reason or None,
+        "early_stopping_reason": job.get("early_stopping_reason"),
+        "early_stopping_patience": job.get("early_stopping_patience"),
+        "best_epoch": job.get("best_epoch"),
+        "completion_message": job.get("message"),
         "training_finished_at": job.get("finished_at"),
         "training_message": job.get("message"),
     }

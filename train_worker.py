@@ -551,6 +551,85 @@ def attach_ai_continuation_callbacks(
     return on_fit_epoch_end
 
 
+
+def derive_training_completion_metadata(
+    trainer, *, requested_epochs, completed_epochs, gate_reason, ai_plan=None
+):
+    """Return durable, user-facing completion truth without guessing from 100% progress."""
+    requested = max(0, int(requested_epochs or 0))
+    completed = max(0, int(completed_epochs or 0))
+    gate = str(gate_reason or "").strip()
+    result = {
+        "completed_epochs": completed,
+        "requested_epochs": requested,
+        "training_outcome": "completed",
+        "completion_reason": "requested_epochs_completed" if requested and completed >= requested else "completed",
+        "early_stopping_reason": None,
+        "early_stopping_patience": None,
+        "best_epoch": None,
+        "completion_message": "训练完成，模型产物校验通过",
+    }
+    if gate and "达到提前完成阈值" in gate:
+        result.update(
+            training_outcome="target_reached",
+            completion_reason="quality_target_reached",
+            completion_message=f"训练提前完成：{gate}，模型产物校验通过",
+        )
+        return result
+    if gate and "低于继续训练阈值" in gate:
+        result.update(
+            training_outcome="needs_optimization",
+            completion_reason="quality_gate_below_continue_threshold",
+            completion_message=f"训练提前结束：{gate}，模型产物校验通过",
+        )
+        return result
+    if not (requested > 0 and completed > 0 and completed < requested):
+        return result
+
+    # An AI continuation request can intentionally stop one phase before another
+    # phase starts. Do not mislabel that transition as Ultralytics patience.
+    if ai_plan:
+        result.update(
+            training_outcome="completed",
+            completion_reason="early_stopping",
+            completion_message="训练提前完成，模型产物校验通过",
+        )
+        return result
+
+    stopper = getattr(trainer, "stopper", None) if trainer is not None else None
+    try:
+        patience = int(float(getattr(stopper, "patience", 0)))
+    except (TypeError, ValueError, OverflowError):
+        patience = 0
+    try:
+        best_epoch = int(float(getattr(stopper, "best_epoch", 0)))
+    except (TypeError, ValueError, OverflowError):
+        best_epoch = 0
+    # Ultralytics EarlyStopping stores best_epoch as 1-indexed and stops once
+    # completed_epoch - best_epoch reaches patience.
+    patience_hit = patience > 0 and best_epoch >= 0 and (completed - best_epoch) >= patience
+    if patience_hit:
+        result.update(
+            training_outcome="early_stopping",
+            completion_reason="early_stopping",
+            early_stopping_reason="patience",
+            early_stopping_patience=patience,
+            best_epoch=best_epoch if best_epoch > 0 else None,
+            completion_message=(
+                f"训练提前完成：连续 {patience} 个 Epoch 无验证指标提升（Early Stopping）"
+                + (f"，最佳 Epoch {best_epoch}" if best_epoch > 0 else "")
+                + "，模型产物校验通过"
+            ),
+        )
+        return result
+    result.update(
+        training_outcome="early_stopping",
+        completion_reason="early_stopping",
+        completion_message="训练提前完成（Early Stopping），模型产物校验通过",
+    )
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
@@ -932,11 +1011,27 @@ def main():
             training_report["error_sample_count"]=len([x for x in training_report["error_samples"] if not x.get("analysis_error")])
         except Exception as ae:
             training_report["error_analysis_error"]=str(ae)
-        outcome="target_reached" if gate_reason and "达到提前完成阈值" in gate_reason else "needs_optimization" if gate_reason and "低于继续训练阈值" in gate_reason else "completed"
+        current_job=read_json(job_file,{})
+        try:
+            completed_epochs=int(current_job.get("current_epoch") or (int(getattr(getattr(model,"trainer",None),"epoch",-1))+1))
+        except Exception:
+            completed_epochs=0
+        try:
+            requested_epochs=int(current_job.get("total_epochs") or args.epochs or completed_epochs)
+        except Exception:
+            requested_epochs=completed_epochs
+        completion=derive_training_completion_metadata(
+            getattr(model,"trainer",None),
+            requested_epochs=requested_epochs,
+            completed_epochs=completed_epochs,
+            gate_reason=gate_reason,
+            ai_plan=ai_plan,
+        )
+        training_report["completion"]={k:v for k,v in completion.items() if k != "completion_message"}
         update_job(
             job_file,
             status="done",
-            message="训练完成，模型产物校验通过",
+            message=completion["completion_message"],
             run_dir=str(run_dir),
             models=copied,
             verified_models=verified,
@@ -944,7 +1039,13 @@ def main():
             last_path=last_path,
             artifact_verified=True,
             training_report=training_report,
-            training_outcome=outcome,
+            training_outcome=completion["training_outcome"],
+            completion_reason=completion["completion_reason"],
+            early_stopping_reason=completion["early_stopping_reason"],
+            early_stopping_patience=completion["early_stopping_patience"],
+            best_epoch=completion["best_epoch"],
+            completed_epochs=completion["completed_epochs"],
+            requested_epochs=completion["requested_epochs"],
             progress_percent=100,
             finished_at=now_iso(),
         )

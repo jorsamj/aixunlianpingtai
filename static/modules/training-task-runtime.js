@@ -130,7 +130,13 @@ function completionRuntimeMeta(job, progress) {
   const reason = String(job?.completion_reason || '').trim();
   if (outcome === 'target_reached' || reason === 'quality_target_reached') return '达到质量目标，提前完成';
   if (outcome === 'needs_optimization' || reason === 'quality_gate_below_continue_threshold') return '提前结束（需继续优化）';
-  if (reason === 'early_stopping') return 'Early Stopping，提前完成';
+  if (reason === 'early_stopping') {
+    const patience = finiteNumber(job?.early_stopping_patience);
+    if (String(job?.early_stopping_reason || '') === 'patience' && patience !== null && patience > 0) {
+      return `连续 ${Math.round(patience)} Epoch 无提升，Early Stopping`;
+    }
+    return 'Early Stopping，提前完成';
+  }
   return '提前完成';
 }
 
