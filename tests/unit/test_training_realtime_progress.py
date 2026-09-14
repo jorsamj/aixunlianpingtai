@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import train_worker
+from platform_core.training_tasks import _training_completion_metadata
 
 
 class _Telemetry:
@@ -96,3 +97,32 @@ def test_batch_progress_callback_is_throttled_but_flushes_the_last_batch(tmp_pat
     # Last batch must always flush even inside the throttle window.
     assert final["current_batch"] == 3
     assert final["progress_percent"] == 27.0
+
+
+def test_training_completion_metadata_distinguishes_quality_target_from_early_stopping():
+    early = _training_completion_metadata(
+        {
+            "status": "done",
+            "current_epoch": 180,
+            "total_epochs": 300,
+            "training_outcome": "completed",
+            "finished_at": "2026-09-11 20:25:26",
+        },
+        {"epochs": 300},
+    )
+    assert early["completed_epochs"] == 180
+    assert early["requested_epochs"] == 300
+    assert early["completion_reason"] == "early_stopping"
+
+    target = _training_completion_metadata(
+        {
+            "status": "done",
+            "current_epoch": 180,
+            "total_epochs": 300,
+            "training_outcome": "target_reached",
+            "quality_gate_reason": "map50 达到提前完成阈值 0.850",
+        },
+        {"epochs": 300},
+    )
+    assert target["completion_reason"] == "quality_target_reached"
+    assert target["quality_gate_reason"] == "map50 达到提前完成阈值 0.850"
