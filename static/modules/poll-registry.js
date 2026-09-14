@@ -2,6 +2,8 @@ function ownerSet(ownerPages) {
   return new Set(Array.isArray(ownerPages) ? ownerPages.map(String) : [String(ownerPages || '')]);
 }
 
+const TRAINING_POLL_STATUSES = new Set(['queued', 'waiting', 'pending', 'running']);
+
 export class PollRegistry {
   constructor() {
     this.entries = new Map();
@@ -78,7 +80,7 @@ export function installPollRegistry({getState} = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__pollRegistryInstalled) return window.PollRegistryRuntime;
   const registry = new PollRegistry();
-  const trainingOwners = ['训练任务', '检测台'];
+  const trainingOwner = '训练任务';
   const videoOwner = '视频切帧';
   const sourceOwner = '素材接入';
   const cleanOwner = '自动标注及清洗';
@@ -96,31 +98,37 @@ export function installPollRegistry({getState} = {}) {
     }
   }
 
-  function trainingPollDelay(s) {
-    const live = (s.jobs || []).some(job => ['queued', 'running', 'waiting', 'pending'].includes(String(job?.status || '')));
-    return live ? 2000 : 5000;
+  function trainingTaskNeedsPolling(task) {
+    return TRAINING_POLL_STATUSES.has(String(task?.status || '').toLowerCase());
   }
 
   function replaceTrainingJobTimer() {
     const s = state();
     registry.clear('training-jobs');
-    if (!trainingOwners.includes(String(s.page || ''))) return null;
+    if (String(s.page || '') !== trainingOwner) return null;
+    if (!s.project?.id) return null;
+    if (!(s.jobs || []).some(trainingTaskNeedsPolling)) return null;
 
-    const callback = async () => {
-      const current = state();
-      if (!trainingOwners.includes(String(current.page || ''))) return;
-      if (!current.project?.id) return;
-      if (typeof window.TrainingTaskRuntime?.refresh === 'function') {
-        await window.TrainingTaskRuntime.refresh({render: true, source: 'poll'});
-      } else if (typeof window.refreshJobsOnly === 'function') {
-        await window.refreshJobsOnly();
-      }
-    };
-    return registry.startInterval(
+    return registry.startTimeout(
       'training-jobs',
-      trainingOwners,
-      callback,
-      trainingPollDelay(s),
+      trainingOwner,
+      async () => {
+        const current = state();
+        if (String(current.page || '') !== trainingOwner) return;
+        if (!current.project?.id) return;
+        try {
+          if (typeof window.TrainingTaskRuntime?.refresh === 'function') {
+            await window.TrainingTaskRuntime.refresh({render: true, source: 'poll'});
+          } else if (typeof window.refreshJobsOnly === 'function') {
+            await window.refreshJobsOnly();
+          }
+        } catch (_) {
+          // Keep the last truthful state. A still-dynamic task may retry next cycle.
+        } finally {
+          replaceTrainingJobTimer();
+        }
+      },
+      2000,
     );
   }
 
@@ -219,6 +227,10 @@ export function installPollRegistry({getState} = {}) {
     beforeNavigate(nextPage) {
       registry.leave(nextPage);
       clearLegacyReferences(nextPage);
+    },
+    afterNavigate(page) {
+      if (String(page || state().page || '') === trainingOwner) return replaceTrainingJobTimer();
+      return null;
     },
     snapshot() { return registry.snapshot(); },
     destroy() {

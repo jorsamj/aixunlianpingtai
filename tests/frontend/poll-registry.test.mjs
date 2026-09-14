@@ -170,6 +170,37 @@ test('paused-only and every supported terminal training state leave no pending t
   }
 });
 
+test('a transient training refresh failure re-arms while last-known state is still dynamic', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nextTimer = 450;
+  const timeouts = new Map();
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+  const state = {page: '训练任务', project: {id: 'p1'}, jobs: [{id: 'j1', status: 'running'}]};
+  globalThis.window = {
+    TrainingTaskRuntime: {async refresh() { throw new Error('temporary network failure'); }},
+  };
+
+  let runtime;
+  try {
+    runtime = installPollRegistry({getState: () => state});
+    const firstTimer = Math.max(...timeouts.keys());
+    await timeouts.get(firstTimer).callback();
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), true);
+    assert.notEqual(Math.max(...timeouts.keys()), firstTimer);
+  } finally {
+    runtime?.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    delete globalThis.window;
+  }
+});
+
 test('leaving training clears its timer and resume lifecycle can restore it from refreshed state', () => {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
