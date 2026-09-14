@@ -15,8 +15,10 @@ on:
       - platform_core/annotation_batches.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
+      - platform_core/cleaning_batches.py
       - platform_core/deployment/inference_tasks.py
       - platform_core/gpu_resources.py
+      - platform_core/material_batches.py
       - platform_core/storage/import_tasks.py
       - platform_core/task_runtime/repository.py
       - platform_core/task_runtime/fenced_repository.py
@@ -27,6 +29,8 @@ on:
       - platform_core/training_tasks.py
       - platform_core/video_tasks.py
       - tests/api/test_durable_training_controls.py
+      - tests/api/test_clean_unified_execution_truth.py
+      - tests/api/test_upload_clean_flow.py
       - tests/api/test_training_unified_task_overlay.py
       - tests/api/test_unified_task_process_cancel.py
       - tests/api/test_unified_task_paused_public_status.py
@@ -75,6 +79,7 @@ on:
 # Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
 # AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
 # AI-annotation queue-display guard: polling rows must preserve durable resource_queue_position/resource_wait_reason instead of erasing runtimeText.
+# Cleaning execution guard: manual and upload-batch clean_task_id values must publish one MATERIAL_BATCH/CLEAN TaskRepository truth.
 # Storage-scan guard: cancellation during a remote object read must stop follow-up I/O and terminal scan publication.
 # Storage-index guard: once cancellation is durable truth, indexing must not start later material/annotation writes.
 # Storage-progress guard: confirmation is partial progress, resume never regresses, and indexing advances 50..99 before success=100.
@@ -109,6 +114,8 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_durable_training_controls.py
+          tests/api/test_clean_unified_execution_truth.py
+          tests/api/test_upload_clean_flow.py
           tests/api/test_training_unified_task_overlay.py
           tests/api/test_unified_task_process_cancel.py
           tests/api/test_unified_task_paused_public_status.py
