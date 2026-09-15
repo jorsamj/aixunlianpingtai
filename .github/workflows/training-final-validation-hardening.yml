@@ -6,6 +6,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - checkpoint_validation_worker.py
+      - train_worker.py
       - train_worker_safe.py
       - platform_core/training_hardened_tasks.py
       - platform_core/training_recovery_tasks.py
@@ -20,6 +21,7 @@ on:
       - tests/unit/test_training_finalization_handshake.py
       - tests/unit/test_training_resource_contract.py
       - tests/unit/test_training_startup_performance_contract.py
+      - tests/unit/test_training_worker_startup_callbacks.py
       - tests/unit/test_portable_dataset.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/task_runtime/test_process_control.py
@@ -49,6 +51,7 @@ jobs:
         run: >-
           python -m py_compile
           checkpoint_validation_worker.py
+          train_worker.py
           train_worker_safe.py
           platform_core/training_hardened_tasks.py
           platform_core/training_recovery_tasks.py
@@ -66,6 +69,7 @@ jobs:
           tests/unit/test_training_finalization_handshake.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_training_startup_performance_contract.py
+          tests/unit/test_training_worker_startup_callbacks.py
           tests/unit/test_portable_dataset.py
           tests/unit/test_training_bundle_isolation.py
           tests/unit/task_runtime/test_process_control.py
@@ -87,6 +91,7 @@ jobs:
           grep -Fq 'process_returncode' platform_core/training_hardened_tasks.py
           grep -Fq 'process_signal' platform_core/training_hardened_tasks.py
           grep -Fq 'completion_error' platform_core/training_hardened_tasks.py
+          grep -Fq 'stage="training" if training_started else "trainer_startup"' platform_core/training_hardened_tasks.py
           grep -Fq 'returncode=-9' tests/unit/test_training_final_validation_oom_hardening.py
           grep -Fq '99a99b479ecf' tests/unit/test_training_final_validation_oom_hardening.py
           grep -Fq '45d5851805c3' tests/unit/test_training_final_validation_oom_hardening.py
@@ -95,6 +100,14 @@ jobs:
           grep -Fq 'test_terminate_tree_reaps_group_after_leader_was_killed' tests/unit/task_runtime/test_process_control.py
           grep -Fq 'validation_mode' platform_core/training_devices.py
           grep -Fq 'class _HashingReader' platform_core/training_tasks.py
+          grep -Fq '_verify_materialized_dataset_evidence' platform_core/training_tasks.py
+          grep -Fq 'durable=False' platform_core/training_tasks.py
+          grep -Fq 'next_oom_retry_resources' train_worker.py
+          grep -Fq 'startup_stage' train_worker.py
+          grep -Fq 'on_train_batch_start' train_worker.py
           grep -Fq 'test_manual_workers_are_not_coupled_to_batch' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq 'test_materialization_uses_construction_evidence_instead_of_full_image_rehash' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq 'test_oom_retry_keeps_workers_independent_from_batch' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq 'on_train_batch_start' tests/unit/test_training_worker_startup_callbacks.py
           grep -Fq '_failure_current_item' platform_core/task_runtime/scheduler.py
           grep -Fq 'test_training_failure_prefers_durable_failure_evidence_for_terminal_detail' tests/unit/task_runtime/test_training_terminal_truth.py
