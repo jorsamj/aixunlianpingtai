@@ -14,9 +14,23 @@ const STAGE_LABELS = Object.freeze({
   training: '训练中',
   paused: '已暂停',
   cancelling: '正在停止训练',
+  cleaning_training_process: '释放训练进程资源',
   finalizing: '校验训练产物',
+  final_validation: '独立验证最佳模型',
+  recovering_checkpoint: '恢复并验证 Checkpoint',
+  process_cleanup_blocked: '等待训练进程安全退出',
   finalizing_commit: '归档训练结果',
   committed: '训练完成',
+  blocked_by_environment: '训练环境不可用',
+  blocked_by_hardware: '训练硬件不可用',
+  failed: '训练失败',
+  cancelled: '已取消',
+});
+
+const FAILURE_STAGE_LABELS = Object.freeze({
+  training_process: '训练进程失败',
+  post_training: '训练结束后处理失败',
+  final_validation: '最终模型验证失败',
 });
 
 function rowsFrom(body) {
@@ -207,6 +221,26 @@ function completionRuntimeMeta(job, progress) {
   return '提前完成';
 }
 
+function terminalRuntimeMeta(job, stage) {
+  const status = String(job?.status || '').trim().toLowerCase();
+  if (['done', 'finished', 'completed'].includes(status)) return '';
+  if (!DONE_STATUSES.has(status)) return '';
+
+  const taskStatus = String(job?.task_status || '').trim().toUpperCase();
+  const failureStage = String(job?.failure_stage || '').trim().toLowerCase();
+  let label = '';
+  if (taskStatus === 'BLOCKED_BY_ENVIRONMENT') label = '训练环境不可用';
+  else if (taskStatus === 'BLOCKED_BY_HARDWARE') label = '训练硬件不可用';
+  else if (status === 'cancelled' || status === 'canceled') label = '已取消';
+  else if (status === 'stopped') label = '已停止';
+  else if (status === 'failed') label = FAILURE_STAGE_LABELS[failureStage] || stage.label || '训练失败';
+  else label = stage.label || statusText(status);
+
+  const reason = String(job?.current_item || job?.message || job?.error || '').trim();
+  if (!reason || reason === label) return label;
+  return `${label} · ${reason}`;
+}
+
 function actions(job) {
   const id = esc(job.id);
   if (job.status === 'queued' || job.status === 'waiting') return `<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
@@ -224,11 +258,22 @@ export function trainingTaskRow(job) {
   const completionMeta = completionRuntimeMeta(job, progress);
   const stage = trainingStageView(job);
   const done = DONE_STATUSES.has(String(job?.status || ''));
+  const successful = ['done', 'finished', 'completed'].includes(String(job?.status || ''));
+  const terminalMeta = terminalRuntimeMeta(job, stage);
   const epochStarted = Number(progress.epoch || 0) > 0;
   const progressParts = [];
 
   if (completionMeta) progressParts.push(completionMeta);
-  if (epochStarted) {
+  if (done && !successful) {
+    if (terminalMeta) progressParts.push(terminalMeta);
+    if (epochStarted) {
+      progressParts.push(`Epoch ${progress.epoch}/${totalEpochs}`);
+      if (progress.currentBatch !== null && progress.currentBatch !== undefined && progress.totalBatches) {
+        progressParts.push(`Batch ${progress.currentBatch}/${progress.totalBatches}`);
+      }
+    }
+    progressParts.push(`${percent.toFixed(0)}%`);
+  } else if (epochStarted) {
     progressParts.push(`Epoch ${progress.epoch}/${totalEpochs}`);
     if (progress.currentBatch !== null && progress.currentBatch !== undefined && progress.totalBatches) {
       progressParts.push(`Batch ${progress.currentBatch}/${progress.totalBatches}`);
@@ -493,7 +538,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
   doc?.addEventListener?.('click', onClickCapture, true);
 
   const runtime = {
-    build: 'training-task-runtime-422504',
+    build: 'training-task-runtime-422505',
     refresh,
     patch: patchFinalTrainingTable,
     state() {
