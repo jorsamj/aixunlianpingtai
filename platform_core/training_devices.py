@@ -119,7 +119,74 @@ def probe_training_devices(python_executable: str, *, validate_device: str | Non
     except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as error:
         report["error"] = str(error)
     report["requested_python_executable"] = str(python_executable)
+    report["validation_mode"] = "torch_subprocess"
     return report
+
+
+def _probe_cuda_with_nvidia_smi(
+    python_executable: str,
+    assigned_device: str,
+    *,
+    timeout: float = 5,
+) -> dict[str, Any] | None:
+    """Cheap scheduler-side CUDA admission check.
+
+    The actual training process still performs the authoritative Torch tensor
+    allocation, CUDA synchronization and UUID identity check. Using nvidia-smi
+    here avoids paying for a second Python+Torch+CUDA cold start before the
+    trainer process is launched. If nvidia-smi is unavailable or malformed we
+    fall back to the original Torch subprocess probe.
+    """
+    device = normalize_training_device(assigned_device)
+    if not device.startswith("cuda:"):
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid,name",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(1.0, min(float(timeout), 5.0)),
+            env=os.environ.copy(),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if completed.returncode:
+        return None
+    gpus: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",", 2)]
+        if len(parts) != 3 or not parts[0].isdigit():
+            continue
+        index = int(parts[0])
+        gpus.append({
+            "id": f"cuda:{index}",
+            "index": index,
+            "uuid": parts[1] or None,
+            "name": parts[2] or None,
+        })
+    index = int(device[5:])
+    selected = next((gpu for gpu in gpus if gpu["index"] == index), None)
+    if selected is None:
+        return None
+    return {
+        "python_executable": str(python_executable),
+        "requested_python_executable": str(python_executable),
+        "torch_version": None,
+        "cuda_version": None,
+        "cuda_available": True,
+        "device_count": len(gpus),
+        "gpus": gpus,
+        "cpu_name": "CPU",
+        "error": None,
+        "validated_device": device,
+        "validation_mode": "nvidia_smi_admission_then_trainer_torch_validation",
+    }
 
 
 def discover_training_devices(python_executable: str) -> dict[str, Any]:
@@ -141,7 +208,9 @@ def discover_training_devices(python_executable: str) -> dict[str, Any]:
 
 def validate_training_device(python_executable: str, assigned_device: str) -> dict[str, Any]:
     device = normalize_training_device(assigned_device)
-    report = probe_training_devices(python_executable, validate_device=device)
+    report = _probe_cuda_with_nvidia_smi(python_executable, device) if device.startswith("cuda:") else None
+    if report is None:
+        report = probe_training_devices(python_executable, validate_device=device)
     if report.get("error") or report.get("validated_device") != device:
         index = int(device[5:]) if device.startswith("cuda:") else None
         gpu = next((gpu for gpu in report["gpus"] if gpu["index"] == index), {})
