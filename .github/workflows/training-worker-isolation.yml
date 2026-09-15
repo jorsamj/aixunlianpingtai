@@ -1,0 +1,50 @@
+name: Training Worker Isolation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/training-worker-isolation.yml
+      - task_worker.py
+      - platform_core/worker_supervisor.py
+      - platform_core/worker_registry.py
+      - platform_core/resource_discovery/tasks.py
+      - platform_core/resource_discovery/candidates.py
+      - platform_core/resource_discovery/scanner.py
+      - platform_core/task_runtime/scheduler.py
+      - tests/unit/test_launcher_workers.py
+      - tests/unit/task_runtime/test_worker_registry.py
+      - tests/integration/test_task_worker_without_web.py
+
+jobs:
+  worker-isolation-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Compile affected Python runtime
+        run: >-
+          python -m py_compile
+          task_worker.py
+          platform_core/worker_supervisor.py
+          platform_core/resource_discovery/tasks.py
+          platform_core/task_runtime/scheduler.py
+      - name: Worker isolation and bounded discovery contracts
+        run: >-
+          python -m pytest -q
+          tests/unit/test_launcher_workers.py
+          tests/unit/task_runtime/test_worker_registry.py
+          tests/integration/test_task_worker_without_web.py
+      - name: Default all-role check remains non-Web and auditable
+        run: >-
+          python task_worker.py --check --data-dir "${RUNNER_TEMP}/platform-data"
