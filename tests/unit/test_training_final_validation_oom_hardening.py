@@ -6,6 +6,7 @@ import pytest
 
 import train_worker_safe
 from platform_core import training_hardened_tasks as hardened
+from platform_core import training_recovery_tasks as recovery
 from platform_core.task_runtime import TaskKind
 from platform_core.worker_registry import resolve_worker_registration
 
@@ -264,6 +265,140 @@ def test_checkpoint_alone_does_not_fabricate_recoverable_completion(tmp_path):
     assert evidence["recovery_action_available"] is False
 
 
+def test_success_manifest_can_reconcile_only_terminal_status_race(tmp_path):
+    project, job_file, weights, _log_path, _job, _argv = _incident(
+        tmp_path,
+        task_id="45d5851805c3",
+        epochs=30,
+    )
+    models = project / "models"
+    models.mkdir(parents=True)
+    best_model = models / "train_45d5851805c3_best.pt"
+    last_model = models / "train_45d5851805c3_last.pt"
+    best_model.write_bytes(b"best-published")
+    last_model.write_bytes(b"last-published")
+    snapshot_id = "snapshot-1"
+    best_sha = hardened.base._sha256(weights / "best.pt")
+
+    hardened.base.atomic_write_json(
+        job_file,
+        {
+            "id": "45d5851805c3",
+            "task_id": "45d5851805c3",
+            "snapshot_id": snapshot_id,
+            "status": "failed",
+            "message": "RuntimeError: false final validation handshake",
+            "artifact_verified": True,
+            "finished_at": "2026-09-15 16:19:05",
+            "training_outcome": "completed",
+            "completion_reason": "requested_epochs_completed",
+            "best_path": str(best_model),
+            "last_path": str(last_model),
+            "verified_models": [str(best_model), str(last_model)],
+            "recovery_attempted": True,
+            "recovery_completed": True,
+        },
+    )
+    hardened.base.atomic_write_json(
+        job_file.parent / "final-validation.json",
+        {
+            "schema_version": 1,
+            "task_id": "45d5851805c3",
+            "snapshot_id": snapshot_id,
+            "checkpoint": str((weights / "best.pt").resolve()),
+            "checkpoint_sha256": best_sha,
+            "success": True,
+            "recovery": True,
+            "published_models": [str(best_model), str(last_model)],
+        },
+    )
+
+    repaired = recovery._reconcile_successful_final_validation(
+        job_file=job_file,
+        expected_task_id="45d5851805c3",
+        expected_snapshot_id=snapshot_id,
+        expected_models_root=models,
+        checkpoint_evidence={
+            "checkpoints": [
+                {
+                    "kind": "best",
+                    "path": str((weights / "best.pt").resolve()),
+                    "sha256": best_sha,
+                }
+            ]
+        },
+        expected_recovery=True,
+    )
+
+    assert repaired is not None
+    assert repaired["status"] == "done"
+    assert repaired["recoverable"] is False
+    assert repaired["recovery_completed"] is True
+    assert hardened.base._training_completion_error(
+        repaired,
+        expected_task_id="45d5851805c3",
+        expected_snapshot_id=snapshot_id,
+        expected_models_root=models,
+    ) is None
+
+
+def test_success_manifest_reconciliation_rejects_checkpoint_mismatch(tmp_path):
+    project, job_file, weights, _log_path, _job, _argv = _incident(tmp_path, task_id="mismatch", epochs=30)
+    models = project / "models"
+    models.mkdir(parents=True)
+    best_model = models / "train_mismatch_best.pt"
+    best_model.write_bytes(b"published")
+    snapshot_id = "snapshot-1"
+    actual_sha = hardened.base._sha256(weights / "best.pt")
+
+    hardened.base.atomic_write_json(
+        job_file,
+        {
+            "id": "mismatch",
+            "task_id": "mismatch",
+            "snapshot_id": snapshot_id,
+            "status": "failed",
+            "artifact_verified": True,
+            "finished_at": "2026-09-15 16:19:05",
+            "training_outcome": "completed",
+            "best_path": str(best_model),
+            "verified_models": [str(best_model)],
+        },
+    )
+    hardened.base.atomic_write_json(
+        job_file.parent / "final-validation.json",
+        {
+            "task_id": "mismatch",
+            "snapshot_id": snapshot_id,
+            "checkpoint": str((weights / "best.pt").resolve()),
+            "checkpoint_sha256": "wrong",
+            "success": True,
+            "recovery": True,
+            "published_models": [str(best_model)],
+        },
+    )
+
+    repaired = recovery._reconcile_successful_final_validation(
+        job_file=job_file,
+        expected_task_id="mismatch",
+        expected_snapshot_id=snapshot_id,
+        expected_models_root=models,
+        checkpoint_evidence={
+            "checkpoints": [
+                {
+                    "kind": "best",
+                    "path": str((weights / "best.pt").resolve()),
+                    "sha256": actual_sha,
+                }
+            ]
+        },
+        expected_recovery=True,
+    )
+
+    assert repaired is None
+    assert hardened.base._json(job_file, {})["status"] == "failed"
+
+
 def test_training_role_uses_checkpoint_recovery_hardened_handler(tmp_path):
     registration = resolve_worker_registration(tmp_path, {"training"})
     handler = registration.handlers[TaskKind.TRAINING]
@@ -271,4 +406,6 @@ def test_training_role_uses_checkpoint_recovery_hardened_handler(tmp_path):
     assert handler.__class__.__name__ == "RecoveryHardenedLabelContractTrainingHandler"
     assert handler.__class__.__module__ == "platform_core.training_recovery_tasks"
     assert isinstance(handler, hardened.HardenedLabelContractTrainingHandler)
+    assert handler.process_runner is recovery._run_hardened_training_process_with_reconciliation
+    assert handler.process_runner is not hardened.base._run_training_process
     assert "training.ultralytics" in registration.capabilities
