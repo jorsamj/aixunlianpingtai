@@ -10,6 +10,7 @@ import {installPageRequestScope} from './modules/page-request-scope.js?v=422501'
 import {installPollRegistry} from './modules/poll-registry.js?v=422518';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422500';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422523';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
@@ -126,6 +127,14 @@ const trainingRecoveryRuntime = installTrainingRecoveryRuntime({
   notify,
 });
 window.PlatformCore.runtime.trainingRecoveryRuntime = trainingRecoveryRuntime;
+
+const trainingMaterialPickerRuntime = installTrainingMaterialPickerRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  trainingDraftRuntime,
+  notify,
+});
+window.PlatformCore.runtime.trainingMaterialPickerRuntime = trainingMaterialPickerRuntime;
 
 const trainingTaskRuntime = installTrainingTaskRuntime({
   getState: () => state,
