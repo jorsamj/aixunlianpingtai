@@ -18,6 +18,7 @@ from filelock import FileLock
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .material_repository import MaterialRepository
+from .storage.errors import StorageError
 from .storage.manager import StorageManager
 
 DEFAULT_PAGE_SIZE = 120
@@ -188,9 +189,9 @@ def training_material_picker_router(get_project, data_dir_provider):
                         manager = StorageManager(data_dir=data_dir(), project_id=project_id, materials=repository)
                         materialized = manager.materialize(dict(row))
                         _write_thumbnail(Path(materialized.path), target, thumbnail_size)
-                    except (OSError, ValueError, UnidentifiedImageError, Exception):
-                        # Remote sources may require credentials owned by the main storage runtime.
-                        # Preserve availability by falling back to the existing authoritative content route.
+                    except (OSError, ValueError, UnidentifiedImageError, StorageError):
+                        # Provider/image failures may be handled by the existing authoritative content route.
+                        # Programming errors are intentionally not swallowed here.
                         encoded = quote(str(image_id), safe="")
                         return RedirectResponse(
                             f"/api/v61/projects/{quote(str(project_id), safe='')}/materials/{encoded}/content",
