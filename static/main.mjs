@@ -3,7 +3,7 @@ import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422513';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422512';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
@@ -11,6 +11,7 @@ import {installPollRegistry} from './modules/poll-registry.js?v=422518';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422500';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422523';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
@@ -51,6 +52,8 @@ function fallbackToast(message) {
 
 if (typeof window.toast !== 'function') window.toast = fallbackToast;
 
+// Training owns its own paged material picker/summary and must never request the whole image pool.
+FULL_MATERIAL_PAGES.delete('训练任务');
 for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
 
 registerAction('algorithm.create', () => {
@@ -111,7 +114,21 @@ window.PlatformCore = {
 
 const notify = message => window.toast(message);
 installNegativeSampleRuntime({getState: () => state, notify});
-const trainingLabelRuntime = installTrainingLabelRuntime({getState: () => state, notify, trainingDraftRuntime});
+
+const trainingMaterialSummaryRuntime = installTrainingMaterialSummaryRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  trainingDraftRuntime,
+  notify,
+});
+window.PlatformCore.runtime.trainingMaterialSummaryRuntime = trainingMaterialSummaryRuntime;
+
+const trainingLabelRuntime = installTrainingLabelRuntime({
+  getState: () => state,
+  notify,
+  trainingDraftRuntime,
+  materialSummaryRuntime: trainingMaterialSummaryRuntime,
+});
 window.PlatformCore.runtime.trainingLabelRuntime = trainingLabelRuntime;
 
 const algorithmListRuntime = installAlgorithmListRuntime({
