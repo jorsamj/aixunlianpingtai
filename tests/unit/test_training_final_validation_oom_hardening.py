@@ -264,10 +264,11 @@ def test_checkpoint_alone_does_not_fabricate_recoverable_completion(tmp_path):
     assert evidence["recovery_action_available"] is False
 
 
-def test_training_role_uses_hardened_label_contract_handler(tmp_path):
+def test_training_role_uses_checkpoint_recovery_hardened_handler(tmp_path):
     registration = resolve_worker_registration(tmp_path, {"training"})
     handler = registration.handlers[TaskKind.TRAINING]
 
-    assert handler.__class__.__name__ == "HardenedLabelContractTrainingHandler"
-    assert handler.__class__.__module__ == "platform_core.training_hardened_tasks"
+    assert handler.__class__.__name__ == "RecoveryHardenedLabelContractTrainingHandler"
+    assert handler.__class__.__module__ == "platform_core.training_recovery_tasks"
+    assert isinstance(handler, hardened.HardenedLabelContractTrainingHandler)
     assert "training.ultralytics" in registration.capabilities
