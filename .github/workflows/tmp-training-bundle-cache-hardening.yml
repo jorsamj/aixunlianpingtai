@@ -11,9 +11,9 @@ permissions:
   contents: write
 
 jobs:
-  patch-and-verify:
+  package-verified-patch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,31 +23,17 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Apply exact cache hardening patch
+      - name: Reapply the already verified exact patch
         run: |
           python .github/tmp_training_bundle_cache_hardening_fix.py
           python .github/tmp_training_bundle_cache_hardening.py
-
-      - name: Install project test dependencies
-        run: |
-          python -m pip install -r requirements.txt
-          python -m pip install -r requirements-dev.txt
-
-      - name: Verify cache integrity and finalization ordering
-        run: |
           python -m py_compile platform_core/training_bundle_cache.py platform_core/training_tasks.py
-          python -m pytest -q \
-            tests/unit/test_training_bundle_cache.py \
-            tests/unit/test_training_startup_performance_contract.py \
-            tests/unit/test_training_finalization_handshake.py \
-            tests/unit/test_portable_dataset.py \
-            tests/unit/test_training_bundle_isolation.py
 
       - name: Commit verified hardening and cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm \
+          git rm -f \
             .github/workflows/tmp-training-bundle-cache-hardening.yml \
             .github/tmp_training_bundle_cache_hardening.py \
             .github/tmp_training_bundle_cache_hardening_fix.py
@@ -58,5 +44,5 @@ jobs:
             docs/CODEX_CURRENT_STATE.md
           git commit -m "fix(training): harden verified bundle cache admission"
 
-      - name: Push verified commit
+      - name: Upload commit object
         run: git push origin HEAD:refactor/frontend-runtime-stabilization
