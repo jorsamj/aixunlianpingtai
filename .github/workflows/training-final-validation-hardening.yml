@@ -8,6 +8,7 @@ on:
       - checkpoint_validation_worker.py
       - train_worker_safe.py
       - platform_core/training_hardened_tasks.py
+      - platform_core/training_recovery_tasks.py
       - platform_core/training_tasks.py
       - platform_core/training_label_tasks.py
       - platform_core/training_metrics.py
@@ -45,6 +46,7 @@ jobs:
           checkpoint_validation_worker.py
           train_worker_safe.py
           platform_core/training_hardened_tasks.py
+          platform_core/training_recovery_tasks.py
           platform_core/task_runtime/process_control.py
           platform_core/task_runtime/scheduler.py
           platform_core/worker_registry.py
@@ -60,7 +62,10 @@ jobs:
 
       - name: Permanent hardening guards
         run: |
-          grep -Fq '"training": "platform_core.training_hardened_tasks"' platform_core/worker_registry.py
+          grep -Fq '"training": "platform_core.training_recovery_tasks"' platform_core/worker_registry.py
+          grep -Fq 'RecoveryHardenedLabelContractTrainingHandler' platform_core/training_recovery_tasks.py
+          grep -Fq 'failure_stage' platform_core/training_recovery_tasks.py
+          grep -Fq 'verify_portable_dataset' platform_core/training_recovery_tasks.py
           grep -Fq 'DEFAULT_AUTO_WORKER_CAP = 2' train_worker_safe.py
           grep -Fq 'TRAINING_AUTO_MAX_DATALOADER_WORKERS' train_worker_safe.py
           grep -Fq 'DEFAULT_FINAL_VALIDATION_WORKERS = 0' platform_core/training_hardened_tasks.py
