@@ -93,6 +93,12 @@ class Scheduler:
             current_item="正在确认训练进程已安全停止",
         ):
             return False
+        if context.task.kind is TaskKind.TRAINING:
+            try:
+                context.heartbeat(current_item="训练已取消")
+            except ExecutionFencedError:
+                context.terminate_bound_process()
+                return False
         cls._finish_if_owned(context, TaskStatus.CANCELLED)
         return True
 
@@ -127,6 +133,35 @@ class Scheduler:
             return False
         return True
 
+    @staticmethod
+    def _failure_current_item(
+        context: WorkerContext,
+        status: TaskStatus,
+        error: Exception,
+    ) -> str:
+        fallback = f"{type(error).__name__}: {error}"
+        if context.task.kind is not TaskKind.TRAINING:
+            return fallback
+        try:
+            evidence = context.artifacts.read_json(
+                context.task.task_id,
+                "failure.json",
+                default={},
+            )
+        except (ExecutionFencedError, OSError, ValueError, TypeError):
+            evidence = {}
+        if not isinstance(evidence, Mapping):
+            return fallback
+        for key in ("completion_error", "recovery_error", "last_job_message"):
+            value = str(evidence.get(key) or "").strip()
+            if value:
+                return value
+        if status is TaskStatus.BLOCKED_BY_HARDWARE:
+            return fallback
+        if status is TaskStatus.BLOCKED_BY_ENVIRONMENT:
+            return fallback
+        return fallback
+
     @classmethod
     def _finish_error_or_cancel(
         cls,
@@ -148,6 +183,12 @@ class Scheduler:
             stage="process_cleanup_blocked",
             current_item=f"任务异常，正在确认训练进程已安全停止：{type(error).__name__}: {error}",
         ):
+            return
+        terminal_item = cls._failure_current_item(context, status, error)
+        try:
+            context.heartbeat(current_item=terminal_item)
+        except ExecutionFencedError:
+            context.terminate_bound_process()
             return
         cls._finish_if_owned(context, status, error=f"{type(error).__name__}: {error}")
 
@@ -193,6 +234,11 @@ class Scheduler:
             if current is not None and current.status is TaskStatus.CANCEL_REQUESTED:
                 self._finish_cancel_if_safe(context, current)
             else:
+                if lease.task.kind is TaskKind.TRAINING and status in {
+                    TaskStatus.SUCCEEDED,
+                    TaskStatus.PARTIAL_SUCCESS,
+                }:
+                    context.heartbeat(current_item="训练完成，结果已归档")
                 context.finish(status, result_ref)
         except ExecutionFencedError:
             # Never let a stale generation publish FAILED/SUCCEEDED over the
