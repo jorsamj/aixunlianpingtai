@@ -1,0 +1,27 @@
+/* Product presentation contract for the create-training modal only.
+ * Runtime, TrainingDraft, TrainingLabel and TrainingSubmit ownership stay unchanged.
+ */
+.train-create-saas .train-ui-card > header small,
+.train-create-saas .train428-panel > header small,
+.train-create-saas .train-ui-split > header small,
+.train-create-saas .train-ui-advanced > summary small,
+.train-create-saas .field > small,
+.train-create-saas .train-v3-resources > small,
+.train-create-saas .train-v3-resource-strategy > small,
+.train-create-saas .train-v3-note,
+.train-create-saas .train-ui-label-slot .training-label-choice small,
+.train-create-saas .train-ui-label-slot .training-label-contract-count,
+.train-create-saas .train-ui-label-slot img,
+.train-create-saas #tr429Estimate {
+  display: none !important;
+}
+
+/* Keep each selectable label visually text-only: checkbox + display name. */
+.train-create-saas .train-ui-label-slot .training-label-choice span {
+  display: block !important;
+}
+
+.train-create-saas .train-ui-label-slot .training-label-choice b {
+  display: block;
+  margin: 0;
+}
