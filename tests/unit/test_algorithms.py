@@ -1,8 +1,13 @@
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
-from platform_core.algorithms import choose_iteration_base
+import platform_core.algorithms as algorithms_module
+from platform_core.algorithms import attach_version, choose_iteration_base
 from platform_core.errors import PlatformError
 
 
@@ -153,3 +158,63 @@ def test_latest_trainable_ignores_failed_and_cancelled_attempts(tmp_path: Path):
     )
 
     assert selected["base_version_id"] == "good"
+
+
+def test_attach_version_is_idempotent_for_training_task(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "name": "fire", "versions": []}]),
+        encoding="utf-8",
+    )
+    version = {
+        "id": "version-one",
+        "task_id": "train-one",
+        "job_id": "train-one",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "created_at": "2026-09-15T01:02:03+00:00",
+    }
+
+    first = attach_version(path, "algorithm-one", version)
+    second = attach_version(path, "algorithm-one", {**version, "id": "duplicate-version"})
+
+    stored = json.loads(path.read_text(encoding="utf-8"))[0]["versions"]
+    assert first["id"] == "version-one"
+    assert second["id"] == "version-one"
+    assert [row["task_id"] for row in stored] == ["train-one"]
+
+
+def test_concurrent_training_finalizers_do_not_overwrite_versions(tmp_path, monkeypatch):
+    path = tmp_path / "algorithms.json"
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "name": "fire", "versions": []}]),
+        encoding="utf-8",
+    )
+    original_list = algorithms_module.list_algorithms
+    start = threading.Barrier(2)
+
+    def slow_list(target):
+        rows = original_list(target)
+        time.sleep(0.05)
+        return rows
+
+    monkeypatch.setattr(algorithms_module, "list_algorithms", slow_list)
+
+    def archive(task_id):
+        start.wait(timeout=2)
+        return attach_version(
+            path,
+            "algorithm-one",
+            {
+                "id": f"version-{task_id}",
+                "task_id": task_id,
+                "training_status": "SUCCEEDED",
+                "finished_at": f"2026-09-15T00:00:0{task_id[-1]}+00:00",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(archive, ("task-1", "task-2")))
+
+    versions = original_list(path)[0]["versions"]
+    assert {row["task_id"] for row in versions} == {"task-1", "task-2"}

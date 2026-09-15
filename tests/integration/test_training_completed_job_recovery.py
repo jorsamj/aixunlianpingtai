@@ -53,7 +53,7 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
         "id": task_id,
         "task_id": task_id,
         "status": "done",
-        "message": "训练完成，模型产物校验通过",
+        "message": "训练达到质量目标，模型产物校验通过",
         "artifact_verified": True,
         "verified_models": [str(trained_model)],
         "best_path": str(trained_model),
@@ -70,7 +70,8 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
         "current_epoch": 180,
         "total_epochs": 300,
         "progress_percent": 100,
-        "training_outcome": "completed",
+        "training_outcome": "target_reached",
+        "completion_reason": "quality_target_reached",
         "finished_at": "2026-09-11 20:25:26",
         "training_report": {
             "metrics": {
@@ -117,7 +118,8 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path):
     result = artifacts.read_json(task_id, "result.json")
     assert result["completed_epochs"] == 180
     assert result["requested_epochs"] == 300
-    assert result["training_outcome"] == "completed"
+    assert result["training_outcome"] == "target_reached"
+    assert result["completion_reason"] == "quality_target_reached"
     assert result["verified_models"][0]["size_bytes"] > 0
     versions = json.loads((project / "algorithms.json").read_text(encoding="utf-8"))[0]["versions"]
     assert len(versions) == 1

@@ -35,6 +35,15 @@ TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
 TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
+TRAINING_COMPLETION_GRACE_SECONDS = 5.0
+_SUCCESSFUL_TRAINING_OUTCOMES = {
+    "completed",
+    "target_reached",
+    "early_stopping",
+    # Existing quality-gate semantics: the run completed and produced a
+    # verified checkpoint, but the result recommends another iteration.
+    "needs_optimization",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -631,11 +640,79 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     return argv
 
 
+def _verified_job_model_paths(job: Mapping[str, Any]) -> list[Path]:
+    paths = []
+    for value in job.get("verified_models") or []:
+        if isinstance(value, Mapping):
+            value = value.get("path") or value.get("stored_path") or value.get("source")
+        raw = str(value or "").strip()
+        if raw:
+            paths.append(Path(raw))
+    return paths
+
+
+def _training_completion_error(
+    job: Mapping[str, Any],
+    *,
+    expected_task_id: str | None = None,
+    expected_snapshot_id: str | None = None,
+    expected_models_root: Path | None = None,
+) -> str | None:
+    if expected_task_id:
+        job_task_id = str(job.get("task_id") or job.get("id") or "").strip()
+        if job_task_id != str(expected_task_id):
+            return "training job identity does not match the durable task"
+    if expected_snapshot_id:
+        if str(job.get("snapshot_id") or "").strip() != str(expected_snapshot_id):
+            return "training snapshot identity does not match the durable task"
+    if str(job.get("status") or "").strip().lower() != "done":
+        return "job status is not done"
+    if job.get("artifact_verified") is not True:
+        return "model artifact verification is incomplete"
+    if not str(job.get("finished_at") or "").strip():
+        return "training finished_at is missing"
+    outcome = str(job.get("training_outcome") or "").strip().lower()
+    if outcome not in _SUCCESSFUL_TRAINING_OUTCOMES:
+        return f"training outcome is not terminal success: {outcome or '<missing>'}"
+    paths = _verified_job_model_paths(job)
+    if not paths:
+        return "verified model list is empty"
+    if expected_models_root is not None:
+        models_root = expected_models_root.resolve()
+        for path in paths:
+            try:
+                path.resolve().relative_to(models_root)
+            except ValueError:
+                return "verified model is outside the project model directory"
+    best_or_last = {
+        str(Path(str(job.get(key))).resolve())
+        for key in ("best_path", "last_path")
+        if str(job.get(key) or "").strip()
+    }
+    if not best_or_last:
+        return "verified best/last model is missing"
+    verified_existing = {
+        str(path.resolve())
+        for path in paths
+        if path.is_file() and path.stat().st_size > 0
+    }
+    if not verified_existing.intersection(best_or_last):
+        return "verified best/last model file is missing or empty"
+    return None
+
+
 def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[str, Any]:
     artifact_log = context.artifacts.artifact_path(context.task.task_id, context.task.log_ref)
     artifact_log.parent.mkdir(parents=True, exist_ok=True)
     log_path = job_file.parent / "train.log"
     root = Path(__file__).resolve().parent.parent
+    snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
+    expected_snapshot_id = (
+        str(snapshot.get("snapshot_id") or "").strip()
+        if isinstance(snapshot, Mapping)
+        else ""
+    )
+    expected_models_root = (job_file.parent.parent.parent / "models").resolve()
     try:
         with log_path.open("a", encoding="utf-8", newline="") as log:
             launched = launch_process(
@@ -649,10 +726,62 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
             context.repository.bind_process(context.task.task_id, context.lease.lease_token, launched.identity)
             controller = ProcessController()
             next_metrics = 0.0
+            completion_seen_at = None
             while launched.process.poll() is None:
                 if context.cancel_requested():
-                    controller.terminate_tree(launched.identity)
+                    try:
+                        controller.terminate_tree(launched.identity)
+                    except PermissionError as error:
+                        # Do not release the task/GPU lease while the exact
+                        # process tree cannot be proven stopped. Keep managing
+                        # the cancellation and retry instead of publishing a
+                        # false CANCELLED terminal state.
+                        context.repository.heartbeat(
+                            context.task.task_id,
+                            context.lease.lease_token,
+                            stage="cancelling",
+                            current_item=f"waiting for verified process cleanup: {error}",
+                        )
+                        time.sleep(0.25)
+                        continue
                     raise InterruptedError("training cancelled")
+                job = _json(job_file, {})
+                if _training_completion_error(
+                    job,
+                    expected_task_id=context.task.task_id,
+                    expected_snapshot_id=expected_snapshot_id or None,
+                    expected_models_root=expected_models_root,
+                ) is None:
+                    completion_seen_at = completion_seen_at or time.monotonic()
+                    context.repository.heartbeat(
+                        context.task.task_id,
+                        context.lease.lease_token,
+                        progress=95,
+                        stage="finalizing",
+                        current_item="verified training complete; finalizing",
+                    )
+                    if time.monotonic() - completion_seen_at >= TRAINING_COMPLETION_GRACE_SECONDS:
+                        # Business completion is already durable and the model files
+                        # are verified. End only this exact bound process tree so
+                        # lingering DataLoader/telemetry threads cannot block commit.
+                        try:
+                            controller.terminate_tree(launched.identity)
+                        except PermissionError as error:
+                            # A verified model is not permission to release a
+                            # GPU that an unverified process may still use.
+                            context.repository.heartbeat(
+                                context.task.task_id,
+                                context.lease.lease_token,
+                                progress=95,
+                                stage="finalizing",
+                                current_item=f"waiting for verified process cleanup: {error}",
+                            )
+                            time.sleep(0.25)
+                            continue
+                        break
+                    time.sleep(0.1)
+                    continue
+                completion_seen_at = None
                 current_task = context.repository.get(context.task.task_id)
                 if current_task is not None and current_task.stage == "paused":
                     context.repository.heartbeat(
@@ -662,7 +791,6 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     )
                     time.sleep(0.25)
                     continue
-                job = _json(job_file, {})
                 if time.monotonic() >= next_metrics:
                     metrics = read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3"))
                     # Feed scheduler evidence with ownership fencing; never infer unknown CPU/IO pressure.
@@ -683,9 +811,19 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
         if log_path.is_file():
             shutil.copy2(log_path, artifact_log)
     job = _json(job_file, {})
+    if context.cancel_requested():
+        raise InterruptedError("training cancelled")
+    completion_error = _training_completion_error(
+        job,
+        expected_task_id=context.task.task_id,
+        expected_snapshot_id=expected_snapshot_id or None,
+        expected_models_root=expected_models_root,
+    )
+    if completion_error is None:
+        return job
     if launched.process.returncode != 0:
         raise RuntimeError(str(job.get("message") or f"training process exited {launched.process.returncode}"))
-    return job
+    raise RuntimeError(f"training process exited without a trusted completion handshake: {completion_error}")
 
 
 def _completion_int(*values: Any) -> int:
@@ -746,6 +884,15 @@ class TrainingHandler:
         self.process_runner = process_runner or _run_training_process
 
     def _committed(self, context) -> str | None:
+        checkpoint = context.load_checkpoint()
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("stage") != "committed"
+            or checkpoint.get("result_ref") != "result.json"
+        ):
+            # result.json is written before the algorithm version. It is not a
+            # complete transaction until the post-version checkpoint exists.
+            return None
         result = context.artifacts.read_json(context.task.task_id, "result.json", default=None)
         if not isinstance(result, dict):
             return None
@@ -755,21 +902,27 @@ class TrainingHandler:
                 return None
         return "result.json"
 
-    def _finalize_completed_job(self, context, payload: Mapping[str, Any], project: Path, job: Mapping[str, Any]):
-        if str(job.get("status") or "").lower() != "done":
-            raise RuntimeError("training recovery requires a terminal project job")
-        if job.get("artifact_verified") is not True:
-            raise RuntimeError("training reported done but model verification was not completed")
-        job_task_id = str(job.get("task_id") or job.get("id") or "").strip()
-        if job_task_id and job_task_id != context.task.task_id:
-            raise RuntimeError("completed training job belongs to a different task")
-
+    def _finalize_completed_job(
+        self,
+        context,
+        payload: Mapping[str, Any],
+        project: Path,
+        job: Mapping[str, Any],
+        *,
+        recovered: bool = False,
+    ):
         snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
         if not isinstance(snapshot, dict) or not str(snapshot.get("snapshot_id") or ""):
             raise RuntimeError("completed training is missing its durable dataset snapshot")
         snapshot_id = str(snapshot["snapshot_id"])
-        if job.get("snapshot_id") and str(job.get("snapshot_id")) != snapshot_id:
-            raise RuntimeError("completed training snapshot does not match durable task snapshot")
+        completion_error = _training_completion_error(
+            job,
+            expected_task_id=context.task.task_id,
+            expected_snapshot_id=snapshot_id,
+            expected_models_root=project / "models",
+        )
+        if completion_error is not None:
+            raise RuntimeError(f"training completion handshake is not trustworthy: {completion_error}")
         manifest_ref = "work/bundle/manifest.json"
         verification = verify_portable_dataset(context.artifacts.artifact_path(context.task.task_id, manifest_ref))
         if str(verification.get("snapshot_id") or "") != snapshot_id:
@@ -786,24 +939,40 @@ class TrainingHandler:
         if not source_values:
             raise RuntimeError("training reported done without verified model paths")
         models_root = (project / "models").resolve()
-        verified_models = []
-        for index, source_value in enumerate(source_values):
-            source = Path(str(source_value)).resolve()
+        resolved_sources = []
+        for source_value in source_values:
+            if isinstance(source_value, Mapping):
+                source_value = (
+                    source_value.get("path")
+                    or source_value.get("stored_path")
+                    or source_value.get("source")
+                )
+            source = Path(str(source_value or "")).resolve()
             try:
                 source.relative_to(models_root)
             except ValueError as error:
                 raise RuntimeError("completed training model is outside the project model directory") from error
             if not source.is_file() or source.stat().st_size <= 0:
                 raise RuntimeError(f"verified training model is missing: {source.name}")
+            resolved_sources.append(source)
+        # Atomically settle the stop/completion race before writing any official
+        # task result or algorithm version. A cancellation already persisted
+        # wins; after this transition the verified completion owns the commit.
+        context.begin_finalization()
+        verified_models = []
+        output_by_source = {}
+        for index, source in enumerate(resolved_sources):
             ref = f"outputs/{index:02d}_{source.name}"
             destination = context.artifacts.artifact_path(context.task.task_id, ref)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-            verified_models.append({
+            artifact = {
                 "ref": ref,
                 "sha256": _sha256(destination),
                 "size_bytes": destination.stat().st_size,
-            })
+            }
+            verified_models.append(artifact)
+            output_by_source[str(source)] = destination.resolve()
         if not verified_models:
             raise RuntimeError("training recovery found no deliverable model")
 
@@ -836,34 +1005,52 @@ class TrainingHandler:
             "dataset_verification": verification,
             "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
             "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
-            "recovered_from_completed_job": True,
+            "recovered_from_completed_job": bool(recovered),
         }
-        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-        existing = next(
-            (version for version in algorithm.get("versions") or [] if version.get("task_id") == context.task.task_id),
+        best_output = output_by_source.get(str(Path(str(job.get("best_path") or "")).resolve())) if job.get("best_path") else None
+        last_output = output_by_source.get(str(Path(str(job.get("last_path") or "")).resolve())) if job.get("last_path") else None
+        result["best_model_ref"] = next(
+            (model["ref"] for model in verified_models if best_output == context.artifacts.artifact_path(context.task.task_id, model["ref"]).resolve()),
             None,
         )
-        if existing is None:
-            primary = context.artifacts.artifact_path(context.task.task_id, verified_models[0]["ref"])
-            attach_version(
-                algorithms_path,
-                str(algorithm.get("id")),
-                {
-                    "id": uuid.uuid4().hex[:12],
-                    "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
-                    "stored_path": str(primary),
-                    "model_name": primary.name,
-                    "training_status": final_status.value,
-                    "artifact_verified": True,
-                    "trainable": True,
-                    "framework": "ultralytics",
-                    "snapshot_id": snapshot_id,
-                    "result_ref": "result.json",
-                    "task_id": context.task.task_id,
-                    "job_id": context.task.task_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+        result["last_model_ref"] = next(
+            (model["ref"] for model in verified_models if last_output == context.artifacts.artifact_path(context.task.task_id, model["ref"]).resolve()),
+            None,
+        )
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        primary = best_output or last_output or context.artifacts.artifact_path(
+            context.task.task_id, verified_models[0]["ref"]
+        ).resolve()
+        finished_at = str(job.get("finished_at") or datetime.now(timezone.utc).isoformat())
+        attach_version(
+            algorithms_path,
+            str(algorithm.get("id")),
+            {
+                "id": uuid.uuid4().hex[:12],
+                "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+                "stored_path": str(primary),
+                "best_path": str(best_output) if best_output else "",
+                "last_path": str(last_output) if last_output else "",
+                "model_name": primary.name,
+                "verified_models": verified_models,
+                "training_status": final_status.value,
+                "training_outcome": job.get("training_outcome"),
+                "completion_reason": job.get("completion_reason"),
+                "base_version_id": job.get("base_version_id"),
+                "base_version_name": job.get("base_version_name"),
+                "base_selection_reason": job.get("base_selection_reason"),
+                "metrics": training_report.get("metrics") or {},
+                "artifact_verified": True,
+                "trainable": True,
+                "framework": "ultralytics",
+                "snapshot_id": snapshot_id,
+                "result_ref": "result.json",
+                "task_id": context.task.task_id,
+                "job_id": context.task.task_id,
+                "created_at": finished_at,
+                "finished_at": finished_at,
+            },
+        )
         context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot_id, "result_ref": "result.json"})
         return final_status, "result.json"
 
@@ -922,6 +1109,8 @@ class TrainingHandler:
             credentials=credentials,
         )
         for row in images:
+            if context.cancel_requested():
+                raise InterruptedError("training cancelled during material preparation")
             resolved = storage.materialize(row)
             row["content_sha256"] = resolved.content_sha256
             row["size_bytes"] = resolved.size_bytes
@@ -937,12 +1126,16 @@ class TrainingHandler:
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 10, "materializing")
+        if context.cancel_requested():
+            raise InterruptedError("training cancelled before dataset materialization")
         bundle = materialize_portable_dataset(
             context.artifacts.artifact_path(context.task.task_id, "work"),
             snapshot,
             images,
             lambda row: storage.materialize(row).path,
         )
+        if context.cancel_requested():
+            raise InterruptedError("training cancelled after dataset materialization")
         verification = verify_portable_dataset(bundle / "manifest.json")
 
         algorithms_path = project / "algorithms.json"
@@ -1009,6 +1202,8 @@ class TrainingHandler:
             "resource_strategy": payload.get("resource_strategy", "auto"),
         }
         atomic_write_json(job_file, job)
+        if context.cancel_requested():
+            raise InterruptedError("training cancelled before trainer launch")
         argv = _training_argv(
             self.data_dir,
             project,
@@ -1023,79 +1218,7 @@ class TrainingHandler:
         )
         context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 20, "starting_trainer")
         job = self.process_runner(context, argv, job_file)
-        if not job.get("artifact_verified"):
-            raise RuntimeError(str(job.get("message") or "training produced no verified model"))
-        verified_models = []
-        for index, source_value in enumerate(job.get("verified_models") or []):
-            source = Path(str(source_value)).resolve()
-            if not source.is_file() or source.stat().st_size <= 0:
-                raise RuntimeError(f"verified training model is missing: {source.name}")
-            ref = f"outputs/{index:02d}_{source.name}"
-            destination = context.artifacts.artifact_path(context.task.task_id, ref)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if source != destination.resolve():
-                shutil.copy2(source, destination)
-            digest = _sha256(destination)
-            verified_models.append({"ref": ref, "sha256": digest, "size_bytes": destination.stat().st_size})
-        if not verified_models:
-            raise RuntimeError("training reported success without a verified model")
-        training_report = job.get("training_report") or {}
-        partial = (training_report.get("test_result") or {}).get("status") == "failed"
-        final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
-        result = {
-            "schema_version": 1,
-            "requested_device": requested_device,
-            "assigned_device": assigned_device,
-            "actual_device": job.get("actual_device"),
-            "device_evidence": job.get("device_evidence"),
-            "device_validation": device_evidence,
-            "actual_train_params": job.get("actual_train_params"),
-            **_training_completion_metadata(job, payload),
-            "snapshot_id": snapshot["snapshot_id"],
-            "snapshot_ref": "snapshot.json",
-            "dataset_manifest_ref": "work/bundle/manifest.json",
-            "counts": manifest.counts,
-            "actual_ratios": manifest.actual_ratios,
-            "test_source": manifest.requested["test_source"],
-            "test_seed": manifest.test_seed,
-            "validation_seed": manifest.validation_seed,
-            "base_version_id": base.get("base_version_id"),
-            "base_version_name": base.get("base_version_name"),
-            "base_selection_reason": base.get("base_selection_reason"),
-            "verified_models": verified_models,
-            "training_report": training_report,
-            "dataset_verification": verification,
-            "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
-            "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
-        }
-        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-        existing = next(
-            (version for version in algorithm.get("versions") or [] if version.get("task_id") == context.task.task_id),
-            None,
-        )
-        if existing is None:
-            primary = context.artifacts.artifact_path(context.task.task_id, verified_models[0]["ref"])
-            attach_version(
-                algorithms_path,
-                str(algorithm.get("id")),
-                {
-                    "id": uuid.uuid4().hex[:12],
-                    "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
-                    "stored_path": str(primary),
-                    "model_name": primary.name,
-                    "training_status": final_status.value,
-                    "artifact_verified": True,
-                    "trainable": True,
-                    "framework": "ultralytics",
-                    "snapshot_id": snapshot["snapshot_id"],
-                    "result_ref": "result.json",
-                    "task_id": context.task.task_id,
-                    "job_id": context.task.task_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot["snapshot_id"], "result_ref": "result.json"})
-        return final_status, "result.json"
+        return self._finalize_completed_job(context, payload, project, job)
 
     def recover(self, context):
         committed = self._committed(context)
@@ -1109,7 +1232,7 @@ class TrainingHandler:
             payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
             if not isinstance(payload, dict):
                 raise RuntimeError("completed training task payload is invalid")
-            return self._finalize_completed_job(context, payload, project, job)
+            return self._finalize_completed_job(context, payload, project, job, recovered=True)
         return self.run(context)
 
 

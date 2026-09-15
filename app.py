@@ -7416,8 +7416,17 @@ def v48_stop_job(project_id: str, job_id: str):
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
     durable = _durable_training_task(project_id, job_id)
     if durable is not None:
+        if durable.status not in {
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.CANCEL_REQUESTED,
+        }:
+            raise HTTPException(status_code=409, detail="训练任务已经结束，不能再次停止")
         was_queued = durable.status is TaskStatus.QUEUED
-        updated = shared_task_repository().request_cancel(job_id)
+        try:
+            updated = shared_task_repository().request_cancel(job_id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         if not was_queued and updated.process_pid is not None:
             try:
                 ProcessController().terminate_tree(_durable_process_identity(updated))

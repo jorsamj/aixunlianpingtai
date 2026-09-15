@@ -511,6 +511,65 @@ class TaskRepository:
             raise KeyError(task_id)
         return result
 
+    def begin_finalization(
+        self,
+        task_id: str,
+        lease_token: str,
+        *,
+        execution_generation: int | None = None,
+    ) -> TaskRecord:
+        """Atomically choose successful commit over a competing cancellation.
+
+        A cancellation already persisted as ``CANCEL_REQUESTED`` wins. Once the
+        owned execution enters ``finalizing_commit``, later stop requests are
+        rejected so a committed algorithm version can never belong to a task
+        subsequently published as cancelled.
+        """
+        now = utc_now()
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            if current.status is TaskStatus.CANCEL_REQUESTED:
+                database.rollback()
+                raise InterruptedError("task cancellation won before finalization")
+            owned = (
+                current.status is TaskStatus.RUNNING
+                and str(row["lease_token"] or "") == str(lease_token)
+                and (
+                    execution_generation is None
+                    or int(row["attempt"]) == int(execution_generation)
+                )
+            )
+            if not owned:
+                database.rollback()
+                raise PermissionError("task execution does not own finalization")
+            if execution_generation is not None and (
+                not row["lease_expires_at"] or str(row["lease_expires_at"]) <= now
+            ):
+                database.rollback()
+                raise PermissionError("task execution lease expired before finalization")
+            if current.stage != "finalizing_commit":
+                database.execute(
+                    """
+                    UPDATE tasks SET stage='finalizing_commit',
+                        current_item='训练已完成，正在归档已验证产物',
+                        updated_at=? WHERE task_id=?
+                    """,
+                    (now, str(task_id)),
+                )
+            database.commit()
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result
+
     def promote(self, task_id: str) -> TaskRecord:
         now = utc_now()
         with closing(self._connect()) as database:
@@ -548,13 +607,16 @@ class TaskRepository:
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                "SELECT status FROM tasks WHERE task_id=?",
+                "SELECT status, stage FROM tasks WHERE task_id=?",
                 (str(task_id),),
             ).fetchone()
             if row is None:
                 database.rollback()
                 raise KeyError(task_id)
             status = TaskStatus(row["status"])
+            if status is TaskStatus.RUNNING and str(row["stage"]) == "finalizing_commit":
+                database.rollback()
+                raise ValueError("训练已完成并正在归档，无法再停止")
             if status is TaskStatus.QUEUED or status is TaskStatus.AWAITING_CONFIRMATION:
                 database.execute(
                     """
