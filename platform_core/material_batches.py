@@ -139,7 +139,6 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
             f"materials:{project_id}", required_capabilities=("materials.batch",),
         )
     try:
-        # Prepare the schema before taking the material lock. No task exists yet.
         with closing(BatchSelection(selection_path)):
             pass
         clauses, params = _predicate(materials, selection)
@@ -325,14 +324,12 @@ class MaterialBatchHandler:
     def run(self, context):
         selection_path = context.artifacts.artifact_path(context.task.task_id, SELECTION_REF)
         selection_path.parent.mkdir(parents=True, exist_ok=True)
-        # A recovering owner must not run alongside a still-exiting stale owner.
         with FileLock(str(selection_path) + ".lock", timeout=60):
             with closing(BatchSelection(selection_path)) as manifest:
                 try:
                     return self._run(context, manifest)
                 except BaseException as error:
                     append_task_log(context, "error", f"{type(error).__name__}: {error}")
-                    # A stale worker must not overwrite a replacement's checkpoint.
                     if not isinstance(error, PermissionError):
                         context.save_checkpoint(manifest.summary())
                     raise
@@ -356,7 +353,6 @@ class MaterialBatchHandler:
         if not manifest.frozen() or confirmed_revision is None or confirmed_revision[0] != str(selection.repository_revision):
             raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "batch has no confirmed immutable selection; create and confirm a new batch", 409)
         if context.task.retry_of:
-            # Failed rows are replayed only by explicit retry, never in a tight loop.
             while batch := manifest.rows(("failed",)):
                 _check_active(context)
                 manifest.transition([row["image_id"] for row in batch], "pending")
@@ -400,7 +396,6 @@ class MaterialBatchHandler:
                     else:
                         raise BatchRequestError("BATCH_OPERATION_NOT_READY", operation.value)
                     manifest.transition(found, "succeeded")
-                    # Index deletion is idempotent after a crash between deletion and checkpoint.
                     manifest.transition(missing, "succeeded" if operation is BatchOperation.DELETE_INDEX else "failed",
                                         None if operation is BatchOperation.DELETE_INDEX else "MATERIAL_NOT_FOUND")
                 except (PermissionError, InterruptedError):
@@ -444,7 +439,6 @@ class MaterialBatchHandler:
                     if source_id not in source_cache:
                         source_cache[source_id] = sources.get(source_id)
                     source = source_cache[source_id]
-                    # Retain the full material reference even when source config is missing.
                     tombstone = {"material": material, "source": asdict(source) if source else None, "created_at": utc_now()}
                     manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
                                               (json.dumps(tombstone, ensure_ascii=False), image_id))
@@ -467,8 +461,6 @@ class MaterialBatchHandler:
                     live_source = source_cache[source.id]
                     if live_source is None or not live_source.enabled:
                         raise ValueError("STORAGE_SOURCE_DISABLED: restore and enable the source before retrying")
-                    # The captured location remains immutable, while enabling a
-                    # source or rotating its credential reference permits retry.
                     source = replace(source, enabled=True, secret_ref=live_source.secret_ref)
                     cache_key = json.dumps(source_data, sort_keys=True)
                     if cache_key not in providers:
@@ -479,8 +471,6 @@ class MaterialBatchHandler:
                     previously_attempted = bool(tombstone.get("delete_attempted_at"))
                     if not previously_attempted:
                         tombstone["delete_attempted_at"] = utc_now()
-                        # Commit intent before the external side effect so a
-                        # crash after deletion can recover without losing index cleanup.
                         manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
                                                   (json.dumps(tombstone, ensure_ascii=False), image_id))
                     try:
@@ -497,7 +487,6 @@ class MaterialBatchHandler:
                 public_error = redact_storage_error(error)
                 manifest.transition([image_id], "failed", public_error)
                 append_task_log(context, "source_delete_error", f"image_id={image_id} {public_error}")
-        # Never remove an index until that row's source deletion is durably recorded.
         if deletable:
             _check_active(context, "deleting_index")
             try:
@@ -630,7 +619,14 @@ def material_batch_router(get_project, material_store, task_repository, task_art
             raise HTTPException(404, detail="task log unavailable")
         return FileResponse(path, media_type="text/plain", filename=f"{task_id}.log")
 
-    return router
+    # app.py has one additive runtime-router mount today.  Keep material-batch
+    # URLs untouched while composing the independent training recovery API at
+    # that existing integration point instead of adding route side effects.
+    from .training_recovery_api import training_recovery_router
+    root = APIRouter()
+    root.include_router(router)
+    root.include_router(training_recovery_router(get_project, task_repository, task_artifacts))
+    return root
 
 
 def worker_registration(data_dir):
