@@ -12,12 +12,16 @@ on:
       - platform_core/training_tasks.py
       - platform_core/training_label_tasks.py
       - platform_core/training_metrics.py
+      - platform_core/training_devices.py
       - platform_core/worker_registry.py
       - platform_core/task_runtime/process_control.py
       - platform_core/task_runtime/scheduler.py
       - tests/unit/test_training_final_validation_oom_hardening.py
       - tests/unit/test_training_finalization_handshake.py
       - tests/unit/test_training_resource_contract.py
+      - tests/unit/test_training_startup_performance_contract.py
+      - tests/unit/test_portable_dataset.py
+      - tests/unit/test_training_bundle_isolation.py
       - tests/unit/task_runtime/test_process_control.py
       - tests/unit/task_runtime/test_worker_registry.py
       - .github/workflows/training-final-validation-hardening.yml
@@ -47,16 +51,22 @@ jobs:
           train_worker_safe.py
           platform_core/training_hardened_tasks.py
           platform_core/training_recovery_tasks.py
+          platform_core/training_tasks.py
+          platform_core/training_metrics.py
+          platform_core/training_devices.py
           platform_core/task_runtime/process_control.py
           platform_core/task_runtime/scheduler.py
           platform_core/worker_registry.py
 
-      - name: Focused training finalization regressions
+      - name: Focused training finalization and startup regressions
         run: >-
           python -m pytest -q
           tests/unit/test_training_final_validation_oom_hardening.py
           tests/unit/test_training_finalization_handshake.py
           tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_startup_performance_contract.py
+          tests/unit/test_portable_dataset.py
+          tests/unit/test_training_bundle_isolation.py
           tests/unit/task_runtime/test_process_control.py
           tests/unit/task_runtime/test_worker_registry.py
 
@@ -81,3 +91,6 @@ jobs:
           grep -Fq 'start_new_session' platform_core/task_runtime/process_control.py
           grep -Fq '_terminate_posix_group' platform_core/task_runtime/process_control.py
           grep -Fq 'test_terminate_tree_reaps_group_after_leader_was_killed' tests/unit/task_runtime/test_process_control.py
+          grep -Fq 'validation_mode' platform_core/training_devices.py
+          grep -Fq 'class _HashingReader' platform_core/training_tasks.py
+          grep -Fq 'workers > batch' tests/unit/test_training_startup_performance_contract.py
