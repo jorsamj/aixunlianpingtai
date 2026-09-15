@@ -13,7 +13,7 @@ ROLE_MODULES = {
     "storage": "platform_core.storage.rescan_tasks",
     "materials": "platform_core.material_batches",
     "video": "platform_core.video_tasks",
-    "training": "platform_core.training_hardened_tasks",
+    "training": "platform_core.training_recovery_tasks",
     "annotation": "platform_core.annotation_task_service",
     "conversion": "platform_core.deployment.conversion_tasks",
     "deployment-test": "platform_core.deployment.inference_tasks",
