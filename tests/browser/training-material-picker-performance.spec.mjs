@@ -86,5 +86,11 @@ test('training material picker opens immediately and pages 120 thumbnails from t
   const runtimeState = await page.evaluate(() => window.TrainingMaterialPickerRuntime?.state?.());
   expect(runtimeState.pageSize).toBe(120);
   expect(runtimeState.fullPoolHydration).toBe(false);
+
+  await page.getByRole('button', {name: '确认选择'}).click();
+  await expect(page.locator('.train-v3-picker.server-paged')).not.toBeVisible();
+  await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.materialIds?.() || []))
+    .toContain(firstId);
+
   expect(pageErrors).toEqual([]);
 });
