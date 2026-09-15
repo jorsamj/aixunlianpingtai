@@ -1,0 +1,56 @@
+name: Training Task Visibility
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - static/index.html
+      - static/app.js
+      - static/main.mjs
+      - static/modules/training-task-runtime.js
+      - static/modules/training-task-visibility-runtime.js
+      - static/modules/poll-registry.js
+      - static/modules/page-request-scope.js
+      - tests/frontend/training-task-runtime.test.mjs
+      - tests/frontend/training-task-visibility-runtime.test.mjs
+      - tests/frontend/poll-registry.test.mjs
+      - .github/workflows/training-task-visibility.yml
+  workflow_dispatch:
+
+jobs:
+  visibility-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Syntax check visibility runtime
+        run: >-
+          node --check static/modules/training-task-runtime.js &&
+          node --check static/modules/training-task-visibility-runtime.js &&
+          node --check static/modules/poll-registry.js &&
+          node --check static/modules/page-request-scope.js
+      - name: Training visibility focused tests
+        run: >-
+          node --test
+          tests/frontend/training-task-runtime.test.mjs
+          tests/frontend/training-task-visibility-runtime.test.mjs
+          tests/frontend/poll-registry.test.mjs
+      - name: Visibility owner wiring guard
+        run: |
+          grep -Fq 'training-task-visibility-runtime.js?v=422523' static/index.html
+          grep -Fq '__trainingJobsPreserved' static/modules/training-task-visibility-runtime.js
+          grep -Fq '__trainingTaskVisibilityRuntime' static/modules/training-task-visibility-runtime.js
+          grep -Fq "source: 'render'" static/modules/training-task-visibility-runtime.js
+          grep -Fq "'cancel_requested'" static/modules/poll-registry.js
+          if grep -Fq 'setInterval(' static/modules/training-task-visibility-runtime.js; then
+            echo 'visibility runtime must not create a second polling owner' >&2
+            exit 1
+          fi
+          if grep -Fq 'setTimeout(' static/modules/training-task-visibility-runtime.js; then
+            echo 'visibility runtime must not use delayed DOM reinsertion' >&2
+            exit 1
+          fi
