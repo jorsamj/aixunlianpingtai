@@ -12,7 +12,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await expect.poll(async () => page.evaluate(() => window.TrainingRecoveryRuntime?.build || null))
     .toBe('training-recovery-runtime-422506');
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
-    .toBe('training-task-runtime-422505');
+    .toBe('training-task-runtime-422506');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
