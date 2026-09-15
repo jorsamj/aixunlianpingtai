@@ -120,3 +120,52 @@ test('resource waiting reason stays visible and is not converted into a fake que
   assert.match(html, /GPU 自动 · GPU_MEMORY_BUSY/);
   assert.doesNotMatch(html, /队列第 2 位/);
 });
+
+test('final validation and recovery stages use durable stage truth', () => {
+  assert.equal(trainingStageView({
+    status: 'running', task_stage: 'final_validation', current_item: '正在独立验证 best.pt',
+  }).label, '独立验证最佳模型');
+  assert.equal(trainingStageView({
+    status: 'running', task_stage: 'recovering_checkpoint', current_item: '正在验证恢复后的 checkpoint',
+  }).label, '恢复并验证 Checkpoint');
+  assert.equal(trainingStageView({
+    status: 'running', task_stage: 'process_cleanup_blocked', current_item: '训练进程仍在退出',
+  }).label, '等待训练进程安全退出');
+});
+
+test('failed final validation exposes exact backend reason instead of only a percentage', () => {
+  const html = trainingTaskRow({
+    id: 'fail-validation',
+    status: 'failed',
+    task_status: 'FAILED',
+    task_stage: 'failed',
+    failure_stage: 'final_validation',
+    current_item: 'best.pt 独立验证失败：checkpoint checksum mismatch',
+    progress_percent: 97,
+    current_epoch: 30,
+    total_epochs: 30,
+    framework: 'ultralytics',
+  });
+
+  assert.match(html, /最终模型验证失败/);
+  assert.match(html, /checkpoint checksum mismatch/);
+  assert.match(html, /Epoch 30\/30/);
+  assert.doesNotMatch(html, /OOM/);
+});
+
+test('blocked training keeps backend resource failure truth', () => {
+  const html = trainingTaskRow({
+    id: 'blocked-env',
+    status: 'failed',
+    task_status: 'BLOCKED_BY_ENVIRONMENT',
+    task_stage: 'blocked_by_environment',
+    current_item: '训练环境缺少 ultralytics',
+    error: 'EnvironmentError: 训练环境缺少 ultralytics',
+    progress_percent: 2,
+    framework: 'ultralytics',
+  });
+
+  assert.match(html, /训练环境不可用/);
+  assert.match(html, /训练环境缺少 ultralytics/);
+  assert.doesNotMatch(html, /显存不足/);
+});
