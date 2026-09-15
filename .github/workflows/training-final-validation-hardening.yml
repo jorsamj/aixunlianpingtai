@@ -5,6 +5,7 @@ on:
     branches:
       - refactor/frontend-runtime-stabilization
     paths:
+      - checkpoint_validation_worker.py
       - train_worker_safe.py
       - platform_core/training_hardened_tasks.py
       - platform_core/training_tasks.py
@@ -41,6 +42,7 @@ jobs:
       - name: Compile hardening runtime
         run: >-
           python -m py_compile
+          checkpoint_validation_worker.py
           train_worker_safe.py
           platform_core/training_hardened_tasks.py
           platform_core/task_runtime/process_control.py
@@ -61,12 +63,16 @@ jobs:
           grep -Fq '"training": "platform_core.training_hardened_tasks"' platform_core/worker_registry.py
           grep -Fq 'DEFAULT_AUTO_WORKER_CAP = 2' train_worker_safe.py
           grep -Fq 'TRAINING_AUTO_MAX_DATALOADER_WORKERS' train_worker_safe.py
+          grep -Fq 'DEFAULT_FINAL_VALIDATION_WORKERS = 0' platform_core/training_hardened_tasks.py
+          grep -Fq 'DEFAULT_FINAL_VALIDATION_BATCH = 1' platform_core/training_hardened_tasks.py
+          grep -Fq 'checkpoint_validation_worker.py' platform_core/training_hardened_tasks.py
           grep -Fq 'recovery_action_available' platform_core/training_hardened_tasks.py
           grep -Fq 'process_returncode' platform_core/training_hardened_tasks.py
           grep -Fq 'process_signal' platform_core/training_hardened_tasks.py
           grep -Fq 'completion_error' platform_core/training_hardened_tasks.py
           grep -Fq 'returncode=-9' tests/unit/test_training_final_validation_oom_hardening.py
           grep -Fq '99a99b479ecf' tests/unit/test_training_final_validation_oom_hardening.py
+          grep -Fq '45d5851805c3' tests/unit/test_training_final_validation_oom_hardening.py
           grep -Fq 'start_new_session' platform_core/task_runtime/process_control.py
           grep -Fq '_terminate_posix_group' platform_core/task_runtime/process_control.py
           grep -Fq 'test_terminate_tree_reaps_group_after_leader_was_killed' tests/unit/task_runtime/test_process_control.py
