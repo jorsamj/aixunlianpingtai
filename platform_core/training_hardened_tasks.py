@@ -130,16 +130,25 @@ def _training_loop_checkpoint_ready(
     job: Mapping[str, Any],
     log_path: Path,
 ) -> dict[str, Any] | None:
-    """Return durable checkpoint evidence as soon as Ultralytics finishes its train loop.
+    """Return evidence only after best.pt is finalized for a safe process handoff.
 
-    Ultralytics logs ``N epochs completed in`` immediately before its extra
-    best-checkpoint final validation.  The parent Worker uses that durable marker
-    plus a hashed best.pt to stop the long-lived training process before the
-    high-shared-memory final validation can run in the same process lifetime.
+    Ultralytics logs ``N epochs completed in`` before ``final_eval()``.  Its
+    final_eval first rewrites last.pt/best.pt with strip_optimizer() and only
+    then starts the memory-heavy best.pt validation.  Killing immediately on the
+    epochs-completed line can race that in-place checkpoint rewrite, so the
+    parent waits until best.pt strip is logged or validation has started.  At
+    that point the checkpoint is stable and the long-lived process can be
+    stopped before its DataLoader shared-memory pressure grows.
     """
 
     tail = _tail_text(log_path)
     if "epochs completed in" not in tail.lower():
+        return None
+    checkpoint_finalized = bool(
+        re.search(r"Optimizer stripped from .+best\.pt", tail, flags=re.IGNORECASE)
+        or re.search(r"\bValidating\s+.+best\.pt", tail, flags=re.IGNORECASE)
+    )
+    if not checkpoint_finalized:
         return None
     checkpoints = _checkpoint_evidence(argv, job_file)
     if not any(str(item.get("kind") or "") == "best" for item in checkpoints):
