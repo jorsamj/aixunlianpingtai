@@ -2,7 +2,17 @@ function ownerSet(ownerPages) {
   return new Set(Array.isArray(ownerPages) ? ownerPages.map(String) : [String(ownerPages || '')]);
 }
 
-const TRAINING_POLL_STATUSES = new Set(['queued', 'waiting', 'pending', 'running']);
+const TRAINING_POLL_STATUSES = new Set([
+  'queued',
+  'waiting',
+  'pending',
+  'starting',
+  'running',
+  'pausing',
+  'resuming',
+  'stopping',
+  'cancel_requested',
+]);
 
 export class PollRegistry {
   constructor() {
