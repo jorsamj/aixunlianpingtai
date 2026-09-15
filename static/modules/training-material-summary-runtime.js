@@ -19,6 +19,14 @@ async function readJson(response, fallback) {
   return body || {};
 }
 
+function setTextIfChanged(element, value) {
+  if (!element) return false;
+  const next = String(value ?? '');
+  if (element.textContent === next) return false;
+  element.textContent = next;
+  return true;
+}
+
 export function installTrainingMaterialSummaryRuntime({
   getState,
   projectId,
@@ -70,9 +78,10 @@ export function installTrainingMaterialSummaryRuntime({
     const labels = ready ? selectedLabelCodes(ids) : [];
     const labelElement = document.getElementById('tr429Labels');
     if (labelElement) {
-      labelElement.textContent = !ids.length ? '—' : ready
+      const labelText = !ids.length ? '—' : ready
         ? (labels.map(labelDisplay).filter(Boolean).join('、') || '无标签')
         : '读取中…';
+      setTextIfChanged(labelElement, labelText);
     }
 
     const cards = document.querySelectorAll('.train-v3-summary > div');
@@ -80,8 +89,11 @@ export function installTrainingMaterialSummaryRuntime({
       const title = card.querySelector('span');
       const value = card.querySelector('b');
       if (title?.textContent?.trim() === '可选素材' && value) {
-        value.textContent = summary ? String(Math.max(0, Number(summary.eligible_total || 0))) : '…';
-        value.dataset.serverTruth = 'training-material-summary';
+        const totalText = summary ? String(Math.max(0, Number(summary.eligible_total || 0))) : '…';
+        setTextIfChanged(value, totalText);
+        if (value.dataset.serverTruth !== 'training-material-summary') {
+          value.dataset.serverTruth = 'training-material-summary';
+        }
       }
     }
   }
