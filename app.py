@@ -105,7 +105,7 @@ from platform_core.task_runtime import (
 )
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
-from platform_core.gpu_resources import GPUResourceManager
+from platform_core.gpu_resources import GPUResourceManager, read_gpu_runtime_truth
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 from platform_core.material_batches import (
     BatchOperation as MaterialBatchOperation,
@@ -280,6 +280,11 @@ def system_version():
 @app.get("/api/v62/workers")
 def list_worker_runtime():
     return {"items": WorkerInstanceService(shared_task_repository()).list_runtime()}
+
+
+@app.get("/api/v62/gpu-runtime")
+def gpu_runtime_truth():
+    return read_gpu_runtime_truth(shared_task_repository())
 
 
 def _runtime_task_for_project(project_id: str, task_id: str) -> TaskRecord:

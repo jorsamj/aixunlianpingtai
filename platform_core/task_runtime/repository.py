@@ -13,7 +13,7 @@ from typing import Iterable
 
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
-from ..gpu_resources import GPU_SCHEMA
+from ..gpu_resources import ensure_gpu_runtime_schema
 
 
 SCHEMA = """
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS worker_instances (
     instance_key TEXT PRIMARY KEY,
     owner_token TEXT NOT NULL,
     worker_id TEXT NOT NULL,
+    node_id TEXT NOT NULL DEFAULT 'legacy-unscoped',
     pid INTEGER NOT NULL,
     hostname TEXT NOT NULL DEFAULT '',
     build_id TEXT NOT NULL DEFAULT '',
@@ -167,6 +168,7 @@ class TaskRepository:
                 str(row[1]) for row in database.execute("PRAGMA table_info(worker_instances)").fetchall()
             }
             additive_worker_columns = (
+                ("node_id", "TEXT NOT NULL DEFAULT 'legacy-unscoped'"),
                 ("hostname", "TEXT NOT NULL DEFAULT ''"),
                 ("build_id", "TEXT NOT NULL DEFAULT ''"),
                 ("roles", "TEXT NOT NULL DEFAULT '[]'"),
@@ -176,7 +178,7 @@ class TaskRepository:
             for name, definition in additive_worker_columns:
                 if name not in worker_columns:
                     database.execute(f"ALTER TABLE worker_instances ADD COLUMN {name} {definition}")
-            database.executescript(GPU_SCHEMA)
+            ensure_gpu_runtime_schema(database)
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)

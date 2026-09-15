@@ -238,6 +238,14 @@ class Scheduler:
                     except PermissionError:
                         stop_event.set()
                         return
+                    if self.gpu_resources is not None:
+                        try:
+                            self.gpu_resources.refresh()
+                        except Exception:
+                            # GPU telemetry failure must not silently end the
+                            # Worker heartbeat. The next cycle retries; stale
+                            # sampled_at remains visible through runtime truth.
+                            continue
 
             renewal = threading.Thread(target=renew_instance, name="worker-instance-lease", daemon=True)
             renewal.start()

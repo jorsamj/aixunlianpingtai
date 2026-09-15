@@ -14,6 +14,8 @@ from typing import Iterable
 
 import psutil
 
+from ..node_identity import resolve_node_identity
+
 
 class DuplicateWorkerInstance(RuntimeError):
     def __init__(self, worker_id: str, pid: int):
@@ -27,10 +29,27 @@ def worker_instance_key(
     roles: Iterable[str],
     slot: str = "default",
     hostname: str | None = None,
+    node_id: str | None = None,
 ) -> str:
     payload = {
         "data_dir": os.path.normcase(str(Path(data_dir).resolve())),
-        "hostname": (hostname or socket.gethostname()).strip().casefold(),
+        "node_id": str(node_id or hostname or socket.gethostname()).strip().casefold(),
+        "roles": sorted({str(role).strip().casefold() for role in roles if str(role).strip()}),
+        "slot": str(slot).strip().casefold() or "default",
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _legacy_worker_instance_key(
+    data_dir: str | Path,
+    roles: Iterable[str],
+    slot: str,
+    hostname: str,
+) -> str:
+    payload = {
+        "data_dir": os.path.normcase(str(Path(data_dir).resolve())),
+        "hostname": str(hostname).strip().casefold(),
         "roles": sorted({str(role).strip().casefold() for role in roles if str(role).strip()}),
         "slot": str(slot).strip().casefold() or "default",
     }
@@ -114,6 +133,7 @@ class WorkerInstanceService:
         pid: int | None = None,
         lease_seconds: int = 30,
         hostname: str | None = None,
+        node_id: str | None = None,
         build_id: str = "",
         task_kinds: Iterable[object] = (),
         capabilities: Iterable[object] = (),
@@ -122,7 +142,20 @@ class WorkerInstanceService:
         normalized_task_kinds = _normalized_values(task_kinds)
         normalized_capabilities = _normalized_values(capabilities)
         runtime_hostname = str(hostname or "").strip() or socket.gethostname()
-        instance_key = worker_instance_key(data_dir, normalized_roles, slot, hostname=runtime_hostname)
+        runtime_node_id = str(node_id or "").strip() or resolve_node_identity().node_id
+        instance_key = worker_instance_key(
+            data_dir,
+            normalized_roles,
+            slot,
+            hostname=runtime_hostname,
+            node_id=runtime_node_id,
+        )
+        legacy_instance_key = _legacy_worker_instance_key(
+            data_dir,
+            normalized_roles,
+            slot,
+            runtime_hostname,
+        )
         owner_token = uuid.uuid4().hex
         process_id = int(pid if pid is not None else os.getpid())
         seconds = max(3, int(lease_seconds))
@@ -132,21 +165,30 @@ class WorkerInstanceService:
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                "SELECT worker_id, pid, expires_at FROM worker_instances WHERE instance_key=?",
-                (instance_key,),
+                """
+                SELECT instance_key,worker_id,pid,expires_at FROM worker_instances
+                 WHERE instance_key IN (?, ?)
+                 ORDER BY expires_at DESC LIMIT 1
+                """,
+                (instance_key, legacy_instance_key),
             ).fetchone()
             if row is not None and str(row["expires_at"]) > now_text and not _pid_is_definitely_dead(int(row["pid"])):
                 database.rollback()
                 raise DuplicateWorkerInstance(str(row["worker_id"]), int(row["pid"]))
             database.execute(
+                "DELETE FROM worker_instances WHERE instance_key IN (?, ?)",
+                (instance_key, legacy_instance_key),
+            )
+            database.execute(
                 """
                 INSERT INTO worker_instances
-                    (instance_key, owner_token, worker_id, pid, hostname, build_id,
+                    (instance_key, owner_token, worker_id, node_id, pid, hostname, build_id,
                      roles, task_kinds, capabilities, started_at, heartbeat_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(instance_key) DO UPDATE SET
                     owner_token=excluded.owner_token, worker_id=excluded.worker_id,
-                    pid=excluded.pid, hostname=excluded.hostname, build_id=excluded.build_id,
+                    node_id=excluded.node_id, pid=excluded.pid, hostname=excluded.hostname,
+                    build_id=excluded.build_id,
                     roles=excluded.roles, task_kinds=excluded.task_kinds,
                     capabilities=excluded.capabilities, started_at=excluded.started_at,
                     heartbeat_at=excluded.heartbeat_at, expires_at=excluded.expires_at
@@ -155,6 +197,7 @@ class WorkerInstanceService:
                     instance_key,
                     owner_token,
                     str(worker_id),
+                    runtime_node_id,
                     process_id,
                     runtime_hostname,
                     str(build_id).strip(),
@@ -176,7 +219,7 @@ class WorkerInstanceService:
         with closing(self.repository._connect()) as database:
             rows = database.execute(
                 """
-                SELECT worker_id, hostname, pid, build_id, roles, task_kinds, capabilities,
+                SELECT worker_id, node_id, hostname, pid, build_id, roles, task_kinds, capabilities,
                        started_at, heartbeat_at, expires_at
                   FROM worker_instances
                  ORDER BY worker_id ASC, instance_key ASC
@@ -189,6 +232,7 @@ class WorkerInstanceService:
             result.append(
                 {
                     "worker_id": str(row["worker_id"]),
+                    "node_id": str(row["node_id"]),
                     "hostname": str(row["hostname"]),
                     "pid": int(row["pid"]),
                     "build_id": str(row["build_id"]),

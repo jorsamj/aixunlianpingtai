@@ -19,6 +19,7 @@ from .worker_instances import (
     WorkerInstanceService,
     worker_instance_key,
 )
+from ..node_identity import NodeIdentity, resolve_node_identity
 
 __all__ = [
     "ArtifactStore",
@@ -45,6 +46,8 @@ __all__ = [
     "WorkerInstanceLease",
     "WorkerInstanceService",
     "worker_instance_key",
+    "NodeIdentity",
+    "resolve_node_identity",
     "hash_command",
     "launch_process",
 ]

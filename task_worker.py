@@ -10,6 +10,7 @@ from pathlib import Path
 
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
+from platform_core.node_identity import resolve_node_identity
 from platform_core.upgrade_guard import ensure_worker_build_compatible, write_worker_build_marker
 from platform_core.task_runtime import (
     ArtifactStore,
@@ -41,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     data_dir = resolve_data_dir(args.data_dir)
+    node_identity = resolve_node_identity()
     build_id = resolve_build_id(Path(__file__).resolve().parent)
     if not args.check:
         try:
@@ -89,6 +91,9 @@ def main(argv=None) -> int:
                     "worker_slot": instance_slot,
                     "execution_fencing": True,
                     "build_id": build_id,
+                    "node_id": node_identity.node_id,
+                    "hostname": node_identity.hostname,
+                    "node_identity_source": node_identity.source,
                 },
                 ensure_ascii=False,
             )
@@ -104,6 +109,7 @@ def main(argv=None) -> int:
             instance_roles,
             instance_slot,
             worker_id,
+            node_id=node_identity.node_id,
             hostname=socket.gethostname(),
             build_id=build_id,
             task_kinds=(kind.value for kind in handlers),
@@ -127,7 +133,9 @@ def main(argv=None) -> int:
             handlers,
             capabilities,
             gpu_resources=GPUResourceManager(repository, artifacts, worker_slot=args.training_slot or "default",
-                                             python_executable=training_python(data_dir)) if "training.ultralytics" in capabilities else None,
+                                             python_executable=training_python(data_dir),
+                                             node_id=node_identity.node_id,
+                                             worker_id=worker_id) if "training.ultralytics" in capabilities else None,
             worker_instance=instance_lease,
         )
         if args.once:

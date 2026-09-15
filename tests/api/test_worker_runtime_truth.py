@@ -17,6 +17,7 @@ def test_worker_runtime_api_returns_sanitized_durable_truth(client):
         worker_id,
         pid=os.getpid(),
         lease_seconds=30,
+        node_id="api-node-actual",
         hostname="api-worker.example",
         build_id="api-build-actual",
         task_kinds={"TRAINING"},
@@ -28,6 +29,7 @@ def test_worker_runtime_api_returns_sanitized_durable_truth(client):
         row = next(item for item in response.json()["items"] if item["worker_id"] == worker_id)
 
         assert row["hostname"] == "api-worker.example"
+        assert row["node_id"] == "api-node-actual"
         assert row["pid"] == os.getpid()
         assert row["build_id"] == "api-build-actual"
         assert row["roles"] == ["training"]

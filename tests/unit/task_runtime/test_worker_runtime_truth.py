@@ -18,6 +18,7 @@ def test_registered_worker_runtime_is_durable_and_online(tmp_path):
         "worker-runtime-a",
         pid=os.getpid(),
         lease_seconds=30,
+        node_id="node-worker-a",
         hostname="worker-a.example",
         build_id="build-actual-a",
         task_kinds={"TRAINING", "CONVERSION"},
@@ -29,6 +30,7 @@ def test_registered_worker_runtime_is_durable_and_online(tmp_path):
     assert len(rows) == 1
     assert rows[0] == {
         "worker_id": "worker-runtime-a",
+        "node_id": "node-worker-a",
         "hostname": "worker-a.example",
         "pid": os.getpid(),
         "build_id": "build-actual-a",
@@ -53,6 +55,7 @@ def test_expired_worker_runtime_is_offline_without_pid_liveness(tmp_path, monkey
         "worker-runtime-expired",
         pid=os.getpid(),
         lease_seconds=3,
+        node_id="node-worker-expired",
         hostname="worker-expired.example",
         build_id="build-expired",
         task_kinds={"TRAINING"},
