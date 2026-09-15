@@ -235,7 +235,7 @@ export function trainingTaskRow(job) {
     }
     progressParts.push(`${percent.toFixed(0)}%`);
     const item = String(job?.current_item || '').trim();
-    if (item && !item.includes(`Epoch ${progress.epoch}/${totalEpochs}`)) progressParts.push(item);
+    if (item && item !== String(progress.epoch) && !item.includes(`Epoch ${progress.epoch}/${totalEpochs}`)) progressParts.push(item);
   } else if (done) {
     progressParts.push(`${percent.toFixed(0)}%`);
   } else {
