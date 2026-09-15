@@ -24,8 +24,8 @@ test('training picker never hydrates the legacy full image pool', () => {
   assert.match(source, /\/api\/v62\/projects\/\$\{encodeURIComponent\(pid\)\}\/training-materials/);
   assert.match(source, /\/training-materials\/ids/);
   assert.doesNotMatch(source, /\/api\/projects\/\$\{[^}]+\}\/images/);
-  assert.match(source, /loading=\\"\$\{loading\}\\"/);
-  assert.match(source, /fetchpriority=\\"\$\{priority\}\\"/);
+  assert.match(source, /loading="\$\{loading\}"/);
+  assert.match(source, /fetchpriority="\$\{priority\}"/);
 });
 
 test('training picker keeps TrainingDraftRuntime as the selection truth owner', () => {
