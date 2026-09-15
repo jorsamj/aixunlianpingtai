@@ -9,10 +9,16 @@ on:
       - 'platform_core/training_recovery_api.py'
       - 'platform_core/material_repository.py'
       - 'static/modules/training-material-picker-runtime.js'
+      - 'static/modules/training-material-summary-runtime.js'
+      - 'static/modules/training-labels.js'
       - 'static/main.mjs'
       - 'tests/api/test_training_material_picker_api.py'
+      - 'tests/api/test_training_material_selection_summary_api.py'
       - 'tests/frontend/training-material-picker-runtime.test.mjs'
+      - 'tests/frontend/training-material-summary-runtime.test.mjs'
+      - 'tests/frontend/training-labels.test.mjs'
       - 'tests/browser/training-material-picker-performance.spec.mjs'
+      - 'tests/browser/training-page-material-summary.spec.mjs'
       - '.github/workflows/training-material-picker.yml'
   workflow_dispatch:
 
@@ -35,18 +41,29 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest
       - name: Compile picker backend
         run: python -m py_compile platform_core/training_material_picker_api.py platform_core/training_recovery_api.py
-      - name: Backend paging and thumbnail contracts
-        run: python -m pytest -q tests/api/test_training_material_picker_api.py
+      - name: Backend paging thumbnail and summary contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_training_material_picker_api.py
+          tests/api/test_training_material_selection_summary_api.py
       - name: Frontend syntax and contracts
         run: >-
           node --check static/modules/training-material-picker-runtime.js &&
+          node --check static/modules/training-material-summary-runtime.js &&
+          node --check static/modules/training-labels.js &&
           node --check static/main.mjs &&
-          node --test tests/frontend/training-material-picker-runtime.test.mjs
+          node --test
+          tests/frontend/training-material-picker-runtime.test.mjs
+          tests/frontend/training-material-summary-runtime.test.mjs
+          tests/frontend/training-labels.test.mjs
       - name: Permanent picker guards
         run: |
           grep -Fq 'DEFAULT_PAGE_SIZE = 120' static/modules/training-material-picker-runtime.js
-          grep -Fq '/training-materials' static/modules/training-material-picker-runtime.js
           grep -Fq '/training-materials/ids' static/modules/training-material-picker-runtime.js
+          grep -Fq '/training-materials/selection-summary' static/modules/training-material-summary-runtime.js
+          grep -Fq "FULL_MATERIAL_PAGES.delete('训练任务')" static/main.mjs
+          grep -Fq 'materialSummaryRuntime: trainingMaterialSummaryRuntime' static/main.mjs
+          grep -Fq 'materialSummaryRuntime.summaryReadyFor' static/modules/training-labels.js
           if grep -Fq '/api/projects/${' static/modules/training-material-picker-runtime.js && grep -Fq '/images' static/modules/training-material-picker-runtime.js; then
             echo 'training picker must not restore whole-pool /images hydration' >&2
             exit 1
@@ -54,6 +71,7 @@ jobs:
           grep -Fq 'annotated=True' platform_core/training_material_picker_api.py
           grep -Fq 'repository.list_page' platform_core/training_material_picker_api.py
           grep -Fq 'repository.iter_filtered_ids' platform_core/training_material_picker_api.py
+          grep -Fq 'requested_training_material_ids' platform_core/training_material_picker_api.py
 
   real-chrome-picker:
     runs-on: ubuntu-24.04
@@ -73,5 +91,8 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Install frontend dependencies
         run: npm ci
-      - name: Real Chrome paged picker
-        run: npx playwright test tests/browser/training-material-picker-performance.spec.mjs
+      - name: Real Chrome paged training material truth
+        run: >-
+          npx playwright test
+          tests/browser/training-material-picker-performance.spec.mjs
+          tests/browser/training-page-material-summary.spec.mjs
