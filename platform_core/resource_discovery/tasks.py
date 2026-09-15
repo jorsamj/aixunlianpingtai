@@ -1,8 +1,9 @@
 """Durable, machine-scoped resource discovery task handlers.
 
-HTTP routes only allocate generations and queue these tasks.  Filesystem
+HTTP routes only allocate generations and queue these tasks. Filesystem
 traversal and Python subprocess probes are deliberately confined to the
-discovery worker.
+discovery worker. Deep filesystem traversal is bounded to explicit request
+roots; default/auto discovery never falls back to whole-machine traversal.
 """
 from __future__ import annotations
 
@@ -38,6 +39,43 @@ def _read_json_file(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
         return {}
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _explicit_roots(request: Mapping[str, Any]) -> list[Path]:
+    """Return only non-empty roots explicitly supplied by the caller.
+
+    This helper deliberately has no machine-root fallback.  Resource discovery
+    may still scan a large directory when a user explicitly selects it, but an
+    omitted roots field can never silently become '/', 'C:\\', '/data', or all
+    mounted filesystems.
+    """
+
+    raw_roots = request.get("roots")
+    if not isinstance(raw_roots, list):
+        return []
+    roots: list[Path] = []
+    for item in raw_roots:
+        value = str(item or "").strip()
+        if value:
+            roots.append(Path(value).expanduser())
+    return roots
+
+
+def _environment_deep_scan_allowed(
+    scope: str,
+    roots: list[Path],
+    available_environments: int,
+) -> bool:
+    if scope == "full" and not roots:
+        raise ValueError("full environment discovery requires at least one explicit root")
+    if not roots:
+        return False
+    return scope == "full" or (scope == "auto" and available_environments == 0)
+
+
+def _require_model_roots(roots: list[Path]) -> None:
+    if not roots:
+        raise ValueError("model discovery requires at least one explicit root")
 
 
 class _ModelManifest:
@@ -159,8 +197,7 @@ class ResourceDiscoveryHandler:
         generation = int(request.get("generation") or 0)
         if generation < 1:
             raise ValueError("resource discovery generation is invalid")
-        raw_roots = request.get("roots")
-        roots = [Path(str(item)).expanduser() for item in raw_roots] if isinstance(raw_roots, list) else []
+        roots = _explicit_roots(request)
         saved = _read_json_file(self.data_dir / "ultralytics_env.json")
         discovery_context = DiscoveryContext.from_system(
             project_root=Path.cwd(), saved_environment=saved
@@ -209,8 +246,10 @@ class ResourceDiscoveryHandler:
         for candidate in discover_fast_python_candidates(discovery_context):
             probe(candidate.path, candidate.sources)
 
-        should_scan = scope == "full" or (
-            scope == "auto" and counters["available_environments"] == 0
+        should_scan = _environment_deep_scan_allowed(
+            scope,
+            roots,
+            counters["available_environments"],
         )
         if should_scan:
             self._publish_progress(
@@ -232,7 +271,7 @@ class ResourceDiscoveryHandler:
                 )
 
             report = scan_python_candidates(
-                roots or None,
+                roots,
                 on_item=lambda path: probe(path, ("deep_scan",)),
                 on_progress=on_progress,
                 cancel_requested=lambda: self._cancelled(context),
@@ -255,6 +294,8 @@ class ResourceDiscoveryHandler:
             "scope": scope,
             "generation": generation,
             "published": published,
+            "deep_scan_performed": should_scan,
+            "explicit_root_count": len(roots),
             **counters,
         }
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
@@ -273,10 +314,8 @@ class ResourceDiscoveryHandler:
         generation = int(request.get("generation") or 0)
         if generation < 1:
             raise ValueError("resource discovery generation is invalid")
-        raw_roots = request.get("roots")
-        roots = [Path(str(item)).expanduser() for item in raw_roots] if isinstance(raw_roots, list) else []
-        if scope == "directory" and not roots:
-            raise ValueError("directory model discovery requires at least one root")
+        roots = _explicit_roots(request)
+        _require_model_roots(roots)
 
         manifest = _ModelManifest(
             context.artifacts.artifact_path(context.task.task_id, _MODEL_MANIFEST_REF)
@@ -312,7 +351,7 @@ class ResourceDiscoveryHandler:
             )
 
         report = scan_model_files(
-            None if scope == "full" else roots,
+            roots,
             on_item=on_item,
             on_progress=on_progress,
             cancel_requested=lambda: self._cancelled(context),
@@ -340,6 +379,7 @@ class ResourceDiscoveryHandler:
             "scope": scope,
             "generation": generation,
             "published": published,
+            "explicit_root_count": len(roots),
             **counters,
         }
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
