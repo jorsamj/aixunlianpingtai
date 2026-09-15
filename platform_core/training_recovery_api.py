@@ -136,7 +136,7 @@ def request_training_recovery(repository, artifacts, project_id: str, task_id: s
 def training_recovery_router(get_project, task_repository, task_artifacts):
     from fastapi import APIRouter, Body, HTTPException
 
-    router = APIRouter(prefix="/api/v62/projects/{project_id}/training-tasks")
+    recovery_router = APIRouter(prefix="/api/v62/projects/{project_id}/training-tasks")
 
     def require_task(project_id: str, task_id: str):
         get_project(project_id)
@@ -145,7 +145,7 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
             raise HTTPException(status_code=404, detail="训练任务不存在")
         return task
 
-    @router.get("/{task_id}/recovery")
+    @recovery_router.get("/{task_id}/recovery")
     def recovery(project_id: str, task_id: str):
         task = require_task(project_id, task_id)
         return {
@@ -157,7 +157,7 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
             ),
         }
 
-    @router.post("/recovery-query")
+    @recovery_router.post("/recovery-query")
     def recovery_query(project_id: str, payload: dict = Body(...)):
         get_project(project_id)
         ids = list(dict.fromkeys(str(value) for value in (payload.get("task_ids") or []) if str(value)))
@@ -173,7 +173,7 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
             items[task_id] = training_recovery_truth(task, artifacts)
         return {"ok": True, "items": items}
 
-    @router.post("/{task_id}/recovery", status_code=202)
+    @recovery_router.post("/{task_id}/recovery", status_code=202)
     def recover(project_id: str, task_id: str, payload: dict = Body(...)):
         require_task(project_id, task_id)
         try:
@@ -199,4 +199,15 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
             "recovery_action": before["recovery_action"],
         }
 
-    return router
+    # app.py intentionally owns a single additive runtime-router mount.  Keep
+    # recovery URLs unchanged and compose the independent training picker at
+    # that same integration point instead of creating route side effects.
+    from .training_material_picker_api import training_material_picker_router
+
+    root = APIRouter()
+    root.include_router(recovery_router)
+    root.include_router(training_material_picker_router(
+        get_project,
+        lambda: task_artifacts().root.parent.parent,
+    ))
+    return root
