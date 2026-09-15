@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
+from . import training_hardened_tasks as hardened
 from . import training_tasks as base
 from .task_runtime import TaskKind
 from .training_hardened_tasks import (
     HardenedLabelContractTrainingHandler,
     _best_checkpoint,
-    _run_checkpoint_validation,
 )
 from .training_label_tasks import _install_scoped_training_hooks
 
 
 _RECOVERABLE_STAGES = {"final_validation", "post_training"}
+_FALSE_FINAL_VALIDATION_HANDSHAKE = (
+    "final validation process exited without a trusted completion handshake"
+)
 
 
 def _explicit_checkpoint_retry(context) -> bool:
@@ -172,13 +175,232 @@ def _clear_recovered_failure_state(job_file: Path, job: Mapping[str, Any]) -> di
         recovery_action_available=False,
         recovery_attempted=True,
         recovery_completed=True,
+        recovery_returncode=0,
+        recovery_signal=None,
+        recovery_error=None,
     )
     base.atomic_write_json(job_file, recovered)
     return recovered
 
 
+def _resolved_paths(values: Sequence[Any] | None) -> set[str]:
+    result: set[str] = set()
+    for value in values or ():
+        if isinstance(value, Mapping):
+            value = value.get("path") or value.get("stored_path") or value.get("source")
+        raw = str(value or "").strip()
+        if raw:
+            result.add(str(Path(raw).resolve()))
+    return result
+
+
+def _reconcile_successful_final_validation(
+    *,
+    job_file: Path,
+    expected_task_id: str,
+    expected_snapshot_id: str,
+    expected_models_root: Path,
+    checkpoint_evidence: Mapping[str, Any],
+    expected_recovery: bool,
+) -> dict[str, Any] | None:
+    """Repair only the mutable job status after a proven successful validator.
+
+    The isolated validator writes ``job.json`` to ``done`` first and then writes
+    ``final-validation.json`` with ``success=true`` before exiting 0. Production
+    showed one cross-process visibility/overwrite race where the parent observed
+    every final job field except the terminal status and then persisted FAILED.
+
+    Treat the immutable validation result as a completion fence only when task,
+    snapshot, checkpoint hash and published model paths all match. The repaired
+    job must still pass the existing trusted completion contract; otherwise the
+    failure remains a failure.
+    """
+
+    result_path = job_file.parent / "final-validation.json"
+    result = base._json(result_path, {})
+    if not isinstance(result, Mapping) or result.get("success") is not True:
+        return None
+    if str(result.get("task_id") or "") != str(expected_task_id):
+        return None
+    if str(result.get("snapshot_id") or "") != str(expected_snapshot_id):
+        return None
+    if bool(result.get("recovery")) is not bool(expected_recovery):
+        return None
+
+    checkpoint = _best_checkpoint(checkpoint_evidence)
+    if checkpoint is None:
+        return None
+    checkpoint_path = Path(str(checkpoint.get("path") or "")).resolve()
+    checkpoint_sha = str(checkpoint.get("sha256") or "").strip()
+    if not checkpoint_path.is_file() or checkpoint_path.stat().st_size <= 0:
+        return None
+    if not checkpoint_sha or base._sha256(checkpoint_path) != checkpoint_sha:
+        return None
+    if str(Path(str(result.get("checkpoint") or "")).resolve()) != str(checkpoint_path):
+        return None
+    if str(result.get("checkpoint_sha256") or "") != checkpoint_sha:
+        return None
+
+    models_root = expected_models_root.resolve()
+    published = _resolved_paths(result.get("published_models") or [])
+    if not published:
+        return None
+    for raw in published:
+        path = Path(raw).resolve()
+        try:
+            path.relative_to(models_root)
+        except ValueError:
+            return None
+        if not path.is_file() or path.stat().st_size <= 0:
+            return None
+
+    job = base._json(job_file, {})
+    if not isinstance(job, Mapping) or not job:
+        return None
+    verified = _resolved_paths(job.get("verified_models") or [])
+    if verified != published:
+        return None
+
+    repaired = dict(job)
+    repaired.update(
+        status="done",
+        message="训练完成，最终验证通过",
+        current_item="最终验证完成",
+        progress_percent=100,
+        failed_at=None,
+        failure_stage=None,
+        process_returncode=0,
+        process_signal=None,
+        completion_error=None,
+        failure_ref=None,
+        checkpoint_available=True,
+        recoverable=False,
+        recovery_action=None,
+        recovery_action_available=False,
+        recovery_attempted=bool(expected_recovery),
+        recovery_completed=bool(expected_recovery),
+        recovery_returncode=0 if expected_recovery else None,
+        recovery_signal=None,
+        recovery_error=None,
+    )
+    if base._training_completion_error(
+        repaired,
+        expected_task_id=expected_task_id,
+        expected_snapshot_id=expected_snapshot_id,
+        expected_models_root=models_root,
+    ) is not None:
+        return None
+
+    base.atomic_write_json(job_file, repaired)
+    reread = base._json(job_file, {})
+    if not isinstance(reread, Mapping):
+        return None
+    if base._training_completion_error(
+        reread,
+        expected_task_id=expected_task_id,
+        expected_snapshot_id=expected_snapshot_id,
+        expected_models_root=models_root,
+    ) is not None:
+        return None
+    return dict(reread)
+
+
+def _run_checkpoint_validation_with_reconciliation(
+    *,
+    context,
+    training_argv: Sequence[str],
+    job_file: Path,
+    expected_snapshot_id: str,
+    expected_models_root: Path,
+    checkpoint_evidence: Mapping[str, Any],
+    recovery: bool,
+) -> dict[str, Any]:
+    try:
+        return hardened._run_checkpoint_validation(
+            context=context,
+            training_argv=training_argv,
+            job_file=job_file,
+            expected_snapshot_id=expected_snapshot_id,
+            expected_models_root=expected_models_root,
+            checkpoint_evidence=checkpoint_evidence,
+            recovery=recovery,
+        )
+    except RuntimeError as error:
+        if _FALSE_FINAL_VALIDATION_HANDSHAKE not in str(error):
+            raise
+        repaired = _reconcile_successful_final_validation(
+            job_file=job_file,
+            expected_task_id=context.task.task_id,
+            expected_snapshot_id=expected_snapshot_id,
+            expected_models_root=expected_models_root,
+            checkpoint_evidence=checkpoint_evidence,
+            expected_recovery=recovery,
+        )
+        if repaired is None:
+            raise
+        context.artifacts.atomic_write_json(
+            context.task.task_id,
+            "final-validation-reconciliation.json",
+            {
+                "schema_version": 1,
+                "task_id": context.task.task_id,
+                "snapshot_id": expected_snapshot_id,
+                "recovery": bool(recovery),
+                "reason": "validator succeeded but parent observed a stale/non-terminal job status",
+            },
+        )
+        return repaired
+
+
+def _run_hardened_training_process_with_reconciliation(context, argv: Sequence[str], job_file: Path) -> dict[str, Any]:
+    try:
+        return hardened.run_hardened_training_process(context, argv, job_file)
+    except RuntimeError as error:
+        if _FALSE_FINAL_VALIDATION_HANDSHAKE not in str(error):
+            raise
+
+        snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
+        failure = context.artifacts.read_json(context.task.task_id, "failure.json", default={})
+        if not isinstance(snapshot, Mapping) or not isinstance(failure, Mapping):
+            raise
+        snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
+        if not snapshot_id:
+            raise
+        result = base._json(job_file.parent / "final-validation.json", {})
+        if not isinstance(result, Mapping):
+            raise
+        repaired = _reconcile_successful_final_validation(
+            job_file=job_file,
+            expected_task_id=context.task.task_id,
+            expected_snapshot_id=snapshot_id,
+            expected_models_root=job_file.parents[2] / "models",
+            checkpoint_evidence=failure,
+            expected_recovery=bool(result.get("recovery")),
+        )
+        if repaired is None:
+            raise
+        context.artifacts.atomic_write_json(
+            context.task.task_id,
+            "final-validation-reconciliation.json",
+            {
+                "schema_version": 1,
+                "task_id": context.task.task_id,
+                "snapshot_id": snapshot_id,
+                "recovery": bool(result.get("recovery")),
+                "reason": "validator succeeded but parent observed a stale/non-terminal job status",
+            },
+        )
+        return repaired
+
+
 class RecoveryHardenedLabelContractTrainingHandler(HardenedLabelContractTrainingHandler):
-    """Add explicit checkpoint-only retry on top of the hardened training owner."""
+    """Hardened training plus explicit checkpoint-only retry."""
+
+    def __init__(self, data_dir: Path):
+        super().__init__(
+            data_dir,
+            process_runner=_run_hardened_training_process_with_reconciliation,
+        )
 
     def recover(self, context):
         committed = self._committed(context)
@@ -190,7 +412,7 @@ class RecoveryHardenedLabelContractTrainingHandler(HardenedLabelContractTraining
             return super().recover(context)
 
         project = candidate["project"]
-        job = _run_checkpoint_validation(
+        job = _run_checkpoint_validation_with_reconciliation(
             context=context,
             training_argv=candidate["training_argv"],
             job_file=candidate["job_file"],
