@@ -1,0 +1,99 @@
+name: Training Recovery Guard
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - platform_core/training_recovery_api.py
+      - platform_core/training_recovery_tasks.py
+      - platform_core/material_batches.py
+      - static/modules/training-recovery-runtime.js
+      - static/modules/training-task-runtime.js
+      - static/main.mjs
+      - tests/unit/test_training_recovery_api.py
+      - tests/frontend/training-recovery-runtime.test.mjs
+      - tests/browser/training-recovery.spec.mjs
+      - .github/workflows/training-recovery-guard.yml
+  workflow_dispatch:
+
+jobs:
+  recovery-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Compile recovery runtime
+        run: >-
+          python -m py_compile
+          platform_core/training_recovery_api.py
+          platform_core/training_recovery_tasks.py
+          platform_core/material_batches.py
+
+      - name: Backend recovery contracts
+        run: python -m pytest -q tests/unit/test_training_recovery_api.py
+
+      - name: Frontend recovery syntax and contracts
+        run: |
+          node --check static/modules/training-recovery-runtime.js
+          node --check static/modules/training-task-runtime.js
+          node --check static/main.mjs
+          node --test tests/frontend/training-recovery-runtime.test.mjs tests/frontend/training-task-runtime.test.mjs
+
+      - name: Permanent recovery guards
+        run: |
+          grep -Fq 'verify_checkpoint_hash=True' platform_core/training_recovery_api.py
+          grep -Fq 'repository.retry(task_id)' platform_core/training_recovery_api.py
+          grep -Fq 'RECOVERY_ACTION_REVALIDATE = "revalidate_checkpoint"' platform_core/training_recovery_api.py
+          grep -Fq 'recoveryRuntime?.hydrateJobs' static/modules/training-task-runtime.js
+          grep -Fq 'installTrainingRecoveryRuntime' static/main.mjs
+          grep -Fq "build: 'training-recovery-runtime-422506'" static/modules/training-recovery-runtime.js
+          grep -Fq '100/100 epochs never grant recovery without backend recovery truth' tests/frontend/training-recovery-runtime.test.mjs
+          if grep -F -n -E 'setTimeout\(|setInterval\(' static/modules/training-recovery-runtime.js; then
+            echo 'TrainingRecoveryRuntime must reuse PollRegistry and must not own a polling timer' >&2
+            exit 1
+          fi
+
+  real-chrome-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Real Chrome checkpoint recovery
+        run: npx playwright test tests/browser/training-recovery.spec.mjs
