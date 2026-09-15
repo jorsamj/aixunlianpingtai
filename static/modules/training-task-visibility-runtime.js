@@ -190,9 +190,10 @@ export function installTrainingTaskVisibilityRuntime({
       try {
         return await legacyLoadRelated(...args);
       } finally {
-        if (destroyed || !sameProject(projectId)) return;
-        if (snapshot) state().jobs = snapshot;
-        else state().jobs = [];
+        if (!destroyed && sameProject(projectId)) {
+          if (snapshot) state().jobs = snapshot;
+          else state().jobs = [];
+        }
       }
     };
     guardedLoadRelated.__trainingJobsPreserved = true;
@@ -206,6 +207,9 @@ export function installTrainingTaskVisibilityRuntime({
       renderOwned();
     }
     pollRegistry?.replaceTrainingJobTimer?.();
+    void refreshOwned({render: true, force: true, source: 'render'}).catch(error => {
+      notify?.(error?.message || error);
+    });
   };
   renderTraining.__trainingTaskVisibilityRuntime = true;
   window.renderTraining423 = renderTraining;
@@ -262,7 +266,9 @@ export function installTrainingTaskVisibilityRuntime({
 
   window.TrainingTaskVisibilityRuntime = visibilityRuntime;
   window.__trainingTaskVisibilityRuntimeInstalled = true;
-  window.PlatformCore?.runtime && (window.PlatformCore.runtime.trainingTaskVisibilityRuntime = visibilityRuntime);
+  if (window.PlatformCore?.runtime) {
+    window.PlatformCore.runtime.trainingTaskVisibilityRuntime = visibilityRuntime;
+  }
 
   if (String(state().page || '') === TRAINING_PAGE) {
     renderOwned();
