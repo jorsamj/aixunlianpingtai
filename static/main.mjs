@@ -9,7 +9,8 @@ import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422518';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422522';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422523';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
@@ -119,10 +120,18 @@ const algorithmListRuntime = installAlgorithmListRuntime({
 });
 window.PlatformCore.runtime.algorithmListRuntime = algorithmListRuntime;
 
+const trainingRecoveryRuntime = installTrainingRecoveryRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+});
+window.PlatformCore.runtime.trainingRecoveryRuntime = trainingRecoveryRuntime;
+
 const trainingTaskRuntime = installTrainingTaskRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
   notify,
+  recoveryRuntime: trainingRecoveryRuntime,
 });
 window.PlatformCore.runtime.trainingTaskRuntime = trainingTaskRuntime;
 
