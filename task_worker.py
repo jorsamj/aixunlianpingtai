@@ -22,13 +22,22 @@ from platform_core.task_runtime import (
 from platform_core.gpu_resources import GPUResourceManager
 from platform_core.training_devices import training_python
 from platform_core.worker_registry import resolve_worker_registration
+from platform_core.worker_supervisor import run_isolated_all_roles
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="畅联云后台任务 Worker")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--worker-id", default=None)
-    parser.add_argument("--roles", nargs="+", default=["all"])
+    parser.add_argument(
+        "--roles",
+        nargs="+",
+        default=["all"],
+        help=(
+            "Worker roles. Compatibility role 'all' now supervises an isolated "
+            "training Worker plus a separate non-training background Worker."
+        ),
+    )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--training-slot", default=None,
@@ -54,9 +63,7 @@ def main(argv=None) -> int:
         except RuntimeError as error:
             print(f"Worker 启动被升级保护拒绝：{error}", file=sys.stderr)
             return 4
-    runtime_dir = data_dir / "task_runtime"
-    repository = FencedTaskRepository(runtime_dir / "tasks.sqlite3")
-    artifacts = ArtifactStore(runtime_dir / "artifacts")
+
     roles = set(args.roles)
     worker_slot = (args.worker_slot or "").strip()
     if args.allow_parallel and (not worker_slot or worker_slot == "default"):
@@ -68,10 +75,38 @@ def main(argv=None) -> int:
     if args.training_slot is not None and (roles != {"training"} or not args.training_slot.strip() or args.training_slot == "default"):
         print("--training-slot requires --roles training and a non-default, non-empty slot name", file=sys.stderr)
         return 2
+
+    worker_id = args.worker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+
+    # Backward-compatible `--roles all` no longer means one serial Scheduler
+    # owns training plus every background task kind.  That layout allowed a
+    # long material scan/annotation/video task to block an otherwise runnable
+    # GPU training task.  Keep the CLI surface, but make it a supervisor for
+    # two real Worker processes using the existing Worker Runtime/Scheduler.
+    if roles == {"all"} and not args.check:
+        if args.allow_parallel or worker_slot or args.training_slot is not None:
+            print(
+                "--roles all is an isolated compatibility supervisor; use explicit roles "
+                "when configuring parallel worker/training slots",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            "Worker roles=all: starting isolated training and background Worker processes",
+            flush=True,
+        )
+        return run_isolated_all_roles(
+            data_dir=data_dir,
+            worker_id=worker_id,
+            once=bool(args.once),
+        )
+
+    runtime_dir = data_dir / "task_runtime"
+    repository = FencedTaskRepository(runtime_dir / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime_dir / "artifacts")
     registration = resolve_worker_registration(data_dir, roles)
     handlers = registration.handlers
     capabilities = registration.capabilities
-    worker_id = args.worker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
     instance_roles = sorted(registration.roles)
     instance_slot = worker_slot if args.allow_parallel else "default"
 
@@ -94,6 +129,7 @@ def main(argv=None) -> int:
                     "node_id": node_identity.node_id,
                     "hostname": node_identity.hostname,
                     "node_identity_source": node_identity.source,
+                    "all_role_execution": "isolated_supervisor" if roles == {"all"} else "single_worker",
                 },
                 ensure_ascii=False,
             )
