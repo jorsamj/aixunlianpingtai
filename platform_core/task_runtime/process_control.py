@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -60,6 +62,10 @@ def launch_process(
             subprocess.CREATE_NEW_PROCESS_GROUP
         )
     else:
+        # Every launched task owns a dedicated POSIX session/process group.  The
+        # group id equals the launcher PID and survives if Linux OOM-kills only
+        # the group leader, which lets cleanup still find re-parented DataLoader
+        # children without scanning or signalling unrelated Python processes.
         options["start_new_session"] = True
     process = subprocess.Popen(
         command,
@@ -119,6 +125,70 @@ class ProcessController:
         except psutil.AccessDenied as error:
             cls._raise_access_denied("verified", error)
         return False
+
+    @staticmethod
+    def _posix_group_exists(group_id: int) -> bool:
+        if os.name == "nt":
+            return False
+        try:
+            os.killpg(int(group_id), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError as error:
+            raise PermissionError("process group cannot be inspected") from error
+        return True
+
+    @classmethod
+    def _wait_posix_group_exit(cls, group_id: int, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        while time.monotonic() < deadline:
+            if not cls._posix_group_exists(group_id):
+                return True
+            time.sleep(0.05)
+        return not cls._posix_group_exists(group_id)
+
+    @classmethod
+    def _terminate_posix_group(cls, group_id: int, timeout: float) -> None:
+        """Terminate the dedicated launch group even after its leader is gone.
+
+        Linux may OOM-kill only the training leader while torch/DataLoader
+        descendants remain alive and are immediately re-parented to PID 1.  At
+        that point psutil parent traversal cannot recover the descendants, but
+        launch_process() has already fenced this execution into a private POSIX
+        session/process group whose id is the original launcher PID.
+        """
+
+        if os.name == "nt" or not cls._posix_group_exists(group_id):
+            return
+
+        try:
+            # Resume stopped descendants first so SIGTERM can be handled and
+            # resources/shared memory can be released normally where possible.
+            os.killpg(int(group_id), signal.SIGCONT)
+        except ProcessLookupError:
+            return
+        except PermissionError as error:
+            raise PermissionError("process group cannot be resumed") from error
+
+        try:
+            os.killpg(int(group_id), signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except PermissionError as error:
+            raise PermissionError("process group cannot be terminated") from error
+
+        if cls._wait_posix_group_exit(group_id, timeout):
+            return
+
+        try:
+            os.killpg(int(group_id), signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except PermissionError as error:
+            raise PermissionError("process group cannot be killed") from error
+
+        if not cls._wait_posix_group_exit(group_id, timeout):
+            raise PermissionError("process group termination could not be verified")
 
     def suspend_tree(self, identity: ProcessIdentity) -> None:
         root = self.inspect(identity)
@@ -198,6 +268,11 @@ class ProcessController:
         try:
             root = self.inspect(identity)
         except ProcessLookupError:
+            # The launch leader can disappear before cleanup (for example when
+            # Linux OOM-kills the training process).  Because launch_process()
+            # gave the execution its own POSIX group, descendants can still be
+            # reaped precisely even after they have PPID=1.
+            self._terminate_posix_group(identity.pid, timeout)
             return
         processes = self._tree(root)
         descendants = [process for process in processes if process.pid != root.pid]
@@ -208,3 +283,8 @@ class ProcessController:
         # descendants are already non-executing and are reaped when the root exits.
         self._terminate_verified(descendants, timeout=timeout, label="child")
         self._terminate_verified([root], timeout=timeout, label="root")
+
+        # Catch descendants that raced with the psutil tree snapshot or became
+        # re-parented while the leader exited.  This is scoped to the private
+        # launch group; it never scans for or kills arbitrary Python processes.
+        self._terminate_posix_group(identity.pid, timeout)
