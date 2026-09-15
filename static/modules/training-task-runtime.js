@@ -101,7 +101,7 @@ function dateText(value) {
 
 function statusText(status) {
   return ({
-    queued: '排队中', running: '运行中', waiting: '等待资源', pending: '等待中', paused: '已暂停',
+    queued: '排队中', running: '训练中', waiting: '等待资源', pending: '等待中', paused: '已暂停',
     done: '已完成', finished: '已完成', completed: '已完成', failed: '失败', stopped: '已停止',
     cancelled: '已取消', canceled: '已取消',
   })[status] || status || '-';
@@ -140,12 +140,14 @@ function queueRuntimeMeta(job) {
     if (reason) parts.push(reason);
     return parts.join(' · ');
   }
-  parts.push('排队中');
   if (position > 0 && job?.resource_queue_position_exact === true) {
     parts.push(`队列第 ${position} 位`);
-  } else if (position > 0) {
-    const ahead = Math.max(0, position - 1);
-    parts.push(ahead > 0 ? `前方约 ${ahead} 个候选任务（动态）` : '当前处于资源候选首位（动态）');
+  } else {
+    parts.push('排队中');
+    if (position > 0) {
+      const ahead = Math.max(0, position - 1);
+      parts.push(ahead > 0 ? `前方约 ${ahead} 个候选任务（动态）` : '当前处于资源候选首位（动态）');
+    }
   }
   return parts.join(' · ');
 }
