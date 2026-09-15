@@ -305,6 +305,25 @@ def _reconcile_successful_final_validation(
     return dict(reread)
 
 
+def _write_reconciliation_evidence(context, snapshot_id: str, *, recovery: bool, reused: bool) -> None:
+    context.artifacts.atomic_write_json(
+        context.task.task_id,
+        "final-validation-reconciliation.json",
+        {
+            "schema_version": 1,
+            "task_id": context.task.task_id,
+            "snapshot_id": snapshot_id,
+            "recovery": bool(recovery),
+            "reused_existing_success": bool(reused),
+            "reason": (
+                "reused an already-successful trusted final-validation manifest"
+                if reused
+                else "validator succeeded but parent observed a stale/non-terminal job status"
+            ),
+        },
+    )
+
+
 def _run_checkpoint_validation_with_reconciliation(
     *,
     context,
@@ -338,16 +357,11 @@ def _run_checkpoint_validation_with_reconciliation(
         )
         if repaired is None:
             raise
-        context.artifacts.atomic_write_json(
-            context.task.task_id,
-            "final-validation-reconciliation.json",
-            {
-                "schema_version": 1,
-                "task_id": context.task.task_id,
-                "snapshot_id": expected_snapshot_id,
-                "recovery": bool(recovery),
-                "reason": "validator succeeded but parent observed a stale/non-terminal job status",
-            },
+        _write_reconciliation_evidence(
+            context,
+            expected_snapshot_id,
+            recovery=recovery,
+            reused=False,
         )
         return repaired
 
@@ -379,16 +393,11 @@ def _run_hardened_training_process_with_reconciliation(context, argv: Sequence[s
         )
         if repaired is None:
             raise
-        context.artifacts.atomic_write_json(
-            context.task.task_id,
-            "final-validation-reconciliation.json",
-            {
-                "schema_version": 1,
-                "task_id": context.task.task_id,
-                "snapshot_id": snapshot_id,
-                "recovery": bool(result.get("recovery")),
-                "reason": "validator succeeded but parent observed a stale/non-terminal job status",
-            },
+        _write_reconciliation_evidence(
+            context,
+            snapshot_id,
+            recovery=bool(result.get("recovery")),
+            reused=False,
         )
         return repaired
 
@@ -412,15 +421,31 @@ class RecoveryHardenedLabelContractTrainingHandler(HardenedLabelContractTraining
             return super().recover(context)
 
         project = candidate["project"]
-        job = _run_checkpoint_validation_with_reconciliation(
-            context=context,
-            training_argv=candidate["training_argv"],
+        job = _reconcile_successful_final_validation(
             job_file=candidate["job_file"],
+            expected_task_id=context.task.task_id,
             expected_snapshot_id=candidate["snapshot_id"],
             expected_models_root=project / "models",
             checkpoint_evidence=candidate["failure"],
-            recovery=True,
+            expected_recovery=True,
         )
+        if job is not None:
+            _write_reconciliation_evidence(
+                context,
+                candidate["snapshot_id"],
+                recovery=True,
+                reused=True,
+            )
+        else:
+            job = _run_checkpoint_validation_with_reconciliation(
+                context=context,
+                training_argv=candidate["training_argv"],
+                job_file=candidate["job_file"],
+                expected_snapshot_id=candidate["snapshot_id"],
+                expected_models_root=project / "models",
+                checkpoint_evidence=candidate["failure"],
+                recovery=True,
+            )
         job = _clear_recovered_failure_state(candidate["job_file"], job)
         outcome = self._finalize_completed_job(
             context,
