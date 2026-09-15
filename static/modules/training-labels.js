@@ -37,6 +37,15 @@ export function selectedMaterialLabelCodes(materials, selectedIds, labelCatalog 
   });
 }
 
+function sortedAvailableCodes(values, labelCatalog = []) {
+  const rank = new Map((labelCatalog || []).map((item, index) => [String(item?.code || ''), index]));
+  return unique(values).sort((left, right) => {
+    const a = rank.has(left) ? rank.get(left) : Number.MAX_SAFE_INTEGER;
+    const b = rank.has(right) ? rank.get(right) : Number.MAX_SAFE_INTEGER;
+    return a - b || left.localeCompare(right);
+  });
+}
+
 function trainableSuccessfulVersion(version) {
   const status = String(version?.training_status || '').trim().toUpperCase();
   return ['SUCCEEDED', 'PARTIAL_SUCCESS', 'DONE', 'FINISHED', 'COMPLETED'].includes(status)
@@ -73,8 +82,17 @@ export function latestVersionLabelInfo(algorithm) {
   };
 }
 
-export function resolveClientTrainingLabels({materials, selectedIds, labelCatalog, algorithm, requestedCodes}) {
-  const available = selectedMaterialLabelCodes(materials, selectedIds, labelCatalog);
+export function resolveClientTrainingLabels({
+  materials,
+  selectedIds,
+  labelCatalog,
+  algorithm,
+  requestedCodes,
+  availableCodes = null,
+}) {
+  const available = availableCodes === null
+    ? selectedMaterialLabelCodes(materials, selectedIds, labelCatalog)
+    : sortedAvailableCodes(availableCodes, labelCatalog);
   const inherited = latestVersionLabelInfo(algorithm);
   const inheritedSet = new Set(inherited.codes);
   const selectable = available.filter(code => !inheritedSet.has(code));
@@ -151,20 +169,11 @@ function currentHost() {
   const v3Summary = document.querySelector('.train429-create .train-v3-summary')
     || document.querySelector('.train-v3-summary');
   if (v3Summary) {
-    return {
-      host: v3Summary.closest('.train428-panel') || v3Summary.parentElement,
-      anchor: v3Summary,
-      mode: 'v3',
-    };
+    return {host: v3Summary.closest('.train428-panel') || v3Summary.parentElement, anchor: v3Summary, mode: 'v3'};
   }
-
   const summary429 = document.querySelector('.train429-create .train429-data-summary');
   if (summary429) {
-    return {
-      host: summary429.closest('.train428-panel') || summary429.parentElement,
-      anchor: summary429,
-      mode: 'v429',
-    };
+    return {host: summary429.closest('.train428-panel') || summary429.parentElement, anchor: summary429, mode: 'v429'};
   }
   return null;
 }
@@ -179,23 +188,18 @@ function ensurePanelStyle() {
     .training-label-contract-head b{font-size:11px;color:#263b5f}
     .training-label-contract-head small{display:block;margin-top:3px;color:#77869b;font-size:9px;line-height:1.5}
     .training-label-contract-count{min-width:42px;text-align:center;padding:5px 8px;border-radius:9px;background:#eaf1ff;color:#315fc2;font-weight:900;font-size:10px}
-    .training-label-contract-block{margin-top:10px}
-    .training-label-contract-title{display:block;color:#758399;font-size:9px;margin-bottom:6px}
+    .training-label-contract-block{margin-top:10px}.training-label-contract-title{display:block;color:#758399;font-size:9px;margin-bottom:6px}
     .training-label-contract-list{display:flex;gap:6px;flex-wrap:wrap}
     .training-label-choice{display:inline-flex;align-items:center;gap:6px;padding:7px 9px;border:1px solid #dce5f2;border-radius:9px;background:#fff;cursor:pointer;min-width:96px}
-    .training-label-choice:has(input:checked){border-color:#6c8ee0;background:#edf3ff;color:#244fae}
-    .training-label-choice input{margin:0}
-    .training-label-choice span{display:flex;flex-direction:column;line-height:1.2}
-    .training-label-choice b{font-size:10px}
-    .training-label-choice small{font-size:8px;color:#8491a4;margin-top:2px}
+    .training-label-choice:has(input:checked){border-color:#6c8ee0;background:#edf3ff;color:#244fae}.training-label-choice input{margin:0}
+    .training-label-choice span{display:flex;flex-direction:column;line-height:1.2}.training-label-choice b{font-size:10px}.training-label-choice small{font-size:8px;color:#8491a4;margin-top:2px}
     .training-label-inherited{display:inline-flex;align-items:center;padding:6px 8px;border-radius:9px;background:#ecfdf5;color:#15803d;font-size:9px;font-weight:800}
-    .training-label-empty{font-size:9px;color:#8a96a8}
-    .training-label-warning{margin-top:8px;font-size:9px;color:#a16207;line-height:1.5}
+    .training-label-empty{font-size:9px;color:#8a96a8}.training-label-warning{margin-top:8px;font-size:9px;color:#a16207;line-height:1.5}
   `;
   document.head.appendChild(style);
 }
 
-export function installTrainingLabelRuntime({getState, notify, trainingDraftRuntime} = {}) {
+export function installTrainingLabelRuntime({getState, notify, trainingDraftRuntime, materialSummaryRuntime} = {}) {
   if (window.__trainingLabelRuntimeInstalled) return window.TrainingLabelRuntime || null;
   window.__trainingLabelRuntimeInstalled = true;
   ensurePanelStyle();
@@ -205,24 +209,36 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
 
   const syncDraftLabels = (state, codes) => {
     if (!trainingDraftRuntime?.update) return;
-    try {
-      trainingDraftRuntime.update({newLabelCodes: unique(codes)});
-    } catch (error) {
-      notify?.(error?.message || error);
-    }
+    try { trainingDraftRuntime.update({newLabelCodes: unique(codes)}); }
+    catch (error) { notify?.(error?.message || error); }
   };
+
+  const availableCodesFor = (state, ids) => {
+    if (!ids.length) return [];
+    if (!materialSummaryRuntime) return selectedMaterialLabelCodes(state.images || [], ids, state.labels || []);
+    if (!materialSummaryRuntime.summaryReadyFor?.(ids)) {
+      void materialSummaryRuntime.refresh?.(ids);
+      return null;
+    }
+    return materialSummaryRuntime.selectedLabelCodes?.(ids) || [];
+  };
+
+  const resolveFor = (state, algorithm, ids, requestedCodes, availableCodes) => resolveClientTrainingLabels({
+    materials: state.images || [], selectedIds: ids, labelCatalog: state.labels || [], algorithm,
+    requestedCodes, availableCodes,
+  });
 
   const updateCount = state => {
     const count = document.querySelector('#trainingLabelContractPanel .training-label-contract-count');
     const algorithm = currentAlgorithm(state);
     if (!count || !algorithm) return;
-    const view = resolveClientTrainingLabels({
-      materials: state.images || [],
-      selectedIds: selectedIds(state),
-      labelCatalog: state.labels || [],
-      algorithm,
-      requestedCodes: canonicalSelectedCodes(state),
-    });
+    const ids = selectedIds(state);
+    const availableCodes = availableCodesFor(state, ids);
+    if (availableCodes === null) {
+      count.textContent = '… 类';
+      return;
+    }
+    const view = resolveFor(state, algorithm, ids, canonicalSelectedCodes(state), availableCodes);
     count.textContent = `${view.effectivePreview.length || (view.legacyPreviousVersion ? '?' : 0)} 类`;
   };
 
@@ -236,28 +252,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
 
     const ids = selectedIds(state);
     const draftRequested = canonicalSelectedCodes(state);
-    const initial = resolveClientTrainingLabels({
-      materials: state.images || [],
-      selectedIds: ids,
-      labelCatalog: state.labels || [],
-      algorithm,
-      requestedCodes: draftRequested,
-    });
-    const selectedCodes = selectionForState(
-      state,
-      String(algorithm.id || ''),
-      initial.hasPreviousVersion,
-      initial.selectable,
-    );
-    if (selectedCodes.join('\u0000') !== draftRequested.join('\u0000')) syncDraftLabels(state, selectedCodes);
-    const view = resolveClientTrainingLabels({
-      materials: state.images || [],
-      selectedIds: ids,
-      labelCatalog: state.labels || [],
-      algorithm,
-      requestedCodes: selectedCodes,
-    });
-
+    const availableCodes = availableCodesFor(state, ids);
     let panel = document.getElementById('trainingLabelContractPanel');
     if (!panel) {
       panel = document.createElement('div');
@@ -265,6 +260,18 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
       panel.className = 'training-label-contract';
       placement.anchor.insertAdjacentElement('afterend', panel);
     }
+
+    if (availableCodes === null) {
+      panel.innerHTML = `
+        <div class="training-label-contract-head"><div><b>本次训练标签</b><small>正在从服务端读取当前已选素材的真实标签。</small></div><span class="training-label-contract-count">… 类</span></div>
+        <div class="training-label-contract-block"><span class="training-label-empty">正在读取已选素材标签…</span></div>`;
+      return true;
+    }
+
+    const initial = resolveFor(state, algorithm, ids, draftRequested, availableCodes);
+    const selectedCodes = selectionForState(state, String(algorithm.id || ''), initial.hasPreviousVersion, initial.selectable);
+    if (selectedCodes.join('\u0000') !== draftRequested.join('\u0000')) syncDraftLabels(state, selectedCodes);
+    const view = resolveFor(state, algorithm, ids, selectedCodes, availableCodes);
 
     const inheritedHtml = view.inherited.length
       ? view.inherited.map(code => `<span class="training-label-inherited" title="来自上一算法版本，迭代时不可移除">继承 · ${esc(displayName(state, code))}</span>`).join('')
@@ -317,9 +324,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
 
   const unsubscribeDraft = trainingDraftRuntime?.subscribe?.(event => {
     const state = getState?.();
-    if (event?.type === 'update' && startsTrainingSession(event.patch)) {
-      resetTaskLabelInteraction(state);
-    }
+    if (event?.type === 'update' && startsTrainingSession(event.patch)) resetTaskLabelInteraction(state);
     if (labelOnlyDraftUpdate(event)) {
       updateCount(state);
       return;
@@ -332,9 +337,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
         if (destroyed || !currentHost()) return;
         if (records?.length && records.every(record => {
           const target = record?.target;
-          return typeof Element !== 'undefined'
-            && target instanceof Element
-            && target.closest?.('#trainingLabelContractPanel');
+          return typeof Element !== 'undefined' && target instanceof Element && target.closest?.('#trainingLabelContractPanel');
         })) return;
         queueRefresh();
       })
@@ -351,6 +354,7 @@ export function installTrainingLabelRuntime({getState, notify, trainingDraftRunt
     state() {
       return {
         refreshQueued,
+        serverSummaryOwner: Boolean(materialSummaryRuntime),
         draftSubscriptionOwner: Boolean(trainingDraftRuntime?.subscribe),
         classicWrapperOwner: false,
         timerOwner: false,
