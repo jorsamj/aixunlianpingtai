@@ -105,6 +105,10 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   });
 
   await page.locator('#refreshBtn').click();
+  await page.evaluate(() => {
+    state.train428Tab = 'history';
+    window.TrainingTaskRuntime?.patch?.();
+  });
   const row = page.locator('[data-job-id="job-recovery-1"]');
   await expect(row).toBeVisible();
   await expect(row).toContainText('最终验证恢复测试');
@@ -123,6 +127,11 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await dialog.getByRole('button', {name: '重新验证 Checkpoint'}).click();
   await expect(dialog).toBeHidden();
   await expect.poll(() => retried).toBe(true);
+  await page.evaluate(() => {
+    state.train428Tab = 'active';
+    window.TrainingTaskRuntime?.patch?.();
+  });
+  await expect(row).toBeVisible();
   await expect(row).toContainText('排队中');
 
   expect(requests).toContain(`POST /api/v62/projects/${projectId}/training-tasks/recovery-query`);
