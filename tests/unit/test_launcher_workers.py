@@ -49,9 +49,23 @@ def test_all_role_compatibility_mode_isolates_training_from_background():
     assert groups == (TRAINING_ROLES, BACKGROUND_ROLES)
     assert TRAINING_ROLES == ("training",)
     assert "training" not in BACKGROUND_ROLES
-    assert {"storage", "materials", "video", "annotation", "conversion", "deployment-test"}.issubset(
-        set(BACKGROUND_ROLES)
-    )
+    assert {
+        "discovery",
+        "storage",
+        "materials",
+        "video",
+        "annotation",
+        "conversion",
+        "deployment-test",
+    }.issubset(set(BACKGROUND_ROLES))
+
+
+def test_background_registry_owns_resource_discovery_but_not_training(tmp_path):
+    registration = resolve_worker_registration(tmp_path, set(BACKGROUND_ROLES))
+
+    assert TaskKind.RESOURCE_DISCOVERY in registration.handlers
+    assert TaskKind.TRAINING not in registration.handlers
+    assert "discovery" in registration.roles
 
 
 def test_task_worker_all_role_runtime_delegates_to_isolated_supervisor(monkeypatch, tmp_path):
