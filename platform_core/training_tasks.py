@@ -118,6 +118,20 @@ def _same_physical_file(left: Path, right: Path) -> bool:
         return True
 
 
+class _HashingReader:
+    """Read-through wrapper so the copied bytes are hashed in the copy pass."""
+
+    def __init__(self, stream, digest):
+        self.stream = stream
+        self.digest = digest
+
+    def read(self, size: int = -1):
+        chunk = self.stream.read(size)
+        if chunk:
+            self.digest.update(chunk)
+        return chunk
+
+
 def _prepare_bundle_root(task_root: str | Path) -> tuple[Path, Path]:
     work_input = Path(task_root)
     if _is_link_like(work_input):
@@ -162,9 +176,6 @@ def _copy_verified_isolated(
     if source_info is None or source_info.st_size <= 0:
         raise FileNotFoundError(f"training image does not exist: {source.name}")
     source_size = source_info.st_size
-    actual = _sha256(source)
-    if actual != expected_hash:
-        raise ValueError(f"source image SHA256 changed: {source.name}")
     if bundle_root is None:
         destination.parent.mkdir(parents=True, exist_ok=True)
     else:
@@ -191,11 +202,13 @@ def _copy_verified_isolated(
         suffix=".copy",
     )
     temporary = Path(name)
+    digest = hashlib.sha256()
     try:
         with source.open("rb") as input_stream:
+            hashing_stream = _HashingReader(input_stream, digest)
             with os.fdopen(descriptor, "wb") as output_stream:
                 descriptor = -1
-                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+                shutil.copyfileobj(hashing_stream, output_stream, length=1024 * 1024)
                 output_stream.flush()
                 os.fsync(output_stream.fileno())
         copied_size = temporary.stat().st_size
@@ -204,8 +217,10 @@ def _copy_verified_isolated(
                 f"portable image size verification failed: {destination.name}; "
                 f"expected={source_size}, actual={copied_size}"
             )
-        if copied_size <= 0 or _sha256(temporary) != expected_hash:
+        if copied_size <= 0:
             raise OSError(f"portable image verification failed: {destination.name}")
+        if digest.hexdigest() != expected_hash:
+            raise ValueError(f"source image SHA256 changed: {source.name}")
         os.replace(temporary, destination)
     finally:
         if descriptor >= 0:
@@ -333,6 +348,7 @@ def materialize_portable_dataset(
     materialize: Callable[[Mapping[str, Any]], str | Path],
     *,
     safety_reserve_bytes: int | None = None,
+    progress: Callable[[int, int, Mapping[str, Any]], None] | None = None,
 ) -> Path:
     work, root = _prepare_bundle_root(task_root)
     _cleanup_orphan_bundle_copies(root, expected_work=work)
@@ -387,7 +403,8 @@ def materialize_portable_dataset(
 
     splits: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}
     remaining_bytes = total_size_bytes
-    for item in planned:
+    total_items = len(planned)
+    for completed, item in enumerate(planned, start=1):
         role = str(item["role"])
         image_id = str(item["image_id"])
         row = item["row"]
@@ -425,6 +442,8 @@ def materialize_portable_dataset(
                 "label_sha256": _sha256(label_path),
             }
         )
+        if progress is not None:
+            progress(completed, total_items, item)
     # Independent test images stay portable, but their hidden answers are deliberately
     # absent from the Ultralytics training YAML. Final evaluation is image-only inference
     # followed by a separate scorer that opens evaluation/ground_truth/test afterwards.
@@ -798,12 +817,13 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     update_reservation_evidence(context.repository, context.lease, metrics)
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
-                current = str(job.get("current_item") or job.get("current_epoch") or "") or None
+                current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
+                training_started = bool(job.get("current_epoch") or job.get("training_progress"))
                 context.repository.heartbeat(
                     context.task.task_id,
                     context.lease.lease_token,
                     progress=max(20, min(95, progress)),
-                    stage="training",
+                    stage="training" if training_started else "trainer_startup",
                     current_item=current,
                 )
                 time.sleep(0.25)
@@ -986,7 +1006,7 @@ class TrainingHandler:
             "assigned_device": job.get("assigned_device"),
             "actual_device": job.get("actual_device"),
             "device_evidence": job.get("device_evidence"),
-            "device_validation": job.get("device_validation") or {},
+            "device_validation": job.get("device_evidence") or job.get("device_validation") or {},
             "actual_train_params": job.get("actual_train_params"),
             **_training_completion_metadata(job, payload),
             "snapshot_id": snapshot_id,
@@ -1075,6 +1095,13 @@ class TrainingHandler:
                 f"TRAINING_DEVICE_ASSIGNMENT_MISMATCH: requested={requested_device}; assigned={assigned_device}"
             )
         python_executable = _training_python(self.data_dir)
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=1,
+            stage="device_admission",
+            current_item="验证训练设备分配",
+        )
         device_evidence = validate_training_device(python_executable, assigned_device)
         if assigned_device.startswith("cuda:"):
             with context.repository._connect() as database:
@@ -1094,7 +1121,13 @@ class TrainingHandler:
         project = self.data_dir / "projects" / context.task.project_id
         if not (project / "meta.json").is_file():
             raise FileNotFoundError("training project does not exist")
-        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 2, "hashing")
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=2,
+            stage="preparing_materials",
+            current_item="读取本次训练素材",
+        )
         train_image_ids = tuple(payload.get("train_image_ids") or ())
         test_image_ids = tuple(payload.get("test_image_ids") or ())
         if payload.get("train_dataset_ids") or payload.get("test_dataset_ids"):
@@ -1108,12 +1141,25 @@ class TrainingHandler:
             materials=materials,
             credentials=credentials,
         )
-        for row in images:
+        materialized_paths: dict[str, Path] = {}
+        total_materials = len(images)
+        material_progress_step = max(1, total_materials // 100) if total_materials else 1
+        for index, row in enumerate(images, start=1):
             if context.cancel_requested():
                 raise InterruptedError("training cancelled during material preparation")
             resolved = storage.materialize(row)
             row["content_sha256"] = resolved.content_sha256
             row["size_bytes"] = resolved.size_bytes
+            materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
+            if index == 1 or index == total_materials or index % material_progress_step == 0:
+                progress = 2 + (6 * index / max(1, total_materials))
+                context.repository.heartbeat(
+                    context.task.task_id,
+                    context.lease.lease_token,
+                    progress=progress,
+                    stage="preparing_materials",
+                    current_item=f"校验训练素材 {index}/{total_materials}",
+                )
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
             train_image_ids=train_image_ids,
@@ -1125,18 +1171,38 @@ class TrainingHandler:
         snapshot = build_snapshot(images, manifest, _label_schema(project))
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
-        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 10, "materializing")
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=10,
+            stage="materializing",
+            current_item=f"准备训练数据 0/{len(images)}",
+        )
         if context.cancel_requested():
             raise InterruptedError("training cancelled before dataset materialization")
+
+        bundle_progress_step = max(1, len(images) // 100) if images else 1
+
+        def bundle_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
+            if completed != 1 and completed != total and completed % bundle_progress_step != 0:
+                return
+            context.repository.heartbeat(
+                context.task.task_id,
+                context.lease.lease_token,
+                progress=10 + (8 * completed / max(1, total)),
+                stage="materializing",
+                current_item=f"准备训练数据 {completed}/{total}",
+            )
+
         bundle = materialize_portable_dataset(
             context.artifacts.artifact_path(context.task.task_id, "work"),
             snapshot,
             images,
-            lambda row: storage.materialize(row).path,
+            lambda row: materialized_paths[str(row.get("id"))],
+            progress=bundle_progress,
         )
         if context.cancel_requested():
             raise InterruptedError("training cancelled after dataset materialization")
-        verification = verify_portable_dataset(bundle / "manifest.json")
 
         algorithms_path = project / "algorithms.json"
         algorithms = list_algorithms(algorithms_path)
@@ -1197,6 +1263,7 @@ class TrainingHandler:
             "assigned_device": assigned_device,
             "actual_device": None,
             "device_validation": device_evidence,
+            "current_item": "启动训练进程",
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
@@ -1216,7 +1283,13 @@ class TrainingHandler:
             model,
             python_executable=python_executable,
         )
-        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 20, "starting_trainer")
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=20,
+            stage="starting_trainer",
+            current_item="启动训练进程",
+        )
         job = self.process_runner(context, argv, job_file)
         return self._finalize_completed_job(context, payload, project, job)
 
