@@ -109,8 +109,15 @@ jobs:
           grep -Fq '_indexed_content_identity_ready' platform_core/training_tasks.py
           grep -Fq 'verified_snapshot_cache' platform_core/training_tasks.py
           grep -Fq 'class TrainingBundleCache' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_SCHEMA_VERSION = 2' platform_core/training_bundle_cache.py
+          grep -Fq 'data_yaml_sha256' platform_core/training_bundle_cache.py
+          grep -Fq 'portable bundle reference must not traverse a link or reparse point' platform_core/training_bundle_cache.py
           grep -Fq 'os.link' platform_core/training_bundle_cache.py
           grep -Fq 'test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_resolve_rejects_tampered_label' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_resolve_rejects_tampered_data_yaml' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_resolve_rejects_in_bundle_symlink_component' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_publication_is_ordered_after_algorithm_version_attachment' tests/unit/test_training_bundle_cache.py
           grep -Fq 'durable=False' platform_core/training_tasks.py
           grep -Fq 'next_oom_retry_resources' train_worker.py
           grep -Fq 'startup_stage' train_worker.py
