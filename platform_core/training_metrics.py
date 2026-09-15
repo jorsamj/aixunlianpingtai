@@ -187,9 +187,13 @@ def resolve_resources(request, context, model, torch):
             batch = 1
             reasons.append("Explicit CPU assignment uses conservative batch<=1")
 
+    # DataLoader worker count is a host/dataset concurrency concern, not a batch-size
+    # concern. A perfectly valid configuration can use workers > batch (for example,
+    # batch=4/workers=8) to keep the accelerator fed. Bound it by dataset size and
+    # available CPU capacity instead of silently coupling it to batch.
+    train_image_count = max(1, int(context.get("train_image_count") or 1))
     loader_limit = min(
-        batch,
-        int(context.get("train_image_count") or batch),
+        train_image_count,
         max(1, cores // max(1, torch.cuda.device_count())),
     )
     if strategy == "auto":
