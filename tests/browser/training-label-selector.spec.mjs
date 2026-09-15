@@ -107,6 +107,12 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await expect(dialog.locator('.train-create-saas')).toBeVisible();
+  await expect(dialog.locator('.train-create-layout')).toBeVisible();
+  await expect(dialog.locator('.train-create-left')).toBeVisible();
+  await expect(dialog.locator('.train-create-right')).toBeVisible();
+  await expect(dialog.locator('#trainUiSummary')).toBeVisible();
+  await expect(dialog.locator('details.train-ui-advanced')).toBeVisible();
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -118,6 +124,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   const labels = dialog.locator('#trainingLabelContractPanel');
   await expect(labels).toContainText('明火');
   await expect(labels).toContainText('烟雾');
+  await expect(labels).toHaveCSS('display', 'block');
+  await expect(dialog.locator('.train-ui-labels-card #trainingLabelContractPanel')).toBeVisible();
   const smoke = labels.locator('input[data-training-label-code="smoke"]');
   await smoke.uncheck();
 
@@ -127,7 +135,10 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await dialog.locator('#trV3ResourceStrategy').selectOption('manual');
   await dialog.locator('#trV3GpuPolicy').selectOption('exclusive');
 
-  await dialog.getByRole('button', {name: '配置设置'}).click();
+  const advancedConfig = dialog.locator('details.train-ui-advanced');
+  await advancedConfig.locator('summary').click();
+  await expect(advancedConfig).toHaveAttribute('open', '');
+  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('#ts428Epoch').fill('30');
   await settings.locator('#ts428Batch').fill('16');
@@ -137,6 +148,10 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await settings.locator('#ts428Cache').selectOption('False');
   await settings.getByRole('button', {name: '应用配置'}).click();
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator('#trainUiSummary')).toContainText('YOLO11n');
+  await expect(dialog.locator('#trainUiSummary')).toContainText('30');
+  await expect(dialog.locator('#trainUiSummary')).toContainText('16');
+  await expect(dialog.locator('#trainUiSummary')).toContainText('AdamW');
 
   await expect.poll(async () => page.evaluate(() => ({
     algorithmId: state.trainingDraft?.algorithmId,
