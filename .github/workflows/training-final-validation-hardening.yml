@@ -1,0 +1,63 @@
+name: Training Final Validation Hardening
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - train_worker_safe.py
+      - platform_core/training_hardened_tasks.py
+      - platform_core/training_tasks.py
+      - platform_core/training_label_tasks.py
+      - platform_core/training_metrics.py
+      - platform_core/worker_registry.py
+      - tests/unit/test_training_final_validation_oom_hardening.py
+      - tests/unit/test_training_finalization_handshake.py
+      - tests/unit/test_training_resource_contract.py
+      - tests/unit/task_runtime/test_worker_registry.py
+      - .github/workflows/training-final-validation-hardening.yml
+  workflow_dispatch:
+
+jobs:
+  hardening-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Compile hardening runtime
+        run: >-
+          python -m py_compile
+          train_worker_safe.py
+          platform_core/training_hardened_tasks.py
+          platform_core/worker_registry.py
+
+      - name: Focused training finalization regressions
+        run: >-
+          python -m pytest -q
+          tests/unit/test_training_final_validation_oom_hardening.py
+          tests/unit/test_training_finalization_handshake.py
+          tests/unit/test_training_resource_contract.py
+          tests/unit/task_runtime/test_worker_registry.py
+
+      - name: Permanent hardening guards
+        run: |
+          grep -Fq '"training": "platform_core.training_hardened_tasks"' platform_core/worker_registry.py
+          grep -Fq 'DEFAULT_AUTO_WORKER_CAP = 2' train_worker_safe.py
+          grep -Fq 'TRAINING_AUTO_MAX_DATALOADER_WORKERS' train_worker_safe.py
+          grep -Fq 'recovery_action_available' platform_core/training_hardened_tasks.py
+          grep -Fq 'process_returncode' platform_core/training_hardened_tasks.py
+          grep -Fq 'process_signal' platform_core/training_hardened_tasks.py
+          grep -Fq 'completion_error' platform_core/training_hardened_tasks.py
+          grep -Fq 'returncode=-9' tests/unit/test_training_final_validation_oom_hardening.py
+          grep -Fq '99a99b479ecf' tests/unit/test_training_final_validation_oom_hardening.py
