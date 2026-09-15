@@ -180,6 +180,20 @@ def test_training_loop_checkpoint_ready_before_final_validation_finishes(tmp_pat
     assert any(item["kind"] == "best" for item in ready["checkpoints"])
 
 
+def test_training_loop_handoff_waits_until_best_checkpoint_is_finalized(tmp_path):
+    _project, job_file, _weights, log_path, job, argv = _incident(tmp_path, task_id="handoff-fence", epochs=30)
+    log_path.write_text("30 epochs completed in 0.144 hours.\n", encoding="utf-8")
+
+    ready = hardened._training_loop_checkpoint_ready(
+        argv=argv,
+        job_file=job_file,
+        job=job,
+        log_path=log_path,
+    )
+
+    assert ready is None
+
+
 def test_final_validation_defaults_are_isolated_and_low_memory(monkeypatch):
     monkeypatch.delenv(hardened.FINAL_VALIDATION_WORKERS_ENV, raising=False)
     monkeypatch.delenv(hardened.FINAL_VALIDATION_BATCH_ENV, raising=False)
