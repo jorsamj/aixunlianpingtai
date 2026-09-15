@@ -29,7 +29,10 @@ jobs:
         with:
           node-version: '24'
       - name: Install focused backend dependencies
-        run: python -m pip install --disable-pip-version-check fastapi httpx pillow filelock pytest
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi httpx uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest
       - name: Compile picker backend
         run: python -m py_compile platform_core/training_material_picker_api.py platform_core/training_recovery_api.py
       - name: Backend paging and thumbnail contracts
