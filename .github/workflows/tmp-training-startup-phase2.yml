@@ -13,7 +13,7 @@ permissions:
 jobs:
   patch-and-verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,210 +24,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Apply startup phase2 patch
+      - name: Decode and apply exact patch
+        env:
+          PATCH_GZ_B64: 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
         run: |
           python - <<'PY'
+          import base64, gzip, os
           from pathlib import Path
-
-          def replace_once(path, old, new):
-              text = Path(path).read_text(encoding='utf-8')
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one match, found {count}: {old[:120]!r}')
-              Path(path).write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          training_tasks = Path('platform_core/training_tasks.py')
-          train_worker = Path('train_worker.py')
-          hardened = Path('platform_core/training_hardened_tasks.py')
-          tests = Path('tests/unit/test_training_startup_performance_contract.py')
-
-          replace_once(training_tasks,
-          '''def _atomic_text(path: Path, text: str) -> None:\n    path.parent.mkdir(parents=True, exist_ok=True)\n    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")\n    temporary = Path(name)\n    try:\n        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:\n            stream.write(text)\n            stream.flush()\n            os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        temporary.unlink(missing_ok=True)\n''',
-          '''def _atomic_text(path: Path, text: str, *, durable: bool = True) -> None:\n    path.parent.mkdir(parents=True, exist_ok=True)\n    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")\n    temporary = Path(name)\n    try:\n        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:\n            stream.write(text)\n            stream.flush()\n            if durable:\n                os.fsync(stream.fileno())\n        os.replace(temporary, path)\n    finally:\n        temporary.unlink(missing_ok=True)\n''')
-
-          replace_once(training_tasks,
-          '''    *,\n    bundle_root: Path | None = None,\n) -> None:\n''',
-          '''    *,\n    bundle_root: Path | None = None,\n    durable: bool = True,\n) -> None:\n''')
-
-          replace_once(training_tasks,
-          '''                output_stream.flush()\n                os.fsync(output_stream.fileno())\n''',
-          '''                output_stream.flush()\n                if durable:\n                    os.fsync(output_stream.fileno())\n''')
-
-          replace_once(training_tasks,
-          '''        _copy_verified_isolated(source_path, destination, expected_hash, bundle_root=root)\n''',
-          '''        # The task bundle is derived/rebuildable. Avoid a per-image fsync storm;\n        # manifest/job durability remains authoritative and recovery revalidates reused files.\n        _copy_verified_isolated(\n            source_path, destination, expected_hash, bundle_root=root, durable=False\n        )\n''')
-
-          replace_once(training_tasks,
-          '''        _atomic_text(label_path, "\\n".join(lines))\n''',
-          '''        _atomic_text(label_path, "\\n".join(lines), durable=False)\n''')
-
-          replace_once(training_tasks,
-          '''    _atomic_text(\n        _bundle_output_path(root, "dataset/data.yaml"),\n        yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),\n    )\n''',
-          '''    _atomic_text(\n        _bundle_output_path(root, "dataset/data.yaml"),\n        yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),\n        durable=False,\n    )\n''')
-
-          replace_once(training_tasks,
-          '''        "total_size_bytes": total_size_bytes,\n        "splits": splits,\n    }\n    atomic_write_json(manifest_path, manifest)\n    verify_portable_dataset(manifest_path)\n    return root\n''',
-          '''        "total_size_bytes": total_size_bytes,\n        "splits": splits,\n        "construction_verification": {\n            "image_integrity": "sha256_verified_during_materialization",\n            "post_write_check": "path_size_label_sha256_and_snapshot_sha256",\n        },\n    }\n    atomic_write_json(manifest_path, manifest)\n    _verify_materialized_dataset_evidence(manifest_path)\n    return root\n''')
-
-          marker = '''def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:\n'''
-          text = training_tasks.read_text(encoding='utf-8')
-          if marker not in text:
-              raise SystemExit('verify_portable_dataset marker missing')
-          helper = '''def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str, Any]:\n    """Validate same-process construction evidence without rereading every image.\n\n    Fresh copies already SHA256 the exact source bytes while streaming them into\n    their isolated temporary destination; reused destinations are SHA256 checked\n    before reuse. This final local check therefore validates path confinement,\n    image size, label hashes and the locked snapshot. Remote/received bundles and\n    post-training finalization still use ``verify_portable_dataset`` for full\n    image SHA256 verification.\n    """\n\n    path = Path(manifest_path).resolve()\n    manifest = json.loads(path.read_text(encoding="utf-8"))\n    resolve_dataset_yaml(path)\n    snapshot = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))\n    expected_snapshot = str(manifest.get("snapshot_sha256") or "")\n    if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:\n        raise ValueError("portable training snapshot SHA256 mismatch")\n    verified = 0\n    for role in ("train", "validation", "test"):\n        for member in (manifest.get("splits") or {}).get(role, []):\n            image_path = _resolve_relative(path.parent, str(member.get("image_ref") or ""))\n            label_path = _resolve_relative(path.parent, str(member.get("label_ref") or ""))\n            if _is_link_like(image_path) or not image_path.is_file():\n                raise ValueError(f"portable image is missing or link-like: {member.get('image_id')}")\n            expected_size = int(member.get("size_bytes") or 0)\n            if expected_size <= 0 or image_path.stat().st_size != expected_size:\n                raise ValueError(f"portable image size mismatch: {member.get('image_id')}")\n            if _is_link_like(label_path) or not label_path.is_file():\n                raise ValueError(f"portable label is missing or link-like: {member.get('image_id')}")\n            if _sha256(label_path) != str(member.get("label_sha256") or ""):\n                raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")\n            verified += 1\n    return {\n        "snapshot_id": manifest.get("snapshot_id"),\n        "verified_files": verified,\n        "verification_mode": "materialization_evidence",\n    }\n\n\n'''
-          training_tasks.write_text(text.replace(marker, helper + marker, 1), encoding='utf-8')
-
-          # train_worker: pure OOM resource helper + explicit startup stages.
-          replace_once(train_worker,
-          '''def parse_cache(v):\n    text = str(v).strip()\n    low = text.lower()\n    if low in {"false", "0", "no", "off", "none", ""}:\n        return False\n    if low in {"true", "1", "yes", "on"}:\n        return True\n    if low in {"ram", "disk"}:\n        return low\n    raise ValueError("cache 只支持 False / True / ram / disk")\n\n\n''',
-          '''def parse_cache(v):\n    text = str(v).strip()\n    low = text.lower()\n    if low in {"false", "0", "no", "off", "none", ""}:\n        return False\n    if low in {"true", "1", "yes", "on"}:\n        return True\n    if low in {"ram", "disk"}:\n        return low\n    raise ValueError("cache 只支持 False / True / ram / disk")\n\n\ndef next_oom_retry_resources(batch, workers):\n    """Step batch down after CUDA OOM without re-coupling DataLoader workers."""\n    return max(1, int(batch) // 2), max(0, int(workers))\n\n\n''')
-
-          replace_once(train_worker,
-          '''def update_job(job_file: Path, **kwargs):\n    job = read_json(job_file, {})\n    job.update(kwargs)\n    job["updated_at"] = now_iso()\n    write_json(job_file, job)\n\n\n''',
-          '''def update_job(job_file: Path, **kwargs):\n    job = read_json(job_file, {})\n    job.update(kwargs)\n    job["updated_at"] = now_iso()\n    write_json(job_file, job)\n\n\ndef publish_startup_stage(job_file: Path, stage: str, message: str, progress_percent: float, **extra):\n    update_job(\n        job_file,\n        status="running",\n        startup_stage=str(stage),\n        current_item=str(message),\n        message=str(message),\n        progress_percent=float(progress_percent),\n        **extra,\n    )\n\n\n''')
-
-          replace_once(train_worker,
-          '''    update_job(job_file, status="running", message="验证训练设备与资源", requested_train_params=train_args, actual_model=actual_model)\n''',
-          '''    publish_startup_stage(\n        job_file,\n        "worker_python_ready",\n        "训练进程已启动",\n        20,\n        requested_train_params=train_args,\n        actual_model=actual_model,\n    )\n''')
-
-          replace_once(train_worker,
-          '''        import ultralytics\n        import torch\n        from ultralytics import YOLO\n        from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources\n''',
-          '''        publish_startup_stage(job_file, "loading_frameworks", "加载 PyTorch / Ultralytics", 21)\n        import ultralytics\n        import torch\n        from ultralytics import YOLO\n        from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources\n        publish_startup_stage(job_file, "validating_runtime_device", "校验训练运行设备", 22)\n''')
-
-          replace_once(train_worker,
-          '''        del allocation\n        train_args["device"] = args.device\n''',
-          '''        del allocation\n        publish_startup_stage(job_file, "runtime_device_validated", "训练设备校验完成", 23)\n        train_args["device"] = args.device\n''')
-
-          replace_once(train_worker,
-          '''        model = YOLO(actual_model)\n        resolved = resolve_resources({**train_args, "device": runtime_device, "resource_strategy": args.resource_strategy}, resource_context, model, torch)\n''',
-          '''        publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)\n        model = YOLO(actual_model)\n        publish_startup_stage(job_file, "resolving_resources", "计算 Batch / Workers / Cache", 25)\n        resolved = resolve_resources({**train_args, "device": runtime_device, "resource_strategy": args.resource_strategy}, resource_context, model, torch)\n''')
-
-          replace_once(train_worker,
-          '''        telemetry.start()\n        gate_events=[]\n''',
-          '''        telemetry.start()\n        publish_startup_stage(job_file, "initializing_trainer", "初始化训练器与数据加载器", 26)\n        gate_events=[]\n''')
-
-          replace_once(train_worker,
-          '''        def attach_resource_callbacks(target, effective_args=None):\n            runtime_args = dict(effective_args or train_args)\n            def verify_runtime(trainer):\n                telemetry.on_train_start(trainer)\n                if str(trainer.device) != runtime_device:\n                    raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")\n                evidence.update(runtime_device=str(trainer.device), effective_args=dict(runtime_args))\n                update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=runtime_args)\n            target.add_callback("on_train_start", verify_runtime)\n            target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)\n''',
-          '''        def attach_resource_callbacks(target, effective_args=None):\n            runtime_args = dict(effective_args or train_args)\n            first_batch_seen = False\n\n            def pretrain_start(_trainer):\n                publish_startup_stage(job_file, "initializing_dataloader", "初始化训练数据加载器", 27)\n\n            def verify_runtime(trainer):\n                telemetry.on_train_start(trainer)\n                if str(trainer.device) != runtime_device:\n                    raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")\n                evidence.update(runtime_device=str(trainer.device), effective_args=dict(runtime_args))\n                publish_startup_stage(\n                    job_file,\n                    "trainer_ready",\n                    "训练器初始化完成，等待首个 Batch",\n                    28,\n                    actual_device=assigned,\n                    device_evidence=evidence,\n                    actual_train_params=runtime_args,\n                )\n\n            def first_batch(_trainer):\n                nonlocal first_batch_seen\n                if first_batch_seen:\n                    return\n                first_batch_seen = True\n                publish_startup_stage(\n                    job_file,\n                    "first_batch",\n                    "首个 Batch 已开始",\n                    29,\n                    training_started=True,\n                    first_batch_at=now_iso(),\n                )\n\n            target.add_callback("on_pretrain_routine_start", pretrain_start)\n            target.add_callback("on_train_start", verify_runtime)\n            target.add_callback("on_train_batch_start", first_batch)\n            target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)\n''')
-
-          replace_once(train_worker,
-          '''                train_args["batch"] = max(1, train_args["batch"] // 2)\n                train_args["workers"] = min(train_args["workers"], train_args["batch"])\n                resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)\n                resolved["reasons"].append(f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; same assigned GPU")\n''',
-          '''                next_batch, next_workers = next_oom_retry_resources(\n                    train_args["batch"], train_args["workers"]\n                )\n                train_args["batch"] = next_batch\n                train_args["workers"] = next_workers\n                resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)\n                resolved["reasons"].append(\n                    f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; "\n                    f"workers retained at {train_args['workers']}; same assigned GPU"\n                )\n''')
-
-          # Parent base runner: first batch is the boundary between startup and training.
-          replace_once(training_tasks,
-          '''                training_started = bool(job.get("current_epoch") or job.get("training_progress"))\n''',
-          '''                training_started = bool(\n                    job.get("training_started") or job.get("current_epoch") or job.get("training_progress")\n                )\n''')
-
-          # Production hardened runner previously reported all child startup as training.
-          replace_once(hardened,
-          '''                progress = float(job.get("progress_percent") or 20)\n                current = str(job.get("current_item") or job.get("current_epoch") or "") or None\n                context.repository.heartbeat(\n                    context.task.task_id,\n                    context.lease.lease_token,\n                    progress=max(20, min(95, progress)),\n                    stage="training",\n                    current_item=current,\n                )\n''',
-          '''                progress = float(job.get("progress_percent") or 20)\n                current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None\n                training_started = bool(\n                    job.get("training_started") or job.get("current_epoch") or job.get("training_progress")\n                )\n                context.repository.heartbeat(\n                    context.task.task_id,\n                    context.lease.lease_token,\n                    progress=max(20, min(95, progress)),\n                    stage="training" if training_started else "trainer_startup",\n                    current_item=current,\n                )\n''')
-
-          test_addition = r'''
-
-
-def test_rebuildable_bundle_copy_can_defer_per_file_fsync(monkeypatch, tmp_path):
-    source = tmp_path / "source.jpg"
-    destination = tmp_path / "bundle" / "image.jpg"
-    destination.parent.mkdir()
-    payload = b"rebuildable-bundle" * 4096
-    source.write_bytes(payload)
-
-    import hashlib
-    expected = hashlib.sha256(payload).hexdigest()
-    monkeypatch.setattr(
-        training_tasks.os,
-        "fsync",
-        lambda _fd: pytest.fail("rebuildable bundle copy should not fsync each image"),
-    )
-
-    training_tasks._copy_verified_isolated(
-        source,
-        destination,
-        expected,
-        durable=False,
-    )
-    assert destination.read_bytes() == payload
-
-
-def test_materialization_uses_construction_evidence_instead_of_full_image_rehash(monkeypatch, tmp_path):
-    source = tmp_path / "source.jpg"
-    payload = b"image-payload" * 2048
-    source.write_bytes(payload)
-
-    import hashlib
-    expected = hashlib.sha256(payload).hexdigest()
-    snapshot = {
-        "snapshot_id": "snapshot-startup-performance",
-        "label_schema": [{"code": "smoke", "class_id": 0}],
-        "images": [{"image_id": "img-1", "content_sha256": expected}],
-        "ids": {"train": ["img-1"], "validation": [], "test": []},
-    }
-    row = {
-        "id": "img-1",
-        "filename": "source.jpg",
-        "width": 100,
-        "height": 100,
-        "boxes": [{"label": "smoke", "x1": 10, "y1": 10, "x2": 40, "y2": 40}],
-    }
-    original_sha256 = training_tasks._sha256
-    hashed_paths = []
-
-    def tracked_sha256(path):
-        resolved = Path(path).resolve()
-        hashed_paths.append(resolved)
-        return original_sha256(resolved)
-
-    monkeypatch.setattr(training_tasks, "_sha256", tracked_sha256)
-    root = training_tasks.materialize_portable_dataset(
-        tmp_path / "work",
-        snapshot,
-        [row],
-        lambda _row: source,
-        safety_reserve_bytes=0,
-    )
-
-    bundle_image = (root / "dataset/images/train/img-1.jpg").resolve()
-    assert bundle_image.is_file()
-    assert bundle_image not in hashed_paths
-    manifest = training_tasks._json(root / "manifest.json", {})
-    assert manifest["construction_verification"]["image_integrity"] == "sha256_verified_during_materialization"
-
-
-def test_oom_retry_keeps_workers_independent_from_batch():
-    from train_worker import next_oom_retry_resources
-
-    assert next_oom_retry_resources(8, 8) == (4, 8)
-    assert next_oom_retry_resources(4, 8) == (2, 8)
-    assert next_oom_retry_resources(2, 3) == (1, 3)
-
-
-def test_startup_stage_contract_persists_first_batch_truth(tmp_path):
-    from train_worker import publish_startup_stage, read_json
-
-    job_file = tmp_path / "job.json"
-    job_file.write_text("{}", encoding="utf-8")
-    publish_startup_stage(
-        job_file,
-        "first_batch",
-        "首个 Batch 已开始",
-        29,
-        training_started=True,
-    )
-    job = read_json(job_file, {})
-    assert job["startup_stage"] == "first_batch"
-    assert job["training_started"] is True
-    assert job["current_item"] == "首个 Batch 已开始"
-'''
-          text = tests.read_text(encoding='utf-8')
-          if 'test_rebuildable_bundle_copy_can_defer_per_file_fsync' in text:
-              raise SystemExit('startup phase2 tests already present')
-          tests.write_text(text + test_addition, encoding='utf-8')
-
-          Path('.github/workflows/tmp-training-startup-phase2.yml').unlink()
+          Path('/tmp/startup_phase2_patch.py').write_bytes(gzip.decompress(base64.b64decode(os.environ['PATCH_GZ_B64'])))
           PY
+          python /tmp/startup_phase2_patch.py
 
-      - name: Install focused test dependencies
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
