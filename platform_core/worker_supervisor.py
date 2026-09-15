@@ -10,6 +10,7 @@ from typing import Iterable, Sequence
 
 TRAINING_ROLES = ("training",)
 BACKGROUND_ROLES = (
+    "discovery",
     "storage",
     "materials",
     "video",
