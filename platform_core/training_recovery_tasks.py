@@ -26,7 +26,7 @@ def _trusted_retry_candidate(context, data_dir: Path) -> dict[str, Any] | None:
 
     Recovery is deliberately restricted to an explicit retry of a terminal task.
     Lease recovery or an unrelated rerun must never consume stale failure
-    evidence.  Snapshot, portable bundle and checkpoint hash are all verified
+    evidence. Snapshot, portable bundle and checkpoint hash are all verified
     before the expensive final validator is allowed to start.
     """
 
@@ -157,6 +157,26 @@ def _trusted_retry_candidate(context, data_dir: Path) -> dict[str, Any] | None:
     }
 
 
+def _clear_recovered_failure_state(job_file: Path, job: Mapping[str, Any]) -> dict[str, Any]:
+    recovered = dict(job)
+    recovered.update(
+        failed_at=None,
+        failure_stage=None,
+        process_returncode=0,
+        process_signal=None,
+        completion_error=None,
+        failure_ref=None,
+        checkpoint_available=True,
+        recoverable=False,
+        recovery_action=None,
+        recovery_action_available=False,
+        recovery_attempted=True,
+        recovery_completed=True,
+    )
+    base.atomic_write_json(job_file, recovered)
+    return recovered
+
+
 class RecoveryHardenedLabelContractTrainingHandler(HardenedLabelContractTrainingHandler):
     """Add explicit checkpoint-only retry on top of the hardened training owner."""
 
@@ -179,6 +199,7 @@ class RecoveryHardenedLabelContractTrainingHandler(HardenedLabelContractTraining
             checkpoint_evidence=candidate["failure"],
             recovery=True,
         )
+        job = _clear_recovered_failure_state(candidate["job_file"], job)
         outcome = self._finalize_completed_job(
             context,
             candidate["payload"],
