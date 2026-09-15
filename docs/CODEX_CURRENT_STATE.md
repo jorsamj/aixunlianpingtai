@@ -6,13 +6,13 @@
 
 ```text
 branch:                                  refactor/frontend-runtime-stabilization
-local HEAD:                              92b8275e5a75167b040738d21a153f487f799b9b
-remote HEAD last verified:               92b8275e5a75167b040738d21a153f487f799b9b
-ahead / behind:                          0 / 0
-push status:                             PUSHED — remote accepted; related CI passed
-latest remotely accepted state:          92b8275e5a75167b040738d21a153f487f799b9b
-latest local scoped product implementation: bfe9f7d (training queue/resource-wait truth)
-latest full-suite acceptance:            92b8275e5a75167b040738d21a153f487f799b9b
+local scoped product HEAD:               de0c37dd93ecc3396935bf9ad6159568d77a03da
+remote HEAD last verified:               ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4
+ahead / behind last verified:            2 / 0
+push status:                             PENDING — GitHub 443 unavailable during Phase 1A handoff
+latest remotely accepted state:          ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4
+latest local scoped product implementation: de0c37d (GPU Runtime Truth Phase 1A)
+latest full-suite acceptance:            ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4
 formal VERSION.txt:                      42.24.0
 visible frontend version:                v42.24.0
 internal UI build metadata:              42.25.0-dev
@@ -28,7 +28,71 @@ TrainingTaskRuntime:                     training-task-runtime-422522
 AutoLabelPollRuntime:                    422501
 ```
 
-The latest remote acceptance is the branch HEAD `92b8275e5a75167b040738d21a153f487f799b9b`. Its directly related `Frontend Runtime Stabilization`, `Material Annotation Atomicity`, `Navigation Action Fencing`, and `v42.25 Release Regression` workflows passed. The Frontend Runtime workflow includes the complete frontend unit suite and Real Chrome runtime regressions; Navigation Action Fencing also includes its Real Chrome contract. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+The latest remotely accepted branch state is `ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4`. GPU Runtime Truth Phase 1A is committed locally at `de0c37dd93ecc3396935bf9ad6159568d77a03da`; push and GitHub CI remain pending because GitHub port 443 was unreachable during handoff. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+
+## Product status — GPU Runtime Truth Phase 1A
+
+```text
+GPU Runtime Truth Phase 1A
+IMPLEMENTED + BASIC TESTS
+REAL MULTI-NODE NVIDIA ACCEPTANCE PENDING
+```
+
+Implementation commit: `de0c37dd93ecc3396935bf9ad6159568d77a03da`.
+This phase extends the existing Worker Runtime and GPU resource owner; it does
+not add a second Worker registry, heartbeat, task queue, Scheduler, or GPU
+assignment path.
+
+Node identity resolves in this order: explicit `MC_NODE_ID`; otherwise a
+hashed node-local Windows MachineGuid or Linux machine-id; when those are not
+available, a generated identity persisted under `MC_NODE_STATE_DIR` or the
+OS-local application state directory. Hostname is display metadata only.
+Node identity is never written to shared `MC_TRAIN_DATA_DIR`. Containers that
+need identity across replacement should set `MC_NODE_ID` or mount a node-local
+`MC_NODE_STATE_DIR`.
+
+`worker_instances` now has an additive `node_id` column. New Worker leases
+write the resolved node through the existing `WorkerInstanceService.acquire()`
+and existing heartbeat. `GET /api/v62/workers` returns `node_id` with the
+existing sanitized runtime fields. Existing rows migrate to
+`legacy-unscoped`; no existing lease secret becomes public.
+
+The existing `gpu_inventory` and `gpu_samples` tables are migrated
+transactionally from global `uuid/gpu_index` rows to node-scoped
+`(node_id, gpu_uuid)` identity and `physical_index`. Inventory now records
+`model`, `total_bytes`, `free_bytes`, `utilization`, `sampled_at`,
+`telemetry_source`, `telemetry_available`, and `mig_mode`. Old rows remain
+recoverable as `legacy-unscoped` until a real Worker observes that UUID and
+adopts it for its Node. The former global
+`UPDATE gpu_inventory SET healthy=0` refresh is retired: a Node only upserts
+its own observations, and missing reports become stale through `sampled_at`.
+
+`worker_gpu_visibility` records the many-to-many runtime relationship
+`worker_id + node_id + gpu_uuid + logical_cuda_index + observed_at`.
+`CUDA_VISIBLE_DEVICES` order is applied only to the Worker logical index;
+physical index and GPU UUID remain separate. NVML is preferred, nvidia-smi is
+the second telemetry source, and Torch fallback contributes identity only:
+it never fabricates memory or utilization. Hardware health is not inferred;
+the public `health_status` remains `unknown` while
+`telemetry_available`, `metrics_fresh`, and `mig_mode` carry the proven facts.
+
+`GET /api/v62/gpu-runtime` is a read-only projection returning `nodes`,
+`workers`, `gpus`, `worker_gpu_visibility`, and telemetry counts. It neither
+samples hardware nor writes task/Scheduler state. Reservations are deliberately
+not exposed as node truth because `gpu_reservations` is not node-scoped yet.
+The existing local `/api/v62/gpu-resources` compatibility endpoint remains.
+
+Minimum verification passed on Windows: focused Worker/GPU schema, migration,
+Node isolation, visibility reorder, stale telemetry, Torch identity-only,
+no-GPU behavior, read-only API, Scheduler and recovery contracts `22/22`; the
+affected Python modules compiled successfully. Real multi-Node NVIDIA, A800,
+MIG, and container/NFS deployment remain **NOT VERIFIED**.
+
+Phase 1B explicitly retains: node-scoping `gpu_reservations`, resolving the
+global `worker_slot UNIQUE` conflict, binding assignments to
+`node_id + gpu_uuid + physical_index + logical_cuda_index`, Worker/server
+binding, remote routing, and GPU automatic scheduling. None of those claims
+are closed by Phase 1A.
 
 ## Product closure — Training Queue Readiness Truth CLOSED
 
@@ -423,7 +487,8 @@ TECH-DEBT CLEANUP PAUSED BY USER REQUEST
 → Training Queue Readiness Truth CLOSED
   product implementation: bfe9f7d
   remote acceptance: 92b8275e5a75167b040738d21a153f487f799b9b
-→ CURRENT NEXT: GPU Runtime Truth
+→ GPU Runtime Truth Phase 1A IMPLEMENTED + BASIC TESTS; push/CI and real multi-Node NVIDIA acceptance pending
+→ NEXT AFTER PHASE 1A REMOTE ACCEPTANCE: GPU Runtime Truth Phase 1B (only when explicitly resumed)
 → genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction
 → SSE/event stream evaluation DEFERRED
 → non-blocking Navigation Action Fencing final scan remains DEFERRED
