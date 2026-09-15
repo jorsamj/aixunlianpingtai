@@ -93,4 +93,4 @@ jobs:
           grep -Fq 'test_terminate_tree_reaps_group_after_leader_was_killed' tests/unit/task_runtime/test_process_control.py
           grep -Fq 'validation_mode' platform_core/training_devices.py
           grep -Fq 'class _HashingReader' platform_core/training_tasks.py
-          grep -Fq 'workers > batch' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq 'test_manual_workers_are_not_coupled_to_batch' tests/unit/test_training_startup_performance_contract.py
