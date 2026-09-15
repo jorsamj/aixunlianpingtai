@@ -148,7 +148,14 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
     @router.get("/{task_id}/recovery")
     def recovery(project_id: str, task_id: str):
         task = require_task(project_id, task_id)
-        return {"ok": True, "recovery": training_recovery_truth(task, task_artifacts())}
+        return {
+            "ok": True,
+            "recovery": training_recovery_truth(
+                task,
+                task_artifacts(),
+                verify_checkpoint_hash=True,
+            ),
+        }
 
     @router.post("/recovery-query")
     def recovery_query(project_id: str, payload: dict = Body(...)):
