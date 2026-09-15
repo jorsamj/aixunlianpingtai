@@ -67,7 +67,7 @@ test('exact resource queues keep exact numeric position', () => {
     framework: 'ultralytics',
   });
 
-  assert.match(html, /CPU · 排队中 · 队列第 2 位/);
+  assert.match(html, /CPU · 队列第 2 位/);
 });
 
 test('epoch and batch truth are shown only after training actually starts', () => {
