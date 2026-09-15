@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 
 from platform_core import training_bundle_cache
-from platform_core.training_bundle_cache import TrainingBundleCache
+from platform_core.training_bundle_cache import (
+    CACHE_MAX_BYTES_ENV,
+    CACHE_TTL_SECONDS_ENV,
+    TrainingBundleCache,
+)
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -72,10 +76,22 @@ def _write_bundle(root: Path, *, snapshot_id: str) -> Path:
     return bundle
 
 
+def _set_access_ns(entry_root: Path, value: int) -> None:
+    (entry_root / "access.json").write_text(
+        json.dumps(
+            {
+                "last_access_ns": value,
+                "last_accessed_at": "1970-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks(tmp_path):
     snapshot_id = "a" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    cache = TrainingBundleCache(tmp_path / "data", "project-a")
+    cache = TrainingBundleCache(tmp_path / "data", "project-a", max_bytes=0, ttl_seconds=0)
 
     entry, published = cache.publish_verified(
         source_bundle,
@@ -84,6 +100,8 @@ def test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks(tmp_p
     )
     assert published["published"] is True
     assert published["verified_files"] == 2
+    assert published["bundle_bytes"] == entry.bundle_bytes
+    assert published["maintenance"]["evicted_entries"] == 0
 
     resolved = cache.resolve(snapshot_id)
     assert resolved is not None
@@ -95,7 +113,11 @@ def test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks(tmp_p
     restored_label = restored / "dataset/labels/train/img-1.txt"
     assert restored_image.read_bytes() == b"train-image-bytes"
     assert stats["hardlinked_images"] == 2
+    assert stats["hardlinked_image_bytes"] == len(b"train-image-bytes") + len(b"test-image-bytes")
     assert stats["copied_images"] == 0
+    assert stats["copied_image_bytes"] == 0
+    assert stats["cache_bundle_bytes"] == entry.bundle_bytes
+    assert stats["cache_last_access_ns"] > 0
     assert os.path.samefile(cache_image, restored_image)
     assert not os.path.samefile(cache_label, restored_label)
 
@@ -103,7 +125,7 @@ def test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks(tmp_p
 def test_cache_resolve_rejects_missing_member_without_rehashing_images(monkeypatch, tmp_path):
     snapshot_id = "b" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    cache = TrainingBundleCache(tmp_path / "data", "project-b")
+    cache = TrainingBundleCache(tmp_path / "data", "project-b", max_bytes=0, ttl_seconds=0)
     entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
 
     image = entry.bundle / "dataset/images/train/img-1.jpg"
@@ -115,7 +137,7 @@ def test_cache_resolve_rejects_missing_member_without_rehashing_images(monkeypat
 def test_cache_restore_falls_back_to_copy_when_hardlink_is_unavailable(monkeypatch, tmp_path):
     snapshot_id = "c" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    cache = TrainingBundleCache(tmp_path / "data", "project-c")
+    cache = TrainingBundleCache(tmp_path / "data", "project-c", max_bytes=0, ttl_seconds=0)
     entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
 
     monkeypatch.setattr(
@@ -125,14 +147,16 @@ def test_cache_restore_falls_back_to_copy_when_hardlink_is_unavailable(monkeypat
     )
     restored, stats = cache.restore(entry, tmp_path / "task-work")
     assert stats["hardlinked_images"] == 0
+    assert stats["hardlinked_image_bytes"] == 0
     assert stats["copied_images"] == 2
+    assert stats["copied_image_bytes"] == len(b"train-image-bytes") + len(b"test-image-bytes")
     assert (restored / "dataset/images/test/img-2.jpg").read_bytes() == b"test-image-bytes"
 
 
 def test_cache_publish_requires_final_verified_file_count(tmp_path):
     snapshot_id = "d" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    cache = TrainingBundleCache(tmp_path / "data", "project-d")
+    cache = TrainingBundleCache(tmp_path / "data", "project-d", max_bytes=0, ttl_seconds=0)
 
     with pytest.raises(ValueError, match="file count"):
         cache.publish_verified(source_bundle, snapshot_id, verified_files=1)
@@ -142,12 +166,13 @@ def test_cache_publish_requires_final_verified_file_count(tmp_path):
 def test_cache_is_project_scoped(tmp_path):
     snapshot_id = "e" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    left = TrainingBundleCache(tmp_path / "data", "project-left")
-    right = TrainingBundleCache(tmp_path / "data", "project-right")
+    left = TrainingBundleCache(tmp_path / "data", "project-left", max_bytes=0, ttl_seconds=0)
+    right = TrainingBundleCache(tmp_path / "data", "project-right", max_bytes=0, ttl_seconds=0)
 
     left.publish_verified(source_bundle, snapshot_id, verified_files=2)
     assert left.resolve(snapshot_id) is not None
     assert right.resolve(snapshot_id) is None
+
 
 def test_indexed_cache_lookup_requires_locked_hash_and_size():
     from platform_core.training_tasks import _indexed_content_identity_ready
@@ -166,7 +191,7 @@ def test_indexed_cache_lookup_requires_locked_hash_and_size():
 def test_cache_resolve_rejects_tampered_label(tmp_path):
     snapshot_id = "1" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    cache = TrainingBundleCache(tmp_path / "data", "project-label-integrity")
+    cache = TrainingBundleCache(tmp_path / "data", "project-label-integrity", max_bytes=0, ttl_seconds=0)
     entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
 
     (entry.bundle / "dataset/labels/train/img-1.txt").write_text(
@@ -178,7 +203,7 @@ def test_cache_resolve_rejects_tampered_label(tmp_path):
 def test_cache_resolve_rejects_tampered_data_yaml(tmp_path):
     snapshot_id = "2" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    cache = TrainingBundleCache(tmp_path / "data", "project-yaml-integrity")
+    cache = TrainingBundleCache(tmp_path / "data", "project-yaml-integrity", max_bytes=0, ttl_seconds=0)
     entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
 
     (entry.bundle / "dataset/data.yaml").write_text(
@@ -190,7 +215,7 @@ def test_cache_resolve_rejects_tampered_data_yaml(tmp_path):
 def test_cache_resolve_rejects_in_bundle_symlink_component(tmp_path):
     snapshot_id = "3" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
-    cache = TrainingBundleCache(tmp_path / "data", "project-link-integrity")
+    cache = TrainingBundleCache(tmp_path / "data", "project-link-integrity", max_bytes=0, ttl_seconds=0)
     entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
 
     data_yaml = entry.bundle / "dataset/data.yaml"
@@ -213,3 +238,105 @@ def test_cache_publication_is_ordered_after_algorithm_version_attachment():
     assert source.index("attach_version(") < source.index(").publish_verified(")
     assert source.index(").publish_verified(") < source.index('"stage": "committed"')
 
+
+def test_cache_resolve_refreshes_lru_access_metadata(monkeypatch, tmp_path):
+    snapshot_id = "4" * 64
+    source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
+    cache = TrainingBundleCache(tmp_path / "data", "project-access", max_bytes=0, ttl_seconds=0)
+    entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
+
+    expected = 9_000_000_000
+    monkeypatch.setattr(training_bundle_cache.time, "time_ns", lambda: expected)
+    resolved = cache.resolve(snapshot_id)
+
+    assert resolved is not None
+    assert resolved.last_access_ns == expected
+    access = json.loads((entry.root / "access.json").read_text(encoding="utf-8"))
+    assert access["last_access_ns"] == expected
+
+
+def test_cache_ttl_expiry_blocks_reuse_and_maintenance_evicts(monkeypatch, tmp_path):
+    snapshot_id = "5" * 64
+    source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
+    cache = TrainingBundleCache(tmp_path / "data", "project-ttl", max_bytes=0, ttl_seconds=1)
+    entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
+    _set_access_ns(entry.root, 1)
+
+    monkeypatch.setattr(
+        training_bundle_cache.time,
+        "time_ns",
+        lambda: 600_000_000_000,
+    )
+    assert cache.resolve(snapshot_id) is None
+
+    maintenance = cache.maintain()
+    assert maintenance["ttl_evictions"] == 1
+    assert maintenance["evicted_entries"] == 1
+    assert maintenance["after_bytes"] == 0
+    assert not entry.root.exists()
+
+
+def test_cache_quota_evicts_lru_entry_but_protects_new_publish(tmp_path):
+    first_id = "6" * 64
+    second_id = "7" * 64
+    first_source = _write_bundle(tmp_path / "source-first", snapshot_id=first_id)
+    second_source = _write_bundle(tmp_path / "source-second", snapshot_id=second_id)
+    unbounded = TrainingBundleCache(
+        tmp_path / "data",
+        "project-quota",
+        max_bytes=0,
+        ttl_seconds=0,
+    )
+    first, _ = unbounded.publish_verified(first_source, first_id, verified_files=2)
+    _set_access_ns(first.root, 1)
+
+    bounded = TrainingBundleCache(
+        tmp_path / "data",
+        "project-quota",
+        max_bytes=first.bundle_bytes + 1,
+        ttl_seconds=0,
+    )
+    second, published = bounded.publish_verified(
+        second_source,
+        second_id,
+        verified_files=2,
+    )
+
+    maintenance = published["maintenance"]
+    assert maintenance["quota_evictions"] == 1
+    assert maintenance["evicted_snapshot_ids"] == [first_id]
+    assert maintenance["over_budget_bytes"] == 0
+    assert bounded.resolve(first_id) is None
+    assert bounded.resolve(second_id) is not None
+    assert second.root.exists()
+
+
+def test_cache_maintenance_skips_locked_active_entry(monkeypatch, tmp_path):
+    snapshot_id = "8" * 64
+    source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
+    cache = TrainingBundleCache(tmp_path / "data", "project-active", max_bytes=0, ttl_seconds=1)
+    entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
+    _set_access_ns(entry.root, 1)
+    monkeypatch.setattr(
+        training_bundle_cache.time,
+        "time_ns",
+        lambda: 600_000_000_000,
+    )
+
+    with cache._lock(snapshot_id):
+        maintenance = cache.maintain()
+
+    assert maintenance["skipped_locked"] == 1
+    assert maintenance["evicted_entries"] == 0
+    assert entry.root.exists()
+
+
+def test_cache_lifecycle_environment_requires_non_negative_integer(monkeypatch, tmp_path):
+    monkeypatch.setenv(CACHE_MAX_BYTES_ENV, "-1")
+    with pytest.raises(ValueError, match=CACHE_MAX_BYTES_ENV):
+        TrainingBundleCache(tmp_path / "data", "project-config")
+
+    monkeypatch.delenv(CACHE_MAX_BYTES_ENV)
+    monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "not-a-number")
+    with pytest.raises(ValueError, match=CACHE_TTL_SECONDS_ENV):
+        TrainingBundleCache(tmp_path / "data", "project-config")

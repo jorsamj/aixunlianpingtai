@@ -112,12 +112,25 @@ jobs:
           grep -Fq 'CACHE_SCHEMA_VERSION = 2' platform_core/training_bundle_cache.py
           grep -Fq 'data_yaml_sha256' platform_core/training_bundle_cache.py
           grep -Fq 'portable bundle reference must not traverse a link or reparse point' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_MAX_BYTES_ENV = "TRAINING_BUNDLE_CACHE_MAX_BYTES"' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_TTL_SECONDS_ENV = "TRAINING_BUNDLE_CACHE_TTL_SECONDS"' platform_core/training_bundle_cache.py
+          grep -Fq 'DEFAULT_CACHE_MAX_BYTES = 64 * 1024 * 1024 * 1024' platform_core/training_bundle_cache.py
+          grep -Fq 'DEFAULT_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_RECENT_ACCESS_GRACE_SECONDS = 5 * 60' platform_core/training_bundle_cache.py
+          grep -Fq 'def maintain(' platform_core/training_bundle_cache.py
+          grep -Fq 'with self._lock(candidate.snapshot_id, timeout=0)' platform_core/training_bundle_cache.py
+          grep -Fq '"hardlinked_image_bytes"' platform_core/training_bundle_cache.py
+          grep -Fq '"maintenance": maintenance' platform_core/training_bundle_cache.py
           grep -Fq 'os.link' platform_core/training_bundle_cache.py
           grep -Fq 'test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks' tests/unit/test_training_bundle_cache.py
           grep -Fq 'test_cache_resolve_rejects_tampered_label' tests/unit/test_training_bundle_cache.py
           grep -Fq 'test_cache_resolve_rejects_tampered_data_yaml' tests/unit/test_training_bundle_cache.py
           grep -Fq 'test_cache_resolve_rejects_in_bundle_symlink_component' tests/unit/test_training_bundle_cache.py
           grep -Fq 'test_cache_publication_is_ordered_after_algorithm_version_attachment' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_resolve_refreshes_lru_access_metadata' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_ttl_expiry_blocks_reuse_and_maintenance_evicts' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_quota_evicts_lru_entry_but_protects_new_publish' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_maintenance_skips_locked_active_entry' tests/unit/test_training_bundle_cache.py
           grep -Fq 'durable=False' platform_core/training_tasks.py
           grep -Fq 'next_oom_retry_resources' train_worker.py
           grep -Fq 'startup_stage' train_worker.py

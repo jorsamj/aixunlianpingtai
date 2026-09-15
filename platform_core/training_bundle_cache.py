@@ -5,17 +5,25 @@ import json
 import os
 import shutil
 import stat
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 
 CACHE_SCHEMA_VERSION = 2
 _CACHE_ROOT_NAME = "training-bundles"
+_CACHE_ACCESS_NAME = "access.json"
+_CACHE_PROJECT_LOCK_NAME = ".project.lock"
+CACHE_MAX_BYTES_ENV = "TRAINING_BUNDLE_CACHE_MAX_BYTES"
+CACHE_TTL_SECONDS_ENV = "TRAINING_BUNDLE_CACHE_TTL_SECONDS"
+DEFAULT_CACHE_MAX_BYTES = 64 * 1024 * 1024 * 1024
+DEFAULT_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
+CACHE_RECENT_ACCESS_GRACE_SECONDS = 5 * 60
 
 
 def _sha256(path: Path) -> str:
@@ -46,6 +54,17 @@ def _snapshot_id(value: str) -> str:
     if len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text):
         raise ValueError("snapshot_id must be a lowercase SHA256 hex digest")
     return text
+
+
+def _configured_non_negative_int(name: str, default: int, override: int | None) -> int:
+    raw: int | str = override if override is not None else os.environ.get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a non-negative integer") from error
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
 
 
 def _path_info(path: Path) -> os.stat_result | None:
@@ -114,6 +133,8 @@ def _resolve_relative(root: Path, reference: str) -> Path:
 
 
 def _real_directory(path: Path, *, label: str) -> Path:
+    if _is_link_like(path):
+        raise ValueError(f"{label} must be a real directory")
     resolved = path.resolve()
     info = _path_info(resolved)
     if info is None or _is_link_like(resolved) or not stat.S_ISDIR(info.st_mode):
@@ -122,18 +143,51 @@ def _real_directory(path: Path, *, label: str) -> Path:
 
 
 def _safe_rmtree(path: Path, *, parent: Path) -> None:
-    if not path.exists():
-        return
-    resolved_parent = parent.resolve()
-    resolved = path.resolve()
-    if resolved.parent != resolved_parent:
-        raise ValueError("cache cleanup escaped its parent")
     info = _path_info(path)
     if info is None:
         return
     if _is_link_like(path) or not stat.S_ISDIR(info.st_mode):
         raise ValueError("cache cleanup target must be a real directory")
+    resolved_parent = parent.resolve()
+    resolved = path.resolve()
+    if resolved.parent != resolved_parent:
+        raise ValueError("cache cleanup escaped its parent")
     shutil.rmtree(path)
+
+
+def _bundle_logical_bytes(root: Path) -> int:
+    info = _path_info(root)
+    if info is None or _is_link_like(root) or not stat.S_ISDIR(info.st_mode):
+        return 0
+    total = 0
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for candidate in directory.iterdir():
+            candidate_info = _path_info(candidate)
+            if candidate_info is None or _is_link_like(candidate):
+                continue
+            if stat.S_ISDIR(candidate_info.st_mode):
+                pending.append(candidate)
+            elif stat.S_ISREG(candidate_info.st_mode):
+                total += int(candidate_info.st_size)
+    return total
+
+
+def _published_ns(marker: Mapping[str, Any], fallback: Path) -> int:
+    raw = str(marker.get("published_at") or "").strip()
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp() * 1_000_000_000)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    try:
+        return int(fallback.stat().st_mtime_ns)
+    except OSError:
+        return 0
 
 
 @dataclass(frozen=True)
@@ -143,24 +197,112 @@ class TrainingBundleCacheEntry:
     snapshot_id: str
     verified_files: int
     manifest_sha256: str
+    bundle_bytes: int = 0
+    last_access_ns: int = 0
+
+
+@dataclass(frozen=True)
+class _MaintenanceCandidate:
+    snapshot_id: str
+    root: Path
+    bundle_bytes: int
+    last_access_ns: int
+    invalid: bool = False
 
 
 class TrainingBundleCache:
-    """Project-scoped immutable cache for fully verified portable training bundles."""
+    """Project-scoped cache for fully verified portable training bundles.
 
-    def __init__(self, data_dir: str | Path, project_id: str) -> None:
+    Bundle payloads remain immutable. Mutable access metadata lives in a separate
+    sidecar and is used only for TTL/LRU lifecycle decisions.
+    """
+
+    def __init__(
+        self,
+        data_dir: str | Path,
+        project_id: str,
+        *,
+        max_bytes: int | None = None,
+        ttl_seconds: int | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir).resolve()
         self.project_id = _safe_component(project_id, label="project_id")
         self.root = self.data_dir / "cache" / _CACHE_ROOT_NAME / self.project_id
+        self.max_bytes = _configured_non_negative_int(
+            CACHE_MAX_BYTES_ENV,
+            DEFAULT_CACHE_MAX_BYTES,
+            max_bytes,
+        )
+        self.ttl_seconds = _configured_non_negative_int(
+            CACHE_TTL_SECONDS_ENV,
+            DEFAULT_CACHE_TTL_SECONDS,
+            ttl_seconds,
+        )
 
     def _entry_root(self, snapshot_id: str) -> Path:
         return self.root / _snapshot_id(snapshot_id)
 
-    def _lock(self, snapshot_id: str) -> FileLock:
+    def _lock(self, snapshot_id: str, *, timeout: float = 300) -> FileLock:
         self.root.mkdir(parents=True, exist_ok=True)
-        return FileLock(str(self.root / f".{_snapshot_id(snapshot_id)}.lock"), timeout=300)
+        return FileLock(str(self.root / f".{_snapshot_id(snapshot_id)}.lock"), timeout=timeout)
 
-    def _resolve_unlocked(self, snapshot_id: str) -> TrainingBundleCacheEntry | None:
+    def _project_lock(self) -> FileLock:
+        self.root.mkdir(parents=True, exist_ok=True)
+        return FileLock(str(self.root / _CACHE_PROJECT_LOCK_NAME), timeout=300)
+
+    @staticmethod
+    def _access_path(entry_root: Path) -> Path:
+        return entry_root / _CACHE_ACCESS_NAME
+
+    def _read_access_ns(self, entry_root: Path, marker: Mapping[str, Any]) -> int:
+        access_path = self._access_path(entry_root)
+        if not _is_link_like(access_path):
+            try:
+                access = json.loads(access_path.read_text(encoding="utf-8"))
+                value = int(access.get("last_access_ns") or 0)
+                if value > 0:
+                    return value
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
+        return _published_ns(marker, entry_root)
+
+    def _write_access_unlocked(self, entry_root: Path, *, now_ns: int | None = None) -> int:
+        timestamp_ns = int(time.time_ns() if now_ns is None else now_ns)
+        if timestamp_ns <= 0:
+            timestamp_ns = 1
+        access_path = self._access_path(entry_root)
+        if _is_link_like(access_path):
+            return timestamp_ns
+        temporary = entry_root / f".{_CACHE_ACCESS_NAME}.{uuid.uuid4().hex}.tmp"
+        payload = {
+            "last_access_ns": timestamp_ns,
+            "last_accessed_at": datetime.fromtimestamp(
+                timestamp_ns / 1_000_000_000,
+                tz=timezone.utc,
+            ).isoformat(),
+        }
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, access_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return timestamp_ns
+
+    def _expired(self, last_access_ns: int, *, now_ns: int | None = None) -> bool:
+        if self.ttl_seconds <= 0 or last_access_ns <= 0:
+            return False
+        current_ns = int(time.time_ns() if now_ns is None else now_ns)
+        return current_ns - last_access_ns > self.ttl_seconds * 1_000_000_000
+
+    def _resolve_unlocked(
+        self,
+        snapshot_id: str,
+        *,
+        allow_expired: bool = False,
+    ) -> TrainingBundleCacheEntry | None:
         sid = _snapshot_id(snapshot_id)
         entry_root = self._entry_root(sid)
         info = _path_info(entry_root)
@@ -182,6 +324,9 @@ class TrainingBundleCache:
             or str(marker.get("snapshot_id") or "") != sid
             or str(manifest.get("snapshot_id") or "") != sid
         ):
+            return None
+        last_access_ns = self._read_access_ns(entry_root, marker)
+        if not allow_expired and self._expired(last_access_ns):
             return None
         expected_manifest_sha = str(marker.get("manifest_sha256") or "")
         if not expected_manifest_sha or _sha256(manifest_path) != expected_manifest_sha:
@@ -238,17 +383,35 @@ class TrainingBundleCache:
             return None
         if verified_files != int(marker.get("verified_files") or -1):
             return None
+        try:
+            bundle_bytes = max(0, int(marker.get("bundle_bytes") or 0))
+        except (TypeError, ValueError):
+            bundle_bytes = 0
         return TrainingBundleCacheEntry(
             root=entry_root,
             bundle=bundle,
             snapshot_id=sid,
             verified_files=verified_files,
             manifest_sha256=expected_manifest_sha,
+            bundle_bytes=bundle_bytes,
+            last_access_ns=last_access_ns,
         )
 
     def resolve(self, snapshot_id: str) -> TrainingBundleCacheEntry | None:
         with self._lock(snapshot_id):
-            return self._resolve_unlocked(snapshot_id)
+            entry = self._resolve_unlocked(snapshot_id)
+            if entry is None:
+                return None
+            accessed_ns = self._write_access_unlocked(entry.root)
+            return TrainingBundleCacheEntry(
+                root=entry.root,
+                bundle=entry.bundle,
+                snapshot_id=entry.snapshot_id,
+                verified_files=entry.verified_files,
+                manifest_sha256=entry.manifest_sha256,
+                bundle_bytes=entry.bundle_bytes,
+                last_access_ns=accessed_ns,
+            )
 
     @staticmethod
     def _clone_bundle(
@@ -268,8 +431,12 @@ class TrainingBundleCache:
             members.extend((manifest.get("splits") or {}).get(role, []))
 
         hardlinked_images = 0
+        hardlinked_image_bytes = 0
         copied_images = 0
+        copied_image_bytes = 0
         label_files = 0
+        label_bytes = 0
+        metadata_bytes = 0
         for index, member in enumerate(members, start=1):
             image_ref = str(member.get("image_ref") or "")
             label_ref = str(member.get("label_ref") or "")
@@ -292,11 +459,14 @@ class TrainingBundleCache:
             try:
                 os.link(source_image, destination_image)
                 hardlinked_images += 1
+                hardlinked_image_bytes += expected_size
             except OSError:
                 shutil.copy2(source_image, destination_image)
                 copied_images += 1
+                copied_image_bytes += expected_size
             shutil.copy2(source_label, destination_label)
             label_files += 1
+            label_bytes += int(source_label.stat().st_size)
             if progress is not None:
                 progress(index, len(members), member)
 
@@ -308,12 +478,22 @@ class TrainingBundleCache:
                 raise ValueError(f"cache source {reference_key} is invalid")
             destination_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, destination_path)
+            metadata_bytes += int(source_path.stat().st_size)
         shutil.copy2(manifest_path, destination_bundle / "manifest.json")
+        metadata_bytes += int(manifest_path.stat().st_size)
         return {
             "verified_files": len(members),
             "hardlinked_images": hardlinked_images,
+            "hardlinked_image_bytes": hardlinked_image_bytes,
             "copied_images": copied_images,
+            "copied_image_bytes": copied_image_bytes,
             "label_files": label_files,
+            "label_bytes": label_bytes,
+            "metadata_bytes": metadata_bytes,
+            "bundle_bytes": hardlinked_image_bytes
+            + copied_image_bytes
+            + label_bytes
+            + metadata_bytes,
         }
 
     def restore(
@@ -323,12 +503,16 @@ class TrainingBundleCache:
         *,
         progress: Callable[[int, int, Mapping[str, Any]], None] | None = None,
     ) -> tuple[Path, dict[str, int]]:
-        work = Path(task_work_root).resolve()
-        if _is_link_like(work):
+        work_input = Path(task_work_root)
+        if _is_link_like(work_input):
             raise ValueError("training work path must not be link-like")
+        work = work_input.resolve()
         work.mkdir(parents=True, exist_ok=True)
         with self._lock(entry.snapshot_id):
-            current = self._resolve_unlocked(entry.snapshot_id)
+            # A cache entry already admitted by resolve() is allowed to cross a
+            # TTL boundary while the same task is restoring it. Integrity must
+            # still match exactly.
+            current = self._resolve_unlocked(entry.snapshot_id, allow_expired=True)
             if current is None or current.manifest_sha256 != entry.manifest_sha256:
                 raise ValueError("training bundle cache entry is no longer valid")
             temporary = work / f".bundle-cache-{uuid.uuid4().hex}.tmp"
@@ -342,10 +526,208 @@ class TrainingBundleCache:
                 if target.exists():
                     _safe_rmtree(target, parent=work)
                 os.replace(temporary, target)
+                access_ns = self._write_access_unlocked(current.root)
+                stats["cache_bundle_bytes"] = int(
+                    current.bundle_bytes or stats.get("bundle_bytes") or 0
+                )
+                stats["cache_last_access_ns"] = access_ns
                 return target, stats
             finally:
                 if temporary.exists():
                     _safe_rmtree(temporary, parent=work)
+
+    def _maintenance_candidates_unlocked(
+        self,
+    ) -> tuple[list[_MaintenanceCandidate], int]:
+        info = _path_info(self.root)
+        if info is None:
+            return [], 0
+        if _is_link_like(self.root) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError("training bundle cache root must be a real directory")
+        candidates: list[_MaintenanceCandidate] = []
+        unsafe_entries = 0
+        for entry_root in self.root.iterdir():
+            if entry_root.name.startswith("."):
+                continue
+            entry_info = _path_info(entry_root)
+            if entry_info is None:
+                continue
+            if _is_link_like(entry_root) or not stat.S_ISDIR(entry_info.st_mode):
+                unsafe_entries += 1
+                continue
+            try:
+                sid = _snapshot_id(entry_root.name)
+            except ValueError:
+                continue
+            marker_path = entry_root / "cache.json"
+            bundle = entry_root / "bundle"
+            marker: Mapping[str, Any] = {}
+            invalid = False
+            if _is_link_like(marker_path) or _is_link_like(bundle):
+                invalid = True
+            else:
+                try:
+                    loaded = json.loads(marker_path.read_text(encoding="utf-8"))
+                    marker = loaded if isinstance(loaded, dict) else {}
+                except (OSError, json.JSONDecodeError):
+                    invalid = True
+            if (
+                not invalid
+                and (
+                    int(marker.get("schema_version") or 0) != CACHE_SCHEMA_VERSION
+                    or str(marker.get("snapshot_id") or "") != sid
+                )
+            ):
+                invalid = True
+            try:
+                bundle_bytes = max(0, int(marker.get("bundle_bytes") or 0))
+            except (TypeError, ValueError):
+                bundle_bytes = 0
+            if bundle_bytes <= 0:
+                bundle_bytes = _bundle_logical_bytes(bundle)
+            last_access_ns = self._read_access_ns(entry_root, marker)
+            candidates.append(
+                _MaintenanceCandidate(
+                    snapshot_id=sid,
+                    root=entry_root,
+                    bundle_bytes=bundle_bytes,
+                    last_access_ns=last_access_ns,
+                    invalid=invalid,
+                )
+            )
+        return candidates, unsafe_entries
+
+    def maintain(
+        self,
+        *,
+        protect_snapshot_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        protected = {_snapshot_id(value) for value in protect_snapshot_ids}
+        self.root.mkdir(parents=True, exist_ok=True)
+        now_ns = time.time_ns()
+        with self._project_lock():
+            candidates, unsafe_entries = self._maintenance_candidates_unlocked()
+            before_bytes = sum(candidate.bundle_bytes for candidate in candidates)
+            retained_bytes = before_bytes
+            evicted_entries = 0
+            evicted_bytes = 0
+            ttl_evictions = 0
+            quota_evictions = 0
+            invalid_evictions = 0
+            skipped_locked = 0
+            skipped_protected = 0
+            skipped_recent = 0
+            eviction_failures = 0
+            evicted_snapshot_ids: list[str] = []
+            removed: set[str] = set()
+
+            def evict(candidate: _MaintenanceCandidate, *, reason: str) -> bool:
+                nonlocal retained_bytes
+                nonlocal evicted_entries
+                nonlocal evicted_bytes
+                nonlocal ttl_evictions
+                nonlocal quota_evictions
+                nonlocal invalid_evictions
+                nonlocal skipped_locked
+                nonlocal skipped_protected
+                nonlocal skipped_recent
+                nonlocal eviction_failures
+
+                if candidate.snapshot_id in protected:
+                    skipped_protected += 1
+                    return False
+                age_ns = max(0, now_ns - candidate.last_access_ns)
+                if (
+                    reason != "invalid"
+                    and candidate.last_access_ns > 0
+                    and age_ns < CACHE_RECENT_ACCESS_GRACE_SECONDS * 1_000_000_000
+                ):
+                    skipped_recent += 1
+                    return False
+                try:
+                    with self._lock(candidate.snapshot_id, timeout=0):
+                        current_info = _path_info(candidate.root)
+                        if current_info is None:
+                            removed.add(candidate.snapshot_id)
+                            return False
+                        if _is_link_like(candidate.root) or not stat.S_ISDIR(current_info.st_mode):
+                            eviction_failures += 1
+                            return False
+                        _safe_rmtree(candidate.root, parent=self.root)
+                except Timeout:
+                    skipped_locked += 1
+                    return False
+                except (OSError, ValueError):
+                    eviction_failures += 1
+                    return False
+                removed.add(candidate.snapshot_id)
+                evicted_entries += 1
+                evicted_bytes += candidate.bundle_bytes
+                retained_bytes = max(0, retained_bytes - candidate.bundle_bytes)
+                evicted_snapshot_ids.append(candidate.snapshot_id)
+                if reason == "ttl":
+                    ttl_evictions += 1
+                elif reason == "quota":
+                    quota_evictions += 1
+                elif reason == "invalid":
+                    invalid_evictions += 1
+                return True
+
+            for candidate in sorted(
+                (item for item in candidates if item.invalid),
+                key=lambda item: (item.last_access_ns, item.snapshot_id),
+            ):
+                evict(candidate, reason="invalid")
+
+            if self.ttl_seconds > 0:
+                for candidate in sorted(
+                    (
+                        item
+                        for item in candidates
+                        if not item.invalid
+                        and item.snapshot_id not in removed
+                        and self._expired(item.last_access_ns, now_ns=now_ns)
+                    ),
+                    key=lambda item: (item.last_access_ns, item.snapshot_id),
+                ):
+                    evict(candidate, reason="ttl")
+
+            if self.max_bytes > 0 and retained_bytes > self.max_bytes:
+                for candidate in sorted(
+                    (
+                        item
+                        for item in candidates
+                        if not item.invalid and item.snapshot_id not in removed
+                    ),
+                    key=lambda item: (item.last_access_ns, item.snapshot_id),
+                ):
+                    if retained_bytes <= self.max_bytes:
+                        break
+                    evict(candidate, reason="quota")
+
+            return {
+                "max_bytes": self.max_bytes,
+                "ttl_seconds": self.ttl_seconds,
+                "scanned_entries": len(candidates),
+                "unsafe_entries": unsafe_entries,
+                "before_bytes": before_bytes,
+                "after_bytes": retained_bytes,
+                "evicted_entries": evicted_entries,
+                "evicted_bytes": evicted_bytes,
+                "ttl_evictions": ttl_evictions,
+                "quota_evictions": quota_evictions,
+                "invalid_evictions": invalid_evictions,
+                "skipped_locked": skipped_locked,
+                "skipped_protected": skipped_protected,
+                "skipped_recent": skipped_recent,
+                "eviction_failures": eviction_failures,
+                "over_budget_bytes": (
+                    max(0, retained_bytes - self.max_bytes)
+                    if self.max_bytes > 0
+                    else 0
+                ),
+                "evicted_snapshot_ids": evicted_snapshot_ids,
+            }
 
     def publish_verified(
         self,
@@ -353,60 +735,83 @@ class TrainingBundleCache:
         snapshot_id: str,
         *,
         verified_files: int,
-    ) -> tuple[TrainingBundleCacheEntry, dict[str, int | bool]]:
+    ) -> tuple[TrainingBundleCacheEntry, dict[str, Any]]:
         sid = _snapshot_id(snapshot_id)
         source = _real_directory(Path(source_bundle), label="source bundle")
+        published = False
+        stats: dict[str, Any]
         with self._lock(sid):
-            existing = self._resolve_unlocked(sid)
+            existing = self._resolve_unlocked(sid, allow_expired=True)
             if existing is not None:
-                return existing, {
+                resolved = existing
+                stats = {
                     "published": False,
                     "verified_files": existing.verified_files,
                     "hardlinked_images": 0,
+                    "hardlinked_image_bytes": 0,
                     "copied_images": 0,
+                    "copied_image_bytes": 0,
                     "label_files": 0,
+                    "label_bytes": 0,
+                    "metadata_bytes": 0,
+                    "bundle_bytes": existing.bundle_bytes,
                 }
-
-            entry_root = self._entry_root(sid)
-            if entry_root.exists():
-                _safe_rmtree(entry_root, parent=self.root)
-            temporary_root = self.root / f".{sid}.{uuid.uuid4().hex}.tmp"
-            bundle = temporary_root / "bundle"
-            try:
-                temporary_root.mkdir(parents=True, exist_ok=False)
-                stats = self._clone_bundle(source, bundle)
-                if int(stats["verified_files"]) != int(verified_files):
-                    raise ValueError(
-                        "verified bundle file count does not match final validation evidence"
-                    )
-                manifest_path = bundle / "manifest.json"
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if str(manifest.get("snapshot_id") or "") != sid:
-                    raise ValueError("verified bundle snapshot identity mismatch")
-                data_yaml_path = _resolve_relative(
-                    bundle, str(manifest.get("data_yaml_ref") or "")
-                )
-                if not data_yaml_path.is_file():
-                    raise ValueError("verified bundle data YAML is missing")
-                marker = {
-                    "schema_version": CACHE_SCHEMA_VERSION,
-                    "snapshot_id": sid,
-                    "manifest_sha256": _sha256(manifest_path),
-                    "data_yaml_sha256": _sha256(data_yaml_path),
-                    "verified_files": int(verified_files),
-                    "published_at": datetime.now(timezone.utc).isoformat(),
-                }
-                (temporary_root / "cache.json").write_text(
-                    json.dumps(marker, ensure_ascii=False, sort_keys=True),
-                    encoding="utf-8",
-                )
-                os.replace(temporary_root, entry_root)
-            finally:
-                if temporary_root.exists():
-                    _safe_rmtree(temporary_root, parent=self.root)
-            resolved = self._resolve_unlocked(sid)
-            if resolved is None:
+                self._write_access_unlocked(existing.root)
+            else:
+                entry_root = self._entry_root(sid)
                 if entry_root.exists():
                     _safe_rmtree(entry_root, parent=self.root)
-                raise ValueError("published training bundle cache failed validation")
-            return resolved, {"published": True, **stats}
+                temporary_root = self.root / f".{sid}.{uuid.uuid4().hex}.tmp"
+                bundle = temporary_root / "bundle"
+                try:
+                    temporary_root.mkdir(parents=True, exist_ok=False)
+                    stats = self._clone_bundle(source, bundle)
+                    if int(stats["verified_files"]) != int(verified_files):
+                        raise ValueError(
+                            "verified bundle file count does not match final validation evidence"
+                        )
+                    manifest_path = bundle / "manifest.json"
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if str(manifest.get("snapshot_id") or "") != sid:
+                        raise ValueError("verified bundle snapshot identity mismatch")
+                    data_yaml_path = _resolve_relative(
+                        bundle, str(manifest.get("data_yaml_ref") or "")
+                    )
+                    if not data_yaml_path.is_file():
+                        raise ValueError("verified bundle data YAML is missing")
+                    now_ns = time.time_ns()
+                    marker = {
+                        "schema_version": CACHE_SCHEMA_VERSION,
+                        "snapshot_id": sid,
+                        "manifest_sha256": _sha256(manifest_path),
+                        "data_yaml_sha256": _sha256(data_yaml_path),
+                        "verified_files": int(verified_files),
+                        "bundle_bytes": int(stats["bundle_bytes"]),
+                        "published_at": datetime.fromtimestamp(
+                            now_ns / 1_000_000_000,
+                            tz=timezone.utc,
+                        ).isoformat(),
+                    }
+                    (temporary_root / "cache.json").write_text(
+                        json.dumps(marker, ensure_ascii=False, sort_keys=True),
+                        encoding="utf-8",
+                    )
+                    self._write_access_unlocked(temporary_root, now_ns=now_ns)
+                    os.replace(temporary_root, entry_root)
+                    published = True
+                finally:
+                    if temporary_root.exists():
+                        _safe_rmtree(temporary_root, parent=self.root)
+                resolved = self._resolve_unlocked(sid, allow_expired=True)
+                if resolved is None:
+                    if entry_root.exists():
+                        _safe_rmtree(entry_root, parent=self.root)
+                    raise ValueError("published training bundle cache failed validation")
+                stats = {"published": True, **stats}
+
+        maintenance = self.maintain(protect_snapshot_ids=(sid,))
+        return resolved, {
+            **stats,
+            "published": published,
+            "maintenance": maintenance,
+        }
