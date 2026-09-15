@@ -23,6 +23,7 @@ on:
       - tests/unit/test_portable_dataset.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/task_runtime/test_process_control.py
+      - tests/unit/task_runtime/test_training_terminal_truth.py
       - tests/unit/task_runtime/test_worker_registry.py
       - .github/workflows/training-final-validation-hardening.yml
   workflow_dispatch:
@@ -68,6 +69,7 @@ jobs:
           tests/unit/test_portable_dataset.py
           tests/unit/test_training_bundle_isolation.py
           tests/unit/task_runtime/test_process_control.py
+          tests/unit/task_runtime/test_training_terminal_truth.py
           tests/unit/task_runtime/test_worker_registry.py
 
       - name: Permanent hardening guards
@@ -94,3 +96,5 @@ jobs:
           grep -Fq 'validation_mode' platform_core/training_devices.py
           grep -Fq 'class _HashingReader' platform_core/training_tasks.py
           grep -Fq 'test_manual_workers_are_not_coupled_to_batch' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq '_failure_current_item' platform_core/task_runtime/scheduler.py
+          grep -Fq 'test_training_failure_prefers_durable_failure_evidence_for_terminal_detail' tests/unit/task_runtime/test_training_terminal_truth.py
