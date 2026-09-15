@@ -161,3 +161,55 @@ def test_indexed_cache_lookup_requires_locked_hash_and_size():
     assert not _indexed_content_identity_ready(
         [{"content_sha256": "f" * 64, "size_bytes": 0}]
     )
+
+
+def test_cache_resolve_rejects_tampered_label(tmp_path):
+    snapshot_id = "1" * 64
+    source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
+    cache = TrainingBundleCache(tmp_path / "data", "project-label-integrity")
+    entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
+
+    (entry.bundle / "dataset/labels/train/img-1.txt").write_text(
+        "0 0.1 0.1 0.1 0.1", encoding="utf-8"
+    )
+    assert cache.resolve(snapshot_id) is None
+
+
+def test_cache_resolve_rejects_tampered_data_yaml(tmp_path):
+    snapshot_id = "2" * 64
+    source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
+    cache = TrainingBundleCache(tmp_path / "data", "project-yaml-integrity")
+    entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
+
+    (entry.bundle / "dataset/data.yaml").write_text(
+        "path: .\ntrain: images/other\n", encoding="utf-8"
+    )
+    assert cache.resolve(snapshot_id) is None
+
+
+def test_cache_resolve_rejects_in_bundle_symlink_component(tmp_path):
+    snapshot_id = "3" * 64
+    source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
+    cache = TrainingBundleCache(tmp_path / "data", "project-link-integrity")
+    entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
+
+    data_yaml = entry.bundle / "dataset/data.yaml"
+    target = entry.bundle / "dataset/data-target.yaml"
+    target.write_bytes(data_yaml.read_bytes())
+    data_yaml.unlink()
+    try:
+        data_yaml.symlink_to(target.name)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable in this environment")
+    assert cache.resolve(snapshot_id) is None
+
+
+def test_cache_publication_is_ordered_after_algorithm_version_attachment():
+    import inspect
+
+    from platform_core.training_tasks import TrainingHandler
+
+    source = inspect.getsource(TrainingHandler._finalize_completed_job)
+    assert source.index("attach_version(") < source.index(").publish_verified(")
+    assert source.index(").publish_verified(") < source.index('"stage": "committed"')
+

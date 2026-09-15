@@ -22,10 +22,14 @@ Snapshot are rebuilt from those verified bytes, and the task-local portable
 bundle is constructed normally.
 
 Cache entries are published only during successful training finalization, after
-the existing `verify_portable_dataset()` full image/label SHA256 gate has passed.
-An incomplete/failed training run therefore cannot seed this cache. Cache
+the existing `verify_portable_dataset()` full image/label SHA256 gate has passed
+and after the official algorithm version has been attached successfully. An
+incomplete/failed training run therefore cannot seed this cache. Cache
 publication failure is recorded as optimization evidence and cannot turn an
-otherwise verified model result into a failed training result.
+otherwise verified model result into a failed training result. Cache-hit
+admission re-hashes the small Snapshot, label and data-YAML files while large
+images use their locked size/manifest evidence; finalization still performs the
+full image SHA256 gate on every run.
 
 Each training task still receives its own `work/bundle`; the trainer never runs
 directly inside the shared cache. Reuse hard-links immutable image files when

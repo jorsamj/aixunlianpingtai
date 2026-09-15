@@ -1015,31 +1015,6 @@ class TrainingHandler:
         if str(verification.get("snapshot_id") or "") != snapshot_id:
             raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
 
-        cache_publish: dict[str, Any]
-        try:
-            cache_entry, cache_stats = TrainingBundleCache(
-                self.data_dir,
-                context.task.project_id,
-            ).publish_verified(
-                manifest_path.parent,
-                snapshot_id,
-                verified_files=int(verification.get("verified_files") or 0),
-            )
-            cache_publish = {
-                "status": "ready",
-                "snapshot_id": cache_entry.snapshot_id,
-                "manifest_sha256": cache_entry.manifest_sha256,
-                **cache_stats,
-            }
-        except Exception as error:
-            # Bundle caching is a performance optimization. A verified training
-            # result must not be converted into failure solely because the
-            # cache filesystem is unavailable.
-            cache_publish = {
-                "status": "publish_failed",
-                "snapshot_id": snapshot_id,
-                "error": str(error),
-            }
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,
             "bundle-cache.json",
@@ -1047,7 +1022,10 @@ class TrainingHandler:
         )
         bundle_cache_evidence = {
             **(cache_runtime if isinstance(cache_runtime, dict) else {}),
-            "publish": cache_publish,
+            "publish": {
+                "status": "pending_commit",
+                "snapshot_id": snapshot_id,
+            },
         }
 
         algorithms_path = project / "algorithms.json"
@@ -1174,6 +1152,38 @@ class TrainingHandler:
                 "finished_at": finished_at,
             },
         )
+        # Seed the shared cache only after the official algorithm version has
+        # been attached successfully. A task that fails before this point must
+        # not become the source of a future fast-path training bundle.
+        try:
+            cache_entry, cache_stats = TrainingBundleCache(
+                self.data_dir,
+                context.task.project_id,
+            ).publish_verified(
+                manifest_path.parent,
+                snapshot_id,
+                verified_files=int(verification.get("verified_files") or 0),
+            )
+            cache_publish = {
+                "status": "ready",
+                "snapshot_id": cache_entry.snapshot_id,
+                "manifest_sha256": cache_entry.manifest_sha256,
+                **cache_stats,
+            }
+        except Exception as error:
+            # Cache publication is only a performance optimization; failure here
+            # cannot invalidate a model/version that already passed final truth.
+            cache_publish = {
+                "status": "publish_failed",
+                "snapshot_id": snapshot_id,
+                "error": str(error),
+            }
+        bundle_cache_evidence = {
+            **(cache_runtime if isinstance(cache_runtime, dict) else {}),
+            "publish": cache_publish,
+        }
+        result["bundle_cache"] = bundle_cache_evidence
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot_id, "result_ref": "result.json"})
         return final_status, "result.json"
 

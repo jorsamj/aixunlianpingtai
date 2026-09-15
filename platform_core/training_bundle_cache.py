@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping
 from filelock import FileLock
 
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 _CACHE_ROOT_NAME = "training-bundles"
 
 
@@ -100,6 +100,13 @@ def _portable_relative(reference: str) -> Path:
 def _resolve_relative(root: Path, reference: str) -> Path:
     relative = _portable_relative(reference)
     base = root.resolve()
+    # Inspect the lexical path before Path.resolve() can hide an in-bundle
+    # symlink/reparse component that happens to target another in-bundle file.
+    current = base
+    for part in relative.parts:
+        current = current / part
+        if _is_link_like(current):
+            raise ValueError("portable bundle reference must not traverse a link or reparse point")
     resolved = (base / relative).resolve()
     if resolved != base and base not in resolved.parents:
         raise ValueError("relative portable bundle reference required")
@@ -190,6 +197,7 @@ class TrainingBundleCache:
         except ValueError:
             return None
         expected_snapshot_sha = str(manifest.get("snapshot_sha256") or "")
+        expected_data_yaml = str(marker.get("data_yaml_sha256") or "")
         if (
             _has_link_component(bundle, snapshot_path)
             or not snapshot_path.is_file()
@@ -197,6 +205,8 @@ class TrainingBundleCache:
             or _sha256(snapshot_path) != expected_snapshot_sha
             or _has_link_component(bundle, data_yaml)
             or not data_yaml.is_file()
+            or not expected_data_yaml
+            or _sha256(data_yaml) != expected_data_yaml
         ):
             return None
 
@@ -211,6 +221,7 @@ class TrainingBundleCache:
                         bundle, str(member.get("label_ref") or "")
                     )
                     expected_size = int(member.get("size_bytes") or 0)
+                    expected_label_sha = str(member.get("label_sha256") or "")
                     if (
                         _has_link_component(bundle, image_path)
                         or not image_path.is_file()
@@ -218,6 +229,8 @@ class TrainingBundleCache:
                         or image_path.stat().st_size != expected_size
                         or _has_link_component(bundle, label_path)
                         or not label_path.is_file()
+                        or not expected_label_sha
+                        or _sha256(label_path) != expected_label_sha
                     ):
                         return None
                     verified_files += 1
@@ -370,10 +383,16 @@ class TrainingBundleCache:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 if str(manifest.get("snapshot_id") or "") != sid:
                     raise ValueError("verified bundle snapshot identity mismatch")
+                data_yaml_path = _resolve_relative(
+                    bundle, str(manifest.get("data_yaml_ref") or "")
+                )
+                if not data_yaml_path.is_file():
+                    raise ValueError("verified bundle data YAML is missing")
                 marker = {
                     "schema_version": CACHE_SCHEMA_VERSION,
                     "snapshot_id": sid,
                     "manifest_sha256": _sha256(manifest_path),
+                    "data_yaml_sha256": _sha256(data_yaml_path),
                     "verified_files": int(verified_files),
                     "published_at": datetime.now(timezone.utc).isoformat(),
                 }
