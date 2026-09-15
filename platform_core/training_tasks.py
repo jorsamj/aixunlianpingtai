@@ -29,6 +29,7 @@ from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_proces
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
+from .training_bundle_cache import TrainingBundleCache
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -607,6 +608,23 @@ def _json(path: Path, default: Any) -> Any:
         return default
 
 
+def _indexed_content_identity_ready(images: Sequence[Mapping[str, Any]]) -> bool:
+    """Return true only when the durable material index can reproduce the Snapshot ID without source reads."""
+    if not images:
+        return False
+    for row in images:
+        digest = str(row.get("content_sha256") or "").strip().lower()
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            return False
+        try:
+            size_bytes = int(row.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            return False
+        if size_bytes <= 0:
+            return False
+    return True
+
+
 def _selected_project_images(
     materials: MaterialRepository,
     project: Path,
@@ -992,9 +1010,45 @@ class TrainingHandler:
         if completion_error is not None:
             raise RuntimeError(f"training completion handshake is not trustworthy: {completion_error}")
         manifest_ref = "work/bundle/manifest.json"
-        verification = verify_portable_dataset(context.artifacts.artifact_path(context.task.task_id, manifest_ref))
+        manifest_path = context.artifacts.artifact_path(context.task.task_id, manifest_ref)
+        verification = verify_portable_dataset(manifest_path)
         if str(verification.get("snapshot_id") or "") != snapshot_id:
             raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
+
+        cache_publish: dict[str, Any]
+        try:
+            cache_entry, cache_stats = TrainingBundleCache(
+                self.data_dir,
+                context.task.project_id,
+            ).publish_verified(
+                manifest_path.parent,
+                snapshot_id,
+                verified_files=int(verification.get("verified_files") or 0),
+            )
+            cache_publish = {
+                "status": "ready",
+                "snapshot_id": cache_entry.snapshot_id,
+                "manifest_sha256": cache_entry.manifest_sha256,
+                **cache_stats,
+            }
+        except Exception as error:
+            # Bundle caching is a performance optimization. A verified training
+            # result must not be converted into failure solely because the
+            # cache filesystem is unavailable.
+            cache_publish = {
+                "status": "publish_failed",
+                "snapshot_id": snapshot_id,
+                "error": str(error),
+            }
+        cache_runtime = context.artifacts.read_json(
+            context.task.task_id,
+            "bundle-cache.json",
+            default={},
+        )
+        bundle_cache_evidence = {
+            **(cache_runtime if isinstance(cache_runtime, dict) else {}),
+            "publish": cache_publish,
+        }
 
         algorithms_path = project / "algorithms.json"
         algorithms = list_algorithms(algorithms_path)
@@ -1071,6 +1125,7 @@ class TrainingHandler:
             "verified_models": verified_models,
             "training_report": training_report,
             "dataset_verification": verification,
+            "bundle_cache": bundle_cache_evidence,
             "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
             "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
             "recovered_from_completed_job": bool(recovered),
@@ -1182,32 +1237,6 @@ class TrainingHandler:
             raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止数据集分组回退")
         materials = MaterialRepository(project)
         images = _selected_project_images(materials, project, (*train_image_ids, *test_image_ids))
-        credentials = SecretCredentialStore(KeyringSecretStore())
-        storage = StorageManager(
-            data_dir=self.data_dir,
-            project_id=context.task.project_id,
-            materials=materials,
-            credentials=credentials,
-        )
-        materialized_paths: dict[str, Path] = {}
-        total_materials = len(images)
-        material_progress_step = max(1, total_materials // 100) if total_materials else 1
-        for index, row in enumerate(images, start=1):
-            if context.cancel_requested():
-                raise InterruptedError("training cancelled during material preparation")
-            resolved = storage.materialize(row)
-            row["content_sha256"] = resolved.content_sha256
-            row["size_bytes"] = resolved.size_bytes
-            materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
-            if index == 1 or index == total_materials or index % material_progress_step == 0:
-                progress = 2 + (6 * index / max(1, total_materials))
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
-                    progress=progress,
-                    stage="preparing_materials",
-                    current_item=f"校验训练素材 {index}/{total_materials}",
-                )
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
             train_image_ids=train_image_ids,
@@ -1215,40 +1244,133 @@ class TrainingHandler:
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
-        manifest = build_split_manifest(images, split_request, seed=int(payload.get("seed") or 0))
-        snapshot = build_snapshot(images, manifest, _label_schema(project))
+        label_schema = _label_schema(project)
+        seed = int(payload.get("seed") or 0)
+        bundle_cache = TrainingBundleCache(self.data_dir, context.task.project_id)
+        manifest = None
+        snapshot = None
+        cache_entry = None
+
+        # A completed cache entry is itself the verified materialization of the
+        # indexed Snapshot. On a hit, do not re-read 10k source objects merely
+        # to rediscover the same content hashes.
+        if _indexed_content_identity_ready(images):
+            manifest = build_split_manifest(images, split_request, seed=seed)
+            snapshot = build_snapshot(images, manifest, label_schema)
+            cache_entry = bundle_cache.resolve(str(snapshot["snapshot_id"]))
+
+        materialized_paths: dict[str, Path] = {}
+        if cache_entry is None:
+            credentials = SecretCredentialStore(KeyringSecretStore())
+            storage = StorageManager(
+                data_dir=self.data_dir,
+                project_id=context.task.project_id,
+                materials=materials,
+                credentials=credentials,
+            )
+            total_materials = len(images)
+            material_progress_step = max(1, total_materials // 100) if total_materials else 1
+            for index, row in enumerate(images, start=1):
+                if context.cancel_requested():
+                    raise InterruptedError("training cancelled during material preparation")
+                resolved = storage.materialize(row)
+                row["content_sha256"] = resolved.content_sha256
+                row["size_bytes"] = resolved.size_bytes
+                materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
+                if index == 1 or index == total_materials or index % material_progress_step == 0:
+                    progress = 2 + (6 * index / max(1, total_materials))
+                    context.repository.heartbeat(
+                        context.task.task_id,
+                        context.lease.lease_token,
+                        progress=progress,
+                        stage="preparing_materials",
+                        current_item=f"校验训练素材 {index}/{total_materials}",
+                    )
+            manifest = build_split_manifest(images, split_request, seed=seed)
+            snapshot = build_snapshot(images, manifest, label_schema)
+
+        if manifest is None or snapshot is None:
+            raise RuntimeError("training snapshot preparation did not produce a manifest")
+
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
-            progress=10,
-            stage="materializing",
-            current_item=f"准备训练数据 0/{len(images)}",
-        )
         if context.cancel_requested():
             raise InterruptedError("training cancelled before dataset materialization")
 
         bundle_progress_step = max(1, len(images) // 100) if images else 1
 
-        def bundle_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
-            if completed != 1 and completed != total and completed % bundle_progress_step != 0:
-                return
+        if cache_entry is not None:
             context.repository.heartbeat(
                 context.task.task_id,
                 context.lease.lease_token,
-                progress=10 + (8 * completed / max(1, total)),
+                progress=10,
                 stage="materializing",
-                current_item=f"准备训练数据 {completed}/{total}",
+                current_item=f"复用已验证训练数据 0/{len(images)}",
             )
 
-        bundle = materialize_portable_dataset(
-            context.artifacts.artifact_path(context.task.task_id, "work"),
-            snapshot,
-            images,
-            lambda row: materialized_paths[str(row.get("id"))],
-            progress=bundle_progress,
-        )
+            def cache_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
+                if completed != 1 and completed != total and completed % bundle_progress_step != 0:
+                    return
+                context.repository.heartbeat(
+                    context.task.task_id,
+                    context.lease.lease_token,
+                    progress=10 + (8 * completed / max(1, total)),
+                    stage="materializing",
+                    current_item=f"复用已验证训练数据 {completed}/{total}",
+                )
+
+            bundle, cache_stats = bundle_cache.restore(
+                cache_entry,
+                context.artifacts.artifact_path(context.task.task_id, "work"),
+                progress=cache_progress,
+            )
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "bundle-cache.json",
+                {
+                    "cache_hit": True,
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "source_validation": "verified_snapshot_cache",
+                    **cache_stats,
+                },
+            )
+        else:
+            context.repository.heartbeat(
+                context.task.task_id,
+                context.lease.lease_token,
+                progress=10,
+                stage="materializing",
+                current_item=f"准备训练数据 0/{len(images)}",
+            )
+
+            def bundle_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
+                if completed != 1 and completed != total and completed % bundle_progress_step != 0:
+                    return
+                context.repository.heartbeat(
+                    context.task.task_id,
+                    context.lease.lease_token,
+                    progress=10 + (8 * completed / max(1, total)),
+                    stage="materializing",
+                    current_item=f"准备训练数据 {completed}/{total}",
+                )
+
+            bundle = materialize_portable_dataset(
+                context.artifacts.artifact_path(context.task.task_id, "work"),
+                snapshot,
+                images,
+                lambda row: materialized_paths[str(row.get("id"))],
+                progress=bundle_progress,
+            )
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "bundle-cache.json",
+                {
+                    "cache_hit": False,
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "source_validation": "materialized_from_source",
+                },
+            )
+
         if context.cancel_requested():
             raise InterruptedError("training cancelled after dataset materialization")
 

@@ -11,6 +11,7 @@ on:
       - platform_core/training_hardened_tasks.py
       - platform_core/training_recovery_tasks.py
       - platform_core/training_tasks.py
+      - platform_core/training_bundle_cache.py
       - platform_core/training_label_tasks.py
       - platform_core/training_metrics.py
       - platform_core/training_devices.py
@@ -21,6 +22,7 @@ on:
       - tests/unit/test_training_finalization_handshake.py
       - tests/unit/test_training_resource_contract.py
       - tests/unit/test_training_startup_performance_contract.py
+      - tests/unit/test_training_bundle_cache.py
       - tests/unit/test_training_worker_startup_callbacks.py
       - tests/unit/test_portable_dataset.py
       - tests/unit/test_training_bundle_isolation.py
@@ -56,6 +58,7 @@ jobs:
           platform_core/training_hardened_tasks.py
           platform_core/training_recovery_tasks.py
           platform_core/training_tasks.py
+          platform_core/training_bundle_cache.py
           platform_core/training_metrics.py
           platform_core/training_devices.py
           platform_core/task_runtime/process_control.py
@@ -69,6 +72,7 @@ jobs:
           tests/unit/test_training_finalization_handshake.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_training_startup_performance_contract.py
+          tests/unit/test_training_bundle_cache.py
           tests/unit/test_training_worker_startup_callbacks.py
           tests/unit/test_portable_dataset.py
           tests/unit/test_training_bundle_isolation.py
@@ -101,6 +105,12 @@ jobs:
           grep -Fq 'validation_mode' platform_core/training_devices.py
           grep -Fq 'class _HashingReader' platform_core/training_tasks.py
           grep -Fq '_verify_materialized_dataset_evidence' platform_core/training_tasks.py
+          grep -Fq 'TrainingBundleCache' platform_core/training_tasks.py
+          grep -Fq '_indexed_content_identity_ready' platform_core/training_tasks.py
+          grep -Fq 'verified_snapshot_cache' platform_core/training_tasks.py
+          grep -Fq 'class TrainingBundleCache' platform_core/training_bundle_cache.py
+          grep -Fq 'os.link' platform_core/training_bundle_cache.py
+          grep -Fq 'test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks' tests/unit/test_training_bundle_cache.py
           grep -Fq 'durable=False' platform_core/training_tasks.py
           grep -Fq 'next_oom_retry_resources' train_worker.py
           grep -Fq 'startup_stage' train_worker.py
