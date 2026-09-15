@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import launcher
+import task_worker
 from platform_core.resource_discovery.tasks import (
     _environment_deep_scan_allowed,
     _require_model_roots,
@@ -50,6 +52,39 @@ def test_all_role_compatibility_mode_isolates_training_from_background():
     assert {"storage", "materials", "video", "annotation", "conversion", "deployment-test"}.issubset(
         set(BACKGROUND_ROLES)
     )
+
+
+def test_task_worker_all_role_runtime_delegates_to_isolated_supervisor(monkeypatch, tmp_path):
+    captured = {}
+
+    monkeypatch.setattr(task_worker, "ensure_worker_build_compatible", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        task_worker,
+        "resolve_node_identity",
+        lambda: SimpleNamespace(node_id="test-node", hostname="test-host", source="test"),
+    )
+
+    def fake_supervisor(**kwargs):
+        captured.update(kwargs)
+        return 17
+
+    monkeypatch.setattr(task_worker, "run_isolated_all_roles", fake_supervisor)
+
+    result = task_worker.main(
+        [
+            "--data-dir",
+            str(tmp_path),
+            "--roles",
+            "all",
+            "--worker-id",
+            "launcher-all-default",
+        ]
+    )
+
+    assert result == 17
+    assert captured["data_dir"] == tmp_path.resolve()
+    assert captured["worker_id"] == "launcher-all-default"
+    assert captured["once"] is False
 
 
 def test_training_only_registry_cannot_claim_non_training_task_kinds(tmp_path):
