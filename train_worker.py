@@ -49,6 +49,18 @@ def update_job(job_file: Path, **kwargs):
     write_json(job_file, job)
 
 
+def publish_startup_stage(job_file: Path, stage: str, message: str, progress_percent: float, **extra):
+    update_job(
+        job_file,
+        status="running",
+        startup_stage=str(stage),
+        current_item=str(message),
+        message=str(message),
+        progress_percent=float(progress_percent),
+        **extra,
+    )
+
+
 def as_bool(v):
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -63,6 +75,11 @@ def parse_cache(v):
     if low in {"ram", "disk"}:
         return low
     raise ValueError("cache 只支持 False / True / ram / disk")
+
+
+def next_oom_retry_resources(batch, workers):
+    """Step batch down after CUDA OOM without re-coupling DataLoader workers."""
+    return max(1, int(batch) // 2), max(0, int(workers))
 
 
 def resolve_training_model(model_arg: str, pretrained: bool) -> str:
@@ -736,7 +753,14 @@ def main():
     if args.freeze > 0:
         train_args["freeze"] = args.freeze
 
-    update_job(job_file, status="running", message="验证训练设备与资源", requested_train_params=train_args, actual_model=actual_model)
+    publish_startup_stage(
+        job_file,
+        "worker_python_ready",
+        "训练进程已启动",
+        20,
+        requested_train_params=train_args,
+        actual_model=actual_model,
+    )
     print(f"[{now_iso()}] 开始训练", flush=True)
     print(f"模型: {actual_model}", flush=True)
     print(f"数据集: {args.data}", flush=True)
@@ -765,10 +789,12 @@ def main():
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
             args.device = "cpu"
+        publish_startup_stage(job_file, "loading_frameworks", "加载 PyTorch / Ultralytics", 21)
         import ultralytics
         import torch
         from ultralytics import YOLO
         from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources
+        publish_startup_stage(job_file, "validating_runtime_device", "校验训练运行设备", 22)
         runtime_device = "cuda:0" if gpu_index is not None else "cpu"
         allocation = torch.empty(1, device=runtime_device)
         props = torch.cuda.get_device_properties(0) if gpu_index is not None else None
@@ -785,10 +811,13 @@ def main():
                         python_executable=sys.executable, torch_version=str(torch.__version__),
                         cuda_version=getattr(torch.version, "cuda", None), validated_at=now_iso())
         del allocation
+        publish_startup_stage(job_file, "runtime_device_validated", "训练设备校验完成", 23)
         train_args["device"] = args.device
         update_job(job_file, requested_device=requested, assigned_device=assigned, actual_device=assigned,
                    device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
+        publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)
         model = YOLO(actual_model)
+        publish_startup_stage(job_file, "resolving_resources", "计算 Batch / Workers / Cache", 25)
         resolved = resolve_resources({**train_args, "device": runtime_device, "resource_strategy": args.resource_strategy}, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
@@ -798,6 +827,7 @@ def main():
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
                                     gpu_uuid=resource_context.get("gpu_uuid"))
         telemetry.start()
+        publish_startup_stage(job_file, "initializing_trainer", "初始化训练器与数据加载器", 26)
         gate_events=[]
         gate_reason=""
         ai_events=[]; ai_plan=None; ai_rounds=0
@@ -843,13 +873,43 @@ def main():
             print(f"[WARN] 阶段质量门禁回调未启用: {cb_err}",flush=True)
         def attach_resource_callbacks(target, effective_args=None):
             runtime_args = dict(effective_args or train_args)
+            first_batch_seen = False
+
+            def pretrain_start(_trainer):
+                publish_startup_stage(job_file, "initializing_dataloader", "初始化训练数据加载器", 27)
+
             def verify_runtime(trainer):
                 telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
                 evidence.update(runtime_device=str(trainer.device), effective_args=dict(runtime_args))
-                update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=runtime_args)
+                publish_startup_stage(
+                    job_file,
+                    "trainer_ready",
+                    "训练器初始化完成，等待首个 Batch",
+                    28,
+                    actual_device=assigned,
+                    device_evidence=evidence,
+                    actual_train_params=runtime_args,
+                )
+
+            def first_batch(_trainer):
+                nonlocal first_batch_seen
+                if first_batch_seen:
+                    return
+                first_batch_seen = True
+                publish_startup_stage(
+                    job_file,
+                    "first_batch",
+                    "首个 Batch 已开始",
+                    29,
+                    training_started=True,
+                    first_batch_at=now_iso(),
+                )
+
+            target.add_callback("on_pretrain_routine_start", pretrain_start)
             target.add_callback("on_train_start", verify_runtime)
+            target.add_callback("on_train_batch_start", first_batch)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
         attach_resource_callbacks(model)
         attach_training_batch_progress(model, job_file, int(args.epochs))
@@ -869,10 +929,16 @@ def main():
                 if args.resource_strategy != "auto" or train_args["batch"] <= 1 or retries >= 6:
                     raise
                 retries += 1
-                train_args["batch"] = max(1, train_args["batch"] // 2)
-                train_args["workers"] = min(train_args["workers"], train_args["batch"])
+                next_batch, next_workers = next_oom_retry_resources(
+                    train_args["batch"], train_args["workers"]
+                )
+                train_args["batch"] = next_batch
+                train_args["workers"] = next_workers
                 resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)
-                resolved["reasons"].append(f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; same assigned GPU")
+                resolved["reasons"].append(
+                    f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; "
+                    f"workers retained at {train_args['workers']}; same assigned GPU"
+                )
                 with telemetry.lock:
                     telemetry.resolved = dict(resolved)
                 persist_resolution(resolution_path, resolved)

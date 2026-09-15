@@ -147,3 +147,98 @@ def test_bundle_copy_rejects_changed_source_even_with_single_pass(tmp_path):
     with pytest.raises(ValueError, match="source image SHA256 changed"):
         training_tasks._copy_verified_isolated(source, destination, "0" * 64)
     assert not destination.exists()
+
+
+
+def test_rebuildable_bundle_copy_can_defer_per_file_fsync(monkeypatch, tmp_path):
+    source = tmp_path / "source.jpg"
+    destination = tmp_path / "bundle" / "image.jpg"
+    destination.parent.mkdir()
+    payload = b"rebuildable-bundle" * 4096
+    source.write_bytes(payload)
+
+    import hashlib
+    expected = hashlib.sha256(payload).hexdigest()
+    monkeypatch.setattr(
+        training_tasks.os,
+        "fsync",
+        lambda _fd: pytest.fail("rebuildable bundle copy should not fsync each image"),
+    )
+
+    training_tasks._copy_verified_isolated(
+        source,
+        destination,
+        expected,
+        durable=False,
+    )
+    assert destination.read_bytes() == payload
+
+
+def test_materialization_uses_construction_evidence_instead_of_full_image_rehash(monkeypatch, tmp_path):
+    source = tmp_path / "source.jpg"
+    payload = b"image-payload" * 2048
+    source.write_bytes(payload)
+
+    import hashlib
+    expected = hashlib.sha256(payload).hexdigest()
+    snapshot = {
+        "snapshot_id": "snapshot-startup-performance",
+        "label_schema": [{"code": "smoke", "class_id": 0}],
+        "images": [{"image_id": "img-1", "content_sha256": expected}],
+        "ids": {"train": ["img-1"], "validation": [], "test": []},
+    }
+    row = {
+        "id": "img-1",
+        "filename": "source.jpg",
+        "width": 100,
+        "height": 100,
+        "boxes": [{"label": "smoke", "x1": 10, "y1": 10, "x2": 40, "y2": 40}],
+    }
+    original_sha256 = training_tasks._sha256
+    hashed_paths = []
+
+    def tracked_sha256(path):
+        resolved = Path(path).resolve()
+        hashed_paths.append(resolved)
+        return original_sha256(resolved)
+
+    monkeypatch.setattr(training_tasks, "_sha256", tracked_sha256)
+    root = training_tasks.materialize_portable_dataset(
+        tmp_path / "work",
+        snapshot,
+        [row],
+        lambda _row: source,
+        safety_reserve_bytes=0,
+    )
+
+    bundle_image = (root / "dataset/images/train/img-1.jpg").resolve()
+    assert bundle_image.is_file()
+    assert bundle_image not in hashed_paths
+    manifest = training_tasks._json(root / "manifest.json", {})
+    assert manifest["construction_verification"]["image_integrity"] == "sha256_verified_during_materialization"
+
+
+def test_oom_retry_keeps_workers_independent_from_batch():
+    from train_worker import next_oom_retry_resources
+
+    assert next_oom_retry_resources(8, 8) == (4, 8)
+    assert next_oom_retry_resources(4, 8) == (2, 8)
+    assert next_oom_retry_resources(2, 3) == (1, 3)
+
+
+def test_startup_stage_contract_persists_first_batch_truth(tmp_path):
+    from train_worker import publish_startup_stage, read_json
+
+    job_file = tmp_path / "job.json"
+    job_file.write_text("{}", encoding="utf-8")
+    publish_startup_stage(
+        job_file,
+        "first_batch",
+        "首个 Batch 已开始",
+        29,
+        training_started=True,
+    )
+    job = read_json(job_file, {})
+    assert job["startup_stage"] == "first_batch"
+    assert job["training_started"] is True
+    assert job["current_item"] == "首个 Batch 已开始"

@@ -630,12 +630,15 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                     update_reservation_evidence(context.repository, context.lease, metrics)
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
-                current = str(job.get("current_item") or job.get("current_epoch") or "") or None
+                current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
+                training_started = bool(
+                    job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
+                )
                 context.repository.heartbeat(
                     context.task.task_id,
                     context.lease.lease_token,
                     progress=max(20, min(95, progress)),
-                    stage="training",
+                    stage="training" if training_started else "trainer_startup",
                     current_item=current,
                 )
                 time.sleep(0.25)

@@ -81,7 +81,7 @@ def _resolve_relative(root: Path, reference: str) -> Path:
     return resolved
 
 
-def _atomic_text(path: Path, text: str) -> None:
+def _atomic_text(path: Path, text: str, *, durable: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     temporary = Path(name)
@@ -89,7 +89,8 @@ def _atomic_text(path: Path, text: str) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
             stream.write(text)
             stream.flush()
-            os.fsync(stream.fileno())
+            if durable:
+                os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -171,6 +172,7 @@ def _copy_verified_isolated(
     expected_hash: str,
     *,
     bundle_root: Path | None = None,
+    durable: bool = True,
 ) -> None:
     source_info = source.stat() if source.is_file() else None
     if source_info is None or source_info.st_size <= 0:
@@ -210,7 +212,8 @@ def _copy_verified_isolated(
                 descriptor = -1
                 shutil.copyfileobj(hashing_stream, output_stream, length=1024 * 1024)
                 output_stream.flush()
-                os.fsync(output_stream.fileno())
+                if durable:
+                    os.fsync(output_stream.fileno())
         copied_size = temporary.stat().st_size
         if copied_size != source_size:
             raise OSError(
@@ -420,7 +423,11 @@ def materialize_portable_dataset(
         )
         destination = _bundle_output_path(root, image_ref)
         _check_bundle_disk_space(root, remaining_bytes, size_bytes, reserve_bytes)
-        _copy_verified_isolated(source_path, destination, expected_hash, bundle_root=root)
+        # The task bundle is derived/rebuildable. Avoid a per-image fsync storm;
+        # manifest/job durability remains authoritative and recovery revalidates reused files.
+        _copy_verified_isolated(
+            source_path, destination, expected_hash, bundle_root=root, durable=False
+        )
         remaining_bytes -= size_bytes
         lines = []
         for box in row.get("boxes") or []:
@@ -431,7 +438,7 @@ def materialize_portable_dataset(
                 _yolo_line(box, float(row.get("width") or 0), float(row.get("height") or 0), class_ids[label])
             )
         label_path = _bundle_output_path(root, label_ref)
-        _atomic_text(label_path, "\n".join(lines))
+        _atomic_text(label_path, "\n".join(lines), durable=False)
         splits[role].append(
             {
                 "image_id": image_id,
@@ -456,6 +463,7 @@ def materialize_portable_dataset(
     _atomic_text(
         _bundle_output_path(root, "dataset/data.yaml"),
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
+        durable=False,
     )
     snapshot_path = root / "snapshot.json"
     atomic_write_json(snapshot_path, dict(snapshot))
@@ -467,9 +475,13 @@ def materialize_portable_dataset(
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": total_size_bytes,
         "splits": splits,
+        "construction_verification": {
+            "image_integrity": "sha256_verified_during_materialization",
+            "post_write_check": "path_size_label_sha256_and_snapshot_sha256",
+        },
     }
     atomic_write_json(manifest_path, manifest)
-    verify_portable_dataset(manifest_path)
+    _verify_materialized_dataset_evidence(manifest_path)
     return root
 
 
@@ -494,6 +506,40 @@ def materialize_runtime_yaml(manifest_path: str | Path, destination: str | Path)
     output = Path(destination).resolve()
     _atomic_text(output, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
     return output
+
+
+def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str, Any]:
+    # Fresh copies SHA256 the exact source bytes while streaming them into their
+    # isolated temporary destination; reused destinations are SHA256 checked
+    # before reuse. Remote/received bundles and post-training finalization still
+    # use verify_portable_dataset for full image SHA256 verification.
+    path = Path(manifest_path).resolve()
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    resolve_dataset_yaml(path)
+    snapshot = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
+    expected_snapshot = str(manifest.get("snapshot_sha256") or "")
+    if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:
+        raise ValueError("portable training snapshot SHA256 mismatch")
+    verified = 0
+    for role in ("train", "validation", "test"):
+        for member in (manifest.get("splits") or {}).get(role, []):
+            image_path = _resolve_relative(path.parent, str(member.get("image_ref") or ""))
+            label_path = _resolve_relative(path.parent, str(member.get("label_ref") or ""))
+            if _is_link_like(image_path) or not image_path.is_file():
+                raise ValueError(f"portable image is missing or link-like: {member.get('image_id')}")
+            expected_size = int(member.get("size_bytes") or 0)
+            if expected_size <= 0 or image_path.stat().st_size != expected_size:
+                raise ValueError(f"portable image size mismatch: {member.get('image_id')}")
+            if _is_link_like(label_path) or not label_path.is_file():
+                raise ValueError(f"portable label is missing or link-like: {member.get('image_id')}")
+            if _sha256(label_path) != str(member.get("label_sha256") or ""):
+                raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
+            verified += 1
+    return {
+        "snapshot_id": manifest.get("snapshot_id"),
+        "verified_files": verified,
+        "verification_mode": "materialization_evidence",
+    }
 
 
 def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
@@ -818,7 +864,9 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
                 current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
-                training_started = bool(job.get("current_epoch") or job.get("training_progress"))
+                training_started = bool(
+                    job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
+                )
                 context.repository.heartbeat(
                     context.task.task_id,
                     context.lease.lease_token,
