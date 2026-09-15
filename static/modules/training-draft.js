@@ -34,8 +34,11 @@ export function trainingInheritanceFromAlgorithm(algorithm = {}) {
     return {hasAny: false, hasPrevious: false, blocked: false, legacy: false, codes: [], versionId: ''};
   }
 
-  const previous = versions.find(successfulVersion) || null;
-  if (!previous) {
+  const currentVersionId = String(algorithm?.current_version_id || '').trim();
+  const previous = currentVersionId
+    ? versions.find(version => String(version?.id || version?.version_id || '').trim() === currentVersionId) || null
+    : versions.find(successfulVersion) || null;
+  if (!previous || !successfulVersion(previous)) {
     return {hasAny: true, hasPrevious: false, blocked: true, legacy: false, codes: [], versionId: ''};
   }
 

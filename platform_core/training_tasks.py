@@ -20,7 +20,7 @@ import yaml
 
 from .annotations import atomic_write_json
 from .annotation_repository import AnnotationRepository
-from .algorithms import attach_version, choose_iteration_base, list_algorithms
+from .algorithms import attach_version, choose_algorithm_iteration_base, list_algorithms
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import build_snapshot
@@ -1147,8 +1147,8 @@ class TrainingHandler:
         if algorithm is None:
             raise ValueError("training algorithm no longer exists")
         mother = str(payload.get("model") or "").strip()
-        base = choose_iteration_base(
-            algorithm.get("versions") or [],
+        base = choose_algorithm_iteration_base(
+            algorithm,
             mother,
             "ultralytics",
             strict_latest=bool(algorithm.get("versions")),

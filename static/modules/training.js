@@ -1,13 +1,13 @@
 export function iterationBasePresentation(base) {
   if (base === null || base === undefined) {
-    return {title: '正在读取最新版本…', detail: '', status: 'loading'};
+    return {title: '正在读取当前版本…', detail: '', status: 'loading'};
   }
   if (base.error) {
     return {title: '读取失败', detail: String(base.error), status: 'error'};
   }
   if (base.version_name) {
     return {
-      title: `从最新可训练版本继续：${base.version_name}`,
+      title: `从当前版本继续：${base.version_name}`,
       detail: base.model_name || '模型权重',
       status: 'version'
     };

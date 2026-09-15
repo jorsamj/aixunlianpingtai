@@ -53,8 +53,11 @@ export function latestVersionLabelInfo(algorithm) {
   if (!allVersions.length) {
     return {hasVersion: false, hasAnyVersion: false, codes: [], legacyUnknown: false, blocked: false, version: null};
   }
-  const latest = allVersions.find(trainableSuccessfulVersion) || null;
-  if (!latest) {
+  const currentVersionId = String(algorithm?.current_version_id || '').trim();
+  const latest = currentVersionId
+    ? allVersions.find(version => String(version?.id || version?.version_id || '').trim() === currentVersionId) || null
+    : allVersions.find(trainableSuccessfulVersion) || null;
+  if (!latest || !trainableSuccessfulVersion(latest)) {
     return {hasVersion: false, hasAnyVersion: true, codes: [], legacyUnknown: false, blocked: true, version: null};
   }
   const schema = [...(latest?.label_schema || [])]

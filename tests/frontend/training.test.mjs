@@ -20,10 +20,10 @@ test('algorithm create and edit responses unwrap the persisted asset', () => {
 });
 
 test('training iteration presentation distinguishes loading, first train, and latest version', () => {
-  assert.equal(iterationBasePresentation(null).title, '正在读取最新版本…');
+  assert.equal(iterationBasePresentation(null).title, '正在读取当前版本…');
   assert.equal(iterationBasePresentation({}).title, '首次训练：使用所选母模型');
   assert.deepEqual(iterationBasePresentation({version_name: 'v2', model_name: 'best.pt'}), {
-    title: '从最新可训练版本继续：v2',
+    title: '从当前版本继续：v2',
     detail: 'best.pt',
     status: 'version'
   });

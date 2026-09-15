@@ -7,7 +7,15 @@ import time
 import pytest
 
 import platform_core.algorithms as algorithms_module
-from platform_core.algorithms import attach_version, choose_iteration_base
+from platform_core.algorithms import (
+    attach_version,
+    choose_algorithm_iteration_base,
+    choose_iteration_base,
+    delete_algorithm_version,
+    resolve_current_version_id,
+    rollback_algorithm_version,
+    update_algorithm_version,
+)
 from platform_core.errors import PlatformError
 
 
@@ -218,3 +226,227 @@ def test_concurrent_training_finalizers_do_not_overwrite_versions(tmp_path, monk
 
     versions = original_list(path)[0]["versions"]
     assert {row["task_id"] for row in versions} == {"task-1", "task-2"}
+
+
+def _trainable_version(tmp_path: Path, version_id: str, finished_at: str) -> dict:
+    model = tmp_path / f"{version_id}.pt"
+    model.write_bytes(version_id.encode("utf-8"))
+    return {
+        "id": version_id,
+        "version_name": version_id.upper(),
+        "finished_at": finished_at,
+        "stored_path": str(model),
+        "artifact_verified": True,
+        "training_status": "SUCCEEDED",
+        "trainable": True,
+        "framework": "ultralytics",
+    }
+
+
+def test_historical_algorithm_projects_latest_trainable_version_without_rewriting(tmp_path: Path):
+    older = _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00")
+    newer = _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00")
+    algorithm = {"id": "algorithm-one", "versions": [older, newer]}
+
+    assert resolve_current_version_id(algorithm, framework="ultralytics") == "v5"
+    assert "current_version_id" not in algorithm
+
+
+def test_rollback_persists_pointer_and_audit_without_deleting_current_version(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(json.dumps([{"id": "algorithm-one", "name": "fire", "versions": versions}]), encoding="utf-8")
+
+    result = rollback_algorithm_version(
+        path,
+        "algorithm-one",
+        "v3",
+        now="2026-09-15T01:02:03+00:00",
+        operator="local_user",
+        expected_current_version_id="v5",
+    )
+
+    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert result["previous_current_version_id"] == "v5"
+    assert result["current_version_id"] == "v3"
+    assert result["deleted_version_id"] is None
+    assert stored["current_version_id"] == "v3"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+    assert stored["version_operations"][-1] == {
+        "id": result["operation_id"],
+        "algorithm_id": "algorithm-one",
+        "from_version_id": "v5",
+        "to_version_id": "v3",
+        "deleted_version_id": None,
+        "action": "rollback",
+        "operator": "local_user",
+        "created_at": "2026-09-15T01:02:03+00:00",
+        "cleanup_status": "not_required",
+        "cleanup_targets": [],
+        "cleanup_errors": [],
+    }
+
+
+def test_rollback_and_delete_preflight_failure_is_atomic(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    original = [{"id": "algorithm-one", "name": "fire", "current_version_id": "v5", "versions": versions}]
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    with pytest.raises(PlatformError) as error:
+        rollback_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            delete_current_version=True,
+            dependency_check=lambda _algorithm, _version: [
+                {"kind": "MODEL_CONVERSION", "id": "convert-active", "reason": "该版本仍有运行中的模型转换任务"}
+            ],
+        )
+
+    assert error.value.code == "ALGORITHM_VERSION_IN_USE"
+    assert json.loads(path.read_text(encoding="utf-8")) == original
+
+
+def test_rollback_and_delete_records_cleanup_failure_after_trusted_pointer_switch(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "name": "fire", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    result = rollback_algorithm_version(
+        path,
+        "algorithm-one",
+        "v3",
+        now="2026-09-15T01:02:03+00:00",
+        delete_current_version=True,
+        dependency_check=lambda _algorithm, _version: [],
+        cleanup=lambda _algorithm, _version: {
+            "status": "cleanup_failed",
+            "targets": ["algorithm_versions/algorithm-one/v5"],
+            "errors": ["permission denied"],
+        },
+    )
+
+    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert result["current_version_id"] == "v3"
+    assert result["deleted_version_id"] == "v5"
+    assert result["cleanup_status"] == "cleanup_failed"
+    assert {row["id"] for row in stored["versions"]} == {"v3"}
+    assert stored["version_operations"][-1]["cleanup_status"] == "cleanup_failed"
+    assert stored["version_operations"][-1]["cleanup_errors"] == ["permission denied"]
+
+
+def test_iteration_base_uses_persisted_current_version_after_rollback(tmp_path: Path):
+    v5 = _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00")
+    v3 = _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00")
+    algorithm = {"id": "algorithm-one", "current_version_id": "v3", "versions": [v5, v3]}
+
+    selected = choose_algorithm_iteration_base(
+        algorithm,
+        "yolo11n.pt",
+        strict_latest=True,
+        artifact_validator=lambda path: path.is_file(),
+    )
+
+    assert selected["base_version_id"] == "v3"
+    assert selected["base_selection_reason"] == "current_verified_version"
+
+
+def test_attach_version_makes_new_version_current_and_preserves_base_as_parent_truth(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    current = _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00")
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "name": "fire", "current_version_id": "v3", "versions": [current]}]),
+        encoding="utf-8",
+    )
+    next_version = {
+        **_trainable_version(tmp_path, "v6", "2026-09-16T00:00:00+00:00"),
+        "base_version_id": "v3",
+    }
+
+    attach_version(path, "algorithm-one", next_version)
+
+    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    saved = next(row for row in stored["versions"] if row["id"] == "v6")
+    assert stored["current_version_id"] == "v6"
+    assert saved["base_version_id"] == "v3"
+    assert "parent_version_id" not in saved
+
+
+def test_version_patch_keeps_current_pointer_and_other_versions(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v6", "2026-09-16T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v6", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    update_algorithm_version(
+        path,
+        "algorithm-one",
+        "v6",
+        {"auto_conversion": {"jobs": [{"id": "conversion-one"}]}},
+        now="2026-09-16T01:00:00+00:00",
+    )
+
+    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert stored["current_version_id"] == "v6"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v6"}
+    current = next(row for row in stored["versions"] if row["id"] == "v6")
+    assert current["auto_conversion"]["jobs"] == [{"id": "conversion-one"}]
+
+
+def test_direct_delete_rejects_current_version_without_mutating_store(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    current = _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00")
+    original = [{"id": "algorithm-one", "current_version_id": "v5", "versions": [current]}]
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    with pytest.raises(PlatformError) as error:
+        delete_algorithm_version(path, "algorithm-one", "v5", now="2026-09-15T01:02:03+00:00")
+
+    assert error.value.code == "ALGORITHM_CURRENT_VERSION_DELETE_FORBIDDEN"
+    assert json.loads(path.read_text(encoding="utf-8")) == original
+
+
+def test_direct_delete_historical_version_keeps_current_and_records_audit(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    result = delete_algorithm_version(
+        path,
+        "algorithm-one",
+        "v3",
+        now="2026-09-15T01:02:03+00:00",
+        cleanup=lambda _algorithm, _version: {"status": "cleanup_completed", "targets": [], "errors": []},
+    )
+
+    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert result["action"] == "delete_version"
+    assert result["deleted_version_id"] == "v3"
+    assert stored["current_version_id"] == "v5"
+    assert [row["id"] for row in stored["versions"]] == ["v5"]
+    assert stored["version_operations"][-1]["action"] == "delete_version"

@@ -93,6 +93,18 @@ test('failed newer version never overrides latest successful trainable label sch
   assert.deepEqual(info.codes, ['fire']);
 });
 
+test('label inheritance follows explicit current version after rollback', () => {
+  const info = latestVersionLabelInfo({
+    current_version_id: 'v3',
+    versions: [
+      successfulVersion({id: 'v5', created_at: '2026-09-12T00:00:00Z', label_schema: [{code: 'person', class_id: 0}]}),
+      successfulVersion({id: 'v3', created_at: '2026-09-10T00:00:00Z', label_schema: [{code: 'fire', class_id: 0}]}),
+    ],
+  });
+  assert.equal(info.version.id, 'v3');
+  assert.deepEqual(info.codes, ['fire']);
+});
+
 test('algorithm with versions but no successful trainable version is blocked instead of treated as first training', () => {
   const info = latestVersionLabelInfo({
     versions: [{
@@ -133,7 +145,7 @@ test('TrainingLabelRuntime is wrapper-free timer-free and canonical-only', () =>
   assert.match(source, /trainingDraftRuntime\?\.subscribe/);
   assert.match(source, /queueMicrotask/);
   assert.match(source, /labelOnlyDraftUpdate/);
-  assert.match(source, /updateCount\(state\);\n\s*return;/);
+  assert.match(source, /updateCount\(state\);\r?\n\s*return;/);
   const checkboxHandler = source.slice(
     source.indexOf("panel.querySelectorAll('[data-training-label-code]')"),
     source.indexOf('return true;', source.indexOf("panel.querySelectorAll('[data-training-label-code]')")),

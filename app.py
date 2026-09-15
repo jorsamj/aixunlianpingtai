@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 import requests
 import yaml
@@ -33,13 +33,19 @@ from platform_core.annotations import annotation_summary, atomic_write_json, nor
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.storage.import_confirmation import confirm_import, public_quality
 from platform_core.algorithms import (
+    attach_version as attach_algorithm_version,
+    choose_algorithm_iteration_base,
     choose_iteration_base,
+    delete_algorithm_version,
     is_trainable_version,
+    project_current_version,
+    rollback_algorithm_version,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
     save_algorithms as save_algorithm_assets,
     update_algorithm as update_algorithm_asset,
+    update_algorithm_version,
 )
 from platform_core import auto_label as auto_label_core
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
@@ -6064,12 +6070,17 @@ class VersionPatchReq(BaseModel):
     remark: Optional[str] = None
 
 
+class AlgorithmVersionRollbackReq(BaseModel):
+    delete_current_version: bool = False
+    expected_current_version_id: Optional[str] = None
+
+
 def algorithms_file(project_id: str) -> Path:
     return project_dir(project_id) / "algorithms.json"
 
 
 def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
-    """Fast algorithm asset read. Existing report snapshots are reused."""
+    """Fast, read-only algorithm projection. Existing report snapshots are reused."""
     get_project(project_id)
     data = list_algorithm_assets(algorithms_file(project_id))
     changed = False
@@ -6087,11 +6098,214 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
                     fresh=job_report(project_id,v.get("job_id",""),sp)
                     if fresh: v["report"]=fresh; v["report_updated_at"]=now_iso(); changed=True
                 except Exception: pass
-    if changed: write_json(algorithms_file(project_id),data)
-    return data
+    # A GET must never overwrite a concurrent rollback/current-pointer update.
+    # Legacy defaults remain a read projection and are persisted on the next
+    # explicit algorithm/version mutation through platform_core.algorithms.
+    return [project_current_version(item) for item in data]
 
 def save_algorithms_internal(project_id: str, data: List[Dict[str, Any]]):
     save_algorithm_assets(algorithms_file(project_id), data)
+
+
+_ACTIVE_VERSION_REFERENCE_STATUSES = {
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.CANCEL_REQUESTED,
+}
+
+
+def _iter_active_project_tasks(project_id: str):
+    repository = shared_task_repository()
+    cursor = None
+    while True:
+        page = repository.list(
+            project_id=project_id,
+            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION, TaskKind.DEPLOYMENT_TEST),
+            statuses=_ACTIVE_VERSION_REFERENCE_STATUSES,
+            limit=100,
+            cursor=cursor,
+        )
+        yield from page.items
+        cursor = page.next_cursor
+        if not cursor:
+            break
+
+
+def _version_model_paths(version: Mapping[str, Any]) -> set[Path]:
+    paths: set[Path] = set()
+    for field in ("stored_path", "best_path", "last_path", "path"):
+        raw = str(version.get(field) or "").strip()
+        if raw:
+            try:
+                paths.add(Path(raw).expanduser().resolve())
+            except (OSError, RuntimeError):
+                continue
+    return paths
+
+
+def _deploy_job_references_version(job: Mapping[str, Any], algorithm_id: str, version_id: str) -> bool:
+    source = job.get("source_meta") or {}
+    trace = job.get("source_trace") or {}
+    return bool(
+        (str(source.get("algorithm_id") or "") == algorithm_id and str(source.get("version_id") or "") == version_id)
+        or (str(trace.get("algorithm_id") or "") == algorithm_id and str(trace.get("version_id") or "") == version_id)
+        or str(job.get("source_id") or "") == f"version::{algorithm_id}::{version_id}"
+    )
+
+
+def _algorithm_version_active_references(
+    project_id: str,
+    algorithm: Mapping[str, Any],
+    version: Mapping[str, Any],
+) -> List[Dict[str, str]]:
+    """Return only references the current persistence model can prove."""
+    algorithm_id = str(algorithm.get("id") or "")
+    version_id = str(version.get("id") or "")
+    model_paths = _version_model_paths(version)
+    references: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, reference_id: str, reason: str):
+        key = (kind, reference_id)
+        if key not in seen:
+            seen.add(key)
+            references.append({"kind": kind, "id": reference_id, "reason": reason})
+
+    for task in _iter_active_project_tasks(project_id):
+        request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+        if task.kind is TaskKind.TRAINING:
+            task_job = read_json(project_dir(project_id) / "jobs" / task.task_id / "job.json", {})
+            base_id = str(task_job.get("base_version_id") or (request or {}).get("base_version_id") or "")
+            task_algorithm_id = str(
+                task_job.get("asset_algorithm_id")
+                or task_job.get("algorithm_asset_id")
+                or (request or {}).get("algorithm_asset_id")
+                or ""
+            )
+            if task_algorithm_id == algorithm_id and (not base_id or base_id == version_id):
+                add("TRAINING", task.task_id, f"算法仍有活动训练任务 {task.task_id}")
+        elif task.kind is TaskKind.MODEL_CONVERSION:
+            job = read_json(_deploy_job_dir(project_id, task.task_id) / "job.json", {})
+            if _deploy_job_references_version(job, algorithm_id, version_id):
+                add("MODEL_CONVERSION", task.task_id, f"该版本仍有活动模型转换任务 {task.task_id}")
+        elif task.kind is TaskKind.DEPLOYMENT_TEST:
+            raw = str((request or {}).get("model_path") or "").strip()
+            if raw:
+                try:
+                    if Path(raw).expanduser().resolve() in model_paths:
+                        add("DEPLOYMENT_TEST", task.task_id, f"该版本仍有活动部署测试任务 {task.task_id}")
+                except (OSError, RuntimeError):
+                    continue
+
+    jobs_root = project_dir(project_id) / "jobs"
+    for job_file in jobs_root.glob("*/job.json") if jobs_root.exists() else ():
+        job = read_json(job_file, {})
+        status = str(job.get("status") or "").lower()
+        if status not in {"queued", "running", "paused", "cancel_requested", "waiting", "pending"}:
+            continue
+        if str(job.get("asset_algorithm_id") or job.get("algorithm_asset_id") or "") != algorithm_id:
+            continue
+        base_id = str(job.get("base_version_id") or "")
+        if not base_id or base_id == version_id:
+            add("TRAINING", str(job.get("id") or job_file.parent.name), f"算法仍有活动训练任务 {job.get('id') or job_file.parent.name}")
+
+    deploy_jobs_root = deploy_root(project_id) / "jobs"
+    for job_file in deploy_jobs_root.glob("*/job.json") if deploy_jobs_root.exists() else ():
+        job = read_json(job_file, {})
+        if str(job.get("status") or "").lower() not in {"queued", "running", "cancel_requested", "waiting", "pending"}:
+            continue
+        if _deploy_job_references_version(job, algorithm_id, version_id):
+            add("MODEL_CONVERSION", str(job.get("id") or job_file.parent.name), f"该版本仍有活动模型转换任务 {job.get('id') or job_file.parent.name}")
+    return references
+
+
+def _cleanup_algorithm_version_artifacts(
+    project_id: str,
+    algorithm: Mapping[str, Any],
+    version: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Remove only exact version-owned files; keep task/audit artifacts."""
+    algorithm_id = str(algorithm.get("id") or "")
+    version_id = str(version.get("id") or "")
+    version_root = (project_dir(project_id) / "algorithm_versions" / algorithm_id / version_id).resolve()
+    algorithm_versions_root = (project_dir(project_id) / "algorithm_versions" / algorithm_id).resolve()
+    targets: List[str] = []
+    errors: List[str] = []
+
+    # Task state lives in a separate durable store, so repeat the dependency
+    # check after the metadata transaction and before touching any file. This
+    # closes the create-task/preflight race without pretending both stores can
+    # share one filesystem transaction.
+    late_references = _algorithm_version_active_references(project_id, algorithm, version)
+    if late_references:
+        return {
+            "status": "cleanup_failed",
+            "targets": [],
+            "errors": [
+                "元数据提交后发现新的活动引用，已保留全部版本产物："
+                + "；".join(str(item.get("reason") or item.get("id") or "存在活动引用") for item in late_references)
+            ],
+        }
+
+    other_paths: set[Path] = set()
+    for other in algorithm.get("versions") or []:
+        if str(other.get("id") or "") != version_id:
+            other_paths.update(_version_model_paths(other))
+    if version_root.exists():
+        if algorithm_versions_root not in version_root.parents or version_root == algorithm_versions_root:
+            errors.append(f"拒绝清理越界版本目录：{version_root}")
+        elif any(version_root == path or version_root in path.parents for path in other_paths):
+            errors.append(f"版本目录仍被其他算法版本引用：{version_root}")
+        else:
+            try:
+                shutil.rmtree(version_root)
+                targets.append(str(version_root))
+            except OSError as error:
+                errors.append(f"删除版本目录失败 {version_root}：{error}")
+
+    # Completed conversion records remain auditable, while their exact output
+    # files are retired when they are owned by the deleted source version.
+    deploy_jobs_root = deploy_root(project_id) / "jobs"
+    for job_file in deploy_jobs_root.glob("*/job.json") if deploy_jobs_root.exists() else ():
+        job = read_json(job_file, {})
+        if not _deploy_job_references_version(job, algorithm_id, version_id):
+            continue
+        if str(job.get("status") or "").lower() in {"queued", "running", "cancel_requested", "waiting", "pending"}:
+            errors.append(f"转换任务在清理阶段重新变为活动状态：{job.get('id') or job_file.parent.name}")
+            continue
+        job_root = job_file.parent.resolve()
+        changed = False
+        for output in job.get("outputs") or []:
+            raw = str(output.get("path") or "").strip()
+            if not raw:
+                continue
+            try:
+                output_path = Path(raw).expanduser().resolve()
+            except (OSError, RuntimeError) as error:
+                errors.append(f"转换产物路径无效 {raw}：{error}")
+                continue
+            if job_root not in output_path.parents:
+                errors.append(f"拒绝清理非任务专属转换产物：{output_path}")
+                continue
+            try:
+                if output_path.is_file():
+                    output_path.unlink()
+                    targets.append(str(output_path))
+                output["available"] = False
+                output["deleted_with_version_at"] = now_iso()
+                changed = True
+            except OSError as error:
+                errors.append(f"删除转换产物失败 {output_path}：{error}")
+        if changed:
+            job["source_version_status"] = "deleted"
+            job["updated_at"] = now_iso()
+            write_json(job_file, job)
+
+    return {
+        "status": "cleanup_failed" if errors else "cleanup_completed",
+        "targets": targets,
+        "errors": errors,
+    }
 
 
 def used_model_keys(project_id: str) -> set:
@@ -6856,8 +7070,8 @@ def _v54_iteration_base(
     algo = next((a for a in list_algorithms_internal(project_id) if str(a.get("id")) == str(algorithm_id)), None)
     if not algo:
         return None
-    selection = choose_iteration_base(
-        algo.get("versions") or [],
+    selection = choose_algorithm_iteration_base(
+        algo,
         "",
         framework,
         strict_latest=strict_latest,
@@ -6877,6 +7091,7 @@ def _v54_iteration_base(
         "version_id": selection["base_version_id"], "version_name": selection["base_version_name"],
         "path": str(path), "model_name": path.name,
         "is_latest_version": bool(latest and str(latest[0].get("id")) == str(selection["base_version_id"])),
+        "is_current_version": True,
         "latest_version_name": (latest[0] if latest else {}).get("version_name") or "",
     }
 
@@ -6902,7 +7117,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
             "base_version_name": iteration_base.get("version_name") or "",
             "base_model_path": iteration_base.get("path") or "",
             "base_model_kind": "train_checkpoint",
-            "base_selection_reason": "latest_verified_version",
+            "base_selection_reason": iteration_base.get("base_selection_reason") or "current_verified_version",
         }
     else:
         base_selection = choose_iteration_base((asset_algorithm or {}).get("versions") or [], mother_model, framework)
@@ -7561,55 +7776,83 @@ def v12_assign_version(project_id: str, algorithm_id: str, payload: AlgorithmVer
         "report": report,
         "report_updated_at": now_iso(),
         "status": "已归属",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": version_file.suffix.lower() in {".pt", ".pdparams", ".pdmodel", ".pdiparams"},
+        "framework": "paddle" if version_file.suffix.lower() in {".pdparams", ".pdmodel", ".pdiparams"} else "ultralytics",
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
-    algo.setdefault("versions", []).insert(0, version)
-    algo["updated_at"] = now_iso()
-    save_algorithms_internal(project_id, algos)
-    return {"ok": True, "version": version}
+    stored = attach_algorithm_version(algorithms_file(project_id), algorithm_id, version)
+    return {"ok": True, "version": stored}
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
 def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payload: VersionPatchReq):
-    algos = list_algorithms_internal(project_id)
-    for a in algos:
-        if a.get("id") == algorithm_id:
-            for v in a.get("versions", []):
-                if v.get("id") == version_id:
-                    # v42.8 起版本号由训练结束时间唯一生成，不允许人工改写。
-                    if payload.remark is not None: v["remark"] = payload.remark or ""
-                    v["updated_at"] = now_iso(); a["updated_at"] = now_iso()
-                    save_algorithms_internal(project_id, algos)
-                    return v
-    raise HTTPException(status_code=404, detail="版本不存在")
+    # v42.8 起版本号由训练结束时间唯一生成，不允许人工改写。
+    patch: Dict[str, Any] = {}
+    if payload.remark is not None:
+        patch["remark"] = payload.remark or ""
+    return update_algorithm_version(
+        algorithms_file(project_id), algorithm_id, version_id, patch, now=now_iso(),
+    )
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
 def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
-    algos = list_algorithms_internal(project_id)
-    for a in algos:
-        if a.get("id") == algorithm_id:
-            target = next((v for v in a.get("versions", []) if v.get("id") == version_id), None)
-            if not target:
-                raise HTTPException(status_code=404, detail="版本不存在")
-            try:
-                stored = str(target.get("stored_path") or "").strip()
-                if stored:
-                    sp = Path(stored).resolve()
-                    root = (project_dir(project_id) / "algorithm_versions" / algorithm_id).resolve()
-                    # 只允许删除算法版本专属目录，避免空路径 Path("") 误指向当前目录。
-                    if sp.exists() and (root == sp.parent or root in sp.parents):
-                        version_folder = sp.parent
-                        if root in version_folder.parents or version_folder == root:
-                            shutil.rmtree(version_folder, ignore_errors=True)
-            except Exception:
-                pass
-            a["versions"] = [v for v in a.get("versions", []) if v.get("id") != version_id]
-            a["updated_at"] = now_iso()
-            save_algorithms_internal(project_id, algos)
-            return {"ok": True}
-    raise HTTPException(status_code=404, detail="算法不存在")
+    get_project(project_id)
+    result = delete_algorithm_version(
+        algorithms_file(project_id),
+        algorithm_id,
+        version_id,
+        now=now_iso(),
+        operator="local_user",
+        dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
+    )
+    return {
+        "ok": result.get("cleanup_status") != "cleanup_failed",
+        **result,
+        "reference_check": {
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "not_verifiable": ["online_deployment_instances"],
+        },
+    }
+
+
+@app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/rollback")
+def v12_rollback_version(
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+    payload: AlgorithmVersionRollbackReq,
+):
+    get_project(project_id)
+    if not str(payload.expected_current_version_id or "").strip():
+        raise PlatformError(
+            "ALGORITHM_VERSION_EXPECTATION_REQUIRED", "缺少当前版本并发校验",
+            "回退请求必须携带页面确认时看到的 current_version_id。",
+            "请刷新算法版本列表后重新确认回退。", 409,
+        )
+    result = rollback_algorithm_version(
+        algorithms_file(project_id),
+        algorithm_id,
+        version_id,
+        now=now_iso(),
+        delete_current_version=bool(payload.delete_current_version),
+        operator="local_user",
+        expected_current_version_id=payload.expected_current_version_id,
+        dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
+    )
+    return {
+        "ok": result.get("cleanup_status") != "cleanup_failed",
+        **result,
+        "reference_check": {
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "not_verifiable": ["online_deployment_instances"],
+        },
+    }
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/download")
@@ -7766,14 +8009,18 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "snapshot_id": str(job.get("snapshot_id") or ""),
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
+        "base_version_id": str(job.get("base_version_id") or "").strip() or None,
         "status":"可用" if stored_path else "无可用模型产物","created_at":job.get("finished_at") or now_iso(),"updated_at":now_iso(),
     }
-    algo.setdefault("versions",[]).insert(0,version);algo["updated_at"]=now_iso();save_algorithms_internal(project_id,algos)
+    version=attach_algorithm_version(algorithms_file(project_id),algorithm_id,version)
     job["auto_version_id"]=version_id;job["auto_version_name"]=version_name
     try:write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
-    version["auto_conversion"]=_v48_auto_convert_version(project_id,algorithm_id,version,job)
-    save_algorithms_internal(project_id,algos)
+    auto_conversion=_v48_auto_convert_version(project_id,algorithm_id,version,job)
+    version=update_algorithm_version(
+        algorithms_file(project_id),algorithm_id,version_id,
+        {"auto_conversion":auto_conversion},now=now_iso(),
+    )
     try:
         job["auto_conversion"]=version.get("auto_conversion");write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
@@ -8072,9 +8319,14 @@ def v12_test_models(project_id: str, probe_optional: bool = True):
             items.append({"label": "飞桨内置：PP-YOLOE-S_human 人员检测", "model_name": "PP-YOLOE-S_human", "model_source": "paddle_builtin", "framework": "paddle", "path": "PP-YOLOE-S_human"})
     # 算法版本
     for a in list_algorithms_internal(project_id):
-        for v in a.get("versions", []):
+        current_version_id = str(a.get("current_version_id") or "")
+        versions = list(a.get("versions", []) or [])
+        versions.sort(key=lambda version: 0 if str(version.get("id") or "") == current_version_id else 1)
+        for v in versions:
             if str(v.get("stored_path", "")).lower().endswith(".pt"):
-                items.append({"label": f"算法版本：{a.get('name')} / {v.get('version_name')}", "algorithm_id": a.get("id"), "version_id": v.get("id"), "model_source": "algorithm_version", "framework": "ultralytics", "path": v.get("stored_path")})
+                is_current = str(v.get("id") or "") == current_version_id
+                current_suffix = "（当前）" if is_current else ""
+                items.append({"label": f"算法版本：{a.get('name')} / {v.get('version_name')}{current_suffix}", "algorithm_id": a.get("id"), "version_id": v.get("id"), "is_current_version": is_current, "model_source": "algorithm_version", "framework": "ultralytics", "path": v.get("stored_path")})
     # Real conversion artifacts are selectable in the deployment test page.
     try:
         for artifact in v39_list_deploy_artifacts(project_id).get("items", []):
@@ -11061,10 +11313,15 @@ def _deploy_source_models(project_id: str) -> List[Dict[str, Any]]:
         if ext in {".pt", ".pth", ".onnx", ".pdparams", ".pdmodel", ".pdiparams", ".engine", ".bmodel", ".om"}:
             items.append({"id":f"model::{m.get('name')}","kind":"project_model","name":m.get("name"),"path":m.get("path"),"type":m.get("type"),"framework":m.get("framework"),"job_id":m.get("job_id"),"config_path":m.get("config_path"),"size_mb":m.get("size_mb"),"label":m.get("name")})
     for a in list_algorithms_internal(project_id):
-        for v in a.get("versions", []) or []:
+        current_version_id = str(a.get("current_version_id") or "")
+        versions = list(a.get("versions", []) or [])
+        versions.sort(key=lambda version: 0 if str(version.get("id") or "") == current_version_id else 1)
+        for v in versions:
             p=Path(str(v.get("stored_path") or ""))
             if p.exists():
-                items.append({"id":f"version::{a.get('id')}::{v.get('id')}","kind":"algorithm_version","name":v.get("model_name") or p.name,"path":str(p),"type":p.suffix.lower().lstrip('.'),"framework":v.get("report",{}).get("framework", ""),"job_id":v.get("job_id", ""),"config_path":"","size_mb":v.get("size_mb",0),"algorithm_id":a.get("id"),"algorithm_name":a.get("name"),"version_id":v.get("id"),"version_name":v.get("version_name"),"label":f"{a.get('name')} / {v.get('version_name')} / {p.name}"})
+                is_current = str(v.get("id") or "") == current_version_id
+                current_suffix = "（当前）" if is_current else ""
+                items.append({"id":f"version::{a.get('id')}::{v.get('id')}","kind":"algorithm_version","name":v.get("model_name") or p.name,"path":str(p),"type":p.suffix.lower().lstrip('.'),"framework":v.get("report",{}).get("framework", ""),"job_id":v.get("job_id", ""),"config_path":"","size_mb":v.get("size_mb",0),"algorithm_id":a.get("id"),"algorithm_name":a.get("name"),"version_id":v.get("id"),"version_name":v.get("version_name"),"is_current_version":is_current,"label":f"{a.get('name')} / {v.get('version_name')}{current_suffix} / {p.name}"})
     return items
 
 
@@ -14231,9 +14488,10 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
         if j.get('status') in {'done','finished','completed'}: success += 1
         trend.append({'job_id':j.get('id'),'version':j.get('auto_version_name') or '', 'finished_at':j.get('finished_at') or j.get('updated_at') or j.get('created_at'), 'map50':m, 'status':j.get('status'), 'labels':lc, 'images':int((j.get('dataset_counts') or {}).get('train') or 0)})
     versions=algo.get('versions') or []
-    latest=versions[0] if versions else None
+    current_id=str(algo.get('current_version_id') or '')
+    current=next((v for v in versions if str(v.get('id') or '')==current_id), versions[0] if versions else None)
     aggregate=build_algorithm_report(versions)
-    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions)}, 'summary':{'training_count':len(jobs),'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':latest.get('version_name') if latest else '', 'latest_accuracy': _v49_metric_from_report((latest or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if latest else None}, 'trend':trend, 'jobs':jobs[-20:]}
+    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':len(jobs),'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:]}
 
 @app.post('/api/v49/projects/{project_id}/images/mark-processed')
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):

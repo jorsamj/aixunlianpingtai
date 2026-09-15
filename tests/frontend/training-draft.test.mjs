@@ -41,6 +41,27 @@ test('inheritance comes only from the latest successful artifact-verified traina
   assert.equal(inheritance.legacy, false);
 });
 
+test('explicit current version remains the inheritance source after rollback', () => {
+  const inheritance = trainingInheritanceFromAlgorithm({
+    current_version_id: 'v3',
+    versions: [
+      {
+        id: 'v5', created_at: '2026-09-12T03:00:00Z', training_status: 'SUCCEEDED',
+        artifact_verified: true, trainable: true,
+        label_schema: [{class_id: 0, code: 'newer-but-not-current'}],
+      },
+      {
+        id: 'v3', created_at: '2026-09-10T03:00:00Z', training_status: 'SUCCEEDED',
+        artifact_verified: true, trainable: true,
+        label_schema: [{class_id: 0, code: 'fire'}],
+      },
+    ],
+  });
+
+  assert.equal(inheritance.versionId, 'v3');
+  assert.deepEqual(inheritance.codes, ['fire']);
+});
+
 test('successful historical version without stored schema is marked pending instead of guessing labels', () => {
   const inheritance = trainingInheritanceFromAlgorithm({
     versions: [{
