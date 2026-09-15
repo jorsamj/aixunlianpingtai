@@ -5,32 +5,40 @@
 ## 1. Branch / release state
 
 ```text
-branch:                      refactor/frontend-runtime-stabilization
-latest full code acceptance: 1c3fa7f2b5cb826c0998f249637241a59134f053
-latest scoped product implementation: bfe9f7d (training queue/resource-wait truth)
-Frontend Runtime run:        34794630837
-formal VERSION.txt:          42.24.0
-visible frontend version:    v42.24.0
-internal UI build metadata:  42.25.0-dev
-app.js cache:                42.25.99
-main.mjs cache:              42.25.99
-NavigationStability:         422512
-UI state runtime:            422500
-PollRegistry:                422518
-TrainingDraftRuntime:        422516
-TrainingLabelRuntime:        422513
-TrainingSubmitRuntime:       training-submit-422504
-TrainingTaskRuntime:         training-task-runtime-422522
-AutoLabelPollRuntime:        422501
+branch:                                  refactor/frontend-runtime-stabilization
+local HEAD:                              92b8275e5a75167b040738d21a153f487f799b9b
+remote HEAD last verified:               92b8275e5a75167b040738d21a153f487f799b9b
+ahead / behind:                          0 / 0
+push status:                             PUSHED — remote accepted; related CI passed
+latest remotely accepted state:          92b8275e5a75167b040738d21a153f487f799b9b
+latest local scoped product implementation: bfe9f7d (training queue/resource-wait truth)
+latest full-suite acceptance:            92b8275e5a75167b040738d21a153f487f799b9b
+formal VERSION.txt:                      42.24.0
+visible frontend version:                v42.24.0
+internal UI build metadata:              42.25.0-dev
+app.js cache:                            42.25.99
+main.mjs cache:                          42.25.99
+NavigationStability:                     422512
+UI state runtime:                        422500
+PollRegistry:                            422518
+TrainingDraftRuntime:                    422516
+TrainingLabelRuntime:                    422513
+TrainingSubmitRuntime:                   training-submit-422504
+TrainingTaskRuntime:                     training-task-runtime-422522
+AutoLabelPollRuntime:                    422501
 ```
 
-Run `34733035739` passed syntax, all permanent owner guards, all frontend unit tests and Real Chrome runtime regressions after ZIP 10k owner/manifest migration. Browser navigation runs **33 tests and passed 33/33**. Permanent Action Fencing workflow `34733035761` is green; permanent Resource Discovery SQLite workflow `34700900542` remains green on Ubuntu and Windows. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
+The latest remote acceptance is the branch HEAD `92b8275e5a75167b040738d21a153f487f799b9b`. Its directly related `Frontend Runtime Stabilization`, `Material Annotation Atomicity`, `Navigation Action Fencing`, and `v42.25 Release Regression` workflows passed. The Frontend Runtime workflow includes the complete frontend unit suite and Real Chrome runtime regressions; Navigation Action Fencing also includes its Real Chrome contract. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
-## Product closure — Training queue / waiting-resource truth CLOSED
+## Product closure — Training Queue Readiness Truth CLOSED
 
 Training task queue readiness is closed at scoped product implementation
-`bfe9f7d`. This batch consumes the already-closed Worker Runtime Truth and the
-existing durable TaskRepository/Scheduler state; it does not add another queue,
+`bfe9f7d`, with remote acceptance recorded at
+`92b8275e5a75167b040738d21a153f487f799b9b`. The earlier local-only/pending-push
+state is resolved: local and remote are synchronized at `0 / 0`, and all four
+directly related workflows passed. This batch consumes the already-closed Worker
+Runtime Truth and the existing durable TaskRepository/Scheduler state; it does
+not add another queue,
 Worker registry, Scheduler, durable task status, or frontend polling owner.
 
 For a local durable `TRAINING` task whose persisted status is `QUEUED`, the GET
@@ -210,7 +218,7 @@ formal VERSION.txt:         42.24.0 unchanged
 
 All temporary deployment RED/migration helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-Next product batch: **storage import polling owner / lifecycle-managed polling truth**. Storage import already preserves durable queue/progress display truth, but its action runtime still owns a direct `while + setTimeout(1200)` polling loop; that owner must be audited separately without mixing it into this deployment closure.
+Historical sequencing note: at this closure point, storage import polling ownership was recorded as the subsequent batch. That statement is retained only as history and is not a current work instruction.
 
 ## Product closure — Cleaning frontend queue/progress truth CLOSED
 
@@ -269,7 +277,7 @@ formal VERSION.txt:         42.24.0 unchanged
 
 The temporary frontend migration helper/workflow were physically deleted before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-Deployment-test durable queue/progress truth is now CLOSED. Next product scope: **storage import polling owner / lifecycle-managed polling truth**. Genuine 10,000-image processing acceptance remains explicitly deferred.
+Deployment-test durable queue/progress truth is CLOSED. The storage-import polling work that followed this historical closure is no longer a current instruction. Genuine 10,000-image processing acceptance remains explicitly deferred.
 
 ## Product closure — Cleaning durable execution truth CLOSED
 
@@ -308,7 +316,7 @@ formal VERSION.txt:         42.24.0 unchanged
 
 All one-shot cleaning migration/diagnostic helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-Following batch status: **cleaning frontend queue/progress truth is now CLOSED**. Current next product scope is the storage import / deployment-test queue and progress truth audit.
+Historical sequencing note: cleaning frontend queue/progress truth was subsequently closed, followed by the storage-import and deployment-test queue/progress audits. This is historical context, not current scope.
 
 ## Product closure — Plain image upload whole-task progress truth CLOSED
 
@@ -410,17 +418,12 @@ No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was per
 
 ```text
 TECH-DEBT CLEANUP PAUSED BY USER REQUEST
-→ PRODUCT MAINLINE: Deployment Artifact E2E CLOSED
-→ Unified Task Progress Phase 1 + Phase 2 CLOSED
-→ Training Progress v2 CLOSED
-→ ZIP 10k import scalability CLOSED (live v19 + cold candidate manifest)
-→ ZIP Processing P2c COCO/VOC structured single-write CLOSED
-→ Plain image upload whole-task progress truth CLOSED
-→ AI annotation polling queue metadata truth CLOSED
-→ Video resource queue truth CLOSED
-→ Cleaning durable execution truth CLOSED
-→ Cleaning frontend queue/progress truth CLOSED
-→ NEXT: storage import and deployment-test horizontal queue/progress truth audit
+→ Worker Runtime Truth CLOSED
+→ Training Task Status / Progress Auto-Refresh CLOSED
+→ Training Queue Readiness Truth CLOSED
+  product implementation: bfe9f7d
+  remote acceptance: 92b8275e5a75167b040738d21a153f487f799b9b
+→ CURRENT NEXT: GPU Runtime Truth
 → genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction
 → SSE/event stream evaluation DEFERRED
 → non-blocking Navigation Action Fencing final scan remains DEFERRED
@@ -428,7 +431,7 @@ TECH-DEBT CLEANUP PAUSED BY USER REQUEST
 → backend regression / A800 RC only when explicitly resumed
 ```
 
-A800 RC remains deferred unless the next product/acceptance task explicitly resumes it.
+A800 RC remains deferred unless the user explicitly resumes it.
 
 ### 当前产品主线 — ZIP 10k import scalability CLOSED
 
