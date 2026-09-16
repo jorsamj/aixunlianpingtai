@@ -22,11 +22,16 @@ from .material_repository import MaterialRepository
 from .storage.errors import StorageError
 from .storage.manager import StorageManager
 
-DEFAULT_PAGE_SIZE = 120
-MAX_PAGE_SIZE = 240
+# Keep the visual page intentionally smaller than the old 120-card page. The
+# picker now renders larger previews and only loads thumbnails close to the
+# viewport, so 60 rows gives a substantially faster first interaction without
+# changing the meaning of "select all filtered".
+DEFAULT_PAGE_SIZE = 60
+MAX_PAGE_SIZE = 120
 MAX_SELECTION_SUMMARY_IDS = 50000
-# Cards render at 96 CSS px. 192 px keeps 2x-density displays sharp without
-# decoding and caching unnecessarily large 256 px images for the picker.
+BULK_SELECTION_SCAN_SIZE = 500
+# Picker cards are intentionally larger now. 192 px keeps the preview sharp
+# enough while avoiding the decode/cache cost of full-size source images.
 DEFAULT_THUMBNAIL_SIZE = 192
 ALLOWED_THUMBNAIL_SIZES = {160, 192, 224, 256, 320, 384}
 
@@ -64,6 +69,14 @@ def _normalize_selection_ids(values: object) -> list[str]:
     if len(ids) > MAX_SELECTION_SUMMARY_IDS:
         raise ValueError(f"image_ids must not exceed {MAX_SELECTION_SUMMARY_IDS}")
     return ids
+
+
+def _normalize_labels(values: object) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if not isinstance(values, list):
+        raise ValueError("labels must be a list")
+    return tuple(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
 
 
 def _selection_summary(repository: MaterialRepository, image_ids: list[str]) -> dict:
@@ -110,6 +123,50 @@ def _selection_summary(repository: MaterialRepository, image_ids: list[str]) -> 
         "label_counts": label_counts,
         "eligible_total": eligible_total,
     }
+
+
+def _bulk_filtered_ids(
+    repository: MaterialRepository,
+    *,
+    query: str = "",
+    labels: tuple[str, ...] = (),
+) -> tuple[list[str], int]:
+    """Resolve a large filtered selection server-side with one HTTP request.
+
+    MaterialRepository intentionally exposes bounded cursor pages. We keep that
+    safety boundary internally, but avoid making the browser perform 20+ HTTP
+    round-trips just to select a 10k-image filtered result.
+    """
+    filters = {
+        "query": str(query or "").strip(),
+        "labels": labels,
+        "annotated": True,
+    }
+    cursor = None
+    ids: list[str] = []
+    total = -1
+    first = True
+    while True:
+        page = repository.iter_filtered_ids(
+            filters,
+            cursor=cursor,
+            limit=BULK_SELECTION_SCAN_SIZE,
+            include_total=first,
+        )
+        if first:
+            total = max(0, int(page.total))
+            if total > MAX_SELECTION_SUMMARY_IDS:
+                raise ValueError(
+                    f"筛选结果共 {total} 张，超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张"
+                )
+            first = False
+        ids.extend(str(value) for value in page.items)
+        if len(ids) > MAX_SELECTION_SUMMARY_IDS:
+            raise ValueError(f"筛选结果超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张")
+        cursor = page.next_cursor
+        if not cursor:
+            break
+    return ids, total if total >= 0 else len(ids)
 
 
 def _thumbnail_identity(row: dict) -> str:
@@ -240,6 +297,25 @@ def training_material_picker_router(get_project, data_dir_provider):
             "next_cursor": page.next_cursor,
             "total": page.total,
             "repository_revision": repository.current_revision(),
+        }
+
+    @router.post("/bulk-selection")
+    def resolve_training_material_bulk_selection(project_id: str, payload: dict):
+        repository = materials(project_id)
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            labels = _normalize_labels(body.get("labels"))
+            query = "" if bool(body.get("all_available")) else str(body.get("query") or "").strip()
+            if bool(body.get("all_available")):
+                labels = ()
+            ids, total = _bulk_filtered_ids(repository, query=query, labels=labels)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {
+            "items": ids,
+            "total": total,
+            "repository_revision": repository.current_revision(),
+            "selection_mode": "all_available" if bool(body.get("all_available")) else "filtered",
         }
 
     @router.post("/selection-summary")
