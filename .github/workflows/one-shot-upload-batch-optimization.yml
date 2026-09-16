@@ -27,179 +27,106 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('app.py')
           text = path.read_text(encoding='utf-8')
 
-          old_begin = '''def _v50_begin_image_batch(project_id: str):
-              _IMAGE_BATCH_CTX.batch = {
-                  "project_id": project_id,
-                  "records": {},
-                  "patches": {},
-                  # New-image annotations are buffered with the material rows and
-                  # committed once per request/import batch. Existing-image writes
-                  # stay immediate so their independent update semantics do not change.
-                  "annotations": {},
-                  "annotation_repository": None,
-              }
-          '''
-          new_begin = '''def _v50_begin_image_batch(project_id: str):
-              _IMAGE_BATCH_CTX.batch = {
-                  "project_id": project_id,
-                  "records": {},
-                  "patches": {},
-                  # New-image annotations are buffered with the material rows and
-                  # committed once per request/import batch. Existing-image writes
-                  # stay immediate so their independent update semantics do not change.
-                  "annotations": {},
-                  "annotation_repository": None,
-                  # Storage source schema/provider/credential setup is request-scoped,
-                  # not image-scoped. Reuse one manager across the whole import batch.
-                  "storage_manager": None,
-              }
-          '''
-          if old_begin not in text:
-              raise SystemExit('batch initializer contract changed; refusing blind patch')
-          text = text.replace(old_begin, new_begin, 1)
-
-          marker = '''def _v50_annotation_repository(project_id: str) -> AnnotationRepository:
-              batch = _v50_active_image_batch(project_id)
-              if batch is not None:
-                  repository = batch.get("annotation_repository")
-                  if repository is None:
-                      repository = AnnotationRepository(project_dir(project_id))
-                      batch["annotation_repository"] = repository
-                  return repository
-              return AnnotationRepository(project_dir(project_id))
-          '''
-          replacement = marker + '''\n\ndef _v50_storage_manager(project_id: str) -> StorageManager:
-              batch = _v50_active_image_batch(project_id)
-              if batch is not None:
-                  manager = batch.get("storage_manager")
-                  if manager is None:
-                      manager = storage_manager(project_id)
-                      batch["storage_manager"] = manager
-                  return manager
-              return storage_manager(project_id)
-          '''
-          if marker not in text:
-              raise SystemExit('annotation repository helper changed; refusing blind patch')
-          text = text.replace(marker, replacement, 1)
-
-          old_source = '''    source_config = storage_source_repository().get(storage_source_id)
-              if source_config is None:
-          '''
-          new_source = '''    manager = _v50_storage_manager(project_id)
-              source_config = manager.sources.get(storage_source_id)
-              if source_config is None:
-          '''
-          if old_source not in text:
-              raise SystemExit('storage source lookup changed; refusing blind patch')
-          text = text.replace(old_source, new_source, 1)
-
-          old_upload = '''    metadata = storage_manager(project_id).upload_object(
-              storage_source_id, object_key, src,
-              content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
+          begin_pattern = re.compile(
+              r'(def _v50_begin_image_batch\(project_id: str\):\n'
+              r'    _IMAGE_BATCH_CTX\.batch = \{.*?'
+              r'        "annotation_repository": None,\n)'
+              r'(    \}\n)',
+              re.S,
           )
-          '''
-          new_upload = '''    metadata = manager.upload_object(
-              storage_source_id, object_key, src,
-              content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
+          text, count = begin_pattern.subn(
+              r'\1'
+              '        # Storage source schema/provider/credential setup is request-scoped,\n'
+              '        # not image-scoped. Reuse one manager across the whole import batch.\n'
+              '        "storage_manager": None,\n'
+              r'\2',
+              text,
+              count=1,
           )
-          '''
-          if old_upload not in text:
-              raise SystemExit('storage upload block changed; refusing blind patch')
-          text = text.replace(old_upload, new_upload, 1)
+          if count != 1:
+              raise SystemExit(f'batch initializer patch count={count}; refusing blind patch')
 
-          old_cleanup = '''        try:
-              storage_manager(project_id).delete_source_file(record)
-          except Exception:
-              pass
-          '''
-          new_cleanup = '''        try:
-              manager.delete_source_file(record)
-          except Exception:
-              pass
-          '''
-          # This exact block occurs in add_image_record and should change once.
-          if old_cleanup not in text:
-              raise SystemExit('add_image_record cleanup block changed; refusing blind patch')
-          text = text.replace(old_cleanup, new_cleanup, 1)
+          helper_pattern = re.compile(
+              r'(def _v50_annotation_repository\(project_id: str\) -> AnnotationRepository:\n'
+              r'.*?'
+              r'    return AnnotationRepository\(project_dir\(project_id\)\)\n)'
+              r'\n(?=def _v50_queue_image_patch)',
+              re.S,
+          )
+          helper = '''\n\ndef _v50_storage_manager(project_id: str) -> StorageManager:\n    batch = _v50_active_image_batch(project_id)\n    if batch is not None:\n        manager = batch.get("storage_manager")\n        if manager is None:\n            manager = storage_manager(project_id)\n            batch["storage_manager"] = manager\n        return manager\n    return storage_manager(project_id)\n'''
+          text, count = helper_pattern.subn(lambda match: match.group(1) + helper + '\n', text, count=1)
+          if count != 1:
+              raise SystemExit(f'storage manager helper patch count={count}; refusing blind patch')
 
-          old_commit = '''        _v50_end_image_batch(save=True)
-              except Exception:
-                  if _v50_active_image_batch(project_id):
-                      _v50_end_image_batch(save=False)
-                  raise
+          add_pattern = re.compile(
+              r'(def add_image_record\(.*?)(?=\n\ndef zip_dir)',
+              re.S,
+          )
+          match = add_pattern.search(text)
+          if not match:
+              raise SystemExit('add_image_record function not found')
+          add_body = match.group(1)
 
-              upload_batch_store(project_id).create(
-          '''
-          new_commit = '''        committed = _v50_end_image_batch(save=True)
-              if committed:
-                  committed_by_id = {
-                      str(item.get("id")): item for item in committed
-                  }
-                  uploaded = [
-                      dict(committed_by_id.get(str(item.get("id"))) or item)
-                      for item in uploaded
-                  ]
-              except Exception:
-                  if _v50_active_image_batch(project_id):
-                      _v50_end_image_batch(save=False)
-                  raise
+          replacements = [
+              (
+                  '    source_config = storage_source_repository().get(storage_source_id)\n',
+                  '    manager = _v50_storage_manager(project_id)\n'
+                  '    source_config = manager.sources.get(storage_source_id)\n',
+                  'storage source lookup',
+              ),
+              (
+                  '    metadata = storage_manager(project_id).upload_object(\n',
+                  '    metadata = manager.upload_object(\n',
+                  'storage upload manager',
+              ),
+              (
+                  '            storage_manager(project_id).delete_source_file(record)\n',
+                  '            manager.delete_source_file(record)\n',
+                  'storage rollback manager',
+              ),
+          ]
+          for old, new, label in replacements:
+              occurrences = add_body.count(old)
+              if occurrences != 1:
+                  raise SystemExit(f'{label} count={occurrences}; refusing blind patch')
+              add_body = add_body.replace(old, new, 1)
+          text = text[:match.start(1)] + add_body + text[match.end(1):]
 
-              upload_batch_store(project_id).create(
-          '''
-          if old_commit not in text:
-              raise SystemExit('plain upload commit block changed; refusing blind patch')
-          text = text.replace(old_commit, new_commit, 1)
-
+          upload_pattern = re.compile(
+              r'(@app\.post\("/api/projects/\{project_id\}/images"\)\n'
+              r'async def upload_images\(.*?)(?=\n\n_ANNOTATION_INDEX_LOCK)',
+              re.S,
+          )
+          match = upload_pattern.search(text)
+          if not match:
+              raise SystemExit('plain upload endpoint not found')
+          upload_body = match.group(1)
+          old_commit = '        _v50_end_image_batch(save=True)\n'
+          if upload_body.count(old_commit) != 1:
+              raise SystemExit('plain upload batch commit contract changed')
+          new_commit = '''        committed = _v50_end_image_batch(save=True)\n        if committed:\n            committed_by_id = {\n                str(item.get("id")): item for item in committed\n            }\n            uploaded = [\n                dict(committed_by_id.get(str(item.get("id"))) or item)\n                for item in uploaded\n            ]\n'''
+          upload_body = upload_body.replace(old_commit, new_commit, 1)
+          text = text[:match.start(1)] + upload_body + text[match.end(1):]
           path.write_text(text, encoding='utf-8')
 
           test_path = Path('tests/api/test_upload_batch_performance_truth.py')
           tests = test_path.read_text(encoding='utf-8')
-          old_project = '''    project_id = client.post(
-                  "/api/projects", json={"name": "plain-upload-batch", "labels": []}
-              ).json()["id"]
+          setup_anchor = '''    project_id = client.post(\n        "/api/projects", json={"name": "plain-upload-batch", "labels": []}\n    ).json()["id"]\n\n'''
+          if tests.count(setup_anchor) != 1:
+              raise SystemExit('upload performance test setup anchor changed')
+          setup_extra = '''    original_storage_manager = app_module.storage_manager\n    storage_manager_calls = 0\n\n    def counted_storage_manager(project):\n        nonlocal storage_manager_calls\n        storage_manager_calls += 1\n        return original_storage_manager(project)\n\n    monkeypatch.setattr(app_module, "storage_manager", counted_storage_manager)\n\n'''
+          tests = tests.replace(setup_anchor, setup_anchor + setup_extra, 1)
 
-              def unexpected_material_upsert(_self, _record):
-          '''
-          new_project = '''    project_id = client.post(
-                  "/api/projects", json={"name": "plain-upload-batch", "labels": []}
-              ).json()["id"]
-
-              original_storage_manager = app_module.storage_manager
-              storage_manager_calls = 0
-
-              def counted_storage_manager(project):
-                  nonlocal storage_manager_calls
-                  storage_manager_calls += 1
-                  return original_storage_manager(project)
-
-              monkeypatch.setattr(app_module, "storage_manager", counted_storage_manager)
-
-              def unexpected_material_upsert(_self, _record):
-          '''
-          if old_project not in tests:
-              raise SystemExit('upload performance test setup changed; refusing blind patch')
-          tests = tests.replace(old_project, new_project, 1)
-
-          old_assert = '''    assert body["uploaded_count"] == 12
-              assert body["failed_count"] == 0
-
-              materials = MaterialRepository(app_module.project_dir(project_id))
-          '''
-          new_assert = '''    assert body["uploaded_count"] == 12
-              assert body["failed_count"] == 0
-              assert storage_manager_calls == 1
-              assert all(item.get("annotation_summary_at") for item in body["uploaded"])
-              assert all(item.get("annotation_state") == "unannotated" for item in body["uploaded"])
-
-              materials = MaterialRepository(app_module.project_dir(project_id))
-          '''
-          if old_assert not in tests:
-              raise SystemExit('upload performance test assertion block changed; refusing blind patch')
-          tests = tests.replace(old_assert, new_assert, 1)
+          assert_anchor = '''    assert body["uploaded_count"] == 12\n    assert body["failed_count"] == 0\n'''
+          if tests.count(assert_anchor) != 1:
+              raise SystemExit('upload performance test assertion anchor changed')
+          assert_extra = '''    assert storage_manager_calls == 1\n    assert all(item.get("annotation_summary_at") for item in body["uploaded"])\n    assert all(item.get("annotation_state") == "unannotated" for item in body["uploaded"])\n'''
+          tests = tests.replace(assert_anchor, assert_anchor + assert_extra, 1)
           test_path.write_text(tests, encoding='utf-8')
           PY
       - name: Install focused API dependencies
@@ -221,6 +148,7 @@ jobs:
           grep -Fq '"storage_manager": None' app.py
           grep -Fq 'def _v50_storage_manager(project_id: str) -> StorageManager:' app.py
           grep -Fq 'source_config = manager.sources.get(storage_source_id)' app.py
+          grep -Fq 'metadata = manager.upload_object(' app.py
           grep -Fq 'committed = _v50_end_image_batch(save=True)' app.py
           grep -Fq 'assert storage_manager_calls == 1' tests/api/test_upload_batch_performance_truth.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
