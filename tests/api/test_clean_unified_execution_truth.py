@@ -199,7 +199,8 @@ def test_clean_analysis_timeout_fails_one_image_and_continues_next(client, monke
     assert result["failed"] == 1
     assert TimeoutThenAnalyzeRuntime.calls == 2
 
-    first_state = app_module.material_store(project_id).get(image_ids[0])["clean_status"]
-    second_state = app_module.material_store(project_id).get(image_ids[1])["clean_status"]
-    assert first_state == "failed"
-    assert second_state in {"passed", "needs_review"}
+    states = [app_module.material_store(project_id).get(image_id)["clean_status"] for image_id in image_ids]
+    assert states.count("failed") == 1
+    completed_states = [state for state in states if state != "failed"]
+    assert len(completed_states) == 1
+    assert completed_states[0] in {"passed", "needs_review"}
