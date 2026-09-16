@@ -1,3 +1,5 @@
+import {canonicalTaskPhase, canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js';
+
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'pending', 'paused']);
 const DONE_STATUSES = new Set(['done', 'finished', 'completed', 'failed', 'stopped', 'cancelled', 'canceled']);
@@ -144,7 +146,7 @@ function priorityValue(job) {
 }
 
 function queueRuntimeMeta(job) {
-  const status = String(job?.status || '');
+  const status = trainingDisplayStatus(job);
   if (!['queued', 'waiting'].includes(status)) return '';
   const pool = String(job?.resource_pool_label || '').trim();
   const position = Number(job?.resource_queue_position || 0);
@@ -172,8 +174,8 @@ function workerRuntimeMeta(job) {
 }
 
 export function trainingStageView(job = {}) {
-  const status = String(job?.status || '').trim().toLowerCase();
-  const stage = String(job?.task_stage || job?.stage || '').trim().toLowerCase();
+  const status = trainingDisplayStatus(job);
+  const stage = canonicalTaskPhase(job);
   const currentItem = String(job?.current_item || '').trim();
   const message = String(job?.message || '').trim();
   let label = STAGE_LABELS[stage] || '';
@@ -222,11 +224,11 @@ function completionRuntimeMeta(job, progress) {
 }
 
 function terminalRuntimeMeta(job, stage) {
-  const status = String(job?.status || '').trim().toLowerCase();
+  const status = trainingDisplayStatus(job);
   if (['done', 'finished', 'completed'].includes(status)) return '';
   if (!DONE_STATUSES.has(status)) return '';
 
-  const taskStatus = String(job?.task_status || '').trim().toUpperCase();
+  const taskStatus = canonicalTaskStatus(job);
   const failureStage = String(job?.failure_stage || '').trim().toLowerCase();
   let label = '';
   if (taskStatus === 'BLOCKED_BY_ENVIRONMENT') label = '训练环境不可用';
@@ -243,23 +245,25 @@ function terminalRuntimeMeta(job, stage) {
 
 function actions(job) {
   const id = esc(job.id);
+  const status = trainingDisplayStatus(job);
   const detail = `<button class="btn mini" onclick="openTrainingRecoveryDetail('${id}')">详情</button>`;
-  if (job.status === 'queued' || job.status === 'waiting') return `${detail}<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  if (job.status === 'running') return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button><button class="btn mini" onclick="pauseTrain428('${id}')">暂停</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  if (job.status === 'paused') return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button><button class="btn mini primary" onclick="resumeTrain428('${id}')">继续</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
+  if (status === 'queued' || status === 'waiting') return `${detail}<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
+  if (status === 'running') return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button><button class="btn mini" onclick="pauseTrain428('${id}')">暂停</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
+  if (status === 'paused') return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button><button class="btn mini primary" onclick="resumeTrain428('${id}')">继续</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
   return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button>${job.auto_version_id ? `<button class="btn mini primary" onclick="trainingReport425('${id}')">训练报告</button>` : ''}<button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
 }
 
 export function trainingTaskRow(job) {
-  const percent = Math.max(0, Math.min(100, Number(job?.progress_percent || 0)));
+  const status = trainingDisplayStatus(job);
+  const percent = canonicalTaskProgressPercent(job);
   const progress = trainingProgressView(job);
   const totalEpochs = progress.totalEpochs ?? '-';
   const queueMeta = queueRuntimeMeta(job);
   const workerMeta = workerRuntimeMeta(job);
   const completionMeta = completionRuntimeMeta(job, progress);
   const stage = trainingStageView(job);
-  const done = DONE_STATUSES.has(String(job?.status || ''));
-  const successful = ['done', 'finished', 'completed'].includes(String(job?.status || ''));
+  const done = DONE_STATUSES.has(status);
+  const successful = ['done', 'finished', 'completed'].includes(status);
   const terminalMeta = terminalRuntimeMeta(job, stage);
   const epochStarted = Number(progress.epoch || 0) > 0;
   const recoveryMeta = job?.recovery?.available === true ? '可恢复 · Checkpoint 已保留' : '';
@@ -291,19 +295,23 @@ export function trainingTaskRow(job) {
     if (stage.detail) progressParts.push(stage.detail);
   }
 
-  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(job.status)}">${esc(statusText(job.status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${recoveryMeta ? `<small>${esc(recoveryMeta)}</small>` : ''}${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${esc(progressParts.join(' · '))}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td>${esc(duration(progress.elapsedSeconds))}</td><td>${esc(duration(progress.etaSeconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
+  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${recoveryMeta ? `<small>${esc(recoveryMeta)}</small>` : ''}${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${esc(progressParts.join(' · '))}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td>${esc(duration(progress.elapsedSeconds))}</td><td>${esc(duration(progress.etaSeconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
 }
 
 export function visibleTrainingJobs(jobs, tab = 'active') {
   const rows = Array.isArray(jobs) ? jobs : [];
   const filtered = tab === 'history'
-    ? rows.filter(job => DONE_STATUSES.has(job.status) || !ACTIVE_STATUSES.has(job.status))
-    : rows.filter(job => ACTIVE_STATUSES.has(job.status));
+    ? rows.filter(job => {
+        const status = trainingDisplayStatus(job);
+        return DONE_STATUSES.has(status) || !ACTIVE_STATUSES.has(status);
+      })
+    : rows.filter(job => ACTIVE_STATUSES.has(trainingDisplayStatus(job)));
   const rank = status => status === 'running' ? 0 : status === 'paused' ? 1 : status === 'waiting' ? 2 : status === 'queued' ? 3 : 4;
   return [...filtered].sort((a, b) => {
-    const ar = rank(a.status), br = rank(b.status);
+    const aStatus = trainingDisplayStatus(a), bStatus = trainingDisplayStatus(b);
+    const ar = rank(aStatus), br = rank(bStatus);
     if (ar !== br) return ar - br;
-    if (['queued', 'waiting'].includes(String(a.status))) return priorityValue(a) - priorityValue(b);
+    if (['queued', 'waiting'].includes(aStatus)) return priorityValue(a) - priorityValue(b);
     return String(b.started_at || b.created_at || '').localeCompare(String(a.started_at || a.created_at || ''));
   });
 }
@@ -368,8 +376,11 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       return false;
     }
     const jobs = state().jobs || [];
-    const active = jobs.filter(job => ACTIVE_STATUSES.has(job.status));
-    const history = jobs.filter(job => DONE_STATUSES.has(job.status) || !ACTIVE_STATUSES.has(job.status));
+    const active = jobs.filter(job => ACTIVE_STATUSES.has(trainingDisplayStatus(job)));
+    const history = jobs.filter(job => {
+      const status = trainingDisplayStatus(job);
+      return DONE_STATUSES.has(status) || !ACTIVE_STATUSES.has(status);
+    });
     const buttons = root.querySelectorAll?.('.train428-tabs button') || [];
     const activeCount = buttons[0]?.querySelector?.('span');
     const historyCount = buttons[1]?.querySelector?.('span');
@@ -491,7 +502,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       const pid = encodeURIComponent(projectId?.() || '');
       const encodedId = encodeURIComponent(id);
       const job = (state().jobs || []).find(item => String(item.id) === String(id));
-      if (job && ['running', 'paused', 'queued', 'waiting'].includes(job.status)) {
+      if (job && ['running', 'paused', 'queued', 'waiting'].includes(trainingDisplayStatus(job))) {
         const stopResponse = await nativeFetch(`/api/v48/projects/${pid}/jobs/${encodedId}/stop`, {method: 'POST'});
         const stopError = await responseError(stopResponse, '停止训练失败');
         if (stopError) throw stopError;

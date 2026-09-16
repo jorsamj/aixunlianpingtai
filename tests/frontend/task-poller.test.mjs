@@ -39,3 +39,11 @@ test('poller stops after a terminal backend state', async () => {
   assert.deepEqual(updates, ['RUNNING', 'AWAITING_CONFIRMATION']);
   assert.equal(timers.length, 0);
 });
+
+
+test('poller uses task_status and progress_percent as canonical backend truth', () => {
+  assert.equal(isTaskActive({status: 'completed', task_status: 'RUNNING'}), true);
+  assert.deepEqual(taskProgress({progress: 81, progress_percent: 19, completed_count: 90, total_count: 100}), {
+    percent: 19, completed: 90, total: 100, failed: 0
+  });
+});

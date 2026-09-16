@@ -1,12 +1,13 @@
-const STORAGE_KEY = 'aixunlian.material-batches.v62';
-const ACTIVE = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'CANCEL_REQUESTED']);
+import {canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js';
 
+const STORAGE_KEY = 'aixunlian.material-batches.v62';
 export function isMaterialBatchActive(value) {
-  return ACTIVE.has(String(value || '').toUpperCase());
+  return isCanonicalTaskActive(value);
 }
 
+
 export function materialBatchTaskText(task = {}) {
-  const status = String(task.status || '').toUpperCase();
+  const status = canonicalTaskStatus(task);
   const label = ({QUEUED:'排队中', WAITING_RESOURCE:'等待资源', RUNNING:'处理中', CANCEL_REQUESTED:'正在取消', AWAITING_CONFIRMATION:'等待确认', PARTIAL_SUCCESS:'部分成功', SUCCEEDED:'已完成', CANCELLED:'已取消', FAILED:'失败', BLOCKED_BY_ENVIRONMENT:'环境不可用', BLOCKED_BY_HARDWARE:'硬件不可用'})[status] || status || '未知';
   const queuePosition = Math.max(0, Number(task.resource_queue_position) || 0);
   const waitReason = String(task.resource_wait_reason || '').trim();
@@ -48,7 +49,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
 
   function remember(task) {
     const items = saved();
-    if (isMaterialBatchActive(task.status) || task.review_required) items[task.task_id] = {project_id: pid()};
+    if (isMaterialBatchActive(task) || task.review_required) items[task.task_id] = {project_id: pid()};
     else delete items[task.task_id];
     save(items);
   }
@@ -72,7 +73,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
         const task = await get(taskId);
         remember(task);
         announce(task);
-        if (isMaterialBatchActive(task.status)) {
+        if (isMaterialBatchActive(task)) {
           timers.set(taskId, setTimeout(tick, 1500));
         } else {
           timers.delete(taskId);

@@ -8,7 +8,7 @@ const LABELS = {
 };
 
 export function annotationTaskView(task = {}) {
-  const status = normalizeTaskStatus(task.status);
+  const status = normalizeTaskStatus(task);
   const progress = taskProgress(task);
   const summary = task.summary || {};
   const total = progress.total || Number(summary.total) || 0;

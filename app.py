@@ -98,6 +98,7 @@ from platform_core.storage.zip_import import (
 )
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
+from platform_core.training_job_projection import apply_training_task_truth
 from platform_core.task_runtime import (
     ArtifactStore,
     ProcessController,
@@ -854,22 +855,11 @@ def enrich_job_runtime(
             )
         if public_runtime["status"] == "WAITING_RESOURCE":
             mapped = "waiting"
+        apply_training_task_truth(job, public_runtime, legacy_status=mapped)
         job.update(
-            status=mapped,
-            progress_percent=float(durable.progress),
-            task_stage=durable.stage,
-            task_status=public_runtime["status"],
-            current_item=durable.current_item,
             result_ref=durable.result_ref or job.get("result_ref"),
             queue_priority=int(durable.priority),
             priority_scheme="lower_number_first",
-            resource_queue_position=public_runtime["resource_queue_position"],
-            resource_wait_reason=public_runtime["resource_wait_reason"],
-            resource_queue_position_exact=public_runtime.get("resource_queue_position_exact", False),
-            resource_pool_key=public_runtime.get("resource_pool_key", durable.resource_key),
-            resource_pool_label=public_runtime.get("resource_pool_label", "训练资源"),
-            task_worker_id=public_runtime["worker_id"],
-            task_lease_expires_at=public_runtime["lease_expires_at"],
         )
         if durable.error:
             job["error"] = durable.error

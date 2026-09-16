@@ -363,3 +363,32 @@ test('completed training below requested epochs is shown as early completion ins
   assert.match(html, /180\/300 · 100%/);
   assert.doesNotMatch(html, /训练中/);
 });
+
+
+test('training list and row use canonical task_status over stale legacy status', async () => {
+  const {trainingTaskRow, visibleTrainingJobs} = await import('../../static/modules/training-task-runtime.js');
+  const task = {
+    id: 'truth-1',
+    status: 'completed',
+    task_status: 'WAITING_RESOURCE',
+    persisted_status: 'QUEUED',
+    phase: 'resource_waiting',
+    task_stage: 'committed',
+    progress_percent: 12,
+    resource_pool_label: 'GPU 自动',
+    resource_wait_reason: 'GPU_MEMORY_BUSY',
+    resource_queue_position: 4,
+    resource_queue_position_exact: false,
+    framework: 'ultralytics',
+    total_epochs: 30,
+  };
+
+  assert.equal(visibleTrainingJobs([task], 'active').length, 1);
+  assert.equal(visibleTrainingJobs([task], 'history').length, 0);
+  const html = trainingTaskRow(task);
+  assert.match(html, /等待资源/);
+  assert.match(html, /GPU 自动/);
+  assert.match(html, /GPU_MEMORY_BUSY/);
+  assert.match(html, /12%/);
+  assert.doesNotMatch(html, /队列第 4 位/);
+});
