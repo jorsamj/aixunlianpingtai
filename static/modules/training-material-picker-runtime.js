@@ -1,6 +1,6 @@
 const DEFAULT_PAGE_SIZE = 60;
 const CACHE_LIMIT = 12;
-const THUMBNAIL_EAGER_COUNT = 6;
+const THUMBNAIL_EAGER_COUNT = 15;
 const THUMBNAIL_PRELOAD_MARGIN = 120;
 const IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
@@ -126,7 +126,7 @@ export function installTrainingMaterialPickerRuntime({
       `<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name || row.code)}</button>`
     )).join('');
     return `<div class="train-v3-picker server-paged">
-      <header><div><b>${title}</b><span>服务端分页 · 可视区域按需加载缩略图 · 批量选择由服务器解析</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
+      <header><div><b>${title}</b><span>服务端分页 · 滚动后按需加载更多缩略图 · 批量选择由服务器解析</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
       <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
       <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
       <div id="trV3Grid" class="train-v3-grid"></div>
@@ -179,12 +179,14 @@ export function installTrainingMaterialPickerRuntime({
     const grid = document.getElementById('trV3Grid');
     const images = [...document.querySelectorAll('#trV3Grid img[data-src]')];
     if (!grid || !images.length) return;
+    // First paint is deliberately capped. Do not run a geometry scan during
+    // modal opening: legacy page CSS can report every grid card as visible in
+    // the first layout pass and would immediately request the whole page.
     images.slice(0, THUMBNAIL_EAGER_COUNT).forEach(loadThumbnail);
     if (!grid.dataset.thumbnailScrollBound) {
       grid.dataset.thumbnailScrollBound = 'true';
       grid.addEventListener('scroll', scheduleVisibleThumbnailWindow, {passive: true});
     }
-    scheduleVisibleThumbnailWindow();
   }
 
   function renderSkeleton() {
@@ -429,7 +431,7 @@ export function installTrainingMaterialPickerRuntime({
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422502',
+    build: 'training-material-picker-runtime-422503',
     open,
     loadPage,
     bulkAction,
