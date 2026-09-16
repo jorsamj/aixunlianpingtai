@@ -12,6 +12,12 @@ def _load_oss2():
     return oss2
 
 
+def _object_conflict(error: Exception) -> bool:
+    status = getattr(error, "status", None) or getattr(error, "status_code", None)
+    code = str(getattr(error, "code", "") or "")
+    return status in {409, 412} or code in {"FileAlreadyExists", "PreconditionFailed", "ObjectAlreadyExists"}
+
+
 class OSSStorageProvider:
     storage_type = StorageType.OSS
 
@@ -20,6 +26,7 @@ class OSSStorageProvider:
         self.endpoint = str(config.get("endpoint") or "").strip()
         self.bucket_name = str(config.get("bucket") or "").strip()
         self.prefix = str(config.get("prefix") or "").strip("/")
+        self.protect_existing_objects = config.get("protect_existing_objects", True) is not False
         if not self.endpoint or not self.bucket_name:
             raise StorageError(code="STORAGE_CONFIG_INVALID", message="OSS 配置不完整", detail="Endpoint 和 Bucket 为必填项。", solution="请补全阿里云 OSS 配置。")
         try: oss2 = _load_oss2()
@@ -70,8 +77,21 @@ class OSSStorageProvider:
     def upload(self, object_key, source, *, content_type="application/octet-stream", metadata=None):
         stream = Path(source).open("rb") if isinstance(source, (str, Path)) else source; close = isinstance(source, (str, Path))
         headers = {"Content-Type": content_type, **{f"x-oss-meta-{key}": value for key, value in dict(metadata or {}).items()}}
-        try: self.bucket.put_object(self._key(object_key), stream, headers=headers); return self.stat(object_key)
-        except Exception as error: self._error("upload", error)
+        if self.protect_existing_objects:
+            headers["x-oss-forbid-overwrite"] = "true"
+        try:
+            self.bucket.put_object(self._key(object_key), stream, headers=headers)
+            return self.stat(object_key)
+        except Exception as error:
+            if self.protect_existing_objects and _object_conflict(error):
+                raise StorageError(
+                    code="STORAGE_OBJECT_EXISTS",
+                    message="远程素材对象已存在，禁止原地覆盖",
+                    detail=f"OSS 对象 {object_key} 已存在。",
+                    solution="请使用新的 object_key / 版本写入；如源内容确需变化，请重新扫描并确认素材变更。",
+                    context={"source_id": self.source_id, "object_key": str(object_key)},
+                ) from error
+            self._error("upload", error)
         finally:
             if close: stream.close()
 
@@ -81,31 +101,20 @@ class OSSStorageProvider:
 
     def list_objects(self, prefix="", *, recursive=True, cursor=None, limit=1000):
         try:
-            # 对外 cursor 始终使用去掉配置 Prefix 后的公共 object_key；
-            # OSS marker 则必须使用 Bucket 内真实完整 key，否则配置 Prefix 后翻页会重复/错位。
             marker = self._key(cursor) if cursor else ""
-            iterator = self.oss2.ObjectIterator(
-                self.bucket,
-                prefix=self._key(prefix),
-                marker=marker,
-                delimiter="" if recursive else "/",
-                max_keys=max(1, min(1000, int(limit))),
-            )
-            items = []
+            iterator = self.oss2.ObjectIterator(self.bucket, prefix=self._key(prefix), marker=marker, delimiter="" if recursive else "/", max_keys=max(1, min(1000, int(limit))))
+            items=[]
             for item in iterator:
                 if getattr(item, "is_prefix", lambda: False)(): continue
                 items.append(ObjectMetadata(key=self._public_key(item.key), size_bytes=int(item.size or 0), etag=str(item.etag or ""), last_modified=str(item.last_modified or "")))
-                if len(items) >= limit: break
-            return ObjectPage(tuple(items), items[-1].key if len(items) >= limit else None)
+                if len(items)>=limit: break
+            return ObjectPage(tuple(items), items[-1].key if len(items)>=limit else None)
         except Exception as error: self._error("list", error)
 
     def generate_preview_url(self, object_key, *, expires_seconds=900):
-        try: return self.bucket.sign_url("GET", self._key(object_key), max(1, min(3600, int(expires_seconds))))
+        try: return self.bucket.sign_url("GET", self._key(object_key), max(1,min(3600,int(expires_seconds))))
         except Exception as error: self._error("presign", error)
-
     def generate_upload_url(self, object_key, *, expires_seconds=900, content_type="application/octet-stream"):
         try: return self.bucket.sign_url("PUT", self._key(object_key), max(1, min(3600, int(expires_seconds))), headers={"Content-Type": content_type})
         except Exception as error: self._error("presign upload", error)
-
-    def materialize_to_local(self, object_key, destination): return self.download(object_key, destination)
-
+    def materialize_to_local(self, object_key, destination): return self.download(object_key,destination)
