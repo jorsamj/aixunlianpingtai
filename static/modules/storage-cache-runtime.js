@@ -2,6 +2,7 @@ import {buildStorageSourcePayload as hardenedBuildStorageSourcePayload} from './
 
 const REMOTE_TYPES = new Set(['oss', 's3', 'remote']);
 const OBJECT_STORE_TYPES = new Set(['oss', 's3']);
+const REPORT_HEARTBEAT_SKEW_MS = 5000;
 
 export function storageCacheTruth(source) {
   const type = String(source?.type || 'local');
@@ -101,8 +102,17 @@ export function materialCacheNodeRuntimeView(workers) {
       .filter(item => item && typeof item === 'object')
       .sort((a, b) => asTime(b?.reported_at) - asTime(a?.reported_at));
     const report = reports[0] || null;
+    const reporterWorker = report
+      ? nodeWorkers.find(item => item?.online === true && String(item?.worker_id || '') === String(report?.reporter_worker_id || ''))
+      : null;
+    const reportedAt = asTime(report?.reported_at);
+    const reporterHeartbeatAt = asTime(reporterWorker?.heartbeat_at);
     const reporterFresh = Boolean(
-      report && nodeWorkers.some(item => item?.online === true && String(item?.worker_id || '') === String(report?.reporter_worker_id || ''))
+      report
+      && reporterWorker
+      && reportedAt > 0
+      && reporterHeartbeatAt > 0
+      && reportedAt + REPORT_HEARTBEAT_SKEW_MS >= reporterHeartbeatAt
     );
     const snapshotView = materialCacheStatusView(report?.snapshot || null);
     let state = '未知';

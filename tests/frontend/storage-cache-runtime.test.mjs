@@ -128,3 +128,32 @@ test('cache report becomes stale when its reporter worker is no longer online', 
   assert.equal(view.unknownSnapshotNodeCount, 1);
   assert.equal(view.nodes[0].scopeLabel, '数据目录兼容缓存');
 });
+
+test('cache report becomes stale when reporter heartbeat advances but report hook stops advancing', () => {
+  const view = materialCacheNodeRuntimeView([
+    {
+      worker_id: 'worker-live', node_id: 'node-a', hostname: 'host-a', online: true,
+      heartbeat_at: '2026-09-16T01:05:00+00:00',
+      material_cache: {
+        reporter_worker_id: 'worker-live',
+        cache_scope: 'configured_cache_dir',
+        cache_root_source: 'MC_MATERIAL_CACHE_DIR',
+        reported_at: '2026-09-16T01:04:30+00:00',
+        snapshot: {
+          after_bytes: 4096,
+          max_bytes: 8192,
+          ttl_seconds: 86400,
+          scanned_files: 4,
+          evicted_files: 0,
+          generated_at: '2026-09-16T01:04:00+00:00',
+        },
+      },
+    },
+  ]);
+
+  assert.equal(view.nodes[0].online, true);
+  assert.equal(view.nodes[0].reporterFresh, false);
+  assert.equal(view.nodes[0].state, '上报已过期');
+  assert.equal(view.snapshotNodeCount, 0);
+  assert.equal(view.unknownSnapshotNodeCount, 1);
+});
