@@ -1,7 +1,7 @@
 const DEFAULT_PAGE_SIZE = 60;
 const CACHE_LIMIT = 12;
 const THUMBNAIL_EAGER_COUNT = 6;
-const THUMBNAIL_ROOT_MARGIN = '120px 0px';
+const THUMBNAIL_PRELOAD_MARGIN = 120;
 const IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
 function esc(value) {
@@ -55,7 +55,7 @@ export function installTrainingMaterialPickerRuntime({
   let requestSequence = 0;
   let searchTimer = null;
   let activeController = null;
-  let imageObserver = null;
+  let imageScrollFrame = null;
   const pageCache = new Map();
 
   function injectStyles() {
@@ -64,7 +64,7 @@ export function installTrainingMaterialPickerRuntime({
     style.id = 'training-material-picker-runtime-style';
     style.textContent = `
       .train-v3-picker.server-paged{min-height:64vh}
-      .train-v3-picker.server-paged .train-v3-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;max-height:60vh;min-height:420px;align-content:start;padding:4px 2px 10px;overflow:auto}
+      .train-v3-picker.server-paged .train-v3-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;height:clamp(420px,60vh,620px);max-height:none!important;min-height:0;align-content:start;padding:4px 2px 10px;overflow-y:auto!important;overflow-x:hidden;overscroll-behavior:contain}
       .train-v3-picker.server-paged .train-v3-card{position:relative;display:flex;flex-direction:column;min-width:0;padding:8px;border:1px solid #e3e8f0;border-radius:14px;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.04);overflow:hidden;transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}
       .train-v3-picker.server-paged .train-v3-card:hover{border-color:#bcc9da;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:translateY(-1px)}
       .train-v3-picker.server-paged .train-v3-card.on{border-color:#4f7cff;box-shadow:0 0 0 2px rgba(79,124,255,.12),0 8px 20px rgba(15,23,42,.08)}
@@ -80,7 +80,7 @@ export function installTrainingMaterialPickerRuntime({
       @keyframes trainPickerShimmer{to{background-position:-220% 0}}
       @media(max-width:1180px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
       @media(max-width:900px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
-      @media(max-width:620px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.train-v3-picker.server-paged .train-v3-card{padding:6px}}
+      @media(max-width:620px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;height:clamp(360px,56vh,520px)}.train-v3-picker.server-paged .train-v3-card{padding:6px}}
     `;
     document.head.appendChild(style);
   }
@@ -126,7 +126,7 @@ export function installTrainingMaterialPickerRuntime({
       `<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name || row.code)}</button>`
     )).join('');
     return `<div class="train-v3-picker server-paged">
-      <header><div><b>${title}</b><span>服务端分页 · 视口按需加载缩略图 · 批量选择由服务器解析</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
+      <header><div><b>${title}</b><span>服务端分页 · 可视区域按需加载缩略图 · 批量选择由服务器解析</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
       <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
       <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
       <div id="trV3Grid" class="train-v3-grid"></div>
@@ -135,9 +135,11 @@ export function installTrainingMaterialPickerRuntime({
     </div>`;
   }
 
-  function disconnectImageObserver() {
-    imageObserver?.disconnect?.();
-    imageObserver = null;
+  function cancelViewportFrame() {
+    if (imageScrollFrame != null && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(imageScrollFrame);
+    }
+    imageScrollFrame = null;
   }
 
   function loadThumbnail(image) {
@@ -148,30 +150,45 @@ export function installTrainingMaterialPickerRuntime({
     image.src = source;
   }
 
-  function attachViewportImages() {
-    disconnectImageObserver();
+  function loadVisibleThumbnailWindow() {
+    imageScrollFrame = null;
     const grid = document.getElementById('trV3Grid');
-    const images = [...document.querySelectorAll('#trV3Grid img[data-src]')];
-    if (!images.length) return;
-    images.slice(0, THUMBNAIL_EAGER_COUNT).forEach(loadThumbnail);
-    const deferred = images.slice(THUMBNAIL_EAGER_COUNT);
-    if (!deferred.length) return;
-    if (typeof window.IntersectionObserver !== 'function') {
-      deferred.forEach(loadThumbnail);
+    if (!grid) return;
+    const rootRect = grid.getBoundingClientRect();
+    const top = rootRect.top - THUMBNAIL_PRELOAD_MARGIN;
+    const bottom = rootRect.bottom + THUMBNAIL_PRELOAD_MARGIN;
+    document.querySelectorAll('#trV3Grid img[data-src]').forEach(image => {
+      if (image.dataset.thumbnailLoaded === '1') return;
+      const card = image.closest('.train-v3-card');
+      const rect = (card || image).getBoundingClientRect();
+      if (rect.bottom >= top && rect.top <= bottom) loadThumbnail(image);
+    });
+  }
+
+  function scheduleVisibleThumbnailWindow() {
+    if (imageScrollFrame != null) return;
+    if (typeof window.requestAnimationFrame !== 'function') {
+      loadVisibleThumbnailWindow();
       return;
     }
-    imageObserver = new window.IntersectionObserver(entries => {
-      entries.forEach(entry => {
-        if (!entry.isIntersecting) return;
-        loadThumbnail(entry.target);
-        imageObserver?.unobserve?.(entry.target);
-      });
-    }, {root: grid, rootMargin: THUMBNAIL_ROOT_MARGIN, threshold: 0.01});
-    deferred.forEach(image => imageObserver.observe(image));
+    imageScrollFrame = window.requestAnimationFrame(loadVisibleThumbnailWindow);
+  }
+
+  function attachViewportImages() {
+    cancelViewportFrame();
+    const grid = document.getElementById('trV3Grid');
+    const images = [...document.querySelectorAll('#trV3Grid img[data-src]')];
+    if (!grid || !images.length) return;
+    images.slice(0, THUMBNAIL_EAGER_COUNT).forEach(loadThumbnail);
+    if (!grid.dataset.thumbnailScrollBound) {
+      grid.dataset.thumbnailScrollBound = 'true';
+      grid.addEventListener('scroll', scheduleVisibleThumbnailWindow, {passive: true});
+    }
+    scheduleVisibleThumbnailWindow();
   }
 
   function renderSkeleton() {
-    disconnectImageObserver();
+    cancelViewportFrame();
     const grid = document.getElementById('trV3Grid');
     if (!grid) return;
     grid.innerHTML = Array.from({length: 15}, () => '<div class="train-v3-skeleton" aria-hidden="true"></div>').join('');
@@ -202,7 +219,8 @@ export function installTrainingMaterialPickerRuntime({
     if (!picker) return;
     const grid = document.getElementById('trV3Grid');
     if (!grid) return;
-    disconnectImageObserver();
+    cancelViewportFrame();
+    grid.scrollTop = 0;
     const blocked = blockedIds(picker.role);
     grid.innerHTML = picker.items.map((row, index) => {
       const id = String(row.id || '');
@@ -331,7 +349,7 @@ export function installTrainingMaterialPickerRuntime({
   async function open(role) {
     const pid = projectId();
     if (!pid) return notify('当前项目不存在');
-    disconnectImageObserver();
+    cancelViewportFrame();
     injectStyles();
     picker = {
       role: role === 'test' ? 'test' : 'train',
@@ -411,7 +429,7 @@ export function installTrainingMaterialPickerRuntime({
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422501',
+    build: 'training-material-picker-runtime-422502',
     open,
     loadPage,
     bulkAction,
