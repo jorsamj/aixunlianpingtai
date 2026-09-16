@@ -36,6 +36,10 @@ test('training material picker opens immediately, renders larger previews, and p
     if (url.pathname.startsWith('/thumb/')) thumbnailRequests.push(url.pathname);
   });
 
+  let releaseFirstPage;
+  const firstPageGate = new Promise(resolve => { releaseFirstPage = resolve; });
+  let firstPageHeld = true;
+
   await page.route('**/thumb/*.png', route => route.fulfill({status: 200, contentType: 'image/png', body: PIXEL}));
   await page.route('**/full/*.png', route => route.fulfill({status: 200, contentType: 'image/png', body: PIXEL}));
   await page.route(`**/api/v62/projects/${encoded}/training-materials?*`, async route => {
@@ -43,7 +47,10 @@ test('training material picker opens immediately, renders larger previews, and p
     const cursor = url.searchParams.get('cursor');
     const query = url.searchParams.get('query') || '';
     const isSecond = cursor === 'page-2';
-    if (!cursor && !query) await new Promise(resolve => setTimeout(resolve, 250));
+    if (!cursor && !query && firstPageHeld) {
+      firstPageHeld = false;
+      await firstPageGate;
+    }
     const rows = Array.from({length: query ? 8 : 60}, (_, index) => material(index, isSecond ? 2 : 1));
     await route.fulfill({
       status: 200,
@@ -75,6 +82,9 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.evaluate(() => { window.openTrainMaterialPickerV3('train'); });
   await expect(page.locator('.train-v3-picker.server-paged')).toBeVisible({timeout: 1_000});
   await expect(page.locator('.train-v3-skeleton').first()).toBeVisible({timeout: 1_000});
+  expect(await page.locator('.train-v3-card').count()).toBe(0);
+
+  releaseFirstPage();
   await expect(page.locator('.train-v3-card')).toHaveCount(60, {timeout: 5_000});
   await expect(page.locator('#trV3PickerCount')).toContainText('筛选结果 10000 张');
   await expect(page.locator('#trV3PageMeta')).toContainText('当前页 60 张');
