@@ -13,18 +13,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec:
-          - navigation-stability.spec.mjs
-          - navigation-readiness.spec.mjs
-          - training-label-selector.spec.mjs
-          - auto-label-polling.spec.mjs
-          - algorithm-list-performance.spec.mjs
-          - training-task-performance.spec.mjs
-          - material-pagination-performance.spec.mjs
-          - source-import-completion-scope.spec.mjs
+        case:
+          - 'ZIP import completion surfaces review action'
+          - 'ZIP import completion uses scoped label'
+          - 'base modal post-open content refresh'
+          - 'server storage import confirmation avoids broad related refresh'
+          - 'formal version marker stays stable'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    name: ${{ matrix.spec }}
+    name: ${{ matrix.case }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,4 +38,4 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Run isolated browser case
-        run: npx playwright test tests/browser/${{ matrix.spec }}
+        run: npx playwright test tests/browser/navigation-stability.spec.mjs --grep "${{ matrix.case }}"
