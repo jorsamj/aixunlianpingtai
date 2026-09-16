@@ -52,10 +52,10 @@ jobs:
           tests/integration/test_training_input_integrity_chain.py
       - name: Existing JPEG and cache isolation guards
         run: >-
-          python -m pytest --confcutdir=tests/unit --basetemp=.pytest-unit-tmp -q
+          python -m pytest --disable-plugin-autoload --confcutdir=tests/unit --basetemp=.pytest-unit-tmp -q
           tests/unit/test_training_bundle_isolation.py
           tests/unit/test_training_bundle_cache.py
       - name: Mixed JPEG to cache to task restore integration chain
         run: >-
-          python -m pytest --confcutdir=tests/integration --basetemp=.pytest-integration-tmp -q
+          python -m pytest --disable-plugin-autoload --confcutdir=tests/integration --basetemp=.pytest-integration-tmp -q
           tests/integration/test_training_input_integrity_chain.py
