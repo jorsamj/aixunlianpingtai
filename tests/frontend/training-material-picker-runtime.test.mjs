@@ -40,18 +40,23 @@ test('training picker keeps TrainingDraftRuntime as the selection truth owner', 
 test('picker UI uses larger bounded preview cards rather than a dense thumbnail strip', () => {
   assert.match(source, /repeat\(5,minmax\(0,1fr\)\)/);
   assert.match(source, /aspect-ratio:4\/3/);
+  assert.match(source, /height:clamp\(420px,60vh,620px\)/);
+  assert.match(source, /overflow-y:auto!important/);
   assert.match(source, /Array\.from\(\{length: 15\}/);
   assert.match(source, /pageCache\.size > CACHE_LIMIT/);
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
 });
 
-test('picker only activates thumbnails near the visible grid', () => {
+test('picker only activates thumbnails inside the bounded scroll viewport', () => {
   assert.match(source, /THUMBNAIL_EAGER_COUNT = 6/);
-  assert.match(source, /THUMBNAIL_ROOT_MARGIN = '120px 0px'/);
+  assert.match(source, /THUMBNAIL_PRELOAD_MARGIN = 120/);
   assert.match(source, /data-src="\$\{esc\(thumbnail\)\}"/);
-  assert.match(source, /window\.IntersectionObserver/);
+  assert.match(source, /getBoundingClientRect\(\)/);
+  assert.match(source, /requestAnimationFrame/);
+  assert.match(source, /addEventListener\('scroll', scheduleVisibleThumbnailWindow/);
   assert.match(source, /viewportThumbnailLoading: true/);
   assert.match(source, /eagerThumbnailCount: THUMBNAIL_EAGER_COUNT/);
+  assert.doesNotMatch(source, /IntersectionObserver/);
 });
 
 test('large bulk selection has a single server owner', () => {
