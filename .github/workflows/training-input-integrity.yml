@@ -41,7 +41,7 @@ jobs:
       - name: Install focused integrity dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest pillow pyyaml filelock
+          pytest pillow pyyaml filelock requests
       - name: Compile training input integrity chain
         run: >-
           python -m py_compile
