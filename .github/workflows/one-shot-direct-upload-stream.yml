@@ -32,7 +32,39 @@ jobs:
           path = Path('app.py')
           text = path.read_text(encoding='utf-8')
 
-          start = text.index('def add_image_record(')
+          marker = 'def add_image_record('
+          start = text.index(marker)
+          helper = '\n'.join([
+              'class _NonClosingImageStream:',
+              '    """Let Pillow inspect a caller-owned stream without closing it."""',
+              '    def __init__(self, stream):',
+              '        self._stream = stream',
+              '',
+              '    def read(self, *args, **kwargs):',
+              '        return self._stream.read(*args, **kwargs)',
+              '',
+              '    def seek(self, *args, **kwargs):',
+              '        return self._stream.seek(*args, **kwargs)',
+              '',
+              '    def tell(self):',
+              '        return self._stream.tell()',
+              '',
+              '    def readline(self, *args, **kwargs):',
+              '        return self._stream.readline(*args, **kwargs)',
+              '',
+              '    def close(self):',
+              '        return None',
+              '',
+              '    def __getattr__(self, name):',
+              '        return getattr(self._stream, name)',
+              '',
+              '',
+          ])
+          if 'class _NonClosingImageStream:' in text:
+              raise SystemExit('direct-stream helper already exists unexpectedly')
+          text = text[:start] + helper + text[start:]
+
+          start = text.index(marker)
           end = text.index('\ndef zip_dir(', start)
           body = text[start:end]
 
@@ -67,7 +99,7 @@ jobs:
               '            info = image_info(Path(src))',
               '        else:',
               '            src.seek(0)',
-              '            image = Image.open(src)',
+              '            image = Image.open(_NonClosingImageStream(src))',
               '            try:',
               '                info = {"width": image.width, "height": image.height}',
               '            finally:',
@@ -190,6 +222,11 @@ jobs:
                   assertion_anchor + '    assert direct_stream_sources == [True] * 12\n',
                   1,
               )
+          tests = tests.replace(
+              '    assert body["uploaded_count"] == 12\n',
+              '    assert body["uploaded_count"] == 12, body\n',
+              1,
+          )
           test_path.write_text(tests, encoding='utf-8')
           PY
       - name: Install focused API dependencies
@@ -208,7 +245,9 @@ jobs:
       - name: Permanent invariants before commit
         shell: bash
         run: |
+          grep -Fq 'class _NonClosingImageStream:' app.py
           grep -Fq 'path_source = isinstance(src, (str, Path))' app.py
+          grep -Fq 'Image.open(_NonClosingImageStream(src))' app.py
           grep -Fq 'await file.seek(0)' app.py
           grep -Fq 'stream = file.file' app.py
           if grep -Fq 'p / "imports" / f"upload_' app.py; then
