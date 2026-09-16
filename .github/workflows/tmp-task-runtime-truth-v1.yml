@@ -36,7 +36,7 @@ jobs:
           tests/unit/test_training_job_projection.py
       - name: Backend truth tests
         run: >-
-          python -m pytest -q
+          python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_training_job_projection.py
           tests/unit/task_runtime/test_public_projection.py
       - name: Frontend truth tests
