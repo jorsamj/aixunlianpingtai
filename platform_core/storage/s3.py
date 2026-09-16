@@ -12,6 +12,15 @@ def _load_boto3():
     return boto3
 
 
+def _object_conflict(error: Exception) -> bool:
+    response = getattr(error, "response", {}) or {}
+    error_info = response.get("Error") or {}
+    metadata = response.get("ResponseMetadata") or {}
+    code = str(error_info.get("Code") or "")
+    status = metadata.get("HTTPStatusCode")
+    return status in {409, 412} or code in {"PreconditionFailed", "ConditionalRequestConflict", "ObjectAlreadyExists"}
+
+
 class S3StorageProvider:
     storage_type = StorageType.S3
 
@@ -22,6 +31,7 @@ class S3StorageProvider:
         self.region = str(config.get("region") or "").strip() or None
         self.prefix = str(config.get("prefix") or "").strip("/")
         self.use_ssl = bool(config.get("use_ssl", True))
+        self.protect_existing_objects = config.get("protect_existing_objects", True) is not False
         if not self.bucket:
             raise StorageError(code="STORAGE_CONFIG_INVALID", message="S3 配置不完整", detail="Bucket 为必填项。", solution="请补全 S3 存储配置。")
         try:
@@ -65,8 +75,7 @@ class S3StorageProvider:
             self._error("stat", error)
 
     def exists(self, object_key: str) -> bool:
-        try:
-            self.client.head_object(Bucket=self.bucket, Key=self._key(object_key)); return True
+        try: self.client.head_object(Bucket=self.bucket, Key=self._key(object_key)); return True
         except Exception as error:
             response = getattr(error, "response", {}) or {}
             if str((response.get("Error") or {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
@@ -74,10 +83,8 @@ class S3StorageProvider:
             self._error("exists", error)
 
     def open_reader(self, object_key: str) -> BinaryIO:
-        try:
-            return self.client.get_object(Bucket=self.bucket, Key=self._key(object_key))["Body"]
-        except Exception as error:
-            self._error("read", error)
+        try: return self.client.get_object(Bucket=self.bucket, Key=self._key(object_key))["Body"]
+        except Exception as error: self._error("read", error)
 
     def download(self, object_key: str, destination: str | Path) -> ObjectMetadata:
         target = Path(destination); target.parent.mkdir(parents=True, exist_ok=True)
@@ -92,9 +99,27 @@ class S3StorageProvider:
         stream = Path(source).open("rb") if isinstance(source, (str, Path)) else source
         close = isinstance(source, (str, Path))
         try:
-            self.client.upload_fileobj(stream, self.bucket, self._key(object_key), ExtraArgs={"ContentType": content_type, "Metadata": dict(metadata or {})})
+            if self.protect_existing_objects:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Key=self._key(object_key),
+                    Body=stream,
+                    ContentType=content_type,
+                    Metadata=dict(metadata or {}),
+                    IfNoneMatch="*",
+                )
+            else:
+                self.client.upload_fileobj(stream, self.bucket, self._key(object_key), ExtraArgs={"ContentType": content_type, "Metadata": dict(metadata or {})})
             return self.stat(object_key)
         except Exception as error:
+            if self.protect_existing_objects and _object_conflict(error):
+                raise StorageError(
+                    code="STORAGE_OBJECT_EXISTS",
+                    message="远程素材对象已存在，禁止原地覆盖",
+                    detail=f"S3 对象 {object_key} 已存在。",
+                    solution="请使用新的 object_key / 版本写入；如源内容确需变化，请重新扫描并确认素材变更。",
+                    context={"source_id": self.source_id, "object_key": str(object_key)},
+                ) from error
             self._error("upload", error)
         finally:
             if close: stream.close()
@@ -123,4 +148,3 @@ class S3StorageProvider:
 
     def materialize_to_local(self, object_key: str, destination: str | Path) -> ObjectMetadata:
         return self.download(object_key, destination)
-
