@@ -1,102 +1,41 @@
-name: Temporary Task Runtime Truth V2 Cleanup
+name: Temporary Task Runtime Truth V2 Handoff
 
 on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
     paths:
-      - .github/workflows/tmp-task-runtime-truth-v2-closure.yml
       - scripts/tmp_task_runtime_truth_v2_patch.py
+      - .github/workflows/tmp-task-runtime-truth-v2-closure.yml
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  cleanup-v2:
+  handoff:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: refactor/frontend-runtime-stabilization
-      - name: Refresh durable current-state handoff
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('docs/CODEX_CURRENT_STATE.md')
-          text = path.read_text(encoding='utf-8')
-
-          old = '''Each training task still receives its own `work/bundle`; the trainer never runs
-directly inside the shared cache. Reuse hard-links immutable image files when
-the OS/filesystem permits it, while labels, hidden test ground truth, Snapshot,
-YAML and manifest are copied into the task bundle. `os.link()` is cross-platform
-and any hard-link failure (including cross-device filesystems) falls back to a
-normal copy. The finalization gate still re-hashes the task bundle on every run
-before accepting the model artifact.'''
-          new = '''Each training task still receives its own `work/bundle`; the trainer never runs
-directly inside the shared cache. Cache schema v3 restores trainer-writable image
-inputs with `shutil.copy2()` rather than writable hard-links, so Ultralytics or
-other trainer-side mutations cannot modify the persistent cache inode. Legacy
-schema-v2 cache entries are fenced because their prior hard-link isolation cannot
-be assumed clean. The finalization gate still re-hashes the task bundle on every
-run before accepting the model artifact.'''
-          if old in text:
-              text = text.replace(old, new, 1)
-          elif new not in text:
-              raise SystemExit('training cache lifecycle paragraph no longer matches expected durable text')
-
-          marker = '> First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.\n'
-          section = '''
-
-## Current closure — Task Runtime Truth v2 CLOSED
-
-Product implementation: `cc8981888bc4b27ee9594290455bd08e61713c9d`.
-Permanent Task Runtime Truth gate expansion: `38aa8f736ee11ae419042fa2e90127bd45937ac5`.
-Formal `VERSION.txt` remains `42.24.0`.
-
-The shared durable-task frontend contract now covers training, AI annotation,
-material batches, storage scan/import, server material import, resource discovery,
-video processing, and deployment tests. For those durable payloads, `task_status`
-wins over compatibility `status`, `phase` wins over `task_stage` / `stage`, and
-`progress_percent` wins over legacy `progress`; the browser does not derive a
-new durable percentage from domain counters.
-
-A numeric `resource_queue_position` is displayed as “队列第 N 位” only when the
-backend also returns `resource_queue_position_exact === true`. Candidate order,
-priority order, or an inexact numeric position is never presented as an exact
-Worker/hardware queue position. Domain-specific diagnostics such as scanned file
-counts, extracted bytes, current paths, and wait reasons remain visible.
-
-The permanent `Task Runtime Truth` workflow runs the expanded backend/frontend
-contract on both Ubuntu and Windows. The closure run passed both OS jobs, and the
-existing Frontend Runtime workflow passed frontend unit/owner guards plus Real
-Chrome runtime regressions. Cleaning is intentionally not included because its
-page still consumes a legacy compatibility business object; that migration must
-change backend compatibility projection and frontend consumption together.
-
-Detailed handoff: `docs/CODEX_HANDOFF_2026-09-16_TASK_RUNTIME_TRUTH_V2.md`.
-'''
-          if '## Current closure — Task Runtime Truth v2 CLOSED' not in text:
-              if marker not in text:
-                  raise SystemExit('CODEX_CURRENT_STATE header marker not found')
-              text = text.replace(marker, marker + section, 1)
-
-          path.write_text(text, encoding='utf-8')
-          PY
-      - name: Remove temporary closure machinery
-        shell: bash
-        run: |
-          git rm scripts/tmp_task_runtime_truth_v2_patch.py
-          git rm .github/workflows/tmp-task-runtime-truth-v2-closure.yml
-      - name: Commit cleanup and handoff
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Refresh durable current state
+        run: python scripts/tmp_task_runtime_truth_v2_patch.py
+      - name: Validate handoff diff
+        run: git diff --check
+      - name: Commit durable handoff
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/CODEX_CURRENT_STATE.md
-          git diff --check
-          git commit -m "chore(runtime): finalize task truth v2 closure"
+          if git diff --cached --quiet; then
+            echo "No handoff changes to commit"
+            exit 0
+          fi
+          git commit -m "docs(runtime): record task truth v2 closure"
           git push origin HEAD:refactor/frontend-runtime-stabilization
