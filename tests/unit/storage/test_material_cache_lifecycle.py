@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -99,3 +100,24 @@ def test_material_cache_lifecycle_can_be_configured_from_environment(tmp_path, m
     assert cache.ttl_seconds == 456
     assert cache.maintenance_interval_seconds == 7
     assert cache.recent_access_grace_seconds == 8
+
+
+def test_material_cache_maintenance_publishes_compact_observability_snapshot(tmp_path):
+    cache = MaterialCache(
+        tmp_path / "cache",
+        max_bytes=1024,
+        ttl_seconds=3600,
+        maintenance_interval_seconds=0,
+        recent_access_grace_seconds=0,
+    )
+    _cached(cache, b"visible")
+
+    result = cache.maintain(now_ns=5_000_000_000_000)
+    status = json.loads((cache.root / "status.json").read_text(encoding="utf-8"))
+
+    assert status["cache_scope"] == "worker_local"
+    assert status["cache_kind"] == "remote_material_content"
+    assert status["after_bytes"] == result["after_bytes"]
+    assert status["max_bytes"] == 1024
+    assert status["ttl_seconds"] == 3600
+    assert status["generated_at"]
