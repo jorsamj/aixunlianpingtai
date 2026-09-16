@@ -86,5 +86,31 @@ def test_cleaning_reuses_verified_material_hash(tmp_path, monkeypatch):
     assert metrics["analysis_downsampled"] is False
 
 
+def test_large_cleaning_reuses_bounded_raster_for_dhash(tmp_path, monkeypatch):
+    path = tmp_path / "large-for-test.png"
+    Image.new("RGB", (400, 300), "gray").save(path)
+
+    import platform_core.cleaning as cleaning
+
+    # Force the bounded path with a small fixture. The large-image path must not
+    # reopen the original source through dhash(path) after creating its bounded raster.
+    monkeypatch.setattr(cleaning, "MAX_ANALYSIS_PIXELS", 10_000)
+
+    def unexpected_full_source_dhash(_path: Path):
+        raise AssertionError("large-image cleaning must reuse the bounded raster for dHash")
+
+    monkeypatch.setattr(cleaning, "dhash", unexpected_full_source_dhash)
+    metrics = cleaning.image_metrics(
+        path,
+        require_blur=False,
+        content_sha256="b" * 64,
+    )
+
+    assert metrics["analysis_downsampled"] is True
+    assert metrics["width"] == 400
+    assert metrics["height"] == 300
+    assert isinstance(metrics["dhash"], int)
+
+
 def test_cleaning_has_bounded_large_image_analysis_contract():
     assert MAX_ANALYSIS_PIXELS == 16_000_000
