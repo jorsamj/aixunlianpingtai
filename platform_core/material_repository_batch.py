@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterable
 from contextlib import closing
+from pathlib import Path
 from typing import Any, Mapping
 
+from .annotation_repository import AnnotationRepository
 from .material_repository import MaterialRepository, normalize_material
 from .material_selection import MaterialFilters
 
@@ -16,6 +19,54 @@ MUTABLE_MATERIAL_FIELDS = frozenset({
     "annotation_preview", "annotation_summary_at", "negative_sample",
     "cleaned_at", "updated_at", "width", "height", "dataset_id",
 })
+
+# App-level upload paths construct repositories once per image. Schema creation
+# and migration checks are correct but needlessly expensive when repeated
+# hundreds or thousands of times for the same project in one process. Keep the
+# first constructor authoritative, then fast-path later constructors only while
+# the same database file still exists. A process restart intentionally clears
+# this cache so deployment/schema upgrades are rechecked.
+_REPOSITORY_INIT_GUARD = threading.RLock()
+_MATERIAL_INIT_READY: set[Path] = set()
+_ANNOTATION_INIT_READY: set[Path] = set()
+
+
+def _install_repository_initialization_cache() -> None:
+    if not getattr(MaterialRepository, "_schema_init_cache_installed", False):
+        original_material_init = MaterialRepository.__init__
+
+        def cached_material_init(self, project_path):
+            project = Path(project_path)
+            database_path = project / "materials.sqlite3"
+            key = database_path.resolve()
+            with _REPOSITORY_INIT_GUARD:
+                if key in _MATERIAL_INIT_READY and database_path.is_file():
+                    self.project_path = project
+                    self.path = database_path
+                    return
+                original_material_init(self, project)
+                _MATERIAL_INIT_READY.add(self.path.resolve())
+
+        MaterialRepository.__init__ = cached_material_init
+        MaterialRepository._schema_init_cache_installed = True
+
+    if not getattr(AnnotationRepository, "_schema_init_cache_installed", False):
+        original_annotation_init = AnnotationRepository.__init__
+
+        def cached_annotation_init(self, project_path):
+            project = Path(project_path)
+            database_path = project / "annotations.sqlite3"
+            key = database_path.resolve()
+            with _REPOSITORY_INIT_GUARD:
+                if key in _ANNOTATION_INIT_READY and database_path.is_file():
+                    self.project_path = project
+                    self.path = database_path
+                    return
+                original_annotation_init(self, project)
+                _ANNOTATION_INIT_READY.add(self.path.resolve())
+
+        AnnotationRepository.__init__ = cached_annotation_init
+        AnnotationRepository._schema_init_cache_installed = True
 
 
 def _unique_ids(values: Iterable[object]) -> list[str]:
@@ -384,6 +435,7 @@ def _chunked_mutate(self: MaterialRepository, fn):
 
 
 def install_material_repository_batch_guards() -> None:
+    _install_repository_initialization_cache()
     if getattr(MaterialRepository, "_large_id_guards_installed", False):
         return
     MaterialRepository.get_many = _chunked_get_many
