@@ -20,6 +20,7 @@ from .errors import StorageError
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CACHE_FILE = re.compile(r"^([0-9a-f]{64})(\.[a-z0-9]{1,12}|\.bin)$")
 _STATUS_NAME = "status.json"
+MATERIAL_CACHE_DIR_ENV = "MC_MATERIAL_CACHE_DIR"
 MATERIAL_CACHE_MAX_BYTES_ENV = "MATERIAL_CACHE_MAX_BYTES"
 MATERIAL_CACHE_TTL_SECONDS_ENV = "MATERIAL_CACHE_TTL_SECONDS"
 MATERIAL_CACHE_MAINTENANCE_INTERVAL_SECONDS_ENV = "MATERIAL_CACHE_MAINTENANCE_INTERVAL_SECONDS"
@@ -28,6 +29,36 @@ DEFAULT_MATERIAL_CACHE_MAX_BYTES = 128 * 1024 * 1024 * 1024
 DEFAULT_MATERIAL_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
 DEFAULT_MATERIAL_CACHE_MAINTENANCE_INTERVAL_SECONDS = 5 * 60
 DEFAULT_MATERIAL_CACHE_RECENT_ACCESS_GRACE_SECONDS = 10 * 60
+
+
+@dataclass(frozen=True)
+class MaterialCacheLocation:
+    root: Path
+    cache_scope: str
+    cache_root_source: str
+
+
+def resolve_material_cache_location(data_dir: str | Path) -> MaterialCacheLocation:
+    """Resolve the material-content cache independently from durable platform data.
+
+    Production nodes may keep ``MC_TRAIN_DATA_DIR`` on shared storage while
+    placing ``MC_MATERIAL_CACHE_DIR`` on node-local SSD/NVMe.  Without an
+    explicit cache directory we preserve the historical data-dir layout, but
+    describe it truthfully as data-dir scoped instead of claiming it is local.
+    """
+
+    configured = str(os.environ.get(MATERIAL_CACHE_DIR_ENV) or "").strip()
+    if configured:
+        return MaterialCacheLocation(
+            root=Path(configured).expanduser().resolve(),
+            cache_scope="configured_cache_dir",
+            cache_root_source=MATERIAL_CACHE_DIR_ENV,
+        )
+    return MaterialCacheLocation(
+        root=(Path(data_dir).expanduser().resolve() / "cache" / "materials"),
+        cache_scope="data_dir_cache",
+        cache_root_source="data_dir",
+    )
 
 
 def _configured_non_negative_int(name: str, default: int, override: int | None) -> int:
@@ -65,13 +96,14 @@ class _CacheCandidate:
 
 
 class MaterialCache:
-    """Worker-local, content-addressed cache for remote material objects.
+    """Content-addressed cache for remote material objects.
 
     Cached payloads are immutable by SHA256. File mtime is intentionally used as
     mutable access metadata so lifecycle maintenance does not need one sidecar per
     object. Cleanup is best-effort and always respects the same per-object lock as
     materialization. A compact status snapshot is published after maintenance so
-    the UI can expose cache truth without rescanning the cache on every page view.
+    runtime observability can expose cache truth without rescanning the cache on
+    every page view.
     """
 
     def __init__(
@@ -82,8 +114,12 @@ class MaterialCache:
         ttl_seconds: int | None = None,
         maintenance_interval_seconds: int | None = None,
         recent_access_grace_seconds: int | None = None,
+        cache_scope: str = "explicit_root",
+        cache_root_source: str = "constructor",
     ) -> None:
         self.root = Path(root).resolve()
+        self.cache_scope = str(cache_scope or "explicit_root")
+        self.cache_root_source = str(cache_root_source or "constructor")
         self.max_bytes = _configured_non_negative_int(
             MATERIAL_CACHE_MAX_BYTES_ENV,
             DEFAULT_MATERIAL_CACHE_MAX_BYTES,
@@ -187,8 +223,10 @@ class MaterialCache:
             temporary = self.root / f".{_STATUS_NAME}.{uuid.uuid4().hex}.tmp"
             body = {
                 **payload,
+                "schema_version": 2,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "cache_scope": "worker_local",
+                "cache_scope": self.cache_scope,
+                "cache_root_source": self.cache_root_source,
                 "cache_kind": "remote_material_content",
             }
             temporary.write_text(

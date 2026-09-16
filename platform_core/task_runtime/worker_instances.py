@@ -7,10 +7,10 @@ import json
 import os
 import socket
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import psutil
 
@@ -111,9 +111,23 @@ class WorkerInstanceLease:
     pid: int
     lease_seconds: int
     expires_at: str
+    renew_hooks: list[Callable[[], None]] = field(default_factory=list, repr=False)
+
+    def add_renew_hook(self, hook: Callable[[], None]) -> None:
+        if not callable(hook):
+            raise TypeError("worker renew hook must be callable")
+        self.renew_hooks.append(hook)
 
     def renew(self) -> None:
         self.expires_at = self.service.renew(self.instance_key, self.owner_token, self.lease_seconds)
+        # Observability hooks piggyback the one existing Worker heartbeat. They
+        # are best-effort and may never turn a healthy Worker lease into a task
+        # outage merely because cache-status reporting failed.
+        for hook in tuple(self.renew_hooks):
+            try:
+                hook()
+            except Exception:
+                continue
 
     def release(self) -> bool:
         return self.service.release(self.instance_key, self.owner_token)
@@ -225,26 +239,36 @@ class WorkerInstanceService:
                  ORDER BY worker_id ASC, instance_key ASC
                 """
             ).fetchall()
+        try:
+            from ..storage.material_cache_runtime import load_node_cache_reports
+
+            cache_reports = load_node_cache_reports(self.repository)
+        except Exception:
+            # Worker runtime remains available even if optional cache
+            # observability storage is absent or temporarily unreadable.
+            cache_reports = {}
         result: list[dict[str, object]] = []
         for row in rows:
             heartbeat = _utc_datetime(str(row["heartbeat_at"]))
             expiry = _utc_datetime(str(row["expires_at"]))
-            result.append(
-                {
-                    "worker_id": str(row["worker_id"]),
-                    "node_id": str(row["node_id"]),
-                    "hostname": str(row["hostname"]),
-                    "pid": int(row["pid"]),
-                    "build_id": str(row["build_id"]),
-                    "roles": _json_values(row["roles"]),
-                    "task_kinds": _json_values(row["task_kinds"]),
-                    "capabilities": _json_values(row["capabilities"]),
-                    "started_at": str(row["started_at"]),
-                    "heartbeat_at": str(row["heartbeat_at"]),
-                    "expires_at": str(row["expires_at"]),
-                    "online": heartbeat is not None and expiry is not None and expiry > current,
-                }
-            )
+            item: dict[str, object] = {
+                "worker_id": str(row["worker_id"]),
+                "node_id": str(row["node_id"]),
+                "hostname": str(row["hostname"]),
+                "pid": int(row["pid"]),
+                "build_id": str(row["build_id"]),
+                "roles": _json_values(row["roles"]),
+                "task_kinds": _json_values(row["task_kinds"]),
+                "capabilities": _json_values(row["capabilities"]),
+                "started_at": str(row["started_at"]),
+                "heartbeat_at": str(row["heartbeat_at"]),
+                "expires_at": str(row["expires_at"]),
+                "online": heartbeat is not None and expiry is not None and expiry > current,
+            }
+            cache_report = cache_reports.get(str(row["node_id"]))
+            if cache_report is not None:
+                item["material_cache"] = cache_report
+            result.append(item)
         return result
 
     def renew(self, instance_key: str, owner_token: str, lease_seconds: int = 30) -> str:

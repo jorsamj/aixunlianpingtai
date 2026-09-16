@@ -18,7 +18,7 @@ export function storageCacheTruth(source) {
     && source?.config?.protect_existing_objects !== false;
   return {
     remote: true,
-    cacheLabel: 'SHA256 本地内容缓存 · 训练 Bundle 缓存',
+    cacheLabel: 'SHA256 素材内容缓存 · 训练 Bundle 缓存',
     protectionLabel: protectedWrites
       ? '平台写入禁止原地覆盖 · 外部变更需重新扫描'
       : '允许原地覆盖（不建议） · 外部变更需重新扫描',
@@ -50,7 +50,7 @@ export function materialCacheStatusView(status) {
   if (!status || typeof status !== 'object') {
     return {
       available: false,
-      usage: '尚无维护快照',
+      usage: '未知',
       files: '-',
       limit: '-',
       ttl: '-',
@@ -73,6 +73,67 @@ export function materialCacheStatusView(status) {
   };
 }
 
+function asTime(value) {
+  const time = Date.parse(String(value || ''));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function scopeLabel(report) {
+  if (report?.cache_root_source === 'MC_MATERIAL_CACHE_DIR') return '独立缓存目录';
+  if (report?.cache_scope === 'data_dir_cache') return '数据目录兼容缓存';
+  return report ? '缓存目录已上报' : '缓存目录未知';
+}
+
+export function materialCacheNodeRuntimeView(workers) {
+  const rows = Array.isArray(workers) ? workers : [];
+  const groups = new Map();
+  for (const worker of rows) {
+    const nodeId = String(worker?.node_id || 'legacy-unscoped');
+    if (!groups.has(nodeId)) groups.set(nodeId, []);
+    groups.get(nodeId).push(worker || {});
+  }
+  const nodes = [];
+  for (const [nodeId, nodeWorkers] of groups.entries()) {
+    const ordered = [...nodeWorkers].sort((a, b) => asTime(b?.heartbeat_at) - asTime(a?.heartbeat_at));
+    const onlineWorkers = nodeWorkers.filter(item => item?.online === true);
+    const reports = nodeWorkers
+      .map(item => item?.material_cache)
+      .filter(item => item && typeof item === 'object')
+      .sort((a, b) => asTime(b?.reported_at) - asTime(a?.reported_at));
+    const report = reports[0] || null;
+    const reporterFresh = Boolean(
+      report && nodeWorkers.some(item => item?.online === true && String(item?.worker_id || '') === String(report?.reporter_worker_id || ''))
+    );
+    const snapshotView = materialCacheStatusView(report?.snapshot || null);
+    let state = '未知';
+    if (report && !reporterFresh) state = '上报已过期';
+    else if (reporterFresh && !snapshotView.available) state = '等待维护快照';
+    else if (reporterFresh && snapshotView.overBudget) state = '超出缓存配额';
+    else if (reporterFresh && snapshotView.available) state = '已上报';
+    nodes.push({
+      nodeId,
+      hostname: String(ordered[0]?.hostname || ''),
+      workerCount: nodeWorkers.length,
+      onlineWorkerCount: onlineWorkers.length,
+      online: onlineWorkers.length > 0,
+      report,
+      reporterFresh,
+      snapshot: snapshotView,
+      state,
+      scopeLabel: scopeLabel(report),
+    });
+  }
+  nodes.sort((a, b) => Number(b.online) - Number(a.online) || a.hostname.localeCompare(b.hostname) || a.nodeId.localeCompare(b.nodeId));
+  return {
+    aggregation: 'per_node_only_no_sum',
+    knownNodeCount: nodes.length,
+    onlineNodeCount: nodes.filter(node => node.online).length,
+    snapshotNodeCount: nodes.filter(node => node.snapshot.available && node.reporterFresh).length,
+    unknownSnapshotNodeCount: nodes.filter(node => !node.snapshot.available || !node.reporterFresh).length,
+    nodes,
+  };
+}
+
 function apiErrorMessage(body, status) {
   if (body && typeof body === 'object') {
     return String(body.message || body.detail || `HTTP ${status}`);
@@ -91,11 +152,15 @@ async function fetchSources(fetchImpl) {
   return Array.isArray(payload?.items) ? payload.items : [];
 }
 
-async function fetchMaterialCacheStatus(fetchImpl) {
-  const response = await fetchImpl(`/data/cache/materials/status.json?_=${Date.now()}`, {cache: 'no-store'});
-  if (response.status === 404) return null;
-  if (!response.ok) return null;
-  try { return await response.json(); } catch (_) { return null; }
+async function fetchWorkerRuntime(fetchImpl) {
+  const response = await fetchImpl('/api/v62/workers', {cache: 'no-store'});
+  if (!response.ok) return [];
+  try {
+    const payload = await response.json();
+    return Array.isArray(payload?.items) ? payload.items : [];
+  } catch (_) {
+    return [];
+  }
 }
 
 function appendTruth(row, source) {
@@ -121,10 +186,25 @@ function updatePageNote(sources) {
   if (!note) return;
   const hasRemote = sources.some(source => storageCacheTruth(source).remote);
   if (!hasRemote) return;
-  note.textContent = '远程素材训练优先使用 Worker 本地 SHA256 内容缓存，再复用已验证的训练 Bundle。OSS / S3 平台写入默认禁止覆盖同一 object_key；如果有人在平台外直接修改源对象，需先执行“重新扫描 / 恢复”确认变化，避免缓存与源端语义不一致。';
+  note.textContent = '远程素材训练使用 SHA256 内容缓存并复用已验证的训练 Bundle。多 Worker 缓存状态按 node_id 去重展示；不同节点可能仍指向同一共享文件系统，因此平台不会伪造跨节点缓存总容量。OSS / S3 平台写入默认禁止覆盖同一 object_key，外部修改后需重新扫描确认。';
 }
 
-function renderCacheStatus(status) {
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function displayTime(value) {
+  const text = String(value || '').trim();
+  if (!text) return '-';
+  return text.replace('T', ' ').replace('Z', '').slice(0, 19);
+}
+
+function renderCacheRuntime(workers) {
   const shell = document.querySelector?.('.storage61-shell');
   const sourcePanel = shell?.querySelector?.('.panel');
   if (!shell || !sourcePanel) return;
@@ -135,12 +215,25 @@ function renderCacheStatus(status) {
     card.className = 'panel';
     shell.insertBefore(card, sourcePanel);
   }
-  const view = materialCacheStatusView(status);
-  const generated = view.generatedAt ? String(view.generatedAt).replace('T', ' ').replace('Z', '').slice(0, 19) : '';
-  const statusText = view.available
-    ? (view.overBudget ? '超出配额，等待后续安全清理' : '生命周期受控')
-    : '首次远程素材访问后生成维护快照';
-  card.innerHTML = `<div class="panel-head"><div><div class="panel-title">当前节点素材内容缓存</div><div class="item-sub">Worker 本地 SHA256 缓存维护快照${generated ? ` · ${generated}` : ''}</div></div><span class="pill ${view.overBudget ? 'warn' : view.available ? 'ok' : ''}">${statusText}</span></div><div class="panel-body"><div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px"><div class="stat"><div class="k">当前占用</div><div class="v">${view.usage}</div></div><div class="stat"><div class="k">缓存文件</div><div class="v">${view.files}</div></div><div class="stat"><div class="k">容量上限</div><div class="v">${view.limit}</div></div><div class="stat"><div class="k">缓存 TTL</div><div class="v">${view.ttl}</div></div></div></div>`;
+  const view = materialCacheNodeRuntimeView(workers);
+  const nodeRows = view.nodes.length
+    ? view.nodes.map(node => {
+      const snapshot = node.snapshot;
+      const pillClass = node.state === '已上报' ? 'ok' : node.state === '未知' || node.state === '等待维护快照' ? '' : 'warn';
+      const reportTime = displayTime(node.report?.reported_at);
+      const snapshotTime = displayTime(node.report?.snapshot_generated_at || snapshot.generatedAt);
+      return `<div class="storage61-row" style="grid-template-columns:minmax(220px,1.6fr) repeat(5,minmax(110px,1fr));align-items:center">
+        <div><b>${escapeHtml(node.hostname || node.nodeId)}</b><div class="item-sub">${escapeHtml(node.nodeId)} · 在线 Worker ${node.onlineWorkerCount}/${node.workerCount}</div></div>
+        <div><span class="pill ${pillClass}">${escapeHtml(node.state)}</span><div class="item-sub">${escapeHtml(node.scopeLabel)}</div></div>
+        <div><b>${escapeHtml(snapshot.usage)}</b><div class="item-sub">当前占用</div></div>
+        <div><b>${escapeHtml(snapshot.files)}</b><div class="item-sub">缓存文件</div></div>
+        <div><b>${escapeHtml(snapshot.limit)}</b><div class="item-sub">容量上限 · ${escapeHtml(snapshot.ttl)}</div></div>
+        <div><b>${escapeHtml(snapshotTime)}</b><div class="item-sub">快照 · 上报 ${escapeHtml(reportTime)}</div></div>
+      </div>`;
+    }).join('')
+    : '<div class="empty">尚无 Worker 节点缓存状态</div>';
+  card.innerHTML = `<div class="panel-head"><div><div class="panel-title">Worker 节点素材缓存</div><div class="item-sub">按 node_id 去重展示，不跨节点累加容量</div></div><span class="pill ${view.unknownSnapshotNodeCount ? 'warn' : view.snapshotNodeCount ? 'ok' : ''}">在线节点 ${view.onlineNodeCount} / 已知 ${view.knownNodeCount}</span></div>
+    <div class="panel-body"><div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px"><div class="stat"><div class="k">在线节点</div><div class="v">${view.onlineNodeCount}</div></div><div class="stat"><div class="k">有效缓存快照</div><div class="v">${view.snapshotNodeCount}</div></div><div class="stat"><div class="k">未知/过期</div><div class="v">${view.unknownSnapshotNodeCount}</div></div></div>${nodeRows}</div>`;
 }
 
 function editorType() {
@@ -180,28 +273,28 @@ export function installStorageCacheRuntime({fetchImpl = globalThis.fetch, notify
   }
 
   let latestSources = [];
-  let latestCacheStatus = null;
+  let latestWorkers = [];
 
   const decorate = async () => {
     try {
-      const [sources, cacheStatus] = await Promise.all([
+      const [sources, workers] = await Promise.all([
         fetchSources(fetchImpl),
-        fetchMaterialCacheStatus(fetchImpl),
+        fetchWorkerRuntime(fetchImpl),
       ]);
       latestSources = sources;
-      latestCacheStatus = cacheStatus;
+      latestWorkers = workers;
       const container = document.getElementById('storage61Rows');
       if (container) {
         const rows = [...container.children].filter(row => row.classList?.contains('storage61-row'));
         latestSources.forEach((source, index) => appendTruth(rows[index], source));
       }
       updatePageNote(latestSources);
-      renderCacheStatus(latestCacheStatus);
+      renderCacheRuntime(latestWorkers);
       decorateEditor();
       return latestSources;
     } catch (error) {
       notify(error?.message || String(error));
-      renderCacheStatus(latestCacheStatus);
+      renderCacheRuntime(latestWorkers);
       return latestSources;
     }
   };
@@ -235,7 +328,14 @@ export function installStorageCacheRuntime({fetchImpl = globalThis.fetch, notify
     };
   }
 
-  const runtime = Object.freeze({refresh: decorate, decorateEditor, storageCacheTruth, storageCacheSummary, materialCacheStatusView});
+  const runtime = Object.freeze({
+    refresh: decorate,
+    decorateEditor,
+    storageCacheTruth,
+    storageCacheSummary,
+    materialCacheStatusView,
+    materialCacheNodeRuntimeView,
+  });
   window.StorageCacheRuntime = runtime;
   if (document.getElementById('storage61Rows')) void decorate();
   return runtime;

@@ -109,13 +109,17 @@ def test_material_cache_maintenance_publishes_compact_observability_snapshot(tmp
         ttl_seconds=3600,
         maintenance_interval_seconds=0,
         recent_access_grace_seconds=0,
+        cache_scope="configured_cache_dir",
+        cache_root_source="MC_MATERIAL_CACHE_DIR",
     )
     _cached(cache, b"visible")
 
     result = cache.maintain(now_ns=5_000_000_000_000)
     status = json.loads((cache.root / "status.json").read_text(encoding="utf-8"))
 
-    assert status["cache_scope"] == "worker_local"
+    assert status["schema_version"] == 2
+    assert status["cache_scope"] == "configured_cache_dir"
+    assert status["cache_root_source"] == "MC_MATERIAL_CACHE_DIR"
     assert status["cache_kind"] == "remote_material_content"
     assert status["after_bytes"] == result["after_bytes"]
     assert status["max_bytes"] == 1024

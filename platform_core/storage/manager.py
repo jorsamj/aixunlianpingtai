@@ -9,7 +9,7 @@ from platform_core.material_repository import MaterialRepository, normalize_mate
 from platform_core.secrets import SecretCredentialStore
 
 from .base import StorageProvider
-from .cache import MaterialCache, MaterializedFile, file_sha256
+from .cache import MaterialCache, MaterializedFile, file_sha256, resolve_material_cache_location
 from .errors import StorageError
 from .factory import StorageProviderFactory
 from .models import ObjectMetadata, StorageType
@@ -34,7 +34,12 @@ class StorageManager:
         self.sources = sources or StorageSourceRepository(self.data_dir / "storage" / "storage_sources.sqlite3")
         self.credentials = credentials
         self._provider_resolver = provider_resolver
-        self.cache = MaterialCache(self.data_dir / "cache" / "materials")
+        cache_location = resolve_material_cache_location(self.data_dir)
+        self.cache = MaterialCache(
+            cache_location.root,
+            cache_scope=cache_location.cache_scope,
+            cache_root_source=cache_location.cache_root_source,
+        )
         self._providers: dict[str, StorageProvider] = {}
 
     def provider_for(self, source_id: str) -> StorageProvider:

@@ -11,6 +11,7 @@ from pathlib import Path
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
 from platform_core.node_identity import resolve_node_identity
+from platform_core.storage.material_cache_runtime import MaterialCacheRuntimeReporter
 from platform_core.upgrade_guard import ensure_worker_build_compatible, write_worker_build_marker
 from platform_core.task_runtime import (
     ArtifactStore,
@@ -159,6 +160,15 @@ def main(argv=None) -> int:
             file=sys.stderr,
         )
         return 3
+
+    # Cache observability is an observer of the existing Worker heartbeat, not
+    # another timer/registry. A reporting failure is intentionally non-fatal.
+    cache_reporter = MaterialCacheRuntimeReporter(repository, instance_lease, data_dir)
+    try:
+        cache_reporter.report()
+    except Exception:
+        pass
+    instance_lease.add_renew_hook(cache_reporter.report)
 
     try:
         write_worker_build_marker(data_dir, build_id)
