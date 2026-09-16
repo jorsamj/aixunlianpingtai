@@ -1,23 +1,24 @@
 import {isTaskActive, taskProgress} from './task-poller.js?v=422001';
+import {canonicalTaskPhase, canonicalTaskStatus, exactTaskQueuePosition} from './task-runtime-truth.js';
 
 const POLL_KEY = 'storage-import-scan-v61';
 const OWNER_PAGE = '素材存储配置';
 const POLL_DELAY = 1200;
 
 export function storageImportProgressText(task = {}) {
-  const status = String(task.status || '').toUpperCase();
-  const stage = String(task.phase || task.stage || status || 'SCANNING');
+  const status = canonicalTaskStatus(task);
+  const stage = (canonicalTaskPhase(task) || status || 'SCANNING').toUpperCase();
   const current = String(task.current_item || '').trim();
   const {percent} = taskProgress(task);
-  const queuePosition = Number(task.resource_queue_position || 0);
+  const queuePosition = exactTaskQueuePosition(task);
   const priority = Number(task.priority || 0);
-  const worker = String(task.worker_id || '').trim();
+  const worker = String(task.worker_id || task.task_worker_id || '').trim();
   const waitReason = String(task.resource_wait_reason || '').trim();
   if (status === 'WAITING_RESOURCE') {
-    return ['等待资源', queuePosition > 0 ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
+    return ['等待资源', queuePosition ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
   }
   if (status === 'QUEUED') {
-    return ['排队中', queuePosition > 0 ? `队列第 ${queuePosition} 位` : '', priority > 0 ? `优先级 ${priority}` : ''].filter(Boolean).join(' · ');
+    return ['排队中', queuePosition ? `队列第 ${queuePosition} 位` : '', priority > 0 ? `优先级 ${priority}` : ''].filter(Boolean).join(' · ');
   }
   if (stage === 'FINALIZING') return percent > 0 ? `正在整理扫描结果 · ${percent.toFixed(0)}%` : '正在整理扫描结果';
   const parts = [stage];
@@ -86,7 +87,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
   }
 
   function schedule() {
-    if (!trackedTaskId || !isTaskActive(currentTask?.status)) return finish(currentTask);
+    if (!trackedTaskId || !isTaskActive(currentTask)) return finish(currentTask);
     return registry.startTimeout(POLL_KEY, OWNER_PAGE, async () => {
       if (!trackedTaskId) return;
       const s = state();
@@ -98,7 +99,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
         ));
         if (!trackedTaskId) return;
         render(task);
-        if (isTaskActive(task?.status)) schedule();
+        if (isTaskActive(task)) schedule();
         else finish(task);
       } catch (error) {
         fail(error);
@@ -128,7 +129,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
       settle = resolve;
       rejectCurrent = reject;
     });
-    if (isTaskActive(currentTask?.status || 'QUEUED')) schedule();
+    if (isTaskActive(currentTask || 'QUEUED')) schedule();
     else finish(currentTask);
     return promise;
   }

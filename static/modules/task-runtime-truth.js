@@ -58,6 +58,11 @@ export function isCanonicalTaskTerminal(value) {
   return Boolean(status) && TERMINAL.has(status);
 }
 
+export function exactTaskQueuePosition(task = {}) {
+  const truth = taskRuntimeTruth(task);
+  return truth.resource_queue_position_exact ? truth.resource_queue_position : null;
+}
+
 export function trainingDisplayStatus(task = {}) {
   const status = canonicalTaskStatus(task);
   if (status === 'WAITING_RESOURCE') return 'waiting';

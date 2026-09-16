@@ -25,5 +25,15 @@ test('failed cancelled and permission states use actionable frontend copy', () =
 });
 
 test('successful discovery keeps automatic cache refresh', () => {
-  assert.match(source, /if \(SUCCESS_TASK_STATUSES\.has\(status\(task\.status\)\)\) \{\s*await refreshCache\(true\)/);
+  assert.match(source, /if \(SUCCESS_TASK_STATUSES\.has\(canonicalTaskStatus\(task\)\)\) \{\s*await refreshCache\(true\)/);
+});
+
+
+test('resource discovery durable task polling uses shared canonical runtime truth', () => {
+  assert.match(source, /from '.\/task-runtime-truth\.js'/);
+  assert.match(source, /canonicalTaskStatus\(task\)/);
+  assert.match(source, /canonicalTaskPhase\(task\)/);
+  assert.match(source, /isCanonicalTaskActive\(task\)/);
+  assert.doesNotMatch(source, /ACTIVE_TASK_STATUSES/);
+  assert.doesNotMatch(source, /ACTIVE_TASK_STATUSES\.has\(status\(task\.status\)\)/);
 });

@@ -41,8 +41,23 @@ test('resource-waiting storage import remains active until durable truth changes
   const waiting = serverImportView({
     status: 'WAITING_RESOURCE',
     resource_queue_position: 2,
+    resource_queue_position_exact: true,
     resource_wait_reason: 'STORAGE_WORKER_BUSY',
   });
   assert.equal(waiting.active, true);
   assert.equal(waiting.terminal, false);
+});
+
+
+test('server import canonical task status wins and candidate queue rank is not presented as exact', () => {
+  const waiting = serverImportView({
+    status: 'SUCCEEDED', task_status: 'WAITING_RESOURCE', phase: 'resource_waiting',
+    resource_queue_position: 9, resource_queue_position_exact: false,
+    resource_wait_reason: 'STORAGE_WORKER_BUSY',
+  });
+  assert.equal(waiting.status, 'WAITING_RESOURCE');
+  assert.equal(waiting.active, true);
+  assert.match(waiting.text, /等待 Storage Worker 资源/);
+  assert.match(waiting.text, /STORAGE_WORKER_BUSY/);
+  assert.doesNotMatch(waiting.text, /队列第 9 位/);
 });

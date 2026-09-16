@@ -62,7 +62,7 @@ test('queued video row preserves durable resource queue position', () => {
   const task = normalizeVideoTask({
     id: 'vq1', status: 'QUEUED', progress: 0,
     video_name: 'queued.mp4', mode: 'fixed_count', fixed_count: 12,
-    resource_queue_position: 3,
+    resource_queue_position: 3, resource_queue_position_exact: true,
   });
   assert.equal(task.runtimeText, '资源队列第 3 位');
   const html = finalVideoRowRenderer()(task);
@@ -74,7 +74,7 @@ test('WAITING_RESOURCE video row remains active and preserves durable wait reaso
   const task = normalizeVideoTask({
     id: 'vq2', status: 'WAITING_RESOURCE', phase: 'resource_waiting', progress: 0,
     video_name: 'waiting.mp4', mode: 'fixed_count', fixed_count: 12,
-    resource_queue_position: 2,
+    resource_queue_position: 2, resource_queue_position_exact: true,
     resource_wait_reason: 'GPU 资源占用中',
   });
   assert.equal(isActiveVideoTask(task), true);
@@ -91,4 +91,20 @@ test('final video page exposes fixed count and polls by row patching', () => {
   assert.match(source, /option value="fixed_count"/);
   assert.match(source, /refreshVideo424Delta/);
   assert.doesNotMatch(source, /setTimeout\(\(\)=>\{if\(state\.page==='\u89c6频切帧'\)renderVideo424\(\)/);
+});
+
+
+test('video task canonical task_status wins and inexact rank is not rendered as queue position', () => {
+  const task = normalizeVideoTask({
+    id: 'vq3', status: 'SUCCEEDED', task_status: 'WAITING_RESOURCE',
+    progress: 88, progress_percent: 14,
+    video_name: 'waiting.mp4', mode: 'fixed_count', fixed_count: 12,
+    resource_queue_position: 6, resource_queue_position_exact: false,
+    resource_wait_reason: 'VIDEO_WORKER_BUSY',
+  });
+  assert.equal(task.status, 'WAITING_RESOURCE');
+  assert.equal(task.progress_percent, 14);
+  assert.equal(isActiveVideoTask(task), true);
+  assert.match(task.runtimeText, /VIDEO_WORKER_BUSY/);
+  assert.doesNotMatch(task.runtimeText, /资源队列第 6 位/);
 });

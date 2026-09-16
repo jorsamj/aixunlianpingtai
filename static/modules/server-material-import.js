@@ -1,19 +1,15 @@
+import {
+  canonicalTaskPhase,
+  canonicalTaskStatus,
+  exactTaskQueuePosition,
+  isCanonicalTaskActive,
+  isCanonicalTaskTerminal,
+} from './task-runtime-truth.js';
+
 function count(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
-
-const ACTIVE_IMPORT_STATUSES = new Set([
-  'QUEUED',
-  'WAITING_RESOURCE',
-  'PREPARING',
-  'RUNNING',
-  'PAUSING',
-  'PAUSED',
-  'RESUMING',
-  'CANCEL_REQUESTED',
-  'RETRYING',
-]);
 
 export function buildServerImportRequest(values = {}) {
   const mode = String(values.mode || 'directory_scan');
@@ -62,11 +58,11 @@ export function buildImportConfirmation(rows = [], acceptQualityReport = false) 
 }
 
 export function serverImportView(task = {}) {
-  const status = String(task.status || 'QUEUED').toUpperCase();
-  const stage = String(task.stage || '').toLowerCase();
+  const status = canonicalTaskStatus(task) || 'QUEUED';
+  const stage = canonicalTaskPhase(task);
   const metrics = task.metrics || {};
   const current = String(metrics.current_file || task.current_item || '-');
-  const queuePosition = count(task.resource_queue_position);
+  const queuePosition = exactTaskQueuePosition(task);
   const waitReason = String(task.resource_wait_reason || '').trim();
   let text;
 
@@ -94,9 +90,9 @@ export function serverImportView(task = {}) {
     status,
     stage,
     text,
-    active: ACTIVE_IMPORT_STATUSES.has(status),
+    active: isCanonicalTaskActive(task),
     canConfirm: status === 'AWAITING_CONFIRMATION',
     showPercent: stage === 'extracting' && count(metrics.declared_bytes) > 0,
-    terminal: ['SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE'].includes(status),
+    terminal: isCanonicalTaskTerminal(task),
   };
 }

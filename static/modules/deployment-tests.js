@@ -1,7 +1,9 @@
 import {isTaskActive, normalizeTaskStatus, taskProgress} from './task-poller.js';
+import {canonicalTaskPhase, exactTaskQueuePosition} from './task-runtime-truth.js';
 
 function statusFallback(status) {
   return ({
+    ACCEPTED: '已受理',
     QUEUED: '排队中',
     WAITING_RESOURCE: '等待资源',
     PREPARING: '准备中',
@@ -19,18 +21,13 @@ function statusFallback(status) {
   })[status] || status || '-';
 }
 
-function positiveInteger(value) {
-  const number = Number(value);
-  return Number.isInteger(number) && number > 0 ? number : null;
-}
-
 export function deploymentTaskView(task = {}) {
-  const status = normalizeTaskStatus(task.status);
+  const status = normalizeTaskStatus(task);
   const progress = taskProgress(task);
-  const queuePosition = positiveInteger(task.resource_queue_position);
+  const queuePosition = exactTaskQueuePosition(task);
   const waitReason = String(task.resource_wait_reason || '').trim();
-  const workerId = String(task.worker_id || '').trim();
-  const phase = String(task.phase ?? task.stage ?? '').trim();
+  const workerId = String(task.worker_id || task.task_worker_id || '').trim();
+  const phase = canonicalTaskPhase(task);
   const currentItem = String(task.current_item || '').trim();
   const runtime = [];
 
@@ -48,6 +45,6 @@ export function deploymentTaskView(task = {}) {
     percent: progress.percent,
     phase,
     runtimeText: runtime.join(' · '),
-    active: isTaskActive(status),
+    active: isTaskActive(task),
   };
 }

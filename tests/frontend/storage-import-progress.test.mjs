@@ -21,8 +21,8 @@ test('storage scan renders authoritative unified runtime progress', () => {
 
 
 test('queued and resource-waiting scans expose real queue state', () => {
-  assert.equal(storageImportProgressText({status: 'QUEUED', resource_queue_position: 3, priority: 1}), '排队中 · 队列第 3 位 · 优先级 1');
-  assert.equal(storageImportProgressText({status: 'WAITING_RESOURCE', resource_queue_position: 2, resource_wait_reason: 'RESOURCE_BUSY'}), '等待资源 · 队列第 2 位 · RESOURCE_BUSY');
+  assert.equal(storageImportProgressText({status: 'QUEUED', resource_queue_position: 3, resource_queue_position_exact: true, priority: 1}), '排队中 · 队列第 3 位 · 优先级 1');
+  assert.equal(storageImportProgressText({status: 'WAITING_RESOURCE', resource_queue_position: 2, resource_queue_position_exact: true, resource_wait_reason: 'RESOURCE_BUSY'}), '等待资源 · 队列第 2 位 · RESOURCE_BUSY');
   assert.equal(storageImportProgressText({status: 'RUNNING', phase: 'FINALIZING', progress_percent: 91}), '正在整理扫描结果 · 91%');
 });
 
@@ -80,7 +80,7 @@ test('storage import active task uses one PollRegistry-managed one-shot and re-a
           ok: true,
           json: async () => ({
             task_id: 'scan-1', status: 'WAITING_RESOURCE', progress_percent: 12,
-            resource_queue_position: 4, resource_wait_reason: 'STORAGE_WORKER_BUSY',
+            resource_queue_position: 4, resource_queue_position_exact: true, resource_wait_reason: 'STORAGE_WORKER_BUSY',
           }),
         };
       }
@@ -125,4 +125,16 @@ test('storage import final wiring retires direct polling loops and installs mana
   assert.match(appSource, /StorageImportProgressRuntime\?\.track/);
   assert.match(appSource, /StorageImportProgressRuntime\?\.stop/);
   assert.match(mainSource, /window\.installServerMaterialImport61\?\.\(\);[\s\S]*installStorageImportProgressRuntime/);
+});
+
+
+test('storage import canonical task_status wins and inexact queue rank is never shown as position', () => {
+  const text = storageImportProgressText({
+    status: 'SUCCEEDED', task_status: 'WAITING_RESOURCE', phase: 'resource_waiting',
+    resource_queue_position: 7, resource_queue_position_exact: false,
+    resource_wait_reason: 'STORAGE_WORKER_BUSY',
+  });
+  assert.match(text, /等待资源/);
+  assert.match(text, /STORAGE_WORKER_BUSY/);
+  assert.doesNotMatch(text, /队列第 7 位/);
 });

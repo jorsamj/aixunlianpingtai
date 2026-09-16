@@ -5,6 +5,7 @@ import {
   canonicalTaskPhase,
   canonicalTaskProgressPercent,
   canonicalTaskStatus,
+  exactTaskQueuePosition,
   isCanonicalTaskActive,
   taskRuntimeTruth,
   trainingDisplayStatus,
@@ -46,4 +47,11 @@ test('runtime truth preserves backend queue exactness instead of promoting a can
   assert.equal(truth.status, 'QUEUED');
   assert.equal(truth.resource_queue_position, 3);
   assert.equal(truth.resource_queue_position_exact, false);
+});
+
+
+test('exact queue position is presentationally usable only with explicit backend exactness', () => {
+  assert.equal(exactTaskQueuePosition({resource_queue_position: 2, resource_queue_position_exact: true}), 2);
+  assert.equal(exactTaskQueuePosition({resource_queue_position: 2, resource_queue_position_exact: false}), null);
+  assert.equal(exactTaskQueuePosition({resource_queue_position: 2}), null);
 });

@@ -1,9 +1,20 @@
-const ACTIVE = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'CANCEL_REQUESTED']);
+import {
+  canonicalTaskProgressPercent,
+  canonicalTaskStatus,
+  exactTaskQueuePosition,
+  isCanonicalTaskActive,
+} from './task-runtime-truth.js';
 
 const STATUS_TEXT = {
+  ACCEPTED: '已受理',
   QUEUED: '排队中',
   WAITING_RESOURCE: '等待资源',
+  PREPARING: '准备中',
   RUNNING: '处理中',
+  PAUSING: '暂停中',
+  PAUSED: '已暂停',
+  RESUMING: '恢复中',
+  RETRYING: '重试中',
   AWAITING_CONFIRMATION: '待确认',
   PARTIAL_SUCCESS: '部分成功',
   SUCCEEDED: '已完成',
@@ -31,16 +42,17 @@ export function videoTaskFormValues(mode, values = {}) {
 }
 
 export function isActiveVideoTask(task) {
-  return ACTIVE.has(String(task?.status || '').toUpperCase());
+  return isCanonicalTaskActive(task);
 }
 
 export function normalizeVideoTask(task = {}) {
-  const status = String(task.status || '').toUpperCase();
+  const status = canonicalTaskStatus(task);
+  const progressPercent = canonicalTaskProgressPercent(task);
   let samplingText = '未知方式';
   if (task.mode === 'fixed_count') samplingText = `固定抽取 ${Number(task.fixed_count || 0)} 帧`;
   else if (task.mode === 'fps') samplingText = `每秒 ${Number(task.extract_fps || 0)} 帧`;
   else if (task.mode === 'interval_seconds') samplingText = `每 ${Number(task.interval_seconds || 0)} 秒 1 帧`;
-  const queuePosition = Math.max(0, Number(task.resource_queue_position) || 0);
+  const queuePosition = exactTaskQueuePosition(task);
   const waitReason = String(task.resource_wait_reason || '').trim();
   const queuedRuntime = queuePosition
     ? `资源队列第 ${queuePosition} 位${waitReason ? ` · ${waitReason}` : ''}`
@@ -49,6 +61,8 @@ export function normalizeVideoTask(task = {}) {
   return {
     ...task,
     status,
+    progress: progressPercent,
+    progress_percent: progressPercent,
     statusText: STATUS_TEXT[status] || status,
     queuePosition,
     waitReason,
