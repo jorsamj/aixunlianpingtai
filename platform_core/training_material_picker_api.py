@@ -11,6 +11,7 @@ import os
 import sqlite3
 import tempfile
 from contextlib import closing
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -24,7 +25,9 @@ from .storage.manager import StorageManager
 DEFAULT_PAGE_SIZE = 120
 MAX_PAGE_SIZE = 240
 MAX_SELECTION_SUMMARY_IDS = 50000
-DEFAULT_THUMBNAIL_SIZE = 256
+# Cards render at 96 CSS px. 192 px keeps 2x-density displays sharp without
+# decoding and caching unnecessarily large 256 px images for the picker.
+DEFAULT_THUMBNAIL_SIZE = 192
 ALLOWED_THUMBNAIL_SIZES = {160, 192, 224, 256, 320, 384}
 
 
@@ -162,10 +165,20 @@ def training_material_picker_router(get_project, data_dir_provider):
         value = data_dir_provider() if callable(data_dir_provider) else data_dir_provider
         return Path(value).expanduser().resolve()
 
+    @lru_cache(maxsize=128)
+    def repository_for_path(project_path: str) -> MaterialRepository:
+        """Reuse the lightweight repository object across picker and thumbnail requests.
+
+        MaterialRepository opens short-lived SQLite connections per operation, so sharing the
+        object is safe while avoiding schema/bootstrap/migration checks for every thumbnail.
+        """
+        return MaterialRepository(Path(project_path))
+
     def materials(project_id: str) -> MaterialRepository:
         get_project(project_id)
         try:
-            return MaterialRepository(_safe_project_path(data_dir(), project_id))
+            project_path = _safe_project_path(data_dir(), project_id)
+            return repository_for_path(str(project_path))
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
