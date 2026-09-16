@@ -2001,21 +2001,59 @@ def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
     return _v50_annotation_repository(project_id).get(image_id)
 
 
+class _NonClosingImageStream:
+    """Let Pillow inspect a caller-owned stream without closing it."""
+    def __init__(self, stream):
+        self._stream = stream
+
+    def read(self, *args, **kwargs):
+        return self._stream.read(*args, **kwargs)
+
+    def seek(self, *args, **kwargs):
+        return self._stream.seek(*args, **kwargs)
+
+    def tell(self):
+        return self._stream.tell()
+
+    def readline(self, *args, **kwargs):
+        return self._stream.readline(*args, **kwargs)
+
+    def close(self):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
 def add_image_record(
-    project_id: str, src: Path, original_name: str,
+    project_id: str, src: Any, original_name: str,
     source_type: str = "raw", dataset_id: str = "default",
     storage_source_id: str = "default_local", annotation_builder=None,
     content_sha256: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
-    ext = src.suffix.lower()
+    path_source = isinstance(src, (str, Path))
+    ext = (Path(src).suffix if path_source else Path(original_name).suffix).lower()
     if ext not in IMAGE_EXTS:
         return None
     img_id = uuid.uuid4().hex[:16]
     dst_name = f"{img_id}{ext}"
     try:
-        info = image_info(src)
+        if path_source:
+            info = image_info(Path(src))
+        else:
+            src.seek(0)
+            image = Image.open(_NonClosingImageStream(src))
+            try:
+                info = {"width": image.width, "height": image.height}
+            finally:
+                image.close()
+            src.seek(0)
     except Exception:
+        try:
+            if not path_source:
+                src.seek(0)
+        except Exception:
+            pass
         return None
     manager = _v50_storage_manager(project_id)
     source_config = manager.sources.get(storage_source_id)
@@ -2032,7 +2070,15 @@ def add_image_record(
     )
     content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
     if not content_hash:
-        content_hash = sha256_file(src)
+        if path_source:
+            content_hash = sha256_file(Path(src))
+        else:
+            src.seek(0)
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                digest.update(chunk)
+            content_hash = digest.hexdigest()
+            src.seek(0)
     target_dataset_id = dataset_id or "default"
     record = {
         "id": img_id,
@@ -3169,35 +3215,31 @@ async def upload_images(
     started = time.time()
     _v50_begin_image_batch(project_id)
     try:
-        # Stream each multipart file to disk so memory stays bounded. The
-        # same pass also computes SHA256, avoiding a later full source reread.
+        # Starlette already owns a seekable/spooled UploadFile. Send that stream
+        # directly to StorageManager instead of writing imports/upload_* and then
+        # copying the same bytes into the final object a second time.
         for file in files:
             filename = safe_filename(file.filename or "image.jpg")
             ext = Path(filename).suffix.lower()
             if ext not in IMAGE_EXTS:
                 failed.append({"name": filename, "reason": "不支持的图片格式"})
                 continue
-            tmp = p / "imports" / f"upload_{uuid.uuid4().hex}{ext}"
-            upload_digest = hashlib.sha256()
             try:
-                with tmp.open("wb") as out:
-                    while True:
-                        chunk = await file.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        upload_digest.update(chunk)
-                        out.write(chunk)
-                if not tmp.exists() or tmp.stat().st_size <= 0:
+                await file.seek(0)
+                stream = file.file
+                stream.seek(0, os.SEEK_END)
+                size_bytes = stream.tell()
+                stream.seek(0)
+                if size_bytes <= 0:
                     failed.append({"name": filename, "reason": "文件为空"})
                     continue
                 record = add_image_record(
                     project_id,
-                    tmp,
+                    stream,
                     filename,
                     "raw",
                     dataset_id,
                     storage_source_id,
-                    content_sha256=upload_digest.hexdigest(),
                 )
                 if record:
                     uploaded.append(record)
@@ -3207,8 +3249,6 @@ async def upload_images(
                 failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
             except Exception as error:
                 failed.append({"name": filename, "reason": str(error)})
-            finally:
-                tmp.unlink(missing_ok=True)
         committed = _v50_end_image_batch(save=True)
         if committed:
             committed_by_id = {

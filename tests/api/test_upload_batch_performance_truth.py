@@ -1,5 +1,6 @@
 import hashlib
 import io
+from pathlib import Path
 
 from PIL import Image
 
@@ -21,6 +22,14 @@ def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch)
 
     original_storage_manager = app_module.storage_manager
     storage_manager_calls = 0
+    original_add_image_record = app_module.add_image_record
+    direct_stream_sources = []
+
+    def tracked_add_image_record(project_id, source, *args, **kwargs):
+        direct_stream_sources.append(not isinstance(source, (str, Path)))
+        return original_add_image_record(project_id, source, *args, **kwargs)
+
+    monkeypatch.setattr(app_module, "add_image_record", tracked_add_image_record)
 
     def counted_storage_manager(project):
         nonlocal storage_manager_calls
@@ -53,9 +62,10 @@ def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch)
     )
     response.raise_for_status()
     body = response.json()
-    assert body["uploaded_count"] == 12
+    assert body["uploaded_count"] == 12, body
     assert body["failed_count"] == 0
     assert storage_manager_calls == 1
+    assert direct_stream_sources == [True] * 12
     assert all(item.get("annotation_summary_at") for item in body["uploaded"])
     assert all(item.get("annotation_state") == "unannotated" for item in body["uploaded"])
 
