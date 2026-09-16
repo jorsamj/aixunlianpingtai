@@ -2,8 +2,9 @@
 
 HTTP routes only allocate generations and queue these tasks. Filesystem
 traversal and Python subprocess probes are deliberately confined to the
-discovery worker. Deep filesystem traversal is bounded to explicit request
-roots; default/auto discovery never falls back to whole-machine traversal.
+discovery worker. Environment deep scans remain bounded to explicit request
+roots. An explicit model scope=full action delegates local-machine root
+resolution to the scanner, which excludes network and virtual filesystems.
 """
 from __future__ import annotations
 
@@ -76,6 +77,23 @@ def _environment_deep_scan_allowed(
 def _require_model_roots(roots: list[Path]) -> None:
     if not roots:
         raise ValueError("model discovery requires at least one explicit root")
+
+
+def _model_scan_roots(scope: str, roots: list[Path]) -> list[Path] | None:
+    """Resolve model scan roots without weakening directory-scan safety.
+
+    ``directory`` always requires caller-supplied roots. ``full`` is itself an
+    explicit user action and therefore delegates machine-local root discovery to
+    ``scan_model_files`` by passing ``None``. The scanner remains responsible for
+    excluding network and virtual filesystems cross-platform.
+    """
+
+    if scope == "directory":
+        _require_model_roots(roots)
+        return roots
+    if scope == "full":
+        return None
+    raise ValueError("model discovery scope must be directory or full")
 
 
 class _ModelManifest:
@@ -315,7 +333,7 @@ class ResourceDiscoveryHandler:
         if generation < 1:
             raise ValueError("resource discovery generation is invalid")
         roots = _explicit_roots(request)
-        _require_model_roots(roots)
+        scan_roots = _model_scan_roots(scope, roots)
 
         manifest = _ModelManifest(
             context.artifacts.artifact_path(context.task.task_id, _MODEL_MANIFEST_REF)
@@ -351,7 +369,7 @@ class ResourceDiscoveryHandler:
             )
 
         report = scan_model_files(
-            roots,
+            scan_roots,
             on_item=on_item,
             on_progress=on_progress,
             cancel_requested=lambda: self._cancelled(context),
@@ -380,6 +398,7 @@ class ResourceDiscoveryHandler:
             "generation": generation,
             "published": published,
             "explicit_root_count": len(roots),
+            "scan_root_mode": "local_machine" if scan_roots is None else "explicit",
             **counters,
         }
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
