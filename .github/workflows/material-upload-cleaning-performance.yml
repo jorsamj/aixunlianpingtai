@@ -37,7 +37,7 @@ jobs:
       - name: Compile optimized material paths
         run: python -m py_compile platform_core/material_repository_batch.py platform_core/cleaning.py platform_core/cleaning_batches.py
       - name: Upload and cleaning hot-path contracts
-        run: python -m pytest -q tests/unit/test_material_upload_cleaning_performance.py
+        run: python -m pytest --confcutdir=tests/unit -q tests/unit/test_material_upload_cleaning_performance.py
       - name: Cleaning frontend runtime truth
         run: node --test tests/frontend/clean-task-view.test.mjs
 
