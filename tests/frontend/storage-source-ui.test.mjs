@@ -30,6 +30,7 @@ test('storage configuration separates secrets from ordinary config', () => {
   });
   assert.deepEqual(payload.config, {
     endpoint: 'http://minio:9000', region: 'us-east-1', bucket: 'materials', prefix: 'vision', use_ssl: false,
+    protect_existing_objects: true,
   });
   assert.deepEqual(payload.credentials, {access_key_id: 'user', secret_access_key: 'secret'});
   assert.equal(JSON.stringify(payload.config).includes('secret'), false);
@@ -42,6 +43,7 @@ test('editing a configured source with blank credential fields preserves the sto
   });
   assert.equal(Object.hasOwn(payload, 'credentials'), false);
   assert.equal(payload.config.prefix, 'changed-prefix');
+  assert.equal(payload.config.protect_existing_objects, true);
 });
 
 test('object storage credentials must be replaced as a complete pair', () => {
