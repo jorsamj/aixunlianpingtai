@@ -14,6 +14,11 @@ DEFAULT_OPTIONS = {
     "brightness_check": False, "brightness_min": 15.0, "brightness_max": 245.0,
     "corrupt_check": True,
 }
+# Cleaning is a quality scan, not model training. Extremely large decoded images
+# must not monopolize one Materials Worker just to compute blur/brightness. Keep
+# original dimensions for rule decisions, but bound the analysis raster. Normal
+# camera/training images stay on the historical full-resolution path.
+MAX_ANALYSIS_PIXELS = 16_000_000
 
 
 class ImageDecodeError(ValueError):
@@ -61,30 +66,53 @@ def hamming(a: int, b: int) -> int:
     return int((a ^ b).bit_count())
 
 
-def image_metrics(path: Path, *, require_blur: bool = False) -> dict:
+def _bounded_analysis_rgb(path: Path, width: int, height: int):
+    """Decode a bounded RGB raster only when the source is unusually large."""
+    if width * height <= MAX_ANALYSIS_PIXELS:
+        return None
+    from PIL import Image
+    scale = math.sqrt(MAX_ANALYSIS_PIXELS / max(1, width * height))
+    target = (max(1, int(width * scale)), max(1, int(height * scale)))
+    with Image.open(path) as im:
+        return im.convert("RGB").resize(target)
+
+
+def image_metrics(
+    path: Path, *, require_blur: bool = False, content_sha256: str | None = None,
+) -> dict:
     """Original Laplacian/brightness/entropy/dHash checks with honest fallback.
 
-    Pillow validates corruption first. A missing blur engine cannot produce a
-    fabricated zero score; Workers fail the item when blur was requested.
+    ``StorageManager.materialize`` already verifies and returns the content SHA.
+    Reusing that verified digest avoids rereading every image a second time during
+    cleaning. Pillow validates corruption first. Very large sources keep their
+    real width/height but use a bounded raster for expensive visual metrics.
     """
     from PIL import Image, ImageStat, UnidentifiedImageError
-    exact = file_sha256(path)
+    exact = str(content_sha256 or "").strip().lower() or file_sha256(path)
     try:
         with Image.open(path) as im:
+            width, height = im.size
             im.verify()
     except (PermissionError, FileNotFoundError):
         raise
     except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as error:
         raise ImageDecodeError(str(error)) from error
+    bounded_rgb = None
     try:
+        bounded_rgb = _bounded_analysis_rgb(path, int(width), int(height))
         import cv2
         import numpy as np
-        # imdecode supports Windows Unicode paths, unlike some cv2.imread builds.
-        img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError("OpenCV无法解码图片")
-        h, w = img.shape[:2]
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if bounded_rgb is None:
+            # imdecode supports Windows Unicode paths, unlike some cv2.imread builds.
+            img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError("OpenCV无法解码图片")
+            h, w = img.shape[:2]
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            rgb = np.asarray(bounded_rgb)
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            w, h = int(width), int(height)
         blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         brightness = float(gray.mean())
         hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).ravel()
@@ -99,10 +127,14 @@ def image_metrics(path: Path, *, require_blur: bool = False) -> dict:
             brightness = float(ImageStat.Stat(im.convert("L")).mean[0])
         blur_score = None
         entropy = None
+    finally:
+        if bounded_rgb is not None:
+            bounded_rgb.close()
     return {"width": int(w), "height": int(h), "sha256": exact, "dhash": dhash(path),
             "blur_score": round(blur_score, 3) if blur_score is not None else None,
             "brightness": round(brightness, 3),
-            "entropy": round(entropy, 3) if entropy is not None else None}
+            "entropy": round(entropy, 3) if entropy is not None else None,
+            "analysis_downsampled": int(width) * int(height) > MAX_ANALYSIS_PIXELS}
 
 
 def metric_issues(metrics, options, image_id, index):
