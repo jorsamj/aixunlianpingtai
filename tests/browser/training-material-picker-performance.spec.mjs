@@ -23,7 +23,7 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.build || null))
-    .toBe('training-material-picker-runtime-422503');
+    .toBe('training-material-picker-runtime-422504');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
