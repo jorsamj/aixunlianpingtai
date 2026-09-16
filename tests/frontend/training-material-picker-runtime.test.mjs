@@ -39,7 +39,9 @@ test('training picker keeps TrainingDraftRuntime as the selection truth owner', 
 
 test('picker UI uses larger bounded preview cards rather than a dense thumbnail strip', () => {
   assert.match(source, /repeat\(5,minmax\(0,1fr\)\)/);
-  assert.match(source, /aspect-ratio:4\/3/);
+  assert.match(source, /grid-auto-rows:minmax\(210px,max-content\)/);
+  assert.match(source, /min-height:210px/);
+  assert.match(source, /aspect-ratio:4\/3!important/);
   assert.match(source, /height:clamp\(420px,60vh,620px\)/);
   assert.match(source, /overflow-y:auto!important/);
   assert.match(source, /Array\.from\(\{length: 15\}/);
