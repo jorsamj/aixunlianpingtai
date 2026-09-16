@@ -24,13 +24,22 @@ def _save_result(manifest, image_id, result, index, near_indexed=False):
         )
 
 
+def _publish_item_stage(context, manifest, check_active, stage, image_id):
+    """Publish truthful current-item/stage without inventing progress."""
+    summary = manifest.summary(image_id)
+    progress = int(summary["processed"] * 100 / max(1, summary["total"]))
+    context.save_checkpoint(summary)
+    check_active(context, stage, image_id, progress=progress)
+    return summary
+
+
 def clean_batch(context, manifest, materials, batch, options, manager, index, check_active):
     if len(batch) > 500:
         raise ValueError("cleaning batches are limited to 500 images")
     indexed = {row["id"]: row for row in materials.get_many([item["image_id"] for item in batch])}
     for item in batch:
         image_id = item["image_id"]
-        check_active(context, "cleaning", image_id)
+        _publish_item_stage(context, manifest, check_active, "materializing", image_id)
         saved = manifest.database.execute("SELECT result_json FROM clean_results WHERE image_id=?", (image_id,)).fetchone()
         result = json.loads(saved[0]) if saved else None
         # Inspection failures are retried only when the manifest row is replayed.
@@ -42,14 +51,26 @@ def clean_batch(context, manifest, materials, batch, options, manager, index, ch
                 raise FileNotFoundError("MATERIAL_NOT_FOUND")
             if result is None:
                 local = manager.materialize(material)
-                check_active(context, "cleaning", image_id)
-                metrics = image_metrics(local.path, require_blur=options["blur_check"])
+                _publish_item_stage(context, manifest, check_active, "analyzing", image_id)
+                # materialize() already verified the actual content hash. Reuse it
+                # instead of rereading the full file only to compute SHA256 again.
+                metrics = image_metrics(
+                    local.path,
+                    require_blur=options["blur_check"],
+                    content_sha256=local.content_sha256,
+                )
+                _publish_item_stage(context, manifest, check_active, "evaluating", image_id)
                 issues, near_indexed = metric_issues(metrics, options, image_id, index)
-                check_active(context, "cleaning", image_id)
+                check_active(context, "saving_clean_result", image_id)
                 result = {"image_id": image_id, "filename": material.get("filename"),
                           "status": "succeeded", "metrics": metrics, "issues": issues,
                           "suggest_delete": bool(issues), "inspected_at": utc_now()}
                 _save_result(manifest, image_id, result, index, near_indexed)
+                if metrics.get("analysis_downsampled"):
+                    append_task_log(
+                        context, "clean_analysis_bounded",
+                        f"image_id={image_id} source={metrics.get('width')}x{metrics.get('height')}",
+                    )
             check_active(context, "saving_clean_result", image_id)
             patch = {"clean_status": "needs_review" if result["issues"] else "passed",
                      "clean_result_task_id": context.task.task_id,
