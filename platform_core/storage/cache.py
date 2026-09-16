@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -17,6 +19,7 @@ from .errors import StorageError
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CACHE_FILE = re.compile(r"^([0-9a-f]{64})(\.[a-z0-9]{1,12}|\.bin)$")
+_STATUS_NAME = "status.json"
 MATERIAL_CACHE_MAX_BYTES_ENV = "MATERIAL_CACHE_MAX_BYTES"
 MATERIAL_CACHE_TTL_SECONDS_ENV = "MATERIAL_CACHE_TTL_SECONDS"
 MATERIAL_CACHE_MAINTENANCE_INTERVAL_SECONDS_ENV = "MATERIAL_CACHE_MAINTENANCE_INTERVAL_SECONDS"
@@ -67,7 +70,8 @@ class MaterialCache:
     Cached payloads are immutable by SHA256. File mtime is intentionally used as
     mutable access metadata so lifecycle maintenance does not need one sidecar per
     object. Cleanup is best-effort and always respects the same per-object lock as
-    materialization.
+    materialization. A compact status snapshot is published after maintenance so
+    the UI can expose cache truth without rescanning the cache on every page view.
     """
 
     def __init__(
@@ -176,6 +180,29 @@ class MaterialCache:
             protected.add(candidate)
         return protected
 
+    def _publish_status(self, payload: dict[str, int]) -> None:
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            target = self.root / _STATUS_NAME
+            temporary = self.root / f".{_STATUS_NAME}.{uuid.uuid4().hex}.tmp"
+            body = {
+                **payload,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "cache_scope": "worker_local",
+                "cache_kind": "remote_material_content",
+            }
+            temporary.write_text(
+                json.dumps(body, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, target)
+        except OSError:
+            # Observability must never fail a training/material operation.
+            try:
+                temporary.unlink(missing_ok=True)  # type: ignore[possibly-undefined]
+            except Exception:
+                pass
+
     def maintain(
         self,
         *,
@@ -268,7 +295,7 @@ class MaterialCache:
                     continue
                 evict(candidate, reason="quota")
 
-        return {
+        result = {
             "max_bytes": self.max_bytes,
             "ttl_seconds": self.ttl_seconds,
             "maintenance_interval_seconds": self.maintenance_interval_seconds,
@@ -290,6 +317,8 @@ class MaterialCache:
                 else 0
             ),
         }
+        self._publish_status(result)
+        return result
 
     def _maybe_maintain(self, *, protect_path: Path) -> None:
         interval = self.maintenance_interval_seconds
