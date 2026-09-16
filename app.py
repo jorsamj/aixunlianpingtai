@@ -1762,9 +1762,10 @@ def _v50_begin_image_batch(project_id: str):
         "project_id": project_id,
         "records": {},
         "patches": {},
-        # Lazily reused for all annotation writes in this import batch. The
-        # repository is stateless between calls; each write still owns its
-        # SQLite transaction, preserving current durability semantics.
+        # New-image annotations are buffered with the material rows and
+        # committed once per request/import batch. Existing-image writes
+        # stay immediate so their independent update semantics do not change.
+        "annotations": {},
         "annotation_repository": None,
     }
 
@@ -1837,6 +1838,9 @@ def _v50_end_image_batch(save: bool = True):
         str(image_id): dict(patch)
         for image_id, patch in batch.get("patches", {}).items()
     }
+    annotations = [
+        dict(row) for row in batch.get("annotations", {}).values()
+    ]
     if not save:
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
         if cleanup_errors:
@@ -1844,60 +1848,91 @@ def _v50_end_image_batch(save: bool = True):
                 "批量导入回滚失败：" + "; ".join(cleanup_errors)
             )
         return []
-    if not records and not patches:
+    if not records and not patches and not annotations:
         return []
 
-    def commit(rows):
-        by_id = {}
-        for row in rows:
-            by_id.setdefault(str(row.get("id")), row)
-        changed_ids = []
-        for incoming in records:
-            image_id = str(incoming.get("id"))
-            row = by_id.get(image_id)
-            if row is None:
-                row = dict(incoming)
-                rows.append(row)
-                by_id[image_id] = row
-            else:
-                row.update(incoming)
-            changed_ids.append(image_id)
-        for image_id, patch in patches.items():
-            row = by_id.get(image_id)
-            if row is None:
-                continue
-            row.update(patch)
-            if image_id not in changed_ids:
-                changed_ids.append(image_id)
-        return [dict(by_id[image_id]) for image_id in changed_ids]
-
-    target_dataset_ids = {
-        str(record.get("dataset_id") or "default")
-        for record in records
-    }
-    target_dataset_ids.update(
-        str(patch.get("dataset_id") or "default")
-        for patch in patches.values()
-        if "dataset_id" in patch
-    )
     try:
+        if annotations:
+            annotation_repository = (
+                batch.get("annotation_repository")
+                or AnnotationRepository(project_dir(project_id))
+            )
+            saved_annotations = annotation_repository.upsert_many(
+                annotations,
+                project_material=False,
+                return_rows=True,
+            )
+            records_by_id = {
+                str(record.get("id")): record for record in records
+            }
+            for saved in saved_annotations:
+                image_id = str(saved.get("image_id") or "")
+                patch = _v50_material_annotation_patch(saved)
+                record = records_by_id.get(image_id)
+                if record is not None:
+                    record.update(patch)
+                else:
+                    patches.setdefault(image_id, {}).update(patch)
+
+        records_by_id = {
+            str(record.get("id")): record for record in records
+        }
+        for image_id in list(patches):
+            record = records_by_id.get(image_id)
+            if record is not None:
+                record.update(patches.pop(image_id))
+
+        target_dataset_ids = {
+            str(record.get("dataset_id") or "default")
+            for record in records
+        }
+        target_dataset_ids.update(
+            str(patch.get("dataset_id") or "default")
+            for patch in patches.values()
+            if "dataset_id" in patch
+        )
         with _v50_dataset_locks(project_id, target_dataset_ids):
             for dataset_id in sorted(target_dataset_ids):
                 _v50_assert_dataset_writable_locked(project_id, dataset_id)
-            return material_store(project_id).mutate(commit)
-    except HTTPException as error:
-        if error.status_code != 409:
-            raise
+            repository = material_store(project_id)
+            if not patches:
+                return repository.upsert_many(records)
+
+            # Rare compatibility fallback: a batch may contain patches for
+            # pre-existing rows. Preserve the old single-transaction mutate
+            # semantics for that case instead of splitting atomicity.
+            def commit(rows):
+                by_id = {}
+                for row in rows:
+                    by_id.setdefault(str(row.get("id")), row)
+                changed_ids = []
+                for incoming in records:
+                    image_id = str(incoming.get("id"))
+                    row = by_id.get(image_id)
+                    if row is None:
+                        row = dict(incoming)
+                        rows.append(row)
+                        by_id[image_id] = row
+                    else:
+                        row.update(incoming)
+                    changed_ids.append(image_id)
+                for image_id, patch in patches.items():
+                    row = by_id.get(image_id)
+                    if row is None:
+                        continue
+                    row.update(patch)
+                    if image_id not in changed_ids:
+                        changed_ids.append(image_id)
+                return [dict(by_id[image_id]) for image_id in changed_ids]
+
+            return repository.mutate(commit)
+    except Exception as error:
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(
             project_id, records
         )
         if cleanup_errors:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "批量导入被拒绝，部分缓冲文件未能清理",
-                    "errors": cleanup_errors,
-                },
+            raise RuntimeError(
+                f"{error}; 批量上传回滚未完全完成：" + "; ".join(cleanup_errors)
             ) from error
         raise
 
@@ -1911,25 +1946,39 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
-def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
-    # App-level writes own the material projection so annotation truth and searchable
-    # material metadata are projected exactly once. Direct repository callers keep
-    # the legacy/default projection behavior via project_material=True.
-    saved = _v50_annotation_repository(project_id).upsert(
-        image_id, boxes, annotation_state, project_material=False
-    )
-    updated = saved['updated_at']
-    # v42.11：把标注摘要同步进 material index。列表页/首次启动无需逐张再次读取 annotation SQLite，
-    # 同时保留前 32 个框用于数据卡片和预览叠加显示。
+def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
+    boxes = list(saved.get("boxes") or [])
+    state = str(saved.get("annotation_state") or ("annotated" if boxes else "unannotated"))
+    updated = str(saved.get("updated_at") or now_iso())
     patch = {
-        **annotation_summary(boxes, saved['annotation_state']),
+        **annotation_summary(boxes, state),
         "annotation_scope": list(saved.get("annotation_scope") or []),
         "annotation_hash": str(saved.get("content_digest") or ""),
         "annotation_summary_at": updated,
     }
-    if saved['annotation_state'] in {'annotated', 'confirmed_empty'}:
+    if state in {"annotated", "confirmed_empty"}:
         patch["processing_status"] = "processed"
         patch["annotated_at"] = updated
+    return patch
+
+
+def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
+    batch = _v50_active_image_batch(project_id)
+    normalized_id = str(image_id)
+    if batch is not None and normalized_id in batch.get("records", {}):
+        batch.setdefault("annotations", {})[normalized_id] = {
+            "image_id": normalized_id,
+            "boxes": [dict(box) for box in boxes],
+            "annotation_state": annotation_state,
+        }
+        return
+
+    # Existing-image writes remain immediately durable. New images inside
+    # an import/upload batch are persisted together by _v50_end_image_batch.
+    saved = _v50_annotation_repository(project_id).upsert(
+        image_id, boxes, annotation_state, project_material=False
+    )
+    patch = _v50_material_annotation_patch(saved)
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
@@ -1942,6 +1991,7 @@ def add_image_record(
     project_id: str, src: Path, original_name: str,
     source_type: str = "raw", dataset_id: str = "default",
     storage_source_id: str = "default_local", annotation_builder=None,
+    content_sha256: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
     ext = src.suffix.lower()
@@ -1965,7 +2015,9 @@ def add_image_record(
         storage_source_id, object_key, src,
         content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
     )
-    content_hash = sha256_file(src)
+    content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
+    if not content_hash:
+        content_hash = sha256_file(src)
     target_dataset_id = dataset_id or "default"
     record = {
         "id": img_id,
@@ -3100,37 +3152,54 @@ async def upload_images(
     uploaded, failed = [], []
     batch_id = uuid.uuid4().hex[:12]
     started = time.time()
-    # v42.11：分块写盘，避免多张大图一次性占满内存；逐文件返回失败原因。
-    for file in files:
-        filename = safe_filename(file.filename or "image.jpg")
-        ext = Path(filename).suffix.lower()
-        if ext not in IMAGE_EXTS:
-            failed.append({"name": filename, "reason": "不支持的图片格式"})
-            continue
-        tmp = p / "imports" / f"upload_{uuid.uuid4().hex}{ext}"
-        try:
-            with tmp.open("wb") as out:
-                while True:
-                    chunk = await file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-            if not tmp.exists() or tmp.stat().st_size <= 0:
-                failed.append({"name": filename, "reason": "文件为空"})
+    _v50_begin_image_batch(project_id)
+    try:
+        # Stream each multipart file to disk so memory stays bounded. The
+        # same pass also computes SHA256, avoiding a later full source reread.
+        for file in files:
+            filename = safe_filename(file.filename or "image.jpg")
+            ext = Path(filename).suffix.lower()
+            if ext not in IMAGE_EXTS:
+                failed.append({"name": filename, "reason": "不支持的图片格式"})
                 continue
-            record = add_image_record(
-                project_id, tmp, filename, "raw", dataset_id, storage_source_id
-            )
-            if record:
-                uploaded.append(record)
-            else:
-                failed.append({"name": filename, "reason": "图片损坏或无法识别"})
-        except StorageError as error:
-            failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
-        except Exception as e:
-            failed.append({"name": filename, "reason": str(e)})
-        finally:
-            tmp.unlink(missing_ok=True)
+            tmp = p / "imports" / f"upload_{uuid.uuid4().hex}{ext}"
+            upload_digest = hashlib.sha256()
+            try:
+                with tmp.open("wb") as out:
+                    while True:
+                        chunk = await file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        upload_digest.update(chunk)
+                        out.write(chunk)
+                if not tmp.exists() or tmp.stat().st_size <= 0:
+                    failed.append({"name": filename, "reason": "文件为空"})
+                    continue
+                record = add_image_record(
+                    project_id,
+                    tmp,
+                    filename,
+                    "raw",
+                    dataset_id,
+                    storage_source_id,
+                    content_sha256=upload_digest.hexdigest(),
+                )
+                if record:
+                    uploaded.append(record)
+                else:
+                    failed.append({"name": filename, "reason": "图片损坏或无法识别"})
+            except StorageError as error:
+                failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
+            except Exception as error:
+                failed.append({"name": filename, "reason": str(error)})
+            finally:
+                tmp.unlink(missing_ok=True)
+        _v50_end_image_batch(save=True)
+    except Exception:
+        if _v50_active_image_batch(project_id):
+            _v50_end_image_batch(save=False)
+        raise
+
     upload_batch_store(project_id).create(
         batch_id,
         [str(item.get("id")) for item in uploaded],
@@ -3142,7 +3211,7 @@ async def upload_images(
         "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
         "elapsed_seconds": round(max(0.0, time.time()-started), 2),
-        "total": material_store(project_id).count()
+        "total": material_store(project_id).count(),
     }
 
 
