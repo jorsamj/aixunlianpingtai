@@ -172,6 +172,28 @@ def test_cleanup_refuses_linked_bundle_root_and_preserves_active_copy(tmp_path: 
     assert protected.read_bytes() == b"active"
 
 
+def test_process_liveness_probe_never_sends_os_signal(monkeypatch: pytest.MonkeyPatch):
+    observed: list[int] = []
+
+    monkeypatch.setattr(
+        training_tasks.psutil,
+        "pid_exists",
+        lambda process_id: observed.append(int(process_id)) or True,
+    )
+    monkeypatch.setattr(
+        training_tasks.os,
+        "kill",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("process liveness probe must never signal a process")
+        ),
+    )
+
+    assert training_tasks._process_is_running(43210) is True
+    assert observed == [43210]
+    assert training_tasks._process_is_running(0) is False
+    assert observed == [43210]
+
+
 def test_cleanup_requires_work_boundary_and_keeps_live_owner_copy(tmp_path: Path):
     work = tmp_path / "work"
     bundle = work / "bundle"

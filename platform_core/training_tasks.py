@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
+import psutil
 import yaml
 from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
@@ -326,13 +327,12 @@ def _normalize_training_image(
 def _process_is_running(process_id: int) -> bool:
     if process_id <= 0:
         return False
-    try:
-        os.kill(process_id, 0)
-    except ProcessLookupError:
-        return False
-    except (PermissionError, OSError):
-        return True
-    return True
+    # POSIX commonly uses os.kill(pid, 0) as a non-signalling existence probe,
+    # but that contract is unsafe on Windows: signal value 0 is CTRL_C_EVENT
+    # there. Use psutil's cross-platform, non-signalling PID probe instead. A
+    # reused PID intentionally counts as live so orphan cleanup remains
+    # conservative and never deletes a temporary copy owned by another process.
+    return bool(psutil.pid_exists(int(process_id)))
 
 
 def _cleanup_orphan_bundle_copies(

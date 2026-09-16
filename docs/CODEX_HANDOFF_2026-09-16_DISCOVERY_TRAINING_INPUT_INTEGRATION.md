@@ -84,3 +84,18 @@ Still **NOT VERIFIED** by this batch:
 - genuine 10k ZIP/data acceptance or performance timing.
 
 Those require the corresponding real host/environment and must not be inferred from CI.
+
+## Windows PID-probe defect found during cross-platform acceptance
+
+The new Windows training-input gate exposed a real platform bug rather than a test-only
+problem. `training_tasks._process_is_running()` used the POSIX idiom
+`os.kill(pid, 0)`. On Windows, Python defines signal value `0` as `CTRL_C_EVENT`; it is
+therefore not a safe, non-signalling PID-existence probe. The diagnostic parent process
+received `KeyboardInterrupt` while a child test exercised orphan-copy cleanup, proving
+the production code path could emit a console control event on Windows.
+
+The implementation now uses `psutil.pid_exists()` for a cross-platform, non-signalling
+probe. A permanent unit guard replaces `os.kill` with a function that raises if called
+and verifies the liveness path uses only the psutil probe. The temporary diagnostic
+workflow/helper used to isolate this issue must be removed after the permanent Windows
+and Ubuntu gates are green.
