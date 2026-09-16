@@ -9,30 +9,9 @@ on:
       - '.github/workflows/tmp-zip-runtime-navigation-diagnostic.yml'
 
 jobs:
-  browser-case:
-    strategy:
-      fail-fast: false
-      matrix:
-        case:
-          - 'delayed request from previous page cannot jump back over the current page'
-          - 'final v42.4 video polling patches rows'
-          - 'source polling is PollRegistry-managed'
-          - 'final navigation owner closes the mobile sidebar'
-          - 'final navigation persists the selected page'
-          - 'legacy auto-label route alias resolves'
-          - 'historical persisted 自动标注 page is restored'
-          - 'storage configuration route is rendered'
-          - 'file input beautification survives page render lifecycle ownership'
-          - 'modal file input beautification survives modal lifecycle ownership'
-          - 'modal table wrapping and first-field focus survives normalization ownership'
-          - 'training server connection keeps existing form and payload behavior'
-          - 'paddle environment activation keeps manual and quick-detect behavior'
-          - 'model config delete keeps model configuration page consistent'
-          - 'prompt template save appears immediately in model configuration'
-          - 'prompt template delete disappears immediately in model configuration'
+  navigation-sequence:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    name: ${{ matrix.case }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,5 +27,5 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Install frontend dependencies
         run: npm ci
-      - name: Run isolated browser case
-        run: npx playwright test tests/browser/navigation-stability.spec.mjs --grep "${{ matrix.case }}"
+      - name: Run navigation stability sequence
+        run: npx playwright test tests/browser/navigation-stability.spec.mjs
