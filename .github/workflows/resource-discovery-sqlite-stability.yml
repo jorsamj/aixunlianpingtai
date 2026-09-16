@@ -7,14 +7,18 @@ on:
       - main
     paths:
       - platform_core/resource_discovery/cache.py
+      - platform_core/resource_discovery/scanner.py
       - platform_core/resource_discovery/tasks.py
       - tests/unit/test_resource_discovery_sqlite_lifecycle.py
+      - tests/unit/test_resource_discovery_scope_contract.py
       - .github/workflows/resource-discovery-sqlite-stability.yml
   pull_request:
     paths:
       - platform_core/resource_discovery/cache.py
+      - platform_core/resource_discovery/scanner.py
       - platform_core/resource_discovery/tasks.py
       - tests/unit/test_resource_discovery_sqlite_lifecycle.py
+      - tests/unit/test_resource_discovery_scope_contract.py
       - .github/workflows/resource-discovery-sqlite-stability.yml
   workflow_dispatch:
 
@@ -35,6 +39,6 @@ jobs:
       - name: Install lifecycle test dependencies
         run: python -m pip install --disable-pip-version-check pytest filelock psutil
       - name: Compile resource discovery modules
-        run: python -m py_compile platform_core/resource_discovery/cache.py platform_core/resource_discovery/tasks.py
-      - name: SQLite lifecycle and concurrency guard
-        run: python -m pytest --confcutdir=tests/unit -q tests/unit/test_resource_discovery_sqlite_lifecycle.py
+        run: python -m py_compile platform_core/resource_discovery/cache.py platform_core/resource_discovery/scanner.py platform_core/resource_discovery/tasks.py tests/unit/test_resource_discovery_sqlite_lifecycle.py tests/unit/test_resource_discovery_scope_contract.py
+      - name: SQLite lifecycle and model full-scan scope guards
+        run: python -m pytest --confcutdir=tests/unit -q tests/unit/test_resource_discovery_sqlite_lifecycle.py tests/unit/test_resource_discovery_scope_contract.py
