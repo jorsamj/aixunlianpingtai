@@ -23,7 +23,7 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.build || null))
-    .toBe('training-material-picker-runtime-422501');
+    .toBe('training-material-picker-runtime-422502');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -80,12 +80,23 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect(page.locator('#trV3PageMeta')).toContainText('当前页 60 张');
   expect(requests.some(value => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(value))).toBe(false);
   expect(requests.filter(value => value.includes(`/api/v62/projects/${projectId}/training-materials?`))).toHaveLength(1);
-  expect(thumbnailRequests.length).toBeLessThan(60);
+  await expect.poll(() => thumbnailRequests.length).toBeGreaterThan(0);
+  const firstViewportThumbnailCount = thumbnailRequests.length;
+  expect(firstViewportThumbnailCount).toBeLessThan(60);
+
+  const gridMetrics = await page.locator('#trV3Grid').evaluate(element => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(gridMetrics.scrollHeight).toBeGreaterThan(gridMetrics.clientHeight);
 
   const firstCard = page.locator('.train-v3-card').first();
   const firstImage = firstCard.locator('img');
   const ratio = await firstImage.evaluate(element => getComputedStyle(element).aspectRatio);
   expect(ratio).toContain('4');
+
+  await page.locator('#trV3Grid').evaluate(element => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event('scroll')); });
+  await expect.poll(() => thumbnailRequests.length).toBeGreaterThan(firstViewportThumbnailCount);
 
   const firstId = await firstCard.getAttribute('data-material-id');
   await firstCard.locator('input').check();
@@ -112,6 +123,7 @@ test('training material picker opens immediately, renders larger previews, and p
   expect(runtimeState.pageSize).toBe(60);
   expect(runtimeState.fullPoolHydration).toBe(false);
   expect(runtimeState.bulkSelectionOwner).toBe('server');
+  expect(runtimeState.viewportThumbnailLoading).toBe(true);
 
   await page.getByRole('button', {name: '确认选择'}).click();
   await expect(page.locator('.train-v3-picker.server-paged')).not.toBeVisible();
