@@ -38,9 +38,9 @@ recent-admission grace:          5 minutes
 A configured value of `0` disables the corresponding quota or TTL rule.
 Negative and non-integer values are rejected instead of being silently coerced.
 
-The quota uses logical Bundle bytes. This is intentionally conservative: image
-hardlinks may initially share physical disk blocks with a task Bundle, but the
-cache can later become the remaining link after task cleanup.
+The quota uses logical Bundle bytes. This remains intentionally conservative even
+though trainer-writable task images are now restored with `shutil.copy2()` and
+therefore do not share an inode with the persistent cache.
 
 ## LRU / TTL evidence
 
@@ -56,8 +56,10 @@ cache lookup refreshes it before the task restores the Bundle, and a successful
 restore refreshes it again. The access sidecar is never part of Snapshot,
 manifest, label or model correctness.
 
-For older schema-v2 entries without `access.json`, lifecycle ordering falls back
-to `cache.json.published_at`, then the entry directory mtime.
+Schema-v2 entries are not admitted after the writable-image isolation fix. Cache
+schema v3 deliberately fences legacy entries because schema-v2 task restores could
+have shared writable image inodes with persistent cache data. Lifecycle fallback
+metadata remains relevant only to entries admitted by the current schema.
 
 TTL admission is strict: an entry whose last access is older than the configured
 TTL is not returned by `resolve()`. It can be removed by the next maintenance
@@ -88,10 +90,11 @@ If another process is actively publishing/restoring the entry, maintenance does
 not wait and does not delete it. It records `skipped_locked` and leaves the
 entry for a later pass.
 
-After restoration, the trainer reads its own task-local `work/bundle`. Images
-may be hardlinks to the same file object, while labels, hidden test ground truth,
-Snapshot, YAML and manifest are copied. Removing the cache pathname therefore
-does not remove the task-local hardlink.
+After restoration, the trainer reads its own task-local `work/bundle`. Every
+trainer-writable image is copied with `shutil.copy2()` from the immutable persistent
+cache; labels, hidden test ground truth, Snapshot, YAML and manifest are copied as
+well. The trainer can therefore repair or rewrite a JPEG without mutating the
+persistent `TrainingBundleCache` entry.
 
 ## Observability
 
@@ -139,7 +142,7 @@ fabricated.
 
 ## Safety invariants
 
-- Cache payload integrity rules from schema v2 remain unchanged.
+- Cache schema v3 keeps the integrity gates while rejecting legacy schema-v2 entries that predate writable-image isolation.
 - Large images are not re-hashed merely for cache lookup, but size/manifest
   evidence is checked and finalization still performs the full SHA256 gate.
 - Snapshot, label and data-YAML integrity checks remain mandatory.

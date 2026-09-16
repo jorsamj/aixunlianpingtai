@@ -1,8 +1,9 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from platform_core.resource_discovery import request_scope, tasks
+from platform_core.resource_discovery import request_scope, scanner, tasks
 
 
 def test_directory_model_worker_requires_durable_explicit_roots():
@@ -70,3 +71,44 @@ def test_worker_model_handler_never_uses_implicit_none_roots():
     assert "scan_roots = _model_scan_roots(scope, roots)" in source
     assert "scan_model_files(\n            scan_roots," in source
     assert '"scan_root_mode": "explicit"' in source
+
+
+
+def test_windows_local_scan_roots_include_all_visible_local_drives(monkeypatch):
+    partitions = [
+        SimpleNamespace(device="C:\\", mountpoint="C:/", fstype="NTFS", opts="rw"),
+        SimpleNamespace(device="D:\\", mountpoint="D:/", fstype="NTFS", opts="rw"),
+        SimpleNamespace(device="F:\\", mountpoint="F:/", fstype="NTFS", opts="rw"),
+    ]
+    monkeypatch.setattr(scanner.psutil, "disk_partitions", lambda all=False: partitions)
+
+    roots = scanner.local_scan_roots(platform="win32")
+
+    assert [str(root).replace("\\", "/").rstrip("/") for root in roots] == ["C:", "D:", "F:"]
+
+
+def test_linux_local_scan_roots_exclude_network_and_virtual_mounts(monkeypatch):
+    partitions = [
+        SimpleNamespace(device="/dev/sda1", mountpoint="/", fstype="ext4", opts="rw"),
+        SimpleNamespace(device="/dev/sdb1", mountpoint="/data", fstype="xfs", opts="rw"),
+        SimpleNamespace(device="server:/share", mountpoint="/mnt/nfs", fstype="nfs4", opts="rw,_netdev"),
+        SimpleNamespace(device="//server/share", mountpoint="/mnt/smb", fstype="cifs", opts="rw"),
+        SimpleNamespace(device="proc", mountpoint="/proc", fstype="proc", opts="rw"),
+        SimpleNamespace(device="tmpfs", mountpoint="/run", fstype="tmpfs", opts="rw"),
+    ]
+    monkeypatch.setattr(scanner.psutil, "disk_partitions", lambda all=False: partitions)
+
+    assert scanner.local_scan_roots(platform="linux") == [Path("/"), Path("/data")]
+
+
+@pytest.mark.parametrize("fstype", ["nfs", "nfs4", "smb", "cifs", "sshfs", "proc", "sysfs", "tmpfs", "cgroup", "cgroup2"])
+def test_full_scan_filesystem_fencing_keeps_network_and_virtual_types_excluded(fstype):
+    assert scanner._is_excluded_filesystem("device", "/mnt/test", fstype, "rw") is True
+
+
+def test_public_discovery_task_projects_frozen_request_scope_and_roots():
+    source = Path("app.py").read_text(encoding="utf-8")
+    assert '"request.json"' in source
+    assert 'response["discovery_scope"]' in source
+    assert 'response["scan_roots"] = scan_roots' in source
+    assert 'response["scan_root_count"] = len(scan_roots)' in source

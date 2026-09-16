@@ -4623,6 +4623,19 @@ def _public_discovery_task(task: TaskRecord) -> Dict[str, Any]:
     response = _public_task(task)
     response["task_id"] = task.task_id
     response["progress_determinate"] = False
+    request_payload = shared_task_artifacts().read_json(
+        task.task_id, "request.json", default={}
+    )
+    if not isinstance(request_payload, dict):
+        request_payload = {}
+    scan_roots = [
+        str(root).strip()
+        for root in (request_payload.get("roots") or [])
+        if str(root).strip()
+    ]
+    response["discovery_scope"] = str(request_payload.get("scope") or "").strip().lower()
+    response["scan_roots"] = scan_roots
+    response["scan_root_count"] = len(scan_roots)
     progress = shared_task_artifacts().read_json(
         task.task_id, RESOURCE_DISCOVERY_PROGRESS_REF, default={}
     )
