@@ -1,6 +1,9 @@
 const DEFAULT_PAGE_SIZE = 120;
 const ID_BATCH_SIZE = 500;
 const CACHE_LIMIT = 12;
+const THUMBNAIL_EAGER_COUNT = 8;
+const THUMBNAIL_ROOT_MARGIN = '180px 0px';
+const IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -53,6 +56,7 @@ export function installTrainingMaterialPickerRuntime({
   let requestSequence = 0;
   let searchTimer = null;
   let activeController = null;
+  let imageObserver = null;
   const pageCache = new Map();
 
   function injectStyles() {
@@ -62,7 +66,7 @@ export function installTrainingMaterialPickerRuntime({
     style.textContent = `
       .train-v3-picker.server-paged{min-height:62vh}
       .train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(8,minmax(0,1fr));max-height:58vh;min-height:360px;align-content:start}
-      .train-v3-picker.server-paged .train-v3-card img{height:96px}
+      .train-v3-picker.server-paged .train-v3-card img{height:96px;background:#eef2f7;object-fit:cover}
       .train-v3-picker.server-paged .train-v3-card.blocked{opacity:.5;cursor:not-allowed}
       .train-v3-picker.server-paged .train-v3-card.blocked:after{content:'已用于另一素材集';position:absolute;left:6px;bottom:48px;padding:2px 5px;border-radius:6px;background:rgba(15,23,42,.78);color:#fff;font-size:9px}
       .train-v3-picker.server-paged .train-v3-skeleton{height:154px;border:1px solid #e5eaf2;border-radius:12px;background:linear-gradient(100deg,#f1f5f9 20%,#f8fafc 45%,#f1f5f9 70%);background-size:220% 100%;animation:trainPickerShimmer 1.1s linear infinite}
@@ -126,7 +130,43 @@ export function installTrainingMaterialPickerRuntime({
     </div>`;
   }
 
+  function disconnectImageObserver() {
+    imageObserver?.disconnect?.();
+    imageObserver = null;
+  }
+
+  function loadThumbnail(image) {
+    if (!image || image.dataset.thumbnailLoaded === '1') return;
+    const source = image.dataset.src;
+    if (!source) return;
+    image.dataset.thumbnailLoaded = '1';
+    image.src = source;
+  }
+
+  function attachViewportImages() {
+    disconnectImageObserver();
+    const grid = document.getElementById('trV3Grid');
+    const images = [...document.querySelectorAll('#trV3Grid img[data-src]')];
+    if (!images.length) return;
+    images.slice(0, THUMBNAIL_EAGER_COUNT).forEach(loadThumbnail);
+    const deferred = images.slice(THUMBNAIL_EAGER_COUNT);
+    if (!deferred.length) return;
+    if (typeof window.IntersectionObserver !== 'function') {
+      deferred.forEach(loadThumbnail);
+      return;
+    }
+    imageObserver = new window.IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        loadThumbnail(entry.target);
+        imageObserver?.unobserve?.(entry.target);
+      });
+    }, {root: grid, rootMargin: THUMBNAIL_ROOT_MARGIN, threshold: 0.01});
+    deferred.forEach(image => imageObserver.observe(image));
+  }
+
   function renderSkeleton() {
+    disconnectImageObserver();
     const grid = document.getElementById('trV3Grid');
     if (!grid) return;
     grid.innerHTML = Array.from({length: 32}, () => '<div class="train-v3-skeleton" aria-hidden="true"></div>').join('');
@@ -146,26 +186,30 @@ export function installTrainingMaterialPickerRuntime({
         const fallback = image.dataset.fallback;
         if (!fallback || image.dataset.fallbackUsed === '1') return;
         image.dataset.fallbackUsed = '1';
+        image.dataset.thumbnailLoaded = '1';
         image.src = fallback;
       }, {once: true});
     });
+    attachViewportImages();
   }
 
   function renderPage() {
     if (!picker) return;
     const grid = document.getElementById('trV3Grid');
     if (!grid) return;
+    disconnectImageObserver();
     const blocked = blockedIds(picker.role);
     grid.innerHTML = picker.items.map((row, index) => {
       const id = String(row.id || '');
       const selected = picker.selected.has(id);
       const unavailable = blocked.has(id);
       const labelText = (row.labels || []).map(labelDisplay).filter(Boolean).join('、') || '无标签';
-      const loading = index < 16 ? 'eager' : 'lazy';
-      const priority = index < 8 ? 'high' : 'low';
+      const loading = index < THUMBNAIL_EAGER_COUNT ? 'eager' : 'lazy';
+      const priority = index < THUMBNAIL_EAGER_COUNT ? 'high' : 'low';
+      const thumbnail = row.thumbnail_url || row.content_url || '';
       return `<label class="train-v3-card ${selected ? 'on' : ''} ${unavailable ? 'blocked' : ''}" data-material-id="${esc(id)}">
         <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
-        <img src="${esc(row.thumbnail_url || row.content_url || '')}" data-fallback="${esc(row.content_url || '')}" loading="${loading}" decoding="async" fetchpriority="${priority}" alt="">
+        <img src="${IMAGE_PLACEHOLDER}" data-src="${esc(thumbnail)}" data-fallback="${esc(row.content_url || '')}" loading="${loading}" decoding="async" fetchpriority="${priority}" alt="">
         <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span title="${esc(labelText)}">${esc(labelText)}</span>
       </label>`;
     }).join('') || '<div class="empty">没有符合筛选条件的可训练图片</div>';
@@ -284,6 +328,7 @@ export function installTrainingMaterialPickerRuntime({
   async function open(role) {
     const pid = projectId();
     if (!pid) return notify('当前项目不存在');
+    disconnectImageObserver();
     injectStyles();
     picker = {
       role: role === 'test' ? 'test' : 'train',
@@ -381,6 +426,8 @@ export function installTrainingMaterialPickerRuntime({
         repositoryRevision: picker.repositoryRevision,
         networkOwner: true,
         fullPoolHydration: false,
+        viewportThumbnailLoading: true,
+        eagerThumbnailCount: THUMBNAIL_EAGER_COUNT,
       } : null;
     },
   };
