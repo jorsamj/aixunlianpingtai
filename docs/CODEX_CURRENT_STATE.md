@@ -3,6 +3,34 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Task Runtime Truth v2 CLOSED
+
+Product implementation: `cc8981888bc4b27ee9594290455bd08e61713c9d`.
+Permanent Task Runtime Truth gate expansion: `38aa8f736ee11ae419042fa2e90127bd45937ac5`.
+Formal `VERSION.txt` remains `42.24.0`.
+
+The shared durable-task frontend contract now covers training, AI annotation,
+material batches, storage scan/import, server material import, resource discovery,
+video processing, and deployment tests. For those durable payloads, `task_status`
+wins over compatibility `status`, `phase` wins over `task_stage` / `stage`, and
+`progress_percent` wins over legacy `progress`; the browser does not derive a
+new durable percentage from domain counters.
+
+A numeric `resource_queue_position` is displayed as “队列第 N 位” only when the
+backend also returns `resource_queue_position_exact === true`. Candidate order,
+priority order, or an inexact numeric position is never presented as an exact
+Worker/hardware queue position. Domain-specific diagnostics such as scanned file
+counts, extracted bytes, current paths, and wait reasons remain visible.
+
+The permanent `Task Runtime Truth` workflow runs the expanded backend/frontend
+contract on both Ubuntu and Windows. The closure run passed both OS jobs, and the
+existing Frontend Runtime workflow passed frontend unit/owner guards plus Real
+Chrome runtime regressions. The existing cleaning frontend queue/progress truth
+closure remains authoritative and was not reopened by this batch.
+
+Detailed handoff: `docs/CODEX_HANDOFF_2026-09-16_TASK_RUNTIME_TRUTH_V2.md`.
+
+
 ## Product closure — Training Bundle Snapshot Cache CLOSED
 
 Training Bundle Snapshot Cache is implemented at product commit `b0868a7409ec019365e74355b46f21643d0da2a3`.
@@ -32,12 +60,12 @@ images use their locked size/manifest evidence; finalization still performs the
 full image SHA256 gate on every run.
 
 Each training task still receives its own `work/bundle`; the trainer never runs
-directly inside the shared cache. Reuse hard-links immutable image files when
-the OS/filesystem permits it, while labels, hidden test ground truth, Snapshot,
-YAML and manifest are copied into the task bundle. `os.link()` is cross-platform
-and any hard-link failure (including cross-device filesystems) falls back to a
-normal copy. The finalization gate still re-hashes the task bundle on every run
-before accepting the model artifact.
+directly inside the shared cache. Cache schema v3 restores trainer-writable image
+inputs with `shutil.copy2()` rather than writable hard-links, so Ultralytics or
+other trainer-side mutations cannot modify the persistent cache inode. Legacy
+schema-v2 cache entries are fenced because their prior hard-link isolation cannot
+be assumed clean. The finalization gate still re-hashes the task bundle on every
+run before accepting the model artifact.
 
 Permanent contracts cover project isolation, cache marker/manifest identity,
 missing-member rejection, verified-file-count fencing, hard-link reuse,
