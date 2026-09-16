@@ -23,7 +23,7 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.build || null))
-    .toBe('training-material-picker-runtime-422502');
+    .toBe('training-material-picker-runtime-422503');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -90,9 +90,8 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect(page.locator('#trV3PageMeta')).toContainText('当前页 60 张');
   expect(requests.some(value => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(value))).toBe(false);
   expect(requests.filter(value => value.includes(`/api/v62/projects/${projectId}/training-materials?`))).toHaveLength(1);
-  await expect.poll(() => thumbnailRequests.length).toBeGreaterThan(0);
+  await expect.poll(() => thumbnailRequests.length).toBe(15);
   const firstViewportThumbnailCount = thumbnailRequests.length;
-  expect(firstViewportThumbnailCount).toBeLessThan(60);
 
   const gridMetrics = await page.locator('#trV3Grid').evaluate(element => ({
     clientHeight: element.clientHeight,
@@ -134,6 +133,7 @@ test('training material picker opens immediately, renders larger previews, and p
   expect(runtimeState.fullPoolHydration).toBe(false);
   expect(runtimeState.bulkSelectionOwner).toBe('server');
   expect(runtimeState.viewportThumbnailLoading).toBe(true);
+  expect(runtimeState.eagerThumbnailCount).toBe(15);
 
   await page.getByRole('button', {name: '确认选择'}).click();
   await expect(page.locator('.train-v3-picker.server-paged')).not.toBeVisible();
