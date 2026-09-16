@@ -36,35 +36,32 @@ jobs:
           end = text.index('\ndef zip_dir(', start)
           body = text[start:end]
 
-          old_sig = '''def add_image_record(
-              project_id: str, src: Path, original_name: str,
-              source_type: str = "raw", dataset_id: str = "default",
-              storage_source_id: str = "default_local", annotation_builder=None,
-              content_sha256: Optional[str] = None,
-          ) -> Optional[Dict[str, Any]]:
-              p = project_dir(project_id)
-              ext = src.suffix.lower()
-          '''
-          new_sig = '''def add_image_record(
-              project_id: str, src: Any, original_name: str,
-              source_type: str = "raw", dataset_id: str = "default",
-              storage_source_id: str = "default_local", annotation_builder=None,
-              content_sha256: Optional[str] = None,
-          ) -> Optional[Dict[str, Any]]:
-              p = project_dir(project_id)
-              path_source = isinstance(src, (str, Path))
-              ext = (Path(src).suffix if path_source else Path(original_name).suffix).lower()
-          '''
-          if body.count(old_sig) != 1:
-              raise SystemExit('add_image_record signature/path contract changed')
-          body = body.replace(old_sig, new_sig, 1)
+          body, count = re.subn(
+              r'project_id: str, src: Path, original_name: str,',
+              'project_id: str, src: Any, original_name: str,',
+              body,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('add_image_record source type contract changed')
 
-          old_info = '''    try:
-              info = image_info(src)
-          except Exception:
-              return None
-          '''
-          new_info = '''    try:
+          body, count = re.subn(
+              r'(?m)^    ext = src\.suffix\.lower\(\)$',
+              '    path_source = isinstance(src, (str, Path))\n'
+              '    ext = (Path(src).suffix if path_source else Path(original_name).suffix).lower()',
+              body,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('add_image_record extension contract changed')
+
+          info_pattern = re.compile(
+              r'(?m)^    try:\n'
+              r'        info = image_info\(src\)\n'
+              r'    except Exception:\n'
+              r'        return None\n'
+          )
+          info_replacement = '''    try:
               if path_source:
                   info = image_info(Path(src))
               else:
@@ -83,15 +80,16 @@ jobs:
                   pass
               return None
           '''
-          if body.count(old_info) != 1:
+          body, count = info_pattern.subn(info_replacement, body, count=1)
+          if count != 1:
               raise SystemExit('image info contract changed')
-          body = body.replace(old_info, new_info, 1)
 
-          old_hash = '''    content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
-              if not content_hash:
-                  content_hash = sha256_file(src)
-          '''
-          new_hash = '''    content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
+          hash_pattern = re.compile(
+              r'(?m)^    content_hash = str\(content_sha256 or metadata\.sha256 or ""\)\.strip\(\)\.lower\(\)\n'
+              r'    if not content_hash:\n'
+              r'        content_hash = sha256_file\(src\)\n'
+          )
+          hash_replacement = '''    content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
               if not content_hash:
                   if path_source:
                       content_hash = sha256_file(Path(src))
@@ -103,56 +101,18 @@ jobs:
                       content_hash = digest.hexdigest()
                       src.seek(0)
           '''
-          if body.count(old_hash) != 1:
+          body, count = hash_pattern.subn(hash_replacement, body, count=1)
+          if count != 1:
               raise SystemExit('content hash contract changed')
-          body = body.replace(old_hash, new_hash, 1)
+
           text = text[:start] + body + text[end:]
 
           upload_start = text.index('@app.post("/api/projects/{project_id}/images")')
           upload_end = text.index('\n\n_ANNOTATION_INDEX_LOCK', upload_start)
           upload = text[upload_start:upload_end]
-          old_loop = '''        # Stream each multipart file to disk so memory stays bounded. The
-                  # same pass also computes SHA256, avoiding a later full source reread.
-                  for file in files:
-                      filename = safe_filename(file.filename or "image.jpg")
-                      ext = Path(filename).suffix.lower()
-                      if ext not in IMAGE_EXTS:
-                          failed.append({"name": filename, "reason": "不支持的图片格式"})
-                          continue
-                      tmp = p / "imports" / f"upload_{uuid.uuid4().hex}{ext}"
-                      upload_digest = hashlib.sha256()
-                      try:
-                          with tmp.open("wb") as out:
-                              while True:
-                                  chunk = await file.read(1024 * 1024)
-                                  if not chunk:
-                                      break
-                                  upload_digest.update(chunk)
-                                  out.write(chunk)
-                          if not tmp.exists() or tmp.stat().st_size <= 0:
-                              failed.append({"name": filename, "reason": "文件为空"})
-                              continue
-                          record = add_image_record(
-                              project_id,
-                              tmp,
-                              filename,
-                              "raw",
-                              dataset_id,
-                              storage_source_id,
-                              content_sha256=upload_digest.hexdigest(),
-                          )
-                          if record:
-                              uploaded.append(record)
-                          else:
-                              failed.append({"name": filename, "reason": "图片损坏或无法识别"})
-                      except StorageError as error:
-                          failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
-                      except Exception as error:
-                          failed.append({"name": filename, "reason": str(error)})
-                      finally:
-                          tmp.unlink(missing_ok=True)
-          '''
-          new_loop = '''        # Starlette already owns a seekable/spooled UploadFile. Send that stream
+          loop_start = upload.index('        # Stream each multipart file to disk so memory stays bounded.')
+          loop_end = upload.index('        committed = _v50_end_image_batch(save=True)', loop_start)
+          replacement = '''        # Starlette already owns a seekable/spooled UploadFile. Send that stream
                   # directly to StorageManager instead of writing imports/upload_* and then
                   # copying the same bytes into the final object a second time.
                   for file in files:
@@ -187,24 +147,23 @@ jobs:
                       except Exception as error:
                           failed.append({"name": filename, "reason": str(error)})
           '''
-          if upload.count(old_loop) != 1:
-              raise SystemExit('plain upload tempfile loop contract changed')
-          upload = upload.replace(old_loop, new_loop, 1)
-          upload = upload.replace('    p = project_dir(project_id)\n', '', 1)
+          upload = upload[:loop_start] + replacement + upload[loop_end:]
           text = text[:upload_start] + upload + text[upload_end:]
           path.write_text(text, encoding='utf-8')
 
           test_path = Path('tests/api/test_upload_batch_performance_truth.py')
           tests = test_path.read_text(encoding='utf-8')
-          import_anchor = 'from PIL import Image\n'
-          if tests.count(import_anchor) != 1:
-              raise SystemExit('upload test import anchor changed')
-          tests = tests.replace(import_anchor, import_anchor + 'from pathlib import Path\n', 1)
+          import_anchor = 'import io\n'
+          if 'from pathlib import Path\n' not in tests:
+              if tests.count(import_anchor) != 1:
+                  raise SystemExit('upload test import anchor changed')
+              tests = tests.replace(import_anchor, import_anchor + 'from pathlib import Path\n', 1)
 
-          setup_anchor = '''    original_storage_manager = app_module.storage_manager
-              storage_manager_calls = 0
-          '''
-          setup_extra = '''    original_add_image_record = app_module.add_image_record
+          setup_anchor = '    original_storage_manager = app_module.storage_manager\n    storage_manager_calls = 0\n'
+          if 'direct_stream_sources = []' not in tests:
+              if tests.count(setup_anchor) != 1:
+                  raise SystemExit('upload test setup anchor changed')
+              setup_extra = '''    original_add_image_record = app_module.add_image_record
               direct_stream_sources = []
 
               def tracked_add_image_record(project_id, source, *args, **kwargs):
@@ -213,18 +172,17 @@ jobs:
 
               monkeypatch.setattr(app_module, "add_image_record", tracked_add_image_record)
           '''
-          if tests.count(setup_anchor) != 1:
-              raise SystemExit('upload test setup contract changed')
-          tests = tests.replace(setup_anchor, setup_anchor + setup_extra, 1)
+              tests = tests.replace(setup_anchor, setup_anchor + setup_extra, 1)
 
-          assert_anchor = '''    assert storage_manager_calls == 1
-              assert all(item.get("annotation_summary_at") for item in body["uploaded"])
-          '''
-          assert_extra = '''    assert direct_stream_sources == [True] * 12
-          '''
-          if tests.count(assert_anchor) != 1:
-              raise SystemExit('upload test assertion contract changed')
-          tests = tests.replace(assert_anchor, '    assert storage_manager_calls == 1\n' + assert_extra + '    assert all(item.get("annotation_summary_at") for item in body["uploaded"])\n', 1)
+          assertion_anchor = '    assert storage_manager_calls == 1\n'
+          if 'assert direct_stream_sources == [True] * 12' not in tests:
+              if tests.count(assertion_anchor) != 1:
+                  raise SystemExit('upload test assertion anchor changed')
+              tests = tests.replace(
+                  assertion_anchor,
+                  assertion_anchor + '    assert direct_stream_sources == [True] * 12\n',
+                  1,
+              )
           test_path.write_text(tests, encoding='utf-8')
           PY
       - name: Install focused API dependencies
