@@ -1,0 +1,86 @@
+name: Temporary Model Full Scan Fix
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/tmp-model-full-scan-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest filelock psutil
+      - name: Apply exact model scope fix and permanent tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('platform_core/resource_discovery/tasks.py')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'traversal and Python subprocess probes are deliberately confined to the\n'
+              'discovery worker. Deep filesystem traversal is bounded to explicit request\n'
+              'roots; default/auto discovery never falls back to whole-machine traversal.\n',
+              'traversal and Python subprocess probes are deliberately confined to the\n'
+              'discovery worker. Environment deep scans remain bounded to explicit request\n'
+              'roots. An explicit model scope=full action delegates local-machine root\n'
+              'resolution to the scanner, which excludes network and virtual filesystems.\n',
+              'module discovery policy docstring',
+          )
+
+          marker = '''def _require_model_roots(roots: list[Path]) -> None:\n    if not roots:\n        raise ValueError("model discovery requires at least one explicit root")\n\n\n'''
+          helper = marker + '''def _model_scan_roots(scope: str, roots: list[Path]) -> list[Path] | None:\n    """Resolve model scan roots without weakening directory-scan safety.\n\n    ``directory`` always requires caller-supplied roots. ``full`` is itself an\n    explicit user action and therefore delegates machine-local root discovery to\n    ``scan_model_files`` by passing ``None``. The scanner remains responsible for\n    excluding network and virtual filesystems cross-platform.\n    """\n\n    if scope == "directory":\n        _require_model_roots(roots)\n        return roots\n    if scope == "full":\n        return None\n    raise ValueError("model discovery scope must be directory or full")\n\n\n'''
+          replace_once(marker, helper, 'model scan root helper')
+
+          replace_once(
+              '''        roots = _explicit_roots(request)\n        _require_model_roots(roots)\n\n        manifest = _ModelManifest(\n''',
+              '''        roots = _explicit_roots(request)\n        scan_roots = _model_scan_roots(scope, roots)\n\n        manifest = _ModelManifest(\n''',
+              'model handler root selection',
+          )
+          replace_once(
+              '''        report = scan_model_files(\n            roots,\n''',
+              '''        report = scan_model_files(\n            scan_roots,\n''',
+              'model scanner invocation',
+          )
+          replace_once(
+              '''            "published": published,\n            "explicit_root_count": len(roots),\n            **counters,\n        }\n        context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)\n''',
+              '''            "published": published,\n            "explicit_root_count": len(roots),\n            "scan_root_mode": "local_machine" if scan_roots is None else "explicit",\n            **counters,\n        }\n        context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)\n''',
+              'model result root evidence',
+          )
+          path.write_text(text, encoding='utf-8')
+
+          test = '''from pathlib import Path\n\nimport pytest\n\nfrom platform_core.resource_discovery import scanner, tasks\n\n\ndef test_directory_model_scan_still_requires_explicit_root():\n    with pytest.raises(ValueError, match="requires at least one explicit root"):\n        tasks._model_scan_roots("directory", [])\n\n\ndef test_full_model_scan_delegates_machine_root_resolution_to_scanner():\n    assert tasks._model_scan_roots("full", []) is None\n    assert tasks._model_scan_roots("full", [Path("ignored-for-full-scope")]) is None\n\n\ndef test_model_handler_uses_scope_resolver_for_scanner_invocation():\n    import inspect\n\n    source = inspect.getsource(tasks.ResourceDiscoveryHandler._models)\n    assert "scan_roots = _model_scan_roots(scope, roots)" in source\n    assert "scan_model_files(\\n            scan_roots," in source\n\n\ndef test_scanner_none_roots_discovers_visible_local_roots(monkeypatch, tmp_path):\n    model = tmp_path / "best.pt"\n    model.write_bytes(b"model")\n    discovered = []\n\n    monkeypatch.setattr(scanner, "local_scan_roots", lambda platform=None: [tmp_path])\n    monkeypatch.setattr(scanner, "mount_boundaries", lambda platform=None: ())\n\n    report = scanner.scan_model_files(None, on_item=discovered.append)\n\n    assert report.models_found == 1\n    assert [Path(row["path"]).name for row in discovered] == ["best.pt"]\n\n\ndef test_full_scope_does_not_reuse_caller_roots_as_fake_machine_roots():\n    roots = [Path("one"), Path("two")]\n    assert tasks._model_scan_roots("full", roots) is None\n'''
+          Path('tests/unit/test_resource_discovery_scope_contract.py').write_text(test, encoding='utf-8')
+          PY
+      - name: Compile resource discovery scope fix
+        run: python -m py_compile platform_core/resource_discovery/scanner.py platform_core/resource_discovery/tasks.py tests/unit/test_resource_discovery_scope_contract.py
+      - name: Run focused scope and SQLite regressions
+        run: python -m pytest --confcutdir=tests/unit -q tests/unit/test_resource_discovery_scope_contract.py tests/unit/test_resource_discovery_sqlite_lifecycle.py
+      - name: Commit verified product fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add platform_core/resource_discovery/tasks.py tests/unit/test_resource_discovery_scope_contract.py
+          git diff --cached --check
+          git commit -m "fix(discovery): allow explicit full-machine model scan"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
