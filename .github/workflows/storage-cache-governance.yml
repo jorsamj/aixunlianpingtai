@@ -63,7 +63,7 @@ jobs:
           tests/frontend/storage-policy-payload.test.mjs
           tests/frontend/storage-cache-runtime.test.mjs
 
-      - name: Guard cache lifecycle and immutable object contracts
+      - name: Guard cache lifecycle, immutable objects, and presigned PUT contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -72,7 +72,13 @@ jobs:
           grep -Fq 'status.json' platform_core/storage/cache.py
           grep -Fq 'protect_existing_objects' platform_core/storage/oss.py
           grep -Fq 'x-oss-forbid-overwrite' platform_core/storage/oss.py
+          grep -Fq 'def generate_upload_contract' platform_core/storage/oss.py
+          grep -Fq 'overwrite_protected' platform_core/storage/oss.py
           grep -Fq 'IfNoneMatch="*"' platform_core/storage/s3.py
+          grep -Fq 'params["IfNoneMatch"] = "*"' platform_core/storage/s3.py
+          grep -Fq '"If-None-Match": "*"' platform_core/storage/s3.py
+          grep -Fq 'def generate_upload_contract' platform_core/storage/s3.py
+          grep -Fq 'overwrite_protected' platform_core/storage/s3.py
           grep -Fq 'storage-cache-runtime.js?v=422525' static/index.html
           grep -Fq '外部变更需重新扫描' static/modules/storage-cache-runtime.js
           grep -Fq '当前节点素材内容缓存' static/modules/storage-cache-runtime.js

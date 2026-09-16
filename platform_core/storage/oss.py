@@ -114,7 +114,31 @@ class OSSStorageProvider:
     def generate_preview_url(self, object_key, *, expires_seconds=900):
         try: return self.bucket.sign_url("GET", self._key(object_key), max(1,min(3600,int(expires_seconds))))
         except Exception as error: self._error("presign", error)
+
+    def generate_upload_contract(self, object_key, *, expires_seconds=900, content_type="application/octet-stream"):
+        """Return the signed PUT URL together with every header the client must send."""
+        expires = max(1, min(3600, int(expires_seconds)))
+        headers = {"Content-Type": content_type}
+        if self.protect_existing_objects:
+            headers["x-oss-forbid-overwrite"] = "true"
+        try:
+            url = self.bucket.sign_url("PUT", self._key(object_key), expires, headers=headers)
+            return {
+                "url": str(url),
+                "method": "PUT",
+                "headers": dict(headers),
+                "expires_seconds": expires,
+                "overwrite_protected": bool(self.protect_existing_objects),
+            }
+        except Exception as error:
+            self._error("presign upload", error)
+
     def generate_upload_url(self, object_key, *, expires_seconds=900, content_type="application/octet-stream"):
-        try: return self.bucket.sign_url("PUT", self._key(object_key), max(1, min(3600, int(expires_seconds))), headers={"Content-Type": content_type})
-        except Exception as error: self._error("presign upload", error)
+        contract = self.generate_upload_contract(
+            object_key,
+            expires_seconds=expires_seconds,
+            content_type=content_type,
+        )
+        return str(contract.get("url") or "") or None
+
     def materialize_to_local(self, object_key, destination): return self.download(object_key,destination)

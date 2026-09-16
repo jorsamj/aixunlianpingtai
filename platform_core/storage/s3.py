@@ -142,9 +142,41 @@ class S3StorageProvider:
         try: return self.client.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": self._key(object_key)}, ExpiresIn=max(1, min(3600, int(expires_seconds))))
         except Exception as error: self._error("presign", error)
 
+    def generate_upload_contract(self, object_key: str, *, expires_seconds: int = 900, content_type: str = "application/octet-stream") -> dict[str, object]:
+        """Return the signed PUT URL together with every header the client must send."""
+        expires = max(1, min(3600, int(expires_seconds)))
+        params: dict[str, object] = {
+            "Bucket": self.bucket,
+            "Key": self._key(object_key),
+            "ContentType": content_type,
+        }
+        headers = {"Content-Type": content_type}
+        if self.protect_existing_objects:
+            params["IfNoneMatch"] = "*"
+            headers["If-None-Match"] = "*"
+        try:
+            url = self.client.generate_presigned_url(
+                "put_object",
+                Params=params,
+                ExpiresIn=expires,
+            )
+            return {
+                "url": str(url),
+                "method": "PUT",
+                "headers": dict(headers),
+                "expires_seconds": expires,
+                "overwrite_protected": bool(self.protect_existing_objects),
+            }
+        except Exception as error:
+            self._error("presign upload", error)
+
     def generate_upload_url(self, object_key: str, *, expires_seconds: int = 900, content_type: str = "application/octet-stream") -> str | None:
-        try: return self.client.generate_presigned_url("put_object", Params={"Bucket": self.bucket, "Key": self._key(object_key), "ContentType": content_type}, ExpiresIn=max(1, min(3600, int(expires_seconds))))
-        except Exception as error: self._error("presign upload", error)
+        contract = self.generate_upload_contract(
+            object_key,
+            expires_seconds=expires_seconds,
+            content_type=content_type,
+        )
+        return str(contract.get("url") or "") or None
 
     def materialize_to_local(self, object_key: str, destination: str | Path) -> ObjectMetadata:
         return self.download(object_key, destination)
