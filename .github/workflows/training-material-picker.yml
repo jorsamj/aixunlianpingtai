@@ -58,11 +58,14 @@ jobs:
           tests/frontend/training-labels.test.mjs
       - name: Permanent picker guards
         run: |
-          grep -Fq 'DEFAULT_PAGE_SIZE = 120' static/modules/training-material-picker-runtime.js
-          grep -Fq 'THUMBNAIL_EAGER_COUNT = 8' static/modules/training-material-picker-runtime.js
+          grep -Fq 'DEFAULT_PAGE_SIZE = 60' static/modules/training-material-picker-runtime.js
+          grep -Fq 'THUMBNAIL_EAGER_COUNT = 6' static/modules/training-material-picker-runtime.js
+          grep -Fq 'repeat(5,minmax(0,1fr))' static/modules/training-material-picker-runtime.js
+          grep -Fq 'aspect-ratio:4/3' static/modules/training-material-picker-runtime.js
           grep -Fq 'window.IntersectionObserver' static/modules/training-material-picker-runtime.js
           grep -Fq 'data-src="${esc(thumbnail)}"' static/modules/training-material-picker-runtime.js
-          grep -Fq '/training-materials/ids' static/modules/training-material-picker-runtime.js
+          grep -Fq '/training-materials/bulk-selection' static/modules/training-material-picker-runtime.js
+          grep -Fq "bulkSelectionOwner: 'server'" static/modules/training-material-picker-runtime.js
           grep -Fq '/training-materials/selection-summary' static/modules/training-material-summary-runtime.js
           grep -Fq "FULL_MATERIAL_PAGES.delete('训练任务')" static/main.mjs
           grep -Fq 'materialSummaryRuntime: trainingMaterialSummaryRuntime' static/main.mjs
@@ -71,8 +74,11 @@ jobs:
             echo 'training picker must not restore whole-pool /images hydration' >&2
             exit 1
           fi
+          grep -Fq 'DEFAULT_PAGE_SIZE = 60' platform_core/training_material_picker_api.py
           grep -Fq 'DEFAULT_THUMBNAIL_SIZE = 192' platform_core/training_material_picker_api.py
           grep -Fq '@lru_cache(maxsize=128)' platform_core/training_material_picker_api.py
+          grep -Fq '@router.post("/bulk-selection")' platform_core/training_material_picker_api.py
+          grep -Fq 'include_total=first' platform_core/training_material_picker_api.py
           grep -Fq 'annotated=True' platform_core/training_material_picker_api.py
           grep -Fq 'repository.list_page' platform_core/training_material_picker_api.py
           grep -Fq 'repository.iter_filtered_ids' platform_core/training_material_picker_api.py
