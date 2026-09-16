@@ -25,8 +25,8 @@ jobs:
           python-version: '3.12'
       - name: Apply exact Task Runtime Truth patch
         run: python scripts/tmp_task_runtime_truth_patch.py
-      - name: Install focused Python test dependency
-        run: python -m pip install --disable-pip-version-check pytest
+      - name: Install focused Python test dependencies
+        run: python -m pip install --disable-pip-version-check pytest pillow
       - name: Compile backend contract
         run: >-
           python -m py_compile
