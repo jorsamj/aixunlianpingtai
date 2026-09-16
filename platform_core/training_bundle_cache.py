@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 from filelock import FileLock, Timeout
 
 
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 _CACHE_ROOT_NAME = "training-bundles"
 _CACHE_ACCESS_NAME = "access.json"
 _CACHE_PROJECT_LOCK_NAME = ".project.lock"
@@ -456,14 +456,11 @@ class TrainingBundleCache:
             destination_label = _resolve_relative(destination_bundle, label_ref)
             destination_image.parent.mkdir(parents=True, exist_ok=True)
             destination_label.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(source_image, destination_image)
-                hardlinked_images += 1
-                hardlinked_image_bytes += expected_size
-            except OSError:
-                shutil.copy2(source_image, destination_image)
-                copied_images += 1
-                copied_image_bytes += expected_size
+            # Trainer work is writable. Never share a cache inode with a task.
+            # A future reflink/CoW optimization is safe only if writes remain isolated.
+            shutil.copy2(source_image, destination_image)
+            copied_images += 1
+            copied_image_bytes += expected_size
             shutil.copy2(source_label, destination_label)
             label_files += 1
             label_bytes += int(source_label.stat().st_size)

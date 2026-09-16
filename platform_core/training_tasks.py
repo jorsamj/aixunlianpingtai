@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
 import yaml
+from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
 from .annotations import atomic_write_json
 from .annotation_repository import AnnotationRepository
@@ -37,6 +39,9 @@ TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 TRAINING_COMPLETION_GRACE_SECONDS = 5.0
+TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
+_JPEG_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".jfif"}
+_JPEG_NORMALIZATION_LOCK = threading.Lock()
 _SUCCESSFUL_TRAINING_OUTCOMES = {
     "completed",
     "target_reached",
@@ -232,6 +237,92 @@ def _copy_verified_isolated(
         temporary.unlink(missing_ok=True)
 
 
+def _normalize_training_image(
+    destination: Path,
+    source_content_sha256: str,
+    source_size_bytes: int,
+) -> dict[str, Any]:
+    """Normalize a task-local JPEG trainer input without rewriting source material."""
+    identity = {
+        "source_content_sha256": str(source_content_sha256),
+        "source_size_bytes": int(source_size_bytes),
+        "training_content_sha256": str(source_content_sha256),
+        "training_size_bytes": int(source_size_bytes),
+        "training_input_policy": TRAINING_INPUT_POLICY,
+        "normalized": False,
+        "normalization_reason": None,
+    }
+    if destination.suffix.lower() not in _JPEG_SUFFIXES:
+        return identity
+    current_size = destination.stat().st_size
+    if current_size < 2:
+        raise ValueError(
+            f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=jpeg_too_small"
+        )
+    with destination.open("rb") as stream:
+        jpeg_soi = stream.read(2)
+        stream.seek(-2, os.SEEK_END)
+        jpeg_eoi = stream.read(2)
+    # Extension alone is not proof of JPEG bytes. Keep opaque content format-neutral.
+    if jpeg_soi != b"\xff\xd8":
+        return identity
+    if jpeg_eoi == b"\xff\xd9":
+        return identity
+
+    temporary = destination.with_name(
+        f".{destination.name}.{uuid.uuid4().hex}.normalize.tmp"
+    )
+    try:
+        try:
+            # This Pillow switch is process-global, so serialize the narrow repair
+            # window and restore the previous value immediately afterwards.
+            with _JPEG_NORMALIZATION_LOCK:
+                previous_truncated = ImageFile.LOAD_TRUNCATED_IMAGES
+                ImageFile.LOAD_TRUNCATED_IMAGES = True
+                try:
+                    with Image.open(destination) as image:
+                        repaired = ImageOps.exif_transpose(image)
+                        try:
+                            repaired.save(
+                                temporary,
+                                format="JPEG",
+                                subsampling=0,
+                                quality=100,
+                            )
+                        finally:
+                            if repaired is not image:
+                                repaired.close()
+                finally:
+                    ImageFile.LOAD_TRUNCATED_IMAGES = previous_truncated
+        except (OSError, UnidentifiedImageError) as error:
+            raise ValueError(
+                f"TRAINING_IMAGE_INVALID: filename={destination.name}; "
+                f"reason=jpeg_missing_eoi_repair_failed; detail={error}"
+            ) from error
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise ValueError(
+                f"TRAINING_IMAGE_INVALID: filename={destination.name}; "
+                "reason=jpeg_repair_empty_output"
+            )
+        with temporary.open("rb") as stream:
+            stream.seek(-2, os.SEEK_END)
+            if stream.read(2) != b"\xff\xd9":
+                raise ValueError(
+                    f"TRAINING_IMAGE_INVALID: filename={destination.name}; "
+                    "reason=jpeg_repair_missing_eoi"
+                )
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    identity.update(
+        training_content_sha256=_sha256(destination),
+        training_size_bytes=destination.stat().st_size,
+        normalized=True,
+        normalization_reason="jpeg_missing_eoi",
+    )
+    return identity
+
 def _process_is_running(process_id: int) -> bool:
     if process_id <= 0:
         return False
@@ -407,6 +498,7 @@ def materialize_portable_dataset(
 
     splits: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}
     remaining_bytes = total_size_bytes
+    training_total_size_bytes = 0
     total_items = len(planned)
     for completed, item in enumerate(planned, start=1):
         role = str(item["role"])
@@ -429,6 +521,12 @@ def materialize_portable_dataset(
         _copy_verified_isolated(
             source_path, destination, expected_hash, bundle_root=root, durable=False
         )
+        image_identity = _normalize_training_image(
+            destination, expected_hash, size_bytes
+        )
+        training_hash = str(image_identity["training_content_sha256"])
+        training_size_bytes = int(image_identity["training_size_bytes"])
+        training_total_size_bytes += training_size_bytes
         remaining_bytes -= size_bytes
         lines = []
         for box in row.get("boxes") or []:
@@ -445,8 +543,13 @@ def materialize_portable_dataset(
                 "image_id": image_id,
                 "image_ref": image_ref,
                 "label_ref": label_ref,
-                "content_sha256": expected_hash,
-                "size_bytes": size_bytes,
+                "source_content_sha256": expected_hash,
+                "source_size_bytes": size_bytes,
+                "content_sha256": training_hash,
+                "size_bytes": training_size_bytes,
+                "training_input_policy": TRAINING_INPUT_POLICY,
+                "normalized": bool(image_identity["normalized"]),
+                "normalization_reason": image_identity["normalization_reason"],
                 "label_sha256": _sha256(label_path),
             }
         )
@@ -469,15 +572,17 @@ def materialize_portable_dataset(
     snapshot_path = root / "snapshot.json"
     atomic_write_json(snapshot_path, dict(snapshot))
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "training_input_policy": TRAINING_INPUT_POLICY,
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": _sha256(snapshot_path),
         "data_yaml_ref": "dataset/data.yaml",
-        "total_size_bytes": total_size_bytes,
+        "total_size_bytes": training_total_size_bytes,
         "splits": splits,
         "construction_verification": {
-            "image_integrity": "sha256_verified_during_materialization",
+            "image_integrity": "source_sha256_verified_then_training_input_normalized",
+            "training_input_policy": TRAINING_INPUT_POLICY,
             "post_write_check": "path_size_label_sha256_and_snapshot_sha256",
         },
     }
@@ -552,8 +657,17 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
         for member in (manifest.get("splits") or {}).get(role, []):
             image_path = _resolve_relative(path.parent, str(member.get("image_ref") or ""))
             label_path = _resolve_relative(path.parent, str(member.get("label_ref") or ""))
-            if not image_path.is_file() or _sha256(image_path) != str(member.get("content_sha256") or ""):
-                raise ValueError(f"portable image SHA256 mismatch: {member.get('image_id')}")
+            expected_training_sha = str(member.get("content_sha256") or "")
+            actual_training_sha = _sha256(image_path) if image_path.is_file() else ""
+            if not image_path.is_file() or actual_training_sha != expected_training_sha:
+                raise ValueError(
+                    "TRAINING_BUNDLE_IMAGE_MUTATED: portable image SHA256 mismatch; "
+                    f"image_id={member.get('image_id')}; "
+                    f"expected_training_sha256={expected_training_sha or '<missing>'}; "
+                    f"actual_sha256={actual_training_sha or '<missing>'}; "
+                    f"source_sha256={member.get('source_content_sha256') or expected_training_sha or '<missing>'}; "
+                    f"normalization_policy={member.get('training_input_policy') or manifest.get('training_input_policy') or '<missing>'}"
+                )
             if not label_path.is_file() or _sha256(label_path) != str(member.get("label_sha256") or ""):
                 raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
             verified += 1

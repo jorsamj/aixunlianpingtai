@@ -63,6 +63,7 @@ def test_v3_snapshot_contains_three_roles_provenance_content_hash_and_annotation
     second = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
     assert first["snapshot_id"] == second["snapshot_id"]
     assert first["schema_version"] == 3
+    assert first["training_input_policy"] == "ultralytics_jpeg_repair_v1"
     assert set(first["ids"]) == {"train", "validation", "test"}
     assert first["counts"] == manifest.counts
     assert all(row["content_sha256"] for row in first["images"])

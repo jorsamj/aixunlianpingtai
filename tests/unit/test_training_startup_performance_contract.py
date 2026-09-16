@@ -215,7 +215,8 @@ def test_materialization_uses_construction_evidence_instead_of_full_image_rehash
     assert bundle_image.is_file()
     assert bundle_image not in hashed_paths
     manifest = training_tasks._json(root / "manifest.json", {})
-    assert manifest["construction_verification"]["image_integrity"] == "sha256_verified_during_materialization"
+    assert manifest["construction_verification"]["image_integrity"] == "source_sha256_verified_then_training_input_normalized"
+    assert manifest["construction_verification"]["training_input_policy"] == "ultralytics_jpeg_repair_v1"
 
 
 def test_oom_retry_keeps_workers_independent_from_batch():

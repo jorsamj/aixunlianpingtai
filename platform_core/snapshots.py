@@ -8,6 +8,9 @@ from .annotations import atomic_write_json
 from .training_splits import SplitManifest
 
 
+TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -155,6 +158,7 @@ def build_snapshot(
         })
     payload = {
         "seed": int(seed),
+        "training_input_policy": TRAINING_INPUT_POLICY,
         "train_image_ids": train_ids,
         "val_image_ids": val_ids,
         "label_schema": stable_schema,
@@ -242,6 +246,7 @@ def _build_snapshot_v2(
     }
     payload = {
         "schema_version": 3,
+        "training_input_policy": TRAINING_INPUT_POLICY,
         "mode": manifest.mode.value,
         "test_seed": manifest.test_seed,
         "validation_seed": manifest.validation_seed,

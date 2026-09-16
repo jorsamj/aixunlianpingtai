@@ -88,16 +88,13 @@ def _set_access_ns(entry_root: Path, value: int) -> None:
     )
 
 
-def test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks(tmp_path):
+
+def test_verified_bundle_cache_restores_isolated_trainer_writable_images(tmp_path):
     snapshot_id = "a" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
     cache = TrainingBundleCache(tmp_path / "data", "project-a", max_bytes=0, ttl_seconds=0)
 
-    entry, published = cache.publish_verified(
-        source_bundle,
-        snapshot_id,
-        verified_files=2,
-    )
+    entry, published = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
     assert published["published"] is True
     assert published["verified_files"] == 2
     assert published["bundle_bytes"] == entry.bundle_bytes
@@ -112,15 +109,17 @@ def test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks(tmp_p
     cache_label = entry.bundle / "dataset/labels/train/img-1.txt"
     restored_label = restored / "dataset/labels/train/img-1.txt"
     assert restored_image.read_bytes() == b"train-image-bytes"
-    assert stats["hardlinked_images"] == 2
-    assert stats["hardlinked_image_bytes"] == len(b"train-image-bytes") + len(b"test-image-bytes")
-    assert stats["copied_images"] == 0
-    assert stats["copied_image_bytes"] == 0
+    assert stats["hardlinked_images"] == 0
+    assert stats["hardlinked_image_bytes"] == 0
+    assert stats["copied_images"] == 2
+    assert stats["copied_image_bytes"] == len(b"train-image-bytes") + len(b"test-image-bytes")
     assert stats["cache_bundle_bytes"] == entry.bundle_bytes
     assert stats["cache_last_access_ns"] > 0
-    assert os.path.samefile(cache_image, restored_image)
+    assert not os.path.samefile(cache_image, restored_image)
     assert not os.path.samefile(cache_label, restored_label)
 
+    restored_image.write_bytes(b"rewritten-by-trainer")
+    assert cache_image.read_bytes() == b"train-image-bytes"
 
 def test_cache_resolve_rejects_missing_member_without_rehashing_images(monkeypatch, tmp_path):
     snapshot_id = "b" * 64
@@ -134,7 +133,8 @@ def test_cache_resolve_rejects_missing_member_without_rehashing_images(monkeypat
     assert cache.resolve(snapshot_id) is None
 
 
-def test_cache_restore_falls_back_to_copy_when_hardlink_is_unavailable(monkeypatch, tmp_path):
+
+def test_cache_restore_never_attempts_image_hardlinks(monkeypatch, tmp_path):
     snapshot_id = "c" * 64
     source_bundle = _write_bundle(tmp_path / "source", snapshot_id=snapshot_id)
     cache = TrainingBundleCache(tmp_path / "data", "project-c", max_bytes=0, ttl_seconds=0)
@@ -143,7 +143,7 @@ def test_cache_restore_falls_back_to_copy_when_hardlink_is_unavailable(monkeypat
     monkeypatch.setattr(
         training_bundle_cache.os,
         "link",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(errno.EXDEV, "cross-device")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("hardlink must not be used")),
     )
     restored, stats = cache.restore(entry, tmp_path / "task-work")
     assert stats["hardlinked_images"] == 0
@@ -151,7 +151,6 @@ def test_cache_restore_falls_back_to_copy_when_hardlink_is_unavailable(monkeypat
     assert stats["copied_images"] == 2
     assert stats["copied_image_bytes"] == len(b"train-image-bytes") + len(b"test-image-bytes")
     assert (restored / "dataset/images/test/img-2.jpg").read_bytes() == b"test-image-bytes"
-
 
 def test_cache_publish_requires_final_verified_file_count(tmp_path):
     snapshot_id = "d" * 64
@@ -340,3 +339,15 @@ def test_cache_lifecycle_environment_requires_non_negative_integer(monkeypatch, 
     monkeypatch.setenv(CACHE_TTL_SECONDS_ENV, "not-a-number")
     with pytest.raises(ValueError, match=CACHE_TTL_SECONDS_ENV):
         TrainingBundleCache(tmp_path / "data", "project-config")
+
+def test_cache_schema_v2_is_rejected_after_writable_hardlink_fix(tmp_path):
+    snapshot_id = "0" * 64
+    source_bundle = _write_bundle(tmp_path / "source-schema", snapshot_id=snapshot_id)
+    cache = TrainingBundleCache(tmp_path / "data", "project-schema", max_bytes=0, ttl_seconds=0)
+    entry, _ = cache.publish_verified(source_bundle, snapshot_id, verified_files=2)
+    marker_path = entry.root / "cache.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["schema_version"] = 2
+    marker_path.write_text(json.dumps(marker, sort_keys=True), encoding="utf-8")
+
+    assert cache.resolve(snapshot_id) is None
