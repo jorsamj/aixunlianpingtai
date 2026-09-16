@@ -7,16 +7,58 @@ This is the shortest entry point for continuing `jorsamj/aixunlianpingtai` on br
 Before editing, read and reconcile these files against live GitHub HEAD:
 
 1. `docs/CODEX_READ_FIRST.md`
-2. `docs/CODEX_HANDOFF_2026-09-15_DISCOVERY_AND_ORPHAN_PROCESS_CLEANUP.md`
-3. `docs/CODEX_HANDOFF_2026-09-15_TRAINING_FINAL_VALIDATION_OOM.md`
-4. `docs/CODEX_HANDOFF_2026-09-15_TRAINING_TASK_VISIBILITY.md`
-5. `docs/CODEX_HANDOFF_2026-09-15_TRAINING_WORKER_ISOLATION.md`
+2. `docs/CODEX_HANDOFF_2026-09-16_DEPLOYMENT_CANDIDATE.md`
+3. `docs/CODEX_HANDOFF_2026-09-16_TASK_RUNTIME_TRUTH_V2.md`
+4. `docs/CODEX_HANDOFF_2026-09-16_GENERIC_QUEUE_EXACTNESS.md`
+5. `docs/CODEX_HANDOFF_2026-09-16_TASK_RUNTIME_TRUTH_V1.md`
 6. `docs/CODEX_CURRENT_STATE.md`
-7. `docs/TECH_DEBT_CLOSURE_V42_25.md`
-8. `docs/frontend-legacy-audit.md`
-9. `docs/FRONTEND_OWNER_MAP_V42_25.md`
+7. `docs/CODEX_HANDOFF_2026-09-15_DISCOVERY_AND_ORPHAN_PROCESS_CLEANUP.md`
+8. `docs/CODEX_HANDOFF_2026-09-15_TRAINING_FINAL_VALIDATION_OOM.md`
+9. `docs/CODEX_HANDOFF_2026-09-15_TRAINING_TASK_VISIBILITY.md`
+10. `docs/CODEX_HANDOFF_2026-09-15_TRAINING_WORKER_ISOLATION.md`
+11. `docs/TECH_DEBT_CLOSURE_V42_25.md`
+12. `docs/frontend-legacy-audit.md`
+13. `docs/FRONTEND_OWNER_MAP_V42_25.md`
 
-`docs/CODEX_CURRENT_STATE.md` contains valuable historical closure detail, but its top branch/push snapshot may lag the live branch. Never trust an old SHA or `push pending` sentence over the actual remote branch.
+`docs/CODEX_CURRENT_STATE.md` contains valuable historical closure detail, but historical branch/push snapshots inside that long-lived document may lag the live branch. Never trust an old SHA or `push pending` sentence over the actual remote branch. The newest dated deployment-candidate handoff above is the current resume pointer; live GitHub state still wins if newer commits exist.
+
+## Current resume pointer — 2026-09-16
+
+Runtime-validated clean baseline:
+
+```text
+cca721d13ead436c46ee4ffab0dbd06b3cbaeca5
+```
+
+Formal version remains:
+
+```text
+VERSION.txt = 42.24.0
+```
+
+The runtime baseline above has the latest Task Runtime Truth v1/v2 and Generic Durable Queue Exactness work already integrated and validated. Documentation-only commits may sit on top of that runtime baseline after this file is updated, so always verify the live branch before editing.
+
+Do not reopen these 2026-09-16 closures merely because an older document contains a stale branch snapshot:
+
+- Task Runtime Truth v1;
+- Task Runtime Truth v2;
+- Generic Durable Queue Exactness;
+- Resource Discovery / Training Input Integrity closures already recorded in the dated handoffs/current-state history.
+
+Durable task presentation invariants now include:
+
+```text
+task_status > compatibility status
+phase > task_stage / stage
+progress_percent > legacy progress
+resource_queue_position may render as exact only when resource_queue_position_exact === true
+```
+
+The browser must not invent a durable percentage from counts and must not promote a candidate rank to an exact Worker/hardware queue position.
+
+For the exact CI evidence, deployment-candidate boundary and remaining real-environment acceptance work, read:
+
+`docs/CODEX_HANDOFF_2026-09-16_DEPLOYMENT_CANDIDATE.md`
 
 ## Non-negotiable repository constraints
 
