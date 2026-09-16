@@ -139,29 +139,46 @@ test('runtime leaves renderer untouched and owns polling only through PollRegist
 
   await Promise.resolve();
   assert.equal(window.renderOps427, originalRenderOps, 'runtime must not wrap the page renderer');
-
-  runtime.activate(state.annotationTasks60);
-  assert.equal(managed?.key, 'auto-label-list');
-  assert.equal(managed?.owners, '自动标注及清洗');
+  assert.equal(managed?.key, 'auto-label-v60');
   assert.equal(managed?.delay, 1800);
+  assert.equal(runtime.snapshot().classicWrapperOwner, false);
+  assert.equal(runtime.snapshot().timerOwner, false);
 
+  const currentView = document.getElementById('view');
   await managed.callback();
-  assert.equal(state.annotationTasks60[0].id, 'done-1');
-  assert.match(tbody.innerHTML, /完成任务/);
-  assert.equal(managed, null, 'terminal refresh must not re-arm polling');
 
-  runtime.deactivate();
-  assert.deepEqual(cleared, ['auto-label-list', 'auto-label-list']);
+  assert.equal(document.getElementById('view'), currentView, 'polling must not replace the page root');
+  assert.match(tbody.innerHTML, /完成任务/);
+  assert.match(tbody.innerHTML, /已完成/);
+  assert.deepEqual(state.annotationTasks60.map(task => task.id), ['done-1']);
+  assert.equal(managed, null, 'completed task should not re-arm polling');
+  assert.ok(cleared.includes('auto-label-v60'));
+
+  state.page = '数据集';
+  assert.equal(runtime.activate(), false);
+  assert.equal(managed, null);
+
+  runtime.destroy();
+  assert.equal(window.renderOps427, originalRenderOps);
+  delete globalThis.window;
+  delete globalThis.document;
 });
 
 test('AutoLabelPollRuntime stays wrapper-free and timer-free', () => {
   const source = readFileSync(new URL('../../static/modules/auto-label-poll-runtime.js', import.meta.url), 'utf8');
-  for (const retired of [
-    'renderOps427', '__autoLabelPollRuntimeWrapped', 'originalRenderOps', 'wrappedRenderOps',
-    'rebindTimers', 'ai60ListTimer', 'setTimeout(', 'clearTimeout(',
+  for (const token of [
+    'renderOps427',
+    '__autoLabelPollRuntimeWrapped',
+    'originalRenderOps',
+    'wrappedRenderOps',
+    'rebindTimers',
+    'ai60ListTimer',
+    'setTimeout(',
+    'clearTimeout(',
   ]) {
-    assert.equal(source.includes(retired), false, `retired compatibility token returned: ${retired}`);
+    assert.equal(source.includes(token), false, `retired AutoLabel lifecycle token remains: ${token}`);
   }
-  assert.match(source, /classicWrapperOwner:\s*false/);
-  assert.match(source, /timerOwner:\s*false/);
+  assert.match(source, /classicWrapperOwner: false/);
+  assert.match(source, /timerOwner: false/);
+  assert.match(source, /build: 'auto-label-poll-422501'/);
 });
