@@ -116,7 +116,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   async function maybeStart(project){const active=activeZipJobs(jobs),next=active[0];if(!next||status(next)!=='selecting')return;const id=String(next.id||'');if(started.has(id))return;const now=Date.now();if(!eligibleSince.has(id))eligibleSince.set(id,now);const action=zipStartDisposition(next,jobs,{intent:readIntent(project,id),eligibleForMs:now-eligibleSince.get(id)});if(!['start','start-legacy-recovery'].includes(action))return;started.add(id);writeIntent(project,id,'submitting');try{await startZipJob(project,id,{fetchImpl});writeIntent(project,id,'submitted')}catch(e){started.delete(id);writeIntent(project,id,'ambiguous');throw e}}
   async function applyCompletion(job,reason){
     if(!job||status(job)!=='done'||reason==='bootstrap')return;const id=String(job.id||'');if(completionEffects.has(id))return;completionEffects.add(id);
-    window.completeZipImportReview412?.(id);window.invalidateQuality411?.();await window.refreshLabels414?.(false);if((getState()||{}).page==='数据集')await window.reloadMaterialPage61?.();
+    window.completeZipImportReview412?.(id);window.invalidateQuality411?.();await window.refreshLabels414?.(false);if((getState()||{}).page==='数据集')await window.reloadMaterialPage61?.();notify?.(`后台导入完成：${Number(job?.report?.imported_images||0)} 张图片`);
   }
   async function reconcile(reason='manual'){
     if(busy||destroyed)return current;const project=pid();if(!project)return null;busy=true;
