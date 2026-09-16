@@ -1,5 +1,15 @@
 const ACTIVE_CLEAN = new Set(['queued', 'running']);
 
+const CLEAN_STAGE_TEXT = {
+  materializing: '正在读取素材',
+  analyzing: '正在分析图片',
+  evaluating: '正在判断清洗规则',
+  duplicate_lookup: '正在检查重复图片',
+  saving_clean_result: '正在保存清洗结果',
+  saving_clean_error: '正在记录异常结果',
+  cleaning: '正在清洗',
+};
+
 function cleanStatusFallback(status) {
   return ({
     queued: '排队中',
@@ -30,17 +40,24 @@ export function cleanTaskView(task = {}) {
   const total = Math.max(0, finiteNumber(task.total_images, 0));
   const flagged = Math.max(0, finiteNumber(task.flagged_images, 0));
   const queuePosition = Math.max(0, Math.trunc(finiteNumber(task.resource_queue_position, 0)));
+  const queuePositionExact = task.resource_queue_position_exact === true;
   const waitReason = String(task.resource_wait_reason || '').trim();
   const workerId = String(task.worker_id || '').trim();
+  const stage = String(task.phase || task.task_stage || task.stage || '').trim();
+  const currentItem = String(task.current_item || task.current_image_id || task.current || '').trim();
 
   let runtimeText = '';
   if (status === 'queued') {
     const parts = [];
-    if (queuePosition > 0) parts.push(`资源队列第 ${queuePosition} 位`);
+    if (queuePositionExact && queuePosition > 0) parts.push(`资源队列第 ${queuePosition} 位`);
     if (waitReason) parts.push(waitReason);
     runtimeText = parts.join(' · ');
-  } else if (status === 'running' && workerId) {
-    runtimeText = `Worker ${workerId}`;
+  } else if (status === 'running') {
+    const parts = [];
+    if (CLEAN_STAGE_TEXT[stage]) parts.push(CLEAN_STAGE_TEXT[stage]);
+    if (currentItem) parts.push(`当前 ${currentItem}`);
+    if (workerId) parts.push(`Worker ${workerId}`);
+    runtimeText = parts.join(' · ');
   }
 
   return {
@@ -51,6 +68,8 @@ export function cleanTaskView(task = {}) {
     processed,
     total,
     flagged,
+    stage,
+    currentItem,
     progressText: `${processed}/${total}`,
     runtimeText,
     active: isActiveCleanTask(status),
