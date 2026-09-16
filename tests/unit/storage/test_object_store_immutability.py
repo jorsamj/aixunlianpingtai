@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -293,3 +294,48 @@ def test_s3_generate_upload_url_delegates_to_protected_contract(monkeypatch):
     assert url == "https://s3.example.com/signed"
     assert captured["params"]["IfNoneMatch"] == "*"
     assert captured["params"]["ContentType"] == "image/jpeg"
+
+
+def test_s3_real_sdk_presign_uses_sigv4_and_signs_conditional_headers():
+    provider = S3StorageProvider(
+        "s3-real-signing",
+        {"bucket": "materials", "region": "us-east-1", "prefix": "vision"},
+        {"access_key_id": "test-access", "secret_access_key": "test-secret"},
+    )
+
+    contract = provider.generate_upload_contract(
+        "incoming/a.jpg",
+        expires_seconds=60,
+        content_type="image/jpeg",
+    )
+
+    query = parse_qs(urlsplit(str(contract["url"])).query)
+    assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+    signed_headers = set(query["X-Amz-SignedHeaders"][0].split(";"))
+    assert {"content-type", "host", "if-none-match"}.issubset(signed_headers)
+    assert contract["headers"]["If-None-Match"] == "*"
+
+
+def test_oss_real_sdk_presign_accepts_conditional_signed_headers_without_network():
+    provider = OSSStorageProvider(
+        "oss-real-signing",
+        {
+            "endpoint": "https://oss-cn-hangzhou.aliyuncs.com",
+            "bucket": "materials",
+            "prefix": "vision",
+        },
+        {"access_key_id": "test-access", "access_key_secret": "test-secret"},
+    )
+
+    contract = provider.generate_upload_contract(
+        "incoming/a.jpg",
+        expires_seconds=60,
+        content_type="image/jpeg",
+    )
+
+    assert str(contract["url"]).startswith("https://")
+    assert contract["headers"] == {
+        "Content-Type": "image/jpeg",
+        "x-oss-forbid-overwrite": "true",
+    }
+    assert contract["overwrite_protected"] is True

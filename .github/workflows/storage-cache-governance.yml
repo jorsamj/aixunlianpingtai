@@ -74,11 +74,14 @@ jobs:
           grep -Fq 'x-oss-forbid-overwrite' platform_core/storage/oss.py
           grep -Fq 'def generate_upload_contract' platform_core/storage/oss.py
           grep -Fq 'overwrite_protected' platform_core/storage/oss.py
+          grep -Fq 'signature_version="s3v4"' platform_core/storage/s3.py
           grep -Fq 'IfNoneMatch="*"' platform_core/storage/s3.py
           grep -Fq 'params["IfNoneMatch"] = "*"' platform_core/storage/s3.py
           grep -Fq 'headers["If-None-Match"] = "*"' platform_core/storage/s3.py
           grep -Fq 'def generate_upload_contract' platform_core/storage/s3.py
           grep -Fq 'overwrite_protected' platform_core/storage/s3.py
+          grep -Fq 'test_s3_real_sdk_presign_uses_sigv4_and_signs_conditional_headers' tests/unit/storage/test_object_store_immutability.py
+          grep -Fq 'test_oss_real_sdk_presign_accepts_conditional_signed_headers_without_network' tests/unit/storage/test_object_store_immutability.py
           grep -Fq 'storage-cache-runtime.js?v=422525' static/index.html
           grep -Fq '外部变更需重新扫描' static/modules/storage-cache-runtime.js
           grep -Fq '当前节点素材内容缓存' static/modules/storage-cache-runtime.js

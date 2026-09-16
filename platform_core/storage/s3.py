@@ -12,6 +12,11 @@ def _load_boto3():
     return boto3
 
 
+def _load_s3_client_config():
+    from botocore.config import Config
+    return Config(signature_version="s3v4")
+
+
 def _object_conflict(error: Exception) -> bool:
     response = getattr(error, "response", {}) or {}
     error_info = response.get("Error") or {}
@@ -36,14 +41,16 @@ class S3StorageProvider:
             raise StorageError(code="STORAGE_CONFIG_INVALID", message="S3 配置不完整", detail="Bucket 为必填项。", solution="请补全 S3 存储配置。")
         try:
             boto3 = _load_boto3()
+            client_config = _load_s3_client_config()
         except ImportError as error:
-            raise StorageError(code="STORAGE_SDK_MISSING", message="缺少 S3 SDK", detail="未安装 boto3。", solution="请执行 pip install boto3 后重启服务。") from error
+            raise StorageError(code="STORAGE_SDK_MISSING", message="缺少 S3 SDK", detail="未安装 boto3 / botocore。", solution="请执行 pip install boto3 后重启服务。") from error
         try:
             self.client = boto3.client(
                 "s3", endpoint_url=self.endpoint, region_name=self.region, use_ssl=self.use_ssl,
                 aws_access_key_id=credentials.get("access_key_id"),
                 aws_secret_access_key=credentials.get("secret_access_key"),
                 aws_session_token=credentials.get("session_token"),
+                config=client_config,
             )
         except Exception as error:
             raise StorageError(code="STORAGE_CONFIG_INVALID", message="S3 客户端初始化失败", detail=redact_storage_error(error), solution="请检查 Endpoint、Region 和凭据。") from error
