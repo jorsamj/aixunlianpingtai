@@ -32,7 +32,9 @@ jobs:
         run: python -m pip install --disable-pip-version-check pytest filelock psutil
 
       - name: Apply exact product patch
-        run: python scripts/tmp_resource_discovery_p1_patch.py
+        run: |
+          python scripts/tmp_fix_resource_discovery_helper.py
+          python scripts/tmp_resource_discovery_p1_patch.py
 
       - name: Compile discovery contract
         run: >-
@@ -92,6 +94,7 @@ jobs:
           set -euo pipefail
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           test ! -e scripts/tmp_resource_discovery_p1_patch.py
+          test ! -e scripts/tmp_fix_resource_discovery_helper.py
           git diff --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
