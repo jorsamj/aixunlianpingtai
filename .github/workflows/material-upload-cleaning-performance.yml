@@ -33,7 +33,9 @@ jobs:
         with:
           node-version: '24'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest pillow numpy opencv-python-headless filelock
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest pillow numpy opencv-python-headless filelock requests pyyaml boto3 oss2
       - name: Compile optimized material paths
         run: python -m py_compile platform_core/material_repository_batch.py platform_core/cleaning.py platform_core/cleaning_batches.py
       - name: Upload and cleaning hot-path contracts
