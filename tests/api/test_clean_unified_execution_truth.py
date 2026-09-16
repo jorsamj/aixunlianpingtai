@@ -1,9 +1,13 @@
 import io
 import uuid
+from pathlib import Path
 
 from PIL import Image
 
 import app as app_module
+import platform_core.cleaning_batches as cleaning_batches
+from platform_core.cleaning import image_metrics
+from platform_core.cleaning_analysis_runtime import CleaningAnalysisTimeout
 from platform_core.task_runtime import (
     ArtifactStore, FencedTaskRepository, Scheduler, TaskKind, TaskStatus,
 )
@@ -43,6 +47,23 @@ def _assert_durable_clean_task(project_id: str, task_id: str, expected_ids: list
     request = app_module.shared_task_artifacts().read_json(task_id, task.payload_ref, default={})
     assert request["operation"] == "CLEAN"
     assert sorted(request["selection_spec"]["image_ids"]) == sorted(expected_ids)
+
+
+def _materials_scheduler(project_id: str):
+    runtime = app_module.DATA_DIR / "task_runtime"
+    repository = FencedTaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    handlers, capabilities = build_worker_registration(app_module.DATA_DIR, {"materials"})
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        f"clean-contract-{project_id}-{uuid.uuid4().hex[:8]}",
+        handlers,
+        capabilities,
+        lease_seconds=5,
+        poll_seconds=0.01,
+    )
+    return scheduler, repository, artifacts
 
 
 def test_v47_manual_clean_creation_publishes_material_batch_truth(client):
@@ -105,19 +126,7 @@ def test_clean_executes_through_real_fenced_material_worker(client):
     response.raise_for_status()
     task_id = response.json()["id"]
 
-    runtime = app_module.DATA_DIR / "task_runtime"
-    repository = FencedTaskRepository(runtime / "tasks.sqlite3")
-    artifacts = ArtifactStore(runtime / "artifacts")
-    handlers, capabilities = build_worker_registration(app_module.DATA_DIR, {"materials"})
-    scheduler = Scheduler(
-        repository,
-        artifacts,
-        f"clean-contract-{uuid.uuid4().hex[:8]}",
-        handlers,
-        capabilities,
-        lease_seconds=5,
-        poll_seconds=0.01,
-    )
+    scheduler, _repository, _artifacts = _materials_scheduler(project_id)
     for _ in range(10):
         current = app_module.shared_task_repository().get(task_id)
         assert current is not None
@@ -143,3 +152,52 @@ def test_clean_executes_through_real_fenced_material_worker(client):
     assert durable_after_projection is not None
     assert durable_after_projection.status is TaskStatus.SUCCEEDED
     assert durable_after_projection.stage == "succeeded"
+
+
+def test_clean_analysis_timeout_fails_one_image_and_continues_next(client, monkeypatch):
+    project_id = _create_project(client, "clean-analysis-timeout-continues")
+    uploaded = _upload(client, project_id, "timeout-first.png", "continue-second.png")
+    image_ids = [item["id"] for item in uploaded["uploaded"]]
+    response = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={"image_ids": image_ids, "task_name": "timeout must not freeze batch"},
+    )
+    response.raise_for_status()
+    task_id = response.json()["id"]
+
+    class TimeoutThenAnalyzeRuntime:
+        calls = 0
+
+        def analyze(self, path, *, require_blur, content_sha256, check_active=None):
+            type(self).calls += 1
+            if check_active is not None:
+                check_active()
+            if type(self).calls == 1:
+                raise CleaningAnalysisTimeout("CLEAN_ANALYSIS_TIMEOUT: simulated stalled image")
+            return image_metrics(
+                Path(path),
+                require_blur=require_blur,
+                content_sha256=content_sha256,
+            )
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(cleaning_batches, "CleaningAnalysisRuntime", TimeoutThenAnalyzeRuntime)
+    scheduler, repository, artifacts = _materials_scheduler(project_id)
+    assert scheduler.run_once() is True
+
+    current = repository.get(task_id)
+    assert current is not None
+    assert current.status is TaskStatus.PARTIAL_SUCCESS, current.error
+    assert current.progress == 100
+
+    result = artifacts.read_json(task_id, "result.json", default={})
+    assert result["total"] == 2
+    assert result["processed"] == 2
+    assert result["succeeded"] == 1
+    assert result["failed"] == 1
+    assert TimeoutThenAnalyzeRuntime.calls == 2
+
+    states = [app_module.material_store(project_id).get(image_id)["clean_status"] for image_id in image_ids]
+    assert sorted(states) == ["failed", "passed"]
