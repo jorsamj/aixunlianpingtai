@@ -53,6 +53,7 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     assert body["next_cursor"]
     assert all(item["annotated"] is True for item in body["items"])
     assert all("thumbnail_url" in item and "content_url" in item for item in body["items"])
+    assert all("size=192" in item["thumbnail_url"] for item in body["items"])
 
     second = client.get(
         "/api/v62/projects/p1/training-materials",
