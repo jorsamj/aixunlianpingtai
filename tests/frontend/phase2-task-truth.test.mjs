@@ -8,7 +8,7 @@ import {isMaterialBatchActive, materialBatchTaskText} from '../../static/modules
 test('AI annotation waiting-resource state stays active and shows real queue metadata', () => {
   const view = annotationTaskView({
     status: 'WAITING_RESOURCE', progress_percent: 12.5, completed_count: 5, total_count: 40,
-    resource_queue_position: 2, resource_wait_reason: 'VISION_CAPACITY_BUSY',
+    resource_queue_position: 2, resource_queue_position_exact: true, resource_wait_reason: 'VISION_CAPACITY_BUSY',
   });
   assert.equal(view.active, true);
   assert.equal(view.statusText, '等待资源');
@@ -19,7 +19,7 @@ test('AI annotation waiting-resource state stays active and shows real queue met
 test('material batch waiting-resource state remains pollable and human-readable', () => {
   assert.equal(isMaterialBatchActive('WAITING_RESOURCE'), true);
   assert.equal(
-    materialBatchTaskText({status:'WAITING_RESOURCE', resource_queue_position:3, resource_wait_reason:'MATERIAL_WORKER_BUSY'}),
+    materialBatchTaskText({status:'WAITING_RESOURCE', resource_queue_position:3, resource_queue_position_exact:true, resource_wait_reason:'MATERIAL_WORKER_BUSY'}),
     '等待资源 · 资源队列第 3 位 · MATERIAL_WORKER_BUSY',
   );
   assert.equal(materialBatchTaskText({status:'RUNNING', worker_id:'materials-worker-01'}), '处理中 · Worker materials-worker-01');
@@ -29,4 +29,20 @@ test('live annotation table/modal consumes runtimeText instead of hiding it', ()
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /task\.current_item\|\|view\.runtimeText\|\|'等待 Worker 处理'/);
   assert.match(source, /view\.runtimeText\?`<div class="muted-line">/);
+});
+
+
+test('annotation and material batch never promote inexact candidate ranks', () => {
+  const annotation = annotationTaskView({
+    status: 'WAITING_RESOURCE', resource_queue_position: 7, resource_queue_position_exact: false,
+    resource_wait_reason: 'VISION_CAPACITY_BUSY',
+  });
+  assert.equal(annotation.runtimeText, '等待资源 · VISION_CAPACITY_BUSY');
+  assert.equal(annotation.runtimeText.includes('第 7 位'), false);
+  const material = materialBatchTaskText({
+    status: 'WAITING_RESOURCE', resource_queue_position: 9, resource_queue_position_exact: false,
+    resource_wait_reason: 'MATERIAL_WORKER_BUSY',
+  });
+  assert.equal(material, '等待资源 · MATERIAL_WORKER_BUSY');
+  assert.equal(material.includes('第 9 位'), false);
 });

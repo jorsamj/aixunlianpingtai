@@ -1,4 +1,4 @@
-import {canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js';
+import {canonicalTaskStatus, exactTaskQueuePosition, isCanonicalTaskActive} from './task-runtime-truth.js';
 
 const STORAGE_KEY = 'aixunlian.material-batches.v62';
 export function isMaterialBatchActive(value) {
@@ -9,7 +9,7 @@ export function isMaterialBatchActive(value) {
 export function materialBatchTaskText(task = {}) {
   const status = canonicalTaskStatus(task);
   const label = ({QUEUED:'排队中', WAITING_RESOURCE:'等待资源', RUNNING:'处理中', CANCEL_REQUESTED:'正在取消', AWAITING_CONFIRMATION:'等待确认', PARTIAL_SUCCESS:'部分成功', SUCCEEDED:'已完成', CANCELLED:'已取消', FAILED:'失败', BLOCKED_BY_ENVIRONMENT:'环境不可用', BLOCKED_BY_HARDWARE:'硬件不可用'})[status] || status || '未知';
-  const queuePosition = Math.max(0, Number(task.resource_queue_position) || 0);
+  const queuePosition = exactTaskQueuePosition(task) || 0;
   const waitReason = String(task.resource_wait_reason || '').trim();
   const workerId = String(task.worker_id || '').trim();
   const runtime = ['QUEUED', 'WAITING_RESOURCE'].includes(status)

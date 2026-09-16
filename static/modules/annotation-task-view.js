@@ -1,3 +1,4 @@
+import {exactTaskQueuePosition} from './task-runtime-truth.js';
 import {isTaskActive, normalizeTaskStatus, taskProgress} from './task-poller.js';
 
 const LABELS = {
@@ -13,7 +14,7 @@ export function annotationTaskView(task = {}) {
   const summary = task.summary || {};
   const total = progress.total || Number(summary.total) || 0;
   const completed = progress.completed || Math.max(0, Number(summary.total) || 0);
-  const queuePosition = Math.max(0, Number(task.resource_queue_position) || 0);
+  const queuePosition = exactTaskQueuePosition(task) || 0;
   const waitReason = String(task.resource_wait_reason || '').trim();
   const workerId = String(task.worker_id || '').trim();
   const queuedRuntime = queuePosition

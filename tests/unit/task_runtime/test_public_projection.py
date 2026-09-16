@@ -192,3 +192,83 @@ def test_worker_lease_and_progress_survive_repository_reopen(tmp_path):
     assert public['worker_id'] == 'worker-a800-01'
     assert public['lease_expires_at']
     assert public['resource_queue_position'] is None
+
+
+def add_video(repository, task_id, priority=50, resource="cpu:video"):
+    return repository.create(TaskRecord.new(
+        task_id, "project-1", TaskKind.VIDEO_FRAMES, "request.json", resource,
+        priority=priority, required_capabilities=("opencv",),
+    ))
+
+
+def test_generic_queue_position_is_exact_for_one_dedicated_worker(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    first = add_video(repository, "video-first", priority=5)
+    second = add_video(repository, "video-second", priority=50)
+    register_worker(
+        repository, "video-worker",
+        task_kinds=(TaskKind.VIDEO_FRAMES.value,), capabilities=("opencv",),
+    )
+
+    public = task_to_public(second, repository)
+
+    assert public["resource_queue_position"] == 2
+    assert public["resource_queue_position_exact"] is True
+    assert repository.resource_queue_position(first.task_id) == 1
+
+
+def test_generic_queue_position_is_inexact_without_compatible_worker(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task = add_video(repository, "video-no-worker")
+
+    public = task_to_public(task, repository)
+
+    assert public["resource_queue_position"] == 1
+    assert public["resource_queue_position_exact"] is False
+
+
+def test_generic_queue_position_is_inexact_with_multiple_compatible_workers(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task = add_video(repository, "video-many-workers")
+    for worker_id in ("video-worker-a", "video-worker-b"):
+        register_worker(
+            repository, worker_id,
+            task_kinds=(TaskKind.VIDEO_FRAMES.value,), capabilities=("opencv",),
+        )
+
+    public = task_to_public(task, repository)
+
+    assert public["resource_queue_position"] == 1
+    assert public["resource_queue_position_exact"] is False
+
+
+def test_generic_queue_position_is_inexact_when_worker_competes_across_resources(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    target = add_video(repository, "video-target", priority=50, resource="cpu:video")
+    add_video(repository, "video-other-resource", priority=5, resource="cpu:video-secondary")
+    register_worker(
+        repository, "video-worker",
+        task_kinds=(TaskKind.VIDEO_FRAMES.value,), capabilities=("opencv",),
+    )
+
+    public = task_to_public(target, repository)
+
+    assert public["resource_queue_position"] == 1
+    assert public["resource_queue_position_exact"] is False
+
+
+def test_running_generic_task_never_exposes_queue_position(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    add_video(repository, "video-running")
+    register_worker(
+        repository, "video-worker",
+        task_kinds=(TaskKind.VIDEO_FRAMES.value,), capabilities=("opencv",),
+    )
+    lease = repository.claim_next("video-worker", [TaskKind.VIDEO_FRAMES], {"opencv"})
+    assert lease is not None
+
+    public = task_to_public(repository.get("video-running"), repository)
+
+    assert public["status"] == "RUNNING"
+    assert public["resource_queue_position"] is None
+    assert public["resource_queue_position_exact"] is False

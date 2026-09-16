@@ -26,3 +26,19 @@ test('candidate decisions explicitly retain both accepts and rejects', () => {
     commit: true
   });
 });
+
+
+test('annotation queue number is visible only when backend proves exactness', () => {
+  const exact = annotationTaskView({
+    task_status: 'WAITING_RESOURCE', status: 'completed',
+    resource_queue_position: 2, resource_queue_position_exact: true,
+    resource_wait_reason: 'VISION_CAPACITY_BUSY',
+  });
+  assert.equal(exact.status, 'WAITING_RESOURCE');
+  assert.equal(exact.runtimeText, '资源队列第 2 位 · VISION_CAPACITY_BUSY');
+
+  const inexact = annotationTaskView({
+    status: 'QUEUED', resource_queue_position: 2, resource_queue_position_exact: false,
+  });
+  assert.equal(inexact.runtimeText, '');
+});

@@ -322,8 +322,17 @@ def list_unified_runtime_tasks(
         page = repository.list(project_id=project_id, kinds=kinds, limit=limit, cursor=cursor)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
     return {
-        "items": [task_to_public(task, repository) for task in page.items],
+        "items": [
+            task_to_public(
+                task, repository,
+                worker_runtime=worker_runtime,
+                queued_candidates=queued_candidates,
+            )
+            for task in page.items
+        ],
         "next_cursor": page.next_cursor,
     }
 
@@ -9726,29 +9735,35 @@ def _v33_run_video_frame_task(project_id: str, task_id: str):
         _v33_update_task(project_id, "video_frame_tasks", task_id, status="failed", status_text="失败", error=str(e), finished_at=now_iso())
 
 
-def _public_task(task: TaskRecord) -> Dict[str, Any]:
+def _public_task(
+    task: TaskRecord,
+    *,
+    worker_runtime=None,
+    queued_candidates=None,
+) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    truth = task_to_public(
+        task,
+        repository,
+        worker_runtime=worker_runtime,
+        queued_candidates=queued_candidates,
+    )
     return {
+        **truth,
         "id": task.task_id,
-        "project_id": task.project_id,
-        "kind": task.kind.value,
-        "status": task.status.value,
-        "priority": task.priority,
-        "progress": task.progress,
-        "stage": task.stage,
-        "resource_wait_reason": task.resource_wait_reason,
-        "current_item": task.current_item,
-        "attempt": task.attempt,
-        "accepted": task.accepted,
-        "error": task.error,
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
-        "finished_at": task.finished_at,
-        "result_ref": task.result_ref,
+        "task_id": task.task_id,
+        "task_status": truth["status"],
+        "progress": truth["progress_percent"],
+        "stage": truth["phase"],
     }
 
 
-def _public_video_task(task: TaskRecord) -> Dict[str, Any]:
-    response = _public_task(task)
+def _public_video_task(task: TaskRecord, *, worker_runtime=None, queued_candidates=None) -> Dict[str, Any]:
+    response = _public_task(
+        task,
+        worker_runtime=worker_runtime,
+        queued_candidates=queued_candidates,
+    )
     payload = shared_task_artifacts().read_json(
         task.task_id,
         task.payload_ref,
@@ -9787,13 +9802,26 @@ def _require_shared_task(project_id: str, task_id: str, kind: TaskKind) -> TaskR
 @app.get("/api/v33/projects/{project_id}/video-tasks")
 def v33_list_video_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
     get_project(project_id)
-    page = shared_task_repository().list(
+    repository = shared_task_repository()
+    page = repository.list(
         project_id=project_id,
         kinds={TaskKind.VIDEO_FRAMES},
         limit=max(1, min(100, int(limit))),
         cursor=cursor,
     )
-    return {"items": [_public_video_task(task) for task in page.items], "next_cursor": page.next_cursor}
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
+    return {
+        "items": [
+            _public_video_task(
+                task,
+                worker_runtime=worker_runtime,
+                queued_candidates=queued_candidates,
+            )
+            for task in page.items
+        ],
+        "next_cursor": page.next_cursor,
+    }
 
 
 @app.get("/api/v33/projects/{project_id}/video-tasks/{task_id}")
@@ -13984,10 +14012,21 @@ def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelCon
     return {'ok':True,'applied_images':applied,'applied_image_ids':sorted(chosen),'boxes_added':boxes,'labels':get_project(project_id).get('labels',[])}
 
 
-def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) -> Dict[str, Any]:
+def public_annotation_task(
+    task: TaskRecord,
+    *,
+    summary: Optional[dict] = None,
+    worker_runtime=None,
+    queued_candidates=None,
+) -> Dict[str, Any]:
     progress_summary = summary or {}
     repository = shared_task_repository()
-    truth = task_to_public(task, repository)
+    truth = task_to_public(
+        task,
+        repository,
+        worker_runtime=worker_runtime,
+        queued_candidates=queued_candidates,
+    )
     request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
     checkpoint = shared_task_artifacts().read_json(task.task_id, "checkpoints/worker.json", default={})
     is_batch = task.kind is TaskKind.MATERIAL_BATCH and request.get("operation") == "AI_ANNOTATE"
@@ -14114,13 +14153,26 @@ def create_annotation_task(project_id: str, payload: AnnotationTaskCreateReq):
 @app.get("/api/v60/projects/{project_id}/annotation-tasks")
 def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
     get_project(project_id)
-    page = shared_task_repository().list(
+    repository = shared_task_repository()
+    page = repository.list(
         project_id=project_id,
         kinds={TaskKind.AI_ANNOTATION},
         limit=max(1, min(100, int(limit))),
         cursor=cursor,
     )
-    return {"items": [public_annotation_task(task) for task in page.items], "next_cursor": page.next_cursor}
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
+    return {
+        "items": [
+            public_annotation_task(
+                task,
+                worker_runtime=worker_runtime,
+                queued_candidates=queued_candidates,
+            )
+            for task in page.items
+        ],
+        "next_cursor": page.next_cursor,
+    }
 
 
 def _require_annotation_review_task(project_id: str, task_id: str):

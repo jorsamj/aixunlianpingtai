@@ -516,6 +516,7 @@ def public_batch(task, artifacts, repository=None):
             "priority": truth["priority"] if truth else task.priority,
             "queue_rank": truth["queue_rank"] if truth else task.queue_rank,
             "resource_queue_position": truth["resource_queue_position"] if truth else None,
+            "resource_queue_position_exact": truth["resource_queue_position_exact"] if truth else False,
             "resource_wait_reason": truth["resource_wait_reason"] if truth else task.resource_wait_reason,
             "worker_id": truth["worker_id"] if truth else task.worker_id,
             "lease_expires_at": truth["lease_expires_at"] if truth else task.lease_expires_at,
