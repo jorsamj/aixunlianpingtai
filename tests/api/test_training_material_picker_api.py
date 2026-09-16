@@ -44,6 +44,11 @@ def _client(tmp_path):
 def test_training_picker_is_server_paged_and_filtered(tmp_path):
     client, _repository = _client(tmp_path)
 
+    default_page = client.get("/api/v62/projects/p1/training-materials")
+    assert default_page.status_code == 200
+    assert default_page.json()["limit"] == 60
+    assert len(default_page.json()["items"]) == 60
+
     first = client.get("/api/v62/projects/p1/training-materials", params={"limit": 120})
     assert first.status_code == 200
     body = first.json()
@@ -54,6 +59,9 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     assert all(item["annotated"] is True for item in body["items"])
     assert all("thumbnail_url" in item and "content_url" in item for item in body["items"])
     assert all("size=192" in item["thumbnail_url"] for item in body["items"])
+
+    too_large = client.get("/api/v62/projects/p1/training-materials", params={"limit": 121})
+    assert too_large.status_code == 422
 
     second = client.get(
         "/api/v62/projects/p1/training-materials",
@@ -101,6 +109,31 @@ def test_training_picker_ids_support_explicit_bulk_selection_without_full_rows(t
     assert totals == {115}
     assert len(ids) == 115
     assert len(set(ids)) == 115
+
+
+def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp_path):
+    client, _repository = _client(tmp_path)
+
+    filtered = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={"query": "", "labels": ["smoke"], "all_available": False},
+    )
+    assert filtered.status_code == 200
+    filtered_body = filtered.json()
+    assert filtered_body["selection_mode"] == "filtered"
+    assert filtered_body["total"] == 115
+    assert len(filtered_body["items"]) == 115
+    assert len(set(filtered_body["items"])) == 115
+
+    all_available = client.post(
+        "/api/v62/projects/p1/training-materials/bulk-selection",
+        json={"query": "ignored", "labels": ["person"], "all_available": True},
+    )
+    assert all_available.status_code == 200
+    all_body = all_available.json()
+    assert all_body["selection_mode"] == "all_available"
+    assert all_body["total"] == 230
+    assert len(all_body["items"]) == 230
 
 
 def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
