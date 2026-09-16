@@ -239,26 +239,13 @@ jobs:
               raise SystemExit('add_image_record signature changed; refusing blind patch')
           text = text.replace(old_signature, new_signature, 1)
 
-          old_hash = '''    metadata = storage_manager(project_id).upload_object(
-              storage_source_id, object_key, src,
-              content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
-          )
-              content_hash = sha256_file(src)
-          '''
-          # Keep indentation-independent replacement because the source block is
-          # inside a top-level function and uses four spaces.
-          old_hash = old_hash.replace('          ', '')
-          new_hash = '''    metadata = storage_manager(project_id).upload_object(
-              storage_source_id, object_key, src,
-              content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
-          )
-              content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
+          hash_pattern = re.compile(r'^    content_hash = sha256_file\(src\)$', re.M)
+          new_hash = '''    content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
               if not content_hash:
-                  content_hash = sha256_file(src)
-          '''.replace('          ', '')
-          if old_hash not in text:
-              raise SystemExit('add_image_record hash block changed; refusing blind patch')
-          text = text.replace(old_hash, new_hash, 1)
+                  content_hash = sha256_file(src)'''
+          text, count = hash_pattern.subn(new_hash, text, count=1)
+          if count != 1:
+              raise SystemExit(f'add_image_record hash patch count={count}; refusing blind patch')
 
           upload_pattern = re.compile(
               r'@app\.post\("/api/projects/\{project_id\}/images"\)\nasync def upload_images\(.*?(?=\n\n_ANNOTATION_INDEX_LOCK)',
