@@ -43,3 +43,12 @@ test('picker UI is dense but bounded rather than rendering an unbounded pool', (
   assert.match(source, /pageCache\.size > CACHE_LIMIT/);
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
 });
+
+test('picker only activates thumbnails near the visible grid', () => {
+  assert.match(source, /THUMBNAIL_EAGER_COUNT = 8/);
+  assert.match(source, /THUMBNAIL_ROOT_MARGIN = '180px 0px'/);
+  assert.match(source, /data-src="\$\{esc\(thumbnail\)\}"/);
+  assert.match(source, /window\.IntersectionObserver/);
+  assert.match(source, /viewportThumbnailLoading: true/);
+  assert.match(source, /eagerThumbnailCount: THUMBNAIL_EAGER_COUNT/);
+});
