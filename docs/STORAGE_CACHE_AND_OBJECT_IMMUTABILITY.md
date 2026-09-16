@@ -233,3 +233,23 @@ materials/<uuid>/<version>.<ext>
 - 前端两层缓存、对象保护、占用快照语义。
 
 真实 OSS Bucket / 多节点 GPU 缓存命中率属于生产环境验收，不得用 mock 测试结果替代。
+
+## 10. 关闭证据 — 2026-09-16
+
+本批 **Storage Cache Governance** 已完成代码、前端真值、永久测试、CI guard 与 Real Chrome 回归，可按 v42.25 技术债批次标记为 **CLOSED**。
+
+```text
+validated implementation HEAD:      748958541aa12eb8a6e6dc88f2be5132e3311a58
+Storage Cache Governance run:        35039564474 SUCCESS
+  backend focused storage tests:    26 / 26 PASS
+  frontend focused storage tests:   12 / 12 PASS
+Frontend Runtime Stabilization:      35039564416 SUCCESS
+  full frontend unit tests:         305 / 305 PASS
+  Real Chrome / Playwright:         33 / 33 PASS
+Navigation Action Fencing:           35039564421 SUCCESS
+formal VERSION.txt:                  42.24.0 unchanged
+```
+
+永久 guard 会检查 MaterialCache 容量/TTL/status 快照、OSS/S3 条件写保护、前端两层缓存与外部变更提示，以及 `VERSION.txt` 必须继续保持 `42.24.0`。
+
+本关闭结论**不扩大生产验收边界**：真实 OSS Bucket、真实多节点 GPU 缓存命中率、presigned PUT 等价不可变写保护仍未由本批证明；A800 RC 与 genuine 10k 实测仍按项目总约束保持暂停。
