@@ -13,12 +13,22 @@ on:
       - static/modules/training-task-runtime.js
       - static/modules/annotation-task-view.js
       - static/modules/material-batches.js
+      - static/modules/storage-import-progress.js
+      - static/modules/server-material-import.js
+      - static/modules/video-tasks.js
+      - static/modules/deployment-tests.js
+      - static/modules/resource-discovery.js
       - tests/unit/test_training_job_projection.py
       - tests/unit/task_runtime/test_public_projection.py
       - tests/frontend/task-runtime-truth.test.mjs
       - tests/frontend/task-poller.test.mjs
       - tests/frontend/training-task-runtime.test.mjs
       - tests/frontend/phase2-task-truth.test.mjs
+      - tests/frontend/storage-import-progress.test.mjs
+      - tests/frontend/server-material-import.test.mjs
+      - tests/frontend/video-tasks.test.mjs
+      - tests/frontend/deployment-task-view.test.mjs
+      - tests/frontend/resource-discovery-runtime-truth.test.mjs
       - .github/workflows/task-runtime-truth.yml
   pull_request:
     paths:
@@ -30,12 +40,22 @@ on:
       - static/modules/training-task-runtime.js
       - static/modules/annotation-task-view.js
       - static/modules/material-batches.js
+      - static/modules/storage-import-progress.js
+      - static/modules/server-material-import.js
+      - static/modules/video-tasks.js
+      - static/modules/deployment-tests.js
+      - static/modules/resource-discovery.js
       - tests/unit/test_training_job_projection.py
       - tests/unit/task_runtime/test_public_projection.py
       - tests/frontend/task-runtime-truth.test.mjs
       - tests/frontend/task-poller.test.mjs
       - tests/frontend/training-task-runtime.test.mjs
       - tests/frontend/phase2-task-truth.test.mjs
+      - tests/frontend/storage-import-progress.test.mjs
+      - tests/frontend/server-material-import.test.mjs
+      - tests/frontend/video-tasks.test.mjs
+      - tests/frontend/deployment-task-view.test.mjs
+      - tests/frontend/resource-discovery-runtime-truth.test.mjs
       - .github/workflows/task-runtime-truth.yml
   workflow_dispatch:
 
@@ -77,3 +97,8 @@ jobs:
           tests/frontend/task-poller.test.mjs
           tests/frontend/training-task-runtime.test.mjs
           tests/frontend/phase2-task-truth.test.mjs
+          tests/frontend/storage-import-progress.test.mjs
+          tests/frontend/server-material-import.test.mjs
+          tests/frontend/video-tasks.test.mjs
+          tests/frontend/deployment-task-view.test.mjs
+          tests/frontend/resource-discovery-runtime-truth.test.mjs
