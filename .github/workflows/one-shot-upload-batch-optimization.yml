@@ -1,0 +1,382 @@
+name: One-shot Plain Upload Batch Optimization
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - '.github/workflows/one-shot-upload-batch-optimization.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact upload hot-path migration
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('app.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_begin = '''def _v50_begin_image_batch(project_id: str):
+              _IMAGE_BATCH_CTX.batch = {
+                  "project_id": project_id,
+                  "records": {},
+                  "patches": {},
+                  # Lazily reused for all annotation writes in this import batch. The
+                  # repository is stateless between calls; each write still owns its
+                  # SQLite transaction, preserving current durability semantics.
+                  "annotation_repository": None,
+              }
+          '''
+          new_begin = '''def _v50_begin_image_batch(project_id: str):
+              _IMAGE_BATCH_CTX.batch = {
+                  "project_id": project_id,
+                  "records": {},
+                  "patches": {},
+                  # New-image annotations are buffered with the material rows and
+                  # committed once per request/import batch. Existing-image writes
+                  # stay immediate so their independent update semantics do not change.
+                  "annotations": {},
+                  "annotation_repository": None,
+              }
+          '''
+          if old_begin not in text:
+              raise SystemExit('image batch initializer contract changed; refusing blind patch')
+          text = text.replace(old_begin, new_begin, 1)
+
+          end_pattern = re.compile(
+              r'def _v50_end_image_batch\(save: bool = True\):\n.*?(?=def _v50_mark_image_processed)',
+              re.S,
+          )
+          new_end = '''def _v50_end_image_batch(save: bool = True):
+              batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
+              _IMAGE_BATCH_CTX.batch = None
+              if not batch:
+                  return []
+              project_id = str(batch.get("project_id") or "")
+              records = [dict(record) for record in batch.get("records", {}).values()]
+              patches = {
+                  str(image_id): dict(patch)
+                  for image_id, patch in batch.get("patches", {}).items()
+              }
+              annotations = [
+                  dict(row) for row in batch.get("annotations", {}).values()
+              ]
+              if not save:
+                  cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
+                  if cleanup_errors:
+                      raise RuntimeError(
+                          "批量导入回滚失败：" + "; ".join(cleanup_errors)
+                      )
+                  return []
+              if not records and not patches and not annotations:
+                  return []
+
+              try:
+                  if annotations:
+                      annotation_repository = (
+                          batch.get("annotation_repository")
+                          or AnnotationRepository(project_dir(project_id))
+                      )
+                      saved_annotations = annotation_repository.upsert_many(
+                          annotations,
+                          project_material=False,
+                          return_rows=True,
+                      )
+                      records_by_id = {
+                          str(record.get("id")): record for record in records
+                      }
+                      for saved in saved_annotations:
+                          image_id = str(saved.get("image_id") or "")
+                          patch = _v50_material_annotation_patch(saved)
+                          record = records_by_id.get(image_id)
+                          if record is not None:
+                              record.update(patch)
+                          else:
+                              patches.setdefault(image_id, {}).update(patch)
+
+                  records_by_id = {
+                      str(record.get("id")): record for record in records
+                  }
+                  for image_id in list(patches):
+                      record = records_by_id.get(image_id)
+                      if record is not None:
+                          record.update(patches.pop(image_id))
+
+                  target_dataset_ids = {
+                      str(record.get("dataset_id") or "default")
+                      for record in records
+                  }
+                  target_dataset_ids.update(
+                      str(patch.get("dataset_id") or "default")
+                      for patch in patches.values()
+                      if "dataset_id" in patch
+                  )
+                  with _v50_dataset_locks(project_id, target_dataset_ids):
+                      for dataset_id in sorted(target_dataset_ids):
+                          _v50_assert_dataset_writable_locked(project_id, dataset_id)
+                      repository = material_store(project_id)
+                      if not patches:
+                          return repository.upsert_many(records)
+
+                      # Rare compatibility fallback: a batch may contain patches for
+                      # pre-existing rows. Preserve the old single-transaction mutate
+                      # semantics for that case instead of splitting atomicity.
+                      def commit(rows):
+                          by_id = {}
+                          for row in rows:
+                              by_id.setdefault(str(row.get("id")), row)
+                          changed_ids = []
+                          for incoming in records:
+                              image_id = str(incoming.get("id"))
+                              row = by_id.get(image_id)
+                              if row is None:
+                                  row = dict(incoming)
+                                  rows.append(row)
+                                  by_id[image_id] = row
+                              else:
+                                  row.update(incoming)
+                              changed_ids.append(image_id)
+                          for image_id, patch in patches.items():
+                              row = by_id.get(image_id)
+                              if row is None:
+                                  continue
+                              row.update(patch)
+                              if image_id not in changed_ids:
+                                  changed_ids.append(image_id)
+                          return [dict(by_id[image_id]) for image_id in changed_ids]
+
+                      return repository.mutate(commit)
+              except Exception as error:
+                  cleanup_errors = _v50_cleanup_buffered_image_batch_files(
+                      project_id, records
+                  )
+                  if cleanup_errors:
+                      raise RuntimeError(
+                          f"{error}; 批量上传回滚未完全完成：" + "; ".join(cleanup_errors)
+                      ) from error
+                  raise
+
+          '''
+          text, count = end_pattern.subn(new_end, text, count=1)
+          if count != 1:
+              raise SystemExit(f'image batch finalizer patch count={count}; refusing blind patch')
+
+          write_pattern = re.compile(
+              r'def write_annotation\(project_id: str, image_id: str, boxes: List\[Dict\[str, Any\]\], annotation_state=None\):\n.*?(?=\ndef read_annotation)',
+              re.S,
+          )
+          new_write = '''def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
+              boxes = list(saved.get("boxes") or [])
+              state = str(saved.get("annotation_state") or ("annotated" if boxes else "unannotated"))
+              updated = str(saved.get("updated_at") or now_iso())
+              patch = {
+                  **annotation_summary(boxes, state),
+                  "annotation_scope": list(saved.get("annotation_scope") or []),
+                  "annotation_hash": str(saved.get("content_digest") or ""),
+                  "annotation_summary_at": updated,
+              }
+              if state in {"annotated", "confirmed_empty"}:
+                  patch["processing_status"] = "processed"
+                  patch["annotated_at"] = updated
+              return patch
+
+
+          def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
+              batch = _v50_active_image_batch(project_id)
+              normalized_id = str(image_id)
+              if batch is not None and normalized_id in batch.get("records", {}):
+                  batch.setdefault("annotations", {})[normalized_id] = {
+                      "image_id": normalized_id,
+                      "boxes": [dict(box) for box in boxes],
+                      "annotation_state": annotation_state,
+                  }
+                  return
+
+              # Existing-image writes remain immediately durable. New images inside
+              # an import/upload batch are persisted together by _v50_end_image_batch.
+              saved = _v50_annotation_repository(project_id).upsert(
+                  image_id, boxes, annotation_state, project_material=False
+              )
+              patch = _v50_material_annotation_patch(saved)
+              if not _v50_queue_image_patch(project_id, image_id, patch):
+                  material_store(project_id).patch({str(image_id): patch})
+
+          '''
+          text, count = write_pattern.subn(new_write, text, count=1)
+          if count != 1:
+              raise SystemExit(f'write_annotation patch count={count}; refusing blind patch')
+
+          old_signature = '''def add_image_record(
+              project_id: str, src: Path, original_name: str,
+              source_type: str = "raw", dataset_id: str = "default",
+              storage_source_id: str = "default_local", annotation_builder=None,
+          ) -> Optional[Dict[str, Any]]:
+          '''
+          new_signature = '''def add_image_record(
+              project_id: str, src: Path, original_name: str,
+              source_type: str = "raw", dataset_id: str = "default",
+              storage_source_id: str = "default_local", annotation_builder=None,
+              content_sha256: Optional[str] = None,
+          ) -> Optional[Dict[str, Any]]:
+          '''
+          if old_signature not in text:
+              raise SystemExit('add_image_record signature changed; refusing blind patch')
+          text = text.replace(old_signature, new_signature, 1)
+
+          old_hash = '''    metadata = storage_manager(project_id).upload_object(
+              storage_source_id, object_key, src,
+              content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
+          )
+              content_hash = sha256_file(src)
+          '''
+          # Keep indentation-independent replacement because the source block is
+          # inside a top-level function and uses four spaces.
+          old_hash = old_hash.replace('          ', '')
+          new_hash = '''    metadata = storage_manager(project_id).upload_object(
+              storage_source_id, object_key, src,
+              content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
+          )
+              content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
+              if not content_hash:
+                  content_hash = sha256_file(src)
+          '''.replace('          ', '')
+          if old_hash not in text:
+              raise SystemExit('add_image_record hash block changed; refusing blind patch')
+          text = text.replace(old_hash, new_hash, 1)
+
+          upload_pattern = re.compile(
+              r'@app\.post\("/api/projects/\{project_id\}/images"\)\nasync def upload_images\(.*?(?=\n\n_ANNOTATION_INDEX_LOCK)',
+              re.S,
+          )
+          new_upload = '''@app.post("/api/projects/{project_id}/images")
+          async def upload_images(
+              project_id: str, files: List[UploadFile] = File(...),
+              dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
+          ):
+              get_project(project_id)
+              p = project_dir(project_id)
+              uploaded, failed = [], []
+              batch_id = uuid.uuid4().hex[:12]
+              started = time.time()
+              _v50_begin_image_batch(project_id)
+              try:
+                  # Stream each multipart file to disk so memory stays bounded. The
+                  # same pass also computes SHA256, avoiding a later full source reread.
+                  for file in files:
+                      filename = safe_filename(file.filename or "image.jpg")
+                      ext = Path(filename).suffix.lower()
+                      if ext not in IMAGE_EXTS:
+                          failed.append({"name": filename, "reason": "不支持的图片格式"})
+                          continue
+                      tmp = p / "imports" / f"upload_{uuid.uuid4().hex}{ext}"
+                      upload_digest = hashlib.sha256()
+                      try:
+                          with tmp.open("wb") as out:
+                              while True:
+                                  chunk = await file.read(1024 * 1024)
+                                  if not chunk:
+                                      break
+                                  upload_digest.update(chunk)
+                                  out.write(chunk)
+                          if not tmp.exists() or tmp.stat().st_size <= 0:
+                              failed.append({"name": filename, "reason": "文件为空"})
+                              continue
+                          record = add_image_record(
+                              project_id,
+                              tmp,
+                              filename,
+                              "raw",
+                              dataset_id,
+                              storage_source_id,
+                              content_sha256=upload_digest.hexdigest(),
+                          )
+                          if record:
+                              uploaded.append(record)
+                          else:
+                              failed.append({"name": filename, "reason": "图片损坏或无法识别"})
+                      except StorageError as error:
+                          failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
+                      except Exception as error:
+                          failed.append({"name": filename, "reason": str(error)})
+                      finally:
+                          tmp.unlink(missing_ok=True)
+                  _v50_end_image_batch(save=True)
+              except Exception:
+                  if _v50_active_image_batch(project_id):
+                      _v50_end_image_batch(save=False)
+                  raise
+
+              upload_batch_store(project_id).create(
+                  batch_id,
+                  [str(item.get("id")) for item in uploaded],
+                  now_iso(),
+              )
+              return {
+                  "batch_id": batch_id,
+                  "uploaded": uploaded, "failed": failed,
+                  "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
+                  "uploaded_count": len(uploaded), "failed_count": len(failed),
+                  "elapsed_seconds": round(max(0.0, time.time()-started), 2),
+                  "total": material_store(project_id).count(),
+              }
+          '''
+          text, count = upload_pattern.subn(new_upload, text, count=1)
+          if count != 1:
+              raise SystemExit(f'upload endpoint patch count={count}; refusing blind patch')
+
+          path.write_text(text, encoding='utf-8')
+
+          test_path = Path('tests/api/test_upload_batch_performance_truth.py')
+          test_path.write_text('''import hashlib\nimport io\n\nfrom PIL import Image\n\n\ndef _png_bytes(index: int) -> bytes:\n    output = io.BytesIO()\n    Image.new("RGB", (96, 72), (index % 255, 80, 160)).save(output, format="PNG")\n    return output.getvalue()\n\n\ndef test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch):\n    import app as app_module\n    from platform_core.annotation_repository import AnnotationRepository\n    from platform_core.material_repository import MaterialRepository\n\n    project_id = client.post(\n        "/api/projects", json={"name": "plain-upload-batch", "labels": []}\n    ).json()["id"]\n\n    def unexpected_material_upsert(_self, _record):\n        raise AssertionError("plain multi-image upload must not commit materials one image at a time")\n\n    def unexpected_annotation_upsert(_self, *args, **kwargs):\n        raise AssertionError("new-image annotations must be committed with upsert_many")\n\n    def unexpected_source_rehash(_path):\n        raise AssertionError("multipart receive hash must be reused by add_image_record")\n\n    monkeypatch.setattr(MaterialRepository, "upsert", unexpected_material_upsert)\n    monkeypatch.setattr(AnnotationRepository, "upsert", unexpected_annotation_upsert)\n    monkeypatch.setattr(app_module, "sha256_file", unexpected_source_rehash)\n\n    payloads = [_png_bytes(index) for index in range(12)]\n    response = client.post(\n        f"/api/projects/{project_id}/images",\n        files=[\n            ("files", (f"image-{index}.png", payload, "image/png"))\n            for index, payload in enumerate(payloads)\n        ],\n        data={"dataset_id": "default"},\n    )\n    response.raise_for_status()\n    body = response.json()\n    assert body["uploaded_count"] == 12\n    assert body["failed_count"] == 0\n\n    materials = MaterialRepository(app_module.project_dir(project_id))\n    rows = materials.read().rows\n    assert len(rows) == 12\n    assert materials.current_revision() == 1\n    expected_hashes = {hashlib.sha256(payload).hexdigest() for payload in payloads}\n    assert {row["content_sha256"] for row in rows} == expected_hashes\n\n    annotations = AnnotationRepository(app_module.project_dir(project_id)).summary()\n    assert annotations["unannotated"] == 12\n    assert annotations["total"] == 12\n\n\ndef test_plain_upload_keeps_per_file_failure_isolation(client):\n    project_id = client.post(\n        "/api/projects", json={"name": "plain-upload-partial", "labels": []}\n    ).json()["id"]\n    response = client.post(\n        f"/api/projects/{project_id}/images",\n        files=[\n            ("files", ("good.png", _png_bytes(1), "image/png")),\n            ("files", ("bad.txt", b"not-an-image", "text/plain")),\n            ("files", ("also-good.png", _png_bytes(2), "image/png")),\n        ],\n        data={"dataset_id": "default"},\n    )\n    response.raise_for_status()\n    body = response.json()\n    assert body["uploaded_count"] == 2\n    assert body["failed_count"] == 1\n    assert body["failed"][0]["name"] == "bad.txt"\n''', encoding='utf-8')
+          PY
+      - name: Install focused API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Compile changed runtime
+        run: python -m py_compile app.py tests/api/test_upload_batch_performance_truth.py
+      - name: Verify upload batch and existing upload-clean flow
+        run: >-
+          python -m pytest -q
+          tests/api/test_upload_batch_performance_truth.py
+          tests/api/test_upload_clean_flow.py
+          tests/unit/test_material_upload_cleaning_performance.py
+      - name: Permanent invariants before commit
+        shell: bash
+        run: |
+          grep -Fq '_v50_begin_image_batch(project_id)' app.py
+          grep -Fq 'annotation_repository.upsert_many(' app.py
+          grep -Fq 'return repository.upsert_many(records)' app.py
+          grep -Fq 'content_sha256=upload_digest.hexdigest()' app.py
+          grep -Fq 'content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()' app.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit verified optimization
+        shell: bash
+        run: |
+          if git diff --quiet -- app.py tests/api/test_upload_batch_performance_truth.py; then
+            echo 'No runtime diff produced; refusing empty migration.'
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py tests/api/test_upload_batch_performance_truth.py
+          git commit -m 'perf(materials): batch plain image upload persistence'
+          git push origin HEAD:refactor/frontend-runtime-stabilization
