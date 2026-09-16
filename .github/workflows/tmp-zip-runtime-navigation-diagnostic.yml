@@ -9,9 +9,9 @@ on:
       - '.github/workflows/tmp-zip-runtime-navigation-diagnostic.yml'
 
 jobs:
-  navigation-sequence:
+  browser-sequence:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,12 +27,22 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Install frontend dependencies
         run: npm ci
-      - name: Run navigation stability sequence
-        run: npx playwright test tests/browser/navigation-stability.spec.mjs --reporter=json > navigation-report.json
-      - name: Upload navigation report
+      - name: Run full browser regression sequence
+        run: >-
+          npx playwright test
+          tests/browser/navigation-stability.spec.mjs
+          tests/browser/navigation-readiness.spec.mjs
+          tests/browser/training-label-selector.spec.mjs
+          tests/browser/auto-label-polling.spec.mjs
+          tests/browser/algorithm-list-performance.spec.mjs
+          tests/browser/training-task-performance.spec.mjs
+          tests/browser/material-pagination-performance.spec.mjs
+          tests/browser/source-import-completion-scope.spec.mjs
+          --reporter=json > browser-report.json
+      - name: Upload browser report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: navigation-report
-          path: navigation-report.json
+          name: browser-report
+          path: browser-report.json
           if-no-files-found: error
