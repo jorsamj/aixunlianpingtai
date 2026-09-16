@@ -47,13 +47,14 @@ test('picker UI uses larger bounded preview cards rather than a dense thumbnail 
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
 });
 
-test('picker only activates thumbnails inside the bounded scroll viewport', () => {
-  assert.match(source, /THUMBNAIL_EAGER_COUNT = 6/);
+test('picker caps first-paint thumbnails and only expands loading after scroll', () => {
+  assert.match(source, /THUMBNAIL_EAGER_COUNT = 15/);
   assert.match(source, /THUMBNAIL_PRELOAD_MARGIN = 120/);
   assert.match(source, /data-src="\$\{esc\(thumbnail\)\}"/);
+  assert.match(source, /images\.slice\(0, THUMBNAIL_EAGER_COUNT\)\.forEach\(loadThumbnail\)/);
+  assert.match(source, /addEventListener\('scroll', scheduleVisibleThumbnailWindow/);
   assert.match(source, /getBoundingClientRect\(\)/);
   assert.match(source, /requestAnimationFrame/);
-  assert.match(source, /addEventListener\('scroll', scheduleVisibleThumbnailWindow/);
   assert.match(source, /viewportThumbnailLoading: true/);
   assert.match(source, /eagerThumbnailCount: THUMBNAIL_EAGER_COUNT/);
   assert.doesNotMatch(source, /IntersectionObserver/);
