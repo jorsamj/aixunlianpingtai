@@ -19,6 +19,16 @@ def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch)
         "/api/projects", json={"name": "plain-upload-batch", "labels": []}
     ).json()["id"]
 
+    original_storage_manager = app_module.storage_manager
+    storage_manager_calls = 0
+
+    def counted_storage_manager(project):
+        nonlocal storage_manager_calls
+        storage_manager_calls += 1
+        return original_storage_manager(project)
+
+    monkeypatch.setattr(app_module, "storage_manager", counted_storage_manager)
+
     def unexpected_material_upsert(_self, _record):
         raise AssertionError("plain multi-image upload must not commit materials one image at a time")
 
@@ -45,6 +55,9 @@ def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch)
     body = response.json()
     assert body["uploaded_count"] == 12
     assert body["failed_count"] == 0
+    assert storage_manager_calls == 1
+    assert all(item.get("annotation_summary_at") for item in body["uploaded"])
+    assert all(item.get("annotation_state") == "unannotated" for item in body["uploaded"])
 
     materials = MaterialRepository(app_module.project_dir(project_id))
     rows = materials.read().rows

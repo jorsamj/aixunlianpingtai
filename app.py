@@ -1767,6 +1767,9 @@ def _v50_begin_image_batch(project_id: str):
         # stay immediate so their independent update semantics do not change.
         "annotations": {},
         "annotation_repository": None,
+        # Storage source schema/provider/credential setup is request-scoped,
+        # not image-scoped. Reuse one manager across the whole import batch.
+        "storage_manager": None,
     }
 
 
@@ -1779,6 +1782,17 @@ def _v50_annotation_repository(project_id: str) -> AnnotationRepository:
             batch["annotation_repository"] = repository
         return repository
     return AnnotationRepository(project_dir(project_id))
+
+
+def _v50_storage_manager(project_id: str) -> StorageManager:
+    batch = _v50_active_image_batch(project_id)
+    if batch is not None:
+        manager = batch.get("storage_manager")
+        if manager is None:
+            manager = storage_manager(project_id)
+            batch["storage_manager"] = manager
+        return manager
+    return storage_manager(project_id)
 
 
 def _v50_queue_image_patch(project_id: str, image_id: str, patch: Dict[str, Any]) -> bool:
@@ -2003,7 +2017,8 @@ def add_image_record(
         info = image_info(src)
     except Exception:
         return None
-    source_config = storage_source_repository().get(storage_source_id)
+    manager = _v50_storage_manager(project_id)
+    source_config = manager.sources.get(storage_source_id)
     if source_config is None:
         raise StorageError(
             code="STORAGE_SOURCE_NOT_FOUND", message="素材保存位置不存在",
@@ -2011,7 +2026,7 @@ def add_image_record(
             solution="请刷新保存位置后重试。",
         )
     object_key = f"uploads/{dst_name}"
-    metadata = storage_manager(project_id).upload_object(
+    metadata = manager.upload_object(
         storage_source_id, object_key, src,
         content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
     )
@@ -2068,7 +2083,7 @@ def add_image_record(
         annotation_path.unlink(missing_ok=True)
         _v50_annotation_repository(project_id).remove([img_id])
         try:
-            storage_manager(project_id).delete_source_file(record)
+            manager.delete_source_file(record)
         except Exception:
             pass
         raise
@@ -3194,7 +3209,15 @@ async def upload_images(
                 failed.append({"name": filename, "reason": str(error)})
             finally:
                 tmp.unlink(missing_ok=True)
-        _v50_end_image_batch(save=True)
+        committed = _v50_end_image_batch(save=True)
+        if committed:
+            committed_by_id = {
+                str(item.get("id")): item for item in committed
+            }
+            uploaded = [
+                dict(committed_by_id.get(str(item.get("id"))) or item)
+                for item in uploaded
+            ]
     except Exception:
         if _v50_active_image_batch(project_id):
             _v50_end_image_batch(save=False)
