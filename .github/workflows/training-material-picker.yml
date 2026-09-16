@@ -60,12 +60,21 @@ jobs:
         run: |
           grep -Fq 'DEFAULT_PAGE_SIZE = 60' static/modules/training-material-picker-runtime.js
           grep -Fq 'THUMBNAIL_EAGER_COUNT = 6' static/modules/training-material-picker-runtime.js
+          grep -Fq 'THUMBNAIL_PRELOAD_MARGIN = 120' static/modules/training-material-picker-runtime.js
           grep -Fq 'repeat(5,minmax(0,1fr))' static/modules/training-material-picker-runtime.js
           grep -Fq 'aspect-ratio:4/3' static/modules/training-material-picker-runtime.js
-          grep -Fq 'window.IntersectionObserver' static/modules/training-material-picker-runtime.js
+          grep -Fq 'height:clamp(420px,60vh,620px)' static/modules/training-material-picker-runtime.js
+          grep -Fq 'overflow-y:auto!important' static/modules/training-material-picker-runtime.js
+          grep -Fq 'getBoundingClientRect()' static/modules/training-material-picker-runtime.js
+          grep -Fq 'requestAnimationFrame' static/modules/training-material-picker-runtime.js
+          grep -Fq "addEventListener('scroll', scheduleVisibleThumbnailWindow" static/modules/training-material-picker-runtime.js
           grep -Fq 'data-src="${esc(thumbnail)}"' static/modules/training-material-picker-runtime.js
           grep -Fq '/training-materials/bulk-selection' static/modules/training-material-picker-runtime.js
           grep -Fq "bulkSelectionOwner: 'server'" static/modules/training-material-picker-runtime.js
+          if grep -Fq 'IntersectionObserver' static/modules/training-material-picker-runtime.js; then
+            echo 'training picker must use deterministic bounded-scroll thumbnail loading' >&2
+            exit 1
+          fi
           grep -Fq '/training-materials/selection-summary' static/modules/training-material-summary-runtime.js
           grep -Fq "FULL_MATERIAL_PAGES.delete('训练任务')" static/main.mjs
           grep -Fq 'materialSummaryRuntime: trainingMaterialSummaryRuntime' static/main.mjs
