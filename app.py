@@ -70,6 +70,7 @@ from platform_core.resource_discovery import (
     OFFICIAL_DOWNLOADABLE_MODELS,
     probe_python_environment,
 )
+from platform_core.resource_discovery.request_scope import resolve_discovery_request_roots
 from platform_core.resource_discovery.tasks import (
     CACHE_FILENAME as RESOURCE_DISCOVERY_CACHE_FILENAME,
     PROGRESS_REF as RESOURCE_DISCOVERY_PROGRESS_REF,
@@ -4698,10 +4699,14 @@ def list_local_models(limit: int = 200, cursor: Optional[str] = None):
 
 @app.post("/api/local_models/scan", status_code=202)
 def scan_local_models(payload: LocalModelScanReq):
-    roots = [value for value in (payload.roots or []) if str(value).strip()]
-    scope = payload.scope or ("directory" if roots else "full")
-    if scope == "directory" and not roots:
+    submitted_roots = [value for value in (payload.roots or []) if str(value).strip()]
+    scope = payload.scope or ("directory" if submitted_roots else "full")
+    if scope == "directory" and not submitted_roots:
         raise HTTPException(status_code=422, detail="指定目录扫描至少需要一个目录")
+    try:
+        roots = resolve_discovery_request_roots(scope, submitted_roots)
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     return _public_discovery_task(_create_discovery_task("local_models", scope, roots))
 
 
@@ -4723,8 +4728,12 @@ def get_ultralytics_env():
 
 @app.post("/api/ultralytics_env/detect", status_code=202)
 def detect_ultralytics_env(payload: UltralyticsEnvDetectReq):
+    try:
+        roots = resolve_discovery_request_roots(payload.scope, payload.roots)
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     return _public_discovery_task(
-        _create_discovery_task("ultralytics_environment", payload.scope, payload.roots)
+        _create_discovery_task("ultralytics_environment", payload.scope, roots)
     )
 
 

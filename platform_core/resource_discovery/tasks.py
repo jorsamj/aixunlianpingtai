@@ -1,10 +1,10 @@
 """Durable, machine-scoped resource discovery task handlers.
 
-HTTP routes only allocate generations and queue these tasks. Filesystem
-traversal and Python subprocess probes are deliberately confined to the
-discovery worker. Environment deep scans remain bounded to explicit request
-roots. An explicit model scope=full action delegates local-machine root
-resolution to the scanner, which excludes network and virtual filesystems.
+HTTP routes allocate generations and queue these tasks. Filesystem traversal
+and Python subprocess probes are deliberately confined to the discovery worker.
+Deep filesystem traversal is bounded to explicit request roots. Whole-machine
+roots are resolved and frozen before durable task creation; the worker never
+expands a missing root set into an implicit machine scan.
 """
 from __future__ import annotations
 
@@ -79,21 +79,13 @@ def _require_model_roots(roots: list[Path]) -> None:
         raise ValueError("model discovery requires at least one explicit root")
 
 
-def _model_scan_roots(scope: str, roots: list[Path]) -> list[Path] | None:
-    """Resolve model scan roots without weakening directory-scan safety.
+def _model_scan_roots(scope: str, roots: list[Path]) -> list[Path]:
+    """Require the durable request to carry concrete roots for every deep scan."""
 
-    ``directory`` always requires caller-supplied roots. ``full`` is itself an
-    explicit user action and therefore delegates machine-local root discovery to
-    ``scan_model_files`` by passing ``None``. The scanner remains responsible for
-    excluding network and virtual filesystems cross-platform.
-    """
-
-    if scope == "directory":
-        _require_model_roots(roots)
-        return roots
-    if scope == "full":
-        return None
-    raise ValueError("model discovery scope must be directory or full")
+    if scope not in {"directory", "full"}:
+        raise ValueError("model discovery scope must be directory or full")
+    _require_model_roots(roots)
+    return roots
 
 
 class _ModelManifest:
@@ -398,7 +390,7 @@ class ResourceDiscoveryHandler:
             "generation": generation,
             "published": published,
             "explicit_root_count": len(roots),
-            "scan_root_mode": "local_machine" if scan_roots is None else "explicit",
+            "scan_root_mode": "explicit",
             **counters,
         }
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
