@@ -14,9 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         case:
+          - 'base modal post-open content refresh'
           - 'ZIP import completion surfaces review action'
           - 'ZIP import completion uses scoped label'
-          - 'base modal post-open content refresh'
           - 'server storage import confirmation avoids broad related refresh'
           - 'formal version marker stays stable'
     runs-on: ubuntu-24.04
