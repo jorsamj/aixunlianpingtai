@@ -64,12 +64,12 @@ export function installTrainingMaterialPickerRuntime({
     style.id = 'training-material-picker-runtime-style';
     style.textContent = `
       .train-v3-picker.server-paged{min-height:64vh}
-      .train-v3-picker.server-paged .train-v3-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;height:clamp(420px,60vh,620px);max-height:none!important;min-height:0;align-content:start;padding:4px 2px 10px;overflow-y:auto!important;overflow-x:hidden;overscroll-behavior:contain}
-      .train-v3-picker.server-paged .train-v3-card{position:relative;display:flex;flex-direction:column;min-width:0;padding:8px;border:1px solid #e3e8f0;border-radius:14px;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.04);overflow:hidden;transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}
+      .train-v3-picker.server-paged .train-v3-grid{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;grid-auto-rows:minmax(210px,max-content);align-items:start;gap:12px;height:clamp(420px,60vh,620px);max-height:none!important;min-height:0;align-content:start;padding:4px 2px 10px;overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:contain}
+      .train-v3-picker.server-paged .train-v3-card{position:relative;display:flex!important;flex-direction:column;align-self:start;min-width:0;min-height:210px;height:auto!important;padding:8px;border:1px solid #e3e8f0;border-radius:14px;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.04);overflow:hidden;transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}
       .train-v3-picker.server-paged .train-v3-card:hover{border-color:#bcc9da;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:translateY(-1px)}
       .train-v3-picker.server-paged .train-v3-card.on{border-color:#4f7cff;box-shadow:0 0 0 2px rgba(79,124,255,.12),0 8px 20px rgba(15,23,42,.08)}
       .train-v3-picker.server-paged .train-v3-card>input[type="checkbox"]{position:absolute;top:14px;right:14px;z-index:3;width:18px;height:18px;margin:0;accent-color:#2563eb;box-shadow:0 1px 4px rgba(15,23,42,.22)}
-      .train-v3-picker.server-paged .train-v3-card img{display:block;width:100%;height:auto;aspect-ratio:4/3;background:#eef2f7;object-fit:cover;border-radius:9px}
+      .train-v3-picker.server-paged .train-v3-card img{display:block!important;width:100%!important;height:auto!important;min-height:0;aspect-ratio:4/3!important;flex:none;background:#eef2f7;object-fit:cover;border-radius:9px}
       .train-v3-picker.server-paged .train-v3-card b{display:block;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:20px;color:#172033}
       .train-v3-picker.server-paged .train-v3-card span{display:block;min-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:18px;color:#64748b}
       .train-v3-picker.server-paged .train-v3-card.blocked{opacity:.5;cursor:not-allowed}
@@ -78,9 +78,9 @@ export function installTrainingMaterialPickerRuntime({
       .train-v3-picker.server-paged .train-v3-page-meta{color:#64748b;font-size:11px}
       .train-v3-picker.server-paged .train-v3-loading{pointer-events:none;opacity:.65}
       @keyframes trainPickerShimmer{to{background-position:-220% 0}}
-      @media(max-width:1180px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
-      @media(max-width:900px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
-      @media(max-width:620px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;height:clamp(360px,56vh,520px)}.train-v3-picker.server-paged .train-v3-card{padding:6px}}
+      @media(max-width:1180px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(4,minmax(0,1fr))!important}}
+      @media(max-width:900px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+      @media(max-width:620px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:9px;height:clamp(360px,56vh,520px)}.train-v3-picker.server-paged .train-v3-card{padding:6px;min-height:190px}}
     `;
     document.head.appendChild(style);
   }
@@ -431,7 +431,7 @@ export function installTrainingMaterialPickerRuntime({
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422503',
+    build: 'training-material-picker-runtime-422504',
     open,
     loadPage,
     bulkAction,
