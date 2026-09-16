@@ -1,0 +1,66 @@
+name: Temporary Task Runtime Truth V2 Closure
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - scripts/tmp_task_runtime_truth_v2_patch.py
+      - .github/workflows/tmp-task-runtime-truth-v2-closure.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  close-v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/frontend-runtime-stabilization
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply Task Runtime Truth v2 patch
+        run: python scripts/tmp_task_runtime_truth_v2_patch.py
+      - name: Focused frontend truth tests
+        run: >-
+          node --test
+          tests/frontend/task-runtime-truth.test.mjs
+          tests/frontend/storage-import-progress.test.mjs
+          tests/frontend/server-material-import.test.mjs
+          tests/frontend/video-tasks.test.mjs
+          tests/frontend/deployment-task-view.test.mjs
+          tests/frontend/resource-discovery-runtime-truth.test.mjs
+      - name: Diff safety check
+        run: git diff --check
+      - name: Commit product closure
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            static/modules/task-runtime-truth.js \
+            static/modules/storage-import-progress.js \
+            static/modules/server-material-import.js \
+            static/modules/video-tasks.js \
+            static/modules/deployment-tests.js \
+            static/modules/resource-discovery.js \
+            tests/frontend/task-runtime-truth.test.mjs \
+            tests/frontend/storage-import-progress.test.mjs \
+            tests/frontend/server-material-import.test.mjs \
+            tests/frontend/video-tasks.test.mjs \
+            tests/frontend/deployment-task-view.test.mjs \
+            tests/frontend/resource-discovery-runtime-truth.test.mjs \
+            docs/CODEX_HANDOFF_2026-09-16_TASK_RUNTIME_TRUTH_V2.md
+          if git diff --cached --quiet; then
+            echo "No product changes to commit"
+            exit 0
+          fi
+          git commit -m "fix(runtime): unify durable task truth across task pages"
+          git push origin HEAD:refactor/frontend-runtime-stabilization
