@@ -28,4 +28,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Run navigation stability sequence
-        run: npx playwright test tests/browser/navigation-stability.spec.mjs
+        run: npx playwright test tests/browser/navigation-stability.spec.mjs --reporter=json > navigation-report.json
+      - name: Upload navigation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: navigation-report
+          path: navigation-report.json
+          if-no-files-found: error
