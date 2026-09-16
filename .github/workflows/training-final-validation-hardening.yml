@@ -12,6 +12,7 @@ on:
       - platform_core/training_recovery_tasks.py
       - platform_core/training_tasks.py
       - platform_core/training_bundle_cache.py
+      - platform_core/snapshots.py
       - platform_core/training_label_tasks.py
       - platform_core/training_metrics.py
       - platform_core/training_devices.py
@@ -26,6 +27,7 @@ on:
       - tests/unit/test_training_worker_startup_callbacks.py
       - tests/unit/test_portable_dataset.py
       - tests/unit/test_training_bundle_isolation.py
+      - tests/unit/test_snapshots.py
       - tests/unit/task_runtime/test_process_control.py
       - tests/unit/task_runtime/test_training_terminal_truth.py
       - tests/unit/task_runtime/test_worker_registry.py
@@ -59,6 +61,7 @@ jobs:
           platform_core/training_recovery_tasks.py
           platform_core/training_tasks.py
           platform_core/training_bundle_cache.py
+          platform_core/snapshots.py
           platform_core/training_metrics.py
           platform_core/training_devices.py
           platform_core/task_runtime/process_control.py
@@ -76,6 +79,7 @@ jobs:
           tests/unit/test_training_worker_startup_callbacks.py
           tests/unit/test_portable_dataset.py
           tests/unit/test_training_bundle_isolation.py
+          tests/unit/test_snapshots.py
           tests/unit/task_runtime/test_process_control.py
           tests/unit/task_runtime/test_training_terminal_truth.py
           tests/unit/task_runtime/test_worker_registry.py
@@ -109,7 +113,7 @@ jobs:
           grep -Fq '_indexed_content_identity_ready' platform_core/training_tasks.py
           grep -Fq 'verified_snapshot_cache' platform_core/training_tasks.py
           grep -Fq 'class TrainingBundleCache' platform_core/training_bundle_cache.py
-          grep -Fq 'CACHE_SCHEMA_VERSION = 2' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_SCHEMA_VERSION = 3' platform_core/training_bundle_cache.py
           grep -Fq 'data_yaml_sha256' platform_core/training_bundle_cache.py
           grep -Fq 'portable bundle reference must not traverse a link or reparse point' platform_core/training_bundle_cache.py
           grep -Fq 'CACHE_MAX_BYTES_ENV = "TRAINING_BUNDLE_CACHE_MAX_BYTES"' platform_core/training_bundle_cache.py
@@ -121,8 +125,16 @@ jobs:
           grep -Fq 'with self._lock(candidate.snapshot_id, timeout=0)' platform_core/training_bundle_cache.py
           grep -Fq '"hardlinked_image_bytes"' platform_core/training_bundle_cache.py
           grep -Fq '"maintenance": maintenance' platform_core/training_bundle_cache.py
-          grep -Fq 'os.link' platform_core/training_bundle_cache.py
-          grep -Fq 'test_verified_bundle_cache_publishes_and_restores_with_image_hardlinks' tests/unit/test_training_bundle_cache.py
+          if grep -Fq 'os.link(source_image, destination_image)' platform_core/training_bundle_cache.py; then echo 'trainer-writable cache restore must not hardlink images' >&2; exit 1; fi
+          grep -Fq 'test_verified_bundle_cache_restores_isolated_trainer_writable_images' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_restore_never_attempts_image_hardlinks' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_schema_v2_is_rejected_after_writable_hardlink_fix' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"' platform_core/training_tasks.py
+          grep -Fq 'source_content_sha256' platform_core/training_tasks.py
+          grep -Fq 'TRAINING_BUNDLE_IMAGE_MUTATED' platform_core/training_tasks.py
+          grep -Fq '_JPEG_NORMALIZATION_LOCK' platform_core/training_tasks.py
+          grep -Fq 'test_missing_jpeg_eoi_is_normalized_before_ultralytics_without_mutating_source' tests/unit/test_training_bundle_isolation.py
+          grep -Fq 'training_input_policy' platform_core/snapshots.py
           grep -Fq 'test_cache_resolve_rejects_tampered_label' tests/unit/test_training_bundle_cache.py
           grep -Fq 'test_cache_resolve_rejects_tampered_data_yaml' tests/unit/test_training_bundle_cache.py
           grep -Fq 'test_cache_resolve_rejects_in_bundle_symlink_component' tests/unit/test_training_bundle_cache.py
