@@ -182,15 +182,53 @@ materials/<uuid>/<version>.<ext>
 
 ## 6. Presigned PUT 边界
 
-当前平台正式 Web 上传链路使用后端 Provider 写入，因此 OSS / S3 的条件写保护可以由后端强制执行。
+Provider 层已经具备**不可覆盖的 presigned PUT 契约**，但当前平台仍未启用正式浏览器 / 客户端直传入口。
 
-现有 Provider 仍保留 `generate_upload_url()` 能力，但**当前不可把普通 presigned PUT 视为已经具备与后端条件写完全相同的不可覆盖契约**。如果以后启用浏览器 / 客户端直传，必须满足以下任一条件后才能作为正式写入路径：
+### 6.1 受保护契约
 
-- 使用唯一、不可复用的 object_key；
-- 由服务端签发带等价条件写约束的上传契约；
-- 使用对象存储版本化并把具体版本 ID 纳入素材真值。
+当 `protect_existing_objects = true` 时：
 
-在此之前，直传能力不能绕过后端不可变写策略。
+- OSS `generate_upload_contract()` 会把 `Content-Type` 与 `x-oss-forbid-overwrite: true` 一起签入 PUT URL，并返回客户端必须原样发送的 Header；
+- S3 `generate_upload_contract()` 使用 SigV4，并把 `Content-Type` 与 `If-None-Match: *` 纳入签名；
+- 返回结构同时包含 `url`、`method=PUT`、`headers`、`expires_seconds`、`overwrite_protected=true`；
+- `generate_upload_url()` 继续作为兼容 URL-only 方法存在，但其 URL 由同一受保护契约生成。客户端若不发送签名要求的 Header，应签名校验失败，而不是退化为可覆盖上传。
+
+S3 Provider 显式使用：
+
+```text
+signature_version = s3v4
+```
+
+避免由 SDK / Region 默认行为生成不能明确证明条件 Header 已签入的旧式 presigned URL。
+
+### 6.2 legacy opt-out
+
+只有显式：
+
+```text
+protect_existing_objects = false
+```
+
+生成的上传契约才会返回：
+
+```text
+overwrite_protected = false
+```
+
+并且不会附加 OSS / S3 条件写 Header。
+
+### 6.3 当前仍未开放的产品边界
+
+本批**没有新增正式 Web API，也没有把浏览器直传接入前端上传页面**。因此不能把本批描述成“浏览器直传功能已经上线”。正式启用前仍需完成：
+
+1. 服务端短时效上传契约 API 与权限校验；
+2. 前端严格使用返回的 URL + Headers，不允许自行丢弃条件 Header；
+3. 真实 Bucket CORS 允许这些条件 Header；
+4. 真实 OSS / S3 上验证首传成功、同 key 二次上传被拒绝、过期 URL 被拒绝；
+5. 上传完成后的对象 SHA256 / size / etag 回写及素材确认流程；
+6. 必要时采用不可变 key / Bucket versioning 作为第二层保护。
+
+在这些端到端条件验收前，当前正式 Web 上传仍以后端 Provider 写入链路为准。
 
 ## 7. 前端真实展示
 
@@ -217,7 +255,7 @@ materials/<uuid>/<version>.<ext>
 
 ## 9. 验证边界
 
-本批永久测试覆盖：
+永久测试覆盖：
 
 - MaterialCache 首次 miss、再次 hit、并发同 SHA 只下载一次；
 - 本地缓存损坏重新下载；
@@ -230,13 +268,16 @@ materials/<uuid>/<version>.<ext>
 - OSS 冲突映射 `STORAGE_OBJECT_EXISTS`；
 - S3 默认 `If-None-Match: *`；
 - legacy 覆盖必须显式 opt-out；
+- OSS presigned PUT 返回并签入 `x-oss-forbid-overwrite: true`；
+- S3 presigned PUT 强制 SigV4，并验证 `X-Amz-SignedHeaders` 包含 `content-type` 与 `if-none-match`；
+- 真实 `boto3` / `oss2` SDK 的离线签名路径；
 - 前端两层缓存、对象保护、占用快照语义。
 
-真实 OSS Bucket / 多节点 GPU 缓存命中率属于生产环境验收，不得用 mock 测试结果替代。
+真实 OSS / S3 Bucket、Bucket CORS、真实多节点 GPU 缓存命中率仍属于生产环境验收，不得用 mock / 离线签名测试结果替代。
 
-## 10. 关闭证据 — 2026-09-16
+## 10. Storage Cache Governance 关闭证据 — 2026-09-16
 
-本批 **Storage Cache Governance** 已完成代码、前端真值、永久测试、CI guard 与 Real Chrome 回归，可按 v42.25 技术债批次标记为 **CLOSED**。
+基础存储缓存治理批次已完成代码、前端真值、永久测试、CI guard 与 Real Chrome 回归，可按 v42.25 技术债批次标记为 **CLOSED**。
 
 ```text
 validated implementation HEAD:      748958541aa12eb8a6e6dc88f2be5132e3311a58
@@ -250,6 +291,24 @@ Navigation Action Fencing:           35039564421 SUCCESS
 formal VERSION.txt:                  42.24.0 unchanged
 ```
 
-永久 guard 会检查 MaterialCache 容量/TTL/status 快照、OSS/S3 条件写保护、前端两层缓存与外部变更提示，以及 `VERSION.txt` 必须继续保持 `42.24.0`。
+后续专项 CI 已收窄依赖，不再为了 Storage guard 安装 `torch / torchvision / ultralytics` 训练栈，同时保留完整 storage 测试与 `tests/conftest.py` 装载语义。
 
-本关闭结论**不扩大生产验收边界**：真实 OSS Bucket、真实多节点 GPU 缓存命中率、presigned PUT 等价不可变写保护仍未由本批证明；A800 RC 与 genuine 10k 实测仍按项目总约束保持暂停。
+## 11. Presigned PUT Provider Contract 关闭证据 — 2026-09-16
+
+Provider 层的安全 presigned PUT 契约已完成代码、真实 SDK 离线签名测试和永久 CI guard，可标记为 **CLOSED**。
+
+```text
+validated implementation HEAD:      9abfa7b944aa0f29963e62491103010b434bbc48
+Storage Cache Governance run:        35043735559 SUCCESS
+  backend focused storage tests:    32 / 32 PASS
+  frontend focused storage tests:   12 / 12 PASS
+Frontend Runtime Stabilization:      35043735536 SUCCESS
+  full frontend unit tests:         305 / 305 PASS
+  Real Chrome / Playwright:         33 / 33 PASS
+Navigation Action Fencing:           35043735579 SUCCESS
+formal VERSION.txt:                  42.24.0 unchanged
+```
+
+本关闭结论只覆盖 **Provider 层签名与不可覆盖契约**。它不扩大为真实 Bucket 的端到端上传验收，也不表示正式 Web / 浏览器直传已经启用。真实 OSS / S3 Bucket、CORS、同 key 二次上传拒绝、过期签名拒绝、上传完成后的素材真值回写以及多节点 GPU 缓存汇总仍需分别验收。
+
+A800 RC 与 genuine 10k 实测继续按项目总约束保持暂停。
