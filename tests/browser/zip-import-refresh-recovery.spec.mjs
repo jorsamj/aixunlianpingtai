@@ -75,7 +75,7 @@ async function createSelectingZipJob(request, projectId) {
   return body;
 }
 
-test('server-persisted ZIP job is restored after browser refresh', async ({page, request}) => {
+test('server-persisted ZIP job is restored in upload task center after browser refresh', async ({page, request}) => {
   const project = await createProject(request);
   const job = await createSelectingZipJob(request, project.id);
   expect(job.id).toBeTruthy();
@@ -86,14 +86,20 @@ test('server-persisted ZIP job is restored after browser refresh', async ({page,
 
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();
-  const dock = page.locator('#zipImportDurableDock');
-  await expect(dock).toBeVisible({timeout: 10_000});
-  await expect(dock).toContainText(/等待启动后台导入|后台导入/);
+  const taskCenter = page.locator('#uploadTaskCenter');
+  await expect(taskCenter).toBeVisible({timeout: 10_000});
+  await expect(taskCenter).toContainText('上传任务');
+
+  await taskCenter.locator('[data-utc-toggle]').click();
+  await expect(taskCenter).toContainText('refresh-recovery.zip');
+  await expect(taskCenter).toContainText(/等待启动后台导入|等待中|后台/);
 
   await page.reload();
-  await expect(dock).toBeVisible({timeout: 10_000});
-  await dock.click();
-  const dialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
-  await expect(dialog).toContainText('refresh-recovery.zip');
-  await expect(dialog).toContainText(/后台任务状态以服务器为准|正在确认后台启动状态|后台/);
+  await expect(taskCenter).toBeVisible({timeout: 10_000});
+  await taskCenter.locator('[data-utc-toggle]').click();
+  await expect(taskCenter).toContainText('refresh-recovery.zip');
+  await expect(taskCenter).toContainText(/等待启动后台导入|等待中|后台/);
+
+  // The retired single-task ZIP dock must stay hidden when the unified task center owns visibility.
+  await expect(page.locator('#zipImportDurableDock')).toBeHidden();
 });
