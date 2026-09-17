@@ -15,6 +15,7 @@ on:
   pull_request:
     branches:
       - main
+      - refactor/frontend-runtime-stabilization
     paths:
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
