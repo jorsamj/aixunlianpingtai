@@ -289,15 +289,31 @@ class AgentExecutionWorkdir:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def _contained_directory(self, path: Path, *, create: bool) -> Path | None:
+        root = self.root.resolve()
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_dir():
+                raise ValueError("execution workdir contains an unsafe path component")
+        elif create:
+            path.mkdir()
+        else:
+            return None
+        resolved = path.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise ValueError("execution workdir escaped Agent state root")
+        return resolved
+
     def path_for(self, lease: RemoteExecutionLease) -> Path:
         task_id = _safe_component(lease.task_id, "task_id")
         generation = str(int(lease.generation))
-        target = (self.root / "executions" / task_id / generation)
-        target.mkdir(parents=True, exist_ok=True)
-        resolved = target.resolve()
-        root = self.root.resolve()
-        if resolved != root and root not in resolved.parents:
-            raise ValueError("execution workdir escaped Agent state root")
+        executions = self.root / "executions"
+        self._contained_directory(executions, create=True)
+        task_dir = executions / task_id
+        self._contained_directory(task_dir, create=True)
+        target = task_dir / generation
+        resolved = self._contained_directory(target, create=True)
+        if resolved is None:
+            raise RuntimeError("failed to create execution workdir")
         return resolved
 
     @staticmethod
@@ -336,8 +352,16 @@ class AgentExecutionWorkdir:
         return target
 
     def cleanup(self, lease: RemoteExecutionLease) -> None:
-        target = self.path_for(lease)
-        if target.exists():
+        task_id = _safe_component(lease.task_id, "task_id")
+        generation = str(int(lease.generation))
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return
+        task_dir = self._contained_directory(Path(executions) / task_id, create=False)
+        if task_dir is None:
+            return
+        target = self._contained_directory(Path(task_dir) / generation, create=False)
+        if target is not None:
             shutil.rmtree(target)
 
 
