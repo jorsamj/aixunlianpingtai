@@ -35,12 +35,12 @@ jobs:
           git diff --check
       - name: Commit durable fix
         run: |
-          if git diff --quiet; then
+          if git diff --quiet -- app.py tests/unit/test_algorithm_sql_app_contract.py; then
             echo "No changes to commit"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app.py tests/unit/test_algorithm_sql_app_contract.py .github/workflows/algorithm-sql-store.yml
+          git add app.py tests/unit/test_algorithm_sql_app_contract.py
           git commit -m "fix: route algorithm bootstrap counts through SQL store"
           git push origin HEAD:feature/external-algorithm-publishing
