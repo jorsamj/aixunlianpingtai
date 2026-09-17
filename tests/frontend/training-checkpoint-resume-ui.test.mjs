@@ -55,6 +55,12 @@ test('validation phase is shown after resumed training loop', () => {
   assert.deepEqual(checkpointResumeTimeline(job).map(step => step.state), ['done', 'done', 'done', 'active', 'pending']);
 });
 
+test('finalizing commit phase comes from backend task truth and marks archive active', () => {
+  const job = {...running, phase: 'finalizing_commit', recovery_state: 'validation_completed', current_epoch: 100};
+  assert.equal(checkpointResumeBadge(job), '续训完成 · 正在归档');
+  assert.deepEqual(checkpointResumeTimeline(job).map(step => step.state), ['done', 'done', 'done', 'pending', 'active']);
+});
+
 test('completed resume shows archive complete without exposing a manual retry button contract', () => {
   const job = {...running, status: 'done', task_status: 'SUCCEEDED', recovery_state: 'completed', current_epoch: 100};
   assert.equal(checkpointResumeBadge(job), '已从 Epoch 36 恢复');
