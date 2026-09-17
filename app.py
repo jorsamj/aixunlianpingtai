@@ -8185,6 +8185,13 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     try:
         job["auto_conversion"]=version.get("auto_conversion");write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
+    request_external_auto_publish_if_enabled(
+        data_dir=DATA_DIR,
+        algorithms_path=algorithms_file(project_id),
+        algorithm_id=algorithm_id,
+        version_id=version_id,
+        now=now_iso(),
+    )
     return version
 
 
@@ -14874,6 +14881,10 @@ from platform_core.external_algorithm_platform import (
     assert_local_algorithm_create_allowed,
     external_algorithm_platform_router,
 )
+from platform_core.external_algorithm_publish import (
+    external_algorithm_publish_router,
+    request_external_auto_publish_if_enabled,
+)
 from platform_core.material_batches import material_batch_router
 
 app.include_router(external_algorithm_platform_router(
@@ -14881,6 +14892,15 @@ app.include_router(external_algorithm_platform_router(
     get_project=get_project,
     algorithms_file=algorithms_file,
     secret_store_factory=_v35_secret_store,
+))
+app.include_router(external_algorithm_publish_router(
+    data_dir=DATA_DIR,
+    get_project=get_project,
+    project_dir=project_dir,
+    algorithms_file=algorithms_file,
+    external_secret_store_factory=_v35_secret_store,
+    storage_sources_factory=storage_source_repository,
+    storage_credentials_factory=storage_credentials,
 ))
 app.include_router(material_batch_router(
     get_project, material_store, shared_task_repository, shared_task_artifacts,
