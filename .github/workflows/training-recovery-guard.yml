@@ -9,6 +9,7 @@ on:
       - platform_core/training_recovery_tasks.py
       - platform_core/training_checkpoint_resume_tasks.py
       - platform_core/training_runtime_tasks.py
+      - platform_core/training_job_projection.py
       - platform_core/worker_registry.py
       - platform_core/material_batches.py
       - train_checkpoint_resume_worker.py
@@ -19,6 +20,7 @@ on:
       - static/modules/training-task-runtime.js
       - static/main.mjs
       - tests/test_training_checkpoint_resume.py
+      - tests/test_training_checkpoint_resume_projection.py
       - tests/unit/test_training_recovery_api.py
       - tests/frontend/training-checkpoint-resume-ui.test.mjs
       - tests/frontend/training-recovery-runtime.test.mjs
@@ -114,10 +116,14 @@ jobs:
           train_checkpoint_resume_worker.py
           platform_core/training_checkpoint_resume_tasks.py
           platform_core/training_runtime_tasks.py
+          platform_core/training_job_projection.py
           platform_core/worker_registry.py
 
       - name: Backend checkpoint resume contracts
-        run: python -m pytest -q tests/test_training_checkpoint_resume.py
+        run: >-
+          python -m pytest -q
+          tests/test_training_checkpoint_resume.py
+          tests/test_training_checkpoint_resume_projection.py
 
       - name: Frontend checkpoint resume contracts
         run: |
@@ -134,9 +140,11 @@ jobs:
           grep -Fq 'resume_checkpoint_sha256' platform_core/training_checkpoint_resume_tasks.py
           grep -Fq 'stage=FINALIZING_COMMIT_STAGE' platform_core/training_runtime_tasks.py
           grep -Fq 'FINALIZING_COMMIT_STAGE = "finalizing_commit"' platform_core/training_runtime_tasks.py
+          grep -Fq 'test_algorithm_version_replay_is_idempotent_by_training_task' tests/test_training_checkpoint_resume.py
+          grep -Fq 'test_training_job_projection_preserves_checkpoint_resume_fields' tests/test_training_checkpoint_resume_projection.py
           grep -Fq 'training-checkpoint-resume-bootstrap.mjs?v=422531' static/index.html
           grep -Fq "const RESUME_MODE = 'training_checkpoint_resume';" static/modules/training-checkpoint-resume-ui.js
-          grep -Fq 'version replay is idempotent' <(grep -n 'test_algorithm_version_replay_is_idempotent_by_training_task' tests/test_training_checkpoint_resume.py | sed 's/.*/version replay is idempotent/')
+          grep -Fq 'finalizing commit phase comes from backend task truth' tests/frontend/training-checkpoint-resume-ui.test.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
 
