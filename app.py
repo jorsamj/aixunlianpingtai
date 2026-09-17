@@ -90,6 +90,7 @@ from platform_core.storage.import_tasks import (
     load_legacy_candidates,
     server_import_dir,
 )
+from platform_core.zip_multipart import ZipMultipartRepository
 from platform_core.storage.zip_import import (
     ServerZipImportError,
     resolve_server_zip,
@@ -5356,6 +5357,8 @@ def gpu_resources():
 
 
 class TrainReq(BaseModel):
+    task_id: Optional[str] = None
+
     @model_validator(mode="before")
     @classmethod
     def reject_dataset_group_contract(cls, value):
@@ -5559,7 +5562,16 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     else:
         device = normalize_training_device(payload.device)
         resource_key = f"training:{device}"
-    task_id = uuid.uuid4().hex[:12]
+    requested_task_id = str(payload.task_id or "").strip()
+    if requested_task_id and not re.fullmatch(r"train_[0-9a-f]{16,32}", requested_task_id):
+        raise HTTPException(status_code=422, detail="训练任务 ID 格式不正确")
+    task_id = requested_task_id or uuid.uuid4().hex[:12]
+    if requested_task_id:
+        existing_task = shared_task_repository().get(task_id)
+        if existing_task is not None:
+            if existing_task.project_id == project_id and existing_task.kind is TaskKind.TRAINING:
+                return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
+            raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
     request_payload = payload.model_dump(mode="json", exclude_none=True)
     request_payload.update(
         {
@@ -8537,8 +8549,8 @@ def _v18_safe_extract(zip_path: Path, dest: Path, progress_cb=None):
                 raise HTTPException(status_code=400, detail=f'压缩包包含越权路径：{name}')
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, 'wb') as out:
-                shutil.copyfileobj(src, out, length=1024*1024)
-            if progress_cb and (idx==1 or idx==total or idx%20==0):
+                shutil.copyfileobj(src, out, length=8*1024*1024)
+            if progress_cb:
                 progress_cb(idx,total,f'正在解压 {idx}/{total} 个文件')
 
 
@@ -8681,7 +8693,7 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             report['boxes'] += len(boxes)
             if boxes: report['annotated_images'] += 1
             progress_done += 1
-            if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 COCO 图片 {progress_done}/{total_expected}')
+            if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 COCO 图片 {progress_done}/{total_expected}')
     report['detected_format'] = 'COCO'
     return True
 
@@ -8743,7 +8755,7 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 VOC 图片 {progress_done}/{total_expected}')
+        if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 VOC 图片 {progress_done}/{total_expected}')
     if any_imported:
         report['detected_format'] = 'Pascal VOC'
     return any_imported
@@ -8821,7 +8833,7 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 YOLO 图片 {progress_done}/{total_expected}')
+        if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 YOLO 图片 {progress_done}/{total_expected}')
     if any_imported:
         report['detected_format'] = 'YOLO'
     return any_imported
@@ -9093,7 +9105,13 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 if extracted.exists():
                     shutil.rmtree(extracted, ignore_errors=True)
                 extracted.mkdir(parents=True, exist_ok=True)
+                last_extract_emit = 0.0
                 def extract_progress(done,total,msg):
+                    nonlocal last_extract_emit
+                    tick = time.monotonic()
+                    if done != total and tick - last_extract_emit < 0.6:
+                        return
+                    last_extract_emit = tick
                     frac=done/max(1,total); prog=8+frac*24
                     elapsed=max(0.01,time.time()-processing_started)
                     eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
@@ -9108,7 +9126,13 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     parse_root = selected_root
                 v19_update_job(project_id, job_id, stage="正在识别标注格式", progress=38, processed=0)
                 imported = False
+                last_import_emit = 0.0
                 def import_progress(done,total,msg):
+                    nonlocal last_import_emit
+                    tick = time.monotonic()
+                    if done != total and tick - last_import_emit < 0.6:
+                        return
+                    last_import_emit = tick
                     frac=done/max(1,total); prog=45+frac*50
                     elapsed=max(0.01,time.time()-processing_started)
                     eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
@@ -9169,6 +9193,137 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
         shutil.rmtree(selected_root, ignore_errors=True)
 
 
+
+class V19MultipartUploadReq(BaseModel):
+    file_name: str
+    file_size: int = Field(gt=0)
+    fingerprint: str = ""
+    part_size: int = 8 * 1024 * 1024
+
+
+def _v19_multipart_repository(project_id: str) -> ZipMultipartRepository:
+    return ZipMultipartRepository(project_dir(project_id))
+
+
+@app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/uploads")
+def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19MultipartUploadReq):
+    get_project(project_id)
+    filename = safe_filename(payload.file_name or "dataset.zip")
+    if Path(filename).suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="文件类型不支持：请上传 .zip 压缩包。")
+    repository = _v19_multipart_repository(project_id)
+    try:
+        session = repository.create_or_resume(
+            dataset_id=dataset_id, file_name=filename, file_size=int(payload.file_size),
+            fingerprint=str(payload.fingerprint or ""), part_size=int(payload.part_size or 0),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    job_id = str(session["upload_id"])
+    current = read_json(v19_job_file(project_id, job_id), {})
+    if not isinstance(current, dict) or not current:
+        current = {
+            "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
+            "batch_id": job_id, "file_name": filename,
+            "file_size_mb": round(int(payload.file_size) / 1024 / 1024, 2),
+            "uploaded_bytes": int(session.get("received_bytes") or 0),
+            "upload_progress": float(session.get("upload_progress") or 0),
+            "status": "uploading", "stage": "正在上传 ZIP", "progress": 0,
+            "message": "分片上传已创建，可断点续传",
+            "upload_session_id": job_id, "total_parts": int(session.get("total_parts") or 0),
+            "created_at": now_iso(), "updated_at": now_iso(),
+        }
+    else:
+        current.update({
+            "status": "uploading", "stage": "正在上传 ZIP",
+            "uploaded_bytes": int(session.get("received_bytes") or 0),
+            "upload_progress": float(session.get("upload_progress") or 0),
+            "message": f"继续上传：已完成 {len(session.get('completed_parts') or [])}/{int(session.get('total_parts') or 0)} 个分片",
+            "updated_at": now_iso(),
+        })
+    v19_write_job(project_id, current)
+    return {"ok": True, **session, "job": v19_public_job(project_id, current, image_limit=0)}
+
+
+@app.put("/api/v19/projects/{project_id}/import/uploads/{upload_id}/parts/{part_number}")
+async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number: int, request: Request):
+    get_project(project_id)
+    repository = _v19_multipart_repository(project_id)
+    try:
+        payload = await request.body()
+        result = repository.write_part(upload_id, part_number, BytesIO(payload))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    job = read_json(v19_job_file(project_id, upload_id), {})
+    if isinstance(job, dict) and job:
+        completed = len(result.get("completed_parts") or [])
+        total_parts = int(result.get("total_parts") or 0)
+        job.update({
+            "status": "uploading", "stage": "正在上传 ZIP",
+            "uploaded_bytes": int(result.get("received_bytes") or 0),
+            "upload_progress": float(result.get("upload_progress") or 0),
+            "message": f"已完成 {completed}/{total_parts} 个分片",
+            "updated_at": now_iso(),
+        })
+        v19_write_job(project_id, job)
+    return {"ok": True, **result}
+
+
+@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete")
+def v19_complete_multipart_upload(project_id: str, upload_id: str):
+    get_project(project_id)
+    repository = _v19_multipart_repository(project_id)
+    try:
+        session = repository.get(upload_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
+    job = read_json(v19_job_file(project_id, upload_id), {})
+    if not isinstance(job, dict) or not job:
+        raise HTTPException(status_code=404, detail="ZIP 导入任务不存在")
+    jd = v19_job_dir(project_id, upload_id)
+    jd.mkdir(parents=True, exist_ok=True)
+    zip_path = jd / "source.zip"
+    try:
+        v19_update_job(project_id, upload_id, status="merging", stage="正在合并 ZIP 分片", progress=0,
+                       upload_progress=100, message="文件上传完成，正在服务器合并分片")
+        if not (str(session.get("status") or "") == "completed" and zip_path.is_file()):
+            repository.assemble(upload_id, zip_path)
+        v19_update_job(project_id, upload_id, status="validating", stage="正在校验 ZIP", progress=0,
+                       upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
+                       message="分片合并完成，正在检查 ZIP 目录结构")
+        scan_started = time.time()
+        scan = v19_scan_zip(zip_path)
+        scan_seconds = round(max(0.0, time.time() - scan_started), 2)
+        if scan.get("image_count", 0) == 0:
+            raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
+        scan_images = list(scan.pop("images", []) or [])
+        v19_write_scan_images(project_id, upload_id, scan_images)
+        finished = {
+            **job, **scan,
+            "id": upload_id, "project_id": project_id,
+            "dataset_id": job.get("dataset_id") or session.get("dataset_id") or "default",
+            "batch_id": upload_id, "file_name": job.get("file_name") or session.get("file_name") or "dataset.zip",
+            "file_size_mb": round(zip_path.stat().st_size / 1024 / 1024, 2),
+            "uploaded_bytes": zip_path.stat().st_size, "upload_progress": 100,
+            "scan_seconds": scan_seconds, "status": "selecting", "stage": "上传与校验完成", "progress": 0,
+            "message": "上传与 ZIP 校验完成，等待开始后台导入",
+            "scan_images_ref": "scan-images.json", "uploaded_at": now_iso(), "updated_at": now_iso(),
+        }
+        v19_write_job(project_id, finished)
+        return v19_public_job(project_id, finished, image_limit=500)
+    except zipfile.BadZipFile as error:
+        v19_update_job(project_id, upload_id, status="failed", stage="ZIP 校验失败", progress=0,
+                       upload_progress=100, error="压缩包已损坏、格式不正确或不是有效 ZIP。",
+                       message="ZIP 校验失败", finished_at=now_iso())
+        raise HTTPException(status_code=400, detail="ZIP 校验失败：压缩包已损坏、格式不正确或不是有效 ZIP。") from error
+    except Exception as error:
+        v19_update_job(project_id, upload_id, status="failed", stage="ZIP 处理失败", progress=0,
+                       upload_progress=100, error=str(error), message=str(error), finished_at=now_iso())
+        raise HTTPException(status_code=400, detail=f"ZIP 处理失败：{error}") from error
+
+
 @app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/jobs")
 async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFile = File(...)):
     get_project(project_id)
@@ -9185,7 +9340,7 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         # 分块落盘，避免大 ZIP 一次性读入内存。
         with zip_path.open("wb") as out:
             while True:
-                chunk = await file.read(1024 * 1024)
+                chunk = await file.read(8 * 1024 * 1024)
                 if not chunk:
                     break
                 out.write(chunk)

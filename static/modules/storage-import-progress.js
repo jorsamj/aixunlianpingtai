@@ -4,10 +4,12 @@ import {canonicalTaskPhase, canonicalTaskStatus, exactTaskQueuePosition} from '.
 const POLL_KEY = 'storage-import-scan-v61';
 const OWNER_PAGE = '素材存储配置';
 const POLL_DELAY = 1200;
+const STAGE_LABELS = {MAPPING_LABELS:'正在转换标签', WRITING_ANNOTATIONS:'正在写入标注', INDEXING:'正在建立素材索引', FINALIZING:'正在整理结果', SCANNING:'正在扫描素材'};
 
 export function storageImportProgressText(task = {}) {
   const status = canonicalTaskStatus(task);
   const stage = (canonicalTaskPhase(task) || status || 'SCANNING').toUpperCase();
+  const stageLabel = STAGE_LABELS[stage] || stage;
   const current = String(task.current_item || '').trim();
   const {percent} = taskProgress(task);
   const queuePosition = exactTaskQueuePosition(task);
@@ -62,6 +64,20 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     if (!currentTask) return;
     const status = statusElement();
     if (status) status.textContent = storageImportProgressText(currentTask);
+    const s = state();
+    const taskId = String(currentTask.task_id || currentTask.id || trackedTaskId || '');
+    const projectId = String(s.project?.id || '');
+    const phase = (canonicalTaskPhase(currentTask) || '').toUpperCase();
+    const progress = taskProgress(currentTask).percent || 0;
+    if (taskId && projectId) {
+      window.UploadTaskCenterRuntime?.upsert?.({
+        id: `storage-import:${taskId}`, kind: 'storage-import',
+        title: ['MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING'].includes(phase) ? '标签转换 / 素材索引' : '素材导入',
+        status: canonicalTaskStatus(currentTask), progress, stage: STAGE_LABELS[phase] || phase || '素材导入',
+        detail: String(currentTask.current_item || currentTask.error || ''),
+        serverUrl: `/api/v62/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
+      });
+    }
     if (typeof window.renderStorageImportTask61 === 'function') {
       window.renderStorageImportTask61(currentTask);
     }

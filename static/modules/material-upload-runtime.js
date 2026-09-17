@@ -260,6 +260,11 @@ export function installMaterialUploadRuntime({
       return null;
     }
     const chunks = partitionMaterialFiles(rows, {maxFiles, maxBytes});
+    const uploadTaskId = `images:${Date.now()}:${Math.random().toString(16).slice(2,8)}`;
+    const chunkBytes = chunks.map(chunk => chunk.reduce((sum,file)=>sum+fileSize(file),0));
+    const totalBytes = Math.max(1, chunkBytes.reduce((sum,value)=>sum+value,0));
+    const bytesBefore = chunkBytes.map((_,index)=>chunkBytes.slice(0,index).reduce((sum,value)=>sum+value,0));
+    window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,kind:'browser-upload',title:`图片上传 · ${rows.length} 张`,status:'UPLOADING',progress:0,stage:'准备上传',detail:`${chunks.length} 个批次`});
     renderShell(rows.length, chunks.length);
     const started = performance.now();
     const state = getState() || {};
@@ -280,6 +285,8 @@ export function installMaterialUploadRuntime({
             setText('up411TransferText', `当前批次 ${event.chunkSize} 张 · 等待传输`);
           } else if (event.type === 'transfer') {
             const percent = Math.round((event.ratio || 0) * 100);
+            const overallBytes = bytesBefore[event.chunkIndex] + chunkBytes[event.chunkIndex] * (event.ratio || 0);
+            window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'UPLOADING',progress:overallBytes/totalBytes*100,stage:`上传第 ${event.chunkNumber}/${event.chunkCount} 批`,detail:`${formatBytes(overallBytes)} / ${formatBytes(totalBytes)}`});
             setText('up411TransferText', `当前批次传输 ${percent}% · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`);
           } else if (event.type === 'chunk-committed') {
             patchState(responseRows(event.response, 'uploaded'));
@@ -291,6 +298,7 @@ export function installMaterialUploadRuntime({
           }
         },
       });
+      window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'SUCCEEDED',progress:100,stage:'上传完成',detail:`成功 ${aggregate.uploaded.length} · 失败 ${aggregate.failed.length}`});
       renderResult(aggregate, (performance.now() - started) / 1000);
       if (getState()?.page === '数据集') {
         if (typeof window.reloadMaterialPage61 === 'function') await window.reloadMaterialPage61();
@@ -303,6 +311,7 @@ export function installMaterialUploadRuntime({
       const total = rows.length;
       const out = document.getElementById('up411Result');
       if (out) out.innerHTML = `<div class="alert err">上传中断：${escapeHtml(error?.message || error)}。服务器已确认处理 ${confirmed}/${total}。为避免网络响应丢失后重复入库，系统不会自动重试当前未确认批次。</div>`;
+      window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'FAILED',stage:'上传中断',detail:String(error?.message||error)});
       setText('up411Text', '上传中断');
       throw error;
     } finally {

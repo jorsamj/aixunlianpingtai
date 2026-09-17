@@ -194,6 +194,8 @@ export function installTrainingSubmitRuntime({
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
       const externalAnalysisId = window.ExternalAlgorithmPlatformRuntime?.selectedAnalysisId?.(asset.id) || '';
       if (externalAnalysisId) payload.external_analysis_id = externalAnalysisId;
+      const plannedTaskId = String(document.getElementById('tr429TaskId')?.value || '').trim();
+      if (plannedTaskId) payload.task_id = plannedTaskId;
       const pid = projectId?.();
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 

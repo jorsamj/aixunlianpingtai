@@ -128,19 +128,22 @@ class ZipMultipartRepository:
             return self._public(meta)
 
     def write_part(self, upload_id: str, part_number: int, stream: BinaryIO) -> dict[str, Any]:
-        with self.lock:
-            meta = self._read(upload_id)
-            if meta.get('status') == 'completed':
-                return self._public(meta)
-            total_parts = int(meta['total_parts'])
-            number = int(part_number)
-            if number < 0 or number >= total_parts:
-                raise ValueError('multipart part number out of range')
-            expected = int(meta['part_size'])
-            if number == total_parts - 1:
-                expected = int(meta['file_size']) - int(meta['part_size']) * (total_parts - 1)
-            target = self._part_path(upload_id, number)
-            target.parent.mkdir(parents=True, exist_ok=True)
+        # Different part numbers are independent and may be written in parallel.
+        # A per-part lock protects duplicate retries without serialising the whole upload.
+        meta = self._read(upload_id)
+        if meta.get('status') == 'completed':
+            return self._public(meta)
+        total_parts = int(meta['total_parts'])
+        number = int(part_number)
+        if number < 0 or number >= total_parts:
+            raise ValueError('multipart part number out of range')
+        expected = int(meta['part_size'])
+        if number == total_parts - 1:
+            expected = int(meta['file_size']) - int(meta['part_size']) * (total_parts - 1)
+        target = self._part_path(upload_id, number)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        part_lock = FileLock(str(target) + '.lock', timeout=30)
+        with part_lock:
             temporary = target.with_suffix('.tmp')
             written = 0
             digest = hashlib.sha256()
@@ -156,7 +159,7 @@ class ZipMultipartRepository:
                 temporary.unlink(missing_ok=True)
                 raise ValueError(f'multipart part size mismatch: {written}/{expected}')
             temporary.replace(target)
-            return {**self._public(meta), 'part_number': number, 'part_sha256': digest.hexdigest()}
+        return {**self._public(meta), 'part_number': number, 'part_sha256': digest.hexdigest()}
 
     def assemble(self, upload_id: str, destination: str | Path) -> dict[str, Any]:
         with self.lock:

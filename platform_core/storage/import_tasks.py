@@ -42,6 +42,7 @@ ERROR_RESULT_REF = "scan/error.json"
 BATCH_SIZE = 500
 
 
+INDEX_BATCH_SIZE = 50
 def _sha256_stream(stream, *, cancelled=None) -> str:
     digest = hashlib.sha256()
     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -647,9 +648,17 @@ class StorageImportHandler:
         while True:
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
-            batch = store.pending_index_batch(BATCH_SIZE)
+            batch = store.pending_index_batch(INDEX_BATCH_SIZE)
             if not batch:
                 break
+            batch_start = indexed_at_least + 1
+            batch_end = min(selected_count, indexed_at_least + len(batch))
+            context.repository.heartbeat(
+                context.task.task_id, context.lease.lease_token,
+                progress=(50.0 if selected_count <= 0 else min(98.0, 50.0 + 49.0 * indexed_at_least / selected_count)),
+                stage="mapping_labels",
+                current_item=f"正在转换标签：{batch_start} - {batch_end} / {selected_count}",
+            )
             by_reference = materials.get_by_storage_references(
                 (row["storage_source_id"], row["object_key"]) for row in batch
             )
@@ -724,6 +733,12 @@ class StorageImportHandler:
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
             materials.upsert_many(records)
+            context.repository.heartbeat(
+                context.task.task_id, context.lease.lease_token,
+                progress=(50.0 if selected_count <= 0 else min(98.5, 50.0 + 49.0 * (indexed_at_least + len(batch) * 0.55) / selected_count)),
+                stage="writing_annotations",
+                current_item=f"正在写入标签与标注：{batch_start} - {batch_end} / {selected_count}",
+            )
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
             annotations.upsert_many(annotation_rows)
