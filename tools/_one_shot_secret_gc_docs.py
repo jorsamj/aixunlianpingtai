@@ -106,7 +106,7 @@ replace_between(
     r'---\n\n### OPEN-02 — 未完成 multipart session 缺少过期清理 / GC\n',
     '''### CLOSED-04 — Headless Linux 新畅联 Secret 安全持久化
 
-**级别：P1**  
+**级别：P1**
 **状态：CLOSED（代码/合同完成，生产主机仍需部署验收）**
 
 现在 `platform_core/secrets.py` 支持：
@@ -137,7 +137,7 @@ replace_between(
     r'---\n\n### OPEN-03 — 上传任务中心仍有独立 1\.5 秒 project-switch interval\n',
     '''### CLOSED-05 — Multipart session TTL / GC
 
-**级别：P1/P2**  
+**级别：P1/P2**
 **状态：CLOSED**
 
 当前实现：
