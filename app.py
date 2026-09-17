@@ -43,7 +43,6 @@ from platform_core.algorithms import (
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
-    save_algorithms as save_algorithm_assets,
     update_algorithm as update_algorithm_asset,
     update_algorithm_version,
 )
@@ -6270,10 +6269,6 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
     # Legacy defaults remain a read projection and are persisted on the next
     # explicit algorithm/version mutation through platform_core.algorithms.
     return [project_current_version(item) for item in data]
-
-def save_algorithms_internal(project_id: str, data: List[Dict[str, Any]]):
-    save_algorithm_assets(algorithms_file(project_id), data)
-
 
 _ACTIVE_VERSION_REFERENCE_STATUSES = {
     TaskStatus.QUEUED,
@@ -14742,7 +14737,7 @@ def _v53_set_bootstrap(progress:int, stage:str, message:str="", **extra):
 def _v53_project_counts(project:Dict[str,Any])->Dict[str,int]:
     pid=str(project.get("id") or "")
     if not pid:return {"images":0,"algorithms":0,"versions":0,"jobs":0}
-    image_count=material_store(pid).count(); algs=read_json(project_dir(pid)/"algorithms.json",[]); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
+    image_count=material_store(pid).count(); algs=list_algorithm_assets(algorithms_file(pid)); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
     if not isinstance(algs,list):algs=[]
     if not isinstance(jobs,list):jobs=[]
     return {"images":image_count,"algorithms":len(algs),"versions":sum(len(a.get("versions") or []) for a in algs if isinstance(a,dict)),"jobs":len(jobs)}
