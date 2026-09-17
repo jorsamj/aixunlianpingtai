@@ -5,8 +5,6 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from platform_core import training_checkpoint_resume_tasks as resume
 
 
@@ -169,7 +167,52 @@ def test_completed_epoch_checkpoint_is_not_resumed(tmp_path, monkeypatch):
     assert candidate["reason"] == "checkpoint_is_not_incomplete_training"
 
 
-def test_worker_registry_points_at_checkpoint_resume_handler():
+def test_worker_registry_points_at_canonical_production_training_handler():
     from platform_core import worker_registry
 
-    assert worker_registry.ROLE_MODULES["training"] == "platform_core.training_checkpoint_resume_tasks"
+    assert worker_registry.ROLE_MODULES["training"] == "platform_core.training_runtime_tasks"
+
+
+def test_algorithm_version_replay_is_idempotent_by_training_task(tmp_path):
+    from platform_core.algorithms import attach_version, list_algorithms
+
+    algorithms_path = tmp_path / "algorithms.json"
+    write_json(
+        algorithms_path,
+        [
+            {
+                "id": "alg-1",
+                "name": "Smoke",
+                "versions": [],
+                "current_version_id": None,
+            }
+        ],
+    )
+    first = attach_version(
+        algorithms_path,
+        "alg-1",
+        {
+            "id": "version-a",
+            "version_name": "20260917000100",
+            "task_id": "train-task-1",
+            "job_id": "train-task-1",
+            "stored_path": "/models/a.pt",
+        },
+    )
+    replay = attach_version(
+        algorithms_path,
+        "alg-1",
+        {
+            "id": "version-b",
+            "version_name": "20260917000200",
+            "task_id": "train-task-1",
+            "job_id": "train-task-1",
+            "stored_path": "/models/b.pt",
+        },
+    )
+    saved = list_algorithms(algorithms_path)[0]
+
+    assert first["id"] == "version-a"
+    assert replay["id"] == "version-a"
+    assert len(saved["versions"]) == 1
+    assert saved["versions"][0]["task_id"] == "train-task-1"
