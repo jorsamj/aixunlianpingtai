@@ -57,7 +57,14 @@ export function normalizeVideoTask(task = {}) {
   const queuedRuntime = queuePosition
     ? `资源队列第 ${queuePosition} 位${waitReason ? ` · ${waitReason}` : ''}`
     : (waitReason ? `等待资源 · ${waitReason}` : '');
-  const runtimeText = ['QUEUED', 'WAITING_RESOURCE'].includes(status) ? queuedRuntime : '';
+  const attempt = Math.max(0, Math.trunc(Number(task.attempt || 0)));
+  const recoveryRuntime = (
+    attempt > 1
+    && ['RUNNING', 'RESUMING', 'RETRYING', 'CANCEL_REQUESTED'].includes(status)
+  ) ? `恢复执行 · 第 ${attempt} 次执行` : '';
+  const runtimeText = ['QUEUED', 'WAITING_RESOURCE'].includes(status)
+    ? queuedRuntime
+    : recoveryRuntime;
   return {
     ...task,
     status,
@@ -66,6 +73,7 @@ export function normalizeVideoTask(task = {}) {
     statusText: STATUS_TEXT[status] || status,
     queuePosition,
     waitReason,
+    attempt,
     runtimeText,
     samplingText,
     extractedFrames: Number(task.result?.extracted_frames ?? task.extracted_frames ?? 0),
