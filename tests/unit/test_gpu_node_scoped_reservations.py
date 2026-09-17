@@ -294,3 +294,65 @@ def test_summary_does_not_count_same_uuid_reservation_from_other_node(tmp_path):
     assert summary["gpus"][0]["gpu_uuid"] == "GPU-SAME"
     assert summary["gpus"][0]["active_tasks"] == 0
     assert summary["gpus"][0]["reserved_bytes"] == 0
+
+
+def test_same_worker_id_visibility_is_preserved_across_nodes(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    stamp = datetime.now(timezone.utc).isoformat()
+
+    def sampler(gpu_uuid, physical_index):
+        return lambda _python: [{
+            "gpu_uuid": gpu_uuid,
+            "physical_index": physical_index,
+            "logical_cuda_index": 0,
+            "model": "Synthetic GPU",
+            "total_bytes": 16 * GIB,
+            "free_bytes": 14 * GIB,
+            "utilization": 5.0,
+            "sampled_at": stamp,
+            "telemetry_source": "nvml",
+            "telemetry_available": True,
+            "mig_mode": "disabled",
+        }]
+
+    manager_a = NodeScopedGPUResourceManager(
+        repository,
+        _Artifacts(),
+        node_id="node-a",
+        worker_id="shared-worker",
+        sampler=sampler("GPU-A", 0),
+        config=_config(),
+    )
+    manager_b = NodeScopedGPUResourceManager(
+        repository,
+        _Artifacts(),
+        node_id="node-b",
+        worker_id="shared-worker",
+        sampler=sampler("GPU-B", 1),
+        config=_config(),
+    )
+
+    manager_a.refresh()
+    manager_b.refresh()
+
+    with closing(repository._connect()) as database:
+        rows = database.execute(
+            """
+            SELECT worker_id,node_id,gpu_uuid,logical_cuda_index
+              FROM worker_gpu_visibility
+             WHERE worker_id='shared-worker'
+             ORDER BY node_id
+            """
+        ).fetchall()
+        table_sql = database.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='worker_gpu_visibility'"
+        ).fetchone()[0]
+
+    assert [
+        (row["worker_id"], row["node_id"], row["gpu_uuid"], row["logical_cuda_index"])
+        for row in rows
+    ] == [
+        ("shared-worker", "node-a", "GPU-A", 0),
+        ("shared-worker", "node-b", "GPU-B", 0),
+    ]
+    assert "UNIQUE(worker_id, node_id, logical_cuda_index)" in table_sql
