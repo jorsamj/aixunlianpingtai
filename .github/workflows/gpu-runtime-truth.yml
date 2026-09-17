@@ -65,6 +65,8 @@ jobs:
           ]
           required_runtime = [
               'UNIQUE(node_id, worker_slot)',
+              'UNIQUE(worker_id, node_id, logical_cuda_index)',
+              'DELETE FROM worker_gpu_visibility WHERE worker_id=? AND node_id=?',
               'GPU_LEGACY_RESERVATION_UNSCOPED',
               'GPU_VISIBILITY_UNAVAILABLE',
               'GPU_ASSIGNMENT_FENCED',
