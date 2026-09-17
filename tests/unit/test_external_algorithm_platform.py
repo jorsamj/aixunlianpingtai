@@ -284,3 +284,70 @@ def test_diagnostics_reports_read_only_master_data_checks(tmp_path: Path):
     result = service.diagnose()
     assert result["ok"] is True
     assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis"]
+
+
+
+def test_draft_connection_test_does_not_persist_credentials_or_url(tmp_path: Path):
+    memory = MemorySecretStore()
+    captured = []
+
+    class CapturingClient(FakeChangLianClient):
+        def __init__(self, **kwargs):
+            captured.append(dict(kwargs))
+
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=CapturingClient,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://saved.example",
+        access_key="saved-ak", access_secret="saved-secret", endpoints=EndpointPayload(),
+    ))
+    draft = ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://draft.example",
+        access_key="draft-ak", access_secret="draft-secret", endpoints=EndpointPayload(),
+    )
+
+    result = service.test_connection(draft)
+
+    assert result["ok"] is True
+    assert result["base_url"] == "https://draft.example"
+    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms"]
+    assert "draft-secret" not in str(result)
+    assert service.repository.config()["base_url"] == "https://saved.example"
+    ref = service.repository.config()["credential_ref"]
+    stored = service._credential_store().get(ref)
+    assert stored == {"access_key_id": "saved-ak", "access_secret": "saved-secret"}
+    assert captured[-1]["access_key"] == "draft-ak"
+    assert captured[-1]["access_secret"] == "draft-secret"
+
+
+def test_draft_connection_blank_secret_reuses_saved_secret_without_exposing_it(tmp_path: Path):
+    memory = MemorySecretStore()
+    captured = []
+
+    class CapturingClient(FakeChangLianClient):
+        def __init__(self, **kwargs):
+            captured.append(dict(kwargs))
+
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=CapturingClient,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://saved.example",
+        access_key="saved-ak", access_secret="saved-secret", endpoints=EndpointPayload(),
+    ))
+    draft = ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://saved.example",
+        access_key=None, access_secret=None, endpoints=EndpointPayload(),
+    )
+
+    result = service.test_connection(draft)
+
+    assert result["ok"] is True
+    assert captured[-1]["access_key"] == "saved-ak"
+    assert captured[-1]["access_secret"] == "saved-secret"
+    assert "saved-secret" not in str(result)

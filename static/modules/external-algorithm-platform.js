@@ -17,7 +17,12 @@ async function requestJson(url, options = {}, fetchImpl = rawFetch()) {
   if (!response.ok) {
     const message = body.message || body.detail || `请求失败（HTTP ${response.status}）`;
     const solution = body.solution ? `\n建议：${body.solution}` : '';
-    throw new Error(`${message}${solution}`);
+    const error = new Error(`${message}${solution}`);
+    error.code = body.code || '';
+    error.detail = body.detail || '';
+    error.solution = body.solution || '';
+    error.httpStatus = response.status;
+    throw error;
   }
   return body;
 }
@@ -124,6 +129,7 @@ export function installExternalAlgorithmPlatformRuntime({
   let destroyed = false;
   let renderQueued = false;
   let diagnostics = null;
+  let connectionTest = null;
   let selectedCategoryId = '';
   let unregisterAlgorithmDecorator = null;
   let trainingAnalysisObserver = null;
@@ -411,14 +417,20 @@ export function installExternalAlgorithmPlatformRuntime({
               </div>
             </div>
             <div class="field"><label>外部平台</label><select id="externalProvider" class="select"><option value="changlian">新畅联</option></select></div>
-            <div class="field"><label>服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com"></div>
-            <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" placeholder="${escapeHtml(c.credentials?.masked || '未配置')}"></div>
-            <div class="field"><label>AccessSecret</label><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" placeholder="${c.credentials?.configured ? '已配置，留空表示不修改' : '请输入 AccessSecret'}"></div>
+            <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com"></div>
+            <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(c.credentials?.masked || '请输入 AccessKey')}"></div>
+            <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" placeholder="${c.credentials?.configured ? '已配置，留空表示继续使用原 Secret' : '请输入 AccessSecret'}"><button type="button" class="btn" id="externalSecretToggle">显示</button></div></div>
+            <div class="field full"><div class="subline">凭据状态：${c.credentials?.configured ? `已配置（${escapeHtml(c.credentials?.masked || 'AccessKey 已保存')}）` : '未配置'}。AccessSecret 仅提交给后端保存，页面不会读取已保存的明文 Secret。</div></div>
             <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（后台每 ${Math.round(c.autoSyncIntervalSeconds / 60)} 分钟检查）</label>
             <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布</label>
           </div>
           <div class="row end"><button class="btn primary" id="externalPlatformSave">保存配置</button></div>
         </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><div class="panel-title">连接测试</div><div class="subline">使用当前页面填写的 API 地址和凭据临时测试，不会自动保存或覆盖已保存凭据。</div></div></div>
+        <div class="panel-body" id="externalConnectionResult">${connectionTestHtml()}</div>
       </section>
 
       <section class="panel">
@@ -470,6 +482,21 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
       </section>
     </section>`;
+  }
+
+  function connectionTestHtml() {
+    if (!connectionTest) return '<div class="subline">尚未测试连接</div>';
+    if (!connectionTest.ok) {
+      return `<div class="alert err"><b>连接失败</b><div>${escapeHtml(connectionTest.message || '新畅联连接测试失败')}</div>${connectionTest.detail ? `<div>${escapeHtml(connectionTest.detail)}</div>` : ''}${connectionTest.solution ? `<div>建议：${escapeHtml(connectionTest.solution)}</div>` : ''}</div>`;
+    }
+    const rows = Array.isArray(connectionTest.steps) ? connectionTest.steps : [];
+    const body = rows.map(row => `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${row.status === 'success' ? 'ok' : 'err'}">${row.status === 'success' ? '成功' : '失败'}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`).join('');
+    return `<div class="alert ok"><b>连接成功</b> · ${escapeHtml(connectionTest.base_url || '')}</div><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">鉴权连接正常</td></tr>'}</tbody></table>`;
+  }
+
+  function paintConnectionTest() {
+    const root = document.getElementById('externalConnectionResult');
+    if (root) root.innerHTML = connectionTestHtml();
   }
 
   function diagnosticsHtml() {
@@ -551,23 +578,45 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   async function testConnection() {
-    await save({quiet: true});
+    const payload = collectForm();
     const button = document.getElementById('externalPlatformTest');
     if (button) { button.disabled = true; button.textContent = '正在测试…'; }
+    connectionTest = null;
+    paintConnectionTest();
     try {
-      await requestJson(`${API_ROOT}/test`, {method: 'POST'});
-      notify?.('新畅联鉴权连接正常');
+      connectionTest = await requestJson(`${API_ROOT}/test`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      });
+      paintConnectionTest();
+      notify?.(connectionTest.ok ? '新畅联连接测试通过' : '新畅联连接测试存在失败项');
+      return connectionTest;
+    } catch (error) {
+      connectionTest = {
+        ok: false,
+        message: error?.message || '新畅联连接测试失败',
+        detail: error?.detail || '',
+        solution: error?.solution || '',
+      };
+      paintConnectionTest();
+      notify?.(connectionTest.message);
+      return connectionTest;
     } finally {
       if (button) { button.disabled = false; button.textContent = '测试连接'; }
     }
   }
 
   async function runDiagnostics() {
-    if (String(state().page || '') === PAGE) await save({quiet: true});
+    const payload = String(state().page || '') === PAGE ? collectForm() : null;
     const button = document.getElementById('externalPlatformDiagnostics');
     if (button) { button.disabled = true; button.textContent = '正在诊断…'; }
     try {
-      diagnostics = await requestJson(`${API_ROOT}/diagnostics`, {method: 'POST'});
+      diagnostics = await requestJson(`${API_ROOT}/diagnostics`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
       notify?.(diagnostics.ok ? '新畅联联调诊断通过' : '联调诊断存在失败项，请查看详情');
       if (String(state().page || '') === PAGE) await render({reload: false});
       return diagnostics;
@@ -603,10 +652,17 @@ export function installExternalAlgorithmPlatformRuntime({
     const testButton = document.getElementById('externalPlatformTest');
     const diagnosticsButton = document.getElementById('externalPlatformDiagnostics');
     const syncButton = document.getElementById('externalPlatformSync');
+    const secretToggle = document.getElementById('externalSecretToggle');
+    const secretInput = document.getElementById('externalAccessSecret');
     if (saveButton) saveButton.onclick = () => void save().then(() => render({reload: false})).catch(error => notify?.(error?.message || error));
     if (testButton) testButton.onclick = () => void testConnection().catch(error => notify?.(error?.message || error));
     if (diagnosticsButton) diagnosticsButton.onclick = () => void runDiagnostics().catch(error => notify?.(error?.message || error));
     if (syncButton) syncButton.onclick = () => void syncNow().catch(error => notify?.(error?.message || error));
+    if (secretToggle && secretInput) secretToggle.onclick = () => {
+      const show = secretInput.type === 'password';
+      secretInput.type = show ? 'text' : 'password';
+      secretToggle.textContent = show ? '隐藏' : '显示';
+    };
 
     for (const radio of document.querySelectorAll('input[name="externalMode"]')) {
       radio.addEventListener('change', () => {
@@ -660,7 +716,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63002',
+    build: 'external-algorithm-platform-63003',
     page: PAGE,
     loadConfig,
     loadHistory,

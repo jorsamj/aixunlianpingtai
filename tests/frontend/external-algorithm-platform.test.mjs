@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   algorithmSourceLabel,
@@ -76,4 +77,18 @@ test('external mapping exposes provider ids and sync state', () => {
   assert.deepEqual(mapping.analysisIds, ['a-1', 'a-2']);
   assert.equal(mapping.active, false);
   assert.equal(mapping.syncedAt, '2026-09-17T06:30:00Z');
+});
+
+
+test('connection test uses draft form without saving credentials first', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function testConnection()');
+  const end = source.indexOf('async function runDiagnostics()', start);
+  assert.ok(start >= 0 && end > start);
+  const block = source.slice(start, end);
+  assert.doesNotMatch(block, /await save\(/);
+  assert.match(block, /const payload = collectForm\(\)/);
+  assert.match(block, /JSON\.stringify\(payload\)/);
+  assert.match(source, /id="externalSecretToggle"/);
+  assert.match(source, /id="externalConnectionResult"/);
 });

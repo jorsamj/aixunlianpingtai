@@ -668,30 +668,79 @@ class ExternalAlgorithmPlatformService:
         self.repository.save_config(payload.model_dump(exclude={"access_key", "access_secret"}))
         return self.public_config()
 
-    def _client(self) -> ChangLianClient:
+    def _client_for_payload(self, payload: Optional[ExternalPlatformConfigPayload] = None) -> ChangLianClient:
         config = self.repository.config()
-        if str(config.get("provider") or "") != "changlian":
+        provider = str(payload.provider if payload is not None else config.get("provider") or "changlian")
+        if provider != "changlian":
             raise PlatformError(
                 "EXTERNAL_PLATFORM_PROVIDER_UNSUPPORTED",
                 "暂不支持该外部平台",
-                str(config.get("provider") or ""),
+                provider,
                 "当前版本已实现新畅联 Provider；其他平台后续通过 Provider 扩展。",
                 422,
             )
         ref = str(config.get("credential_ref") or DEFAULT_CONFIG["credential_ref"])
-        credentials = self._credential_store().get(ref) or {}
+        stored = self._credential_store().get(ref) or {}
+        if payload is None:
+            base_url = str(config.get("base_url") or "")
+            access_key = str(stored.get("access_key_id") or "")
+            access_secret = str(stored.get("access_secret") or "")
+            endpoints = ChangLianEndpoints.from_mapping(config.get("endpoints"))
+        else:
+            # Draft credentials are used only for this request. Blank fields reuse the
+            # already-saved credential so the browser never needs to read secrets back.
+            base_url = str(payload.base_url or "")
+            access_key = str(payload.access_key or "").strip() or str(stored.get("access_key_id") or "")
+            access_secret = str(payload.access_secret or "") or str(stored.get("access_secret") or "")
+            endpoints = ChangLianEndpoints.from_mapping(payload.endpoints.model_dump())
         return self.client_factory(
-            base_url=str(config.get("base_url") or ""),
-            access_key=str(credentials.get("access_key_id") or ""),
-            access_secret=str(credentials.get("access_secret") or ""),
-            endpoints=ChangLianEndpoints.from_mapping(config.get("endpoints")),
+            base_url=base_url,
+            access_key=access_key,
+            access_secret=access_secret,
+            endpoints=endpoints,
         )
 
-    def test_connection(self) -> Dict[str, Any]:
-        return self._client().probe()
+    def _client(self) -> ChangLianClient:
+        return self._client_for_payload()
 
-    def diagnose(self) -> Dict[str, Any]:
-        client = self._client()
+    def test_connection(self, payload: Optional[ExternalPlatformConfigPayload] = None) -> Dict[str, Any]:
+        client = self._client_for_payload(payload)
+        steps: list[Dict[str, Any]] = []
+
+        def record(key: str, name: str, action: Callable[[], Any], *, count_items: bool = False) -> Any:
+            try:
+                value = action()
+                row: Dict[str, Any] = {"key": key, "name": name, "status": "success"}
+                if count_items:
+                    row["count"] = len(extract_items(value))
+                steps.append(row)
+                return value
+            except Exception as error:
+                steps.append({
+                    "key": key,
+                    "name": name,
+                    "status": "failed",
+                    "detail": str(getattr(error, "detail", error))[:500],
+                })
+                return None
+
+        auth = record("auth", "应用鉴权", client.probe)
+        if auth is not None:
+            record("categories", "算法品目", client.category_tree, count_items=True)
+            record("products", "算法产品", client.products, count_items=True)
+            record("compute_platforms", "算力环境", client.compute_platforms, count_items=True)
+        return {
+            "ok": bool(steps) and all(row.get("status") == "success" for row in steps),
+            "provider": "changlian",
+            "provider_name": "新畅联",
+            "base_url": normalize_base_url(payload.base_url if payload is not None else self.repository.config().get("base_url")),
+            "auth_mode": "test_sign_bridge",
+            "tested_at": utc_now(),
+            "steps": steps,
+        }
+
+    def diagnose(self, payload: Optional[ExternalPlatformConfigPayload] = None) -> Dict[str, Any]:
+        client = self._client_for_payload(payload)
         steps: list[Dict[str, Any]] = []
 
         def record(key: str, name: str, action: Callable[[], Any], *, count_items: bool = False) -> Any:
@@ -928,9 +977,9 @@ def external_algorithm_platform_router(
         return {"ok": True, "config": service.save(payload)}
 
     @router.post("/test")
-    def test_connection():
+    def test_connection(payload: Optional[ExternalPlatformConfigPayload] = None):
         try:
-            result = service.test_connection()
+            result = service.test_connection(payload)
         except PlatformError:
             raise
         except Exception as error:
@@ -944,8 +993,8 @@ def external_algorithm_platform_router(
         return result
 
     @router.post("/diagnostics")
-    def diagnostics():
-        return service.diagnose()
+    def diagnostics(payload: Optional[ExternalPlatformConfigPayload] = None):
+        return service.diagnose(payload)
 
     @router.post("/sync")
     def sync(project_id: str = Query(..., min_length=1)):
