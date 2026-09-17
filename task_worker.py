@@ -16,10 +16,10 @@ from platform_core.upgrade_guard import ensure_worker_build_compatible, write_wo
 from platform_core.task_runtime import (
     ArtifactStore,
     DuplicateWorkerInstance,
-    FencedTaskRepository,
     Scheduler,
     WorkerInstanceService,
 )
+from platform_core.task_node_assignments import AssignmentAwareFencedTaskRepository
 from platform_core.gpu_reservations_v2 import NodeScopedGPUResourceManager
 from platform_core.training_devices import training_python
 from platform_core.worker_registry import resolve_worker_registration
@@ -103,7 +103,7 @@ def main(argv=None) -> int:
         )
 
     runtime_dir = data_dir / "task_runtime"
-    repository = FencedTaskRepository(runtime_dir / "tasks.sqlite3")
+    repository = AssignmentAwareFencedTaskRepository(runtime_dir / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime_dir / "artifacts")
     registration = resolve_worker_registration(data_dir, roles)
     handlers = registration.handlers
@@ -126,6 +126,7 @@ def main(argv=None) -> int:
                     "training_slot": args.training_slot or "default",
                     "worker_slot": instance_slot,
                     "execution_fencing": True,
+                    "central_assignment_fencing": True,
                     "build_id": build_id,
                     "node_id": node_identity.node_id,
                     "hostname": node_identity.hostname,
