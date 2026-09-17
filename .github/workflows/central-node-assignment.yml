@@ -12,6 +12,16 @@ on:
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_central_scheduler_api.py'
       - '.github/workflows/central-node-assignment.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'task_worker.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/api/test_central_scheduler_api.py'
+      - '.github/workflows/central-node-assignment.yml'
 
 jobs:
   contract:
