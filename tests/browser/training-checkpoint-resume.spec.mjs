@@ -10,19 +10,30 @@ test('automatic training recovery is visible and operable without colliding with
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => Boolean(window.TrainingCheckpointResumeUI)))
     .toBe(true);
-  await expect.poll(async () => page.evaluate(() => Boolean(window.TrainingTaskRuntime)))
-    .toBe(true);
+  await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
+    .toBe('training-task-runtime-422506');
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
   const encoded = encodeURIComponent(projectId);
-  await page.evaluate(() => window.PollRegistryRuntime?.clear?.('training-jobs'));
-  await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.state?.().inflight === false))
-    .toBe(true);
-  // TrainingTaskRuntime deduplicates a manual refresh against a just-finished
-  // poll for a short bounded window. Let that real browser window expire so the
-  // click below proves a fresh manual request rather than reusing old state.
+  await page.evaluate(() => {
+    window.PollRegistryRuntime?.clear?.('training-jobs');
+    state.jobPollTimer = null;
+  });
+  await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.state?.().inflight ?? null))
+    .toBe(false);
+  // Drain callbacks that were already queued before the managed poll was cleared.
+  // This mirrors the permanent training-task refresh acceptance contract.
   await page.waitForTimeout(180);
+
+  const startNavigationEpoch = await page.evaluate(() => Number(state.__navigationEpoch || 0));
+  const apiRequests = [];
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname === `/api/projects/${projectId}/jobs`) {
+      apiRequests.push(`${request.method()} ${url.pathname}${url.search}`);
+    }
+  });
 
   const resumeJob = {
     id: 'job-resume-36',
@@ -103,12 +114,12 @@ test('automatic training recovery is visible and operable without colliding with
     });
   });
 
-  const jobsResponse = page.waitForResponse(response => {
-    const url = new URL(response.url());
-    return url.pathname === `/api/projects/${projectId}/jobs` && response.request().method() === 'GET';
-  });
+  apiRequests.length = 0;
   await page.locator('#refreshBtn').click();
-  await jobsResponse;
+  await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.state?.().inflight ?? null))
+    .toBe(false);
+  expect(await page.evaluate(() => Number(state.__navigationEpoch || 0))).toBe(startNavigationEpoch);
+  expect(apiRequests).toEqual([`GET /api/projects/${projectId}/jobs`]);
   await expect.poll(async () => page.evaluate(() => {
     const ids = new Set((state.jobs || []).map(job => job.id));
     return ids.has('job-resume-36') && ids.has('job-finalize-replay');
