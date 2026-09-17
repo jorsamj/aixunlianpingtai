@@ -1,0 +1,522 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import mimetypes
+import sqlite3
+import tempfile
+import uuid
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from filelock import FileLock
+from pydantic import BaseModel, Field
+
+from .algorithms import list_algorithms
+from .errors import PlatformError
+from .secrets import SecretCredentialStore
+from .storage import StorageProviderFactory, StorageSourceRepository
+
+
+SUCCESSFUL_CONVERSION_STATUSES = {
+    "done", "finished", "completed", "success", "succeeded", "partial_success", "blocked_by_hardware",
+}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_segment(value: Any, fallback: str = "item") -> str:
+    import re
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
+    return (text or fallback)[:120]
+
+
+def _json_load(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+class ModelArtifactConfigPayload(BaseModel):
+    storage_source_id: str = ""
+    object_prefix: str = "model-assets"
+    auto_upload_enabled: bool = True
+
+
+class StorageTestPayload(BaseModel):
+    storage_source_id: str
+
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "schema_version": 1,
+    "storage_source_id": "",
+    "object_prefix": "model-assets",
+    "auto_upload_enabled": True,
+    "updated_at": None,
+}
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS model_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    algorithm_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    artifact_kind TEXT NOT NULL,
+    target TEXT NOT NULL,
+    conversion_job_id TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    storage_source_id TEXT NOT NULL DEFAULT '',
+    object_key TEXT NOT NULL DEFAULT '',
+    storage_status TEXT NOT NULL DEFAULT 'PENDING',
+    storage_error TEXT NOT NULL DEFAULT '',
+    uploaded_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_model_artifacts_identity
+ON model_artifacts(project_id, algorithm_id, version_id, target, sha256);
+CREATE INDEX IF NOT EXISTS ix_model_artifacts_version
+ON model_artifacts(project_id, algorithm_id, version_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_model_artifacts_storage_status
+ON model_artifacts(storage_status, updated_at);
+"""
+
+
+class ModelArtifactRepository:
+    def __init__(self, data_dir: str | Path):
+        self.root = Path(data_dir) / "model_artifacts"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.db_path = self.root / "artifacts.sqlite3"
+        self.config_path = self.root / "config.json"
+        self.lock = FileLock(str(self.root / ".config.lock"), timeout=30)
+        with closing(self._connect()) as database:
+            database.executescript(_SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        database = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
+        database.row_factory = sqlite3.Row
+        database.execute("PRAGMA journal_mode=WAL")
+        database.execute("PRAGMA busy_timeout=5000")
+        return database
+
+    def config(self) -> dict[str, Any]:
+        with self.lock:
+            stored = _json_load(self.config_path, {})
+        result = dict(DEFAULT_CONFIG)
+        if isinstance(stored, dict):
+            result.update(stored)
+        return result
+
+    def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
+        prefix = str(payload.object_prefix or "model-assets").strip().strip("/") or "model-assets"
+        body = {
+            "schema_version": 1,
+            "storage_source_id": str(payload.storage_source_id or "").strip(),
+            "object_prefix": prefix,
+            "auto_upload_enabled": bool(payload.auto_upload_enabled),
+            "updated_at": utc_now(),
+        }
+        with self.lock:
+            temporary = self.config_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(self.config_path)
+        return self.config()
+
+    def get(self, artifact_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as database:
+            row = database.execute("SELECT * FROM model_artifacts WHERE artifact_id = ?", (str(artifact_id),)).fetchone()
+        return self._public(row) if row else None
+
+    @staticmethod
+    def _public(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            value["metadata"] = json.loads(value.pop("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            value["metadata"] = {}
+        return value
+
+    def upsert(self, discovered: Mapping[str, Any]) -> dict[str, Any]:
+        stamp = utc_now()
+        metadata = dict(discovered.get("metadata") or {})
+        values = (
+            str(discovered["artifact_id"]), str(discovered["project_id"]), str(discovered["algorithm_id"]),
+            str(discovered["version_id"]), str(discovered.get("artifact_kind") or "conversion"),
+            str(discovered.get("target") or "unknown"), str(discovered.get("conversion_job_id") or ""),
+            str(discovered["file_name"]), str(discovered["source_path"]), str(discovered["sha256"]),
+            int(discovered["size_bytes"]), json.dumps(metadata, ensure_ascii=False, sort_keys=True), stamp, stamp,
+        )
+        with closing(self._connect()) as database:
+            database.execute(
+                """
+                INSERT INTO model_artifacts (
+                    artifact_id, project_id, algorithm_id, version_id, artifact_kind, target,
+                    conversion_job_id, file_name, source_path, sha256, size_bytes, metadata_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(artifact_id) DO UPDATE SET
+                    source_path=excluded.source_path,
+                    file_name=excluded.file_name,
+                    size_bytes=excluded.size_bytes,
+                    conversion_job_id=excluded.conversion_job_id,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                values,
+            )
+        return self.get(str(discovered["artifact_id"])) or {}
+
+    def patch(self, artifact_id: str, **changes: Any) -> dict[str, Any]:
+        allowed = {"storage_source_id", "object_key", "storage_status", "storage_error", "uploaded_at", "updated_at"}
+        values = {key: value for key, value in changes.items() if key in allowed}
+        values.setdefault("updated_at", utc_now())
+        if not values:
+            return self.get(artifact_id) or {}
+        sql = "UPDATE model_artifacts SET " + ", ".join(f"{key} = ?" for key in values) + " WHERE artifact_id = ?"
+        with closing(self._connect()) as database:
+            database.execute(sql, (*values.values(), str(artifact_id)))
+        row = self.get(artifact_id)
+        if row is None:
+            raise KeyError(artifact_id)
+        return row
+
+    def list(
+        self,
+        *,
+        project_id: str = "",
+        algorithm_id: str = "",
+        version_id: str = "",
+        status: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses = ["1=1"]
+        args: list[Any] = []
+        if project_id:
+            clauses.append("project_id = ?")
+            args.append(str(project_id))
+        if algorithm_id:
+            clauses.append("algorithm_id = ?")
+            args.append(str(algorithm_id))
+        if version_id:
+            clauses.append("version_id = ?")
+            args.append(str(version_id))
+        if status:
+            clauses.append("storage_status = ?")
+            args.append(str(status).upper())
+        args.extend([max(1, min(500, int(limit))), max(0, int(offset))])
+        sql = "SELECT * FROM model_artifacts WHERE " + " AND ".join(clauses) + " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        with closing(self._connect()) as database:
+            rows = database.execute(sql, args).fetchall()
+        return [self._public(row) for row in rows]
+
+    def summary(self, *, project_id: str = "") -> dict[str, int]:
+        clause = "WHERE project_id = ?" if project_id else ""
+        args = (str(project_id),) if project_id else ()
+        with closing(self._connect()) as database:
+            row = database.execute(
+                f"""
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN storage_status='UPLOADED' THEN 1 ELSE 0 END) AS uploaded,
+                       SUM(CASE WHEN storage_status='FAILED' THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE WHEN storage_status IN ('PENDING','UPLOADING') THEN 1 ELSE 0 END) AS pending
+                FROM model_artifacts {clause}
+                """,
+                args,
+            ).fetchone()
+        return {
+            "total": int(row["total"] or 0),
+            "uploaded": int(row["uploaded"] or 0),
+            "failed": int(row["failed"] or 0),
+            "pending": int(row["pending"] or 0),
+        }
+
+
+class ModelArtifactService:
+    def __init__(
+        self,
+        *,
+        data_dir: str | Path,
+        project_dir: Callable[[str], Path],
+        algorithms_file: Callable[[str], Path],
+        storage_sources_factory: Callable[[], StorageSourceRepository],
+        storage_credentials_factory: Callable[[], SecretCredentialStore],
+    ):
+        self.data_dir = Path(data_dir)
+        self.project_dir = project_dir
+        self.algorithms_file = algorithms_file
+        self.storage_sources_factory = storage_sources_factory
+        self.storage_credentials_factory = storage_credentials_factory
+        self.repository = ModelArtifactRepository(self.data_dir)
+
+    def public_config(self) -> dict[str, Any]:
+        config = self.repository.config()
+        credentials = self.storage_credentials_factory()
+        sources = []
+        for source in self.storage_sources_factory().list():
+            state = credentials.public_state(source.secret_ref) if source.secret_ref else {"configured": False, "masked": ""}
+            sources.append(source.to_public_dict(
+                secret_configured=bool(state.get("configured")),
+                secret_masked=str(state.get("masked") or ""),
+            ))
+        return {"config": config, "storage_sources": sources, "summary": self.repository.summary()}
+
+    def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
+        source_id = str(payload.storage_source_id or "").strip()
+        if source_id:
+            source = self.storage_sources_factory().get(source_id)
+            if source is None:
+                raise PlatformError("MODEL_STORAGE_SOURCE_NOT_FOUND", "模型资产存储源不存在", source_id, "请先在存储配置中创建该存储源。", 404)
+            if not source.enabled:
+                raise PlatformError("MODEL_STORAGE_SOURCE_DISABLED", "模型资产存储源已停用", source_id, "请启用存储源后再保存。", 409)
+        return self.repository.save_config(payload)
+
+    def _provider(self, project_id: str, source_id: str):
+        source = self.storage_sources_factory().get(source_id)
+        if source is None:
+            raise PlatformError("MODEL_STORAGE_SOURCE_NOT_FOUND", "模型资产存储源不存在", source_id, "请重新选择模型资产存储源。", 404)
+        secret: Mapping[str, str] = {}
+        if source.secret_ref:
+            secret = self.storage_credentials_factory().get(source.secret_ref) or {}
+        return StorageProviderFactory(
+            data_dir=self.data_dir,
+            project_dir=self.project_dir(project_id),
+            credentials={source.id: secret},
+        ).create(source)
+
+    def test_storage(self, source_id: str) -> dict[str, Any]:
+        source_id = str(source_id or "").strip()
+        if not source_id:
+            raise PlatformError("MODEL_STORAGE_SOURCE_REQUIRED", "请选择模型资产存储源", "storage_source_id 为空", "请选择 OSS / MinIO / S3 / 本地存储源后测试。", 422)
+        probe_project = "_model_artifact_probe"
+        self.project_dir(probe_project).mkdir(parents=True, exist_ok=True)
+        provider = self._provider(probe_project, source_id)
+        health = provider.health_check()
+        probe_id = uuid.uuid4().hex
+        key = f"model-assets-healthcheck/{probe_id}.txt"
+        with tempfile.NamedTemporaryFile("wb", delete=False) as stream:
+            stream.write(b"model-artifact-storage-healthcheck")
+            temporary = Path(stream.name)
+        try:
+            meta = provider.upload(key, temporary, content_type="text/plain", metadata={"purpose": "healthcheck"})
+            checked = provider.stat(key)
+            if int(checked.size_bytes) != int(meta.size_bytes) or int(checked.size_bytes) <= 0:
+                raise RuntimeError("写入后对象大小校验失败")
+            provider.delete(key)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {
+            "ok": True,
+            "storage_source_id": source_id,
+            "health": getattr(health, "status", None) or "AVAILABLE",
+            "message": "写入、读取元数据和删除测试通过",
+            "tested_at": utc_now(),
+        }
+
+    def _conversion_jobs(self, project_id: str, algorithm_id: str, version_id: str) -> list[dict[str, Any]]:
+        root = self.project_dir(project_id) / "deployment" / "jobs"
+        rows: list[dict[str, Any]] = []
+        for job_file in root.glob("*/job.json") if root.exists() else ():
+            job = _json_load(job_file, {})
+            if not isinstance(job, dict):
+                continue
+            source = job.get("source_meta") or {}
+            trace = job.get("source_trace") or {}
+            exact = (
+                (str(source.get("algorithm_id") or "") == str(algorithm_id) and str(source.get("version_id") or "") == str(version_id))
+                or (str(trace.get("algorithm_id") or "") == str(algorithm_id) and str(trace.get("version_id") or "") == str(version_id))
+                or str(job.get("source_id") or "") == f"version::{algorithm_id}::{version_id}"
+            )
+            if exact:
+                rows.append(job)
+        return rows
+
+    def discover_version_artifacts(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> list[dict[str, Any]]:
+        algorithm_id = str(algorithm.get("id") or "")
+        version_id = str(version.get("id") or "")
+        candidates: list[tuple[str, str, Path, str, dict[str, Any]]] = []
+        for key in ("best_path", "stored_path", "last_path", "path"):
+            raw = str(version.get(key) or "").strip()
+            if raw:
+                candidates.append(("original", "original", Path(raw).expanduser(), "", {"version_field": key}))
+        for job in self._conversion_jobs(project_id, algorithm_id, version_id):
+            status = str(job.get("status") or "").strip().lower()
+            if status and status not in SUCCESSFUL_CONVERSION_STATUSES:
+                continue
+            target = str(job.get("target") or "converted").strip().lower() or "converted"
+            params = job.get("params") or {}
+            chip = str(params.get("chip") or params.get("soc_version") or "")
+            for output in job.get("outputs") or []:
+                if not isinstance(output, dict) or output.get("available") is False:
+                    continue
+                raw = str(output.get("path") or "").strip()
+                if raw:
+                    candidates.append(("conversion", target, Path(raw).expanduser(), str(job.get("id") or ""), {"chip_code": chip}))
+        seen: set[tuple[str, str]] = set()
+        result: list[dict[str, Any]] = []
+        for kind, target, path, job_id, metadata in candidates:
+            try:
+                path = path.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if not path.is_file() or path.stat().st_size <= 0:
+                continue
+            digest = _sha256(path)
+            identity = (target, digest)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            artifact_id = hashlib.sha256(
+                f"{project_id}:{algorithm_id}:{version_id}:{target}:{digest}".encode("utf-8")
+            ).hexdigest()[:32]
+            result.append({
+                "artifact_id": artifact_id,
+                "project_id": project_id,
+                "algorithm_id": algorithm_id,
+                "version_id": version_id,
+                "artifact_kind": kind,
+                "target": target,
+                "conversion_job_id": job_id,
+                "file_name": path.name,
+                "source_path": str(path),
+                "sha256": digest,
+                "size_bytes": path.stat().st_size,
+                "metadata": metadata,
+            })
+        return result
+
+    def ensure_uploaded(self, discovered: Mapping[str, Any], *, force: bool = False) -> dict[str, Any]:
+        row = self.repository.upsert(discovered)
+        config = self.repository.config()
+        source_id = str(config.get("storage_source_id") or "").strip()
+        if not source_id:
+            return self.repository.patch(str(row["artifact_id"]), storage_status="PENDING", storage_error="尚未配置模型资产存储源")
+        provider = self._provider(str(row["project_id"]), source_id)
+        source_path = Path(str(row["source_path"])).resolve()
+        if not source_path.is_file() or source_path.stat().st_size <= 0:
+            return self.repository.patch(str(row["artifact_id"]), storage_status="FAILED", storage_error="模型源文件不存在")
+        prefix = str(config.get("object_prefix") or "model-assets").strip().strip("/") or "model-assets"
+        object_key = str(row.get("object_key") or "")
+        if not object_key or str(row.get("storage_source_id") or "") != source_id:
+            object_key = "/".join([
+                prefix,
+                _safe_segment(row["project_id"], "project"),
+                _safe_segment(row["algorithm_id"], "algorithm"),
+                _safe_segment(row["version_id"], "version"),
+                _safe_segment(row["target"], "artifact"),
+                f"{str(row['sha256'])[:16]}-{_safe_segment(row['file_name'], 'model.bin')}",
+            ])
+        if not force and str(row.get("storage_status") or "").upper() == "UPLOADED" and str(row.get("storage_source_id") or "") == source_id:
+            try:
+                meta = provider.stat(object_key)
+                if int(meta.size_bytes) == int(row["size_bytes"]) and (not meta.sha256 or str(meta.sha256) == str(row["sha256"])):
+                    return row
+            except Exception:
+                pass
+        self.repository.patch(str(row["artifact_id"]), storage_source_id=source_id, object_key=object_key, storage_status="UPLOADING", storage_error="")
+        try:
+            if provider.exists(object_key):
+                meta = provider.stat(object_key)
+                if int(meta.size_bytes) != int(row["size_bytes"]) or (meta.sha256 and str(meta.sha256) != str(row["sha256"])):
+                    raise RuntimeError("同名对象已存在但内容校验不一致")
+            else:
+                meta = provider.upload(
+                    object_key,
+                    source_path,
+                    content_type=mimetypes.guess_type(source_path.name)[0] or "application/octet-stream",
+                    metadata={
+                        "sha256": str(row["sha256"]),
+                        "algorithm": str(row["algorithm_id"]),
+                        "version": str(row["version_id"]),
+                        "target": str(row["target"]),
+                    },
+                )
+            if int(meta.size_bytes) != int(row["size_bytes"]):
+                raise RuntimeError("上传后文件大小校验失败")
+            if meta.sha256 and str(meta.sha256) != str(row["sha256"]):
+                raise RuntimeError("上传后 SHA256 校验失败")
+        except Exception as error:
+            return self.repository.patch(
+                str(row["artifact_id"]), storage_source_id=source_id, object_key=object_key,
+                storage_status="FAILED", storage_error=str(error)[:2000],
+            )
+        return self.repository.patch(
+            str(row["artifact_id"]), storage_source_id=source_id, object_key=object_key,
+            storage_status="UPLOADED", storage_error="", uploaded_at=utc_now(),
+        )
+
+    def ingest_version(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> dict[str, int]:
+        summary = {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
+        for item in self.discover_version_artifacts(project_id, algorithm, version):
+            summary["discovered"] += 1
+            row = self.ensure_uploaded(item)
+            status = str(row.get("storage_status") or "PENDING").upper()
+            if status == "UPLOADED":
+                summary["uploaded"] += 1
+            elif status == "FAILED":
+                summary["failed"] += 1
+            else:
+                summary["pending"] += 1
+        return summary
+
+    def run_auto_upload_once(self) -> dict[str, int]:
+        summary = {"versions": 0, "discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
+        config = self.repository.config()
+        if not bool(config.get("auto_upload_enabled")) or not str(config.get("storage_source_id") or "").strip():
+            return summary
+        projects = _json_load(self.data_dir / "projects.json", [])
+        if not isinstance(projects, list):
+            return summary
+        for project in projects:
+            project_id = str(project.get("id") or "") if isinstance(project, dict) else ""
+            if not project_id:
+                continue
+            for algorithm in list_algorithms(self.algorithms_file(project_id)):
+                for version in algorithm.get("versions") or []:
+                    if not isinstance(version, dict) or version.get("artifact_verified") is not True:
+                        continue
+                    summary["versions"] += 1
+                    current = self.ingest_version(project_id, algorithm, version)
+                    for key in ("discovered", "uploaded", "failed", "pending"):
+                        summary[key] += current[key]
+        return summary
+
+    def retry(self, artifact_id: str) -> dict[str, Any]:
+        row = self.repository.get(artifact_id)
+        if row is None:
+            raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在", artifact_id, "请刷新模型资产列表。", 404)
+        discovered = {
+            "artifact_id": row["artifact_id"], "project_id": row["project_id"], "algorithm_id": row["algorithm_id"],
+            "version_id": row["version_id"], "artifact_kind": row["artifact_kind"], "target": row["target"],
+            "conversion_job_id": row.get("conversion_job_id") or "", "file_name": row["file_name"],
+            "source_path": row["source_path"], "sha256": row["sha256"], "size_bytes": row["size_bytes"],
+            "metadata": row.get("metadata") or {},
+        }
+        return self.ensure_uploaded(discovered, force=True)
+
+    def download(self, artifact_id: str):
+        row = self.repository.get(artifact_id)
+        if row is None or str(row.get("storage_status") or "").upper() != "UPLOADED":
+            raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在或尚未上传", artifact_id, "请重新执行资产上传。", 404)
+        provider = self._provider(str(row["project_id"]), str(row["storage_source_id"]))
+        return row, provider
