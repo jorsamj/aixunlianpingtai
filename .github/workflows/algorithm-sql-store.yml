@@ -75,5 +75,7 @@ jobs:
           test ! -e tools/migrate_algorithm_store_to_sql.py
           test ! -e tools/migrate_algorithm_sql_row_crud.py
           test ! -e tools/fix_algorithm_sql_row_crud.py
+          test ! -e tools/fix_algorithm_sql_read_bypass.py
           test ! -e .github/workflows/algorithm-sql-migration-one-shot.yml
           test ! -e .github/workflows/algorithm-sql-crud-one-shot.yml
+          test ! -e .github/workflows/algorithm-sql-read-bypass-one-shot.yml
