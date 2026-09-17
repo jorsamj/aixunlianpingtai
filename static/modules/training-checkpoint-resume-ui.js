@@ -1,4 +1,5 @@
 const RESUME_MODE = 'training_checkpoint_resume';
+const FINALIZATION_REPLAY_MODE = 'finalization_replay';
 const ACTIVE_STATUSES = new Set(['queued', 'waiting', 'pending', 'running', 'paused']);
 const SUCCESS_STATUSES = new Set(['done', 'finished', 'completed']);
 
@@ -21,6 +22,14 @@ function fileName(path) {
 
 export function isCheckpointResumeJob(job = {}) {
   return String(job?.recovery_mode || '').trim() === RESUME_MODE;
+}
+
+export function isFinalizationReplayJob(job = {}) {
+  return String(job?.recovery_mode || '').trim() === FINALIZATION_REPLAY_MODE;
+}
+
+export function isAutomaticTrainingRecoveryJob(job = {}) {
+  return isCheckpointResumeJob(job) || isFinalizationReplayJob(job);
 }
 
 export function checkpointResumeView(job = {}) {
@@ -52,28 +61,45 @@ export function checkpointResumeView(job = {}) {
     totalEpochs,
     recoveryState,
     phase,
+    mode: String(job?.recovery_mode || ''),
+    finalizationReplay: isFinalizationReplayJob(job),
+    finalValidationReused: job?.final_validation_reused === true,
     checkpointName: fileName(job?.resume_checkpoint),
     checkpointSha256: String(job?.resume_checkpoint_sha256 || ''),
     assignedDevice: String(job?.assigned_device || job?.actual_device || '-'),
     workerId: String(job?.task_worker_id || '-'),
     currentItem: String(job?.current_item || job?.message || ''),
+    progressPercent: numberOrNull(job?.progress_percent) ?? 0,
     validationActive,
     archiveActive,
   };
 }
 
 export function checkpointResumeBadge(job = {}) {
-  if (!isCheckpointResumeJob(job)) return '';
+  if (!isAutomaticTrainingRecoveryJob(job)) return '';
   const view = checkpointResumeView(job);
+  if (view.finalizationReplay) {
+    if (view.failed) return '恢复归档失败';
+    if (view.complete) return '恢复归档已完成';
+    return '恢复归档 · 跳过重训和重验证';
+  }
   if (view.failed) return '断点续训失败';
   if (view.complete) return `已从 Epoch ${view.fromEpoch} 恢复`;
-  if (view.validationActive) return `续训完成 · 正在模型验证`;
-  if (view.archiveActive) return `续训完成 · 正在归档`;
+  if (view.validationActive) return '续训完成 · 正在模型验证';
+  if (view.archiveActive) return '续训完成 · 正在归档';
   return `断点续训 · 从 Epoch ${view.fromEpoch}`;
 }
 
 export function checkpointResumeTimeline(job = {}) {
   const view = checkpointResumeView(job);
+  if (view.finalizationReplay) {
+    return [
+      {label: '任务重新接管', state: 'done'},
+      {label: '模型训练', state: 'done'},
+      {label: '独立 Final Validation', state: 'done'},
+      {label: '版本与结果归档', state: view.failed ? 'failed' : (view.complete ? 'done' : 'active')},
+    ];
+  }
   const trainingState = view.failed ? 'failed' : (view.complete || view.validationActive || view.archiveActive ? 'done' : 'active');
   const validationState = view.complete
     ? 'done'
@@ -121,6 +147,30 @@ function timelineHtml(job) {
 
 function detailHtml(job) {
   const view = checkpointResumeView(job);
+  if (view.finalizationReplay) {
+    const title = view.failed ? '恢复归档失败' : (view.complete ? '恢复归档已完成' : '正在恢复训练结果归档');
+    return `
+      <div class="checkpoint-resume-overlay" data-checkpoint-resume-overlay>
+        <div class="checkpoint-resume-dialog" role="dialog" aria-modal="true" aria-label="训练恢复归档详情">
+          <div class="checkpoint-resume-head"><div><h3>${esc(title)}</h3><p>${esc(job.id || '')}</p></div><button class="btn mini" data-checkpoint-resume-close>关闭</button></div>
+          <div class="checkpoint-resume-body">
+            <div class="checkpoint-resume-hero"><div><b>${esc(checkpointResumeBadge(job))}</b><span>${esc(view.currentItem || '最终验证已完成，后台正在继续归档')}</span></div><div class="checkpoint-resume-percent">${Math.round(view.progressPercent || 98)}%</div></div>
+            <section class="checkpoint-resume-grid">
+              <div><small>训练主循环</small><b>已完成</b></div>
+              <div><small>Final Validation</small><b>${view.finalValidationReused ? '已通过并复用' : '已通过'}</b></div>
+              <div><small>恢复阶段</small><b>结果与版本归档</b></div>
+              <div><small>恢复状态</small><b>${esc(view.recoveryState || 'finalizing_commit')}</b></div>
+              <div><small>训练设备</small><b>${esc(view.assignedDevice)}</b></div>
+              <div><small>执行 Worker</small><b>${esc(view.workerId)}</b></div>
+            </section>
+            <section class="checkpoint-resume-section"><h4>恢复流程</h4>${timelineHtml(job)}</section>
+            <div class="checkpoint-resume-note">系统已验证同一任务的 Final Validation 成功证据、Snapshot、Checkpoint 与已发布模型，本次只继续结果和算法版本归档，不重新训练，也不重新执行 Final Validation。</div>
+          </div>
+          <div class="checkpoint-resume-actions"><button class="btn" data-checkpoint-resume-log="${esc(job.id || '')}">查看训练日志</button><button class="btn primary" data-checkpoint-resume-close>关闭</button></div>
+        </div>
+      </div>`;
+  }
+
   const total = view.totalEpochs || '-';
   const percent = view.totalEpochs ? Math.max(0, Math.min(100, 100 * view.currentEpoch / view.totalEpochs)) : 0;
   const title = view.failed ? '断点续训失败' : (view.complete ? '断点续训已完成' : '正在从 Checkpoint 恢复训练');
@@ -139,7 +189,7 @@ function detailHtml(job) {
             <div><small>执行 Worker</small><b>${esc(view.workerId)}</b></div>
           </section>
           <section class="checkpoint-resume-section"><h4>恢复流程</h4>${timelineHtml(job)}</section>
-          <div class="checkpoint-resume-note">系统只会在同一训练任务、同一 Snapshot、同一 run 目录且 task-local last.pt 通过完整性校验时自动续训；如果这些条件不成立，后台不会把普通重跑伪装成断点续训。</div>
+          <div class="checkpoint-resume-note">系统只会在同一训练任务、同一 Snapshot、同一 run 目录且 task-local last.pt 通过完整性校验时自动续训；last.pt 加载后还会按 Checkpoint 内的 start_epoch 校正真实恢复轮次。</div>
         </div>
         <div class="checkpoint-resume-actions"><button class="btn" data-checkpoint-resume-log="${esc(job.id || '')}">查看训练日志</button><button class="btn primary" data-checkpoint-resume-close>关闭</button></div>
       </div>
@@ -164,7 +214,7 @@ export function installTrainingCheckpointResumeUI({getState, notify} = {}) {
       const job = jobs.get(String(row.dataset.jobId || ''));
       const cell = row.children?.[1];
       const previous = cell?.querySelector?.('.checkpoint-resume-badge');
-      if (!job || !isCheckpointResumeJob(job)) {
+      if (!job || !isAutomaticTrainingRecoveryJob(job)) {
         previous?.remove?.();
         continue;
       }
@@ -180,7 +230,7 @@ export function installTrainingCheckpointResumeUI({getState, notify} = {}) {
 
   function open(taskId) {
     const job = jobsById().get(String(taskId || ''));
-    if (!job || !isCheckpointResumeJob(job)) {
+    if (!job || !isAutomaticTrainingRecoveryJob(job)) {
       return typeof originalOpenDetail === 'function' ? originalOpenDetail(taskId) : false;
     }
     close();
