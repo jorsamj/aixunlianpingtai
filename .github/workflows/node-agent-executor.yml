@@ -1,0 +1,90 @@
+name: Node Agent Executor
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/service_nodes.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'tests/unit/test_agent_execution.py'
+      - 'tests/api/test_agent_executor_api.py'
+      - '.github/workflows/node-agent-executor.yml'
+  pull_request:
+    branches:
+      - main
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/service_nodes.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'tests/unit/test_agent_execution.py'
+      - 'tests/api/test_agent_executor_api.py'
+      - '.github/workflows/node-agent-executor.yml'
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+      - name: Python syntax check
+        run: >-
+          python -m py_compile
+          platform_core/agent_execution.py
+          platform_core/service_nodes.py
+          platform_core/task_node_assignments.py
+          platform_core/training_recovery_api.py
+          tests/unit/test_agent_execution.py
+      - name: Agent execution contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_agent_execution.py
+          tests/unit/test_service_nodes.py
+          tests/unit/test_task_node_assignments.py
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+      - name: Agent executor API contract
+        run: >-
+          python -m pytest -q --confcutdir=tests/api
+          tests/api/test_agent_executor_api.py
+          tests/api/test_service_node_api.py
+          tests/api/test_central_scheduler_api.py
+      - name: Permanent Agent executor guards
+        shell: bash
+        run: |
+          grep -Fq 'verify_service_node_token' platform_core/service_nodes.py
+          grep -Fq 'hmac.compare_digest' platform_core/service_nodes.py
+          grep -Fq 'BEGIN IMMEDIATE' platform_core/agent_execution.py
+          grep -Fq 'token_hash FROM service_nodes' platform_core/agent_execution.py
+          grep -Fq 'attempt=attempt+1' platform_core/agent_execution.py
+          grep -Fq "release_reason='execution_started'" platform_core/agent_execution.py
+          grep -Fq 'assert_execution' platform_core/agent_execution.py
+          grep -Fq 'execution_generation=int(execution_generation)' platform_core/agent_execution.py
+          grep -Fq '"shared_sqlite_required": False' platform_core/agent_execution.py
+          grep -Fq '"shared_nfs_required": False' platform_core/agent_execution.py
+          grep -Fq 'agent_executor_router(task_repository, task_artifacts)' platform_core/training_recovery_api.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
