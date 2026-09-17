@@ -7,10 +7,12 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'platform_core/agent_execution.py'
+      - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
       - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
       - '.github/workflows/node-agent-executor.yml'
   pull_request:
@@ -19,10 +21,12 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'platform_core/agent_execution.py'
+      - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
       - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
       - '.github/workflows/node-agent-executor.yml'
 
@@ -45,14 +49,17 @@ jobs:
         run: >-
           python -m py_compile
           platform_core/agent_execution.py
+          platform_core/node_agent_executor_runtime.py
           platform_core/service_nodes.py
           platform_core/task_node_assignments.py
           platform_core/training_recovery_api.py
           tests/unit/test_agent_execution.py
+          tests/unit/test_node_agent_executor_runtime.py
       - name: Agent execution contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_agent_execution.py
+          tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
 
@@ -86,5 +93,10 @@ jobs:
           grep -Fq '"shared_sqlite_required": False' platform_core/agent_execution.py
           grep -Fq '"shared_nfs_required": False' platform_core/agent_execution.py
           grep -Fq 'agent_executor_router(task_repository, task_artifacts)' platform_core/training_recovery_api.py
+          ! grep -Fq 'import sqlite3' platform_core/node_agent_executor_runtime.py
+          ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_executor_runtime.py
+          ! grep -Fq 'task_runtime.repository' platform_core/node_agent_executor_runtime.py
+          grep -Fq 'shared_sqlite_required' tests/unit/test_node_agent_executor_runtime.py
+          grep -Fq 'ExecutionLeaseMonitor' platform_core/node_agent_executor_runtime.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
