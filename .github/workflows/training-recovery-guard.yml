@@ -148,7 +148,8 @@ jobs:
               ],
               "platform_core/training_checkpoint_resume_tasks.py": [
                   "stage=RESUME_STAGE",
-                  "resume_checkpoint_sha256",
+                  '"--resume-checkpoint-sha256"',
+                  "checkpoint_sha = base._sha256(checkpoint)",
                   'FINALIZATION_REPLAY_MODE = "finalization_replay"',
                   "inspect_finalization_replay_candidate",
                   "final_validation_reused=True",
@@ -164,6 +165,7 @@ jobs:
               ],
               "tests/test_training_checkpoint_resume_projection.py": [
                   "test_training_job_projection_preserves_checkpoint_resume_fields",
+                  "test_training_job_projection_preserves_finalization_replay_fields",
               ],
               "static/index.html": [
                   "training-checkpoint-resume-bootstrap.mjs",
