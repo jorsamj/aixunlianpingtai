@@ -5714,11 +5714,6 @@ def start_train(project_id: str, payload: TrainReq):
         "project_id": project_id,
         "asset_algorithm_id": (asset_algorithm or {}).get("id", ""),
         "asset_algorithm_name": (asset_algorithm or {}).get("name", ""),
-        "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
-        "external_provider": (asset_algorithm or {}).get("provider_type", ""),
-        "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
-        "external_analysis_id": (asset_algorithm or {}).get("external_analysis_id", ""),
-        "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
         "status": "queued",
         "target": payload.target,
         "framework": framework,
@@ -7857,21 +7852,18 @@ def v12_list_algorithms(project_id: str):
 @app.post("/api/v12/projects/{project_id}/algorithms")
 def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
     get_project(project_id)
-    assert_local_algorithm_create_allowed(DATA_DIR)
     item = create_algorithm_asset(algorithms_file(project_id), payload.model_dump(), now_iso())
     return {"ok": True, "algorithm": item}
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_update_algorithm(project_id: str, algorithm_id: str, payload: AlgorithmReq):
-    assert_algorithm_mutable(algorithms_file(project_id), algorithm_id)
     item = update_algorithm_asset(algorithms_file(project_id), algorithm_id, payload.model_dump(), now_iso())
     return {"ok": True, "algorithm": item}
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_delete_algorithm(project_id: str, algorithm_id: str):
-    assert_algorithm_mutable(algorithms_file(project_id), algorithm_id)
     delete_algorithm_asset(algorithms_file(project_id), algorithm_id)
     return {"ok": True}
 
@@ -8185,13 +8177,6 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     try:
         job["auto_conversion"]=version.get("auto_conversion");write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
-    request_external_auto_publish_if_enabled(
-        data_dir=DATA_DIR,
-        algorithms_path=algorithms_file(project_id),
-        algorithm_id=algorithm_id,
-        version_id=version_id,
-        now=now_iso(),
-    )
     return version
 
 
@@ -14876,32 +14861,8 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
     return {'ok': True, 'base': _v54_iteration_base(project_id, algorithm_id, framework, strict_latest=True)}
 
 
-from platform_core.external_algorithm_platform import (
-    assert_algorithm_mutable,
-    assert_local_algorithm_create_allowed,
-    external_algorithm_platform_router,
-)
-from platform_core.external_algorithm_publish import (
-    external_algorithm_publish_router,
-    request_external_auto_publish_if_enabled,
-)
 from platform_core.material_batches import material_batch_router
 
-app.include_router(external_algorithm_platform_router(
-    data_dir=DATA_DIR,
-    get_project=get_project,
-    algorithms_file=algorithms_file,
-    secret_store_factory=_v35_secret_store,
-))
-app.include_router(external_algorithm_publish_router(
-    data_dir=DATA_DIR,
-    get_project=get_project,
-    project_dir=project_dir,
-    algorithms_file=algorithms_file,
-    external_secret_store_factory=_v35_secret_store,
-    storage_sources_factory=storage_source_repository,
-    storage_credentials_factory=storage_credentials,
-))
 app.include_router(material_batch_router(
     get_project, material_store, shared_task_repository, shared_task_artifacts,
 ))

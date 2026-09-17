@@ -9,8 +9,6 @@ import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
 import {installPollRegistry} from './modules/poll-registry.js?v=422518';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63001';
-import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64001';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422500';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
@@ -139,22 +137,6 @@ const algorithmListRuntime = installAlgorithmListRuntime({
   notify,
 });
 window.PlatformCore.runtime.algorithmListRuntime = algorithmListRuntime;
-
-const externalAlgorithmPlatformRuntime = installExternalAlgorithmPlatformRuntime({
-  getState: () => state,
-  projectId: () => state.project?.id,
-  notify,
-  algorithmListRuntime,
-});
-window.PlatformCore.runtime.externalAlgorithmPlatformRuntime = externalAlgorithmPlatformRuntime;
-
-const externalAlgorithmPublishRuntime = installExternalAlgorithmPublishRuntime({
-  getState: () => state,
-  projectId: () => state.project?.id,
-  notify,
-  algorithmListRuntime,
-});
-window.PlatformCore.runtime.externalAlgorithmPublishRuntime = externalAlgorithmPublishRuntime;
 
 const trainingRecoveryRuntime = installTrainingRecoveryRuntime({
   getState: () => state,
