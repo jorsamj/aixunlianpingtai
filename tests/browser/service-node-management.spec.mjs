@@ -84,13 +84,25 @@ test('service node page shows live resources and creates Agent credentials', asy
 
   await expect(page.locator('#title')).toHaveText('服务节点');
   await expect(page.locator('[data-service-node-page="1"]')).toBeVisible({timeout: 10_000});
-  await expect(page.locator('[data-node-card="gpu-a800-01"]')).toContainText('A800 训练节点');
-  await expect(page.locator('[data-node-card="gpu-a800-01"]')).toContainText('NVIDIA A800-SXM4-40GB');
-  await expect(page.locator('[data-node-card="gpu-a800-01"]')).toContainText('2.5.0+cu124');
-  await expect(page.locator('[data-node-card="gpu-a800-01"]')).toContainText('12.4');
-  await expect(page.locator('[data-node-card="gpu-a800-01"]')).toContainText('train-browser-1');
+  const a800 = page.locator('[data-node-card="gpu-a800-01"]');
+  await expect(a800).toContainText('A800 训练节点');
+  await expect(a800).toContainText('NVIDIA A800-SXM4-40GB');
+  await expect(a800).toContainText('2.5.0+cu124');
+  await expect(a800).toContainText('12.4');
+  await expect(a800).toContainText('train-browser-1');
   await expect(page.locator('#summary')).toContainText('服务节点');
   await expect(page.locator('#summary')).toContainText('在线');
+
+  // Modal lifecycle must not consume the node-card action owner.
+  await page.getByRole('button', {name: /新增服务节点/}).click();
+  await expect(page.locator('[data-node-form="1"]')).toBeVisible();
+  await page.locator('[data-node-form-cancel]').click();
+  await expect(page.locator('#modal')).toHaveClass(/hidden/);
+  await a800.getByRole('button', {name: '编辑'}).click();
+  await expect(page.locator('[data-node-form="1"]')).toBeVisible();
+  await expect(page.locator('#node633Id')).toHaveValue('gpu-a800-01');
+  await expect(page.locator('#node633Id')).toBeDisabled();
+  await page.locator('[data-node-form-cancel]').click();
 
   await page.getByRole('button', {name: /新增服务节点/}).click();
   await expect(page.locator('[data-node-form="1"]')).toBeVisible();
