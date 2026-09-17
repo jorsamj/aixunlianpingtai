@@ -1,11 +1,15 @@
 import json
 
 import pytest
+from cryptography.fernet import Fernet
 
 from platform_core.secrets import (
+    EncryptedFileSecretStore,
+    KeyringSecretStore,
     MemorySecretStore,
     SecretCredentialStore,
     SecretStoreUnavailable,
+    secret_environment_name,
     secret_ref,
 )
 
@@ -67,6 +71,9 @@ def test_public_state_degrades_without_crashing_when_secret_backend_is_unavailab
         "masked": "",
         "available": False,
         "error": "SECRET_STORE_UNAVAILABLE",
+        "backend": "unavailable",
+        "writable": False,
+        "environment_name": "",
     }
 
 
@@ -92,4 +99,68 @@ def test_public_state_for_working_store_keeps_masked_identifier_only():
     assert state["available"] is True
     assert state["error"] == ""
     assert state["masked"].startswith("acc****")
+    assert state["backend"] == "memory"
+    assert state["writable"] is True
     assert "do-not-expose-this-secret" not in str(state)
+
+
+def test_encrypted_file_secret_store_never_writes_plaintext(tmp_path):
+    key = Fernet.generate_key()
+    path = tmp_path / "secure" / "secrets.enc.json"
+    store = EncryptedFileSecretStore(path, master_key=key)
+    reference = "xjalgo:external-platform:changlian"
+    payload = json.dumps({"access_key_id": "ak-test", "access_secret": "super-secret"})
+
+    store.set(reference, payload)
+
+    assert store.get(reference) == payload
+    disk = path.read_text(encoding="utf-8")
+    assert "ak-test" not in disk
+    assert "super-secret" not in disk
+    assert reference in disk
+
+
+def test_headless_composite_falls_back_to_encrypted_file(tmp_path):
+    key = Fernet.generate_key()
+    reference = "xjalgo:external-platform:changlian"
+    store = KeyringSecretStore(
+        keyring_module=None,
+        encrypted_path=tmp_path / "secrets.enc.json",
+        master_key=key,
+    )
+    credentials = SecretCredentialStore(store)
+
+    credentials.set(reference, {
+        "access_key_id": "headless-ak",
+        "access_secret": "headless-secret",
+    })
+    state = credentials.public_state(reference)
+
+    assert credentials.get(reference)["access_secret"] == "headless-secret"
+    assert state["configured"] is True
+    assert state["backend"] == "encrypted_file"
+    assert state["writable"] is True
+    assert "headless-secret" not in str(state)
+
+
+def test_changlian_environment_credentials_are_read_only(monkeypatch):
+    reference = "xjalgo:external-platform:changlian"
+    monkeypatch.setenv("MC_CHANGLIAN_ACCESS_KEY", "env-ak")
+    monkeypatch.setenv("MC_CHANGLIAN_ACCESS_SECRET", "env-secret")
+    store = KeyringSecretStore(keyring_module=None)
+    credentials = SecretCredentialStore(store)
+
+    assert credentials.get(reference) == {
+        "access_key_id": "env-ak",
+        "access_secret": "env-secret",
+    }
+    state = credentials.public_state(reference)
+    assert state["backend"] == "environment"
+    assert state["writable"] is False
+    assert state["environment_name"] == "MC_CHANGLIAN_ACCESS_KEY/MC_CHANGLIAN_ACCESS_SECRET"
+    with pytest.raises(ValueError, match="只读配置"):
+        credentials.set(reference, {"access_key_id": "new", "access_secret": "new-secret"})
+
+
+def test_generic_environment_secret_name_is_stable():
+    assert secret_environment_name("xjalgo:storage-source:oss-a") == "MC_SECRET_XJALGO_STORAGE_SOURCE_OSS_A"
