@@ -20,7 +20,7 @@ from platform_core.task_runtime import (
     Scheduler,
     WorkerInstanceService,
 )
-from platform_core.gpu_resources import GPUResourceManager
+from platform_core.gpu_reservations_v2 import NodeScopedGPUResourceManager
 from platform_core.training_devices import training_python
 from platform_core.worker_registry import resolve_worker_registration
 from platform_core.worker_supervisor import run_isolated_all_roles
@@ -178,10 +178,14 @@ def main(argv=None) -> int:
             worker_id,
             handlers,
             capabilities,
-            gpu_resources=GPUResourceManager(repository, artifacts, worker_slot=args.training_slot or "default",
-                                             python_executable=training_python(data_dir),
-                                             node_id=node_identity.node_id,
-                                             worker_id=worker_id) if "training.ultralytics" in capabilities else None,
+            gpu_resources=NodeScopedGPUResourceManager(
+                repository,
+                artifacts,
+                worker_slot=args.training_slot or "default",
+                python_executable=training_python(data_dir),
+                node_id=node_identity.node_id,
+                worker_id=worker_id,
+            ) if "training.ultralytics" in capabilities else None,
             worker_instance=instance_lease,
         )
         if args.once:
