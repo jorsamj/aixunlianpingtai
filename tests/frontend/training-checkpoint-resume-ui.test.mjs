@@ -5,7 +5,9 @@ import {
   checkpointResumeBadge,
   checkpointResumeTimeline,
   checkpointResumeView,
+  isAutomaticTrainingRecoveryJob,
   isCheckpointResumeJob,
+  isFinalizationReplayJob,
 } from '../../static/modules/training-checkpoint-resume-ui.js';
 
 const running = {
@@ -25,9 +27,34 @@ const running = {
   current_item: '断点续训 · Epoch 41/100',
 };
 
+const replayingFinalization = {
+  id: 'train-archive-1',
+  status: 'running',
+  task_status: 'RUNNING',
+  phase: 'finalizing_commit',
+  recovery_mode: 'finalization_replay',
+  recovery_state: 'finalizing_commit',
+  final_validation_reused: true,
+  progress_percent: 98,
+  current_epoch: 100,
+  requested_epochs: 100,
+  total_epochs: 100,
+  assigned_device: 'cuda:0',
+  task_worker_id: 'worker-b',
+  current_item: 'Final Validation 已通过，正在恢复结果与算法版本归档',
+};
+
 test('checkpoint resume job is distinguished from final-validation retry', () => {
   assert.equal(isCheckpointResumeJob(running), true);
   assert.equal(isCheckpointResumeJob({recovery_action: 'revalidate_checkpoint'}), false);
+});
+
+test('automatic recovery distinguishes checkpoint resume and finalization replay', () => {
+  assert.equal(isFinalizationReplayJob(replayingFinalization), true);
+  assert.equal(isCheckpointResumeJob(replayingFinalization), false);
+  assert.equal(isAutomaticTrainingRecoveryJob(running), true);
+  assert.equal(isAutomaticTrainingRecoveryJob(replayingFinalization), true);
+  assert.equal(isAutomaticTrainingRecoveryJob({recovery_action: 'revalidate_checkpoint'}), false);
 });
 
 test('checkpoint resume view keeps backend epoch truth', () => {
@@ -59,6 +86,21 @@ test('finalizing commit phase comes from backend task truth and marks archive ac
   const job = {...running, phase: 'finalizing_commit', recovery_state: 'validation_completed', current_epoch: 100};
   assert.equal(checkpointResumeBadge(job), '续训完成 · 正在归档');
   assert.deepEqual(checkpointResumeTimeline(job).map(step => step.state), ['done', 'done', 'done', 'pending', 'active']);
+});
+
+test('finalization replay shows validation as already complete and archive as active', () => {
+  const view = checkpointResumeView(replayingFinalization);
+  assert.equal(view.finalizationReplay, true);
+  assert.equal(view.finalValidationReused, true);
+  assert.equal(checkpointResumeBadge(replayingFinalization), '恢复归档 · 跳过重训和重验证');
+  assert.deepEqual(
+    checkpointResumeTimeline(replayingFinalization).map(step => step.state),
+    ['done', 'done', 'done', 'active'],
+  );
+  assert.deepEqual(
+    checkpointResumeTimeline(replayingFinalization).map(step => step.label),
+    ['任务重新接管', '模型训练', '独立 Final Validation', '版本与结果归档'],
+  );
 });
 
 test('completed resume shows archive complete without exposing a manual retry button contract', () => {
