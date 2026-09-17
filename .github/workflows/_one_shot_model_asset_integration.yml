@@ -22,11 +22,12 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install focused dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest fastapi pydantic filelock requests pillow pyyaml psutil keyring httpx2
+        run: python -m pip install --disable-pip-version-check pytest fastapi pydantic filelock requests keyring
       - name: Apply precise integration patch
         run: python tools/_one_shot_model_asset_integration.py
       - name: Python syntax
@@ -38,7 +39,7 @@ jobs:
             platform_core/external_algorithm_publish.py
       - name: Backend contracts
         run: |
-          python -m pytest -q \
+          PYTHONPATH=. pytest -q --confcutdir=tests/unit \
             tests/unit/test_model_artifacts.py \
             tests/unit/test_integration_audit.py \
             tests/unit/test_external_algorithm_platform.py \
