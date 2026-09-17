@@ -27,6 +27,8 @@ on:
       - 'tests/browser/zip-import-refresh-recovery.spec.mjs'
       - 'tests/api/test_v19_job_atomic_persistence.py'
       - 'tests/api/test_v19_import_scalability.py'
+      - 'docs/PROJECT_HANDOFF_CURRENT.md'
+      - 'docs/BUG_AUDIT_2026-09-17.md'
       - '.github/workflows/zip-import-durable-runtime.yml'
 
 jobs:
@@ -81,12 +83,18 @@ jobs:
           grep -Fq 'EncryptedFileSecretStore' platform_core/secrets.py
           grep -Fq 'MC_CHANGLIAN_ACCESS_KEY' platform_core/secrets.py
           grep -Fq 'cryptography>=' requirements.txt
+          grep -Fq 'CLOSED — Headless Linux Secret 持久化' docs/PROJECT_HANDOFF_CURRENT.md
+          grep -Fq 'CLOSED — Multipart session TTL / GC' docs/PROJECT_HANDOFF_CURRENT.md
+          grep -Fq 'CLOSED-04 — Headless Linux 新畅联 Secret 安全持久化' docs/BUG_AUDIT_2026-09-17.md
+          grep -Fq 'CLOSED-05 — Multipart session TTL / GC' docs/BUG_AUDIT_2026-09-17.md
           test ! -e tools/_one_shot_upload_pipeline_v2.py
           test ! -e tools/_one_shot_upload_pipeline_v2_fix.py
           test ! -e tools/_one_shot_upload_pipeline_v2_postfix.py
           test ! -e .github/workflows/_one_shot_upload_pipeline_v2.yml
           test ! -e tools/_one_shot_secret_gc_ui.py
           test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
+          test ! -e tools/_one_shot_secret_gc_docs.py
+          test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
 
