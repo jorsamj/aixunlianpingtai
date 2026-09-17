@@ -17,9 +17,14 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .service_nodes import HEARTBEAT_TTL_SECONDS, ServiceNodeError, ServiceNodeRepository
+from .service_nodes import (
+    HEARTBEAT_TTL_SECONDS,
+    ServiceNodeError,
+    ServiceNodeRepository,
+    verify_service_node_token,
+)
 from .task_node_assignments import CentralTaskAllocator
-from .task_runtime import TaskLease, TaskStatus
+from .task_runtime import TaskStatus
 from .task_runtime.fenced_repository import FencedTaskRepository
 from .task_runtime.repository import TERMINAL_STATUSES, _from_row
 
@@ -197,12 +202,23 @@ class AgentExecutionService:
                 )
 
             node = database.execute(
-                "SELECT enabled,last_heartbeat_at,allowed_capabilities,reported_capabilities FROM service_nodes WHERE node_id=?",
+                "SELECT enabled,last_heartbeat_at,allowed_capabilities,reported_capabilities,token_hash FROM service_nodes WHERE node_id=?",
                 (str(node_id),),
             ).fetchone()
             if node is None or not bool(node["enabled"]):
                 database.rollback()
                 raise AgentExecutionError("NODE_DISABLED", "service node is disabled", 409)
+            if not verify_service_node_token(
+                node_id,
+                node_token,
+                str(node["token_hash"] or ""),
+            ):
+                database.rollback()
+                raise AgentExecutionError(
+                    "INVALID_NODE_TOKEN",
+                    "service node token changed before execution start",
+                    401,
+                )
             try:
                 heartbeat = datetime.fromisoformat(
                     str(node["last_heartbeat_at"] or "").replace("Z", "+00:00")
