@@ -1,10 +1,8 @@
 """Authoritative service-node registry and authenticated Agent heartbeat contract.
 
-The central control plane owns desired node state.  Agents only report observed
-runtime/resource truth; they never make scheduling decisions from this module.
-The registry deliberately shares the durable TaskRepository database so future
-central task assignment can be transactional with queue state without creating a
-second scheduler or a SQLite-over-NFS side database.
+The control plane owns desired node state. Agents only report observed resource
+and runtime truth here; scheduling remains with the existing durable runtime so
+this layer does not create a second scheduler or weaken task lease/fencing.
 """
 from __future__ import annotations
 
@@ -34,8 +32,6 @@ SUPPORTED_NODE_CAPABILITIES = (
 )
 HEARTBEAT_TTL_SECONDS = 45
 _NODE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_CAPABILITY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS service_nodes (
@@ -76,23 +72,23 @@ class ServiceNodeError(RuntimeError):
 
 
 def _text(value: object, *, field: str, limit: int, required: bool = False) -> str:
-    normalized = str(value or "").strip()
-    if required and not normalized:
+    result = str(value or "").strip()
+    if required and not result:
         raise ServiceNodeError("NODE_FIELD_REQUIRED", f"{field} is required", 422)
-    if len(normalized) > limit:
+    if len(result) > limit:
         raise ServiceNodeError("NODE_FIELD_TOO_LONG", f"{field} exceeds {limit} characters", 422)
-    return normalized
+    return result
 
 
 def _node_id(value: object) -> str:
-    normalized = _text(value, field="node_id", limit=128, required=True)
-    if not _NODE_ID_PATTERN.fullmatch(normalized):
+    result = _text(value, field="node_id", limit=128, required=True)
+    if not _NODE_ID_PATTERN.fullmatch(result):
         raise ServiceNodeError(
             "INVALID_NODE_ID",
             "node_id must use letters, digits, '.', '_', ':', or '-'",
             422,
         )
-    return normalized
+    return result
 
 
 def _capabilities(value: object) -> tuple[str, ...]:
@@ -100,70 +96,62 @@ def _capabilities(value: object) -> tuple[str, ...]:
         return ()
     if not isinstance(value, (list, tuple, set, frozenset)):
         raise ServiceNodeError("INVALID_NODE_CAPABILITIES", "capabilities must be an array", 422)
-    normalized = tuple(sorted({str(item or "").strip().lower() for item in value if str(item or "").strip()}))
-    unknown = [item for item in normalized if item not in SUPPORTED_NODE_CAPABILITIES]
+    result = tuple(sorted({str(item or "").strip().lower() for item in value if str(item or "").strip()}))
+    unknown = sorted(set(result) - set(SUPPORTED_NODE_CAPABILITIES))
     if unknown:
         raise ServiceNodeError(
             "UNSUPPORTED_NODE_CAPABILITY",
             "unsupported node capabilities: " + ", ".join(unknown),
             422,
         )
-    if any(not _CAPABILITY_PATTERN.fullmatch(item) for item in normalized):
-        raise ServiceNodeError("INVALID_NODE_CAPABILITIES", "invalid capability name", 422)
-    return normalized
+    return result
 
 
-def _json_array(value: object, *, field: str, limit: int = 256) -> list[str]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise ServiceNodeError("INVALID_NODE_HEARTBEAT", f"{field} must be an array", 422)
-    if len(value) > limit:
-        raise ServiceNodeError("INVALID_NODE_HEARTBEAT", f"{field} exceeds {limit} items", 422)
-    return [
-        _text(item, field=field, limit=160, required=True)
-        for item in value
-    ]
-
-
-def _json_mapping(value: object, *, field: str, max_bytes: int = 131072) -> dict[str, Any]:
+def _mapping(value: object, *, field: str, max_bytes: int = 131072) -> dict[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
         raise ServiceNodeError("INVALID_NODE_HEARTBEAT", f"{field} must be an object", 422)
     result = dict(value)
-    encoded = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     if len(encoded) > max_bytes:
         raise ServiceNodeError("INVALID_NODE_HEARTBEAT", f"{field} exceeds {max_bytes} bytes", 422)
     return result
 
 
-def _json_dumps(value: object) -> str:
+def _task_ids(value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 256:
+        raise ServiceNodeError("INVALID_NODE_HEARTBEAT", "active_tasks must be an array of at most 256 items", 422)
+    return [_text(item, field="active_tasks", limit=160, required=True) for item in value]
+
+
+def _dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _json_loads(value: object, fallback):
+def _load(value: object, fallback):
     try:
-        decoded = json.loads(str(value or ""))
+        return json.loads(str(value or ""))
     except (TypeError, ValueError):
         return fallback
-    return decoded
 
 
-def _parse_time(value: object) -> datetime | None:
+def _time(value: object) -> datetime | None:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        result = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    if result.tzinfo is None:
+        result = result.replace(tzinfo=timezone.utc)
+    return result.astimezone(timezone.utc)
 
 
 def _token_hash(node_id: str, token: str) -> str:
-    return hashlib.sha256(f"service-node:v1:{node_id}:{token}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"service-node:v1:{node_id}:{token}".encode()).hexdigest()
 
 
 def _new_token(node_id: str) -> tuple[str, str]:
@@ -181,8 +169,7 @@ class ServiceNodeRepository:
     def _row(self, node_id: str):
         with closing(self.task_repository._connect()) as database:
             return database.execute(
-                "SELECT * FROM service_nodes WHERE node_id=?",
-                (_node_id(node_id),),
+                "SELECT * FROM service_nodes WHERE node_id=?", (_node_id(node_id),)
             ).fetchone()
 
     def _require_row(self, node_id: str):
@@ -191,16 +178,20 @@ class ServiceNodeRepository:
             raise ServiceNodeError("SERVICE_NODE_NOT_FOUND", "service node not found", 404)
         return row
 
-    def _runtime_projection(self, now: datetime | None = None) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]]:
-        workers = WorkerInstanceService(self.task_repository).list_runtime(now=now or datetime.now(timezone.utc))
+    def _runtime_projection(self, now: datetime | None = None):
+        workers = WorkerInstanceService(self.task_repository).list_runtime(
+            now=now or datetime.now(timezone.utc)
+        )
         workers_by_node: dict[str, list[dict[str, Any]]] = {}
         worker_to_node: dict[str, str] = {}
         for worker in workers:
-            node = str(worker.get("node_id") or "")
-            if not node:
+            node_id = str(worker.get("node_id") or "")
+            worker_id = str(worker.get("worker_id") or "")
+            if not node_id or not worker_id:
                 continue
-            workers_by_node.setdefault(node, []).append(worker)
-            worker_to_node[str(worker.get("worker_id") or "")] = node
+            workers_by_node.setdefault(node_id, []).append(worker)
+            worker_to_node[worker_id] = node_id
+
         tasks_by_node: dict[str, list[dict[str, Any]]] = {}
         if worker_to_node:
             with closing(self.task_repository._connect()) as database:
@@ -213,10 +204,10 @@ class ServiceNodeRepository:
                     """
                 ).fetchall()
             for row in rows:
-                node = worker_to_node.get(str(row["worker_id"] or ""))
-                if node is None:
+                node_id = worker_to_node.get(str(row["worker_id"] or ""))
+                if node_id is None:
                     continue
-                tasks_by_node.setdefault(node, []).append({
+                tasks_by_node.setdefault(node_id, []).append({
                     "task_id": str(row["task_id"]),
                     "kind": str(row["kind"]),
                     "status": str(row["status"]),
@@ -227,28 +218,19 @@ class ServiceNodeRepository:
                 })
         return workers_by_node, tasks_by_node
 
-    def _public_row(
-        self,
-        row,
-        *,
-        now: datetime,
-        workers: list[dict[str, Any]] | None = None,
-        durable_tasks: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        heartbeat = _parse_time(row["last_heartbeat_at"])
+    def _public_row(self, row, *, now: datetime, workers=None, durable_tasks=None) -> dict[str, Any]:
+        heartbeat = _time(row["last_heartbeat_at"])
         age = None if heartbeat is None else max(0.0, (now - heartbeat).total_seconds())
         reachable = age is not None and age <= self.heartbeat_ttl_seconds
         enabled = bool(row["enabled"])
-        if not enabled:
-            status = "DISABLED"
-        elif heartbeat is None:
-            status = "NEVER_CONNECTED"
-        elif reachable:
-            status = "ONLINE"
-        else:
-            status = "OFFLINE"
-        allowed = tuple(_json_loads(row["allowed_capabilities"], []))
-        reported = tuple(_json_loads(row["reported_capabilities"], []))
+        status = (
+            "DISABLED" if not enabled else
+            "NEVER_CONNECTED" if heartbeat is None else
+            "ONLINE" if reachable else
+            "OFFLINE"
+        )
+        allowed = tuple(_load(row["allowed_capabilities"], []))
+        reported = tuple(_load(row["reported_capabilities"], []))
         effective = sorted(set(allowed) & set(reported)) if enabled and reachable else []
         return {
             "node_id": str(row["node_id"]),
@@ -274,10 +256,10 @@ class ServiceNodeRepository:
             "architecture": str(row["architecture"]),
             "agent_version": str(row["agent_version"]),
             "build_id": str(row["build_id"]),
-            "resources": _json_loads(row["resource_json"], {}),
-            "runtime": _json_loads(row["runtime_json"], {}),
-            "process": _json_loads(row["process_json"], {}),
-            "reported_active_tasks": _json_loads(row["active_tasks_json"], []),
+            "resources": _load(row["resource_json"], {}),
+            "runtime": _load(row["runtime_json"], {}),
+            "process": _load(row["process_json"], {}),
+            "reported_active_tasks": _load(row["active_tasks_json"], []),
             "last_error": str(row["last_error"] or ""),
             "workers": list(workers or []),
             "durable_tasks": list(durable_tasks or []),
@@ -287,15 +269,15 @@ class ServiceNodeRepository:
         current = now or datetime.now(timezone.utc)
         with closing(self.task_repository._connect()) as database:
             rows = database.execute(
-                "SELECT * FROM service_nodes ORDER BY display_name COLLATE NOCASE ASC, node_id ASC"
+                "SELECT * FROM service_nodes ORDER BY display_name COLLATE NOCASE,node_id"
             ).fetchall()
-        workers_by_node, tasks_by_node = self._runtime_projection(current)
+        workers, tasks = self._runtime_projection(current)
         return [
             self._public_row(
                 row,
                 now=current,
-                workers=workers_by_node.get(str(row["node_id"]), []),
-                durable_tasks=tasks_by_node.get(str(row["node_id"]), []),
+                workers=workers.get(str(row["node_id"]), []),
+                durable_tasks=tasks.get(str(row["node_id"]), []),
             )
             for row in rows
         ]
@@ -303,24 +285,22 @@ class ServiceNodeRepository:
     def get_public(self, node_id: str, *, now: datetime | None = None) -> dict[str, Any]:
         current = now or datetime.now(timezone.utc)
         row = self._require_row(node_id)
-        workers_by_node, tasks_by_node = self._runtime_projection(current)
+        workers, tasks = self._runtime_projection(current)
         key = str(row["node_id"])
         return self._public_row(
             row,
             now=current,
-            workers=workers_by_node.get(key, []),
-            durable_tasks=tasks_by_node.get(key, []),
+            workers=workers.get(key, []),
+            durable_tasks=tasks.get(key, []),
         )
 
     def create(self, payload: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
         body = dict(payload or {})
         node_id = _node_id(body.get("node_id"))
-        display_name = _text(body.get("display_name") or node_id, field="display_name", limit=120, required=True)
+        name = _text(body.get("display_name") or node_id, field="display_name", limit=120, required=True)
         mode = _text(body.get("connection_mode") or "agent", field="connection_mode", limit=16, required=True).lower()
         if mode not in {"local", "agent"}:
             raise ServiceNodeError("INVALID_CONNECTION_MODE", "connection_mode must be local or agent", 422)
-        agent_url = _text(body.get("agent_url"), field="agent_url", limit=1000)
-        capabilities = _capabilities(body.get("allowed_capabilities"))
         token, token_hash = _new_token(node_id)
         now = utc_now()
         try:
@@ -335,11 +315,11 @@ class ServiceNodeRepository:
                     """,
                     (
                         node_id,
-                        display_name,
+                        name,
                         mode,
-                        agent_url,
+                        _text(body.get("agent_url"), field="agent_url", limit=1000),
                         int(bool(body.get("enabled", True))),
-                        _json_dumps(capabilities),
+                        _dump(_capabilities(body.get("allowed_capabilities"))),
                         token_hash,
                         1,
                         now,
@@ -352,8 +332,9 @@ class ServiceNodeRepository:
         return self.get_public(node_id), token
 
     def update(self, node_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        key = _node_id(node_id)
+        self._require_row(key)
         body = dict(payload or {})
-        self._require_row(node_id)
         updates: list[str] = []
         values: list[object] = []
         if "display_name" in body:
@@ -373,32 +354,26 @@ class ServiceNodeRepository:
             values.append(int(bool(body.get("enabled"))))
         if "allowed_capabilities" in body:
             updates.append("allowed_capabilities=?")
-            values.append(_json_dumps(_capabilities(body.get("allowed_capabilities"))))
+            values.append(_dump(_capabilities(body.get("allowed_capabilities"))))
         if not updates:
-            return self.get_public(node_id)
+            return self.get_public(key)
         updates.append("updated_at=?")
-        values.append(utc_now())
-        values.append(_node_id(node_id))
+        values.extend([utc_now(), key])
         with closing(self.task_repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
-            database.execute(
-                f"UPDATE service_nodes SET {','.join(updates)} WHERE node_id=?",
-                values,
-            )
+            database.execute(f"UPDATE service_nodes SET {','.join(updates)} WHERE node_id=?", values)
             database.commit()
-        return self.get_public(node_id)
+        return self.get_public(key)
 
     def rotate_token(self, node_id: str) -> tuple[dict[str, Any], str]:
         key = _node_id(node_id)
         row = self._require_row(key)
         token, token_hash = _new_token(key)
-        version = int(row["token_version"]) + 1
-        now = utc_now()
         with closing(self.task_repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             database.execute(
                 "UPDATE service_nodes SET token_hash=?,token_version=?,updated_at=? WHERE node_id=?",
-                (token_hash, version, now, key),
+                (token_hash, int(row["token_version"]) + 1, utc_now(), key),
             )
             database.commit()
         return self.get_public(key), token
@@ -410,12 +385,24 @@ class ServiceNodeRepository:
         if not hmac.compare_digest(str(row["token_hash"]), _token_hash(key, supplied)):
             raise ServiceNodeError("INVALID_NODE_TOKEN", "invalid service node token", 401)
         body = dict(payload or {})
-        capabilities = _capabilities(body.get("reported_capabilities"))
-        resources = _json_mapping(body.get("resources"), field="resources")
-        runtime = _json_mapping(body.get("runtime"), field="runtime")
-        process = _json_mapping(body.get("process"), field="process")
-        active_tasks = _json_array(body.get("active_tasks"), field="active_tasks")
         now = utc_now()
+        values = (
+            now,
+            now,
+            _text(body.get("hostname"), field="hostname", limit=255),
+            _text(body.get("os_name"), field="os_name", limit=120),
+            _text(body.get("os_version"), field="os_version", limit=255),
+            _text(body.get("architecture"), field="architecture", limit=120),
+            _text(body.get("agent_version"), field="agent_version", limit=120),
+            _text(body.get("build_id"), field="build_id", limit=255),
+            _dump(_capabilities(body.get("reported_capabilities"))),
+            _dump(_mapping(body.get("resources"), field="resources")),
+            _dump(_mapping(body.get("runtime"), field="runtime")),
+            _dump(_mapping(body.get("process"), field="process")),
+            _dump(_task_ids(body.get("active_tasks"))),
+            _text(body.get("last_error"), field="last_error", limit=4000),
+            key,
+        )
         with closing(self.task_repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             database.execute(
@@ -426,23 +413,7 @@ class ServiceNodeRepository:
                        process_json=?,active_tasks_json=?,last_error=?
                  WHERE node_id=?
                 """,
-                (
-                    now,
-                    now,
-                    _text(body.get("hostname"), field="hostname", limit=255),
-                    _text(body.get("os_name"), field="os_name", limit=120),
-                    _text(body.get("os_version"), field="os_version", limit=255),
-                    _text(body.get("architecture"), field="architecture", limit=120),
-                    _text(body.get("agent_version"), field="agent_version", limit=120),
-                    _text(body.get("build_id"), field="build_id", limit=255),
-                    _json_dumps(capabilities),
-                    _json_dumps(resources),
-                    _json_dumps(runtime),
-                    _json_dumps(process),
-                    _json_dumps(active_tasks),
-                    _text(body.get("last_error"), field="last_error", limit=4000),
-                    key,
-                ),
+                values,
             )
             database.commit()
         return self.get_public(key)
@@ -476,14 +447,11 @@ class ServiceNodeRepository:
             database.commit()
 
 
-def _bearer_token(value: object) -> str:
-    text = str(value or "").strip()
-    if not text.lower().startswith("bearer "):
+def _bearer(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw.lower().startswith("bearer ") or not raw[7:].strip():
         raise ServiceNodeError("NODE_TOKEN_REQUIRED", "Bearer service node token is required", 401)
-    token = text[7:].strip()
-    if not token:
-        raise ServiceNodeError("NODE_TOKEN_REQUIRED", "Bearer service node token is required", 401)
-    return token
+    return raw[7:].strip()
 
 
 def service_node_router(task_repository):
@@ -535,13 +503,13 @@ def service_node_router(task_repository):
         return {"node": node, "agent_token": token, "token_version": node["token_version"]}
 
     @router.post("/{node_id}/heartbeat")
-    def node_heartbeat(
+    def heartbeat(
         node_id: str,
         payload: dict = Body(...),
         authorization: str | None = Header(default=None),
     ):
         try:
-            token = _bearer_token(authorization)
+            token = _bearer(authorization)
         except ServiceNodeError as error:
             raise HTTPException(
                 status_code=error.status_code,
