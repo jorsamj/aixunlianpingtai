@@ -134,17 +134,62 @@ jobs:
       - name: Permanent checkpoint resume guards
         shell: bash
         run: |
-          grep -Fq '"training": "platform_core.training_runtime_tasks"' platform_core/worker_registry.py
-          grep -Fq 'model.train(resume=True, device=logical_device)' train_checkpoint_resume_worker.py
-          grep -Fq 'stage=RESUME_STAGE' platform_core/training_checkpoint_resume_tasks.py
-          grep -Fq 'resume_checkpoint_sha256' platform_core/training_checkpoint_resume_tasks.py
-          grep -Fq 'stage=FINALIZING_COMMIT_STAGE' platform_core/training_runtime_tasks.py
-          grep -Fq 'FINALIZING_COMMIT_STAGE = "finalizing_commit"' platform_core/training_runtime_tasks.py
-          grep -Fq 'test_algorithm_version_replay_is_idempotent_by_training_task' tests/test_training_checkpoint_resume.py
-          grep -Fq 'test_training_job_projection_preserves_checkpoint_resume_fields' tests/test_training_checkpoint_resume_projection.py
-          grep -Fq 'training-checkpoint-resume-bootstrap.mjs?v=422531' static/index.html
-          grep -Fq "const RESUME_MODE = 'training_checkpoint_resume';" static/modules/training-checkpoint-resume-ui.js
-          grep -Fq 'finalizing commit phase comes from backend task truth' tests/frontend/training-checkpoint-resume-ui.test.mjs
+          python - <<'PY'
+          from pathlib import Path
+
+          checks = {
+              "platform_core/worker_registry.py": [
+                  '"training": "platform_core.training_runtime_tasks"',
+              ],
+              "train_checkpoint_resume_worker.py": [
+                  "model.train(resume=True, device=logical_device)",
+                  'getattr(trainer, "start_epoch"',
+                  'resume_epoch_source="checkpoint_start_epoch"',
+              ],
+              "platform_core/training_checkpoint_resume_tasks.py": [
+                  "stage=RESUME_STAGE",
+                  "resume_checkpoint_sha256",
+                  'FINALIZATION_REPLAY_MODE = "finalization_replay"',
+                  "inspect_finalization_replay_candidate",
+                  "final_validation_reused=True",
+              ],
+              "platform_core/training_runtime_tasks.py": [
+                  'FINALIZING_COMMIT_STAGE = "finalizing_commit"',
+                  "stage=FINALIZING_COMMIT_STAGE",
+              ],
+              "tests/test_training_checkpoint_resume.py": [
+                  "test_algorithm_version_replay_is_idempotent_by_training_task",
+                  "test_successful_final_validation_replays_only_persistence",
+                  "test_finalization_replay_fails_closed_without_success_manifest",
+              ],
+              "tests/test_training_checkpoint_resume_projection.py": [
+                  "test_training_job_projection_preserves_checkpoint_resume_fields",
+              ],
+              "static/index.html": [
+                  "training-checkpoint-resume-bootstrap.mjs",
+              ],
+              "static/modules/training-checkpoint-resume-ui.js": [
+                  "const RESUME_MODE = 'training_checkpoint_resume';",
+                  "const FINALIZATION_REPLAY_MODE = 'finalization_replay';",
+                  "不重新训练，也不重新执行 Final Validation",
+              ],
+              "tests/frontend/training-checkpoint-resume-ui.test.mjs": [
+                  "finalizing commit phase comes from backend task truth",
+                  "finalization replay shows validation as already complete and archive as active",
+              ],
+          }
+
+          missing = []
+          for filename, needles in checks.items():
+              text = Path(filename).read_text(encoding="utf-8")
+              for needle in needles:
+                  if needle not in text:
+                      missing.append(f"{filename}: {needle}")
+
+          if missing:
+              raise SystemExit("Missing permanent training recovery contract(s):\n- " + "\n- ".join(missing))
+          print(f"Verified {sum(map(len, checks.values()))} permanent training recovery contracts")
+          PY
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
 
