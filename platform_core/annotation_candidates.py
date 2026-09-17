@@ -4,7 +4,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .task_runtime import ArtifactStore
 
@@ -86,11 +86,68 @@ class CandidateStore:
                 boxes_count=excluded.boxes_count,item_json=excluded.item_json""",
             (image_id, str(item.get("status") or "failed"), accepted, len(item["boxes"]), json.dumps(item, ensure_ascii=False)))
 
-    def append_items(self, items: Iterable[dict[str, Any]]) -> None:
+    def append_items(
+        self,
+        items: Iterable[dict[str, Any]],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> None:
+        """Append/update candidates and optionally prove task ownership before commit.
+
+        Candidate rows live in their own SQLite file, so obtaining the fenced
+        artifact path alone is not enough to fence a later SQLite commit.  The
+        production AI annotation handler supplies ``WorkerContext.assert_current_execution``
+        here so a stale execution cannot commit model output after losing its lease.
+        """
         self._ready()
-        with closing(self._connect()) as db, db:
-            for item in items:
-                self._put(db, item)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                for item in items:
+                    self._put(db, item)
+                if commit_guard is not None:
+                    commit_guard()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    def generation_prefix(self, image_ids: Iterable[str]) -> dict[str, int]:
+        """Return the durable contiguous generation prefix in request order.
+
+        Candidate SQLite is stronger recovery evidence than worker.json for the
+        crash window where a candidate transaction committed but the following
+        checkpoint write did not.  Generation is sequential, therefore stored
+        rows must form an exact prefix of the immutable request image order.
+        """
+        expected = [str(value) for value in image_ids]
+        self._ready()
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT image_id,status FROM candidates ORDER BY ordinal"
+            ).fetchall()
+        if len(rows) > len(expected):
+            raise ValueError("annotation candidate store contains more rows than task input")
+        succeeded = 0
+        failed = 0
+        for index, row in enumerate(rows):
+            image_id = str(row["image_id"])
+            if image_id != expected[index]:
+                raise ValueError(
+                    "annotation candidate recovery order does not match immutable task input"
+                )
+            status = str(row["status"])
+            if status == "failed":
+                failed += 1
+            elif status in {"success", "empty"}:
+                succeeded += 1
+            else:
+                raise ValueError(f"annotation candidate has invalid generation status: {status}")
+        return {
+            "next_index": len(rows),
+            "succeeded": succeeded,
+            "failed": failed,
+        }
 
     @staticmethod
     def _decode(row):
