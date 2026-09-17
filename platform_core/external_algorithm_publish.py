@@ -595,31 +595,39 @@ class ExternalAlgorithmPublishService:
         current = self.repository.artifact(str(artifact["artifact_id"])) or dict(artifact)
         provider = self._provider(str(artifact["project_id"]), source_id)
         source_path = Path(str(artifact["source_path"])).resolve()
+        digest = str(artifact.get("source_sha256") or artifact.get("sha256") or "").strip()
+        if not digest:
+            if not source_path.is_file():
+                raise PlatformError(
+                    "MODEL_ARTIFACT_SOURCE_MISSING", "模型制品源文件不存在", str(source_path),
+                    "请恢复转换产物后重新同步。", 409,
+                )
+            digest = _sha256(source_path)
         product_segment = _safe_segment(algorithm.get("external_product_id"), "product")
         version_segment = _safe_segment(version.get("version_name") or version.get("id"), "version")
-        object_key = str(current.get("object_key") or f"published-models/{product_segment}/{version_segment}/{str(artifact['sha256'])[:16]}-{_safe_segment(artifact['file_name'], 'model.bin')}")
+        object_key = str(current.get("object_key") or f"published-models/{product_segment}/{version_segment}/{digest[:16]}-{_safe_segment(artifact['file_name'], 'model.bin')}")
         already_uploaded = str(current.get("upload_status") or "").upper() == "UPLOADED" and str(current.get("storage_source_id") or "") == source_id
         if already_uploaded:
             try:
                 meta = provider.stat(object_key)
-                if int(meta.size_bytes) == int(artifact["size_bytes"]) and (not meta.sha256 or meta.sha256 == str(artifact["sha256"])):
+                if int(meta.size_bytes) == int(artifact["size_bytes"]) and (not meta.sha256 or meta.sha256 == digest):
                     return current
             except Exception:
                 pass
         try:
             if provider.exists(object_key):
                 meta = provider.stat(object_key)
-                if int(meta.size_bytes) != int(artifact["size_bytes"]) or (meta.sha256 and meta.sha256 != str(artifact["sha256"])):
+                if int(meta.size_bytes) != int(artifact["size_bytes"]) or (meta.sha256 and meta.sha256 != digest):
                     raise RuntimeError("同名对象已存在但内容校验不一致")
             else:
                 meta = provider.upload(
                     object_key, source_path,
                     content_type=mimetypes.guess_type(source_path.name)[0] or "application/octet-stream",
-                    metadata={"sha256": str(artifact["sha256"]), "algorithm": str(algorithm.get("id") or ""), "version": str(version.get("id") or "")},
+                    metadata={"sha256": digest, "algorithm": str(algorithm.get("id") or ""), "version": str(version.get("id") or "")},
                 )
             if int(meta.size_bytes) != int(artifact["size_bytes"]):
                 raise RuntimeError("上传后文件大小校验失败")
-            if meta.sha256 and meta.sha256 != str(artifact["sha256"]):
+            if meta.sha256 and meta.sha256 != digest:
                 raise RuntimeError("上传后 SHA256 校验失败")
         except Exception as error:
             self.repository.patch_artifact(str(artifact["artifact_id"]), storage_source_id=source_id, object_key=object_key, upload_status="FAILED", last_error=str(error))
