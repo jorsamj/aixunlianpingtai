@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`d951937ef1dfac2d90b378e536518f2e15d2e921`  
+本轮产品实现基线：`1c1ffbf188197e395c061b68f5fbd7799a37e8b8`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -63,7 +63,7 @@ revert: keep external algorithm integration off main
 ---
 
 
-# 最新关闭：服务节点控制面 + 中央任务分配
+# 最新关闭：服务节点控制面 + 中央分配 + Executor 控制协议
 
 2026-09-18 已完成并验收：
 
@@ -71,17 +71,21 @@ revert: keep external algorithm integration off main
 - 服务节点管理 UI，包含 CPU / RAM / disk / GPU / VRAM / Torch / CUDA / Worker / durable task 状态。
 - 中央 durable task → node assignment truth。
 - TRAINING 节点/GPU 选择及 resolved execution snapshot。
-- MATERIAL_BATCH → cleaning / annotation / material-import 能力映射。
-- active assignment partial unique fence。
-- legacy Worker 的 `CENTRAL_NODE_ASSIGNED` 自抢保护。
+- active assignment partial unique fence + legacy Worker `CENTRAL_NODE_ASSIGNED` 自抢保护。
 - Scheduler API：allocate / list / release。
-- permanent CI：API、Ubuntu 24.04、Windows latest 全绿，验证 run `35288111906`。
+- HTTP Agent Executor 控制协议：claim / start / heartbeat / log / begin-finalization / finish。
+- Node Token、Assignment Lease Token、Execution Lease Token + generation 三层 fencing。
+- start 在一个 `BEGIN IMMEDIATE` 中完成唯一 `QUEUED → RUNNING` 和 assignment release。
+- Node Token rotate race、跨节点冒领、重复 start、旧 generation、取消/最终归档竞争均有永久测试。
+- Central Assignment CI run `35288111906`：API / Ubuntu / Windows 全绿。
+- Node Agent Executor CI run `35288805083`：API / Ubuntu / Windows 全绿。
 
-权威设计与下一步边界：
+权威设计：
 
 `docs/NODE_CONTROL_PLANE_V42_25.md`
 
-**下一步唯一主线是 HTTP Agent Executor Protocol。** Agent 不得直接连接控制面的 SQLite，也不得把“远端挂 NFS + 运行现有 task_worker.py”包装成真实多机调度。真正的 `QUEUED → RUNNING`、execution generation、lease fencing、进度、日志、取消、完成和失败仍必须由中央 TaskRepository 作为唯一 truth。
+**下一步主线：Agent-side Remote Execution Runtime + Object Storage Transport。**
+控制面协议虽然已关闭，但 `node_agent.py` 还没有真正消费 assignment 并在远端执行 task handler，因此严禁宣称“跨机器训练/素材处理已完成”。Agent 客户端不得直接连接中央 SQLite，也不得用共享 NFS 冒充远程执行；大文件必须走对象存储/明确 artifact transport。
 
 # 1. 产品定位
 
