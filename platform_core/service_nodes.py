@@ -378,12 +378,17 @@ class ServiceNodeRepository:
             database.commit()
         return self.get_public(key), token
 
-    def heartbeat(self, node_id: str, token: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def authenticate(self, node_id: str, token: str) -> None:
+        """Verify one Agent token without exposing the persisted token hash."""
         key = _node_id(node_id)
         row = self._require_row(key)
         supplied = _text(token, field="agent_token", limit=512, required=True)
         if not hmac.compare_digest(str(row["token_hash"]), _token_hash(key, supplied)):
             raise ServiceNodeError("INVALID_NODE_TOKEN", "invalid service node token", 401)
+
+    def heartbeat(self, node_id: str, token: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        key = _node_id(node_id)
+        self.authenticate(key, token)
         body = dict(payload or {})
         now = utc_now()
         values = (
