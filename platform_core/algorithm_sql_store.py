@@ -110,6 +110,367 @@ class AlgorithmSqlStore:
                 conn.rollback()
                 raise
 
+    def read_one(self, algorithm_id: str) -> dict | None:
+        self.ensure_ready()
+        with self._connect() as conn:
+            return self._read_one_conn(conn, str(algorithm_id))
+
+    def create_algorithm(self, item: Mapping[str, Any]) -> dict:
+        self.ensure_ready()
+        value = dict(item)
+        algorithm_id = str(value.get("id") or "").strip()
+        name = str(value.get("name") or "").strip()
+        if not algorithm_id or not name:
+            raise PlatformError("ALGORITHM_ID_REQUIRED", "算法数据不完整", "创建算法需要稳定 ID 和名称。", "请刷新后重试。", 409)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                duplicate = conn.execute(
+                    "SELECT id FROM algorithms WHERE project_id=? AND lower(trim(name))=lower(trim(?)) LIMIT 1",
+                    (self.project_id, name),
+                ).fetchone()
+                if duplicate is not None:
+                    raise PlatformError("ALGORITHM_NAME_EXISTS", "算法名称已存在", f"当前项目中已经存在名为“{name}”的算法。", "请使用不同名称，或编辑已有算法。", 409)
+                sort_index = int(conn.execute(
+                    "SELECT COALESCE(MIN(sort_index),0)-1 FROM algorithms WHERE project_id=?",
+                    (self.project_id,),
+                ).fetchone()[0])
+                self._insert_algorithm_conn(conn, value, sort_index)
+                self._replace_analyses_conn(conn, algorithm_id, value)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return value
+
+    def patch_algorithm(self, algorithm_id: str, patch: Mapping[str, Any], *, replace_analyses: bool = False) -> dict:
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._read_one_conn(conn, algorithm_id)
+                if existing is None:
+                    raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                merged = dict(existing)
+                merged.update(dict(patch))
+                proposed_name = str(merged.get("name") or "").strip()
+                duplicate = conn.execute(
+                    "SELECT id FROM algorithms WHERE project_id=? AND id<>? AND lower(trim(name))=lower(trim(?)) LIMIT 1",
+                    (self.project_id, algorithm_id, proposed_name),
+                ).fetchone()
+                if duplicate is not None:
+                    raise PlatformError("ALGORITHM_NAME_EXISTS", "算法名称已存在", f"算法名称“{proposed_name}”已被使用。", "请使用不同名称。", 409)
+                self._update_algorithm_conn(conn, merged)
+                if replace_analyses:
+                    self._replace_analyses_conn(conn, algorithm_id, merged)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return merged
+
+    def delete_algorithm(self, algorithm_id: str) -> None:
+        self.ensure_ready()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = conn.execute("DELETE FROM algorithms WHERE project_id=? AND id=?", (self.project_id, str(algorithm_id)))
+                if cursor.rowcount != 1:
+                    raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def attach_version(self, algorithm_id: str, version: Mapping[str, Any]) -> dict:
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        value = dict(version)
+        version_id = str(value.get("id") or "").strip()
+        if not version_id:
+            raise PlatformError("ALGORITHM_VERSION_ID_REQUIRED", "算法版本缺少 ID", algorithm_id, "请重新归档训练版本。", 409)
+        task_id = str(value.get("task_id") or value.get("job_id") or value.get("training_job_id") or "").strip()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if conn.execute("SELECT 1 FROM algorithms WHERE project_id=? AND id=?", (self.project_id, algorithm_id)).fetchone() is None:
+                    raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                if task_id:
+                    duplicate = conn.execute(
+                        "SELECT * FROM algorithm_versions WHERE algorithm_id=? AND training_job_id=? LIMIT 1",
+                        (algorithm_id, task_id),
+                    ).fetchone()
+                    if duplicate is not None:
+                        conn.rollback()
+                        return self._version_from_row(duplicate)
+                if conn.execute("SELECT 1 FROM algorithm_versions WHERE id=?", (version_id,)).fetchone() is not None:
+                    raise PlatformError("ALGORITHM_VERSION_ID_DUPLICATED", "算法版本 ID 已存在", version_id, "请检查训练归档幂等状态。", 409)
+                sort_index = int(conn.execute(
+                    "SELECT COALESCE(MIN(sort_index),0)-1 FROM algorithm_versions WHERE algorithm_id=?",
+                    (algorithm_id,),
+                ).fetchone()[0])
+                self._insert_version_conn(conn, algorithm_id, value, sort_index)
+                updated_at = str(value.get("finished_at") or value.get("created_at") or "") or None
+                conn.execute(
+                    "UPDATE algorithms SET current_version_id=?, updated_at=COALESCE(?,updated_at) WHERE project_id=? AND id=?",
+                    (version_id, updated_at, self.project_id, algorithm_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return value
+
+    def patch_version(self, algorithm_id: str, version_id: str, patch: Mapping[str, Any], *, now: str) -> dict:
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        version_id = str(version_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT * FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, version_id)).fetchone()
+                if row is None:
+                    if conn.execute("SELECT 1 FROM algorithms WHERE project_id=? AND id=?", (self.project_id, algorithm_id)).fetchone() is None:
+                        raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                    raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {version_id}。", "请刷新版本列表后重试。", 404)
+                value = self._version_from_row(row)
+                value.update(dict(patch))
+                value["updated_at"] = now
+                self._update_version_conn(conn, algorithm_id, value, row["sort_index"])
+                conn.execute("UPDATE algorithms SET updated_at=? WHERE project_id=? AND id=?", (now, self.project_id, algorithm_id))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return value
+
+    def rollback_version(
+        self,
+        algorithm_id: str,
+        target_version_id: str,
+        *,
+        expected_current_version_id: str,
+        operation: Mapping[str, Any],
+        now: str,
+        delete_current_version: bool,
+    ) -> dict | None:
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        target_version_id = str(target_version_id)
+        expected_current_version_id = str(expected_current_version_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                algorithm = self._read_one_conn(conn, algorithm_id)
+                if algorithm is None:
+                    raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                persisted_current = str(algorithm.get("current_version_id") or "")
+                if persisted_current and persisted_current != expected_current_version_id:
+                    raise PlatformError("ALGORITHM_VERSION_CONFLICT", "算法当前版本已经发生变化", f"请求基于 {expected_current_version_id}，当前实际版本为 {persisted_current}。", "请刷新算法版本列表后重新确认。", 409)
+                target = conn.execute("SELECT 1 FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, target_version_id)).fetchone()
+                if target is None:
+                    raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {target_version_id}。", "请刷新版本列表后重试。", 404)
+                current_row = conn.execute("SELECT * FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, expected_current_version_id)).fetchone()
+                if current_row is None:
+                    raise PlatformError("ALGORITHM_VERSION_CONFLICT", "当前版本记录已发生变化", expected_current_version_id, "请刷新后重试。", 409)
+                removed = self._version_from_row(current_row) if delete_current_version else None
+                payload = self._json_object(conn.execute("SELECT payload_json FROM algorithms WHERE id=?", (algorithm_id,)).fetchone()[0])
+                operations = list(payload.get("version_operations") or [])
+                operations.append(dict(operation))
+                payload["version_operations"] = operations
+                conn.execute(
+                    "UPDATE algorithms SET current_version_id=?, updated_at=?, payload_json=? WHERE project_id=? AND id=?",
+                    (target_version_id, now, self._dumps(payload), self.project_id, algorithm_id),
+                )
+                if delete_current_version:
+                    conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, expected_current_version_id))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return removed
+
+    def delete_version_with_operation(
+        self,
+        algorithm_id: str,
+        version_id: str,
+        *,
+        expected_current_version_id: str | None,
+        operation: Mapping[str, Any],
+        now: str,
+    ) -> dict:
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        version_id = str(version_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT * FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, version_id)).fetchone()
+                if row is None:
+                    raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", f"找不到版本 {version_id}。", "请刷新版本列表后重试。", 404)
+                current = conn.execute("SELECT current_version_id,payload_json FROM algorithms WHERE project_id=? AND id=?", (self.project_id, algorithm_id)).fetchone()
+                if current is None:
+                    raise PlatformError("ALGORITHM_NOT_FOUND", "算法不存在", f"找不到算法 {algorithm_id}。", "请刷新算法列表后重试。", 404)
+                persisted_current = str(current["current_version_id"] or "")
+                if persisted_current and expected_current_version_id is not None and persisted_current != str(expected_current_version_id):
+                    raise PlatformError("ALGORITHM_VERSION_CONFLICT", "算法当前版本已经发生变化", f"请求基于 {expected_current_version_id}，当前实际版本为 {persisted_current}。", "请刷新后重试。", 409)
+                if version_id == persisted_current:
+                    raise PlatformError("ALGORITHM_CURRENT_VERSION_DELETE_FORBIDDEN", "不能直接删除当前版本", f"版本 {version_id} 当前正在作为算法默认版本。", "请先回退到另一个有效版本，再删除该版本。", 409)
+                payload = self._json_object(current["payload_json"])
+                operations = list(payload.get("version_operations") or [])
+                operations.append(dict(operation))
+                payload["version_operations"] = operations
+                conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, version_id))
+                conn.execute("UPDATE algorithms SET updated_at=?, payload_json=? WHERE project_id=? AND id=?", (now, self._dumps(payload), self.project_id, algorithm_id))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return self._version_from_row(row)
+
+    def update_version_operation(self, algorithm_id: str, operation_id: str, patch: Mapping[str, Any]) -> None:
+        self.ensure_ready()
+        algorithm_id = str(algorithm_id)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute("SELECT payload_json FROM algorithms WHERE project_id=? AND id=?", (self.project_id, algorithm_id)).fetchone()
+                if row is None:
+                    raise PlatformError("ALGORITHM_CLEANUP_STATE_LOST", "清理状态无法保存", f"算法 {algorithm_id} 不存在。", "请检查版本操作审计。", 500)
+                payload = self._json_object(row["payload_json"])
+                operations = list(payload.get("version_operations") or [])
+                operation = next((item for item in operations if str(item.get("id") or "") == str(operation_id)), None)
+                if operation is None:
+                    raise PlatformError("ALGORITHM_CLEANUP_STATE_LOST", "清理审计不存在", f"找不到操作记录 {operation_id}。", "请检查算法版本操作审计。", 500)
+                operation.update(dict(patch))
+                payload["version_operations"] = operations
+                conn.execute("UPDATE algorithms SET payload_json=? WHERE project_id=? AND id=?", (self._dumps(payload), self.project_id, algorithm_id))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def sync_external_algorithms(self, incoming: Mapping[str, Mapping[str, Any]], *, provider: str, synced_at: str) -> dict[str, int]:
+        self.ensure_ready()
+        provider = str(provider).upper()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    "SELECT id,external_product_id FROM algorithms WHERE project_id=? AND upper(COALESCE(source_type,''))='EXTERNAL' AND upper(COALESCE(provider_type,''))=?",
+                    (self.project_id, provider),
+                ).fetchall()
+                existing = {str(row["external_product_id"] or ""): str(row["id"]) for row in rows if row["external_product_id"]}
+                added = updated = unchanged = inactivated = 0
+                for product_id, master_raw in incoming.items():
+                    master = dict(master_raw)
+                    algorithm_id = existing.get(str(product_id))
+                    if not algorithm_id:
+                        item = {**master, "current_version_id": None, "version_operations": [], "versions": [], "created_at": synced_at, "updated_at": synced_at}
+                        sort_index = int(conn.execute("SELECT COALESCE(MIN(sort_index),0)-1 FROM algorithms WHERE project_id=?", (self.project_id,)).fetchone()[0])
+                        self._insert_algorithm_conn(conn, item, sort_index)
+                        self._replace_analyses_conn(conn, str(item["id"]), item)
+                        added += 1
+                        continue
+                    current = self._read_one_conn(conn, algorithm_id)
+                    if current is None:
+                        continue
+                    changed = any(current.get(key) != value for key, value in master.items())
+                    merged = dict(current)
+                    merged.update(master)
+                    # external master data must never rewrite the platform's stable algorithm id
+                    merged["id"] = algorithm_id
+                    if changed:
+                        merged["updated_at"] = synced_at
+                        self._update_algorithm_conn(conn, merged)
+                        self._replace_analyses_conn(conn, algorithm_id, merged)
+                        updated += 1
+                    else:
+                        unchanged += 1
+                incoming_ids = {str(key) for key in incoming}
+                for row in rows:
+                    pid = str(row["external_product_id"] or "")
+                    if pid in incoming_ids:
+                        continue
+                    current = self._read_one_conn(conn, str(row["id"]))
+                    if current is not None and current.get("external_active") is not False:
+                        current["external_active"] = False
+                        current["external_last_synced_at"] = synced_at
+                        current["updated_at"] = synced_at
+                        self._update_algorithm_conn(conn, current)
+                        inactivated += 1
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return {"added": added, "updated": updated, "unchanged": unchanged, "inactivated": inactivated, "total": len(incoming)}
+
+    def _read_one_conn(self, conn: sqlite3.Connection, algorithm_id: str) -> dict | None:
+        row = conn.execute("SELECT * FROM algorithms WHERE project_id=? AND id=?", (self.project_id, str(algorithm_id))).fetchone()
+        if row is None:
+            return None
+        item = self._json_object(row["payload_json"])
+        item.update({"id": row["id"], "name": row["name"], "remark": row["remark"] or "", "industry": row["industry"] or "", "algorithm_type": row["algorithm_type"] or "", "current_version_id": row["current_version_id"], "created_at": row["created_at"], "updated_at": row["updated_at"]})
+        self._overlay_optional(item, row, ("source_type", "provider_type", "external_product_id", "external_product_code", "external_category_id", "external_analysis_id", "external_active", "master_data_readonly", "external_last_synced_at"))
+        versions = conn.execute("SELECT * FROM algorithm_versions WHERE algorithm_id=? ORDER BY sort_index ASC, id ASC", (row["id"],)).fetchall()
+        item["versions"] = [self._version_from_row(v) for v in versions]
+        analyses = conn.execute("SELECT * FROM algorithm_external_analyses WHERE algorithm_id=? ORDER BY sort_index ASC, external_analysis_id ASC", (row["id"],)).fetchall()
+        if analyses:
+            item["external_analyses"] = [self._analysis_from_row(a) for a in analyses]
+            item["external_analysis_ids"] = [str(a["external_analysis_id"]) for a in analyses]
+        item.setdefault("version_operations", [])
+        return item
+
+    def _algorithm_payload(self, item: Mapping[str, Any]) -> dict:
+        payload = dict(item)
+        payload.pop("versions", None)
+        payload.pop("external_analyses", None)
+        payload.pop("external_analysis_ids", None)
+        for key in ("id", "name", "remark", "industry", "algorithm_type", "current_version_id", "source_type", "provider_type", "external_product_id", "external_product_code", "external_category_id", "external_analysis_id", "external_active", "master_data_readonly", "external_last_synced_at", "created_at", "updated_at"):
+            payload.pop(key, None)
+        return payload
+
+    def _insert_algorithm_conn(self, conn: sqlite3.Connection, item: Mapping[str, Any], sort_index: int) -> None:
+        conn.execute(
+            """INSERT INTO algorithms (id,project_id,name,remark,industry,algorithm_type,current_version_id,source_type,provider_type,external_product_id,external_product_code,external_category_id,external_analysis_id,external_active,master_data_readonly,external_last_synced_at,created_at,updated_at,sort_index,payload_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(item.get("id")), self.project_id, str(item.get("name") or ""), str(item.get("remark") or ""), str(item.get("industry") or ""), str(item.get("algorithm_type") or ""), self._nullable_text(item.get("current_version_id")), self._nullable_text(item.get("source_type")), self._nullable_text(item.get("provider_type")), self._nullable_text(item.get("external_product_id")), self._nullable_text(item.get("external_product_code")), self._nullable_text(item.get("external_category_id")), self._nullable_text(item.get("external_analysis_id")), self._nullable_bool(item.get("external_active")), self._nullable_bool(item.get("master_data_readonly")), self._nullable_text(item.get("external_last_synced_at")), self._nullable_text(item.get("created_at")), self._nullable_text(item.get("updated_at")), int(sort_index), self._dumps(self._algorithm_payload(item))),
+        )
+
+    def _update_algorithm_conn(self, conn: sqlite3.Connection, item: Mapping[str, Any]) -> None:
+        conn.execute(
+            """UPDATE algorithms SET name=?,remark=?,industry=?,algorithm_type=?,current_version_id=?,source_type=?,provider_type=?,external_product_id=?,external_product_code=?,external_category_id=?,external_analysis_id=?,external_active=?,master_data_readonly=?,external_last_synced_at=?,created_at=?,updated_at=?,payload_json=? WHERE project_id=? AND id=?""",
+            (str(item.get("name") or ""), str(item.get("remark") or ""), str(item.get("industry") or ""), str(item.get("algorithm_type") or ""), self._nullable_text(item.get("current_version_id")), self._nullable_text(item.get("source_type")), self._nullable_text(item.get("provider_type")), self._nullable_text(item.get("external_product_id")), self._nullable_text(item.get("external_product_code")), self._nullable_text(item.get("external_category_id")), self._nullable_text(item.get("external_analysis_id")), self._nullable_bool(item.get("external_active")), self._nullable_bool(item.get("master_data_readonly")), self._nullable_text(item.get("external_last_synced_at")), self._nullable_text(item.get("created_at")), self._nullable_text(item.get("updated_at")), self._dumps(self._algorithm_payload(item)), self.project_id, str(item.get("id"))),
+        )
+
+    def _insert_version_conn(self, conn: sqlite3.Connection, algorithm_id: str, version: Mapping[str, Any], sort_index: int) -> None:
+        conn.execute(
+            """INSERT INTO algorithm_versions (id,algorithm_id,version_name,version_no,training_job_id,framework,training_status,stored_path,model_name,artifact_verified,trainable,external_analysis_id,external_algo_version_id,external_publish_status,created_at,finished_at,sort_index,payload_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (str(version.get("id")), algorithm_id, self._nullable_text(version.get("version_name")), self._nullable_text(version.get("version_no")), self._nullable_text(version.get("task_id") or version.get("job_id") or version.get("training_job_id")), self._nullable_text(version.get("framework")), self._nullable_text(version.get("training_status") or version.get("status")), self._nullable_text(version.get("stored_path")), self._nullable_text(version.get("model_name")), self._nullable_bool(version.get("artifact_verified")), self._nullable_bool(version.get("trainable")), self._nullable_text(version.get("external_analysis_id")), self._nullable_text(version.get("external_algo_version_id")), self._nullable_text(version.get("external_publish_status")), self._nullable_text(version.get("created_at")), self._nullable_text(version.get("finished_at")), int(sort_index), self._dumps(dict(version))),
+        )
+
+    def _update_version_conn(self, conn: sqlite3.Connection, algorithm_id: str, version: Mapping[str, Any], sort_index: int) -> None:
+        conn.execute("DELETE FROM algorithm_versions WHERE algorithm_id=? AND id=?", (algorithm_id, str(version.get("id"))))
+        self._insert_version_conn(conn, algorithm_id, version, sort_index)
+
+    def _replace_analyses_conn(self, conn: sqlite3.Connection, algorithm_id: str, item: Mapping[str, Any]) -> None:
+        conn.execute("DELETE FROM algorithm_external_analyses WHERE algorithm_id=?", (algorithm_id,))
+        analyses = [dict(a) for a in (item.get("external_analyses") or []) if isinstance(a, Mapping)]
+        if not analyses:
+            analyses = [{"analysis_id": str(value)} for value in (item.get("external_analysis_ids") or []) if str(value or "").strip()]
+        default_analysis_id = str(item.get("external_analysis_id") or "")
+        seen: set[str] = set()
+        for index, analysis in enumerate(analyses):
+            analysis_id = str(analysis.get("analysis_id") or analysis.get("analysisId") or "").strip()
+            if not analysis_id or analysis_id in seen:
+                continue
+            seen.add(analysis_id)
+            compute_platform_ids = analysis.get("compute_platform_ids") or analysis.get("computePlatformIds") or []
+            conn.execute(
+                """INSERT INTO algorithm_external_analyses (algorithm_id,external_analysis_id,analysis_name,analysis_type,is_default,active,compute_platform_ids_json,sort_index,payload_json) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (algorithm_id, analysis_id, self._nullable_text(analysis.get("analysis_name") or analysis.get("analysisName")), self._nullable_text(analysis.get("analysis_type") or analysis.get("analysisType")), 1 if analysis_id == default_analysis_id else 0, 0 if analysis.get("active") is False else 1, self._dumps(list(compute_platform_ids) if isinstance(compute_platform_ids, (list, tuple, set)) else []), index, self._dumps(analysis)),
+            )
+
     def migration_status(self) -> dict[str, Any]:
         self.ensure_ready()
         with self._connect() as conn:

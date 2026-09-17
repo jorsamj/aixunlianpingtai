@@ -180,3 +180,52 @@ def test_save_algorithms_preserves_replace_semantics_in_sql(tmp_path: Path):
 
     save_algorithms(json_path, [])
     assert list_algorithms(json_path) == []
+
+
+
+def test_external_sync_cannot_overwrite_concurrent_training_version(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from platform_core.algorithms import attach_version, list_algorithms
+
+    project = tmp_path / "projects" / "p1"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    mirror_products_to_algorithms(
+        algorithms_path=json_path,
+        products=[{"productId": "product-200", "productName": "并发算法", "categoryId": "cat"}],
+        categories=[{"categoryId": "cat", "categoryName": "测试"}],
+        analyses_by_product={"product-200": [{"analysisId": "analysis-1", "analysisName": "视觉"}]},
+        synced_at="2026-09-17T10:00:00Z",
+    )
+    algorithm = next(row for row in list_algorithms(json_path) if row.get("external_product_id") == "product-200")
+    barrier = threading.Barrier(2)
+
+    def finish_training():
+        barrier.wait(timeout=2)
+        attach_version(json_path, algorithm["id"], {
+            "id": "concurrent-v1", "task_id": "train-concurrent", "training_status": "SUCCEEDED",
+            "artifact_verified": True, "trainable": True, "framework": "ultralytics",
+            "finished_at": "2026-09-17T10:01:00Z", "stored_path": "/models/concurrent-v1/best.pt",
+        })
+
+    def sync_master():
+        barrier.wait(timeout=2)
+        mirror_products_to_algorithms(
+            algorithms_path=json_path,
+            products=[{"productId": "product-200", "productName": "并发算法（更新）", "categoryId": "cat"}],
+            categories=[{"categoryId": "cat", "categoryName": "测试"}],
+            analyses_by_product={"product-200": [{"analysisId": "analysis-1", "analysisName": "视觉"}]},
+            synced_at="2026-09-17T10:01:00Z",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(finish_training), executor.submit(sync_master)]
+        for future in futures:
+            future.result(timeout=5)
+
+    persisted = next(row for row in list_algorithms(json_path) if row["id"] == algorithm["id"])
+    assert persisted["name"] == "并发算法（更新）"
+    assert persisted["current_version_id"] == "concurrent-v1"
+    assert [row["id"] for row in persisted["versions"]] == ["concurrent-v1"]

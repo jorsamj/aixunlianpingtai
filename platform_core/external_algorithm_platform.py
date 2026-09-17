@@ -15,7 +15,8 @@ from fastapi import APIRouter, Query
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
-from .algorithms import list_algorithms, save_algorithms
+from .algorithm_sql_store import AlgorithmSqlStore
+from .algorithms import list_algorithms
 from .annotations import atomic_write_json
 from .errors import PlatformError
 from .secrets import SecretCredentialStore, secret_ref
@@ -516,62 +517,7 @@ def mirror_products_to_algorithms(
             "external_last_synced_at": synced_at,
         }
 
-    with lock:
-        algorithms = list_algorithms(algorithms_path)
-        existing_by_external = {
-            str(row.get("external_product_id")): row
-            for row in algorithms
-            if str(row.get("source_type") or "").upper() == SOURCE_EXTERNAL
-            and str(row.get("provider_type") or "").upper() == provider
-            and row.get("external_product_id") not in (None, "")
-        }
-        added = updated = unchanged = inactivated = 0
-        for pid, master in incoming.items():
-            existing = existing_by_external.get(pid)
-            if existing is None:
-                item = {
-                    **master,
-                    "current_version_id": None,
-                    "version_operations": [],
-                    "versions": [],
-                    "created_at": synced_at,
-                    "updated_at": synced_at,
-                }
-                algorithms.insert(0, item)
-                added += 1
-                continue
-            changed = False
-            for key, value in master.items():
-                if existing.get(key) != value:
-                    existing[key] = value
-                    changed = True
-            if changed:
-                existing["updated_at"] = synced_at
-                updated += 1
-            else:
-                unchanged += 1
-
-        incoming_ids = set(incoming)
-        for row in algorithms:
-            if (
-                str(row.get("source_type") or "").upper() == SOURCE_EXTERNAL
-                and str(row.get("provider_type") or "").upper() == provider
-                and str(row.get("external_product_id") or "") not in incoming_ids
-                and row.get("external_active") is not False
-            ):
-                row["external_active"] = False
-                row["external_last_synced_at"] = synced_at
-                row["updated_at"] = synced_at
-                inactivated += 1
-        save_algorithms(algorithms_path, algorithms)
-
-    return {
-        "added": added,
-        "updated": updated,
-        "unchanged": unchanged,
-        "inactivated": inactivated,
-        "total": len(incoming),
-    }
+    return AlgorithmSqlStore(algorithms_path).sync_external_algorithms(incoming, provider=provider, synced_at=synced_at)
 
 
 def algorithm_is_external_readonly(algorithms_path: Path, algorithm_id: str) -> bool:
