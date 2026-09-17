@@ -48,7 +48,7 @@ jobs:
           task_worker.py
       - name: Run GPU runtime truth contracts
         run: >-
-          python -m pytest -q
+          python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_gpu_resource_connection_lifecycle.py
           tests/unit/test_gpu_node_scoped_reservations.py
       - name: Guard formal Worker wiring
