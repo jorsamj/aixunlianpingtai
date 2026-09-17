@@ -1,19 +1,37 @@
 """Node-scoped GPU reservation truth for Task Runtime Phase 1B.
 
-Phase 1A already made inventory/telemetry and Worker GPU visibility node-aware.
-This module upgrades only the reservation/assignment side while preserving the
-existing GPUResourceManager sampling and policy behavior.
+Phase 1A made inventory/telemetry node-aware. Phase 1B makes both Worker GPU
+visibility and reservations node-scoped so multi-node scheduling never relies on
+a globally unique worker slot, worker id, or physical CUDA index.
 """
 from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+import time
 
-from .gpu_resources import GPUResourceManager, _number
+from .gpu_resources import GPUResourceManager, _normalized_gpu_row, _number
 from .training_devices import normalize_training_device
 
 
 LEGACY_UNSCOPED_NODE = "legacy-unscoped"
+
+_WORKER_VISIBILITY_V2_CREATE = """
+CREATE TABLE IF NOT EXISTS worker_gpu_visibility (
+    worker_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    gpu_uuid TEXT NOT NULL,
+    logical_cuda_index INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(worker_id, node_id, gpu_uuid),
+    UNIQUE(worker_id, node_id, logical_cuda_index)
+)
+"""
+
+_WORKER_VISIBILITY_V2_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_worker_gpu_visibility_node
+    ON worker_gpu_visibility(node_id, gpu_uuid, observed_at)
+"""
 
 _GPU_RESERVATIONS_V2_CREATE = """
 CREATE TABLE IF NOT EXISTS gpu_reservations (
@@ -76,6 +94,56 @@ _REQUIRED_RESERVATION_COLUMNS = {
     "heartbeat_at",
     "expires_at",
 }
+
+
+def ensure_node_scoped_worker_visibility(database) -> None:
+    """Upgrade Worker visibility so the same worker id may exist on different nodes."""
+
+    columns = {
+        str(row[1]) for row in database.execute("PRAGMA table_info(worker_gpu_visibility)").fetchall()
+    }
+    if not columns:
+        database.execute(_WORKER_VISIBILITY_V2_CREATE)
+        database.execute(_WORKER_VISIBILITY_V2_INDEX)
+        return
+
+    table_sql_row = database.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='worker_gpu_visibility'"
+    ).fetchone()
+    table_sql = "" if table_sql_row is None else str(table_sql_row[0] or "")
+    normalized_sql = "".join(table_sql.lower().split())
+    node_logical_unique = "unique(worker_id,node_id,logical_cuda_index)" in normalized_sql
+    if node_logical_unique:
+        database.execute(_WORKER_VISIBILITY_V2_INDEX)
+        return
+
+    database.execute("BEGIN IMMEDIATE")
+    try:
+        rows = [dict(row) for row in database.execute("SELECT * FROM worker_gpu_visibility").fetchall()]
+        database.execute("DROP INDEX IF EXISTS idx_worker_gpu_visibility_node")
+        database.execute("ALTER TABLE worker_gpu_visibility RENAME TO worker_gpu_visibility_v1")
+        database.execute(_WORKER_VISIBILITY_V2_CREATE)
+        for row in rows:
+            database.execute(
+                """
+                INSERT INTO worker_gpu_visibility(
+                    worker_id,node_id,gpu_uuid,logical_cuda_index,observed_at
+                ) VALUES (?,?,?,?,?)
+                """,
+                (
+                    row["worker_id"],
+                    row["node_id"],
+                    row["gpu_uuid"],
+                    row["logical_cuda_index"],
+                    row["observed_at"],
+                ),
+            )
+        database.execute("DROP TABLE worker_gpu_visibility_v1")
+        database.execute(_WORKER_VISIBILITY_V2_INDEX)
+        database.commit()
+    except Exception:
+        database.rollback()
+        raise
 
 
 def _resolved_legacy_node(database, worker_id: str) -> str:
@@ -190,12 +258,106 @@ def ensure_node_scoped_gpu_reservations(database) -> None:
 
 
 class NodeScopedGPUResourceManager(GPUResourceManager):
-    """GPUResourceManager with node-scoped reservation and assignment identity."""
+    """GPUResourceManager with node-scoped visibility, reservation and assignment identity."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         with closing(self.repository._connect()) as database:
+            ensure_node_scoped_worker_visibility(database)
             ensure_node_scoped_gpu_reservations(database)
+
+    def refresh(self):
+        """Persist this Worker's visibility without erasing another node with the same worker id."""
+        with self._lock:
+            if time.monotonic() - self._last_refresh < 2:
+                return
+            rows = [_normalized_gpu_row(row) for row in self.sampler(self.python_executable)]
+            with closing(self.repository._connect()) as database:
+                database.execute("BEGIN IMMEDIATE")
+                for row in rows:
+                    database.execute(
+                        "DELETE FROM gpu_inventory WHERE node_id='legacy-unscoped' AND gpu_uuid=?",
+                        (row["gpu_uuid"],),
+                    )
+                    database.execute(
+                        "DELETE FROM gpu_samples WHERE node_id='legacy-unscoped' AND gpu_uuid=?",
+                        (row["gpu_uuid"],),
+                    )
+                    database.execute(
+                        """
+                        INSERT INTO gpu_inventory(
+                            node_id,gpu_uuid,physical_index,model,total_bytes,free_bytes,
+                            utilization,sampled_at,telemetry_source,telemetry_available,mig_mode
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(node_id,gpu_uuid) DO UPDATE SET
+                            physical_index=excluded.physical_index, model=excluded.model,
+                            total_bytes=excluded.total_bytes, free_bytes=excluded.free_bytes,
+                            utilization=excluded.utilization, sampled_at=excluded.sampled_at,
+                            telemetry_source=excluded.telemetry_source,
+                            telemetry_available=excluded.telemetry_available,
+                            mig_mode=excluded.mig_mode
+                        """,
+                        (
+                            self.node_id,
+                            row["gpu_uuid"],
+                            row["physical_index"],
+                            row["model"],
+                            row["total_bytes"],
+                            row["free_bytes"],
+                            row["utilization"],
+                            row["sampled_at"],
+                            row["telemetry_source"],
+                            int(row["telemetry_available"]),
+                            row["mig_mode"],
+                        ),
+                    )
+                    database.execute(
+                        """
+                        INSERT INTO gpu_samples(node_id,gpu_uuid,free_bytes,utilization,sampled_at)
+                        VALUES (?,?,?,?,?)
+                        """,
+                        (
+                            self.node_id,
+                            row["gpu_uuid"],
+                            row["free_bytes"],
+                            row["utilization"],
+                            row["sampled_at"],
+                        ),
+                    )
+                    database.execute(
+                        """
+                        DELETE FROM gpu_samples
+                         WHERE node_id=? AND gpu_uuid=? AND id NOT IN (
+                            SELECT id FROM gpu_samples
+                             WHERE node_id=? AND gpu_uuid=? ORDER BY id DESC LIMIT 60
+                         )
+                        """,
+                        (self.node_id, row["gpu_uuid"], self.node_id, row["gpu_uuid"]),
+                    )
+                if self.worker_id:
+                    database.execute(
+                        "DELETE FROM worker_gpu_visibility WHERE worker_id=? AND node_id=?",
+                        (self.worker_id, self.node_id),
+                    )
+                    for row in rows:
+                        if row["logical_cuda_index"] is None:
+                            continue
+                        database.execute(
+                            """
+                            INSERT INTO worker_gpu_visibility(
+                                worker_id,node_id,gpu_uuid,logical_cuda_index,observed_at
+                            ) VALUES (?,?,?,?,?)
+                            """,
+                            (
+                                self.worker_id,
+                                self.node_id,
+                                row["gpu_uuid"],
+                                row["logical_cuda_index"],
+                                row["sampled_at"],
+                            ),
+                        )
+                database.commit()
+            self._last_refresh = time.monotonic()
 
     @staticmethod
     def _visibility_row(database, *, worker_id: str, node_id: str, gpu_uuid: str):
