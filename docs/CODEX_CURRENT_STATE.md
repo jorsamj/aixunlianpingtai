@@ -4,6 +4,51 @@
 
 
 
+## Current closure — HTTP Agent Executor Control Protocol CLOSED
+
+Development branch remains `feature/external-algorithm-publishing`; formal
+`VERSION.txt` remains `42.24.0`.
+
+`platform_core/agent_execution.py` now provides the control-plane execution
+protocol for centrally assigned remote tasks. Node identity/authentication,
+assignment ownership, and execution ownership are deliberately separate:
+Node Token authenticates the registered node; Assignment Lease Token authorizes
+one start; Execution Lease Token plus `tasks.attempt` generation fences all
+heartbeat/log/finalization/finish mutations.
+
+Execution start performs the one real `QUEUED -> RUNNING` transition under
+`BEGIN IMMEDIATE`, revalidates the current Node Token hash, enabled/fresh
+node state and capability, increments the existing task generation, and
+releases the central assignment with `release_reason=execution_started`.
+The protocol does not create a second task status model. Cancellation and
+finalization continue to use the existing TaskRepository/FencedTaskRepository
+truth.
+
+The API exposes claim, start, heartbeat, log append, begin-finalization and
+finish under `/api/v63/node-executor/{node_id}`. Remote logs are server-owned
+and execution-fenced. A disabled node cannot accept new work but an already
+owned execution can still report/finish, preventing a desired-state change
+from needlessly wedging the task until lease expiry. Missing task payloads
+cannot transition a task to RUNNING. Token rotation is rechecked inside the
+start transaction, closing the pre-authentication rotation race.
+
+Permanent workflow `.github/workflows/node-agent-executor.yml` passed API,
+Ubuntu 24.04 and Windows latest in validation run `35288805083`. Tests cover
+duplicate start, invalid assignment token, cross-node execution use, disable
+semantics, cancellation precedence, finalization, log fencing/size bounds,
+expired-generation takeover, Node Token rotation race, missing payload,
+structured generation validation, VERSION guard and source guards.
+
+**OPEN / next:** Agent-side Remote Execution Runtime + Object Storage
+Transport. `node_agent.py` does not yet consume this executor protocol and
+run a remote task handler, so real cross-machine training/material execution
+is NOT CLOSED. The Agent client must not open control-plane SQLite or require
+shared NFS; large task inputs/results must use object storage or an explicit
+artifact transport. It must kill its local process tree when execution fencing
+or cancellation wins.
+
+Detailed handoff: `docs/NODE_CONTROL_PLANE_V42_25.md`.
+
 ## Current closure — Service Node Control Plane + Central Assignment CLOSED
 
 Current development branch: `feature/external-algorithm-publishing`. Formal
