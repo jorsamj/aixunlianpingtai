@@ -1,0 +1,45 @@
+name: External Algorithm Platform Phase 1 Migration
+
+on:
+  push:
+    branches:
+      - feature/external-algorithm-platform
+    paths:
+      - platform_core/external_algorithm_platform.py
+      - static/modules/external-algorithm-platform.js
+      - tests/unit/test_external_algorithm_platform.py
+      - tests/frontend/external-algorithm-platform.test.mjs
+      - tools/migrate_external_algorithm_platform_phase1.py
+      - .github/workflows/external-algorithm-platform-phase1-migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/external-algorithm-platform
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply bounded wiring migration
+        run: python tools/migrate_external_algorithm_platform_phase1.py
+      - name: Static syntax checks
+        run: |
+          python -m py_compile platform_core/external_algorithm_platform.py app.py
+          node --check static/modules/external-algorithm-platform.js
+      - name: Commit migrated wiring
+        run: |
+          if git diff --quiet; then
+            echo "No migration changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py static/main.mjs static/index.html
+          git commit -m "feat(external-platform): wire phase 1 runtime"
+          git push origin HEAD:feature/external-algorithm-platform
