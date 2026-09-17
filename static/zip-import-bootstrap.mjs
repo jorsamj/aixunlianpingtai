@@ -8,10 +8,9 @@ const runtime = installZipImportRuntime({
 
 if (runtime) {
   const originalLoadImportJobs = window.loadImportJobs;
-  const originalOpenImportDock = window.openImportDock;
   const originalStartImportJobV19 = window.startImportJobV19;
   const LEGACY_IMPORT_POLL_SENTINEL = -1;
-  let openingImportDock = false;
+  let reuseRuntimeSnapshot = true;
 
   const claimLegacyImportPolling = () => {
     const existing = state.importPollTimer;
@@ -26,33 +25,26 @@ if (runtime) {
     return state.importJobs;
   };
 
-  // Durable ZIP runtime is the only completion/poll owner.  Keep the classic
+  // Durable ZIP runtime is the only completion/poll owner. Keep the classic
   // timer slot truthy so legacy startImportPolling() cannot create a second
   // interval that would repeat completion side effects (labels/material refresh).
   claimLegacyImportPolling();
 
   if (typeof originalLoadImportJobs === 'function' && !originalLoadImportJobs.__zipImportRuntimeBridge) {
     const bridgedLoadImportJobs = async function(...args) {
-      // Only the modal's initial open may reuse the already-fetched durable
-      // snapshot.  A later user-triggered "刷新" must hit the backend again.
-      if (openingImportDock) return syncLegacyImportJobsFromRuntime();
+      // The durable runtime has already fetched the authoritative ZIP-job list
+      // during bootstrap. Reuse that snapshot exactly once so startup/open does
+      // not immediately duplicate the same request. After it is consumed, every
+      // later modal open or explicit "刷新" must call the backend and cannot be
+      // satisfied by stale bootstrap state.
+      if (reuseRuntimeSnapshot) {
+        reuseRuntimeSnapshot = false;
+        return syncLegacyImportJobsFromRuntime();
+      }
       return originalLoadImportJobs.apply(this, args);
     };
     bridgedLoadImportJobs.__zipImportRuntimeBridge = true;
     window.loadImportJobs = bridgedLoadImportJobs;
-  }
-
-  if (typeof originalOpenImportDock === 'function' && !originalOpenImportDock.__zipImportRuntimeBridge) {
-    const bridgedOpenImportDock = async function(...args) {
-      openingImportDock = true;
-      try {
-        return await originalOpenImportDock.apply(this, args);
-      } finally {
-        openingImportDock = false;
-      }
-    };
-    bridgedOpenImportDock.__zipImportRuntimeBridge = true;
-    window.openImportDock = bridgedOpenImportDock;
   }
 
   if (typeof originalStartImportJobV19 === 'function' && !originalStartImportJobV19.__zipImportRuntimeBridge) {
