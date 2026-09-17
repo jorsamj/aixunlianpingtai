@@ -20,6 +20,7 @@ import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgo
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
 import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422506';
+import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422532';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422501';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
@@ -207,6 +208,14 @@ const trainingSubmitRuntime = installTrainingSubmitRuntime({
   notify,
 });
 window.PlatformCore.runtime.trainingSubmitRuntime = trainingSubmitRuntime;
+
+const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  request: api,
+  notify,
+});
+window.PlatformCore.runtime.trainingCreateHydrationRuntime = trainingCreateHydrationRuntime;
 
 const autoLabelPollRuntime = installAutoLabelPollRuntime({
   getState: () => state,
