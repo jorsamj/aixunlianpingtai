@@ -3,6 +3,47 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+
+## Current closure — Service Node Control Plane + Central Assignment CLOSED
+
+Current development branch: `feature/external-algorithm-publishing`. Formal
+`VERSION.txt` remains `42.24.0`. Older branch-state sections later in this
+file are historical snapshots; live branch/HEAD must always be re-read before
+editing.
+
+Service-node control plane is implemented through
+`platform_core/service_nodes.py`, `platform_core/node_agent_runtime.py`, and
+`node_agent.py`. The management UI is implemented by
+`static/modules/service-node-runtime.js`. Node identity, heartbeat,
+allowed/reported/effective capabilities, CPU/RAM/disk/GPU/Torch/CUDA/process
+telemetry and one-time Agent token handling are now real backend/frontend
+contracts, not simulated UI state.
+
+Central durable task-to-node assignment is implemented in
+`platform_core/task_node_assignments.py` and composed through the existing
+single additive runtime-router integration point. An active assignment is
+durable control-plane truth and is protected by a partial unique index.
+`AssignmentAwareFencedTaskRepository` prevents legacy Workers from
+self-claiming a centrally assigned queued task. Allocation and claim paths use
+`BEGIN IMMEDIATE`; schema scripts are initialized before the scheduling
+transaction so SQLite implicit commit cannot break allocator atomicity.
+
+Permanent Central Node Assignment workflow run `35288111906` passed API,
+Ubuntu 24.04, and Windows latest contracts. It covers node eligibility,
+training node/GPU selection, execution snapshot persistence, MATERIAL_BATCH
+capability mapping, concurrent single-assignment fencing, claim/reclaim,
+release generation, legacy Worker fencing, API contracts, VERSION guard and
+`git diff --check`.
+
+**OPEN / next:** HTTP Agent Executor Protocol. A remote Agent must not open the
+control-plane SQLite or depend on NFS in order to claim work. The next protocol
+must authenticate the node, claim its assignment, atomically acquire the one
+real TaskRepository execution lease/generation on the control plane, exchange
+execution inputs/artifact references over HTTP/object storage, and return
+progress/log/result/cancel/failure updates to the same durable task truth.
+
+Detailed handoff: `docs/NODE_CONTROL_PLANE_V42_25.md`.
+
 ## Current closure — Task Runtime Truth v2 CLOSED
 
 Product implementation: `cc8981888bc4b27ee9594290455bd08e61713c9d`.
