@@ -100,7 +100,9 @@ export function checkpointResumeTimeline(job = {}) {
       {label: '版本与结果归档', state: view.failed ? 'failed' : (view.complete ? 'done' : 'active')},
     ];
   }
-  const trainingState = view.failed ? 'failed' : (view.complete || view.validationActive || view.archiveActive ? 'done' : 'active');
+  const trainingState = view.failed
+    ? 'failed'
+    : (view.complete || view.validationActive || view.archiveActive ? 'done' : 'active');
   const validationState = view.complete
     ? 'done'
     : (view.validationActive ? 'active' : (view.failed && view.phase === 'final_validation' ? 'failed' : 'pending'));
@@ -219,8 +221,15 @@ export function installTrainingCheckpointResumeUI({getState, notify} = {}) {
         continue;
       }
       const text = checkpointResumeBadge(job);
-      if (previous) previous.textContent = text;
-      else if (cell) cell.insertAdjacentHTML('beforeend', `<span class="checkpoint-resume-badge">${esc(text)}</span>`);
+      if (previous) {
+        // MutationObserver watches childList. Writing an unchanged textContent
+        // still replaces the text node and schedules another observer callback,
+        // so recovery rows could previously create a self-triggering microtask
+        // loop and keep the owning TrainingTaskRuntime refresh in-flight.
+        if (previous.textContent !== text) previous.textContent = text;
+      } else if (cell) {
+        cell.insertAdjacentHTML('beforeend', `<span class="checkpoint-resume-badge">${esc(text)}</span>`);
+      }
     }
   }
 
