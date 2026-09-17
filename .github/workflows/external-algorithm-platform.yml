@@ -8,20 +8,27 @@ on:
       - static/main.mjs
       - static/index.html
       - static/modules/external-algorithm-platform.js
+      - static/modules/algorithm-list-runtime.js
+      - static/modules/training-submit.js
       - tests/unit/test_external_algorithm_platform.py
       - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/frontend/algorithm-list-runtime.test.mjs
       - .github/workflows/external-algorithm-platform.yml
   push:
     branches:
       - feature/external-algorithm-platform
+      - feature/external-algorithm-publishing
     paths:
       - app.py
       - platform_core/external_algorithm_platform.py
       - static/main.mjs
       - static/index.html
       - static/modules/external-algorithm-platform.js
+      - static/modules/algorithm-list-runtime.js
+      - static/modules/training-submit.js
       - tests/unit/test_external_algorithm_platform.py
       - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/frontend/algorithm-list-runtime.test.mjs
       - .github/workflows/external-algorithm-platform.yml
 
 jobs:
@@ -40,14 +47,21 @@ jobs:
       - name: Backend external-platform contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_external_algorithm_platform.py
       - name: Frontend external-platform contracts
-        run: node --test tests/frontend/external-algorithm-platform.test.mjs
+        run: node --test tests/frontend/external-algorithm-platform.test.mjs tests/frontend/algorithm-list-runtime.test.mjs
       - name: Syntax and wiring guards
         run: |
           python -m py_compile app.py platform_core/external_algorithm_platform.py
           node --check static/modules/external-algorithm-platform.js
+          node --check static/modules/algorithm-list-runtime.js
+          node --check static/modules/training-submit.js
           grep -q "external_algorithm_platform_router" app.py
           grep -q "installExternalAlgorithmPlatformRuntime" static/main.mjs
           grep -q "DEFAULT_AUTO_SYNC_INTERVAL_SECONDS" platform_core/external_algorithm_platform.py
           grep -q "external-algorithm-platform-auto-sync" platform_core/external_algorithm_platform.py
           grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
           grep -q "test_sign_bridge" platform_core/external_algorithm_platform.py
+          grep -q "resolve_external_training_analysis" app.py
+          grep -q "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js
+          if grep -q "window.renderAlg412 =" static/modules/external-algorithm-platform.js; then echo "external platform must not wrap renderAlg412" >&2; exit 1; fi
+          if grep -q "下一阶段" static/modules/external-algorithm-platform.js; then echo "stale phase wording remains" >&2; exit 1; fi
+          test "$(cat VERSION.txt)" = "42.24.0"
