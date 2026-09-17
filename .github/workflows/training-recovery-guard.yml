@@ -8,6 +8,7 @@ on:
       - platform_core/training_recovery_api.py
       - platform_core/training_recovery_tasks.py
       - platform_core/training_checkpoint_resume_tasks.py
+      - platform_core/training_runtime_tasks.py
       - platform_core/worker_registry.py
       - platform_core/material_batches.py
       - train_checkpoint_resume_worker.py
@@ -112,6 +113,7 @@ jobs:
           python -m py_compile
           train_checkpoint_resume_worker.py
           platform_core/training_checkpoint_resume_tasks.py
+          platform_core/training_runtime_tasks.py
           platform_core/worker_registry.py
 
       - name: Backend checkpoint resume contracts
@@ -126,12 +128,15 @@ jobs:
       - name: Permanent checkpoint resume guards
         shell: bash
         run: |
-          grep -Fq '"training": "platform_core.training_checkpoint_resume_tasks"' platform_core/worker_registry.py
+          grep -Fq '"training": "platform_core.training_runtime_tasks"' platform_core/worker_registry.py
           grep -Fq 'model.train(resume=True, device=logical_device)' train_checkpoint_resume_worker.py
           grep -Fq 'stage=RESUME_STAGE' platform_core/training_checkpoint_resume_tasks.py
           grep -Fq 'resume_checkpoint_sha256' platform_core/training_checkpoint_resume_tasks.py
+          grep -Fq 'stage=FINALIZING_COMMIT_STAGE' platform_core/training_runtime_tasks.py
+          grep -Fq 'FINALIZING_COMMIT_STAGE = "finalizing_commit"' platform_core/training_runtime_tasks.py
           grep -Fq 'training-checkpoint-resume-bootstrap.mjs?v=422531' static/index.html
           grep -Fq "const RESUME_MODE = 'training_checkpoint_resume';" static/modules/training-checkpoint-resume-ui.js
+          grep -Fq 'version replay is idempotent' <(grep -n 'test_algorithm_version_replay_is_idempotent_by_training_task' tests/test_training_checkpoint_resume.py | sed 's/.*/version replay is idempotent/')
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
 
