@@ -10,6 +10,17 @@ class SecretStore(Protocol):
     def masked(self, reference: str) -> str: ...
 
 
+class SecretStoreUnavailable(RuntimeError):
+    """Raised when the configured OS secret backend cannot be used.
+
+    Headless Linux hosts commonly have the ``keyring`` package installed without
+    a usable desktop keyring backend. Public configuration reads must degrade
+    safely instead of turning an unrelated page/bootstrap request into HTTP 500.
+    Secret-dependent writes or remote API calls still fail closed through this
+    exception; credentials are never moved into plaintext configuration files.
+    """
+
+
 def secret_ref(scope: str, item_id: str) -> str:
     safe_scope = str(scope or "").strip().replace(":", "-")
     safe_id = str(item_id or "").strip().replace(":", "-")
@@ -51,19 +62,28 @@ class KeyringSecretStore:
         try:
             import keyring
         except ImportError as error:
-            raise RuntimeError("缺少 keyring，无法安全保存模型 API Key") from error
+            raise SecretStoreUnavailable("缺少 keyring，无法安全访问系统 Secret 存储") from error
         self._keyring = keyring
         self._service_name = service_name
+
+    def _unavailable(self, error: Exception) -> SecretStoreUnavailable:
+        return SecretStoreUnavailable("系统 Secret 存储不可用；请配置可用 Keyring 后重试")
 
     def set(self, reference: str, value: str) -> None:
         if str(reference).startswith("env:"):
             raise ValueError("环境变量 Secret 为只读引用")
-        self._keyring.set_password(self._service_name, str(reference), str(value))
+        try:
+            self._keyring.set_password(self._service_name, str(reference), str(value))
+        except self._keyring.errors.KeyringError as error:
+            raise self._unavailable(error) from error
 
     def get(self, reference: str) -> Optional[str]:
         if str(reference).startswith("env:"):
             return os.environ.get(str(reference)[4:])
-        return self._keyring.get_password(self._service_name, str(reference))
+        try:
+            return self._keyring.get_password(self._service_name, str(reference))
+        except self._keyring.errors.KeyringError as error:
+            raise self._unavailable(error) from error
 
     def delete(self, reference: str) -> None:
         if str(reference).startswith("env:"):
@@ -72,6 +92,8 @@ class KeyringSecretStore:
             self._keyring.delete_password(self._service_name, str(reference))
         except self._keyring.errors.PasswordDeleteError:
             pass
+        except self._keyring.errors.KeyringError as error:
+            raise self._unavailable(error) from error
 
     def masked(self, reference: str) -> str:
         return mask_secret(self.get(reference))
@@ -119,7 +141,15 @@ class SecretCredentialStore:
         self.backend.delete(reference)
 
     def public_state(self, reference: str) -> dict[str, object]:
-        value = self.get(reference)
+        try:
+            value = self.get(reference)
+        except SecretStoreUnavailable:
+            return {
+                "configured": False,
+                "masked": "",
+                "available": False,
+                "error": "SECRET_STORE_UNAVAILABLE",
+            }
         identifier = ""
         if value:
             identifier = next(
@@ -133,4 +163,6 @@ class SecretCredentialStore:
         return {
             "configured": bool(value),
             "masked": mask_secret(identifier) if identifier else ("已配置" if value else ""),
+            "available": True,
+            "error": "",
         }
