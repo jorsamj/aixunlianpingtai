@@ -96,6 +96,45 @@ def build_context(tmp_path: Path, *, snapshot_id="snap-1", attempt=2):
     return data_dir, project, context, checkpoint
 
 
+def prepare_finalization_replay(tmp_path: Path):
+    data_dir, project, context, last_checkpoint = build_context(tmp_path)
+    job_file = project / "jobs" / context.task.task_id / "job.json"
+    best_checkpoint = last_checkpoint.with_name("best.pt")
+    best_checkpoint.write_bytes(b"trusted-best-checkpoint")
+    published = project / "models" / f"train_{context.task.task_id}_best.pt"
+    published.parent.mkdir(parents=True, exist_ok=True)
+    published.write_bytes(b"published-verified-model")
+
+    job = json.loads(job_file.read_text(encoding="utf-8"))
+    job.update(
+        status="done",
+        artifact_verified=True,
+        finished_at="2026-09-17T00:00:00+00:00",
+        training_outcome="completed",
+        completed_epochs=100,
+        requested_epochs=100,
+        current_epoch=100,
+        best_path=str(published.resolve()),
+        last_path="",
+        verified_models=[str(published.resolve())],
+    )
+    write_json(job_file, job)
+    write_json(
+        job_file.parent / "final-validation.json",
+        {
+            "schema_version": 1,
+            "task_id": context.task.task_id,
+            "snapshot_id": "snap-1",
+            "checkpoint": str(best_checkpoint.resolve()),
+            "checkpoint_sha256": resume.base._sha256(best_checkpoint),
+            "success": True,
+            "recovery": False,
+            "published_models": [str(published.resolve())],
+        },
+    )
+    return data_dir, project, context, job_file, published
+
+
 def test_same_task_reclaim_admits_trusted_last_checkpoint(tmp_path, monkeypatch):
     data_dir, _project, context, checkpoint = build_context(tmp_path)
     monkeypatch.setattr(resume.base, "_training_python", lambda _data_dir: sys.executable)
@@ -165,6 +204,40 @@ def test_completed_epoch_checkpoint_is_not_resumed(tmp_path, monkeypatch):
     candidate = resume.inspect_training_resume_candidate(context, data_dir)
     assert candidate["eligible"] is False
     assert candidate["reason"] == "checkpoint_is_not_incomplete_training"
+
+
+def test_successful_final_validation_replays_only_persistence(tmp_path, monkeypatch):
+    data_dir, _project, context, _job_file, published = prepare_finalization_replay(tmp_path)
+    monkeypatch.setattr(
+        resume.base,
+        "_verify_materialized_dataset_evidence",
+        lambda _manifest: {"snapshot_id": "snap-1", "verified_files": 10, "verification_mode": "materialization_evidence"},
+    )
+
+    candidate = resume.inspect_finalization_replay_candidate(context, data_dir)
+
+    assert candidate["eligible"] is True
+    assert candidate["reason"] == "trusted_final_validation_requires_persistence_replay"
+    assert candidate["validation"]["success"] is True
+    assert candidate["job"]["status"] == "done"
+    assert Path(candidate["job"]["best_path"]) == published.resolve()
+
+
+def test_finalization_replay_fails_closed_without_success_manifest(tmp_path, monkeypatch):
+    data_dir, _project, context, job_file, _published = prepare_finalization_replay(tmp_path)
+    result = json.loads((job_file.parent / "final-validation.json").read_text(encoding="utf-8"))
+    result["success"] = False
+    write_json(job_file.parent / "final-validation.json", result)
+    monkeypatch.setattr(
+        resume.base,
+        "_verify_materialized_dataset_evidence",
+        lambda _manifest: {"snapshot_id": "snap-1", "verified_files": 10, "verification_mode": "materialization_evidence"},
+    )
+
+    candidate = resume.inspect_finalization_replay_candidate(context, data_dir)
+
+    assert candidate["eligible"] is False
+    assert candidate["reason"] == "successful_final_validation_missing"
 
 
 def test_worker_registry_points_at_canonical_production_training_handler():
