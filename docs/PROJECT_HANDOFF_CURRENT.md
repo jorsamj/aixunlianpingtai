@@ -502,21 +502,81 @@ Real Chrome refresh recovery     PASS
 
 这部分不能在汇报里包装成“已完成”。
 
-## P1 — Headless Linux Secret 持久化
+## CLOSED — Headless Linux Secret 持久化
 
-公开读取现在安全降级，不再 500；但真正保存新畅联 AccessKey/AccessSecret 仍需要一个明确、可运维、安全的 headless Linux Secret backend。
+状态：**CLOSED（代码与永久合同完成；真实生产主机仍需部署验收）**。
 
-不能用 plaintext JSON 代替。
-
-## P1 — Multipart session GC
-
-未完成上传目前可长期留下：
+当前 SecretStore 已形成三层安全策略，禁止明文 JSON 回退：
 
 ```text
-<project>/import_uploads/<upload_id>/parts
+1. 环境变量只读注入（优先）
+   MC_CHANGLIAN_ACCESS_KEY
+   MC_CHANGLIAN_ACCESS_SECRET
+
+2. 系统 Keyring
+   Windows Credential Locker / Linux SecretService 等可用 backend
+
+3. Headless Linux 加密文件 fallback
+   MC_SECRET_MASTER_KEY
+   → Fernet 加密
+   → <data_dir>/secure/secrets.enc.json
 ```
 
-要做 TTL / expires_at / cleanup / freed bytes 记录。
+`MC_SECRET_MASTER_KEY` 是服务器主密钥，必须由部署环境/Secret Manager 注入，不能写进仓库、普通 JSON 或前端。
+
+配置页面会明确显示当前凭据后端：
+
+```text
+环境变量 / 系统密钥环 / 服务器加密文件 / 不可用
+```
+
+如果安全 backend 不可用，真实 Secret 写入继续 fail-closed，不会降级为明文保存。
+
+相关主文件：
+
+```text
+platform_core/secrets.py
+static/modules/external-algorithm-platform.js
+requirements.txt
+```
+
+永久测试覆盖环境变量优先级、加密文件 round-trip、密文不包含明文 Secret、backend public state 和无 backend 安全降级。
+
+## CLOSED — Multipart session TTL / GC
+
+状态：**CLOSED**。
+
+未完成 ZIP multipart session 现在包含：
+
+```text
+created_at
+updated_at
+expires_at
+```
+
+当前项目策略：
+
+```text
+默认 TTL：24 小时
+每成功写入一个 part：刷新 updated_at / expires_at
+completed session：不参与过期 GC
+```
+
+右下角 UploadTaskCenter 会轮询 v19 导入任务列表；该服务端入口会调用：
+
+```text
+cleanup_expired_if_due(interval_seconds=60)
+```
+
+因此正常使用平台时最多每 60 秒尝试一次 GC，而不是每次页面轮询都扫描磁盘。GC 记录：
+
+```text
+removed_uploads
+released_bytes
+last_run_at
+```
+
+新建/恢复 multipart session 时也会执行过期清理兜底。
 
 ## P1 — 真实 500 张 ZIP benchmark
 
