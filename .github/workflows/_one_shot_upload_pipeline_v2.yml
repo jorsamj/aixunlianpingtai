@@ -7,6 +7,7 @@ on:
     paths:
       - 'tools/_one_shot_upload_pipeline_v2.py'
       - 'tools/_one_shot_upload_pipeline_v2_fix.py'
+      - 'tools/_one_shot_upload_pipeline_v2_postfix.py'
       - '.github/workflows/_one_shot_upload_pipeline_v2.yml'
   workflow_dispatch:
 
@@ -34,6 +35,8 @@ jobs:
         run: python tools/_one_shot_upload_pipeline_v2_fix.py
       - name: Apply precise patch
         run: python tools/_one_shot_upload_pipeline_v2.py
+      - name: Preserve existing polling contracts
+        run: python tools/_one_shot_upload_pipeline_v2_postfix.py
       - name: Syntax checks
         run: |
           python -m py_compile app.py platform_core/zip_multipart.py platform_core/storage/import_tasks.py
@@ -86,7 +89,8 @@ jobs:
             tests/unit/test_zip_multipart.py \
             tests/frontend/upload-task-center.test.mjs \
             tests/frontend/zip-multipart-upload.test.mjs \
-            tests/frontend/training-task-identity.test.mjs
+            tests/frontend/training-task-identity.test.mjs \
+            tests/frontend/material-upload-runtime.test.mjs
           if git diff --cached --quiet; then
             echo "No production patch to commit"
           else
