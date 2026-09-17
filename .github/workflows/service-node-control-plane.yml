@@ -30,6 +30,13 @@ jobs:
           python-version: '3.12'
       - name: Install focused dependencies
         run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+      - name: Python syntax check
+        run: >-
+          python -m py_compile
+          platform_core/service_nodes.py
+          platform_core/node_agent_runtime.py
+          platform_core/training_recovery_api.py
+          node_agent.py
       - name: Service node and Agent contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -48,6 +55,13 @@ jobs:
           python-version: '3.12'
       - name: Install focused API dependencies
         run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+      - name: Python syntax check
+        run: >-
+          python -m py_compile
+          platform_core/service_nodes.py
+          platform_core/node_agent_runtime.py
+          platform_core/training_recovery_api.py
+          node_agent.py
       - name: Service node API contract
         run: python -m pytest -q --confcutdir=tests/api tests/api/test_service_node_api.py
       - name: Permanent service-node guards
