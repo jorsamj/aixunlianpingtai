@@ -62,7 +62,14 @@ test('interrupted training resume is visible and operable without colliding with
     });
   });
 
+  const jobsResponse = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === `/api/projects/${projectId}/jobs` && response.request().method() === 'GET';
+  });
   await page.locator('#refreshBtn').click();
+  await jobsResponse;
+  await expect.poll(async () => page.evaluate(() => state.jobs?.some(job => job.id === 'job-resume-36') || false))
+    .toBe(true);
   await page.evaluate(() => {
     state.train428Tab = 'active';
     window.TrainingTaskRuntime?.patch?.();
@@ -70,7 +77,7 @@ test('interrupted training resume is visible and operable without colliding with
   });
 
   const row = page.locator('[data-job-id="job-resume-36"]');
-  await expect(row).toBeVisible();
+  await expect(row).toBeVisible({timeout: 10_000});
   await expect(row).toContainText('烟火识别算法');
   await expect(row).toContainText('Epoch 41/100');
   await expect(row).toContainText('断点续训 · 从 Epoch 36');
