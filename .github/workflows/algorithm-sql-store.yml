@@ -5,12 +5,14 @@ on:
     branches:
       - feature/external-algorithm-publishing
       - feature/external-algorithm-publishing-sql
+      - feature/external-algorithm-publishing-sql-crud
     paths:
       - platform_core/algorithm_sql_store.py
       - platform_core/algorithms.py
       - platform_core/external_algorithm_platform.py
       - platform_core/external_algorithm_publish.py
       - tests/unit/test_algorithm_sql_store.py
+      - tests/unit/test_algorithms.py
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_external_algorithm_publish.py
       - tests/frontend/external-algorithm-platform.test.mjs
@@ -40,8 +42,8 @@ jobs:
           python -m py_compile platform_core/algorithm_sql_store.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/external-algorithm-publish.js
-      - name: SQL migration contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py
+      - name: SQL migration and row CRUD contracts
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_algorithms.py
       - name: External platform contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_external_algorithm_platform.py
       - name: External publish contracts
@@ -56,6 +58,14 @@ jobs:
           grep -q 'AlgorithmSqlStore' platform_core/algorithms.py
           grep -q 'algorithms.sqlite3' platform_core/algorithm_sql_store.py
           grep -q 'algorithms.json.pre-sql-migration-backup' platform_core/algorithm_sql_store.py
+          grep -q 'def attach_version(self, algorithm_id' platform_core/algorithm_sql_store.py
+          grep -q 'def sync_external_algorithms' platform_core/algorithm_sql_store.py
+          grep -q 'AlgorithmSqlStore(Path(path)).attach_version' platform_core/algorithms.py
+          grep -q 'merged\["id"\] = algorithm_id' platform_core/algorithm_sql_store.py
+          ! grep -q 'save_algorithms(algorithms_path, algorithms)' platform_core/external_algorithm_platform.py
           ! grep -q 'atomic_write_json(path, list(algorithms))' platform_core/algorithms.py
           test ! -e tools/migrate_algorithm_store_to_sql.py
+          test ! -e tools/migrate_algorithm_sql_row_crud.py
+          test ! -e tools/fix_algorithm_sql_row_crud.py
           test ! -e .github/workflows/algorithm-sql-migration-one-shot.yml
+          test ! -e .github/workflows/algorithm-sql-crud-one-shot.yml
