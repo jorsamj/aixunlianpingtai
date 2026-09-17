@@ -23,6 +23,8 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(local.mode, 'local');
   assert.equal(local.provider, 'changlian');
   assert.equal(local.endpoints.token, '/internal/auth/token');
+  assert.equal(local.autoSyncIntervalSeconds, 600);
+  assert.equal(local.authMode, 'test_sign_bridge');
 
   const external = normalizeExternalPlatformConfig({
     config: {

@@ -189,3 +189,42 @@ def test_service_sync_saves_redacted_config_cache_history_and_mirror(tmp_path: P
     row = list_algorithms(algorithms_path)[0]
     assert row["external_product_id"] == "p1"
     assert row["source_type"] == SOURCE_EXTERNAL
+
+
+def test_auto_sync_due_respects_switch_and_interval(tmp_path: Path):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=FakeChangLianClient,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        auto_sync_enabled=True,
+        auto_sync_interval_seconds=600,
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    assert service.auto_sync_due() is True
+    service.repository.append_history({
+        "id": "recent",
+        "sync_type": "manual",
+        "status": "success",
+        "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat().replace("+00:00", "Z"),
+    })
+    assert service.auto_sync_due() is False
+
+
+def test_public_config_marks_test_sign_as_integration_bridge(tmp_path: Path):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=FakeChangLianClient,
+    )
+    public = service.public_config()
+    assert public["auth_mode"] == "test_sign_bridge"
+    assert public["auto_sync_interval_seconds"] == 600

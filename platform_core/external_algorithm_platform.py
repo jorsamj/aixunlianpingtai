@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 import requests
 from fastapi import APIRouter, Query
-from filelock import FileLock
+from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms, save_algorithms
@@ -28,6 +28,7 @@ SOURCE_EXTERNAL = "EXTERNAL"
 CONFIG_SCHEMA_VERSION = 1
 CACHE_SCHEMA_VERSION = 1
 MAX_SYNC_HISTORY = 100
+DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 600
 
 
 def utc_now() -> str:
@@ -76,6 +77,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "provider": "changlian",
     "base_url": "",
     "auto_sync_enabled": False,
+    "auto_sync_interval_seconds": DEFAULT_AUTO_SYNC_INTERVAL_SECONDS,
     "auto_publish_enabled": False,
     "credential_ref": secret_ref("external-platform", "changlian"),
     "endpoints": asdict(ChangLianEndpoints()),
@@ -99,6 +101,7 @@ class ExternalPlatformConfigPayload(BaseModel):
     provider: Literal["changlian"] = "changlian"
     base_url: str = ""
     auto_sync_enabled: bool = False
+    auto_sync_interval_seconds: int = Field(default=DEFAULT_AUTO_SYNC_INTERVAL_SECONDS, ge=60, le=86400)
     auto_publish_enabled: bool = False
     access_key: Optional[str] = None
     access_secret: Optional[str] = None
@@ -150,6 +153,7 @@ class ExternalPlatformRepository:
             "provider": str(value.get("provider") or "changlian"),
             "base_url": normalize_base_url(value.get("base_url")),
             "auto_sync_enabled": bool(value.get("auto_sync_enabled", False)),
+            "auto_sync_interval_seconds": max(60, min(86400, int(value.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS))),
             "auto_publish_enabled": bool(value.get("auto_publish_enabled", False)),
             "credential_ref": current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"],
             "endpoints": asdict(ChangLianEndpoints.from_mapping(value.get("endpoints"))),
@@ -624,7 +628,9 @@ class ExternalAlgorithmPlatformService:
             "provider_name": "新畅联" if config.get("provider") == "changlian" else config.get("provider"),
             "base_url": config.get("base_url", ""),
             "auto_sync_enabled": bool(config.get("auto_sync_enabled")),
+            "auto_sync_interval_seconds": int(config.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
             "auto_publish_enabled": bool(config.get("auto_publish_enabled")),
+            "auth_mode": "test_sign_bridge",
             "credentials": state,
             "endpoints": config.get("endpoints") or asdict(ChangLianEndpoints()),
             "updated_at": config.get("updated_at"),
@@ -685,7 +691,13 @@ class ExternalAlgorithmPlatformService:
     def test_connection(self) -> Dict[str, Any]:
         return self._client().probe()
 
-    def sync(self, *, project_id: str, algorithms_path: Path) -> Dict[str, Any]:
+    def sync(
+        self,
+        *,
+        project_id: str,
+        algorithms_path: Path,
+        sync_type: Literal["manual", "auto"] = "manual",
+    ) -> Dict[str, Any]:
         config = self.repository.config()
         if str(config.get("mode") or "local") != "external":
             raise PlatformError(
@@ -700,7 +712,7 @@ class ExternalAlgorithmPlatformService:
             "id": hashlib.sha256(f"{project_id}:{started_at}".encode()).hexdigest()[:16],
             "project_id": project_id,
             "provider": "changlian",
-            "sync_type": "manual",
+            "sync_type": sync_type,
             "status": "running",
             "started_at": started_at,
         }
@@ -772,6 +784,32 @@ class ExternalAlgorithmPlatformService:
             ) from error
 
 
+    def auto_sync_due(self, *, now: Optional[datetime] = None) -> bool:
+        config = self.repository.config()
+        if str(config.get("mode") or "local") != "external":
+            return False
+        if not bool(config.get("auto_sync_enabled")):
+            return False
+        if not str(config.get("base_url") or "").strip():
+            return False
+        interval = max(60, min(86400, int(config.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS)))
+        history = self.repository.history()
+        latest = history[0] if history else None
+        if not latest:
+            return True
+        stamp = latest.get("finished_at") or latest.get("started_at")
+        if not stamp:
+            return True
+        try:
+            last = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return (current - last).total_seconds() >= interval
+
+
 def external_algorithm_platform_router(
     *,
     data_dir: Path,
@@ -784,6 +822,61 @@ def external_algorithm_platform_router(
         data_dir=Path(data_dir),
         secret_store_factory=secret_store_factory,
     )
+    auto_sync_lock = FileLock(str(service.repository.root / ".auto-sync-worker.lock"), timeout=0)
+
+    def _auto_sync_projects() -> list[str]:
+        projects_path = Path(data_dir) / "projects.json"
+        if not projects_path.exists():
+            return []
+        try:
+            rows = json.loads(projects_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(rows, list):
+            return []
+        result: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            project_id = str(row.get("id") or "").strip()
+            if project_id:
+                result.append(project_id)
+        return result
+
+    def _auto_sync_once() -> None:
+        if not service.auto_sync_due():
+            return
+        try:
+            with auto_sync_lock.acquire(timeout=0):
+                if not service.auto_sync_due():
+                    return
+                for project_id in _auto_sync_projects():
+                    try:
+                        get_project(project_id)
+                        service.sync(
+                            project_id=project_id,
+                            algorithms_path=algorithms_file(project_id),
+                            sync_type="auto",
+                        )
+                    except Exception:
+                        # sync() records provider failures; one project must not stop the worker.
+                        continue
+        except Timeout:
+            return
+
+    def _auto_sync_loop() -> None:
+        while True:
+            try:
+                _auto_sync_once()
+            except Exception:
+                pass
+            time.sleep(30)
+
+    threading.Thread(
+        target=_auto_sync_loop,
+        name="external-algorithm-platform-auto-sync",
+        daemon=True,
+    ).start()
 
     @router.get("/config")
     def get_config():
@@ -812,7 +905,7 @@ def external_algorithm_platform_router(
     @router.post("/sync")
     def sync(project_id: str = Query(..., min_length=1)):
         get_project(project_id)
-        return service.sync(project_id=project_id, algorithms_path=algorithms_file(project_id))
+        return service.sync(project_id=project_id, algorithms_path=algorithms_file(project_id), sync_type="manual")
 
     @router.get("/sync-history")
     def sync_history(limit: int = Query(default=20, ge=1, le=100)):

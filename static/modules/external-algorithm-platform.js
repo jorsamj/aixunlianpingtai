@@ -42,7 +42,9 @@ export function normalizeExternalPlatformConfig(body = {}) {
     providerName: config.provider_name || '新畅联',
     baseUrl: config.base_url || '',
     autoSyncEnabled: Boolean(config.auto_sync_enabled),
+    autoSyncIntervalSeconds: Number(config.auto_sync_interval_seconds || 600),
     autoPublishEnabled: Boolean(config.auto_publish_enabled),
+    authMode: config.auth_mode || 'test_sign_bridge',
     credentials: config.credentials || {configured: false, masked: ''},
     endpoints: {
       test_sign: endpoints.test_sign || '/internal/auth/test-sign',
@@ -93,6 +95,7 @@ export function installExternalAlgorithmPlatformRuntime({
   const state = () => getState?.() || {};
   let config = null;
   let history = [];
+  let cacheData = {categories: [], products: [], analyses_by_product: {}, compute_platforms: []};
   let loading = false;
   let destroyed = false;
   let renderQueued = false;
@@ -119,6 +122,17 @@ export function installExternalAlgorithmPlatformRuntime({
       const body = await requestJson(`${API_ROOT}/sync-history?limit=20`);
       history = Array.isArray(body?.items) ? body.items : [];
       return history;
+    } catch (error) {
+      if (!silent) notify?.(error?.message || error);
+      throw error;
+    }
+  }
+
+  async function loadCache({silent = false} = {}) {
+    try {
+      const body = await requestJson(`${API_ROOT}/cache`);
+      cacheData = body?.cache || {categories: [], products: [], analyses_by_product: {}, compute_platforms: []};
+      return cacheData;
     } catch (error) {
       if (!silent) notify?.(error?.message || error);
       throw error;
@@ -245,7 +259,7 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="field"><label>服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com"></div>
             <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" placeholder="${escapeHtml(c.credentials?.masked || '未配置')}"></div>
             <div class="field"><label>AccessSecret</label><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" placeholder="${c.credentials?.configured ? '已配置，留空表示不修改' : '请输入 AccessSecret'}"></div>
-            <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（配置预留）</label>
+            <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（后台每 ${Math.round(c.autoSyncIntervalSeconds / 60)} 分钟检查）</label>
             <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布（下一阶段启用）</label>
           </div>
           <div class="row end"><button class="btn primary" id="externalPlatformSave">保存配置</button></div>
@@ -264,8 +278,11 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="stat"><div class="k">算力环境</div><div class="v">${Number(cache.compute_platform_count || 0)}</div></div>
           </div>
           ${last?.status === 'failed' ? `<div class="alert warn">${escapeHtml(last.error || '同步失败')}：${escapeHtml(last.detail || '')}</div>` : ''}
+          ${c.authMode === 'test_sign_bridge' ? '<div class="alert warn">当前鉴权使用新畅联 /internal/auth/test-sign 联调辅助接口生成签名参数。待新畅联提供正式签名算法规范后，应切换为本地签名实现。</div>' : ''}
         </div>
       </section>
+
+      ${masterDataPreviewHtml()}
 
       <section class="panel">
         <div class="panel-head"><div><div class="panel-title">接口路径</div><div class="subline">鉴权路径按当前新畅联文档预置；业务路径可按实际部署前缀调整。</div></div></div>
@@ -298,6 +315,31 @@ export function installExternalAlgorithmPlatformRuntime({
     </section>`;
   }
 
+  function masterDataPreviewHtml() {
+    const categories = Array.isArray(cacheData?.categories) ? cacheData.categories.slice(0, 12) : [];
+    const products = Array.isArray(cacheData?.products) ? cacheData.products.slice(0, 20) : [];
+    const categoryRows = categories.length ? categories.map(row => `<tr>
+      <td>${escapeHtml(row.categoryName || row.name || '-')}</td>
+      <td>${escapeHtml(row.categoryId || row.id || '-')}</td>
+      <td>${escapeHtml(row.parentId || '-')}</td>
+    </tr>`).join('') : '<tr><td colspan="3">尚未同步算法品目</td></tr>';
+    const productRows = products.length ? products.map(row => `<tr>
+      <td>${escapeHtml(row.productName || row.name || '-')}</td>
+      <td>${escapeHtml(row.productCode || row.code || '-')}</td>
+      <td>${escapeHtml(row.productId || row.id || '-')}</td>
+      <td>${escapeHtml(row.categoryName || row.category?.categoryName || row.categoryId || '-')}</td>
+    </tr>`).join('') : '<tr><td colspan="4">尚未同步算法产品</td></tr>';
+    return `<section class="panel">
+      <div class="panel-head"><div><div class="panel-title">已同步主数据</div><div class="subline">这里只读展示新畅联缓存；名称、品目和产品基础信息仍以新畅联为准。</div></div></div>
+      <div class="panel-body">
+        <div class="panel-title" style="margin-bottom:10px">算法品目</div>
+        <table class="table"><thead><tr><th>品目名称</th><th>品目 ID</th><th>父级 ID</th></tr></thead><tbody>${categoryRows}</tbody></table>
+        <div class="panel-title" style="margin:18px 0 10px">算法产品</div>
+        <table class="table"><thead><tr><th>算法名称</th><th>产品编码</th><th>Product ID</th><th>品目</th></tr></thead><tbody>${productRows}</tbody></table>
+      </div>
+    </section>`;
+  }
+
   function endpointField(key, label, value) {
     return `<div class="field"><label>${escapeHtml(label)}</label><input class="input" data-external-endpoint="${escapeHtml(key)}" value="${escapeHtml(value || '')}"></div>`;
   }
@@ -323,6 +365,7 @@ export function installExternalAlgorithmPlatformRuntime({
       provider: document.getElementById('externalProvider')?.value || 'changlian',
       base_url: document.getElementById('externalBaseUrl')?.value.trim() || '',
       auto_sync_enabled: Boolean(document.getElementById('externalAutoSync')?.checked),
+      auto_sync_interval_seconds: config?.autoSyncIntervalSeconds || 600,
       auto_publish_enabled: Boolean(document.getElementById('externalAutoPublish')?.checked),
       access_key: document.getElementById('externalAccessKey')?.value.trim() || null,
       access_secret: document.getElementById('externalAccessSecret')?.value || null,
@@ -367,7 +410,7 @@ export function installExternalAlgorithmPlatformRuntime({
     try {
       const body = await requestJson(`${API_ROOT}/sync?project_id=${encodeURIComponent(pid)}`, {method: 'POST'});
       const counts = body?.sync?.counts || {};
-      await Promise.all([loadConfig({silent: true}), loadHistory({silent: true})]);
+      await Promise.all([loadConfig({silent: true}), loadHistory({silent: true}), loadCache({silent: true})]);
       await algorithmListRuntime?.refresh?.({render: String(state().page || '') === '算法列表'});
       notify?.(`同步完成：算法新增 ${counts.added || 0}，更新 ${counts.updated || 0}`);
       if (String(state().page || '') === PAGE) await render({reload: false});
@@ -401,12 +444,14 @@ export function installExternalAlgorithmPlatformRuntime({
     if (!config) view.innerHTML = '<div class="empty">正在读取平台对接配置…</div>';
     try {
       if (reload || !config) {
-        const [nextConfig, nextHistory] = await Promise.all([
+        const [nextConfig, nextHistory, nextCache] = await Promise.all([
           loadConfig({silent: true}),
           loadHistory({silent: true}),
+          loadCache({silent: true}),
         ]);
         config = nextConfig;
         history = nextHistory;
+        cacheData = nextCache;
       }
       if (String(state().page || '') !== PAGE) return false;
       view.innerHTML = configFormHtml(config);
@@ -433,6 +478,7 @@ export function installExternalAlgorithmPlatformRuntime({
     page: PAGE,
     loadConfig,
     loadHistory,
+    loadCache,
     render,
     save,
     testConnection,
