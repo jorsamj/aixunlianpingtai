@@ -1,0 +1,46 @@
+name: Algorithm SQL Read Bypass One Shot
+
+on:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - tools/fix_algorithm_sql_read_bypass.py
+      - .github/workflows/algorithm-sql-read-bypass-one-shot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/external-algorithm-publishing
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring pillow pyyaml
+      - name: Apply exact one-shot patch
+        run: python tools/fix_algorithm_sql_read_bypass.py
+      - name: Verify syntax and focused contracts
+        run: |
+          python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/algorithms.py
+          PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
+          test "$(cat VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Commit durable fix
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py tests/unit/test_algorithm_sql_app_contract.py .github/workflows/algorithm-sql-store.yml
+          git commit -m "fix: route algorithm bootstrap counts through SQL store"
+          git push origin HEAD:feature/external-algorithm-publishing
