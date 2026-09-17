@@ -159,6 +159,13 @@ def _new_token(node_id: str) -> tuple[str, str]:
     return token, _token_hash(node_id, token)
 
 
+def verify_service_node_token(node_id: str, token: str, expected_hash: str) -> bool:
+    """Compare one Agent token against an already-read authoritative hash."""
+    key = _node_id(node_id)
+    supplied = _text(token, field="agent_token", limit=512, required=True)
+    return hmac.compare_digest(str(expected_hash or ""), _token_hash(key, supplied))
+
+
 class ServiceNodeRepository:
     def __init__(self, task_repository, *, heartbeat_ttl_seconds: int = HEARTBEAT_TTL_SECONDS):
         self.task_repository = task_repository
@@ -382,8 +389,7 @@ class ServiceNodeRepository:
         """Verify one Agent token without exposing the persisted token hash."""
         key = _node_id(node_id)
         row = self._require_row(key)
-        supplied = _text(token, field="agent_token", limit=512, required=True)
-        if not hmac.compare_digest(str(row["token_hash"]), _token_hash(key, supplied)):
+        if not verify_service_node_token(key, token, str(row["token_hash"])):
             raise ServiceNodeError("INVALID_NODE_TOKEN", "invalid service node token", 401)
 
     def heartbeat(self, node_id: str, token: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -539,4 +545,5 @@ __all__ = [
     "ServiceNodeError",
     "ServiceNodeRepository",
     "service_node_router",
+    "verify_service_node_token",
 ]
