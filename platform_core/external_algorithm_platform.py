@@ -19,6 +19,7 @@ from .algorithm_sql_store import AlgorithmSqlStore
 from .algorithms import list_algorithms
 from .annotations import atomic_write_json
 from .errors import PlatformError
+from .integration_audit import IntegrationAuditRepository
 from .secrets import SecretCredentialStore, secret_ref
 
 
@@ -298,6 +299,7 @@ class ChangLianClient:
         endpoints: ChangLianEndpoints,
         session: Optional[requests.Session] = None,
         timeout: float = 15.0,
+        audit_callback: Optional[Callable[[Mapping[str, Any]], Any]] = None,
     ):
         self.base_url = normalize_base_url(base_url)
         self.access_key = str(access_key or "").strip()
@@ -309,6 +311,8 @@ class ChangLianClient:
         self._token_type = "Bearer"
         self._token_expires_at = 0.0
         self._token_lock = threading.Lock()
+        self.audit_callback = audit_callback
+        self.audit_context: Dict[str, Any] = {}
         if not self.access_key or not self.access_secret:
             raise PlatformError(
                 "EXTERNAL_PLATFORM_CREDENTIAL_REQUIRED",
@@ -321,12 +325,52 @@ class ChangLianClient:
     def _url(self, path: str) -> str:
         return urljoin(self.base_url + "/", str(path or "").lstrip("/"))
 
+    def set_audit_context(self, **context: Any) -> None:
+        self.audit_context.update({key: value for key, value in context.items() if value not in (None, "")})
+
+    def _operation_for_path(self, path: str) -> str:
+        current = str(path or "").split("?", 1)[0]
+        exact = {
+            self.endpoints.test_sign: "auth_signature",
+            self.endpoints.token: "auth_token",
+            self.endpoints.category_tree: "category_list",
+            self.endpoints.product_list: "product_list",
+            self.endpoints.compute_platform_list: "compute_platform_list",
+            self.endpoints.version_create: "version_create",
+            self.endpoints.weight_create: "weight_create",
+        }
+        if current in exact:
+            return exact[current]
+        if "algorithm-product-analysis" in current:
+            return "analysis_list"
+        if "algorithm-version" in current:
+            return "version_list"
+        if "algorithm-weight" in current:
+            return "weight_list"
+        return "http_request"
+
+    def _emit_audit(self, event: Mapping[str, Any]) -> None:
+        if not self.audit_callback:
+            return
+        try:
+            self.audit_callback({"provider": "changlian", **self.audit_context, **dict(event)})
+        except Exception:
+            # Audit persistence must never change remote-call semantics.
+            pass
+
     def _request(self, method: str, path: str, *, auth: bool = False, **kwargs: Any) -> Any:
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Accept", "application/json")
         if auth:
             token_type, token = self.token()
             headers["Authorization"] = f"{token_type} {token}".strip()
+        started = time.perf_counter()
+        correlation_id = hashlib.sha256(f"{time.time_ns()}:{method}:{path}".encode()).hexdigest()[:24]
+        request_snapshot = {
+            "headers": headers,
+            "params": kwargs.get("params") or {},
+            "json": kwargs.get("json") or {},
+        }
         try:
             response = self.session.request(
                 method.upper(),
@@ -336,18 +380,45 @@ class ChangLianClient:
                 **kwargs,
             )
         except requests.RequestException as error:
+            self._emit_audit({
+                "operation": self._operation_for_path(path), "status": "UNKNOWN", "method": method,
+                "endpoint": str(path), "duration_ms": int((time.perf_counter() - started) * 1000),
+                "correlation_id": correlation_id, "request": request_snapshot,
+                "error_code": type(error).__name__, "error_message": str(error),
+            })
             raise RuntimeError(f"无法连接外部平台：{type(error).__name__}") from error
-        if not 200 <= response.status_code < 300:
-            message = ""
-            try:
-                body = response.json()
-                if isinstance(body, dict):
-                    message = str(body.get("message") or body.get("msg") or body.get("detail") or "")
-            except ValueError:
-                pass
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"raw": str(getattr(response, "text", ""))[:2000]}
+        response_headers = getattr(response, "headers", {}) or {}
+        request_id = str(
+            response_headers.get("X-Request-Id") or response_headers.get("X-Request-ID")
+            or response_headers.get("X-Correlation-Id") or response_headers.get("Trace-Id") or ""
+        )
+        business_code = str(body.get("code") or "") if isinstance(body, dict) else ""
+        business_failed = bool(
+            isinstance(body, dict)
+            and (body.get("success") is False or (body.get("code") is not None and business_code not in {"0", "200", "SUCCESS", "success"}))
+        )
+        http_ok = 200 <= response.status_code < 300
+        message = ""
+        if isinstance(body, dict):
+            message = str(body.get("message") or body.get("msg") or body.get("detail") or "")
+        self._emit_audit({
+            "operation": self._operation_for_path(path),
+            "status": "SUCCESS" if http_ok and not business_failed else "FAILED",
+            "method": method, "endpoint": str(path), "http_status": response.status_code,
+            "business_code": business_code, "duration_ms": int((time.perf_counter() - started) * 1000),
+            "request_id": request_id, "correlation_id": correlation_id,
+            "request": request_snapshot, "response": body,
+            "error_code": business_code if (business_failed or not http_ok) else "",
+            "error_message": message if (business_failed or not http_ok) else "",
+        })
+        if not http_ok:
             suffix = f"：{message}" if message else ""
             raise RuntimeError(f"外部平台请求失败 HTTP {response.status_code}{suffix}")
-        return _ResponseAdapter.json(response)
+        return body
 
     def _signature(self) -> Dict[str, str]:
         payload = {"accessKey": self.access_key, "accessSecret": self.access_secret}
@@ -609,6 +680,7 @@ class ExternalAlgorithmPlatformService:
         self.repository = ExternalPlatformRepository(Path(data_dir))
         self.secret_store_factory = secret_store_factory
         self.client_factory = client_factory
+        self.audit = IntegrationAuditRepository(Path(data_dir))
 
     def _credential_store(self) -> SecretCredentialStore:
         return SecretCredentialStore(self.secret_store_factory())
@@ -698,6 +770,7 @@ class ExternalAlgorithmPlatformService:
             access_key=access_key,
             access_secret=access_secret,
             endpoints=endpoints,
+            audit_callback=self.audit.record,
         )
 
     def _client(self) -> ChangLianClient:
@@ -1004,6 +1077,31 @@ def external_algorithm_platform_router(
     @router.get("/sync-history")
     def sync_history(limit: int = Query(default=20, ge=1, le=100)):
         return {"ok": True, "items": service.repository.history()[:limit]}
+
+    @router.get("/interaction-logs/summary")
+    def interaction_log_summary(hours: int = Query(default=24, ge=1, le=720)):
+        return {"ok": True, "summary": service.audit.summary(provider="changlian", hours=hours)}
+
+    @router.get("/interaction-logs")
+    def interaction_logs(
+        status: str = Query(default=""), operation: str = Query(default=""),
+        project_id: str = Query(default=""), limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ):
+        return {
+            "ok": True,
+            "items": service.audit.list(
+                provider="changlian", status=status, operation=operation, project_id=project_id,
+                limit=limit, offset=offset,
+            ),
+        }
+
+    @router.get("/interaction-logs/{log_id}")
+    def interaction_log_detail(log_id: str):
+        item = service.audit.get(log_id)
+        if item is None:
+            raise PlatformError("INTERACTION_LOG_NOT_FOUND", "交互日志不存在", log_id, "请刷新日志列表。", 404)
+        return {"ok": True, "item": item}
 
     @router.get("/cache")
     def cache():

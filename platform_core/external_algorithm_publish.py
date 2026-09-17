@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms, update_algorithm_version
 from .errors import PlatformError
+from .integration_audit import IntegrationAuditRepository
+from .model_artifacts import ModelArtifactConfigPayload, ModelArtifactService, StorageTestPayload
 from .external_algorithm_platform import (
     DEFAULT_CONFIG as EXTERNAL_PLATFORM_DEFAULT_CONFIG,
     PROVIDER_CHANGLIAN,
@@ -366,6 +368,19 @@ class ExternalAlgorithmPublishService:
         self.client_factory = client_factory
         self.repository = ExternalPublicationRepository(self.data_dir)
         self.external_repository = ExternalPlatformRepository(self.data_dir)
+        self.audit = IntegrationAuditRepository(self.data_dir)
+        self.model_assets = ModelArtifactService(
+            data_dir=self.data_dir, project_dir=self.project_dir, algorithms_file=self.algorithms_file,
+            storage_sources_factory=self.storage_sources_factory,
+            storage_credentials_factory=self.storage_credentials_factory,
+        )
+        legacy_publish = self.repository.config()
+        asset_config = self.model_assets.repository.config()
+        if not str(asset_config.get("storage_source_id") or "") and str(legacy_publish.get("storage_source_id") or ""):
+            self.model_assets.save_config(ModelArtifactConfigPayload(
+                storage_source_id=str(legacy_publish.get("storage_source_id") or ""),
+                object_prefix="model-assets", auto_upload_enabled=True,
+            ))
 
     def public_config(self) -> Dict[str, Any]:
         config = self.repository.config()
@@ -396,7 +411,16 @@ class ExternalAlgorithmPublishService:
                 "ARTIFACT_PUBLIC_URL_INVALID", "模型下载服务地址格式不正确", str(payload.public_base_url),
                 "请填写以 http:// 或 https:// 开头的本平台外部访问地址。", 422,
             )
-        return self.repository.save_config(payload)
+        saved = self.repository.save_config(payload)
+        # Backward compatible: an existing publication storage choice becomes the platform model-asset storage.
+        if source_id:
+            current = self.model_assets.repository.config()
+            self.model_assets.save_config(ModelArtifactConfigPayload(
+                storage_source_id=source_id,
+                object_prefix=str(current.get("object_prefix") or "model-assets"),
+                auto_upload_enabled=bool(current.get("auto_upload_enabled", True)),
+            ))
+        return saved
 
     def _external_client(self) -> PublishingChangLianClient:
         config = self.external_repository.config()
@@ -412,6 +436,7 @@ class ExternalAlgorithmPublishService:
             access_key=str(credentials.get("access_key_id") or ""),
             access_secret=str(credentials.get("access_secret") or ""),
             endpoints=ChangLianEndpoints.from_mapping(config.get("endpoints")),
+            audit_callback=self.audit.record,
         )
 
     def _provider(self, project_id: str, source_id: str):
@@ -584,57 +609,34 @@ class ExternalAlgorithmPublishService:
         return version_id
 
     def _upload_artifact(self, artifact: Mapping[str, Any], algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> Dict[str, Any]:
-        config = self.repository.config()
-        source_id = str(config.get("storage_source_id") or "")
-        base_url = str(config.get("public_base_url") or "").rstrip("/")
-        if not source_id or not base_url:
+        base_url = str(self.repository.config().get("public_base_url") or "").rstrip("/")
+        if not base_url:
             raise PlatformError(
-                "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE", "模型发布配置不完整", "缺少模型存储源或本平台外部访问地址。",
-                "请在“平台对接 → 训练成果发布”选择 OSS/S3/MinIO/本地存储源，并填写外部访问地址。", 422,
+                "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE", "模型发布配置不完整", "缺少本平台外部访问地址。",
+                "请在“平台对接 → 畅联云版本发布”填写外部访问地址。", 422,
             )
-        current = self.repository.artifact(str(artifact["artifact_id"])) or dict(artifact)
-        provider = self._provider(str(artifact["project_id"]), source_id)
-        source_path = Path(str(artifact["source_path"])).resolve()
-        digest = str(artifact.get("source_sha256") or artifact.get("sha256") or "").strip()
-        if not digest:
-            if not source_path.is_file():
-                raise PlatformError(
-                    "MODEL_ARTIFACT_SOURCE_MISSING", "模型制品源文件不存在", str(source_path),
-                    "请恢复转换产物后重新同步。", 409,
-                )
-            digest = _sha256(source_path)
-        product_segment = _safe_segment(algorithm.get("external_product_id"), "product")
-        version_segment = _safe_segment(version.get("version_name") or version.get("id"), "version")
-        object_key = str(current.get("object_key") or f"published-models/{product_segment}/{version_segment}/{digest[:16]}-{_safe_segment(artifact['file_name'], 'model.bin')}")
-        already_uploaded = str(current.get("upload_status") or "").upper() == "UPLOADED" and str(current.get("storage_source_id") or "") == source_id
-        if already_uploaded:
-            try:
-                meta = provider.stat(object_key)
-                if int(meta.size_bytes) == int(artifact["size_bytes"]) and (not meta.sha256 or meta.sha256 == digest):
-                    return current
-            except Exception:
-                pass
-        try:
-            if provider.exists(object_key):
-                meta = provider.stat(object_key)
-                if int(meta.size_bytes) != int(artifact["size_bytes"]) or (meta.sha256 and meta.sha256 != digest):
-                    raise RuntimeError("同名对象已存在但内容校验不一致")
-            else:
-                meta = provider.upload(
-                    object_key, source_path,
-                    content_type=mimetypes.guess_type(source_path.name)[0] or "application/octet-stream",
-                    metadata={"sha256": digest, "algorithm": str(algorithm.get("id") or ""), "version": str(version.get("id") or "")},
-                )
-            if int(meta.size_bytes) != int(artifact["size_bytes"]):
-                raise RuntimeError("上传后文件大小校验失败")
-            if meta.sha256 and meta.sha256 != digest:
-                raise RuntimeError("上传后 SHA256 校验失败")
-        except Exception as error:
-            self.repository.patch_artifact(str(artifact["artifact_id"]), storage_source_id=source_id, object_key=object_key, upload_status="FAILED", last_error=str(error))
-            raise
+        discovered = {
+            "artifact_id": str(artifact["artifact_id"]),
+            "project_id": str(artifact["project_id"]),
+            "algorithm_id": str(artifact["algorithm_id"]),
+            "version_id": str(artifact["version_id"]),
+            "artifact_kind": "original" if str(artifact.get("target") or "") == "original" else "conversion",
+            "target": str(artifact.get("target") or "unknown"),
+            "conversion_job_id": "",
+            "file_name": str(artifact["file_name"]),
+            "source_path": str(artifact["source_path"]),
+            "sha256": str(artifact.get("source_sha256") or artifact.get("sha256") or ""),
+            "size_bytes": int(artifact["size_bytes"]),
+            "metadata": {"chip_code": str(artifact.get("chip_code") or "")},
+        }
+        stored = self.model_assets.ensure_uploaded(discovered)
+        if str(stored.get("storage_status") or "").upper() != "UPLOADED":
+            raise RuntimeError(str(stored.get("storage_error") or "模型资产上传失败"))
         public_url = f"{base_url}/api/v64/model-artifacts/{artifact['artifact_id']}/download"
         return self.repository.patch_artifact(
-            str(artifact["artifact_id"]), storage_source_id=source_id, object_key=object_key,
+            str(artifact["artifact_id"]),
+            storage_source_id=str(stored.get("storage_source_id") or ""),
+            object_key=str(stored.get("object_key") or ""),
             public_url=public_url, upload_status="UPLOADED", last_error="",
         )
 
@@ -742,6 +744,12 @@ class ExternalAlgorithmPublishService:
         for item, mapping in selected:
             self.repository.upsert_artifact(str(publication["publication_key"]), item, mapping)
         client = self._external_client()
+        if hasattr(client, "set_audit_context"):
+            client.set_audit_context(
+                project_id=project_id, algorithm_id=algorithm_id, version_id=version_id,
+                external_product_id=str(algorithm.get("external_product_id") or ""),
+                external_analysis_id=str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or ""),
+            )
         external_version_id = self._ensure_external_version(publication, algorithm, version, client)
         failures: list[str] = []
         synced = 0
@@ -749,6 +757,8 @@ class ExternalAlgorithmPublishService:
             row = self.repository.artifact(str(item["artifact_id"])) or item
             try:
                 uploaded = self._upload_artifact(row, algorithm, version)
+                if hasattr(client, "set_audit_context"):
+                    client.set_audit_context(artifact_id=str(row.get("artifact_id") or ""), external_algo_version_id=external_version_id)
                 self._sync_weight(uploaded, external_version_id, client)
                 synced += 1
             except Exception as error:
@@ -787,7 +797,7 @@ class ExternalAlgorithmPublishService:
         return bool(
             str(external.get("mode") or "local") == "external"
             and bool(external.get("auto_publish_enabled"))
-            and publish.get("storage_source_id")
+            and self.model_assets.repository.config().get("storage_source_id")
             and publish.get("public_base_url")
         )
 
@@ -832,11 +842,18 @@ class ExternalAlgorithmPublishService:
         return summary
 
     def download(self, artifact_id: str):
-        artifact = self.repository.artifact(artifact_id)
-        if artifact is None or str(artifact.get("upload_status") or "").upper() != "UPLOADED":
-            raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型制品不存在或尚未上传", artifact_id, "请重新执行模型发布。", 404)
-        provider = self._provider(str(artifact["project_id"]), str(artifact["storage_source_id"]))
-        object_key = str(artifact["object_key"])
+        artifact = self.model_assets.repository.get(artifact_id)
+        if artifact is not None and str(artifact.get("storage_status") or "").upper() == "UPLOADED":
+            _row, provider = self.model_assets.download(artifact_id)
+            object_key = str(artifact["object_key"])
+            filename = str(artifact.get("file_name") or "model.bin").replace('"', "")
+        else:
+            artifact = self.repository.artifact(artifact_id)
+            if artifact is None or str(artifact.get("upload_status") or "").upper() != "UPLOADED":
+                raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型制品不存在或尚未上传", artifact_id, "请重新执行模型资产上传。", 404)
+            provider = self._provider(str(artifact["project_id"]), str(artifact["storage_source_id"]))
+            object_key = str(artifact["object_key"])
+            filename = str(artifact.get("file_name") or "model.bin").replace('"', "")
         url = provider.generate_preview_url(object_key, expires_seconds=600)
         if url:
             return RedirectResponse(url=url, status_code=302)
@@ -855,7 +872,6 @@ class ExternalAlgorithmPublishService:
                 except Exception:
                     pass
 
-        filename = str(artifact.get("file_name") or "model.bin").replace('"', "")
         return StreamingResponse(
             chunks(),
             media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
@@ -901,10 +917,16 @@ def external_algorithm_publish_router(
         storage_credentials_factory=storage_credentials_factory,
     )
     worker_lock = FileLock(str(service.repository.root / ".auto-publish-worker.lock"), timeout=0)
+    asset_worker_lock = FileLock(str(service.model_assets.repository.root / ".auto-upload-worker.lock"), timeout=0)
 
     def worker_loop() -> None:
         while True:
             try:
+                try:
+                    with asset_worker_lock.acquire(timeout=0):
+                        service.model_assets.run_auto_upload_once()
+                except Timeout:
+                    pass
                 if service.auto_publish_ready():
                     try:
                         with worker_lock.acquire(timeout=0):
@@ -920,6 +942,41 @@ def external_algorithm_publish_router(
     @router.get("/api/v64/external-publish/config")
     def get_publish_config():
         return {"ok": True, **service.public_config()}
+
+    @router.get("/api/v64/model-artifacts/config")
+    def get_model_artifact_config():
+        return {"ok": True, **service.model_assets.public_config()}
+
+    @router.put("/api/v64/model-artifacts/config")
+    def save_model_artifact_config(payload: ModelArtifactConfigPayload):
+        return {"ok": True, "config": service.model_assets.save_config(payload)}
+
+    @router.post("/api/v64/model-artifacts/storage-test")
+    def test_model_artifact_storage(payload: StorageTestPayload):
+        return service.model_assets.test_storage(payload.storage_source_id)
+
+    @router.get("/api/v64/model-artifacts")
+    def list_model_artifacts(
+        project_id: str = Query(default=""), algorithm_id: str = Query(default=""),
+        version_id: str = Query(default=""), status: str = Query(default=""),
+        limit: int = Query(default=100, ge=1, le=500), offset: int = Query(default=0, ge=0),
+    ):
+        return {
+            "ok": True,
+            "items": service.model_assets.repository.list(
+                project_id=project_id, algorithm_id=algorithm_id, version_id=version_id,
+                status=status, limit=limit, offset=offset,
+            ),
+            "summary": service.model_assets.repository.summary(project_id=project_id),
+        }
+
+    @router.post("/api/v64/model-artifacts/{artifact_id}/retry")
+    def retry_model_artifact(artifact_id: str):
+        return {"ok": True, "artifact": service.model_assets.retry(artifact_id)}
+
+    @router.post("/api/v64/model-artifacts/run-auto")
+    def run_model_artifact_auto_upload():
+        return {"ok": True, **service.model_assets.run_auto_upload_once()}
 
     @router.put("/api/v64/external-publish/config")
     def save_publish_config(payload: ExternalPublishConfigPayload):

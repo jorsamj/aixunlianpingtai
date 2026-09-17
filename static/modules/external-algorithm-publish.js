@@ -120,12 +120,11 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   function panelHtml() {
     const c = config || normalizePublishConfig({});
     return `<section class="panel" data-external-publish-panel="1">
-      <div class="panel-head"><div><div class="panel-title">训练成果发布</div><div class="subline">转换完成后将模型制品上传到选定对象存储，并把算法版本、算力环境、芯片和下载地址登记到新畅联。</div></div></div>
+      <div class="panel-head"><div><div class="panel-title">畅联云版本发布</div><div class="subline">模型文件统一从“模型资产存储”读取；这里仅配置畅联云版本/权重登记和算力环境映射。</div></div></div>
       <div class="panel-body">
         <div class="form two">
-          <div class="field"><label>模型制品存储源</label><select id="externalPublishStorage" class="select">${storageOptions(c.storageSourceId)}</select></div>
           <div class="field"><label>本平台外部访问地址</label><input id="externalPublishBaseUrl" class="input" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://algorithm.example.com"></div>
-          <label class="field check"><input id="externalPublishOriginal" type="checkbox" ${c.publishOriginalModel ? 'checked' : ''}> 同时发布原始训练权重（默认仅发布转换产物）</label>
+          <label class="field check"><input id="externalPublishOriginal" type="checkbox" ${c.publishOriginalModel ? 'checked' : ''}> 将原始训练权重也登记为畅联云权重（文件本身始终自动归档）</label>
         </div>
         <div class="panel-title" style="margin:18px 0 10px">转换目标 → 新畅联算力环境映射</div>
         <table class="table"><thead><tr><th>转换目标</th><th>算力环境</th><th>芯片编码</th></tr></thead><tbody>${mappingRows()}</tbody></table>
@@ -149,7 +148,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       };
     }
     return {
-      storage_source_id: document.getElementById('externalPublishStorage')?.value || '',
+      storage_source_id: config?.storageSourceId || '',
       public_base_url: document.getElementById('externalPublishBaseUrl')?.value.trim() || '',
       publish_original_model: Boolean(document.getElementById('externalPublishOriginal')?.checked),
       target_mappings: mappings,
