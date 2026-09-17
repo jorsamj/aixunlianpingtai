@@ -4,7 +4,7 @@ const STORAGE_PREFIX = 'mc_upload_task_center_v1:';
 const POLL_MS = 1200;
 const MAX_ROWS = 20;
 
-const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[char]));
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
 const upper = value => String(value || '').trim().toUpperCase();
 const nowIso = () => new Date().toISOString();
@@ -67,6 +67,8 @@ export function normalizeDurableUploadTask(task, row) {
     stage:task?.stage || task?.phase || row.stage,
     detail:task?.current_item || task?.message || task?.error || row.detail,
     updatedAt:task?.updated_at || nowIso(),
+    resumeRequired:false,
+    browserTransfer:false,
   });
 }
 
@@ -144,7 +146,6 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
           browserTransfer:false,
         });
       }
-      // Browser-local transfers cannot survive a refresh because File objects are not durable.
       if (row.kind === 'browser-upload' && isUploadTaskActive(row) && !row.serverUrl) {
         return mergeUploadTask(row, {status:'INTERRUPTED', stage:'上传已中断', detail:'页面刷新后需重新选择文件；已创建的后台任务会自动恢复显示。'});
       }
