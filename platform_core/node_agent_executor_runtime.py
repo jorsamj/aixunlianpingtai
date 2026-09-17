@@ -167,7 +167,13 @@ class NodeExecutorClient:
             ) from error
         try:
             body = response.json()
-        except ValueError:
+        except ValueError as error:
+            if response.ok:
+                raise NodeExecutorHTTPError(
+                    "NODE_EXECUTOR_INVALID_RESPONSE",
+                    "control plane returned non-JSON executor response",
+                    status_code=int(response.status_code),
+                ) from error
             body = {}
         if not response.ok:
             code, message = _json_error(
