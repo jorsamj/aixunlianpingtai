@@ -38,7 +38,7 @@ jobs:
       - name: Install focused Python dependencies
         run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring pillow pyyaml python-multipart httpx psutil
       - name: Backend external-platform contracts
-        run: pytest -q tests/unit/test_external_algorithm_platform.py
+        run: PYTHONPATH=. pytest -q tests/unit/test_external_algorithm_platform.py
       - name: Frontend external-platform contracts
         run: node --test tests/frontend/external-algorithm-platform.test.mjs
       - name: Syntax and wiring guards
