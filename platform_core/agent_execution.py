@@ -106,11 +106,12 @@ class AgentExecutionService:
         node_token: str,
         *,
         require_online: bool,
+        require_enabled: bool = True,
         required_capability: str | None = None,
     ) -> dict[str, Any]:
         self.nodes.authenticate(node_id, node_token)
         node = self.nodes.get_public(node_id)
-        if not node["enabled"]:
+        if require_enabled and not node["enabled"]:
             raise AgentExecutionError("NODE_DISABLED", "service node is disabled", 409)
         if require_online and not node["reachable"]:
             raise AgentExecutionError("NODE_OFFLINE", "service node heartbeat is stale", 409)
@@ -153,6 +154,29 @@ class AgentExecutionService:
         assignment_lease_token: str,
     ) -> dict[str, Any]:
         self.nodes.authenticate(node_id, node_token)
+        preflight_task = self.repository.get(task_id)
+        if preflight_task is None:
+            raise AgentExecutionError("TASK_NOT_FOUND", "assigned task no longer exists", 404)
+        missing_payload = object()
+        try:
+            payload = self.artifacts.read_json(
+                preflight_task.task_id,
+                preflight_task.payload_ref,
+                default=missing_payload,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "assigned task payload cannot be read",
+                409,
+            ) from error
+        if payload is missing_payload:
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "assigned task payload does not exist",
+                409,
+            )
+
         current, now = _iso_now()
         execution_expires = (
             current + timedelta(seconds=self.execution_lease_seconds)
@@ -315,7 +339,6 @@ class AgentExecutionService:
             database.commit()
 
         task = _from_row(started_row)
-        payload = self.artifacts.read_json(task.task_id, task.payload_ref, default={})
         return {
             "task": _task_public(task),
             "execution": {
@@ -348,7 +371,12 @@ class AgentExecutionService:
         execution_lease_token: str,
         execution_generation: int,
     ):
-        self._authenticate_node(node_id, node_token, require_online=False)
+        self._authenticate_node(
+            node_id,
+            node_token,
+            require_online=False,
+            require_enabled=False,
+        )
         try:
             task = self.fenced.assert_execution(
                 task_id,
@@ -432,6 +460,15 @@ class AgentExecutionService:
                 f"one remote log append exceeds {MAX_REMOTE_LOG_BYTES} bytes",
                 413,
             )
+        # Re-check immediately before publishing the append. Logs are append-only,
+        # but a stale generation must still be fenced from writing after takeover.
+        task = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
         self.artifacts.append_log(task.task_id, task.log_ref, value)
         return {"ok": True, "bytes": len(value.encode("utf-8"))}
 
@@ -521,6 +558,24 @@ class AgentExecutionService:
         return {"task": _task_public(task)}
 
 
+def _execution_generation(value: object) -> int:
+    try:
+        generation = int(value)
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "INVALID_EXECUTION_GENERATION",
+            "execution_generation must be a positive integer",
+            422,
+        ) from error
+    if generation <= 0:
+        raise AgentExecutionError(
+            "INVALID_EXECUTION_GENERATION",
+            "execution_generation must be a positive integer",
+            422,
+        )
+    return generation
+
+
 def _bearer_token(value: object) -> str:
     raw = str(value or "").strip()
     if not raw.lower().startswith("bearer ") or not raw[7:].strip():
@@ -594,7 +649,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            int(payload.get("execution_generation") or 0),
+            _execution_generation(payload.get("execution_generation")),
             progress=payload.get("progress"),
             stage=payload.get("stage"),
             current_item=payload.get("current_item"),
@@ -613,7 +668,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            int(payload.get("execution_generation") or 0),
+            _execution_generation(payload.get("execution_generation")),
             str(payload.get("text") or ""),
         )
 
@@ -630,7 +685,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            int(payload.get("execution_generation") or 0),
+            _execution_generation(payload.get("execution_generation")),
         )
 
     @router.post("/executions/{task_id}/finish")
@@ -646,7 +701,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            int(payload.get("execution_generation") or 0),
+            _execution_generation(payload.get("execution_generation")),
             status=str(payload.get("status") or ""),
             result_ref=payload.get("result_ref"),
             error=payload.get("error"),
