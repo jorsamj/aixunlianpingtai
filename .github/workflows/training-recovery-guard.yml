@@ -7,12 +7,21 @@ on:
     paths:
       - platform_core/training_recovery_api.py
       - platform_core/training_recovery_tasks.py
+      - platform_core/training_checkpoint_resume_tasks.py
+      - platform_core/worker_registry.py
       - platform_core/material_batches.py
+      - train_checkpoint_resume_worker.py
+      - static/index.html
+      - static/training-checkpoint-resume-bootstrap.mjs
+      - static/modules/training-checkpoint-resume-ui.js
       - static/modules/training-recovery-runtime.js
       - static/modules/training-task-runtime.js
       - static/main.mjs
+      - tests/test_training_checkpoint_resume.py
       - tests/unit/test_training_recovery_api.py
+      - tests/frontend/training-checkpoint-resume-ui.test.mjs
       - tests/frontend/training-recovery-runtime.test.mjs
+      - tests/browser/training-checkpoint-resume.spec.mjs
       - tests/browser/training-recovery.spec.mjs
       - .github/workflows/training-recovery-guard.yml
   workflow_dispatch:
@@ -72,6 +81,60 @@ jobs:
             exit 1
           fi
 
+  checkpoint-resume-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Compile checkpoint resume runtime
+        run: >-
+          python -m py_compile
+          train_checkpoint_resume_worker.py
+          platform_core/training_checkpoint_resume_tasks.py
+          platform_core/worker_registry.py
+
+      - name: Backend checkpoint resume contracts
+        run: python -m pytest -q tests/test_training_checkpoint_resume.py
+
+      - name: Frontend checkpoint resume contracts
+        run: |
+          node --check static/modules/training-checkpoint-resume-ui.js
+          node --check static/training-checkpoint-resume-bootstrap.mjs
+          node --test tests/frontend/training-checkpoint-resume-ui.test.mjs
+
+      - name: Permanent checkpoint resume guards
+        shell: bash
+        run: |
+          grep -Fq '"training": "platform_core.training_checkpoint_resume_tasks"' platform_core/worker_registry.py
+          grep -Fq 'model.train(resume=True, device=logical_device)' train_checkpoint_resume_worker.py
+          grep -Fq 'stage=RESUME_STAGE' platform_core/training_checkpoint_resume_tasks.py
+          grep -Fq 'resume_checkpoint_sha256' platform_core/training_checkpoint_resume_tasks.py
+          grep -Fq 'training-checkpoint-resume-bootstrap.mjs?v=422531' static/index.html
+          grep -Fq "const RESUME_MODE = 'training_checkpoint_resume';" static/modules/training-checkpoint-resume-ui.js
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
   real-chrome-recovery:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -96,4 +159,7 @@ jobs:
         run: npm ci
 
       - name: Real Chrome checkpoint recovery
-        run: npx playwright test tests/browser/training-recovery.spec.mjs
+        run: >-
+          npx playwright test
+          tests/browser/training-recovery.spec.mjs
+          tests/browser/training-checkpoint-resume.spec.mjs
