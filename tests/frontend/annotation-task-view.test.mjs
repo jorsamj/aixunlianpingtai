@@ -42,3 +42,17 @@ test('annotation queue number is visible only when backend proves exactness', ()
   });
   assert.equal(inexact.runtimeText, '');
 });
+
+
+test('annotation recovery execution is surfaced from durable attempt truth', () => {
+  const recovery = annotationTaskView({
+    task_status: 'RUNNING', status: 'RUNNING', attempt: 3,
+    worker_id: 'annotation-worker-2', progress_percent: 48,
+    completed_count: 24, total_count: 50,
+  });
+  assert.equal(recovery.status, 'RUNNING');
+  assert.equal(recovery.attempt, 3);
+  assert.equal(recovery.runtimeText, '恢复执行 · 第 3 次执行 · Worker annotation-worker-2');
+  assert.equal(recovery.percent, 48);
+  assert.equal(recovery.canCancel, true);
+});
