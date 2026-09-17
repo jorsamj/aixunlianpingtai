@@ -59,9 +59,38 @@ def algorithm_store_status(path: Path) -> dict[str, Any]:
 if old_store not in text:
     raise SystemExit("expected algorithms.py JSON list/save block not found")
 text = text.replace(old_store, new_store, 1)
-
-# json is no longer used by algorithms.py after the storage adapter switch.
 text = text.replace("import json\n", "", 1)
-
 TARGET.write_text(text, encoding="utf-8")
-print("algorithm store switched to SQL adapter")
+
+STORE = ROOT / "platform_core" / "algorithm_sql_store.py"
+store_text = STORE.read_text(encoding="utf-8")
+old_analysis = '''    def _analysis_from_row(self, row: sqlite3.Row) -> dict:
+        value = self._json_object(row["payload_json"])
+        value["analysis_id"] = row["external_analysis_id"]
+        if row["analysis_name"] is not None:
+            value["analysis_name"] = row["analysis_name"]
+        if row["analysis_type"] is not None:
+            value["analysis_type"] = row["analysis_type"]
+        value["compute_platform_ids"] = self._json_list(row["compute_platform_ids_json"])
+        value["active"] = bool(row["active"])
+        return value
+'''
+new_analysis = '''    def _analysis_from_row(self, row: sqlite3.Row) -> dict:
+        value = self._json_object(row["payload_json"])
+        value["analysis_id"] = row["external_analysis_id"]
+        if row["analysis_name"] is not None:
+            value["analysis_name"] = row["analysis_name"]
+        if row["analysis_type"] is not None:
+            value["analysis_type"] = row["analysis_type"]
+        compute_platform_ids = self._json_list(row["compute_platform_ids_json"])
+        if "compute_platform_ids" in value or compute_platform_ids:
+            value["compute_platform_ids"] = compute_platform_ids
+        if "active" in value or not bool(row["active"]):
+            value["active"] = bool(row["active"])
+        return value
+'''
+if old_analysis not in store_text:
+    raise SystemExit("expected SQL analysis projection block not found")
+STORE.write_text(store_text.replace(old_analysis, new_analysis, 1), encoding="utf-8")
+
+print("algorithm store switched to SQL adapter with legacy API compatibility")
