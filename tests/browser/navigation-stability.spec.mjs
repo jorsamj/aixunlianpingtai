@@ -558,41 +558,56 @@ test('server storage import confirmation avoids broad related refresh', async ({
   expect(pageErrors).toEqual([]);
 });
 
-test('base modal post-open content refresh stays functional', async ({page}) => {
+test('base modal open and manual refresh both fetch fresh import jobs', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
   let listCalls = 0;
+  let phase = 'startup';
+
+  const job = (id, fileName) => ({
+    id,
+    file_name: fileName,
+    status: 'done',
+    stage: '导入完成',
+    message: '完成',
+    image_count: 2,
+    report: {imported_images: 2, annotated_images: 1, boxes: 3, warnings: []},
+  });
 
   await page.route(/\/api\/v19\/projects\/[^/]+\/import\/jobs$/, async route => {
     if (route.request().method() !== 'GET') return route.continue();
     listCalls += 1;
+    const items = phase === 'open'
+      ? [job('modal-open-job', 'modal-open.zip')]
+      : phase === 'refresh'
+        ? [job('modal-refresh-job', 'modal-refresh.zip')]
+        : [];
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({items: listCalls === 1 ? [] : [{
-        id: 'modal-refresh-job',
-        file_name: 'modal-refresh.zip',
-        status: 'done',
-        stage: '导入完成',
-        message: '完成',
-        image_count: 2,
-        report: {imported_images: 2, annotated_images: 1, boxes: 3, warnings: []},
-      }]}),
+      body: JSON.stringify({items}),
     });
   });
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
-  await page.evaluate(async () => { await window.openImportDock(); });
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
 
+  const callsBeforeOpen = listCalls;
+  phase = 'open';
+  await page.evaluate(async () => { await window.openImportDock(); });
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#modalTitle')).toHaveText('后台导入任务');
-  await expect(page.locator('#modalBody')).toContainText('暂无导入任务');
+  await expect(page.locator('#modalBody')).toContainText('modal-open.zip');
+  await expect(page.locator('#modalBody')).toContainText('导入完成');
+  expect(listCalls).toBeGreaterThan(callsBeforeOpen);
 
+  const callsBeforeRefresh = listCalls;
+  phase = 'refresh';
   await page.locator('#modalBody').getByRole('button', {name: '刷新'}).click();
   await expect(page.locator('#modalBody')).toContainText('modal-refresh.zip');
-  await expect(page.locator('#modalBody')).toContainText('导入完成');
-  expect(listCalls).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('#modalBody')).not.toContainText('modal-open.zip');
+  expect(listCalls).toBeGreaterThan(callsBeforeRefresh);
   expect(pageErrors).toEqual([]);
 });
 
@@ -967,4 +982,3 @@ test('model config save appears immediately without broad related refresh', asyn
   expect(actionRequests.filter(row => row.includes('/bootstrap/snapshot'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
-
