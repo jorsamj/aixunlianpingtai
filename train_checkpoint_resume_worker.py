@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import sys
 import time
 import traceback
 from pathlib import Path
@@ -98,6 +96,7 @@ def main(argv=None) -> int:
     if not isinstance(resource_context, dict):
         resource_context = {}
     logical_device, gpu_index = _runtime_device(args.assigned_device, resource_context)
+    observed_resume_epoch = int(args.resume_from_epoch)
 
     base_worker.update_job(
         job_file,
@@ -105,17 +104,18 @@ def main(argv=None) -> int:
         recovery_mode="training_checkpoint_resume",
         recovery_state="loading_checkpoint",
         recovery_auto=True,
-        resume_from_epoch=int(args.resume_from_epoch),
+        resume_from_epoch=observed_resume_epoch,
+        resume_epoch_source="preload_observation",
         resume_checkpoint=str(checkpoint),
         resume_checkpoint_sha256=str(args.resume_checkpoint_sha256),
-        current_epoch=max(int(args.resume_from_epoch), int(job.get("current_epoch") or 0)),
+        current_epoch=observed_resume_epoch,
         total_epochs=int(args.epochs),
         progress_percent=max(20.0, float(job.get("progress_percent") or 20.0)),
-        current_item=f"从 Epoch {int(args.resume_from_epoch)} 恢复训练",
-        message=f"检测到可信 last.pt，正在从 Epoch {int(args.resume_from_epoch)} 继续训练",
+        current_item=f"正在加载 last.pt · 已观察 Epoch {observed_resume_epoch}",
+        message="正在从 task-local last.pt 读取真实恢复起点",
     )
     print(
-        f"[{base_worker.now_iso()}] 断点续训：Epoch {int(args.resume_from_epoch)}/{int(args.epochs)} · {checkpoint}",
+        f"[{base_worker.now_iso()}] 准备断点续训：observed Epoch {observed_resume_epoch}/{int(args.epochs)} · {checkpoint}",
         flush=True,
     )
 
@@ -146,19 +146,33 @@ def main(argv=None) -> int:
 
         model = YOLO(str(checkpoint))
         first_batch = False
+        resume_truth = {"epoch": observed_resume_epoch}
 
         def on_train_start(trainer):
             if str(trainer.device) != runtime_device:
                 raise RuntimeError(
                     f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}"
                 )
+            checkpoint_resume_epoch = int(getattr(trainer, "start_epoch", observed_resume_epoch) or observed_resume_epoch)
+            if checkpoint_resume_epoch <= 0 or checkpoint_resume_epoch >= int(args.epochs):
+                raise RuntimeError(
+                    "RESUME_CHECKPOINT_EPOCH_INVALID: loaded last.pt is not an incomplete training checkpoint"
+                )
+            resume_truth["epoch"] = checkpoint_resume_epoch
             base_worker.update_job(
                 job_file,
                 recovery_state="training",
+                resume_from_epoch=checkpoint_resume_epoch,
+                resume_epoch_source="checkpoint_start_epoch",
+                current_epoch=checkpoint_resume_epoch,
                 actual_device=assigned,
                 ultralytics_version=getattr(ultralytics, "__version__", "unknown"),
-                current_item=f"断点续训 · Epoch {int(args.resume_from_epoch)}/{int(args.epochs)}",
-                message="Checkpoint 已加载，继续训练中",
+                current_item=f"断点续训 · 从 Epoch {checkpoint_resume_epoch}/{int(args.epochs)} 恢复",
+                message="Checkpoint 已加载，恢复起点已按 last.pt 校正",
+            )
+            print(
+                f"[{base_worker.now_iso()}] Checkpoint 真值：从 Epoch {checkpoint_resume_epoch}/{int(args.epochs)} 继续训练",
+                flush=True,
             )
 
         def on_train_batch_start(_trainer):
@@ -166,17 +180,19 @@ def main(argv=None) -> int:
             if first_batch:
                 return
             first_batch = True
+            resume_epoch = int(resume_truth["epoch"])
             base_worker.update_job(
                 job_file,
                 recovery_state="training",
                 training_started=True,
                 resume_first_batch_at=base_worker.now_iso(),
-                current_item=f"断点续训已开始 · Epoch {int(args.resume_from_epoch) + 1}/{int(args.epochs)}",
+                current_item=f"断点续训已开始 · Epoch {resume_epoch + 1}/{int(args.epochs)}",
                 message="断点续训已恢复 Batch 执行",
             )
 
         def on_fit_epoch_end(trainer):
-            epoch = max(int(args.resume_from_epoch), int(getattr(trainer, "epoch", 0)) + 1)
+            resume_epoch = int(resume_truth["epoch"])
+            epoch = max(resume_epoch, int(getattr(trainer, "epoch", 0)) + 1)
             total = max(epoch, int(getattr(trainer, "epochs", 0) or args.epochs))
             metrics = {}
             for key, value in dict(getattr(trainer, "metrics", {}) or {}).items():
@@ -188,13 +204,14 @@ def main(argv=None) -> int:
                 "epoch": epoch,
                 "total_epochs": total,
                 "metrics": metrics,
-                "resume_from_epoch": int(args.resume_from_epoch),
+                "resume_from_epoch": resume_epoch,
                 "resumed": True,
             }
             percent = base_worker._training_phase_percent(epoch, total)
             base_worker.update_job(
                 job_file,
                 recovery_state="training",
+                resume_from_epoch=resume_epoch,
                 current_epoch=epoch,
                 total_epochs=total,
                 current_batch=None,
@@ -223,6 +240,7 @@ def main(argv=None) -> int:
         base_worker.update_job(
             job_file,
             recovery_state="training_loop_completed",
+            resume_from_epoch=int(resume_truth["epoch"]),
             current_epoch=max(int(current.get("current_epoch") or 0), int(args.epochs)),
             total_epochs=int(args.epochs),
             progress_percent=max(95.0, float(current.get("progress_percent") or 0.0)),
