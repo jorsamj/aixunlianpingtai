@@ -4,7 +4,7 @@ const STORAGE_PREFIX = 'mc_upload_task_center_v1:';
 const POLL_MS = 1200;
 const MAX_ROWS = 20;
 
-const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[char]));
 const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
 const upper = value => String(value || '').trim().toUpperCase();
 const nowIso = () => new Date().toISOString();
@@ -47,15 +47,26 @@ export function mergeUploadTask(previous = {}, next = {}) {
   };
 }
 
-function normalizeBackendTask(task, row) {
-  const status = upper(task?.status || row.status);
+export function normalizeDurableUploadTask(task, row) {
+  const backendStatus = upper(task?.status || row.status);
   const progress = task?.progress ?? task?.progress_percent ?? row.progress;
+  if (row?.resumeRequired && backendStatus === 'UPLOADING') {
+    return mergeUploadTask(row, {
+      status:'WAITING',
+      progress,
+      stage:'上传已暂停，等待继续',
+      detail:row?.detail || '页面刷新后浏览器已释放文件对象；重新选择同一个 ZIP 后会从已完成分片继续。',
+      updatedAt:task?.updated_at || nowIso(),
+      resumeRequired:true,
+      browserTransfer:false,
+    });
+  }
   return mergeUploadTask(row, {
-    status,
+    status:backendStatus,
     progress,
-    stage: task?.stage || task?.phase || row.stage,
-    detail: task?.current_item || task?.message || task?.error || row.detail,
-    updatedAt: task?.updated_at || nowIso(),
+    stage:task?.stage || task?.phase || row.stage,
+    detail:task?.current_item || task?.message || task?.error || row.detail,
+    updatedAt:task?.updated_at || nowIso(),
   });
 }
 
@@ -123,10 +134,22 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       const parsed = JSON.parse(localStorage.getItem(storageKey(project)) || '[]');
       if (Array.isArray(parsed)) rows = parsed.map(row => mergeUploadTask({}, row)).slice(0, MAX_ROWS);
     } catch (_) { rows = []; }
-    // Browser-local transfers cannot survive a refresh because File objects are not durable.
-    rows = rows.map(row => row.kind === 'browser-upload' && isUploadTaskActive(row) && !row.serverUrl
-      ? mergeUploadTask(row, {status:'INTERRUPTED', stage:'上传已中断', detail:'页面刷新后需重新选择文件；已创建的后台任务会自动恢复显示。'})
-      : row);
+    rows = rows.map(row => {
+      if (row.kind === 'zip' && row.browserTransfer && isUploadTaskActive(row)) {
+        return mergeUploadTask(row, {
+          status:'WAITING',
+          stage:'上传已暂停，等待继续',
+          detail:'页面刷新后浏览器已释放文件对象；重新选择同一个 ZIP 后会从已完成分片继续。',
+          resumeRequired:true,
+          browserTransfer:false,
+        });
+      }
+      // Browser-local transfers cannot survive a refresh because File objects are not durable.
+      if (row.kind === 'browser-upload' && isUploadTaskActive(row) && !row.serverUrl) {
+        return mergeUploadTask(row, {status:'INTERRUPTED', stage:'上传已中断', detail:'页面刷新后需重新选择文件；已创建的后台任务会自动恢复显示。'});
+      }
+      return row;
+    });
   }
 
   function render() {
@@ -174,7 +197,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     if (!row?.serverUrl || !isUploadTaskActive(row)) return row;
     try {
       const body = await responseJson(await fetchImpl(row.serverUrl, {credentials:'same-origin'}));
-      return normalizeBackendTask(body, row);
+      return normalizeDurableUploadTask(body, row);
     } catch (error) {
       return mergeUploadTask(row, {detail:`状态刷新失败：${error?.message || error}`});
     }
