@@ -7,11 +7,13 @@ on:
       - feature/external-algorithm-publishing-sql
       - feature/external-algorithm-publishing-sql-crud
     paths:
+      - app.py
       - platform_core/algorithm_sql_store.py
       - platform_core/algorithms.py
       - platform_core/external_algorithm_platform.py
       - platform_core/external_algorithm_publish.py
       - tests/unit/test_algorithm_sql_store.py
+      - tests/unit/test_algorithm_sql_app_contract.py
       - tests/unit/test_algorithms.py
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_external_algorithm_publish.py
@@ -39,11 +41,11 @@ jobs:
         run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring pillow
       - name: Syntax checks
         run: |
-          python -m py_compile platform_core/algorithm_sql_store.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
+          python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/external-algorithm-publish.js
       - name: SQL migration and row CRUD contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_algorithms.py
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
       - name: External platform contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_external_algorithm_platform.py
       - name: External publish contracts
@@ -63,6 +65,10 @@ jobs:
           grep -q 'def rollback_version' platform_core/algorithm_sql_store.py
           grep -q 'def sync_external_algorithms' platform_core/algorithm_sql_store.py
           grep -q 'AlgorithmSqlStore(Path(path)).attach_version' platform_core/algorithms.py
+          grep -q 'algs=list_algorithm_assets(algorithms_file(pid))' app.py
+          ! grep -Fq 'read_json(project_dir(pid)/"algorithms.json",[])' app.py
+          ! grep -q 'save_algorithms_internal' app.py
+          ! grep -q 'save_algorithms as save_algorithm_assets' app.py
           grep -q 'merged\["id"\] = algorithm_id' platform_core/algorithm_sql_store.py
           ! grep -q 'save_algorithms(algorithms_path, algorithms)' platform_core/external_algorithm_platform.py
           ! grep -q 'atomic_write_json(path, list(algorithms))' platform_core/algorithms.py
