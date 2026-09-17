@@ -62,6 +62,14 @@ jobs:
           grep -q "test_sign_bridge" platform_core/external_algorithm_platform.py
           grep -q "resolve_external_training_analysis" app.py
           grep -q "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js
+          grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
+          grep -q "def test_connection(payload: Optional\[ExternalPlatformConfigPayload\] = None)" platform_core/external_algorithm_platform.py
+          grep -q "id=\"externalConnectionResult\"" static/modules/external-algorithm-platform.js
+          grep -q "id=\"externalSecretToggle\"" static/modules/external-algorithm-platform.js
+          grep -q "const payload = collectForm();" static/modules/external-algorithm-platform.js
           if grep -q "window.renderAlg412 =" static/modules/external-algorithm-platform.js; then echo "external platform must not wrap renderAlg412" >&2; exit 1; fi
           if grep -q "下一阶段" static/modules/external-algorithm-platform.js; then echo "stale phase wording remains" >&2; exit 1; fi
+          test ! -e tools/finalize_external_platform_credentials_ui.py
+          test ! -e tools/fix_external_platform_connectivity_result.py
+          test ! -e .github/workflows/external-platform-credentials-one-shot.yml
           test "$(cat VERSION.txt)" = "42.24.0"
