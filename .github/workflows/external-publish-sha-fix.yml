@@ -1,0 +1,47 @@
+name: External Publish SHA Fix
+
+on:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - .github/workflows/external-publish-sha-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/external-algorithm-publishing
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch persisted artifact SHA handling
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('platform_core/external_algorithm_publish.py')
+          text = path.read_text(encoding='utf-8')
+          needle = '''        current = self.repository.artifact(str(artifact["artifact_id"])) or dict(artifact)\n        provider = self._provider(str(artifact["project_id"]), source_id)\n        source_path = Path(str(artifact["source_path"])).resolve()\n'''
+          replacement = '''        current = self.repository.artifact(str(artifact["artifact_id"])) or dict(artifact)\n        provider = self._provider(str(artifact["project_id"]), source_id)\n        source_path = Path(str(artifact["source_path"])).resolve()\n        digest = str(artifact.get("source_sha256") or artifact.get("sha256") or "").strip()\n        if not digest:\n            if not source_path.is_file():\n                raise PlatformError(\n                    "MODEL_ARTIFACT_SOURCE_MISSING", "模型制品源文件不存在", str(source_path),\n                    "请恢复转换产物后重新同步。", 409,\n                )\n            digest = _sha256(source_path)\n'''
+          if needle not in text:
+              raise SystemExit('upload artifact anchor not found')
+          text = text.replace(needle, replacement, 1)
+          text = text.replace("str(artifact['sha256'])", 'digest')
+          text = text.replace('str(artifact["sha256"])', 'digest')
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Static syntax check
+        run: python -m py_compile platform_core/external_algorithm_publish.py
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add platform_core/external_algorithm_publish.py
+          git diff --cached --quiet || git commit -m "fix(external-publish): preserve artifact sha across persistence"
+          git push origin HEAD:feature/external-algorithm-publishing
