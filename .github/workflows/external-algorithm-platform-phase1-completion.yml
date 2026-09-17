@@ -1,0 +1,41 @@
+name: External Algorithm Platform Phase 1 Completion
+
+on:
+  push:
+    branches:
+      - feature/external-algorithm-platform
+    paths:
+      - tools/migrate_external_algorithm_platform_phase1_completion.py
+      - .github/workflows/external-algorithm-platform-phase1-completion.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/external-algorithm-platform
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply bounded completion migration
+        run: python tools/migrate_external_algorithm_platform_phase1_completion.py
+      - name: Static syntax checks
+        run: |
+          python -m py_compile platform_core/external_algorithm_platform.py
+          node --check static/modules/external-algorithm-platform.js
+      - name: Commit completed phase 1
+        run: |
+          if git diff --quiet; then
+            echo "No completion changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add platform_core/external_algorithm_platform.py static/modules/external-algorithm-platform.js tests/unit/test_external_algorithm_platform.py tests/frontend/external-algorithm-platform.test.mjs
+          git commit -m "feat(external-platform): complete master-data sync phase 1"
+          git push origin HEAD:feature/external-algorithm-platform
