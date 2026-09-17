@@ -209,7 +209,7 @@ class IntegrationAuditRepository:
                     SUM(CASE WHEN status='UNKNOWN' THEN 1 ELSE 0 END) AS unknown,
                     COALESCE(ROUND(AVG(duration_ms)), 0) AS avg_duration_ms
                 FROM external_interaction_logs
-                WHERE provider = ? AND created_at >= datetime('now', ?)
+                WHERE provider = ? AND julianday(created_at) >= julianday('now', ?)
                 """,
                 (str(provider), f"-{hours} hours"),
             ).fetchone()
