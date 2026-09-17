@@ -164,3 +164,96 @@ def test_changlian_environment_credentials_are_read_only(monkeypatch):
 
 def test_generic_environment_secret_name_is_stable():
     assert secret_environment_name("xjalgo:storage-source:oss-a") == "MC_SECRET_XJALGO_STORAGE_SOURCE_OSS_A"
+
+
+class UnexpectedFailureStore:
+    def set(self, reference: str, value: str) -> None:
+        raise RuntimeError("unexpected backend failure")
+
+    def get(self, reference: str):
+        raise RuntimeError("unexpected backend failure")
+
+    def delete(self, reference: str) -> None:
+        raise RuntimeError("unexpected backend failure")
+
+    def masked(self, reference: str) -> str:
+        raise RuntimeError("unexpected backend failure")
+
+
+def test_public_state_never_crashes_on_unexpected_backend_failure():
+    state = SecretCredentialStore(UnexpectedFailureStore()).public_state(
+        "xjalgo:external-platform:changlian"
+    )
+
+    assert state["configured"] is False
+    assert state["available"] is False
+    assert state["backend"] == "unavailable"
+    assert state["error"] == "SECRET_STORE_UNAVAILABLE"
+
+
+def test_public_state_never_crashes_on_legacy_non_json_credential():
+    backend = MemorySecretStore()
+    backend.set("xjalgo:external-platform:changlian", "legacy-plain-secret")
+
+    state = SecretCredentialStore(backend).public_state(
+        "xjalgo:external-platform:changlian"
+    )
+
+    assert state["configured"] is False
+    assert state["available"] is False
+    assert state["error"] == "SECRET_STORE_UNAVAILABLE"
+
+
+class FakeDbusFailKeyring:
+    class errors:
+        class KeyringError(Exception):
+            pass
+
+        class PasswordDeleteError(KeyringError):
+            pass
+
+    @staticmethod
+    def get_password(_service: str, _reference: str):
+        raise RuntimeError("Cannot autolaunch D-Bus without X11 $DISPLAY")
+
+    @staticmethod
+    def set_password(_service: str, _reference: str, _value: str):
+        raise RuntimeError("Cannot autolaunch D-Bus without X11 $DISPLAY")
+
+    @staticmethod
+    def delete_password(_service: str, _reference: str):
+        raise RuntimeError("Cannot autolaunch D-Bus without X11 $DISPLAY")
+
+
+def test_keyring_non_keyringerror_dbus_failure_is_normalized():
+    reference = "xjalgo:external-platform:changlian"
+    credentials = SecretCredentialStore(KeyringSecretStore(keyring_module=FakeDbusFailKeyring))
+
+    state = credentials.public_state(reference)
+
+    assert state["configured"] is False
+    assert state["available"] is False
+    assert state["backend"] == "unavailable"
+    with pytest.raises(SecretStoreUnavailable):
+        credentials.get(reference)
+    with pytest.raises(SecretStoreUnavailable):
+        credentials.set(reference, {"access_key_id": "ak", "access_secret": "secret"})
+
+
+def test_invalid_headless_master_key_does_not_crash_public_state(tmp_path):
+    reference = "xjalgo:external-platform:changlian"
+    credentials = SecretCredentialStore(
+        KeyringSecretStore(
+            keyring_module=None,
+            encrypted_path=tmp_path / "secrets.enc.json",
+            master_key="not-a-valid-fernet-key",
+        )
+    )
+
+    state = credentials.public_state(reference)
+
+    assert state["configured"] is False
+    assert state["available"] is False
+    assert state["backend"] == "unavailable"
+    with pytest.raises(SecretStoreUnavailable):
+        credentials.get(reference)

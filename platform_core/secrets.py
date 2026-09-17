@@ -193,6 +193,11 @@ class KeyringSecretStore:
     injection. Normal desktop hosts use the OS keyring. Headless Linux may set
     ``MC_SECRET_MASTER_KEY`` to keep the existing page-based save flow while the
     persisted file remains encrypted at rest.
+
+    Keyring implementations are third-party OS adapters. On headless Linux they
+    may surface D-Bus/GLib/runtime failures that do not inherit KeyringError, so
+    every keyring boundary is normalized to SecretStoreUnavailable instead of
+    leaking an implementation exception into an HTTP request.
     """
 
     def __init__(
@@ -203,26 +208,32 @@ class KeyringSecretStore:
         encrypted_path: str | Path | None = None,
         master_key: str | bytes | None = None,
     ) -> None:
+        self._keyring_import_error: Optional[Exception] = None
         if keyring_module is _UNSET:
             try:
                 import keyring as loaded_keyring
-            except ImportError:
+            except Exception as error:
                 loaded_keyring = None
+                self._keyring_import_error = error
             self._keyring = loaded_keyring
         else:
             self._keyring = keyring_module
         self._service_name = service_name
         self._encrypted: Optional[EncryptedFileSecretStore] = None
+        self._encrypted_error: Optional[Exception] = None
         if master_key or os.environ.get(SECRET_MASTER_KEY_ENV):
-            self._encrypted = EncryptedFileSecretStore(
-                encrypted_path,
-                master_key=master_key,
-            )
+            try:
+                self._encrypted = EncryptedFileSecretStore(
+                    encrypted_path,
+                    master_key=master_key,
+                )
+            except Exception as error:
+                self._encrypted_error = error
 
     def _unavailable(self, _error: Optional[Exception] = None) -> SecretStoreUnavailable:
         return SecretStoreUnavailable(
-            "系统 Keyring 不可用，且未配置 Headless 加密 Secret 后端；"
-            f"请配置 SecretService，或设置 {SECRET_MASTER_KEY_ENV}。"
+            "系统 Keyring 不可用，且未配置可用的 Headless 加密 Secret 后端；"
+            f"请配置 SecretService，或设置有效的 {SECRET_MASTER_KEY_ENV}。"
         )
 
     def _resolve(self, reference: str) -> tuple[Optional[str], str, bool, str]:
@@ -231,14 +242,14 @@ class KeyringSecretStore:
             return env_value, "environment", False, env_name
 
         keyring_available = False
-        keyring_error: Optional[Exception] = None
+        keyring_error: Optional[Exception] = self._keyring_import_error
         if self._keyring is not None:
             try:
                 value = self._keyring.get_password(self._service_name, str(reference))
                 keyring_available = True
                 if value is not None:
                     return value, "keyring", True, ""
-            except self._keyring.errors.KeyringError as error:
+            except Exception as error:
                 keyring_error = error
 
         if self._encrypted is not None:
@@ -247,7 +258,7 @@ class KeyringSecretStore:
 
         if keyring_available:
             return None, "keyring", True, ""
-        raise self._unavailable(keyring_error)
+        raise self._unavailable(keyring_error or self._encrypted_error)
 
     def backend_state(self, reference: str) -> dict[str, object]:
         try:
@@ -270,17 +281,17 @@ class KeyringSecretStore:
         env_value, env_name = _environment_override(reference)
         if env_value is not None:
             raise ValueError(f"Secret 由环境变量 {env_name} 管理，为只读配置")
-        keyring_error: Optional[Exception] = None
+        keyring_error: Optional[Exception] = self._keyring_import_error
         if self._keyring is not None:
             try:
                 self._keyring.set_password(self._service_name, str(reference), str(value))
                 return
-            except self._keyring.errors.KeyringError as error:
+            except Exception as error:
                 keyring_error = error
         if self._encrypted is not None:
             self._encrypted.set(reference, value)
             return
-        raise self._unavailable(keyring_error)
+        raise self._unavailable(keyring_error or self._encrypted_error)
 
     def get(self, reference: str) -> Optional[str]:
         value, _backend, _writable, _env_name = self._resolve(reference)
@@ -291,19 +302,23 @@ class KeyringSecretStore:
         if env_value is not None:
             return
         keyring_deleted = False
+        keyring_error: Optional[Exception] = self._keyring_import_error
         if self._keyring is not None:
             try:
                 self._keyring.delete_password(self._service_name, str(reference))
                 keyring_deleted = True
-            except self._keyring.errors.PasswordDeleteError:
-                keyring_deleted = True
-            except self._keyring.errors.KeyringError:
-                pass
+            except Exception as error:
+                keyring_error = error
+                errors = getattr(self._keyring, "errors", None)
+                password_delete_error = getattr(errors, "PasswordDeleteError", None)
+                if password_delete_error is not None and isinstance(error, password_delete_error):
+                    keyring_deleted = True
         if self._encrypted is not None:
             self._encrypted.delete(reference)
             return
-        if not keyring_deleted and self._keyring is None:
-            raise self._unavailable()
+        if keyring_deleted:
+            return
+        raise self._unavailable(keyring_error or self._encrypted_error)
 
     def masked(self, reference: str) -> str:
         return mask_secret(self.get(reference))
@@ -353,7 +368,7 @@ class SecretCredentialStore:
     def public_state(self, reference: str) -> dict[str, object]:
         try:
             value = self.get(reference)
-        except SecretStoreUnavailable:
+        except Exception:
             return {
                 "configured": False,
                 "masked": "",
@@ -381,7 +396,15 @@ class SecretCredentialStore:
         }
         describe = getattr(self.backend, "backend_state", None)
         if callable(describe):
-            backend_state.update(describe(reference))
+            try:
+                backend_state.update(describe(reference))
+            except Exception:
+                backend_state.update({
+                    "available": False,
+                    "backend": "unavailable",
+                    "writable": False,
+                    "environment_name": "",
+                })
         return {
             "configured": bool(value),
             "masked": mask_secret(identifier) if identifier else ("已配置" if value else ""),
