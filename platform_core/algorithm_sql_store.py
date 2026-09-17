@@ -368,8 +368,11 @@ class AlgorithmSqlStore:
             value["analysis_name"] = row["analysis_name"]
         if row["analysis_type"] is not None:
             value["analysis_type"] = row["analysis_type"]
-        value["compute_platform_ids"] = self._json_list(row["compute_platform_ids_json"])
-        value["active"] = bool(row["active"])
+        compute_platform_ids = self._json_list(row["compute_platform_ids_json"])
+        if "compute_platform_ids" in value or compute_platform_ids:
+            value["compute_platform_ids"] = compute_platform_ids
+        if "active" in value or not bool(row["active"]):
+            value["active"] = bool(row["active"])
         return value
 
     def _read_legacy_json(self) -> list[dict]:
