@@ -4,17 +4,12 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../../static/zip-import-bootstrap.mjs', import.meta.url), 'utf8');
 
-test('legacy import modal consumes durable bootstrap snapshot only once', () => {
-  assert.match(source, /runtime\.snapshot\?\.\(\)/);
-  assert.match(source, /state\.importJobs\s*=\s*Array\.isArray\(snapshot\.jobs\)/);
-  assert.match(source, /let reuseRuntimeSnapshot\s*=\s*true/);
-  assert.match(source, /if \(reuseRuntimeSnapshot\)/);
-  assert.match(source, /reuseRuntimeSnapshot\s*=\s*false/);
-  assert.match(source, /return syncLegacyImportJobsFromRuntime\(\)/);
-  assert.match(source, /return originalLoadImportJobs\.apply\(this, args\)/);
-  assert.match(source, /window\.loadImportJobs\s*=\s*bridgedLoadImportJobs/);
-  assert.doesNotMatch(source, /openingImportDock/);
-  assert.doesNotMatch(source, /window\.openImportDock\s*=\s*bridgedOpenImportDock/);
+test('legacy import modal stays server-backed instead of reusing durable bootstrap snapshot', () => {
+  assert.doesNotMatch(source, /runtime\.snapshot\?\.\(\)/);
+  assert.doesNotMatch(source, /syncLegacyImportJobsFromRuntime/);
+  assert.doesNotMatch(source, /reuseRuntimeSnapshot/);
+  assert.doesNotMatch(source, /window\.loadImportJobs\s*=/);
+  assert.doesNotMatch(source, /window\.openImportDock\s*=/);
 });
 
 test('durable ZIP runtime owns polling and completion side effects', () => {
