@@ -1,0 +1,66 @@
+name: Central Node Assignment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'task_worker.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/api/test_central_scheduler_api.py'
+      - '.github/workflows/central-node-assignment.yml'
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+      - name: Python syntax check
+        run: >-
+          python -m py_compile
+          platform_core/task_node_assignments.py
+          platform_core/training_recovery_api.py
+          task_worker.py
+          tests/unit/test_task_node_assignments.py
+      - name: Central assignment contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_task_node_assignments.py
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+      - name: Central scheduler API contract
+        run: python -m pytest -q --confcutdir=tests/api tests/api/test_central_scheduler_api.py
+      - name: Permanent central-assignment guards
+        shell: bash
+        run: |
+          grep -Fq 'BEGIN IMMEDIATE' platform_core/task_node_assignments.py
+          grep -Fq 'CREATE UNIQUE INDEX IF NOT EXISTS idx_task_node_assignment_active' platform_core/task_node_assignments.py
+          grep -Fq "WHERE state IN ('ASSIGNED','CLAIMED')" platform_core/task_node_assignments.py
+          grep -Fq 'CENTRAL_NODE_ASSIGNED' platform_core/task_node_assignments.py
+          grep -Fq 'AssignmentAwareFencedTaskRepository' task_worker.py
+          grep -Fq 'central_scheduler_router(task_repository, task_artifacts)' platform_core/training_recovery_api.py
+          grep -Fq '"protocol": "agent-http-v1"' platform_core/task_node_assignments.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
