@@ -17,12 +17,17 @@ export function annotationTaskView(task = {}) {
   const queuePosition = exactTaskQueuePosition(task) || 0;
   const waitReason = String(task.resource_wait_reason || '').trim();
   const workerId = String(task.worker_id || '').trim();
+  const attempt = Math.max(0, Math.trunc(Number(task.attempt || 0)));
   const queuedRuntime = queuePosition
     ? `资源队列第 ${queuePosition} 位${waitReason ? ` · ${waitReason}` : ''}`
     : (waitReason ? `等待资源 · ${waitReason}` : '');
+  const recoveryRuntime = (
+    attempt > 1
+    && ['RUNNING', 'CANCEL_REQUESTED'].includes(status)
+  ) ? `恢复执行 · 第 ${attempt} 次执行${workerId ? ` · Worker ${workerId}` : ''}` : '';
   const runtimeText = ['QUEUED', 'WAITING_RESOURCE'].includes(status)
     ? queuedRuntime
-    : (workerId ? `Worker ${workerId}` : '');
+    : (recoveryRuntime || (workerId ? `Worker ${workerId}` : ''));
   return {
     status,
     statusText: LABELS[status] || status || '未知',
@@ -35,6 +40,7 @@ export function annotationTaskView(task = {}) {
     queuePosition,
     waitReason,
     workerId,
+    attempt,
     runtimeText,
     active: isTaskActive(status),
     canCancel: isTaskActive(status),
