@@ -552,7 +552,7 @@ class ExternalAlgorithmPublishService:
             self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
             return recovered
         payload: Dict[str, Any] = {"versionName": version_name, "versionNo": version_name}
-        analysis_id = str(algorithm.get("external_analysis_id") or "")
+        analysis_id = str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or "")
         if analysis_id:
             payload["analysisId"] = analysis_id
         else:

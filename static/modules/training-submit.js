@@ -192,6 +192,8 @@ export function installTrainingSubmitRuntime({
       validateTrainingDevice(draft, state.trainingDevicesV3?.options || []);
       lastStage = 'build-payload';
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
+      const externalAnalysisId = window.ExternalAlgorithmPlatformRuntime?.selectedAnalysisId?.(asset.id) || '';
+      if (externalAnalysisId) payload.external_analysis_id = externalAnalysisId;
       const pid = projectId?.();
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
@@ -239,7 +241,7 @@ export function installTrainingSubmitRuntime({
   window.submitTrain429 = submit;
 
   const runtime = {
-    build: 'training-submit-422505',
+    build: 'training-submit-422506',
     submit,
     updateReadiness,
     isSubmitting: () => submitting,

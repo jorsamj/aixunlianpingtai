@@ -10,6 +10,7 @@ from platform_core.external_algorithm_platform import (
     SOURCE_EXTERNAL,
     algorithm_is_external_readonly,
     mirror_products_to_algorithms,
+    resolve_external_training_analysis,
 )
 from platform_core.algorithms import list_algorithms, save_algorithms
 from platform_core.secrets import MemorySecretStore
@@ -99,6 +100,12 @@ def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
     assert local["name"] == "本地历史算法"
     assert external["name"] == "抽烟检测"
     assert external["external_analysis_id"] == "a1"
+    assert external["external_analyses"] == [{
+        "analysis_id": "a1",
+        "analysis_name": "视觉智能分析",
+        "analysis_type": "",
+        "compute_platform_ids": ["gpu"],
+    }]
     assert external["external_category_id"] == "c1"
     assert external["versions"] == [{"id": "v1", "version_name": "V1"}]
     assert external["current_version_id"] == "v1"
@@ -228,3 +235,52 @@ def test_public_config_marks_test_sign_as_integration_bridge(tmp_path: Path):
     public = service.public_config()
     assert public["auth_mode"] == "test_sign_bridge"
     assert public["auto_sync_interval_seconds"] == 600
+
+def test_external_training_analysis_requires_choice_for_multiple_methods():
+    import pytest
+
+    algorithm = {
+        "id": "external-1",
+        "name": "抽烟检测",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_active": True,
+        "external_analysis_id": "a1",
+        "external_analysis_ids": ["a1", "a2"],
+    }
+    with pytest.raises(Exception) as missing:
+        resolve_external_training_analysis(algorithm, "")
+    assert getattr(missing.value, "code", "") == "EXTERNAL_ANALYSIS_REQUIRED"
+    assert resolve_external_training_analysis(algorithm, "a2") == "a2"
+
+
+def test_external_training_rejects_inactive_product():
+    import pytest
+
+    algorithm = {
+        "id": "external-1",
+        "name": "抽烟检测",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_active": False,
+        "external_analysis_ids": ["a1"],
+    }
+    with pytest.raises(Exception) as inactive:
+        resolve_external_training_analysis(algorithm, "a1")
+    assert getattr(inactive.value, "code", "") == "EXTERNAL_ALGORITHM_INACTIVE"
+
+
+def test_diagnostics_reports_read_only_master_data_checks(tmp_path: Path):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=FakeChangLianClient,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    result = service.diagnose()
+    assert result["ok"] is True
+    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis"]

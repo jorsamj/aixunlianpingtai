@@ -437,6 +437,15 @@ def _analysis_name(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "analysisName", "analysisTypeName", "name", "analysisType") or "").strip()
 
 
+def _analysis_summary(row: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "analysis_id": _analysis_id(row),
+        "analysis_name": _analysis_name(row),
+        "analysis_type": str(_value_from(row, "analysisType", "analysisTypeName", "type") or "").strip(),
+        "compute_platform_ids": list(row.get("computePlatformIds") or row.get("compute_platform_ids") or []),
+    }
+
+
 def _choose_analysis(rows: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     values = [dict(row) for row in rows]
     for row in values:
@@ -496,6 +505,7 @@ def mirror_products_to_algorithms(
             "external_product_code": str(_value_from(product, "productCode", "code") or ""),
             "external_analysis_id": _analysis_id(selected_analysis),
             "external_analysis_ids": [_analysis_id(row) for row in analyses if _analysis_id(row)],
+            "external_analyses": [_analysis_summary(row) for row in analyses if _analysis_id(row)],
             "external_category_id": cid,
             "external_compute_platform_ids": list(
                 selected_analysis.get("computePlatformIds")
@@ -585,6 +595,49 @@ def assert_algorithm_mutable(algorithms_path: Path, algorithm_id: str) -> None:
             "请在新畅联修改后回到“配置中心 → 平台对接”执行同步。",
             409,
         )
+
+
+def resolve_external_training_analysis(algorithm: Mapping[str, Any] | None, requested_analysis_id: Any = "") -> str:
+    if not algorithm:
+        return ""
+    if str(algorithm.get("source_type") or "").upper() != SOURCE_EXTERNAL:
+        return ""
+    if str(algorithm.get("provider_type") or "").upper() != PROVIDER_CHANGLIAN:
+        return ""
+    if algorithm.get("external_active") is False:
+        raise PlatformError(
+            "EXTERNAL_ALGORITHM_INACTIVE",
+            "该外部算法已下架，不能新建训练任务",
+            str(algorithm.get("name") or algorithm.get("id") or ""),
+            "历史训练和版本仍可查看；如需继续训练，请先在新畅联恢复该算法产品并重新同步。",
+            409,
+        )
+    analysis_ids = [str(value) for value in (algorithm.get("external_analysis_ids") or []) if str(value or "").strip()]
+    if not analysis_ids:
+        analysis_ids = [
+            str(row.get("analysis_id") or "")
+            for row in (algorithm.get("external_analyses") or [])
+            if isinstance(row, dict) and str(row.get("analysis_id") or "").strip()
+        ]
+    default_id = str(algorithm.get("external_analysis_id") or "").strip()
+    requested = str(requested_analysis_id or "").strip()
+    if requested and analysis_ids and requested not in analysis_ids:
+        raise PlatformError(
+            "EXTERNAL_ANALYSIS_INVALID",
+            "所选分析方式不属于当前算法产品",
+            requested,
+            "请刷新新畅联主数据后重新选择分析方式。",
+            409,
+        )
+    if len(analysis_ids) > 1 and not requested:
+        raise PlatformError(
+            "EXTERNAL_ANALYSIS_REQUIRED",
+            "当前算法存在多个分析方式，请选择本次训练绑定的分析方式",
+            str(algorithm.get("name") or algorithm.get("id") or ""),
+            "请在创建训练任务时选择具体分析方式。",
+            409,
+        )
+    return requested or default_id or (analysis_ids[0] if analysis_ids else "")
 
 
 def assert_local_algorithm_create_allowed(data_dir: Path) -> None:
@@ -690,6 +743,48 @@ class ExternalAlgorithmPlatformService:
 
     def test_connection(self) -> Dict[str, Any]:
         return self._client().probe()
+
+    def diagnose(self) -> Dict[str, Any]:
+        client = self._client()
+        steps: list[Dict[str, Any]] = []
+
+        def record(key: str, name: str, action: Callable[[], Any], *, count_items: bool = False) -> Any:
+            try:
+                value = action()
+                row: Dict[str, Any] = {"key": key, "name": name, "status": "success"}
+                if count_items:
+                    row["count"] = len(extract_items(value))
+                steps.append(row)
+                return value
+            except Exception as error:
+                steps.append({
+                    "key": key,
+                    "name": name,
+                    "status": "failed",
+                    "detail": str(getattr(error, "detail", error))[:500],
+                })
+                return None
+
+        auth = record("auth", "应用鉴权", client.probe)
+        if auth is None:
+            return {"ok": False, "provider": "changlian", "auth_mode": "test_sign_bridge", "steps": steps}
+        categories = record("categories", "算法品目", client.category_tree, count_items=True)
+        products = record("products", "算法产品", client.products, count_items=True)
+        record("compute_platforms", "算力环境", client.compute_platforms, count_items=True)
+        product_rows = extract_items(products) if products is not None else []
+        if product_rows:
+            product_id = _product_id(product_rows[0])
+            if product_id:
+                record("analysis", "产品分析方式", lambda: client.analyses(product_id), count_items=True)
+        else:
+            steps.append({"key": "analysis", "name": "产品分析方式", "status": "skipped", "detail": "当前没有可用于抽查的算法产品"})
+        return {
+            "ok": all(row.get("status") in {"success", "skipped"} for row in steps),
+            "provider": "changlian",
+            "auth_mode": "test_sign_bridge",
+            "steps": steps,
+            "category_sample_available": bool(extract_items(categories)) if categories is not None else False,
+        }
 
     def sync(
         self,
@@ -901,6 +996,10 @@ def external_algorithm_platform_router(
                 502,
             ) from error
         return result
+
+    @router.post("/diagnostics")
+    def diagnostics():
+        return service.diagnose()
 
     @router.post("/sync")
     def sync(project_id: str = Query(..., min_length=1)):

@@ -33,6 +33,17 @@ export function algorithmSourceLabel(algorithm) {
   ));
 }
 
+export function externalAnalysisOptions(algorithm = {}) {
+  const rows = Array.isArray(algorithm.external_analyses) ? algorithm.external_analyses : [];
+  const normalized = rows.map(row => ({
+    id: String(row?.analysis_id || row?.analysisId || ''),
+    name: String(row?.analysis_name || row?.analysisName || row?.analysis_type || row?.analysisType || ''),
+    type: String(row?.analysis_type || row?.analysisType || ''),
+  })).filter(row => row.id);
+  if (normalized.length) return normalized;
+  return (algorithm.external_analysis_ids || []).map(id => ({id: String(id), name: String(id), type: ''}));
+}
+
 export function normalizeExternalPlatformConfig(body = {}) {
   const config = body?.config || body || {};
   const endpoints = config.endpoints || {};
@@ -99,7 +110,10 @@ export function installExternalAlgorithmPlatformRuntime({
   let loading = false;
   let destroyed = false;
   let renderQueued = false;
-  let originalRenderAlg412 = null;
+  let diagnostics = null;
+  let selectedCategoryId = '';
+  let unregisterAlgorithmDecorator = null;
+  let trainingAnalysisObserver = null;
 
   function currentProjectId() {
     return String(projectId?.() || '');
@@ -143,6 +157,20 @@ export function installExternalAlgorithmPlatformRuntime({
     return (config || state().externalAlgorithmPlatformConfig)?.mode === 'external';
   }
 
+  function categoryMatches(categoryId) {
+    if (!selectedCategoryId) return true;
+    let current = String(categoryId || '');
+    const parentById = new Map((cacheData.categories || []).map(row => [
+      String(row.categoryId || row.id || ''),
+      String(row.parentId || ''),
+    ]));
+    while (current) {
+      if (current === selectedCategoryId) return true;
+      current = parentById.get(current) || '';
+    }
+    return false;
+  }
+
   function decorateAlgorithmCards() {
     const s = state();
     if (String(s.page || '') !== '算法列表') return;
@@ -157,6 +185,8 @@ export function installExternalAlgorithmPlatformRuntime({
       const match = String(actionButton?.getAttribute('onclick') || '').match(/editAlgorithm423\('([^']+)'\)/);
       const algorithm = rows.find(row => String(row.id) === String(match?.[1] || ''));
       if (!algorithm) continue;
+      card.dataset.externalCategoryId = String(algorithm.external_category_id || '');
+      card.hidden = !categoryMatches(algorithm.external_category_id);
       const title = card.querySelector('.alg428-title');
       if (title && !title.querySelector('[data-algorithm-source]')) {
         const source = document.createElement('em');
@@ -166,13 +196,47 @@ export function installExternalAlgorithmPlatformRuntime({
         title.appendChild(source);
       }
       if (!isExternalAlgorithm(algorithm)) continue;
+      if (algorithm.external_active === false && title && !title.querySelector('[data-external-inactive]')) {
+        const inactive = document.createElement('em');
+        inactive.dataset.externalInactive = '1';
+        inactive.textContent = '已下架';
+        inactive.title = '新畅联已不再返回该算法；历史版本保留，但不能新建训练';
+        title.appendChild(inactive);
+      }
       for (const button of card.querySelectorAll('button')) {
         const onclick = String(button.getAttribute('onclick') || '');
         if (onclick.includes("editAlgorithm423(") || onclick.includes("delAlgorithm(")) {
           button.disabled = true;
           button.title = '外部平台算法主数据为只读，请在新畅联修改后重新同步';
         }
+        if (algorithm.external_active === false && /训练/.test(String(button.textContent || ''))) {
+          button.disabled = true;
+          button.title = '该算法已在新畅联下架，不能新建训练任务';
+        }
       }
+    }
+
+    const toolbar = document.querySelector('.alg428-toolbar');
+    if (toolbar && externalMode() && Array.isArray(cacheData.categories) && cacheData.categories.length) {
+      let select = toolbar.querySelector('[data-external-category-filter]');
+      if (!select) {
+        select = document.createElement('select');
+        select.className = 'select';
+        select.dataset.externalCategoryFilter = '1';
+        select.title = '按新畅联算法品目筛选';
+        select.addEventListener('change', () => {
+          selectedCategoryId = select.value;
+          decorateAlgorithmCards();
+        });
+        toolbar.prepend(select);
+      }
+      const options = ['<option value="">全部品目</option>', ...(cacheData.categories || []).map(row => {
+        const id = String(row.categoryId || row.id || '');
+        const name = String(row.categoryName || row.name || id);
+        return `<option value="${escapeHtml(id)}" ${id === selectedCategoryId ? 'selected' : ''}>${escapeHtml(name)}</option>`;
+      })];
+      select.innerHTML = options.join('');
+      select.value = selectedCategoryId;
     }
 
     const create = document.querySelector('.alg428-toolbar [data-action="algorithm.create"]');
@@ -188,16 +252,40 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   function installAlgorithmDecorator() {
-    if (typeof window.renderAlg412 !== 'function' || originalRenderAlg412) return;
-    originalRenderAlg412 = window.renderAlg412;
-    const wrapped = function (...args) {
-      const result = originalRenderAlg412.apply(this, args);
-      decorateAlgorithmCards();
-      return result;
-    };
-    wrapped.__externalPlatformWrapper = true;
-    window.renderAlg412 = wrapped;
-    decorateAlgorithmCards();
+    if (unregisterAlgorithmDecorator || !algorithmListRuntime?.registerDecorator) return;
+    unregisterAlgorithmDecorator = algorithmListRuntime.registerDecorator('external-algorithm-platform', decorateAlgorithmCards);
+  }
+
+  function selectedAnalysisId(algorithmId) {
+    const algorithm = (state().algorithms || []).find(row => String(row.id) === String(algorithmId));
+    if (!isExternalAlgorithm(algorithm)) return '';
+    const options = externalAnalysisOptions(algorithm);
+    state().externalAnalysisSelection = state().externalAnalysisSelection || {};
+    return String(state().externalAnalysisSelection[algorithmId] || algorithm.external_analysis_id || options[0]?.id || '');
+  }
+
+  function decorateTrainingAnalysisSelector() {
+    const form = document.querySelector('.train429-create');
+    if (!form || form.querySelector('[data-external-analysis-selector]')) return;
+    const algorithmId = String(state().trainingDraft?.algorithmId || '');
+    const algorithm = (state().algorithms || []).find(row => String(row.id) === algorithmId);
+    if (!isExternalAlgorithm(algorithm) || algorithm.external_active === false) return;
+    const options = externalAnalysisOptions(algorithm);
+    state().externalAnalysisSelection = state().externalAnalysisSelection || {};
+    if (options.length <= 1) {
+      if (options[0]?.id) state().externalAnalysisSelection[algorithmId] = options[0].id;
+      return;
+    }
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    panel.dataset.externalAnalysisSelector = '1';
+    panel.innerHTML = `<div class="panel-body"><div class="field"><label>本次训练分析方式</label><select id="externalTrainingAnalysis" class="select">${options.map(row => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.name || row.id)}</option>`).join('')}</select></div></div>`;
+    form.prepend(panel);
+    const select = panel.querySelector('#externalTrainingAnalysis');
+    const current = selectedAnalysisId(algorithmId);
+    if (current && options.some(row => row.id === current)) select.value = current;
+    state().externalAnalysisSelection[algorithmId] = select.value;
+    select.addEventListener('change', () => { state().externalAnalysisSelection[algorithmId] = select.value; });
   }
 
   function decorateNavigation() {
@@ -240,6 +328,7 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
         <div class="row">
           <button class="btn" id="externalPlatformTest">测试连接</button>
+          <button class="btn" id="externalPlatformDiagnostics">联调诊断</button>
           <button class="btn primary" id="externalPlatformSync" ${external ? '' : 'disabled'}>↻ 立即同步</button>
         </div>
       </div>
@@ -260,7 +349,7 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" placeholder="${escapeHtml(c.credentials?.masked || '未配置')}"></div>
             <div class="field"><label>AccessSecret</label><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" placeholder="${c.credentials?.configured ? '已配置，留空表示不修改' : '请输入 AccessSecret'}"></div>
             <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（后台每 ${Math.round(c.autoSyncIntervalSeconds / 60)} 分钟检查）</label>
-            <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布（下一阶段启用）</label>
+            <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布</label>
           </div>
           <div class="row end"><button class="btn primary" id="externalPlatformSave">保存配置</button></div>
         </div>
@@ -282,6 +371,8 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
       </section>
 
+      ${diagnosticsHtml()}
+
       ${masterDataPreviewHtml()}
 
       <section class="panel">
@@ -296,8 +387,8 @@ export function installExternalAlgorithmPlatformRuntime({
               ${endpointField('product_list', '算法产品列表', c.endpoints.product_list)}
               ${endpointField('analysis_by_product', '产品分析方式', c.endpoints.analysis_by_product)}
               ${endpointField('compute_platform_list', '算力环境列表', c.endpoints.compute_platform_list)}
-              ${endpointField('version_create', '新增算法版本（下一阶段）', c.endpoints.version_create)}
-              ${endpointField('weight_create', '新增权重文件（下一阶段）', c.endpoints.weight_create)}
+              ${endpointField('version_create', '新增算法版本', c.endpoints.version_create)}
+              ${endpointField('weight_create', '新增权重文件', c.endpoints.weight_create)}
             </div>
           </details>
         </div>
@@ -313,6 +404,13 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
       </section>
     </section>`;
+  }
+
+  function diagnosticsHtml() {
+    if (!diagnostics) return '';
+    const rows = Array.isArray(diagnostics.steps) ? diagnostics.steps : [];
+    const body = rows.map(row => `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${row.status === 'success' ? 'ok' : row.status === 'skipped' ? 'warn' : 'err'}">${row.status === 'success' ? '成功' : row.status === 'skipped' ? '跳过' : '失败'}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`).join('');
+    return `<section class="panel"><div class="panel-head"><div><div class="panel-title">联调诊断</div><div class="subline">只读检查鉴权、品目、算法产品、分析方式和算力环境，不创建或修改新畅联数据。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无诊断结果</td></tr>'}</tbody></table></div></section>`;
   }
 
   function masterDataPreviewHtml() {
@@ -398,6 +496,20 @@ export function installExternalAlgorithmPlatformRuntime({
     }
   }
 
+  async function runDiagnostics() {
+    if (String(state().page || '') === PAGE) await save({quiet: true});
+    const button = document.getElementById('externalPlatformDiagnostics');
+    if (button) { button.disabled = true; button.textContent = '正在诊断…'; }
+    try {
+      diagnostics = await requestJson(`${API_ROOT}/diagnostics`, {method: 'POST'});
+      notify?.(diagnostics.ok ? '新畅联联调诊断通过' : '联调诊断存在失败项，请查看详情');
+      if (String(state().page || '') === PAGE) await render({reload: false});
+      return diagnostics;
+    } finally {
+      if (button) { button.disabled = false; button.textContent = '联调诊断'; }
+    }
+  }
+
   async function syncNow() {
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
@@ -423,9 +535,11 @@ export function installExternalAlgorithmPlatformRuntime({
   function bindPage() {
     const saveButton = document.getElementById('externalPlatformSave');
     const testButton = document.getElementById('externalPlatformTest');
+    const diagnosticsButton = document.getElementById('externalPlatformDiagnostics');
     const syncButton = document.getElementById('externalPlatformSync');
     if (saveButton) saveButton.onclick = () => void save().then(() => render({reload: false})).catch(error => notify?.(error?.message || error));
     if (testButton) testButton.onclick = () => void testConnection().catch(error => notify?.(error?.message || error));
+    if (diagnosticsButton) diagnosticsButton.onclick = () => void runDiagnostics().catch(error => notify?.(error?.message || error));
     if (syncButton) syncButton.onclick = () => void syncNow().catch(error => notify?.(error?.message || error));
 
     for (const radio of document.querySelectorAll('input[name="externalMode"]')) {
@@ -471,10 +585,16 @@ export function installExternalAlgorithmPlatformRuntime({
   const observer = nav ? new MutationObserver(decorateNavigation) : null;
   observer?.observe(nav, {childList: true, subtree: true});
   decorateNavigation();
-  void loadConfig({silent: true}).then(() => decorateAlgorithmCards()).catch(() => {});
+  installAlgorithmDecorator();
+  trainingAnalysisObserver = new MutationObserver(() => decorateTrainingAnalysisSelector());
+  trainingAnalysisObserver.observe(document.body, {childList: true, subtree: true});
+  void Promise.all([loadConfig({silent: true}), loadCache({silent: true})]).then(() => {
+    algorithmListRuntime?.runDecorators?.();
+    decorateTrainingAnalysisSelector();
+  }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63001',
+    build: 'external-algorithm-platform-63002',
     page: PAGE,
     loadConfig,
     loadHistory,
@@ -482,16 +602,19 @@ export function installExternalAlgorithmPlatformRuntime({
     render,
     save,
     testConnection,
+    runDiagnostics,
     syncNow,
+    selectedAnalysisId,
+    decorateTrainingAnalysisSelector,
     decorateNavigation,
     decorateAlgorithmCards,
     config: () => config,
     destroy() {
       destroyed = true;
       observer?.disconnect();
-      if (originalRenderAlg412 && window.renderAlg412?.__externalPlatformWrapper) {
-        window.renderAlg412 = originalRenderAlg412;
-      }
+      trainingAnalysisObserver?.disconnect();
+      unregisterAlgorithmDecorator?.();
+      unregisterAlgorithmDecorator = null;
       if (window.ExternalAlgorithmPlatformRuntime === runtime) window.ExternalAlgorithmPlatformRuntime = null;
       window.__externalAlgorithmPlatformRuntimeInstalled = false;
     },

@@ -70,7 +70,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   const state = () => getState?.() || {};
   let config = null;
   let loading = false;
-  let originalRender = null;
+  let unregisterAlgorithmDecorator = null;
   let mutationQueued = false;
 
   function currentProjectId() {
@@ -256,16 +256,8 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   }
 
   function installRendererHook() {
-    if (originalRender || typeof window.renderAlg412 !== 'function') return;
-    originalRender = window.renderAlg412;
-    const wrapped = function (...args) {
-      const result = originalRender.apply(this, args);
-      decorateVersionRows();
-      return result;
-    };
-    wrapped.__externalPublishWrapper = true;
-    window.renderAlg412 = wrapped;
-    decorateVersionRows();
+    if (unregisterAlgorithmDecorator || !algorithmListRuntime?.registerDecorator) return;
+    unregisterAlgorithmDecorator = algorithmListRuntime.registerDecorator('external-algorithm-publish', decorateVersionRows);
   }
 
   function scheduleDecorate() {
@@ -284,7 +276,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   scheduleDecorate();
 
   const runtime = {
-    build: 'external-algorithm-publish-64001',
+    build: 'external-algorithm-publish-64002',
     loadConfig,
     saveConfig,
     runAutoOnce,
@@ -294,7 +286,8 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     config: () => config,
     destroy() {
       observer.disconnect();
-      if (originalRender && window.renderAlg412?.__externalPublishWrapper) window.renderAlg412 = originalRender;
+      unregisterAlgorithmDecorator?.();
+      unregisterAlgorithmDecorator = null;
       window.__externalAlgorithmPublishRuntimeInstalled = false;
       if (window.ExternalAlgorithmPublishRuntime === runtime) window.ExternalAlgorithmPublishRuntime = null;
     },

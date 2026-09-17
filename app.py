@@ -5461,6 +5461,7 @@ class TrainReq(BaseModel):
     # v42.8：训练任务队列与训练完成后的自动转换。
     queue_priority: StrictInt = 50
     auto_convert_targets: Optional[List[str]] = None
+    external_analysis_id: Optional[str] = None
 
 
 def validate_train_request(payload: TrainReq):
@@ -5545,6 +5546,8 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
     if framework not in {"ultralytics", "paddle"}:
         raise HTTPException(status_code=400, detail="训练框架仅支持 ultralytics 或 paddle")
@@ -5568,6 +5571,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "validation_percent": split.validation_percent,
             "schema_version": 3,
             "requested_device": payload.device,
+            "external_analysis_id": external_analysis_id,
         }
     )
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
@@ -5595,6 +5599,11 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "target": target,
             "asset_algorithm_id": payload.algorithm_asset_id,
             "algorithm_asset_id": payload.algorithm_asset_id,
+            "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
+            "external_provider": (asset_algorithm or {}).get("provider_type", ""),
+            "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
+            "external_analysis_id": external_analysis_id,
+            "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
             "algorithm": payload.algorithm,
             "model": payload.model,
             "queue_priority": int(payload.queue_priority),
@@ -5656,6 +5665,8 @@ def start_train(project_id: str, payload: TrainReq):
     get_project(project_id)
     validate_train_request(payload)
     p = project_dir(project_id)
+    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = (payload.framework or "ultralytics").strip().lower()
     # 所有训练入口都遵守同一迭代合同：已有版本时只能使用最新上一版本，
     # 且必须先通过实际训练运行时的权重加载校验，不能静默回退。
@@ -5708,7 +5719,6 @@ def start_train(project_id: str, payload: TrainReq):
     log_file = job_dir / "train.log"
     prefix = "paddle" if framework == "paddle" else "train"
     run_name = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
     job = {
         "id": job_id,
         "project_id": project_id,
@@ -5717,7 +5727,7 @@ def start_train(project_id: str, payload: TrainReq):
         "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
         "external_provider": (asset_algorithm or {}).get("provider_type", ""),
         "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
-        "external_analysis_id": (asset_algorithm or {}).get("external_analysis_id", ""),
+        "external_analysis_id": external_analysis_id,
         "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
         "status": "queued",
         "target": payload.target,
@@ -8165,6 +8175,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "job_id":job.get("id"),"remark":"训练结束自动生成版本","report":rep,"report_updated_at":now_iso(),
         "accuracy":accuracy,"accuracy_metric":"mAP50","quality_reached":_v48_quality_reached(job),"training_status":("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
         "framework": str(job.get("framework") or "ultralytics").strip().lower(),
+        "external_analysis_id": str(job.get("external_analysis_id") or ""),
         "trainable": bool(stored_path),
         "artifact_verified": bool(job.get("artifact_verified")) and bool(stored_path),
         "snapshot_id": str(job.get("snapshot_id") or ""),
@@ -14879,6 +14890,7 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
 from platform_core.external_algorithm_platform import (
     assert_algorithm_mutable,
     assert_local_algorithm_create_allowed,
+    resolve_external_training_analysis,
     external_algorithm_platform_router,
 )
 from platform_core.external_algorithm_publish import (

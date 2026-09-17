@@ -211,3 +211,28 @@ test('focused refresh uses raw fetch but discards results after navigation and a
   runtime.destroy();
   cleanup();
 });
+
+test('registered decorators run after canonical card render without replacing renderAlg412', () => {
+  const state = {page: '算法列表', project: {id: 'p1'}, algorithms: [], jobs: [], alg428Expanded: {}};
+  let renders = 0;
+  let decorated = 0;
+  const renderAlg412 = () => { renders += 1; };
+  globalThis.document = {
+    body: {},
+    getElementById: id => id === 'alg412List' ? {} : null,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
+  globalThis.window = {renderAlg412, fetch: async () => response({items: []})};
+  const runtime = installAlgorithmListRuntime({getState: () => state, projectId: () => 'p1'});
+  runtime.registerDecorator('test', () => { decorated += 1; });
+  runtime.renderCards();
+  assert.equal(window.renderAlg412, renderAlg412);
+  assert.equal(renders, 1);
+  runtime.runDecorators();
+  assert.ok(decorated >= 1);
+  runtime.destroy();
+  delete globalThis.MutationObserver;
+  cleanup();
+});

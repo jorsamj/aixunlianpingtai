@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   algorithmSourceLabel,
+  externalAnalysisOptions,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
 } from '../../static/modules/external-algorithm-platform.js';
@@ -42,4 +43,15 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(external.cache.product_count, 5);
   assert.equal(external.endpoints.product_list, '/custom/products');
   assert.equal(external.endpoints.category_tree, '/algorithm-category/tree');
+});
+
+test('external analysis options preserve all synced analysis methods', () => {
+  const options = externalAnalysisOptions({
+    external_analyses: [
+      {analysis_id: 'a1', analysis_name: '视觉分析 A'},
+      {analysis_id: 'a2', analysis_name: '视觉分析 B'},
+    ],
+  });
+  assert.deepEqual(options.map(row => row.id), ['a1', 'a2']);
+  assert.deepEqual(options.map(row => row.name), ['视觉分析 A', '视觉分析 B']);
 });
