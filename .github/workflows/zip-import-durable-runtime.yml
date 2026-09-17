@@ -74,7 +74,8 @@ jobs:
           grep -Fq 'UploadTaskCenterRuntime' static/modules/storage-import-progress.js
           grep -Fq 'resumeRequired' static/modules/upload-task-center.js
           grep -Fq 'DEFAULT_TTL_SECONDS = 24 * 60 * 60' platform_core/zip_multipart.py
-          grep -Fq 'cleanup_expired' platform_core/zip_multipart.py
+          grep -Fq 'cleanup_expired_if_due' platform_core/zip_multipart.py
+          grep -Fq 'cleanup_expired_if_due(interval_seconds=60)' app.py
           grep -Fq 'released_bytes' platform_core/zip_multipart.py
           grep -Fq 'MC_SECRET_MASTER_KEY' platform_core/secrets.py
           grep -Fq 'EncryptedFileSecretStore' platform_core/secrets.py
@@ -84,6 +85,8 @@ jobs:
           test ! -e tools/_one_shot_upload_pipeline_v2_fix.py
           test ! -e tools/_one_shot_upload_pipeline_v2_postfix.py
           test ! -e .github/workflows/_one_shot_upload_pipeline_v2.yml
+          test ! -e tools/_one_shot_secret_gc_ui.py
+          test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
 
@@ -117,6 +120,7 @@ jobs:
           grep -Fq 'class V19MultipartUploadReq' app.py
           grep -Fq 'ZipMultipartRepository' app.py
           grep -Fq '正在合并 ZIP 分片' app.py
+          grep -Fq 'cleanup_expired_if_due(interval_seconds=60)' app.py
           grep -Fq 'mapping_labels' platform_core/storage/import_tasks.py
           grep -Fq 'writing_annotations' platform_core/storage/import_tasks.py
           grep -Fq 'SECRET_STORE_UNAVAILABLE' platform_core/secrets.py
