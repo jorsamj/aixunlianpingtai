@@ -44,6 +44,19 @@ export function externalAnalysisOptions(algorithm = {}) {
   return (algorithm.external_analysis_ids || []).map(id => ({id: String(id), name: String(id), type: ''}));
 }
 
+export function externalAlgorithmMapping(algorithm = {}) {
+  const analyses = externalAnalysisOptions(algorithm);
+  return {
+    source: algorithmSourceLabel(algorithm),
+    productId: String(algorithm.external_product_id || ''),
+    categoryId: String(algorithm.external_category_id || ''),
+    analysisIds: analyses.map(row => row.id),
+    analysisNames: analyses.map(row => row.name || row.id),
+    active: algorithm.external_active !== false,
+    syncedAt: String(algorithm.external_last_synced_at || ''),
+  };
+}
+
 export function normalizeExternalPlatformConfig(body = {}) {
   const config = body?.config || body || {};
   const endpoints = config.endpoints || {};
@@ -171,12 +184,54 @@ export function installExternalAlgorithmPlatformRuntime({
     return false;
   }
 
+  function decorateAlgorithmDetail(algorithm) {
+    if (!isExternalAlgorithm(algorithm)) return;
+    const detail = document.querySelector('#modalBody .alg428-detail');
+    if (!detail || detail.querySelector('[data-external-algorithm-detail]')) return;
+    const mapping = externalAlgorithmMapping(algorithm);
+    const panel = document.createElement('section');
+    panel.dataset.externalAlgorithmDetail = '1';
+    panel.innerHTML = `<div class="alg428-version-head"><b>外部平台映射</b><span>${escapeHtml(mapping.source)}</span></div>
+      <dl class="report429-dl">
+        <dt>来源平台</dt><dd>${escapeHtml(mapping.source)}</dd>
+        <dt>Product ID</dt><dd>${escapeHtml(mapping.productId || '-')}</dd>
+        <dt>Category ID</dt><dd>${escapeHtml(mapping.categoryId || '-')}</dd>
+        <dt>Analysis ID</dt><dd>${escapeHtml(mapping.analysisIds.join('、') || '-')}</dd>
+        <dt>分析方式</dt><dd>${escapeHtml(mapping.analysisNames.join('、') || '-')}</dd>
+        <dt>同步状态</dt><dd>${mapping.active ? '正常' : '已下架'}</dd>
+        <dt>最近同步</dt><dd>${escapeHtml(timeText(mapping.syncedAt))}</dd>
+      </dl>`;
+    detail.insertBefore(panel, detail.children[1] || null);
+    if (!mapping.active) {
+      for (const button of detail.querySelectorAll('button')) {
+        if (/开始训练/.test(String(button.textContent || ''))) {
+          button.disabled = true;
+          button.title = '该算法已在新畅联下架，不能新建训练任务';
+        }
+      }
+    }
+  }
+
   function decorateAlgorithmCards() {
     const s = state();
     if (String(s.page || '') !== '算法列表') return;
     const rows = s.algorithms || [];
     const root = document.getElementById('alg412List');
     if (!root) return;
+
+    const legacyIndustry = document.getElementById('alg412Industry');
+    if (legacyIndustry) {
+      if (externalMode()) {
+        if (legacyIndustry.value !== 'all') {
+          legacyIndustry.value = 'all';
+          algorithmListRuntime?.renderCards?.();
+          return;
+        }
+        legacyIndustry.hidden = true;
+      } else {
+        legacyIndustry.hidden = false;
+      }
+    }
 
     for (const card of root.querySelectorAll('.alg428-card')) {
       const actionButton = [...card.querySelectorAll('button')].find(button =>
@@ -196,6 +251,13 @@ export function installExternalAlgorithmPlatformRuntime({
         title.appendChild(source);
       }
       if (!isExternalAlgorithm(algorithm)) continue;
+      const detailButton = [...card.querySelectorAll('button')].find(button =>
+        String(button.getAttribute('onclick') || '').includes("viewAlgorithm429(")
+      );
+      if (detailButton && !detailButton.dataset.externalDetailBound) {
+        detailButton.dataset.externalDetailBound = '1';
+        detailButton.addEventListener('click', () => setTimeout(() => decorateAlgorithmDetail(algorithm), 0));
+      }
       if (algorithm.external_active === false && title && !title.querySelector('[data-external-inactive]')) {
         const inactive = document.createElement('em');
         inactive.dataset.externalInactive = '1';
@@ -237,6 +299,10 @@ export function installExternalAlgorithmPlatformRuntime({
       })];
       select.innerHTML = options.join('');
       select.value = selectedCategoryId;
+    }
+    if (toolbar && !externalMode()) {
+      toolbar.querySelector('[data-external-category-filter]')?.remove();
+      selectedCategoryId = '';
     }
 
     const create = document.querySelector('.alg428-toolbar [data-action="algorithm.create"]');

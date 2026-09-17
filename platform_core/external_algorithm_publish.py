@@ -245,7 +245,7 @@ class ExternalPublicationRepository:
                 """,
                 (
                     key, project_id, str(algorithm.get("id") or ""), str(version.get("id") or ""),
-                    str(algorithm.get("external_product_id") or ""), str(algorithm.get("external_analysis_id") or ""),
+                    str(algorithm.get("external_product_id") or ""), str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or ""),
                     str(version.get("version_name") or version.get("id") or ""), stamp, stamp,
                 ),
             )

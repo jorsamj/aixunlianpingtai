@@ -254,3 +254,18 @@ def test_conversion_in_progress_blocks_publish(tmp_path: Path):
         assert False, "publish should have been blocked"
     except Exception as error:
         assert getattr(error, "code", "") == "MODEL_CONVERSION_STILL_RUNNING"
+
+def test_publication_persists_training_analysis_binding(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-2"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["publication"]["external_analysis_id"] == "analysis-2"

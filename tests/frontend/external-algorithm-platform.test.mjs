@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   algorithmSourceLabel,
+  externalAlgorithmMapping,
   externalAnalysisOptions,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
@@ -54,4 +55,25 @@ test('external analysis options preserve all synced analysis methods', () => {
   });
   assert.deepEqual(options.map(row => row.id), ['a1', 'a2']);
   assert.deepEqual(options.map(row => row.name), ['视觉分析 A', '视觉分析 B']);
+});
+
+test('external mapping exposes provider ids and sync state', () => {
+  const mapping = externalAlgorithmMapping({
+    source_type: 'EXTERNAL',
+    provider_type: 'CHANG_LIAN',
+    external_product_id: 'p-1',
+    external_category_id: 'c-1',
+    external_active: false,
+    external_last_synced_at: '2026-09-17T06:30:00Z',
+    external_analyses: [
+      {analysis_id: 'a-1', analysis_name: '视觉分析 A'},
+      {analysis_id: 'a-2', analysis_name: '视觉分析 B'},
+    ],
+  });
+  assert.equal(mapping.source, '新畅联');
+  assert.equal(mapping.productId, 'p-1');
+  assert.equal(mapping.categoryId, 'c-1');
+  assert.deepEqual(mapping.analysisIds, ['a-1', 'a-2']);
+  assert.equal(mapping.active, false);
+  assert.equal(mapping.syncedAt, '2026-09-17T06:30:00Z');
 });
