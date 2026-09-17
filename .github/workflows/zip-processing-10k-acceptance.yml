@@ -1,0 +1,60 @@
+name: ZIP Processing 10k Acceptance
+
+# One-shot acceptance rerun after deterministic SQLite connection lifecycle closure.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/zip-processing-10k-acceptance.yml
+      - tools/accept_zip_processing_10k.py
+
+jobs:
+  genuine-10k-processing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install acceptance dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Syntax and release boundary
+        run: |
+          python -m py_compile tools/accept_zip_processing_10k.py app.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Real HTTP 10k YOLO processing acceptance
+        run: |
+          set -o pipefail
+          python tools/accept_zip_processing_10k.py --output /tmp/zip-processing-10k-acceptance.json | tee /tmp/zip-processing-10k-acceptance.log
+      - name: Verify acceptance artifact
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          value = json.loads(Path('/tmp/zip-processing-10k-acceptance.json').read_text(encoding='utf-8'))
+          assert value['acceptance_passed'] is True, value
+          assert value['image_count'] == 10000, value
+          assert value['report_imported_images'] == 10000, value
+          assert value['material_total'] == 10000, value
+          assert value['annotation_total'] == 10000, value
+          assert value['terminal_progress'] == 100.0, value
+          print('ZIP_10K_ACCEPTANCE_SUMMARY=' + json.dumps(value, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zip-processing-10k-acceptance
+          path: |
+            /tmp/zip-processing-10k-acceptance.json
+            /tmp/zip-processing-10k-acceptance.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Confirm formal version unchanged
+        run: test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

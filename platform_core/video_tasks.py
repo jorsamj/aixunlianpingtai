@@ -163,6 +163,66 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _frame_path(destination: Path, ordinal: int, source_frame_index: int) -> Path:
+    return destination / f"frame_{int(ordinal):06d}_src_{int(source_frame_index):09d}.jpg"
+
+
+def _validated_resume_prefix(
+    destination: Path,
+    indices: list[int],
+    fps: float,
+) -> list[ExtractedFrame]:
+    """Return the contiguous, decodable prefix already published by an older execution.
+
+    Each frame is published with ``os.replace``. A recovered Worker therefore only trusts
+    complete deterministic frame files, verifies that they are still decodable, and drops
+    any suffix after the first gap/corrupt file. This makes the artifact directory itself a
+    durable checkpoint even if the process died after the JPEG replace but before the task
+    checkpoint JSON was updated.
+    """
+    frames: list[ExtractedFrame] = []
+    first_missing = len(indices)
+    for offset, source_frame_index in enumerate(indices):
+        ordinal = offset + 1
+        path = _frame_path(destination, ordinal, source_frame_index)
+        if not path.is_file() or path.stat().st_size <= 0:
+            first_missing = offset
+            break
+        if cv2.imread(str(path), cv2.IMREAD_UNCHANGED) is None:
+            first_missing = offset
+            break
+        frames.append(
+            ExtractedFrame(
+                path=str(path),
+                source_frame_index=source_frame_index,
+                timestamp_seconds=source_frame_index / fps,
+                sha256=_sha256(path),
+                size_bytes=path.stat().st_size,
+            )
+        )
+
+    for offset in range(first_missing, len(indices)):
+        source_frame_index = indices[offset]
+        path = _frame_path(destination, offset + 1, source_frame_index)
+        path.unlink(missing_ok=True)
+        path.with_name(f".{path.name}.tmp.jpg").unlink(missing_ok=True)
+    for temporary_path in destination.glob(".frame_*.tmp.jpg"):
+        temporary_path.unlink(missing_ok=True)
+    return frames
+
+
+def _position_capture_for_resume(capture, source_frame_index: int) -> int:
+    requested = max(0, int(source_frame_index))
+    if requested == 0:
+        return 0
+    if capture.set(cv2.CAP_PROP_POS_FRAMES, float(requested)):
+        reported = int(round(capture.get(cv2.CAP_PROP_POS_FRAMES)))
+        if 0 <= reported <= requested:
+            return reported
+    capture.set(cv2.CAP_PROP_POS_FRAMES, 0.0)
+    return 0
+
+
 def extract_video(
     source: str | Path,
     output_dir: str | Path,
@@ -171,6 +231,7 @@ def extract_video(
     backend: str = "auto",
     progress: Callable[[int, int, int], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    resume_existing: bool = False,
 ) -> VideoExtractionResult:
     source_path = Path(source).resolve()
     probe = probe_video(source_path, backend=backend)
@@ -179,13 +240,35 @@ def extract_video(
         raise ValueError("video sampling produced no frames")
     destination = Path(output_dir).resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    targets = set(indices)
-    frames: list[ExtractedFrame] = []
+    frames = (
+        _validated_resume_prefix(destination, indices, probe.fps)
+        if resume_existing
+        else []
+    )
+    if frames and progress is not None:
+        progress(len(frames), len(indices), frames[-1].source_frame_index)
+    if len(frames) == len(indices):
+        return VideoExtractionResult(
+            source=str(source_path),
+            output_dir=str(destination),
+            backend=probe.backend,
+            duration_seconds=probe.duration_seconds,
+            expected_frames=len(indices),
+            extracted_frames=len(frames),
+            frames=tuple(frames),
+        )
+
+    remaining_indices = indices[len(frames):]
+    targets = set(remaining_indices)
+    ordinals = {
+        source_frame_index: ordinal
+        for ordinal, source_frame_index in enumerate(indices, start=1)
+    }
     capture = cv2.VideoCapture(str(source_path))
     try:
         if not capture.isOpened():
             raise ValueError("video cannot be opened")
-        frame_index = 0
+        frame_index = _position_capture_for_resume(capture, remaining_indices[0])
         while frame_index < probe.total_frames and len(frames) < len(indices):
             if cancelled is not None and cancelled():
                 raise InterruptedError("video extraction cancelled")
@@ -193,8 +276,10 @@ def extract_video(
             if not ok:
                 break
             if frame_index in targets:
-                final_path = destination / (
-                    f"frame_{len(frames) + 1:06d}_src_{frame_index:09d}.jpg"
+                final_path = _frame_path(
+                    destination,
+                    ordinals[frame_index],
+                    frame_index,
                 )
                 temporary_path = final_path.with_name(f".{final_path.name}.tmp.jpg")
                 if not cv2.imwrite(str(temporary_path), frame):
@@ -209,6 +294,7 @@ def extract_video(
                         size_bytes=final_path.stat().st_size,
                     )
                 )
+                targets.remove(frame_index)
                 if progress is not None:
                     progress(len(frames), len(indices), frame_index)
             frame_index += 1
@@ -292,13 +378,25 @@ class VideoFrameHandler:
         source = context.artifacts.artifact_path(context.task.task_id, source_ref)
         frames_dir = context.artifacts.artifact_path(context.task.task_id, "frames")
 
+        def ensure_active() -> None:
+            if context.cancel_requested():
+                raise InterruptedError("video frame task cancelled")
+
         def report_progress(done: int, total: int, current: int) -> None:
-            context.repository.heartbeat(
-                context.task.task_id,
-                context.lease.lease_token,
+            context.heartbeat(
                 progress=round(done / max(1, total) * 90, 2),
                 stage="extracting",
                 current_item=str(current),
+            )
+            context.save_checkpoint(
+                {
+                    "schema_version": 1,
+                    "stage": "extracting",
+                    "extracted_frames": int(done),
+                    "expected_frames": int(total),
+                    "current_source_frame": int(current),
+                    "output_ref": "frames",
+                }
             )
 
         extraction = extract_video(
@@ -308,11 +406,16 @@ class VideoFrameHandler:
             backend=str(payload.get("backend") or "auto"),
             progress=report_progress,
             cancelled=context.cancel_requested,
+            resume_existing=True,
         )
+        ensure_active()
         context.save_checkpoint(
             {
+                "schema_version": 1,
                 "stage": "extracted",
                 "extracted_frames": extraction.extracted_frames,
+                "expected_frames": extraction.expected_frames,
+                "output_ref": "frames",
             }
         )
         project_dir = self._project_dir(context.task.project_id)
@@ -329,7 +432,9 @@ class VideoFrameHandler:
         records = []
         result_materials = []
         created_at = context.task.created_at or datetime.now(timezone.utc).isoformat()
+        total_frames = max(1, extraction.extracted_frames)
         for extracted in extraction.frames:
+            ensure_active()
             image_id = self._material_id(
                 context.task.task_id,
                 extracted.source_frame_index,
@@ -342,11 +447,17 @@ class VideoFrameHandler:
                 Path(extracted.path),
                 content_type="image/jpeg",
             )
+            # Uploads can be slow remote side effects. Re-check ownership and
+            # cancellation immediately after each one before publishing any
+            # annotation/material truth for that object.
+            ensure_active()
             if metadata.sha256 != extracted.sha256:
                 raise OSError("stored frame checksum mismatch")
             annotation_path = annotations / f"{image_id}.json"
-            if not annotation_path.exists() and annotation_repository.get(image_id)['version'] == 0:
-                annotation_repository.upsert(image_id, [], 'unannotated')
+            if not annotation_path.exists() and annotation_repository.get(image_id)["version"] == 0:
+                ensure_active()
+                annotation_repository.upsert(image_id, [], "unannotated")
+                ensure_active()
             records.append(
                 {
                     "id": image_id,
@@ -383,6 +494,13 @@ class VideoFrameHandler:
                     "source_frame_index": extracted.source_frame_index,
                 }
             )
+            ensure_active()
+            context.heartbeat(
+                progress=round(90 + len(records) / total_frames * 7, 2),
+                stage="publishing_frames",
+                current_item=str(extracted.source_frame_index),
+            )
+        ensure_active()
         if records:
             first_image = cv2.imread(str(Path(extraction.frames[0].path)))
             if first_image is None:
@@ -391,10 +509,10 @@ class VideoFrameHandler:
             for record in records:
                 record["width"] = int(width)
                 record["height"] = int(height)
+        ensure_active()
         materials_repository.upsert_many(records)
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        ensure_active()
+        context.heartbeat(
             progress=98,
             stage="committing",
             current_item=str(len(records)),
@@ -408,11 +526,14 @@ class VideoFrameHandler:
             "output_ref": "frames",
             "materials": result_materials,
         }
+        ensure_active()
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
         context.save_checkpoint(
             {
+                "schema_version": 1,
                 "stage": "committed",
                 "extracted_frames": extraction.extracted_frames,
+                "expected_frames": extraction.expected_frames,
                 "result_ref": "result.json",
             }
         )

@@ -1,562 +1,582 @@
-# Codex Current State — v42.25 Runtime
+# Codex Current State
 
-> 这是当前开发分支的**第一入口交接文件**。后续 Codex / ChatGPT / 人工开发接手时，先读本文件，再读根目录 `AGENTS.md` 中列出的专项设计。
->
-> 本记录覆盖代码状态至 `ea4c08065d58ec24c233535ecb41c809b389f691`（后续若只有 handoff 文档提交，代码状态仍以该提交为基准）。接手前必须执行 `git branch --show-current`、`git rev-parse HEAD`、`git log --oneline -20`，不要只依赖本文 SHA。
+> First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
-## 1. 仓库与环境
 
-- 仓库：`jorsamj/aixunlianpingtai`
-- 稳定主分支：`main`
-- 当前开发分支：`refactor/v42.25-runtime`
-- v42.25 基线：`main@01636b61780361dde91c12ac2732f46d2289b6be`
-- **不要在未明确授权时合并 main。**
-- README / VERSION 仍保持正式版 `42.24.0`；当前前端开发标识显示 `v42.25.0-dev`。
+## Current closure — Task Runtime Truth v2 CLOSED
 
-生产/验收服务器：
+Product implementation: `cc8981888bc4b27ee9594290455bd08e61713c9d`.
+Permanent Task Runtime Truth gate expansion: `38aa8f736ee11ae419042fa2e90127bd45937ac5`.
+Formal `VERSION.txt` remains `42.24.0`.
 
-```text
-Ubuntu 22.04
-16 CPU
-约 32 GB RAM
-NVIDIA A800-SXM4-40GB
-代码目录：/data/platform/aixunlianpingtai
-数据目录：/data/platform-data
-Conda：mc-platform
-YOLO Python：/home/vipuser/miniconda3/envs/yolo/bin/python
-Torch：2.5.0+cu124
-CUDA：12.4
-```
+The shared durable-task frontend contract now covers training, AI annotation,
+material batches, storage scan/import, server material import, resource discovery,
+video processing, and deployment tests. For those durable payloads, `task_status`
+wins over compatibility `status`, `phase` wins over `task_stage` / `stage`, and
+`progress_percent` wins over legacy `progress`; the browser does not derive a
+new durable percentage from domain counters.
 
-Windows 仍是主要开发/普通测试环境，正式训练统一 NVIDIA Linux。代码必须跨平台，禁止写死盘符、反斜杠路径、Windows-only shell / process 调用。
+A numeric `resource_queue_position` is displayed as “队列第 N 位” only when the
+backend also returns `resource_queue_position_exact === true`. Candidate order,
+priority order, or an inexact numeric position is never presented as an exact
+Worker/hardware queue position. Domain-specific diagnostics such as scanned file
+counts, extracted bytes, current paths, and wait reasons remain visible.
 
----
+The permanent `Task Runtime Truth` workflow runs the expanded backend/frontend
+contract on both Ubuntu and Windows. The closure run passed both OS jobs, and the
+existing Frontend Runtime workflow passed frontend unit/owner guards plus Real
+Chrome runtime regressions. The existing cleaning frontend queue/progress truth
+closure remains authoritative and was not reopened by this batch.
 
-## 2. 当前整体架构判断
+Detailed handoff: `docs/CODEX_HANDOFF_2026-09-16_TASK_RUNTIME_TRUTH_V2.md`.
 
-当前不是经典“完全前后端工程分仓”，而是：
 
-```text
-前端逻辑分离 + 同仓部署 + 后台异步 Worker 服务化
-```
+## Product closure — Training Bundle Snapshot Cache CLOSED
 
-目标方向：
+Training Bundle Snapshot Cache is implemented at product commit `b0868a7409ec019365e74355b46f21643d0da2a3`.
+It reuses only a project-scoped portable bundle whose Snapshot ID is derived
+from the durable material index and whose previous run reached final dataset
+verification. The cache lives under
+`<data_dir>/cache/training-bundles/<project_id>/<snapshot_id>`; entries are not
+shared across projects.
 
-```text
-Browser
-  ↓ HTTP/JSON
-Web/API
-  ↓
-Task Runtime
-  ├─ Import Worker
-  ├─ Cleaning Worker
-  ├─ Annotation Worker
-  ├─ Video Worker
-  ├─ Training Worker
-  ├─ Conversion Worker
-  └─ Deployment/Final Evaluation Worker
-```
+The fast path is intentionally ahead of source materialization. When every
+selected material already has a locked SHA256 and positive indexed size, the
+Worker rebuilds the deterministic split manifest/Snapshot from durable material
+and annotation truth first. If a matching cache entry exists, source files are
+not reread merely to rediscover the same hashes. A miss keeps the previous
+behavior: every selected source is materialized/verified, the manifest and
+Snapshot are rebuilt from those verified bytes, and the task-local portable
+bundle is constructed normally.
 
-当前阶段**不要为了形式上的前后端分离做大重构**。优先保证训练正确性、Task Runtime 唯一执行、真实 A800 可训练、页面稳定、生产安全。
+Cache entries are published only during successful training finalization, after
+the existing `verify_portable_dataset()` full image/label SHA256 gate has passed
+and after the official algorithm version has been attached successfully. An
+incomplete/failed training run therefore cannot seed this cache. Cache
+publication failure is recorded as optimization evidence and cannot turn an
+otherwise verified model result into a failed training result. Cache-hit
+admission re-hashes the small Snapshot, label and data-YAML files while large
+images use their locked size/manifest evidence; finalization still performs the
+full image SHA256 gate on every run.
 
----
+Each training task still receives its own `work/bundle`; the trainer never runs
+directly inside the shared cache. Cache schema v3 restores trainer-writable image
+inputs with `shutil.copy2()` rather than writable hard-links, so Ultralytics or
+other trainer-side mutations cannot modify the persistent cache inode. Legacy
+schema-v2 cache entries are fenced because their prior hard-link isolation cannot
+be assumed clean. The finalization gate still re-hashes the task bundle on every
+run before accepting the model artifact.
 
-## 3. v42.25 已完成的核心工作
+Permanent contracts cover project isolation, cache marker/manifest identity,
+missing-member rejection, verified-file-count fencing, hard-link reuse,
+cross-device copy fallback, indexed hash/size eligibility, and the production
+TrainingHandler wiring. Formal `VERSION.txt` remains `42.24.0`; no tag, release
+or `main` merge is part of this closure. A800 / genuine 10k timing remains
+unverified and no performance percentage is claimed.
 
-### 3.1 Training Data Contract / 防泄漏切分
-
-核心文件：
-
-- `platform_core/training_splits.py`
-- `platform_core/annotation_repository.py`
-- `platform_core/snapshots.py`
-
-核心合同：
-
-- same SHA + same normalized GT：本次训练 canonicalize，重复素材 ID 进入 `excluded_duplicate_ids`，不删除素材库记录。
-- same SHA + different normalized GT：训练前 `duplicate_annotation_conflict`，禁止 keep-first / keep-latest。
-- Train/Test 如果显式选到相同 SHA，必须拒绝。
-- 使用 union-find 构建不可拆分 Component，关系包括 SHA、file identity、group/video/source/near-duplicate/sequence、camera session 等。
-- `camera_id` 单独不能作为长期不可拆分关系，必须与 session 组合。
-- AnnotationRepository 是 Ground Truth authority，MaterialRepository 只是 searchable projection。
-- Snapshot schema v3 锁定 annotation state/scope/hash、SHA、split role、duplicate audit。
-
-设计文档：
-
-- `docs/superpowers/specs/2026-09-11-v42.25-training-data-contract-design.md`
-
-### 3.2 Negative Sample Contract
-
-语义必须严格区分：
+## 1. Branch / release state
 
 ```text
-unannotated      -> 未确认 GT -> 不可训练
-annotated        -> 有正式框 -> 可训练
-confirmed_empty  -> 明确确认无目标 -> 合法负样本
+branch:                                  refactor/frontend-runtime-stabilization
+local scoped product HEAD:               de0c37dd93ecc3396935bf9ad6159568d77a03da
+remote HEAD last verified:               ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4
+ahead / behind last verified:            2 / 0
+push status:                             PENDING — GitHub 443 unavailable during Phase 1A handoff
+latest remotely accepted state:          ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4
+latest local scoped product implementation: de0c37d (GPU Runtime Truth Phase 1A)
+latest full-suite acceptance:            ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4
+formal VERSION.txt:                      42.24.0
+visible frontend version:                v42.24.0
+internal UI build metadata:              42.25.0-dev
+app.js cache:                            42.25.99
+main.mjs cache:                          42.25.99
+NavigationStability:                     422512
+UI state runtime:                        422500
+PollRegistry:                            422518
+TrainingDraftRuntime:                    422516
+TrainingLabelRuntime:                    422513
+TrainingSubmitRuntime:                   training-submit-422504
+TrainingTaskRuntime:                     training-task-runtime-422522
+AutoLabelPollRuntime:                    422501
 ```
 
-核心要求：
+The latest remotely accepted branch state is `ca8d80cba3cbfa1282e4ff4d9b0a1c341cbd73a4`. GPU Runtime Truth Phase 1A is committed locally at `de0c37dd93ecc3396935bf9ad6159568d77a03da`; push and GitHub CI remain pending because GitHub port 443 was unreachable during handoff. Do not merge `main`, bump `VERSION.txt`, tag or release without explicit user approval.
 
-- `confirmed_empty` 即使 `box_count=0` 仍是正式已标注素材。
-- `annotation_scope` 是 Ground Truth 的一部分。
-- 新 `confirmed_empty` 无显式 scope 时优先冻结当时 active label codes；历史 `['*']` 仅为兼容。
-- Snapshot 必须把 `*` 解析到 locked algorithm schema。
-- partial negative scope 未覆盖算法全部 locked labels 时，不得被当作全类负样本。
-- portable YOLO 中合法负样本生成真实 0-byte `.txt`。
-- 普通 0 框保存不能静默变成负样本；前端必须显式“确认无目标”。
-
-相关文件：
-
-- `platform_core/annotation_repository.py`
-- `platform_core/snapshots.py`
-- `static/modules/annotation.js`
-- `static/modules/negative-samples.js`
-- `static/main.mjs`
-- `tests/unit/test_negative_sample_contract.py`
-
-设计文档：
-
-- `docs/superpowers/specs/2026-09-11-negative-sample-contract.md`
-
-### 3.3 Task Runtime Execution Fencing
-
-目标：解决 Worker lease 丢失后旧 execution 仍运行、第二个 Worker 又 claim 同任务的重复执行窗口。
-
-已实现：
-
-- persisted execution `attempt/generation`
-- lease token + generation ownership 校验
-- heartbeat / bind_process / finish generation-aware
-- PID + create_time + command hash 进程身份验证
-- 无法确认进程身份时 fail closed
-- expired live exact process 不 requeue
-- recovery-hold resource fence
-- GPU reservation quarantine
-- lease loss 后禁止旧 execution 发布正式 artifact / finish
-- process tree 终止
-- FencedArtifactStore 在写入前后做 execution ownership 检查
-
-核心文件：
-
-- `platform_core/task_runtime/fenced_repository.py`
-- `platform_core/task_runtime/process_control.py`
-- `platform_core/task_runtime/worker.py`
-- `platform_core/task_runtime/scheduler.py`
-- `platform_core/deployment/conversion_tasks.py`
-- `task_worker.py`
-
-设计文档：
-
-- `docs/superpowers/specs/2026-09-11-v42.25-task-runtime-fencing-design.md`
-
-### 3.4 Training Resource Contract
-
-真实 A800 曾出现用户配置：
+## Product status — GPU Runtime Truth Phase 1A
 
 ```text
-batch=16
-workers=4
-cache=false
-device=0
+GPU Runtime Truth Phase 1A
+IMPLEMENTED + BASIC TESTS
+REAL MULTI-NODE NVIDIA ACCEPTANCE PENDING
 ```
 
-但 Ultralytics 实际收到：
+Implementation commit: `de0c37dd93ecc3396935bf9ad6159568d77a03da`.
+This phase extends the existing Worker Runtime and GPU resource owner; it does
+not add a second Worker registry, heartbeat, task queue, Scheduler, or GPU
+assignment path.
+
+Node identity resolves in this order: explicit `MC_NODE_ID`; otherwise a
+hashed node-local Windows MachineGuid or Linux machine-id; when those are not
+available, a generated identity persisted under `MC_NODE_STATE_DIR` or the
+OS-local application state directory. Hostname is display metadata only.
+Node identity is never written to shared `MC_TRAIN_DATA_DIR`. Containers that
+need identity across replacement should set `MC_NODE_ID` or mount a node-local
+`MC_NODE_STATE_DIR`.
+
+`worker_instances` now has an additive `node_id` column. New Worker leases
+write the resolved node through the existing `WorkerInstanceService.acquire()`
+and existing heartbeat. `GET /api/v62/workers` returns `node_id` with the
+existing sanitized runtime fields. Existing rows migrate to
+`legacy-unscoped`; no existing lease secret becomes public.
+
+The existing `gpu_inventory` and `gpu_samples` tables are migrated
+transactionally from global `uuid/gpu_index` rows to node-scoped
+`(node_id, gpu_uuid)` identity and `physical_index`. Inventory now records
+`model`, `total_bytes`, `free_bytes`, `utilization`, `sampled_at`,
+`telemetry_source`, `telemetry_available`, and `mig_mode`. Old rows remain
+recoverable as `legacy-unscoped` until a real Worker observes that UUID and
+adopts it for its Node. The former global
+`UPDATE gpu_inventory SET healthy=0` refresh is retired: a Node only upserts
+its own observations, and missing reports become stale through `sampled_at`.
+
+`worker_gpu_visibility` records the many-to-many runtime relationship
+`worker_id + node_id + gpu_uuid + logical_cuda_index + observed_at`.
+`CUDA_VISIBLE_DEVICES` order is applied only to the Worker logical index;
+physical index and GPU UUID remain separate. NVML is preferred, nvidia-smi is
+the second telemetry source, and Torch fallback contributes identity only:
+it never fabricates memory or utilization. Hardware health is not inferred;
+the public `health_status` remains `unknown` while
+`telemetry_available`, `metrics_fresh`, and `mig_mode` carry the proven facts.
+
+`GET /api/v62/gpu-runtime` is a read-only projection returning `nodes`,
+`workers`, `gpus`, `worker_gpu_visibility`, and telemetry counts. It neither
+samples hardware nor writes task/Scheduler state. Reservations are deliberately
+not exposed as node truth because `gpu_reservations` is not node-scoped yet.
+The existing local `/api/v62/gpu-resources` compatibility endpoint remains.
+
+Minimum verification passed on Windows: focused Worker/GPU schema, migration,
+Node isolation, visibility reorder, stale telemetry, Torch identity-only,
+no-GPU behavior, read-only API, Scheduler and recovery contracts `22/22`; the
+affected Python modules compiled successfully. Real multi-Node NVIDIA, A800,
+MIG, and container/NFS deployment remain **NOT VERIFIED**.
+
+Phase 1B explicitly retains: node-scoping `gpu_reservations`, resolving the
+global `worker_slot UNIQUE` conflict, binding assignments to
+`node_id + gpu_uuid + physical_index + logical_cuda_index`, Worker/server
+binding, remote routing, and GPU automatic scheduling. None of those claims
+are closed by Phase 1A.
+
+## Product closure — Training Queue Readiness Truth CLOSED
+
+Training task queue readiness is closed at scoped product implementation
+`bfe9f7d`, with remote acceptance recorded at
+`92b8275e5a75167b040738d21a153f487f799b9b`. The earlier local-only/pending-push
+state is resolved: local and remote are synchronized at `0 / 0`, and all four
+directly related workflows passed. This batch consumes the already-closed Worker
+Runtime Truth and the existing durable TaskRepository/Scheduler state; it does
+not add another queue,
+Worker registry, Scheduler, durable task status, or frontend polling owner.
+
+For a local durable `TRAINING` task whose persisted status is `QUEUED`, the GET
+projection now evaluates the current `worker_instances` lease snapshot. No
+online Worker returns `WAITING_RESOURCE / 当前没有在线 Worker`; online Workers
+without the `TRAINING` task kind return `当前没有可执行训练任务的 Worker`; online
+Training Workers missing any required capability return
+`当前在线 Training Worker 不支持 <capability>`. A provably compatible Worker with
+an existing Scheduler/GPU admission wait preserves the authoritative
+`resource_wait_reason`. Otherwise the public state remains `QUEUED`. The read
+path never writes `tasks.status`, `stage`, or wait reasons.
+
+The current compatible local pool is deliberately limited to durable Worker
+truth that is already proven: online lease, registered `TRAINING` task kind,
+and a capability superset of the task's `required_capabilities`. The requested
+`resource_key` remains the resource boundary. `training:remote:<server_id>` is
+not matched to an arbitrary local Training Worker because current Worker truth
+does not store server binding or resource affinity and the current handler
+rejects non-local targets. Remote tasks therefore expose
+`指定远程服务器的 Worker 路由尚未建立` until a later Worker/server-binding batch.
+
+`resource_queue_position` remains the existing resource-scoped numeric value;
+it is not represented as a universally exact Scheduler rank. The backend now
+returns `resource_queue_position_exact`. Exactness is conservative and is only
+proved for a single compatible CPU Worker when its current claimable queue has
+no cross-resource candidate and the Scheduler scan position equals the
+resource-scoped position. GPU auto/concrete GPU, multiple compatible Workers,
+cross-resource competition, and remote routing remain non-exact. The training
+UI displays `队列第 N 位` only when this proof flag is true; otherwise it shows
+the backend pool label plus `排队中` without a fabricated number.
+
+Backend-owned display metadata is:
 
 ```text
-batch=64
-workers=4
-cache=disk
-device=0
+resource_pool_key
+resource_pool_label
+resource_queue_position_exact
+
+training:cpu      -> CPU
+training:auto     -> GPU 自动
+training:cuda:N   -> GPU N
+training:remote:* -> 指定远程服务器
 ```
 
-根因是平台 auto resource resolver 覆盖了显式参数。
+The training UI now renders public `waiting` as `等待资源`, prioritizes the
+server-provided wait reason, and never parses `resource_key` to infer resource
+availability. Worker recovery and queue changes continue to arrive through the
+already-closed page-scoped two-second PollRegistry one-shot; no new timer or
+request endpoint was added. The jobs-list path reuses one Worker runtime and
+queued-candidate snapshot for the response rather than issuing those full
+queries once per visible task.
 
-已修复 `platform_core/training_metrics.py`：
-
-- 显式正整数 batch：Auto 只允许安全下调，禁止上调。
-- `batch=-1` 才是用户明确委托自动 batch。
-- `cache=false` 是硬关闭，Auto 不得改成 disk/ram。
-- workers 不得被 Auto 增加，`workers=0` 必须保持 0。
-- 生成 `resolved-resources.json`，记录 requested / effective / adjustment reason。
-- `TrainingMetrics.on_train_start()` 对照 Ultralytics Trainer 实际值，不一致时报 `RESOURCE_RUNTIME_MISMATCH`。
-
-设计文档：
-
-- `docs/superpowers/specs/2026-09-11-training-resource-contract-fix.md`
-
-### 3.5 Task-scoped Algorithm Label Contract
-
-这是当前非常重要的业务合同。
-
-**项目标签库 != 算法 label schema。**
-
-首次训练：
-
-- 可选标签只能来自本次精确已选训练素材。
-- 用户必须在创建训练任务时明确选择至少一个标签。
-- 母模型 / pretrained model 自带类别绝不自动继承。
-- 算法 class_id 是 task/model-local，首次训练连续重排为 `0..N-1`。
-
-例如项目标签库：
+Core files:
 
 ```text
-fire, smoke, person, helmet, cigarette
+app.py
+platform_core/task_runtime/__init__.py
+platform_core/task_runtime/public.py
+platform_core/task_runtime/repository.py
+static/modules/training-task-runtime.js
+static/main.mjs
+static/index.html
+tests/unit/task_runtime/test_public_projection.py
+tests/api/test_training_unified_task_overlay.py
+tests/frontend/training-task-runtime.test.mjs
+docs/superpowers/specs/2026-09-14-training-queue-resource-truth-design.md
+docs/superpowers/plans/2026-09-14-training-queue-resource-truth.md
 ```
 
-本次素材包含：
+Minimum verification passed: focused backend queue/Worker/admission contracts
+`13/13`; focused TrainingTaskRuntime rendering and existing list-refresh
+contracts `12/12`; affected Python compilation and JavaScript syntax checks.
+The first backend run was blocked before test setup by the known Windows global
+Temp permission issue; the identical focused tests passed with a worktree-local
+temporary directory, which was removed afterward.
+
+This batch did **not** implement GPU Runtime Truth, GPU automatic scheduling,
+GPU memory/affinity changes, Worker/server binding, remote affinity, designated
+GPU/machine selection, Scheduler claim changes, Worker registration schema
+changes, ETA, pause/resume changes, SSE, or a new polling owner. Linux/A800,
+real multi-Worker concurrency, and remote-server routing remain **NOT
+VERIFIED**. Formal `VERSION.txt` remains `42.24.0`.
+
+## Product closure — Worker Runtime Truth CLOSED
+
+Worker Runtime Truth is complete at implementation HEAD `a5acc6bf9b3de3bab0bd2231a40c9fe8436f1816`. The existing `worker_instances` lease row now durably records `worker_id`, `hostname`, `pid`, the running Worker's resolved `build_id`, actually registered roles, registered task kinds, registered capabilities, `started_at`, `heartbeat_at`, and `expires_at`. SQLite migration is additive and gives existing rows safe defaults; it does not rebuild or discard the table.
+
+Durable truth remains single-owner: `task_worker.py` obtains handlers and capabilities from the existing `worker_registry`, then writes that actual registration into `worker_instances` through `WorkerInstanceService.acquire()`. The existing lease renewal remains the only heartbeat. `WorkerInstanceService.list_runtime()` derives `online` only when a valid heartbeat exists and `expires_at` is later than the query's UTC time; it never uses PID liveness to judge remote Worker availability. `GET /api/v62/workers` returns the sanitized durable runtime list and does not expose `owner_token` or `instance_key`.
+
+Modified files:
 
 ```text
-fire, smoke, person
+app.py
+task_worker.py
+platform_core/worker_registry.py
+platform_core/task_runtime/repository.py
+platform_core/task_runtime/worker_instances.py
+tests/unit/task_runtime/test_worker_runtime_truth.py
+tests/unit/task_runtime/test_worker_registry.py
+tests/api/test_worker_runtime_truth.py
+docs/superpowers/specs/2026-09-14-worker-runtime-truth-design.md
+docs/superpowers/plans/2026-09-14-worker-runtime-truth.md
+docs/CODEX_CURRENT_STATE.md
 ```
 
-用户只选：
+Minimum verification passed: affected Python modules compiled successfully; focused Worker Runtime Truth, actual registry metadata, read-only API, and existing Worker lease connection-lifecycle tests passed `7/7`. Linux/A800 deployment and real distributed Worker heartbeat behavior were not executed in this Windows development environment and remain **NOT VERIFIED**. Formal `VERSION.txt` remains `42.24.0`.
+
+> Build claim fencing、Worker readiness admission、training 503 拦截和前端 Worker readiness 尚未实现，留待后续独立批次。
+
+### CI follow-up — Material Annotation Atomicity
+
+The `Material Annotation Atomicity` failure at `cbc9d5c9e4678160d2acf18124b8c06b1a104702` was an existing test-orchestration mismatch, not a Worker Runtime Truth regression. `f43631e16a51167cf75bb8e2ec545566f226609f` had already moved cleaning execution out of the Web process into the durable `MATERIAL_BATCH` Worker, while `test_upload_to_selected_storage_source_enters_unified_pool` still waited for `awaiting_confirmation` without running a materials Worker. The workflow's previous successful run predated that durable-cleaning migration; the Worker Runtime Truth `app.py` change merely caused this workflow to run again and expose the stale assumption.
+
+The test now drives the existing real `FencedTaskRepository` / `Scheduler` materials registration before asserting the same terminal business truth. No production cleaning, storage, training, Worker Runtime Truth, workflow timeout, or application behavior changed. Focused verification passed the formerly failing storage-upload test and the existing real fenced material-worker regression (`2/2`). GitHub Actions Run `34825337016` passed on fix commit `6abb63a1cb1de2da209879974bfca6c70d0a0c45`.
+
+## Product closure — Training task status/progress auto-refresh CLOSED
+
+Training task list auto-refresh is complete at implementation HEAD `753416e`. The visible list continues to use the existing batch truth endpoint `GET /api/projects/{project_id}/jobs`; `enrich_job_runtime()` projects the persisted training job and metrics together with durable `TaskRepository` status, progress, queue, Worker, epoch, elapsed-time, and terminal truth. The frontend does not synthesize status, percentage, Epoch, or elapsed time.
+
+`TrainingTaskRuntime` remains the focused request/state/table-patch path and updates only the task table plus tab counts. `PollRegistry` remains the only training timer owner: `training-jobs` is now a page-scoped 2-second one-shot for `queued`, `waiting`, `pending`, or `running`. Every completed request re-arms from the latest backend response; a transient request failure retries only while the last-known state is still dynamic. Paused tasks remain in the activity list but paused-only state has no pending timer. `done`, `finished`, `completed`, `failed`, `stopped`, `cancelled`, and `canceled` do not re-arm. Leaving `训练任务` clears the timer, `检测台` is no longer an owner, and re-entering restores polling from freshly loaded state. Resume keeps the existing immediate forced refresh, after which PollRegistry restores the one-shot only if the returned state is dynamic.
+
+Core files:
 
 ```text
-fire, smoke
+static/modules/poll-registry.js
+static/main.mjs
+tests/frontend/poll-registry.test.mjs
+tests/frontend/training-task-runtime.test.mjs
+docs/superpowers/specs/2026-09-14-training-task-auto-refresh-design.md
+docs/superpowers/plans/2026-09-14-training-task-auto-refresh.md
+docs/CODEX_CURRENT_STATE.md
 ```
 
-则 portable `data.yaml` 必须只有：
+Minimum verification passed: focused PollRegistry and TrainingTaskRuntime frontend contracts `22/22`; JavaScript syntax checks for PollRegistry, TrainingTaskRuntime, and `main.mjs`; existing durable training overlay API regression `2/2`. The first API attempt was blocked before test setup by the known Windows global Temp permission issue; the same test passed using a dedicated worktree-local pytest temp directory, which was removed afterward. Real Chrome and Linux/A800 execution were not run and remain **NOT VERIFIED**.
 
-```yaml
-names:
-  0: fire
-  1: smoke
-```
+This batch did not implement GPU Runtime Truth or scheduling, Worker readiness admission, pause/resume feature changes, machine selection, ETA redesign, training-detail refactoring, deployment-center changes, creation-modal changes, SSE, or backend training changes. Formal `VERSION.txt` remains `42.24.0`.
 
-期望 Ultralytics：`nc=2`，绝不能是 5。
+### CI follow-up — Browser navigation training polling guard
 
-迭代训练：
+The browser navigation guard is synchronized with the current training polling lifecycle. In `delayed request from previous page cannot jump back over the current page`, the initial training `/jobs` request is intentionally held before any dynamic task truth exists, so the correct PollRegistry state is no `training-jobs` timer. The test no longer expects the removed `检测台` owner or unconditional polling; it still verifies that completing the stale training request cannot navigate away from the current dataset page. This follow-up changed only `tests/browser/navigation-stability.spec.mjs`; no product business code or workflow changed.
 
-- 自动继承上一**成功且可继续训练**版本的 `label_schema`。
-- inherited labels 不可普通取消。
-- 新素材里的新标签必须用户明确勾选才追加。
-- 旧 class_id 不得重排，新类别只能 append。
-- 历史版本缺 `label_schema` 时，只允许从旧 task `snapshot.json` 恢复；无法恢复必须 fail closed。
-- 新版本持久化 `label_schema`、`label_codes`、`label_contract`。
+Focused Playwright verification passed `1/1`. GitHub Actions Run `34830800955` completed successfully, including `browser-navigation` success, on guard commit `23e53363ec9a1a94143ecc25d052f56c66cc242a`.
 
-投影约束：
+## Product closure — Deployment-test durable queue/progress truth CLOSED
 
-- 未选类别的框可从本 task projection 里过滤。
-- 但如果过滤后正样本变成 0 框，不得静默转成假负样本，必须拒绝并要求正式 `confirmed_empty`。
+The deployment-test business surface now preserves the same durable task truth as the unified v62 task API. Previously the v61 compatibility projection flattened a resource-waiting durable task back to persisted `QUEUED`, dropped queue/resource/worker metadata, and the final `benchPredictOne` loop only considered `QUEUED / RUNNING / CANCEL_REQUESTED` active. That combination could make a real `WAITING_RESOURCE` deployment test appear terminal or fail without showing why it was waiting.
 
-后端：
-
-- `platform_core/training_label_tasks.py`
-- `platform_core/worker_registry.py`
-
-前端现有实现层：
-
-- `static/modules/training-labels.js`
-- `static/training-label-bootstrap.js`
-- `static/training-label-v3-anchor.js`
-- `static/main.mjs`
-
-测试：
-
-- `tests/unit/test_training_label_contract.py`
-- `tests/frontend/training-labels.test.mjs`
-- `tests/browser/training-label-selector.spec.mjs`
-
-设计文档：
-
-- `docs/superpowers/specs/2026-09-11-training-label-contract.md`
-
-### 3.6 Navigation Stability / 页面乱跳
-
-用户反馈：点击“训练任务”等页面后会莫名跳到其他页面，像重新加载。
-
-根因：旧 `app.js` 内大量历史 override 和异步 render。典型竞态：
+Closed semantics:
 
 ```text
-旧页面 await 请求
-→ 用户已经切到新页面
-→ 旧请求返回
-→ 旧 renderXxx() 无条件覆盖 #view
+v61 business projection: delegates durable task fields to task_to_public()
+compatibility aliases: id / progress / stage / result remain for the existing deployment surface
+WAITING_RESOURCE: remains active and visible instead of being flattened to QUEUED
+queue truth: resource_queue_position + resource_wait_reason are server-derived and visible
+worker/progress truth: worker_id / phase / progress_percent come from durable public truth
+active polling: after v61 creation, benchPredictOne reads /api/v62/projects/{project_id}/tasks/{task_id} while the task is active
+terminal success: v61 is read once after SUCCEEDED to obtain deployment-specific result payload
+frontend projection: PlatformCore.deployment.deploymentTaskView reuses taskPoller active/progress semantics
+queue order / resource admission / worker claim / progress generation / process fencing: unchanged
 ```
 
-新增：
+Permanent guards include `tests/api/test_deployment_test_runtime.py`, `tests/frontend/deployment-runtime-source.test.mjs`, `tests/frontend/deployment-task-view.test.mjs`, `tests/unit/task_runtime/test_public_projection.py`, and `tests/unit/test_deployment_inference_process_fencing.py`. Release Regression now permanently runs the deployment business-projection contract and is triggered by the deployment task view/wiring guards. The frontend does not invent queue order or percentage; it only renders unified durable truth.
 
-- `static/modules/navigation-stability.js`
-- `tests/frontend/navigation-stability.test.mjs`
-
-合同：
-
-- `state.page` 是当前页面唯一权威。
-- 页面切换推进 navigation epoch。
-- 异步操作返回时 epoch 已变化则视为 stale，不得永久覆盖当前页面。
-- 离页清理已知页面轮询。
-- 后续新页面禁止 `await ...; renderXxx()` 无 ownership 校验。
-
-设计文档：
-
-- `docs/superpowers/specs/2026-09-11-navigation-stability.md`
-
----
-
-## 4. 当前前端标签 UI 的真实状态（重要）
-
-### 4.1 为什么前几版“后端要求标签，但前端没地方选”
-
-仓库旧前端是一个长期叠加 override 的经典脚本体系，`static/app.js` 很大，训练弹窗经历过多层版本覆盖：
+Evidence:
 
 ```text
-train425 / train428 / train429 / final train-v3
+valid RED head:             5748a89155e653a49c8a8c743cdd3de7a9fa67cf
+valid RED run:              34794353496 (backend v61 QUEUED vs v62 WAITING_RESOURCE; final frontend unified-truth wiring RED)
+focused/full GREEN run:     34794490531 PASS (API + frontend + public projection + deployment fencing + full frontend unit)
+product commit:             0b800a54ae64507314a5f9199734759250691cb6
+formal accepted clean HEAD: 1c3fa7f2b5cb826c0998f249637241a59134f053
+Release Regression:         34794630826 PASS
+Navigation Action Fencing:  34794630808 PASS (Real Chrome PASS)
+Frontend Runtime:           34794630837 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
 ```
 
-最初 `training-labels.js` 只挂到了历史训练 UI，因此后端合同已经生效，但用户在最终窗口没有选择入口。
+All temporary deployment RED/migration helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-后来增加 classic-script 层：
+Historical sequencing note: at this closure point, storage import polling ownership was recorded as the subsequent batch. That statement is retained only as history and is not a current work instruction.
 
-- `static/training-label-bootstrap.js`
-- `static/training-label-v3-anchor.js`
+## Product closure — Cleaning frontend queue/progress truth CLOSED
 
-让它直接与最终 `app.js` 训练窗口工作，而不完全依赖 ES Module 初始化链。
+The final cleaning tab now subscribes to the durable v47 cleaning projection instead of flattening server truth into a generic local row. The backend already exposed `status_text`, `progress`, `processed_images`, `total_images`, `flagged_images`, `resource_queue_position`, `resource_wait_reason`, and worker identity; this batch makes the final visible clean-tab owner preserve those values through both initial rendering and managed refresh.
 
-`static/index.html` 当前会加载：
+Closed semantics:
 
 ```text
-training-label-bootstrap.js
-training-label-v3-anchor.js
-main.mjs
+status text: consume server status_text; WAITING_RESOURCE compatibility projection remains “等待资源” instead of being flattened to “排队中”
+queue metadata: show real resource_queue_position + resource_wait_reason when present
+progress: use server progress / processed_images / total_images only; no browser-simulated percentage
+worker metadata: running rows may show the real worker_id supplied by the server
+polling owner: PollRegistry owns clean-tasks-v47 as a page/tab-scoped 2200 ms one-shot
+refresh owner: refreshCleanOps427Delta refreshes only the cleaning task list and patches clean rows
+terminal truth: awaiting_confirmation is terminal for list polling; the clean timer is not re-armed
+navigation/tab change: PollRegistry clears the clean timer; switching back to AI annotation also clears it immediately
+legacy recursive setTimeout(renderOps427, 2200): retired
+backend queue order / claim / progress generation / worker execution: unchanged
 ```
 
-### 4.2 最近一次“点击训练直接卡死”事故
+`static/modules/cleaning.js` now owns the pure `cleanTaskView()` / `isActiveCleanTask()` projection. `static/main.mjs` exposes those helpers through `PlatformCore.cleaning`. `static/modules/poll-registry.js` owns `clean-tasks-v47`, and the final v427 clean branch in `static/app.js` consumes that view-model. The v47 public compatibility contract permanently requires the queue metadata fields to exist; their values remain dynamic server truth (for example, an immediately queued task may legitimately report position `1`).
 
-用户反馈：点击算法“训练”按钮后，整个页面直接卡死。
-
-根因已确认：`training-label-v3-anchor.js` 的 MutationObserver 对所有子节点变化执行 `sync()`，而 `sync()` 又无条件调用 `TrainingLabelRuntime.refresh()`；`refresh()` 重写标签面板 `innerHTML`，从而再次触发 Observer，形成自激循环。
-
-已在代码提交 `275e0434b747b276c1bbe928774baecc52328752` / cache-bust `ea4c08065d58ec24c233535ecb41c809b389f691` 热修：
-
-- Observer 忽略标签面板自身变化；
-- 对 training panel + algorithm + selected material ids 建 signature；
-- signature 未变化且标签面板仍存在时不再重复 refresh；
-- 只有训练面板重建、算法变化、所选素材变化、标签面板丢失时才刷新。
-
-**当前用户尚未对这个 hotfix 做完真实浏览器复验。**
-
-接手者第一件前端事情：
-
-1. 部署最新 `refactor/v42.25-runtime`；
-2. 浏览器强刷 / 新标签页打开；
-3. 点击算法“训练”；
-4. 确认不再卡死；
-5. 确认训练窗口出现“本次训练标签”；
-6. 选择素材后出现素材真实标签复选框；
-7. 取消某标签后发起训练，确认 `/api/v12/projects/.../train/start` 的 `train_labels` 正确。
-
-### 4.3 不要误报浏览器测试状态
-
-- Node/frontend 定向测试对 training label / navigation 逻辑已有通过记录。
-- Python training-path 定向测试已有 61/61 通过记录。
-- 有一轮真实 Chrome 证明训练窗口能出现 `#trainingLabelContractPanel` / “本次训练标签 / 请先选择训练素材”。
-- 但新增 Playwright 的完整“打开最终窗口 → 真选材 → 取消标签 → 提交请求”链路**尚未稳定全绿**，因为旧 `app.js` 多层训练 UI override 在测试环境里仍存在差异。
-- 所以不得写“浏览器 E2E 已完全通过”。
-
----
-
-## 5. 已执行的验证证据
-
-### Training Label / Training Path 定向 Linux CI
-
-已完成过：
+Permanent guards:
 
 ```text
-frontend: 7 passed / 0 failed
-Python: 61 passed
+tests/frontend/clean-task-view.test.mjs
+  - waiting-resource status/queue/progress truth
+  - running worker/progress truth
+  - final app.js wiring consumes cleanTaskView + PollRegistry
+  - retired direct recursive clean-list timer cannot return
+
+tests/frontend/poll-registry.test.mjs
+  - clean-tasks-v47 one-shot lifecycle
+  - re-arm only while active
+  - stop at awaiting_confirmation
+  - clear on navigation
+
+tests/api/test_clean_unified_execution_truth.py
+  - v47 public queue metadata fields are permanent
+  - dynamic queue position is accepted as server truth, never forced to a frontend assumption
 ```
 
-覆盖包括：
-
-- training label contract
-- negative sample contract
-- annotation scope
-- training splits/components
-- snapshots
-- portable dataset
-- resource contract
-- launcher workers
-- task worker integration subset
-
-这不是 full repo regression。
-
-### Navigation Stability 定向前端测试
-
-曾执行并通过 navigation stability + training-label frontend 组合测试（10 tests 全部通过）。
-
-### 尚未完成
-
-- **FULL REPO REGRESSION NOT VERIFIED**
-- **A800 REAL TRAINING WITH CURRENT LABEL CONTRACT NOT VERIFIED**
-- **CURRENT TRAINING-LABEL HOTFIX REAL BROWSER REVALIDATION NOT VERIFIED**
-
----
-
-## 6. A800 下一步验收清单（P0）
-
-不要先做大重构。当前最优先把 v42.25 训练链闭环。
-
-用小轮数 canary，例如：
+Evidence:
 
 ```text
-device = 0
-batch = 16
-workers = 4
-cache = false
-epochs = 3~5
+valid RED commit:           cf3f2c4fec639903435379b3419dbaadad82c949
+valid RED run:              34793075909 (245 frontend tests: 242 PASS; exactly 3 intended cleaning truth assertions RED)
+focused/full GREEN run:     34793282831 PASS (focused cleaning contracts + full frontend unit + wiring guard)
+product commit:             9f6f329393018623807cb4fea04707f3b5350676
+formal accepted clean HEAD: 736b2acdbf2560be657011035de173cde67517d0
+Release Regression:         34793457861 PASS
+Navigation Action Fencing:  34793457872 PASS (Real Chrome PASS)
+Frontend Runtime:           34793457920 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
 ```
 
-如果精确已选素材有 `fire/smoke/person`，用户只选 `fire/smoke`，必须验证：
+The temporary frontend migration helper/workflow were physically deleted before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
 
-1. `label-contract.json`：effective labels 只有 fire/smoke；
-2. `snapshot.json`：label_schema 只有 fire/smoke；
-3. portable `dataset/data.yaml`：names 只有 fire/smoke；
-4. Ultralytics 实际日志：`nc=2`；
-5. `resolved-resources.json`：batch/workers/cache 实际为 `16/4/false`；
-6. Trainer 实际参数同样是 `16/4/false`；
-7. confirmed_empty 在 YOLO bundle 中生成真实空 `.txt`；
-8. Train/Validation/Test 没有 SHA / Component leakage；
-9. 成功版本写回 `label_schema / label_codes / label_contract`；
-10. 再创建迭代任务，旧标签继承且 class_id 不重排，新标签只有明确勾选后 append。
+Deployment-test durable queue/progress truth is CLOSED. The storage-import polling work that followed this historical closure is no longer a current instruction. Genuine 10,000-image processing acceptance remains explicitly deferred.
 
-如果仍出现：
+## Product closure — Cleaning durable execution truth CLOSED
+
+The active v47 manual-clean and v55 upload-batch clean entry points now publish one durable `MATERIAL_BATCH/CLEAN` task into the shared `TaskRepository`. The Web/API process no longer owns cleaning execution through legacy daemon threads, and Web startup no longer resurrects those retired workers. Real execution is owned by the registered `materials` worker through `FencedTaskRepository` / `Scheduler` truth.
+
+Closed semantics:
 
 ```text
-Pin memory thread exited unexpectedly
+manual v47 create -> prepare + publish one MATERIAL_BATCH/CLEAN durable task
+v55 upload-batch decision -> the deterministic clean_task_id points to that same durable task truth
+real execution -> materials Scheduler / fenced WorkerContext, never Web daemon execution
+prepare -> publish crash window -> reuse the already-frozen semantic request without treating its freeze-time repository_revision as a new user intent
+FAILED retry -> same task id is re-queued through TaskRepository retry; no duplicate task identity
+successful scan awaiting confirmation -> durable task remains SUCCEEDED/succeeded; v47 compatibility alone projects awaiting_confirmation/review
+corrupt image with corrupt_check -> successful flagged cleaning finding for review
+source content changed after indexing -> remains SOURCE_CONTENT_CHANGED storage-integrity failure, not disguised as image corruption
 ```
 
-再检查：
+A real-worker defect was also closed: `MaterialBatchHandler` had called a private artifact validation method that does not exist on the real `FencedArtifactStore`, causing Scheduler execution to fail before processing any material. The handler now validates `project_id` as a safe single path component while preserving fenced artifact access. Corrupt findings are excluded from the hash/dedup index unless real `sha256` and `dhash` metrics exist.
 
-- kernel/cgroup OOM
-- `/dev/shm`
-- DataLoader worker crash
-- pinned memory / RAM
+Permanent guards include `tests/api/test_clean_unified_execution_truth.py`, `tests/api/test_upload_clean_flow.py`, `tests/unit/test_material_batch_public_truth.py`, and the Release Regression path/test scope. The final guard explicitly proves that reading the v47 compatibility result may show `awaiting_confirmation / review` while the underlying durable record remains `SUCCEEDED / succeeded`.
 
-`workers=0` 只可作为诊断手段，不能成为全平台永久默认修复。
-
----
-
-## 7. 当前生产部署方式
-
-用户当前明确采用**原部署目录直接更新**，不是 worktree 并行验收。
-
-代码：
+Evidence:
 
 ```text
-/data/platform/aixunlianpingtai
+valid RED commit:           3f41cdae0d4234bf5171f2aa80111513c223407c
+valid RED run:              34790397474 (intended durable-clean execution assertions RED)
+focused durable migration:  34792422835 PASS (4 durable contracts + 32 upload-clean regressions)
+product commit:             f43631e16a51167cf75bb8e2ec545566f226609f
+formal accepted clean HEAD: 3931a9a2d529845f9e698b22f62fe950a7a8b42f
+Release Regression:         34792673327 PASS
+Navigation Action Fencing:  34792673293 PASS (Real Chrome PASS)
+Frontend Runtime:           34792673296 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
 ```
 
-数据：
+All one-shot cleaning migration/diagnostic helpers and workflows were physically removed before formal acceptance. No merge to `main`, tag, release, A800 RC, or genuine 10,000-image processing acceptance was performed.
+
+Historical sequencing note: cleaning frontend queue/progress truth was subsequently closed, followed by the storage-import and deployment-test queue/progress audits. This is historical context, not current scope.
+
+## Product closure — Plain image upload whole-task progress truth CLOSED
+
+The final live ordinary-image upload owner is the storage61 `doUploadImages426` path posting to `/api/projects/{project_id}/images`. The endpoint is synchronous HTTP, but after browser request bytes are sent the server still performs temporary-file handling, image validation, selected-storage object write, SHA256 calculation and material record commit. Therefore browser `xhr.upload` byte completion is not whole-task completion.
+
+Closed semantics:
 
 ```text
-/data/platform-data
+browser byte transfer: 0% -> 85%
+byte transfer complete: hold at 85%, show “文件已上传，正在服务器入库”
+server-side synchronous commit: no fabricated percentage animation
+successful HTTP completion after material commit: 100%, show “服务器入库完成”
+network/non-2xx failure: never claims terminal 100%
 ```
 
-更新开发分支：
+This batch deliberately does **not** invent a durable background task, fake queue, or fake server progress for a synchronous endpoint. Terminal 100% is fenced to the authoritative successful HTTP completion. Permanent behavior guard: `tests/frontend/image-upload-overall-progress.test.mjs`; Release Regression includes that test in its permanent path scope.
 
-```bash
-cd /data/platform/aixunlianpingtai
-git fetch origin
-git switch refactor/v42.25-runtime
-git reset --hard origin/refactor/v42.25-runtime
+Evidence:
+
+```text
+valid RED commit:          03be0050644af80709bddb97321f1a4ec0b1528c
+valid RED run:             34788264443 (237 existing tests PASS; 2 intended new assertions RED)
+focused migration/GREEN:   34788320142 PASS
+product commit:            259d76d753993f2dd10e1963ee1a9a13887209ad
+accepted clean code point: bae90eae4b3768d365d20344c1f2db9a75795ac8
+Release Regression:        34788383779 PASS
+Navigation Action Fencing: 34788383742 PASS (Real Chrome PASS)
+Frontend Runtime:          34788383772 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:        42.24.0 unchanged
 ```
 
-前端修改后通常只需重启 Web；Task Runtime / Python worker 代码变化时 Web + Worker 都重启。
+The one-shot product migration workflow was removed in the product commit. No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
 
-Web：
+## Product closure — Video resource queue truth CLOSED
 
-```bash
-conda activate mc-platform
-export MC_TRAIN_DATA_DIR=/data/platform-data
-export MC_DATA_DIR=/data/platform-data
-nohup python -m uvicorn app:app --host 0.0.0.0 --port 8010 \
-  > /data/platform-data/logs/web.log 2>&1 &
+The live v424 video task page already reads `/api/v33/projects/{project_id}/video-tasks`, whose public projection is backed by the shared durable `TaskRepository`. `task_to_public()` dynamically exposes resource-scoped `resource_queue_position` / `resource_wait_reason`; a durable queued task in the `resource_waiting` phase is publicly projected as `WAITING_RESOURCE`. The frontend previously dropped that queue metadata and also failed to classify `WAITING_RESOURCE` as an active video task, so a genuinely resource-waiting task could lose timely managed polling and never show its real queue position/reason.
+
+Closed semantics:
+
+```text
+QUEUED: remains active under PollRegistry and shows real resource_queue_position when available
+WAITING_RESOURCE: remains active, shows “等待资源”, real queue position and resource wait reason
+initial render + delta polling: both use the same v424 row projection and preserve runtimeText
+progress: continues to come from durable server/worker truth; no frontend progress simulation
+queue ordering / claim / queue_rank / resource fencing: unchanged
+cancel / stale-worker / publish fencing: unchanged
 ```
 
-Worker：
+The fix is intentionally narrow. `static/modules/video-tasks.js` now projects the existing durable queue metadata into `runtimeText` and treats public `WAITING_RESOURCE` as active; the final v424 `videoTaskRow424()` renders that view-model text. `PollRegistry` remains the sole video polling lifecycle owner. Permanent behavior guard: `tests/frontend/video-tasks.test.mjs`, which executes the real final row renderer and verifies both queued and waiting-resource behavior.
 
-```bash
-nohup python task_worker.py \
-  --data-dir /data/platform-data \
-  --roles all \
-  --worker-id "$(hostname)-prod-all-default" \
-  > /data/platform-data/logs/worker.log 2>&1 &
+Evidence:
+
+```text
+final permanent RED commit: 32284a8972faec46775144b8c47406e67edee014
+valid RED run:              34789541200 (242 total; 239 PASS; only 3 intended video truth assertions RED)
+focused/full GREEN run:     34789628840 PASS
+product/self-cleanup:       c0fee2b7c8dfbf03481cbc6dfb1019f922293576
+formal clean HEAD:          cb81ca39016aea0fc53ed52090f0b0199d39109a
+Release Regression:         34789701814 PASS
+Navigation Action Fencing:  34789703315 PASS (Real Chrome PASS)
+Frontend Runtime:           34789704610 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:         42.24.0 unchanged
 ```
 
-注意：不要同时运行旧 Worker 与新 Worker 指向同一个 `/data/platform-data`。
+No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP processing acceptance was performed. One-shot product/gate migration assets were physically deleted before formal gate acceptance.
 
----
+## Product closure — AI annotation polling queue metadata truth CLOSED
 
-## 8. 当前已知未收口事项
+The durable v60 AI annotation backend/public projection already exposes real `resource_queue_position` and `resource_wait_reason`, and `annotationTaskView()` already turns that truth into `runtimeText`. Initial page rendering consumed `runtimeText`, but `AutoLabelPollRuntime` used a separate row renderer during polling refresh and omitted it. Result: a task could initially show `资源队列第 N 位` / resource wait reason and then lose that truthful metadata after the first managed poll refresh even though durable truth had not changed.
 
-P0/P1：
+Closed semantics:
 
-- 当前 training-label hotfix 需要用户真实浏览器复验。
-- A800 label contract + resource contract + negative samples 需要真实训练闭环。
-- 全仓 pytest / Playwright 还没有做完整回归。
-- `AnnotationSave` API model 尚未把 `annotation_state / scope` 做成完全显式的新 API 合同；目前部分行为依赖 repository/default 与前端保护。
-- YOLO import 的空 TXT scope 目前按项目 active labels 冻结，不一定等同外部数据集精确 label mapping；安全但语义仍可进一步收紧。
-- 正样本 annotated image 的 scope 仍主要来自实际 boxes；尚未要求每张正样本显式证明“其他类不存在”。不要宣称已解决所有 multi-class absence verification。
-
-后续大批：
-
-- 生产安全：移除广泛 `/data` 静态暴露、CORS 收紧、SSRF 防护、SecretStore、受控 artifact/download API、基础认证权限。
-- Worker 真正独立部署：API server 与 GPU Training Worker 可分机。
-- algorithms/version persistence 逐步 SQLite 化。
-- 前端工程化：停止继续把版本 override 堆进巨型 `static/app.js`；v42.25 稳定后再拆 router/store/service/page modules，之后再评估 Vue/React/Vite，不要现在大重写。
-
----
-
-## 9. 不得回退的开发规则
-
-- 不得为了旧测试绿灯回退已经确认的正确业务语义。
-- 不得把项目标签库重新等同算法 schema。
-- 不得让母模型类别混进首次训练 schema。
-- 不得让 `confirmed_empty` 再被当成未标注。
-- 不得在过滤未选标签后把正样本静默变成负样本。
-- 不得让旧 Worker / stale execution 在 lease 丢失后 finish 或发布 artifact。
-- 不得让 Auto resource strategy 增大显式 batch/workers 或打开显式关闭的 cache。
-- 不得让 stale async render 抢占当前页面。
-- 不得继续用无限 MutationObserver + 无条件 innerHTML 重绘的方式做训练 UI 挂载。
-- 不得在未真实验证时写“生产已验收 / E2E 已通过 / A800 已通过”。
-- 未经用户明确指令，不得合并 `main`。
-
----
-
-## 10. 接手动作
-
-Codex 接手后先执行：
-
-```bash
-git branch --show-current
-git rev-parse HEAD
-git status
-git log --oneline -20
-git diff main...HEAD --stat
+```text
+initial render: durable status + progress + runtimeText
+managed polling refresh: the same durable status + progress + runtimeText
+QUEUED / WAITING_RESOURCE: resource queue position remains visible after every refresh
+resource wait reason: remains visible when projected by annotationTaskView
+no frontend queue simulation, no claim/order/resource-fencing changes
 ```
 
-然后按顺序阅读：
+The fix is intentionally narrow: `static/modules/auto-label-poll-runtime.js` now renders existing `view.runtimeText` beside the status pill. No backend queue ordering, task claim, execution fencing, polling cadence, or progress semantics changed. Permanent behavior guard lives in `tests/frontend/auto-label-poll-runtime.test.mjs`; Release Regression path scope now includes both the polling runtime and its guard.
 
-1. `docs/CODEX_CURRENT_STATE.md`（本文件）
-2. `AGENTS.md`
-3. `docs/codex-handoff-v42.25.md`
-4. 与当前任务相关的 `docs/superpowers/specs/*.md`
+Evidence:
 
-如果当前任务涉及训练 UI，先阅读：
+```text
+valid RED commit:          186005b428f361e88553555b3a86013d206f11b3
+valid RED run:             34788748122 (239 existing tests PASS; 1 intended queue-metadata assertion RED)
+product commit:            ddb1168a8f3457fef3d875ceec79e618b75acee9
+accepted clean code point: 2bc6f72fddd878a7e2d4802c5affd3d640f807e7
+Release Regression:        34788824842 PASS
+Navigation Action Fencing: 34788824910 PASS (Real Chrome PASS)
+Frontend Runtime:          34788824849 PASS (unit + full Real Chrome PASS)
+formal VERSION.txt:        42.24.0 unchanged
+```
 
-- `static/app.js` 最终 train-v3 override 段
-- `static/training-label-bootstrap.js`
-- `static/training-label-v3-anchor.js`
-- `static/modules/training-labels.js`
-- `static/modules/navigation-stability.js`
+No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
 
-如果涉及训练 Worker，先阅读：
+## 2. Current priority
 
-- `platform_core/training_label_tasks.py`
-- `platform_core/training_metrics.py`
-- `platform_core/training_splits.py`
-- `platform_core/snapshots.py`
-- `platform_core/task_runtime/*`
-- `platform_core/worker_registry.py`
+```text
+TECH-DEBT CLEANUP PAUSED BY USER REQUEST
+→ Worker Runtime Truth CLOSED
+→ Training Task Status / Progress Auto-Refresh CLOSED
+→ Training Queue Readiness Truth CLOSED
+  product implementation: bfe9f7d
+  remote acceptance: 92b8275e5a75167b040738d21a153f487f799b9b
+→ GPU Runtime Truth Phase 1A IMPLEMENTED + BASIC TESTS; push/CI and real multi-Node NVIDIA acceptance pending
+→ NEXT AFTER PHASE 1A REMOTE ACCEPTANCE: GPU Runtime Truth Phase 1B (only when explicitly resumed)
+→ genuine 10,000-image processing acceptance remains DEFERRED by explicit user instruction
+→ SSE/event stream evaluation DEFERRED
+→ non-blocking Navigation Action Fencing final scan remains DEFERRED
+→ Resource Lifecycle production soak / non-SQLite resource classes
+→ backend regression / A800 RC only when explicitly resumed
+```
 
-最后原则：**先验证当前合同，再修改；每批改动都更新本文件或新增对应 spec，不能让交接再次依赖聊天记录。**
+A800 RC remains deferred unless the user explicitly resumes it.
+
+### 当前产品主线 — ZIP 10k import scalability CLOSED
+
+Technical-debt cleanup remains paused by user request. Product productionization is the active line.
+
+- **Deployment Artifact E2E CLOSED** — successful conversion jobs surface only verified, existing deployment artifacts. Product `b75b7d09780f691b01e4207c3107977b0500d8aa`, focused run `34726749756`, cleanup `8f3d3e394ceed73e5f522cba512622286fead7a5`.
+- **Unified Task Truth API Phase 1 CLOSED** — `/api/v62/projects/{project_id}/tasks` remains the durable public truth for queue/resource/worker/progress metadata. Product `aa5b82ebd2140d3a9f03dc6ae6754c9b7a55afcc`, focused run `34727100684`, cleanup `6de0758e9f0c0cd45d79c48bf7fb022dde8f9ca6`.
+- **Unified Task Progress Phase 2 CLOSED** — model conversion, AI annotation and cleaning/material-batch business surfaces expose durable waiting-resource/queue/worker/progress truth without parallel polling owners. Products `9817f450b3fbd20256279c3c861b0938ffdcef16` and `ff31f879b6d501a501188fed8bc78426d9eb31ea`.
+- **SSE/event stream evaluation DEFERRED** — current page-scoped polling remains lifecycle-managed; no EventSource/replay/reconnect base is introduced without demonstrated need.
+- **Training Progress v2 CLOSED** — existing `training-metrics.sqlite3` persists truthful latest-epoch duration, rolling ETA, throughput, losses, trainer metrics/mAP when supplied, LR and elapsed time; Worker mirrors the compact snapshot into `job.json` without extra list requests. Product `70110f9668e593215bc77c8614dd9d6dd55b7601`, focused run `34730431744`.
+- **ZIP 10k import scalability CLOSED — hot-state/candidate split + live v19 owner**: baseline proved the final v36 visible ZIP action still delegated to synchronous `doImportData()` / `/api/v18/.../import`, and a synthetic 10,000-candidate v19 `job.json` was **1,370,177 bytes**. The product now routes final v36 ZIP upload through existing v19 background jobs and stores the full candidate manifest once in `scan-images.json`; hot `job.json`, running list polling and detail polling no longer carry the 10k candidate array. Create response is bounded to 500 candidates for the picker; selecting-job list preview is bounded to 300; running/terminal task state stays O(1) in candidate count. Selected-path validation reads the cold manifest. Product `b4875ada5ff084fd4e21d7c5f026f5b09128033b`, focused run `34731027723`, cleanup `e819a35c71f6aa20f7739281ddfc75e8502104ce`.

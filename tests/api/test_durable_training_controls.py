@@ -57,7 +57,21 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
 
         stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{task_id}/stop")
         assert stopped.status_code == 200, stopped.text
-        assert repository.get(task_id).status is TaskStatus.CANCEL_REQUESTED
+        cancelling = repository.get(task_id)
+        assert cancelling is not None
+        assert cancelling.status is TaskStatus.CANCEL_REQUESTED
+        assert cancelling.stage == "cancelling"
+
+        # A late/stale resume request must never revive a task once cancellation
+        # has become durable truth. The API guard covers ordinary requests while
+        # the repository set_stage guard closes the stop/resume race window.
+        resume_after_stop = client.post(f"/api/v48/projects/{project_id}/jobs/{task_id}/resume")
+        assert resume_after_stop.status_code == 400, resume_after_stop.text
+        still_cancelling = repository.get(task_id)
+        assert still_cancelling is not None
+        assert still_cancelling.status is TaskStatus.CANCEL_REQUESTED
+        assert still_cancelling.stage == "cancelling"
+
         for _ in range(30):
             if not psutil.pid_exists(launched.identity.pid):
                 break

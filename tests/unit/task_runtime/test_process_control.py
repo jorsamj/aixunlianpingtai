@@ -1,3 +1,5 @@
+import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -21,6 +23,13 @@ def wait_until(predicate, timeout=5.0):
             return True
         time.sleep(0.05)
     return False
+
+
+def process_execution_alive(pid: int) -> bool:
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return False
 
 
 def test_launch_requires_argv_and_identity_rejects_reused_pid(tmp_path):
@@ -65,8 +74,36 @@ def test_suspend_resume_and_terminate_real_process_tree(tmp_path):
     assert wait_until(lambda: psutil.Process(handle.identity.pid).status() != psutil.STATUS_STOPPED)
 
     controller.terminate_tree(handle.identity)
-    assert wait_until(lambda: not psutil.pid_exists(handle.identity.pid))
-    assert wait_until(lambda: not psutil.pid_exists(child_pid))
+    assert wait_until(lambda: not process_execution_alive(handle.identity.pid))
+    assert wait_until(lambda: not process_execution_alive(child_pid))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group orphan recovery")
+def test_terminate_tree_reaps_group_after_leader_was_killed(tmp_path):
+    child_pid_file = tmp_path / "orphan-child.pid"
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(p.pid));"
+        "time.sleep(60)"
+    )
+    handle = launch_process([sys.executable, "-c", script], cwd=tmp_path)
+    controller = ProcessController()
+    assert wait_until(child_pid_file.exists)
+    child_pid = int(child_pid_file.read_text())
+    assert process_execution_alive(child_pid)
+    assert os.getpgid(child_pid) == handle.identity.pid
+
+    # Reproduce the production failure mode: Linux OOM-kills only the training
+    # leader, while DataLoader-like descendants remain alive and become orphans.
+    os.kill(handle.identity.pid, signal.SIGKILL)
+    handle.process.wait(timeout=5)
+    assert not process_execution_alive(handle.identity.pid)
+    assert process_execution_alive(child_pid)
+
+    controller.terminate_tree(handle.identity, timeout=3.0)
+
+    assert wait_until(lambda: not process_execution_alive(child_pid), timeout=5.0)
 
 
 def test_repository_binds_process_only_for_owned_lease(tmp_path):

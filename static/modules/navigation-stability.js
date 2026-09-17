@@ -19,97 +19,152 @@ export class NavigationEpochGuard {
   }
 }
 
-function clearTimer(value, clearFn = clearInterval) {
-  if (value == null) return;
-  try { clearFn(value); } catch (_) {}
+export function normalizeNavigationPage(page) {
+  const requested = String(page || '');
+  return requested === '自动标注' ? '自动标注及清洗' : requested;
 }
 
-function clearPageTimers(state, nextPage) {
-  if (!state) return;
-  if (!['训练任务', '检测台'].includes(nextPage)) {
-    clearTimer(state.jobPollTimer);
-    state.jobPollTimer = null;
-  }
-  if (nextPage !== '素材接入') {
-    clearTimer(state.source422Timer);
-    state.source422Timer = null;
-  }
-  if (!['自动标注', '自动标注及清洗'].includes(nextPage)) {
-    clearTimer(state.auto422Timer);
-    state.auto422Timer = null;
-  }
-  if (nextPage !== '视频切帧') clearTimer(window.__videoFramePollTimer);
-  if (!['自动标注', '自动标注及清洗'].includes(nextPage)) clearTimer(window.__prelabelPollTimer);
+const OWNER_FUNCTIONS = {
+  '训练任务': [
+    'refreshTrainPage428', 'promoteTrain428', 'pauseTrain428', 'resumeTrain428',
+    'stopTrain428', 'deleteTrain428', 'refreshTrain425', 'refreshTrain423',
+    'refreshJobsOnly'
+  ],
+  '素材接入': [
+    'refreshSources422', 'saveSource422', 'runSourceNow422', 'toggleSource422', 'deleteSource422'
+  ],
+  '自动标注及清洗': [
+    'refreshAuto422', 'stopAutoTask422', 'retryAutoTask422', 'createAutoTask422',
+    'retryAiTask60', 'showAiTask60'
+  ],
+  '视频切帧': ['refreshVideoTasksOnly', 'refreshVideo424Delta', 'stopVideo424'],
+  '部署转换': ['loadDeployData', 'refreshDeployTasks'],
+};
+
+const PAGE_RENDERERS = {
+  '算法列表': ['renderAlgorithms', 'renderAlgorithms423', 'renderAlgorithms428', 'renderAlg412'],
+  '训练资源': ['renderResources'],
+  '数据集': ['renderDatasets', 'renderDatasets412', 'renderDatasets424', 'renderDatasets426'],
+  '训练任务': ['renderTraining', 'renderTraining423', 'renderTraining425', 'renderTraining428', 'renderTrainPage428'],
+  '素材接入': ['renderSources422'],
+  '自动标注及清洗': ['renderAutoLabel422', 'renderAutoLabel424', 'renderOps427'],
+  '视频切帧': ['renderVideoFrameTasks', 'renderVideo424'],
+  '部署转换': ['renderDeployTasks', 'renderDeploymentTasks'],
+};
+
+function ownersFor(page) {
+  if (page === '自动标注及清洗') return ['自动标注', '自动标注及清洗'];
+  if (page === '训练任务') return ['训练任务', '检测台'];
+  return [page];
 }
 
-export function installNavigationStability({getState, notify} = {}) {
+export function installNavigationStability({
+  getState,
+  notify,
+  requestScope,
+  pollRegistry,
+  persistNavigationState,
+  waitForNavigationReady,
+  beforeInvokeNavigation,
+  performNavigation,
+} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
   if (window.__navigationStabilityInstalled) return window.NavigationStability;
   window.__navigationStabilityInstalled = true;
 
   const state = getState?.();
-  const guard = new NavigationEpochGuard(state?.page || '');
+  const guard = new NavigationEpochGuard(normalizeNavigationPage(state?.page || ''));
   const pending = new Map();
   const rebindTimers = [];
-  let repairing = false;
-  let repairQueued = false;
   let tokenSeq = 0;
   let destroyed = false;
 
   function currentState() { return getState?.() || state || {}; }
-
-  function repairCurrentPage(reason = 'stale-render') {
-    if (destroyed || repairing || repairQueued) return;
-    const s = currentState();
-    if (!s.page) return;
-    repairQueued = true;
-    queueMicrotask(() => {
-      repairQueued = false;
-      if (destroyed || repairing) return;
-      repairing = true;
-      try {
-        if (typeof window !== 'undefined' && typeof window.render === 'function') window.render();
-        else if (typeof globalThis.render === 'function') globalThis.render();
-      } catch (error) {
-        notify?.(`页面状态恢复失败：${error?.message || error}`);
-      } finally {
-        repairing = false;
-      }
-    });
+  function adoptCurrentPageTimers(ownerPages) {
+    const page = normalizeNavigationPage(currentState().page || '');
+    const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
+    if (owners.has(page)) pollRegistry?.afterNavigate?.(page);
   }
 
-  function hasStalePending() {
-    if (destroyed) return false;
+  function finalizeNavigation(requested, navigationEpoch) {
+    if (destroyed || guard.epoch !== navigationEpoch) return normalizeNavigationPage(currentState().page || requested);
     const s = currentState();
-    for (const item of pending.values()) {
-      if (!guard.isCurrent(item.token, s.page)) return true;
+    const actualPage = normalizeNavigationPage(s.page || requested);
+    if (String(s.page || '') !== actualPage) s.page = actualPage;
+    if (actualPage !== guard.page) guard.page = actualPage;
+    requestScope?.alignPage?.(actualPage);
+    pollRegistry?.afterNavigate?.(actualPage);
+    const currentView = document.getElementById('view');
+    if (currentView) currentView.dataset.navigationPage = actualPage;
+    try {
+      persistNavigationState?.(s, actualPage);
+    } catch (_) {
+      // UI persistence must never turn a successful navigation into a failure.
     }
-    return false;
+    return actualPage;
   }
-
-  const view = document.getElementById('view');
-  const observer = view && typeof MutationObserver !== 'undefined'
-    ? new MutationObserver(() => {
-        if (!repairing && hasStalePending()) repairCurrentPage('stale-dom-mutation');
-      })
-    : null;
-  observer?.observe(view, {childList: true, subtree: true});
 
   const originalSetPage = window.setPage;
-  if (typeof originalSetPage === 'function') {
+  const hasClassicPredecessor = typeof originalSetPage === 'function';
+  const hasNamedNavigationOwner = typeof performNavigation === 'function';
+  if (hasClassicPredecessor || hasNamedNavigationOwner) {
     window.setPage = function stableSetPage(page, ...args) {
-      const requested = String(page || '');
-      guard.navigate(requested);
+      const requested = normalizeNavigationPage(page);
+      requestScope?.navigate?.(requested);
+      pending.clear();
+      const navigationEpoch = guard.navigate(requested);
       const s = currentState();
       s.__navigationEpoch = guard.epoch;
-      clearPageTimers(s, requested);
-      const result = originalSetPage.call(this, page, ...args);
-      // Some legacy aliases rewrite the requested page. Keep the guard aligned
-      // with the authoritative state after the existing router has run.
-      if (String(s.page || '') !== guard.page) guard.page = String(s.page || '');
-      const currentView = document.getElementById('view');
-      if (currentView) currentView.dataset.navigationPage = String(s.page || requested);
-      return result;
+      pollRegistry?.beforeNavigate?.(requested);
+
+      const settleResult = result => {
+        if (result && typeof result.then === 'function') {
+          return Promise.resolve(result).then(
+            value => {
+              finalizeNavigation(requested, navigationEpoch);
+              return value;
+            },
+            error => {
+              finalizeNavigation(requested, navigationEpoch);
+              throw error;
+            },
+          );
+        }
+        finalizeNavigation(requested, navigationEpoch);
+        return result;
+      };
+
+      const invokeNavigationOwner = () => {
+        try {
+          beforeInvokeNavigation?.(requested);
+          if (hasNamedNavigationOwner) {
+            return settleResult(performNavigation.call(this, requested, ...args));
+          }
+          return settleResult(originalSetPage.call(this, requested, ...args));
+        } catch (error) {
+          finalizeNavigation(requested, navigationEpoch);
+          throw error;
+        }
+      };
+
+      let readiness;
+      try {
+        readiness = waitForNavigationReady?.(requested);
+      } catch (error) {
+        finalizeNavigation(requested, navigationEpoch);
+        throw error;
+      }
+
+      if (readiness && typeof readiness.then === 'function') {
+        return Promise.resolve(readiness).then(
+          () => invokeNavigationOwner(),
+          error => {
+            finalizeNavigation(requested, navigationEpoch);
+            throw error;
+          },
+        );
+      }
+      return invokeNavigationOwner();
     };
   }
 
@@ -120,7 +175,8 @@ export function installNavigationStability({getState, notify} = {}) {
     const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
     const wrapped = function (...args) {
       const s = currentState();
-      const owner = owners.has(String(s.page || '')) ? String(s.page || '') : [...owners][0];
+      const currentPage = normalizeNavigationPage(s.page || '');
+      const owner = owners.has(currentPage) ? currentPage : [...owners][0];
       const itemId = `${name}:${++tokenSeq}`;
       const item = {token: guard.token(owner), name};
       pending.set(itemId, item);
@@ -133,12 +189,12 @@ export function installNavigationStability({getState, notify} = {}) {
       }
       if (!result || typeof result.then !== 'function') {
         pending.delete(itemId);
+        adoptCurrentPageTimers([...owners]);
         return result;
       }
       return Promise.resolve(result).finally(() => {
-        const stale = !guard.isCurrent(item.token, currentState().page);
         pending.delete(itemId);
-        if (stale) repairCurrentPage(`stale:${name}`);
+        adoptCurrentPageTimers([...owners]);
       });
     };
     wrapped.__navigationStabilityWrapped = true;
@@ -146,35 +202,40 @@ export function installNavigationStability({getState, notify} = {}) {
     window[name] = wrapped;
   }
 
-  const ownerFunctions = {
-    '训练任务': [
-      'refreshTrainPage428', 'promoteTrain428', 'pauseTrain428', 'resumeTrain428',
-      'stopTrain428', 'deleteTrain428', 'refreshTrain425', 'refreshTrain423'
-    ],
-    '素材接入': [
-      'renderSources422', 'refreshSources422', 'saveSource422', 'runSourceNow422',
-      'toggleSource422', 'deleteSource422'
-    ],
-    '自动标注及清洗': [
-      'renderAutoLabel422', 'refreshAuto422', 'stopAutoTask422', 'retryAutoTask422',
-      'createAutoTask422'
-    ],
-    '视频切帧': ['refreshVideoTasksOnly', 'renderVideoFrameTasks'],
-    '部署转换': ['loadDeployData', 'refreshDeployTasks'],
-  };
+  function wrapRenderer(name, ownerPages) {
+    if (destroyed || typeof window === 'undefined') return;
+    const original = window[name];
+    if (typeof original !== 'function' || original.__navigationOwnerWrapped) return;
+    const owners = new Set(Array.isArray(ownerPages) ? ownerPages : [ownerPages]);
+    const wrapped = function (...args) {
+      const currentPage = normalizeNavigationPage(currentState().page || '');
+      if (!owners.has(currentPage)) return false;
+      const result = original.apply(this, args);
+      if (result && typeof result.then === 'function') {
+        return Promise.resolve(result).finally(() => adoptCurrentPageTimers([...owners]));
+      }
+      adoptCurrentPageTimers([...owners]);
+      return result;
+    };
+    wrapped.__navigationOwnerWrapped = true;
+    wrapped.__navigationOwnerOriginal = original;
+    window[name] = wrapped;
+  }
 
   function wrapKnownFunctions() {
     if (destroyed || typeof window === 'undefined') return;
-    Object.entries(ownerFunctions).forEach(([page, names]) => {
-      for (const name of names) {
-        const owners = page === '自动标注及清洗' ? ['自动标注', '自动标注及清洗'] : [page];
-        wrapAsyncOwner(name, owners);
-      }
+    Object.entries(OWNER_FUNCTIONS).forEach(([page, names]) => {
+      const owners = ownersFor(page);
+      for (const name of names) wrapAsyncOwner(name, owners);
+    });
+    Object.entries(PAGE_RENDERERS).forEach(([page, names]) => {
+      const owners = ownersFor(page);
+      for (const name of names) wrapRenderer(name, owners);
     });
   }
 
   // app.js contains historical override layers; some functions are assigned late.
-  // Re-check briefly after module installation so the final implementation is fenced.
+  // Re-check briefly so the final implementation, not an earlier override, is guarded.
   wrapKnownFunctions();
   for (const delay of [50, 250, 800, 1800]) {
     rebindTimers.push(setTimeout(() => wrapKnownFunctions(), delay));
@@ -183,11 +244,35 @@ export function installNavigationStability({getState, notify} = {}) {
   const api = {
     guard,
     pending,
-    repairCurrentPage,
+    normalizePage: normalizeNavigationPage,
+    isCurrent(token) {
+      return guard.isCurrent(token, normalizeNavigationPage(currentState().page));
+    },
+    token(ownerPage) {
+      return guard.token(normalizeNavigationPage(ownerPage || currentState().page));
+    },
     wrapKnownFunctions,
+    action(ownerPage = currentState().page) {
+      const normalizedOwner = normalizeNavigationPage(ownerPage || currentState().page || '');
+      const token = guard.token(normalizedOwner);
+      const current = () => guard.isCurrent(token, normalizeNavigationPage(currentState().page || ''));
+      return Object.freeze({
+        token,
+        ownerPage: normalizedOwner,
+        isCurrent: current,
+        commit(effect) {
+          if (!current()) return false;
+          if (typeof effect === 'function') effect();
+          return true;
+        },
+      });
+    },
+    repairCurrentPage() {
+      notify?.('旧页面结果已被拦截');
+      return false;
+    },
     destroy() {
       destroyed = true;
-      observer?.disconnect();
       for (const timer of rebindTimers) clearTimeout(timer);
       rebindTimers.length = 0;
       pending.clear();

@@ -1,4 +1,5 @@
-const ACTIVE_TASK_STATUSES = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED']);
+import {canonicalTaskPhase, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js';
+
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
 
 function escapeHtml(value) {
@@ -173,17 +174,45 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     renderCachePanel();
   }
 
+  function discoveryScopeLabel(task) {
+    const scope = String(task.discovery_scope || '').trim().toLowerCase();
+    if (scope === 'full') return '全机（仅本地文件系统）';
+    if (scope === 'directory') return '指定目录';
+    if (scope === 'fast') return '指定环境快速检测';
+    if (scope === 'auto') return '自动检测';
+    return scope || '未返回';
+  }
+
+  function discoveryFailureMessage(task) {
+    const taskStatus = canonicalTaskStatus(task);
+    if (taskStatus === 'CANCELLED') return '任务已取消，扫描已停止；已完成的扫描计数仅用于诊断。';
+    const raw = String(task.error?.message || task.error || '').trim();
+    const normalized = raw.toLocaleLowerCase();
+    if (normalized.includes('requires at least one explicit root') || normalized.includes('no safe local scan roots')) {
+      return '当前未发现可安全扫描的本地文件系统根目录。网络盘和虚拟文件系统不会自动纳入扫描；请确认本机磁盘已正确挂载后重试。';
+    }
+    if (normalized.includes('permission') || normalized.includes('access is denied') || normalized.includes('permission denied')) {
+      return '资源检测因路径权限不足失败。请确认 Worker 对目标目录具有读取权限后重试；网络盘和虚拟文件系统不会因提权而自动纳入扫描。';
+    }
+    return '资源检测失败。请根据任务日志中的失败阶段与错误代码排查；如涉及路径访问，请确认目录存在且 Worker 具有读取权限后重试。';
+  }
+
   function progressBody(task, kind) {
     const metrics = task.metrics || task;
     const environment = kind === 'environment';
-    const taskStatus = status(task.status);
-    const error = task.error?.message || task.error || '';
+    const taskStatus = canonicalTaskStatus(task);
+    const roots = Array.isArray(task.scan_roots) ? task.scan_roots.filter(Boolean) : [];
+    const permissionErrors = Number(metrics.permission_errors) || 0;
+    const terminalMessage = taskStatus === 'FAILED' || taskStatus === 'CANCELLED' ? discoveryFailureMessage(task) : '';
     return `<div class="rd-task" id="resourceDiscoveryTask" data-task-id="${escapeHtml(task.id || task.task_id || '')}">
-      <div class="rd-task-state"><span class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b>${escapeHtml(task.stage || '等待 Worker 领取')}</b></div>
-      ${ACTIVE_TASK_STATUSES.has(taskStatus) ? '<div class="rd-indeterminate"><i></i></div>' : ''}
-      <div class="rd-task-counts"><div><span>已扫描目录</span><b>${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b>${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b>${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b>${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b>${Number(metrics.permission_errors) || 0}</b></div></div>
+      <div class="rd-task-state"><span class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : taskStatus === 'CANCELLED' ? 'warn' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b>${escapeHtml(canonicalTaskPhase(task) || '等待 Worker 领取')}</b></div>
+      ${isCanonicalTaskActive(task) ? '<div class="rd-indeterminate"><i></i></div>' : ''}
+      <div class="rd-current"><span>扫描范围</span><b>${escapeHtml(discoveryScopeLabel(task))}</b></div>
+      ${roots.length ? `<div class="rd-current"><span>实际扫描根目录（任务创建时已冻结，共 ${roots.length} 个）</span><code>${roots.map(root => escapeHtml(root)).join('<br>')}</code></div>` : ''}
+      <div class="rd-task-counts"><div><span>已扫描目录</span><b>${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b>${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b>${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b>${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b>${permissionErrors}</b></div></div>
       <div class="rd-current"><span>当前路径</span><code>${escapeHtml(task.current_item || metrics.current_item || '等待扫描')}</code></div>
-      ${error ? `<div class="error-box422"><b>检测失败</b><span>${escapeHtml(typeof error === 'string' ? error : JSON.stringify(error))}</span></div>` : ''}
+      ${permissionErrors ? '<div class="hint">部分目录因权限不足已跳过；如果关键目录未被扫描，请为 Worker 补充只读权限后重试。</div>' : ''}
+      ${terminalMessage ? `<div class="error-box422"><b>${taskStatus === 'CANCELLED' ? '任务已取消' : '检测失败'}</b><span>${escapeHtml(terminalMessage)}</span></div>` : ''}
       <div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>
     </div>`;
   }
@@ -207,7 +236,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     runtime.pollControllers.add(controller);
     if (root) watchModalClose(taskId, controller);
     try {
-      while (!controller.signal.aborted && ACTIVE_TASK_STATUSES.has(status(task.status))) {
+      while (!controller.signal.aborted && isCanonicalTaskActive(task)) {
         await abortableDelay(1100, controller.signal);
         task = await request(`/api/resource-discovery/tasks/${encodeURIComponent(taskId)}`, {signal: controller.signal});
         const live = document.getElementById('resourceDiscoveryTask');
@@ -218,11 +247,13 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
         live.outerHTML = progressBody(task, kind);
       }
       if (!controller.signal.aborted) {
-        if (SUCCESS_TASK_STATUSES.has(status(task.status))) {
+        if (SUCCESS_TASK_STATUSES.has(canonicalTaskStatus(task))) {
           await refreshCache(true);
           notify(kind === 'environment' ? '环境检测完成，请确认要使用的环境' : '模型扫描完成');
-        } else if (status(task.status) === 'FAILED') {
-          notify(task.error?.message || task.error || '资源检测失败');
+        } else if (canonicalTaskStatus(task) === 'FAILED') {
+          notify(discoveryFailureMessage(task), 'error');
+        } else if (canonicalTaskStatus(task) === 'CANCELLED') {
+          notify(discoveryFailureMessage(task), 'info');
         }
       }
       return task;

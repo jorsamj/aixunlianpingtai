@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import training_tasks as base
-from .algorithms import choose_iteration_base, list_algorithms, save_algorithms
+from .algorithms import choose_algorithm_iteration_base, list_algorithms, save_algorithms
 from .annotation_repository import AnnotationRepository
 from .task_runtime import ArtifactStore, TaskKind, TaskStatus
 
@@ -123,8 +123,8 @@ def _iteration_version(
     versions = list(algorithm.get("versions") or [])
     if not versions:
         return None
-    selection = choose_iteration_base(
-        versions,
+    selection = choose_algorithm_iteration_base(
+        algorithm,
         mother_model,
         "ultralytics",
         strict_latest=True,

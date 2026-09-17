@@ -1,0 +1,62 @@
+name: Video Frame Recovery
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - platform_core/video_tasks.py
+      - static/modules/video-tasks.js
+      - tests/unit/test_video_sampling.py
+      - tests/unit/test_video_commit_fencing.py
+      - tests/integration/test_video_task_worker.py
+      - tests/frontend/video-tasks.test.mjs
+      - .github/workflows/video-frame-recovery.yml
+  pull_request:
+    paths:
+      - platform_core/video_tasks.py
+      - static/modules/video-tasks.js
+      - tests/unit/test_video_sampling.py
+      - tests/unit/test_video_commit_fencing.py
+      - tests/integration/test_video_task_worker.py
+      - tests/frontend/video-tasks.test.mjs
+      - .github/workflows/video-frame-recovery.yml
+  workflow_dispatch:
+
+jobs:
+  recovery-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest numpy opencv-python-headless pillow pyyaml filelock requests psutil
+      - name: Compile video recovery contract
+        run: >-
+          python -m py_compile
+          platform_core/video_tasks.py
+          tests/unit/test_video_sampling.py
+          tests/unit/test_video_commit_fencing.py
+          tests/integration/test_video_task_worker.py
+      - name: Video extraction and fencing guards
+        run: >-
+          python -m pytest --confcutdir=tests/unit -q
+          tests/unit/test_video_sampling.py
+          tests/unit/test_video_commit_fencing.py
+      - name: Video worker checkpoint recovery
+        run: >-
+          python -m pytest --confcutdir=tests/integration -q
+          tests/integration/test_video_task_worker.py
+      - name: Video recovery frontend truth
+        run: node --test tests/frontend/video-tasks.test.mjs

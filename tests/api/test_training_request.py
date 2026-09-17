@@ -10,6 +10,15 @@ def _image_bytes(color: str) -> bytes:
     return stream.getvalue()
 
 
+def test_training_request_normalizes_legacy_boolean_cache_before_string_validation():
+    import app as app_module
+
+    assert app_module.TrainReq(cache=False).cache == "False"
+    assert app_module.TrainReq(cache=True).cache == "True"
+    assert app_module.TrainReq(cache="ram").cache == "ram"
+    assert app_module.TrainReq(cache="disk").cache == "disk"
+
+
 def test_training_job_locks_snapshot_base_and_requested_parameters(client, seeded_project, monkeypatch):
     import app as app_module
 

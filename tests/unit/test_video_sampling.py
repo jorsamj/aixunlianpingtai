@@ -84,6 +84,58 @@ def test_real_opencv_extract_writes_nonempty_frames_and_metadata(real_short_vide
     assert progress[-1][:2] == (5, 5)
 
 
+def test_resume_reuses_verified_prefix_and_only_writes_missing_frames(
+    real_short_video,
+    tmp_path,
+    monkeypatch,
+):
+    frames_dir = tmp_path / "frames"
+    request = VideoSampleRequest(SamplingMode.FIXED_COUNT, fixed_count=5)
+
+    def crash_after_two(done, total, current):
+        if done == 2:
+            raise RuntimeError("simulated extraction crash")
+
+    with pytest.raises(RuntimeError, match="simulated extraction crash"):
+        extract_video(
+            real_short_video,
+            frames_dir,
+            request,
+            backend="opencv",
+            progress=crash_after_two,
+            resume_existing=True,
+        )
+
+    existing = sorted(frames_dir.glob("frame_*.jpg"))
+    assert len(existing) == 2
+    first_two_bytes = {path.name: path.read_bytes() for path in existing}
+
+    original_imwrite = cv2.imwrite
+    rewritten = []
+
+    def tracking_imwrite(path, frame):
+        rewritten.append(Path(path).name)
+        return original_imwrite(path, frame)
+
+    monkeypatch.setattr(cv2, "imwrite", tracking_imwrite)
+    progress = []
+    result = extract_video(
+        real_short_video,
+        frames_dir,
+        request,
+        backend="opencv",
+        progress=lambda done, total, current: progress.append((done, total, current)),
+        resume_existing=True,
+    )
+
+    assert result.extracted_frames == 5
+    assert progress[0][0] == 2
+    assert len(rewritten) == 3
+    assert all(name.startswith(".frame_00000") for name in rewritten)
+    assert {path.name: path.read_bytes() for path in existing} == first_two_bytes
+    assert len(list(frames_dir.glob("frame_*.jpg"))) == 5
+
+
 def test_corrupt_video_fails_instead_of_creating_empty_success(tmp_path):
     corrupt = tmp_path / "corrupt.mp4"
     corrupt.write_bytes(b"not a video")

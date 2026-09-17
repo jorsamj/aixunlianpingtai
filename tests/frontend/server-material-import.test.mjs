@@ -6,16 +6,21 @@ import {
   serverImportView,
 } from '../../static/modules/server-material-import.js';
 
-test('server material import requests contain only source-relative fields', () => {
+test('server material import requests contain source-relative fields and explicit format', () => {
   assert.deepEqual(buildServerImportRequest({
     mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'fire/2026', recursive: true,
   }), {
-    mode: 'directory_scan', storage_source_id: 'local-a', prefix: 'fire/2026', recursive: true,
+    mode: 'directory_scan', import_format: 'auto', storage_source_id: 'local-a', prefix: 'fire/2026', recursive: true,
   });
   assert.deepEqual(buildServerImportRequest({
     mode: 'server_zip', storageSourceId: 'local-a', zipPath: 'fire.zip', targetPrefix: 'fire',
   }), {
-    mode: 'server_zip', storage_source_id: 'local-a', zip_path: 'fire.zip', target_prefix: 'fire', recursive: true,
+    mode: 'server_zip', import_format: 'auto', storage_source_id: 'local-a', zip_path: 'fire.zip', target_prefix: 'fire', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'dataset', importFormat: 'yolo', datasetYaml: 'data.yaml',
+  }), {
+    mode: 'directory_scan', import_format: 'yolo', dataset_yaml: 'data.yaml', storage_source_id: 'local-a', prefix: 'dataset', recursive: true,
   });
 });
 
@@ -30,4 +35,29 @@ test('server material import view uses real counters and distinct confirmation s
   assert.equal(scanning.text.includes('58%'), false);
   assert.equal(serverImportView({status: 'AWAITING_CONFIRMATION'}).canConfirm, true);
   assert.equal(serverImportView({status: 'RUNNING', stage: 'indexing'}).canConfirm, false);
+});
+
+test('resource-waiting storage import remains active until durable truth changes', () => {
+  const waiting = serverImportView({
+    status: 'WAITING_RESOURCE',
+    resource_queue_position: 2,
+    resource_queue_position_exact: true,
+    resource_wait_reason: 'STORAGE_WORKER_BUSY',
+  });
+  assert.equal(waiting.active, true);
+  assert.equal(waiting.terminal, false);
+});
+
+
+test('server import canonical task status wins and candidate queue rank is not presented as exact', () => {
+  const waiting = serverImportView({
+    status: 'SUCCEEDED', task_status: 'WAITING_RESOURCE', phase: 'resource_waiting',
+    resource_queue_position: 9, resource_queue_position_exact: false,
+    resource_wait_reason: 'STORAGE_WORKER_BUSY',
+  });
+  assert.equal(waiting.status, 'WAITING_RESOURCE');
+  assert.equal(waiting.active, true);
+  assert.match(waiting.text, /等待 Storage Worker 资源/);
+  assert.match(waiting.text, /STORAGE_WORKER_BUSY/);
+  assert.doesNotMatch(waiting.text, /队列第 9 位/);
 });

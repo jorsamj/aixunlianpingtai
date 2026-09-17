@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
-import shutil
 import stat
 import uuid
 from pathlib import Path, PureWindowsPath
@@ -181,17 +180,27 @@ class LocalStorageProvider:
             self.stat(object_key)
         return path.open("rb")
 
-    def _atomic_copy(self, source: BinaryIO, destination: Path) -> None:
+    def _atomic_copy(self, source: BinaryIO, destination: Path) -> tuple[int, str]:
+        """Copy once, fsync once, and compute the content hash in the same pass."""
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.parent / f".part-{uuid.uuid4().hex}.tmp"
+        digest = hashlib.sha256()
+        size_bytes = 0
         try:
             with temporary.open("wb") as output:
-                shutil.copyfileobj(source, output, length=1024 * 1024)
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    digest.update(chunk)
+                    size_bytes += len(chunk)
                 output.flush()
                 os.fsync(output.fileno())
-            if temporary.stat().st_size <= 0:
+            if size_bytes <= 0:
                 raise OSError("素材文件为空")
             os.replace(temporary, destination)
+            return size_bytes, digest.hexdigest()
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -199,7 +208,7 @@ class LocalStorageProvider:
         with self.open_reader(object_key) as source:
             target = Path(destination)
             try:
-                self._atomic_copy(source, target)
+                size_bytes, digest = self._atomic_copy(source, target)
             except OSError as error:
                 raise StorageError(
                     code="STORAGE_DOWNLOAD_FAILED",
@@ -211,9 +220,9 @@ class LocalStorageProvider:
                 ) from error
         metadata = self.stat(object_key)
         return ObjectMetadata(
-            key=metadata.key, size_bytes=Path(destination).stat().st_size,
+            key=metadata.key, size_bytes=size_bytes,
             etag=metadata.etag, content_type=metadata.content_type,
-            sha256=_sha256(Path(destination)), last_modified=metadata.last_modified,
+            sha256=digest, last_modified=metadata.last_modified,
         )
 
     def upload(
@@ -221,7 +230,7 @@ class LocalStorageProvider:
         content_type: str = "application/octet-stream",
         metadata: Mapping[str, str] | None = None,
     ) -> ObjectMetadata:
-        del content_type, metadata
+        del metadata
         destination = self._path(object_key)
         stream = None
         close_stream = False
@@ -231,7 +240,8 @@ class LocalStorageProvider:
                 close_stream = True
             else:
                 stream = source
-            self._atomic_copy(stream, destination)
+            size_bytes, digest = self._atomic_copy(stream, destination)
+            stat_result = destination.stat()
         except Exception as error:
             if isinstance(error, StorageError):
                 raise
@@ -246,7 +256,14 @@ class LocalStorageProvider:
         finally:
             if close_stream and stream is not None:
                 stream.close()
-        return self.stat(object_key)
+        return ObjectMetadata(
+            key=Path(object_key).as_posix(),
+            size_bytes=size_bytes,
+            etag=f'"{stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"',
+            content_type=content_type or mimetypes.guess_type(destination.name)[0] or "application/octet-stream",
+            sha256=digest,
+            last_modified=str(stat_result.st_mtime_ns),
+        )
 
     def delete(self, object_key: str) -> None:
         try:

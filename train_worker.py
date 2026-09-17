@@ -3,6 +3,8 @@ import json
 import os
 import shutil
 import sys
+import tempfile
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +25,21 @@ def read_json(path: Path, default):
 
 def write_json(path: Path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    descriptor, name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            descriptor = -1
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def update_job(job_file: Path, **kwargs):
@@ -31,6 +47,18 @@ def update_job(job_file: Path, **kwargs):
     job.update(kwargs)
     job["updated_at"] = now_iso()
     write_json(job_file, job)
+
+
+def publish_startup_stage(job_file: Path, stage: str, message: str, progress_percent: float, **extra):
+    update_job(
+        job_file,
+        status="running",
+        startup_stage=str(stage),
+        current_item=str(message),
+        message=str(message),
+        progress_percent=float(progress_percent),
+        **extra,
+    )
 
 
 def as_bool(v):
@@ -47,6 +75,11 @@ def parse_cache(v):
     if low in {"ram", "disk"}:
         return low
     raise ValueError("cache 只支持 False / True / ram / disk")
+
+
+def next_oom_retry_resources(batch, workers):
+    """Step batch down after CUDA OOM without re-coupling DataLoader workers."""
+    return max(1, int(batch) // 2), max(0, int(workers))
 
 
 def resolve_training_model(model_arg: str, pretrained: bool) -> str:
@@ -364,6 +397,256 @@ def stage_gate_random_eval(trainer, args, epoch):
         return dict(getattr(trainer,'metrics',{}) or {}),[x.name for x in chosen],'random_fallback',str(e)
 
 
+def _training_phase_percent(completed_epochs, total_epochs, *, phase_start=20.0, phase_end=90.0):
+    total = max(1.0, float(total_epochs or 1))
+    completed = max(0.0, min(total, float(completed_epochs or 0)))
+    start = float(phase_start)
+    end = max(start, float(phase_end))
+    return round(start + (end - start) * completed / total, 2)
+
+
+def publish_batch_progress(
+    job_file, trainer, requested_total_epochs, completed_batches, total_batches,
+    *, phase_start=20.0, phase_end=90.0, epoch_offset=0,
+    display_total_epochs=None, item_prefix="",
+):
+    epoch_index = max(0, int(getattr(trainer, "epoch", 0)))
+    phase_current_epoch = epoch_index + 1
+    phase_total_epochs = max(
+        phase_current_epoch,
+        int(getattr(trainer, "epochs", 0) or requested_total_epochs or phase_current_epoch),
+    )
+    offset = max(0, int(epoch_offset or 0))
+    current_epoch = offset + phase_current_epoch
+    total_epochs = max(
+        current_epoch,
+        int(display_total_epochs) if display_total_epochs is not None
+        else offset + phase_total_epochs,
+    )
+    batches = max(1, int(total_batches or 1))
+    completed = max(0, min(batches, int(completed_batches or 0)))
+    epoch_fraction = epoch_index + completed / batches
+    percent = _training_phase_percent(
+        epoch_fraction, phase_total_epochs, phase_start=phase_start, phase_end=phase_end,
+    )
+    prefix = f"{str(item_prefix).strip()} · " if str(item_prefix).strip() else ""
+    current_item = (
+        f"{prefix}Epoch {current_epoch}/{total_epochs} · Batch {completed}/{batches}"
+    )
+    update_job(
+        job_file,
+        current_epoch=current_epoch,
+        total_epochs=total_epochs,
+        current_batch=completed,
+        total_batches=batches,
+        progress_percent=percent,
+        current_item=current_item,
+        message=f"训练中 · {current_item}",
+    )
+    return percent
+
+
+def attach_training_batch_progress(
+    model, job_file, requested_total_epochs, *, min_interval=0.25,
+    phase_start=20.0, phase_end=90.0, epoch_offset=0,
+    display_total_epochs=None, item_prefix="",
+):
+    state = {"epoch": None, "completed_batches": 0, "last_write": None}
+
+    def on_train_batch_end(trainer):
+        epoch_index = max(0, int(getattr(trainer, "epoch", 0)))
+        if state["epoch"] != epoch_index:
+            state["epoch"] = epoch_index
+            state["completed_batches"] = 0
+            state["last_write"] = None
+        try:
+            total_batches = max(1, len(trainer.train_loader))
+        except (TypeError, AttributeError):
+            total_batches = 1
+        state["completed_batches"] = min(total_batches, state["completed_batches"] + 1)
+        now = time.monotonic()
+        final_batch = state["completed_batches"] >= total_batches
+        last_write = state["last_write"]
+        if not final_batch and last_write is not None and now - last_write < max(0.05, float(min_interval)):
+            return
+        publish_batch_progress(
+            job_file, trainer, requested_total_epochs,
+            state["completed_batches"], total_batches,
+            phase_start=phase_start, phase_end=phase_end,
+            epoch_offset=epoch_offset, display_total_epochs=display_total_epochs,
+            item_prefix=item_prefix,
+        )
+        state["last_write"] = now
+
+    model.add_callback("on_train_batch_end", on_train_batch_end)
+    return on_train_batch_end
+
+
+def publish_epoch_progress(job_file, telemetry, trainer, requested_total_epochs):
+    telemetry.on_epoch_end(trainer)
+    progress = dict(telemetry.latest_epoch or {})
+    epoch = int(progress.get("epoch") or (int(getattr(trainer, "epoch", 0)) + 1))
+    total = max(epoch, int(progress.get("total_epochs") or requested_total_epochs or epoch))
+    percent = _training_phase_percent(epoch, total)
+    progress.update(epoch=epoch, total_epochs=total)
+    update_job(
+        job_file,
+        current_epoch=epoch,
+        total_epochs=total,
+        current_batch=None,
+        total_batches=None,
+        progress_percent=percent,
+        training_progress=progress,
+        elapsed_seconds=progress.get("elapsed_seconds"),
+        eta_seconds=progress.get("eta_seconds"),
+        current_item=f"Epoch {epoch}/{total}",
+        message=f"训练中 · Epoch {epoch}/{total}",
+    )
+    return progress
+
+
+def publish_ai_continuation_epoch_progress(
+    job_file, telemetry, trainer, *, base_completed_epochs, extra_epochs,
+):
+    telemetry.on_epoch_end(trainer)
+    progress = dict(telemetry.latest_epoch or {})
+    phase_epoch = int(
+        progress.get("epoch") or (int(getattr(trainer, "epoch", 0)) + 1)
+    )
+    phase_total = max(
+        phase_epoch,
+        int(progress.get("total_epochs") or extra_epochs or phase_epoch),
+    )
+    base = max(0, int(base_completed_epochs or 0))
+    epoch = base + phase_epoch
+    total = max(epoch, base + phase_total)
+    percent = _training_phase_percent(
+        phase_epoch, phase_total, phase_start=90.0, phase_end=95.0,
+    )
+    progress.update(
+        phase_epoch=phase_epoch,
+        phase_total_epochs=phase_total,
+        epoch=epoch,
+        total_epochs=total,
+    )
+    update_job(
+        job_file,
+        current_epoch=epoch,
+        total_epochs=total,
+        current_batch=None,
+        total_batches=None,
+        progress_percent=percent,
+        training_progress=progress,
+        elapsed_seconds=progress.get("elapsed_seconds"),
+        eta_seconds=progress.get("eta_seconds"),
+        current_item=f"AI追加训练 · Epoch {epoch}/{total}",
+        message=f"AI追加训练 · Epoch {epoch}/{total}",
+    )
+    return progress
+
+
+def attach_ai_continuation_callbacks(
+    model, job_file, telemetry, *, base_completed_epochs, extra_epochs,
+    attach_resource_callbacks,
+):
+    base = max(0, int(base_completed_epochs or 0))
+    extra = max(1, int(extra_epochs or 1))
+    total = base + extra
+
+    def on_fit_epoch_end(trainer):
+        return publish_ai_continuation_epoch_progress(
+            job_file, telemetry, trainer,
+            base_completed_epochs=base, extra_epochs=extra,
+        )
+
+    model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
+    attach_training_batch_progress(
+        model, job_file, extra, phase_start=90.0, phase_end=95.0,
+        epoch_offset=base, display_total_epochs=total, item_prefix="AI追加训练",
+    )
+    attach_resource_callbacks(model)
+    return on_fit_epoch_end
+
+
+
+def derive_training_completion_metadata(
+    trainer, *, requested_epochs, completed_epochs, gate_reason, ai_plan=None
+):
+    """Return durable, user-facing completion truth without guessing from 100% progress."""
+    requested = max(0, int(requested_epochs or 0))
+    completed = max(0, int(completed_epochs or 0))
+    gate = str(gate_reason or "").strip()
+    result = {
+        "completed_epochs": completed,
+        "requested_epochs": requested,
+        "training_outcome": "completed",
+        "completion_reason": "requested_epochs_completed" if requested and completed >= requested else "completed",
+        "early_stopping_reason": None,
+        "early_stopping_patience": None,
+        "best_epoch": None,
+        "completion_message": "训练完成，模型产物校验通过",
+    }
+    if gate and "达到提前完成阈值" in gate:
+        result.update(
+            training_outcome="target_reached",
+            completion_reason="quality_target_reached",
+            completion_message=f"训练提前完成：{gate}，模型产物校验通过",
+        )
+        return result
+    if gate and "低于继续训练阈值" in gate:
+        result.update(
+            training_outcome="needs_optimization",
+            completion_reason="quality_gate_below_continue_threshold",
+            completion_message=f"训练提前结束：{gate}，模型产物校验通过",
+        )
+        return result
+    if not (requested > 0 and completed > 0 and completed < requested):
+        return result
+
+    # An AI continuation request can intentionally stop one phase before another
+    # phase starts. Do not mislabel that transition as Ultralytics patience.
+    if ai_plan:
+        result.update(
+            training_outcome="completed",
+            completion_reason="early_stopping",
+            completion_message="训练提前完成，模型产物校验通过",
+        )
+        return result
+
+    stopper = getattr(trainer, "stopper", None) if trainer is not None else None
+    try:
+        patience = int(float(getattr(stopper, "patience", 0)))
+    except (TypeError, ValueError, OverflowError):
+        patience = 0
+    try:
+        best_epoch = int(float(getattr(stopper, "best_epoch", 0)))
+    except (TypeError, ValueError, OverflowError):
+        best_epoch = 0
+    # Ultralytics EarlyStopping stores best_epoch as 1-indexed and stops once
+    # completed_epoch - best_epoch reaches patience.
+    patience_hit = patience > 0 and best_epoch >= 0 and (completed - best_epoch) >= patience
+    if patience_hit:
+        result.update(
+            training_outcome="early_stopping",
+            completion_reason="early_stopping",
+            early_stopping_reason="patience",
+            early_stopping_patience=patience,
+            best_epoch=best_epoch if best_epoch > 0 else None,
+            completion_message=(
+                f"训练提前完成：连续 {patience} 个 Epoch 无验证指标提升（Early Stopping）"
+                + (f"，最佳 Epoch {best_epoch}" if best_epoch > 0 else "")
+                + "，模型产物校验通过"
+            ),
+        )
+        return result
+    result.update(
+        training_outcome="early_stopping",
+        completion_reason="early_stopping",
+        completion_message="训练提前完成（Early Stopping），模型产物校验通过",
+    )
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
@@ -470,7 +753,14 @@ def main():
     if args.freeze > 0:
         train_args["freeze"] = args.freeze
 
-    update_job(job_file, status="running", message="验证训练设备与资源", requested_train_params=train_args, actual_model=actual_model)
+    publish_startup_stage(
+        job_file,
+        "worker_python_ready",
+        "训练进程已启动",
+        20,
+        requested_train_params=train_args,
+        actual_model=actual_model,
+    )
     print(f"[{now_iso()}] 开始训练", flush=True)
     print(f"模型: {actual_model}", flush=True)
     print(f"数据集: {args.data}", flush=True)
@@ -499,10 +789,12 @@ def main():
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
             args.device = "cpu"
+        publish_startup_stage(job_file, "loading_frameworks", "加载 PyTorch / Ultralytics", 21)
         import ultralytics
         import torch
         from ultralytics import YOLO
         from platform_core.training_metrics import TrainingMetrics, persist_resolution, resolve_resources
+        publish_startup_stage(job_file, "validating_runtime_device", "校验训练运行设备", 22)
         runtime_device = "cuda:0" if gpu_index is not None else "cpu"
         allocation = torch.empty(1, device=runtime_device)
         props = torch.cuda.get_device_properties(0) if gpu_index is not None else None
@@ -519,10 +811,13 @@ def main():
                         python_executable=sys.executable, torch_version=str(torch.__version__),
                         cuda_version=getattr(torch.version, "cuda", None), validated_at=now_iso())
         del allocation
+        publish_startup_stage(job_file, "runtime_device_validated", "训练设备校验完成", 23)
         train_args["device"] = args.device
         update_job(job_file, requested_device=requested, assigned_device=assigned, actual_device=assigned,
                    device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
+        publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)
         model = YOLO(actual_model)
+        publish_startup_stage(job_file, "resolving_resources", "计算 Batch / Workers / Cache", 25)
         resolved = resolve_resources({**train_args, "device": runtime_device, "resource_strategy": args.resource_strategy}, resource_context, model, torch)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
@@ -532,6 +827,7 @@ def main():
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
                                     gpu_uuid=resource_context.get("gpu_uuid"))
         telemetry.start()
+        publish_startup_stage(job_file, "initializing_trainer", "初始化训练器与数据加载器", 26)
         gate_events=[]
         gate_reason=""
         ai_events=[]; ai_plan=None; ai_rounds=0
@@ -540,14 +836,8 @@ def main():
         ai_cfg=read_json(Path(args.ai_config),{}) if ai_enabled and args.ai_config else {}
         def on_fit_epoch_end(trainer):
             nonlocal gate_reason, ai_plan, ai_rounds
-            epoch=int(getattr(trainer,"epoch",0))+1
-            update_job(
-                job_file,
-                current_epoch=epoch,
-                total_epochs=int(args.epochs),
-                progress_percent=round(min(90.0, epoch / max(1, int(args.epochs)) * 90.0), 2),
-                message=f"训练中 · Epoch {epoch}/{int(args.epochs)}",
-            )
+            progress = publish_epoch_progress(job_file, telemetry, trainer, int(args.epochs))
+            epoch = int(progress.get("epoch") or (int(getattr(trainer,"epoch",0))+1))
             if ai_enabled and epoch in ai_epochs and ai_rounds < max(1,int(args.ai_max_rounds or 1)) and ai_cfg:
                 try:
                     decision=_run_ai_intervention(ai_cfg,trainer,args,epoch,project_dir)
@@ -581,17 +871,48 @@ def main():
             model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
         except Exception as cb_err:
             print(f"[WARN] 阶段质量门禁回调未启用: {cb_err}",flush=True)
-        def attach_resource_callbacks(target):
+        def attach_resource_callbacks(target, effective_args=None):
+            runtime_args = dict(effective_args or train_args)
+            first_batch_seen = False
+
+            def pretrain_start(_trainer):
+                publish_startup_stage(job_file, "initializing_dataloader", "初始化训练数据加载器", 27)
+
             def verify_runtime(trainer):
                 telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
-                evidence.update(runtime_device=str(trainer.device), effective_args=dict(train_args))
-                update_job(job_file, actual_device=assigned, device_evidence=evidence, actual_train_params=train_args)
+                evidence.update(runtime_device=str(trainer.device), effective_args=dict(runtime_args))
+                publish_startup_stage(
+                    job_file,
+                    "trainer_ready",
+                    "训练器初始化完成，等待首个 Batch",
+                    28,
+                    actual_device=assigned,
+                    device_evidence=evidence,
+                    actual_train_params=runtime_args,
+                )
+
+            def first_batch(_trainer):
+                nonlocal first_batch_seen
+                if first_batch_seen:
+                    return
+                first_batch_seen = True
+                publish_startup_stage(
+                    job_file,
+                    "first_batch",
+                    "首个 Batch 已开始",
+                    29,
+                    training_started=True,
+                    first_batch_at=now_iso(),
+                )
+
+            target.add_callback("on_pretrain_routine_start", pretrain_start)
             target.add_callback("on_train_start", verify_runtime)
+            target.add_callback("on_train_batch_start", first_batch)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
-            target.add_callback("on_fit_epoch_end", telemetry.on_epoch_end)
         attach_resource_callbacks(model)
+        attach_training_batch_progress(model, job_file, int(args.epochs))
         retries = 0
         while True:
             try:
@@ -608,10 +929,16 @@ def main():
                 if args.resource_strategy != "auto" or train_args["batch"] <= 1 or retries >= 6:
                     raise
                 retries += 1
-                train_args["batch"] = max(1, train_args["batch"] // 2)
-                train_args["workers"] = min(train_args["workers"], train_args["batch"])
+                next_batch, next_workers = next_oom_retry_resources(
+                    train_args["batch"], train_args["workers"]
+                )
+                train_args["batch"] = next_batch
+                train_args["workers"] = next_workers
                 resolved.update(resolved_batch=train_args["batch"], resolved_workers=train_args["workers"], oom_retries=retries)
-                resolved["reasons"].append(f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; same assigned GPU")
+                resolved["reasons"].append(
+                    f"CUDA OOM retry {retries}/6: batch stepped down to {train_args['batch']}; "
+                    f"workers retained at {train_args['workers']}; same assigned GPU"
+                )
                 with telemetry.lock:
                     telemetry.resolved = dict(resolved)
                 persist_resolution(resolution_path, resolved)
@@ -625,6 +952,7 @@ def main():
             model = YOLO(actual_model)
             model.add_callback("on_fit_epoch_end", on_fit_epoch_end)
             attach_resource_callbacks(model)
+            attach_training_batch_progress(model, job_file, int(args.epochs))
         first_run_dir=runs_dir/args.run_name
         if ai_plan and str(args.ai_action_mode).lower()=="auto" and ai_plan.get("action") in {"supplement_and_retrain","extend_epochs"}:
             first_last=first_run_dir/"weights"/"last.pt"; first_best=first_run_dir/"weights"/"best.pt"
@@ -634,11 +962,18 @@ def main():
                 if ai_plan.get("action")=="supplement_and_retrain":
                     next_data,supplemented=_supplement_snapshot(project_dir,args.data,ai_plan.get("target_labels") or [],max(1,int(args.supplement_count or 50)),ai_rounds)
                 extra=max(1,int(ai_plan.get("extra_epochs") or args.ai_extra_epochs or 20))
-                phase={"action":ai_plan.get("action"),"reason":ai_plan.get("reason"),"target_labels":ai_plan.get("target_labels") or [],"supplemented_image_ids":supplemented,"extra_epochs":extra,"data_yaml":next_data,"started_at":now_iso()}
-                update_job(job_file,ai_continuation=phase,message="AI建议已执行，进入追加训练")
+                current_job=read_json(job_file,{})
+                base_completed_epochs=max(0,int(current_job.get("current_epoch") or 0))
+                cumulative_total_epochs=base_completed_epochs+extra
+                phase={"action":ai_plan.get("action"),"reason":ai_plan.get("reason"),"target_labels":ai_plan.get("target_labels") or [],"supplemented_image_ids":supplemented,"extra_epochs":extra,"base_completed_epochs":base_completed_epochs,"total_epochs":cumulative_total_epochs,"data_yaml":next_data,"started_at":now_iso()}
+                update_job(job_file,ai_continuation=phase,progress_percent=max(90.0,float(current_job.get("progress_percent") or 0.0)),current_epoch=base_completed_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item=f"AI追加训练准备 · Epoch {base_completed_epochs}/{cumulative_total_epochs}",message="AI建议已执行，进入追加训练")
                 print(f"[AI执行] {phase['action']} · 追加 {extra} 轮 · 补充数据 {len(supplemented)} 张",flush=True)
                 cont_args=dict(train_args);cont_args.update({"data":next_data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
-                model=YOLO(str(resume_model)); train_result=model.train(**cont_args); phase["finished_at"]=now_iso(); update_job(job_file,ai_continuation=phase)
+                model=YOLO(str(resume_model))
+                attach_ai_continuation_callbacks(model,job_file,telemetry,base_completed_epochs=base_completed_epochs,extra_epochs=extra,attach_resource_callbacks=lambda target: attach_resource_callbacks(target,cont_args))
+                train_result=model.train(**cont_args)
+                phase["finished_at"]=now_iso()
+                update_job(job_file,ai_continuation=phase,progress_percent=95.0,current_epoch=cumulative_total_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item="AI追加训练完成，正在校验模型产物",message="AI追加训练完成，正在校验模型产物")
         run_dir = Path(getattr(model.trainer,"save_dir",runs_dir/args.run_name))
         best = run_dir / "weights" / "best.pt"
         last = run_dir / "weights" / "last.pt"
@@ -671,13 +1006,68 @@ def main():
             val_metrics=best_model.val(data=args.data, split="val", verbose=False)
             training_report.update(build_report_from_metrics(val_metrics,getattr(best_model,"names",None)))
             try:
-                test_metrics=best_model.val(data=args.data, split="test", verbose=False)
-                test_values=(build_report_from_metrics(test_metrics,getattr(best_model,"names",None)).get("metrics") or {})
-                training_report["test_metrics"]=test_values
-                training_report["test_result"]={"status":"succeeded","metrics":test_values}
+                import yaml
+                from platform_core.training_evaluation import evaluate_blind_detection
+
+                runtime_spec=yaml.safe_load(Path(args.data).read_text(encoding="utf-8")) or {}
+                dataset_root=Path(str(runtime_spec.get("path") or "."))
+                if not dataset_root.is_absolute():
+                    dataset_root=(Path(args.data).resolve().parent/dataset_root).resolve()
+                else:
+                    dataset_root=dataset_root.resolve()
+                test_images_dir=dataset_root/"images"/"test"
+                hidden_ground_truth_dir=dataset_root.parent/"evaluation"/"ground_truth"/"test"
+                current_job=read_json(job_file,{})
+                update_job(
+                    job_file,
+                    progress_percent=max(96.0,float(current_job.get("progress_percent") or 0.0)),
+                    current_item="独立试验集盲测",
+                    message="训练完成，正在对无标注试验图片执行盲测",
+                )
+
+                def blind_predict(image_path):
+                    results=best_model.predict(
+                        source=str(image_path),
+                        conf=0.001,
+                        iou=0.7,
+                        device=args.device,
+                        verbose=False,
+                    )
+                    result=results[0] if results else None
+                    rows=[]
+                    if result is not None and getattr(result,"boxes",None) is not None:
+                        boxes=result.boxes
+                        xyxy=boxes.xyxy.detach().cpu().tolist()
+                        classes=boxes.cls.detach().cpu().tolist()
+                        confidences=boxes.conf.detach().cpu().tolist()
+                        rows=[
+                            {
+                                "class_id":int(class_id),
+                                "confidence":float(confidence),
+                                "box":list(map(float,box)),
+                            }
+                            for box,class_id,confidence in zip(xyxy,classes,confidences)
+                        ]
+                    return rows
+
+                blind_result=evaluate_blind_detection(
+                    test_images_dir,
+                    hidden_ground_truth_dir,
+                    blind_predict,
+                    names=getattr(best_model,"names",None),
+                )
+                training_report["test_metrics"]=blind_result.get("metrics") or {}
+                training_report["test_result"]=blind_result
+                training_report["test_per_class"]=blind_result.get("per_class") or []
+                training_report["test_protocol"]=blind_result.get("protocol") or {}
             except Exception as te:
-                training_report["test_note"]="评测集为空或无法评测："+str(te)
-                training_report["test_result"]={"status":"failed","metrics":{},"error":str(te)}
+                training_report["test_note"]="独立试验集盲测失败："+str(te)
+                training_report["test_result"]={
+                    "status":"failed",
+                    "metrics":{},
+                    "error":str(te),
+                    "protocol":{"mode":"blind_image_only_inference_then_hidden_ground_truth_scoring"},
+                }
         except Exception as ve:
             training_report["validation_error"]=str(ve)
             training_report["test_result"]={"status":"failed","metrics":{},"error":"验证阶段失败，未执行最终试验集评估："+str(ve)}
@@ -687,11 +1077,27 @@ def main():
             training_report["error_sample_count"]=len([x for x in training_report["error_samples"] if not x.get("analysis_error")])
         except Exception as ae:
             training_report["error_analysis_error"]=str(ae)
-        outcome="target_reached" if gate_reason and "达到提前完成阈值" in gate_reason else "needs_optimization" if gate_reason and "低于继续训练阈值" in gate_reason else "completed"
+        current_job=read_json(job_file,{})
+        try:
+            completed_epochs=int(current_job.get("current_epoch") or (int(getattr(getattr(model,"trainer",None),"epoch",-1))+1))
+        except Exception:
+            completed_epochs=0
+        try:
+            requested_epochs=int(current_job.get("total_epochs") or args.epochs or completed_epochs)
+        except Exception:
+            requested_epochs=completed_epochs
+        completion=derive_training_completion_metadata(
+            getattr(model,"trainer",None),
+            requested_epochs=requested_epochs,
+            completed_epochs=completed_epochs,
+            gate_reason=gate_reason,
+            ai_plan=ai_plan,
+        )
+        training_report["completion"]={k:v for k,v in completion.items() if k != "completion_message"}
         update_job(
             job_file,
             status="done",
-            message="训练完成，模型产物校验通过",
+            message=completion["completion_message"],
             run_dir=str(run_dir),
             models=copied,
             verified_models=verified,
@@ -699,7 +1105,13 @@ def main():
             last_path=last_path,
             artifact_verified=True,
             training_report=training_report,
-            training_outcome=outcome,
+            training_outcome=completion["training_outcome"],
+            completion_reason=completion["completion_reason"],
+            early_stopping_reason=completion["early_stopping_reason"],
+            early_stopping_patience=completion["early_stopping_patience"],
+            best_epoch=completion["best_epoch"],
+            completed_epochs=completion["completed_epochs"],
+            requested_epochs=completion["requested_epochs"],
             progress_percent=100,
             finished_at=now_iso(),
         )

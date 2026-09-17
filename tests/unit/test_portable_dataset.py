@@ -70,7 +70,13 @@ def test_materialized_yaml_is_relative_verified_and_relocatable(tmp_path: Path):
     assert data["path"] == "."
     assert data["train"] == "images/train"
     assert data["val"] == "images/validation"
-    assert data["test"] == "images/test"
+    assert "test" not in data
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    test_member = manifest["splits"]["test"][0]
+    assert test_member["image_ref"] == "dataset/images/test/image-3.jpg"
+    assert test_member["label_ref"] == "evaluation/ground_truth/test/image-3.txt"
+    assert (bundle / test_member["label_ref"]).is_file()
+    assert not (bundle / "dataset" / "labels" / "test").exists()
     assert verify_portable_dataset(bundle / "manifest.json")["verified_files"] == 4
 
     moved = tmp_path / "linux-received"

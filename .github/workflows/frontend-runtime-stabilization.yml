@@ -1,0 +1,301 @@
+name: Frontend Runtime Stabilization
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Syntax check
+        run: >-
+          node --check static/app.js &&
+          node --check static/modules/navigation-stability.js &&
+          node --check static/modules/page-request-scope.js &&
+          node --check static/modules/poll-registry.js &&
+          node --check static/modules/algorithm-list-runtime.js &&
+          node --check static/modules/training-task-runtime.js &&
+          node --check static/modules/material-pagination-runtime.js &&
+          node --check static/modules/training-labels.js &&
+          node --check static/modules/training-draft.js &&
+          node --check static/modules/training-draft-runtime.js &&
+          node --check static/modules/training-draft-controls.js &&
+          node --check static/modules/training-submit.js &&
+          node --check static/modules/auto-label-poll-runtime.js &&
+          node --check static/modules/ui-state.js &&
+          node --check static/main.mjs
+      - name: Retired training mirror guard
+        run: |
+          for token in trainSplitV3 trainingLabelSelected train429Selected train428AlgorithmId train428Config; do
+            if grep -n "$token" static/app.js; then
+              echo "retired training mirror $token was reintroduced into active app.js" >&2
+              exit 1
+            fi
+            for file in static/modules/training-draft.js static/modules/training-draft-runtime.js static/modules/training-labels.js; do
+              if grep -n "$token" "$file"; then
+                echo "retired training mirror $token was reintroduced into $file" >&2
+                exit 1
+              fi
+            done
+          done
+      - name: Canonical training network owner guard
+        run: |
+          if grep -n '/train/start' static/app.js; then
+            echo "classic app.js must not own /train/start; TrainingSubmitRuntime is the sole network owner" >&2
+            exit 1
+          fi
+      - name: TrainingDraft classic wrapper guard
+        run: |
+          for token in startAlgorithmTraining429 wrapLegacyMutation directMutationFor mutationWrappers __trainingDraftMutationWrapped; do
+            if grep -n "$token" static/modules/training-draft-runtime.js; then
+              echo "TrainingDraftRuntime must stay wrapper-free; found $token" >&2
+              exit 1
+            fi
+          done
+          if ! grep -Fq "if (target.closest('.training-label-contract')) return false;" static/modules/training-draft-runtime.js; then
+            echo "TrainingDraftRuntime must explicitly exclude TrainingLabel-owned controls from generic event sync" >&2
+            exit 1
+          fi
+      - name: TrainingLabel canonical lifecycle guard
+        run: |
+          file=static/modules/training-labels.js
+          for token in \
+            "__trainingLabelsWrapped" \
+            "wrappedEntrypoints" \
+            "wrap('startAlgorithmTraining429'" \
+            "wrap('refreshTrain429'" \
+            "train425Selected" \
+            "tr425AssetAlg" \
+            "train423Asset" \
+            ".train425-data" \
+            ".train428-data" \
+            "setTimeout("; do
+            if grep -F -n "$token" "$file"; then
+              echo "TrainingLabelRuntime must stay wrapper-free, timer-free and canonical-only; found $token" >&2
+              exit 1
+            fi
+          done
+      - name: AutoLabel PollRegistry owner guard
+        run: |
+          if grep -n -E 'auto422Timer|ai60ListTimer' static/app.js; then
+            echo "legacy AutoLabel timer owner was reintroduced into app.js" >&2
+            exit 1
+          fi
+          if ! grep -Fq 'window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);' static/app.js; then
+            echo "v60 AutoLabel renderer must explicitly activate managed polling" >&2
+            exit 1
+          fi
+          if ! grep -Fq 'window.AutoLabelPollRuntime?.deactivate?.();' static/app.js; then
+            echo "AutoLabel clean tab must explicitly deactivate managed polling" >&2
+            exit 1
+          fi
+          file=static/modules/auto-label-poll-runtime.js
+          for token in \
+            'renderOps427' \
+            '__autoLabelPollRuntimeWrapped' \
+            'originalRenderOps' \
+            'wrappedRenderOps' \
+            'rebindTimers' \
+            'ai60ListTimer' \
+            'setTimeout(' \
+            'clearTimeout('; do
+            if grep -F -n "$token" "$file"; then
+              echo "AutoLabelPollRuntime must stay wrapper-free, timer-free and canonical-only; found $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'classicWrapperOwner: false' "$file"
+          grep -Fq 'timerOwner: false' "$file"
+          grep -Fq "build: 'auto-label-poll-422501'" "$file"
+      - name: Retired legacy poll timer compatibility guard
+        run: |
+          for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
+            for token in auto422Timer __videoFramePollTimer __prelabelPollTimer; do
+              if grep -F -n "$token" "$file"; then
+                echo "retired legacy timer compatibility $token was reintroduced into $file" >&2
+                exit 1
+              fi
+            done
+          done
+          if grep -F -n '_oldSetupPollV33' static/app.js; then
+            echo 'retired v33 setupPagePolling timer wrapper was reintroduced' >&2
+            exit 1
+          fi
+          grep -Fq 'replaceVideo424Timer' static/modules/poll-registry.js
+      - name: Video PollRegistry direct owner guard
+        run: |
+          if grep -F -n 'setTimeout(refreshVideo424Delta,2000)' static/app.js; then
+            echo 'classic video renderer must not create its own polling timeout' >&2
+            exit 1
+          fi
+          if grep -F -n 'clearTimeout(state.video424Timer)' static/app.js; then
+            echo 'classic video renderer must not clear its own polling timeout' >&2
+            exit 1
+          fi
+          if [ "$(grep -F -o 'window.PollRegistryRuntime?.replaceVideo424Timer?.()' static/app.js | wc -l)" -ne 2 ]; then
+            echo 'renderVideo424 and refreshVideo424Delta must both hand lifecycle explicitly to PollRegistry' >&2
+            exit 1
+          fi
+          file=static/modules/poll-registry.js
+          for token in \
+            installVideo424CreationBridge \
+            __pollRegistryVideoWrapped \
+            originalRenderVideo424 \
+            wrappedRenderVideo424 \
+            originalRefreshVideo424 \
+            wrappedRefreshVideo424 \
+            "registry.adopt('video-frames'"; do
+            if grep -F -n "$token" "$file"; then
+              echo "video wrapper/adoption compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'replaceVideo424Timer();' "$file"
+      - name: Source PollRegistry direct owner guard
+        run: |
+          for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
+            if grep -F -n 'source422Timer' "$file"; then
+              echo "retired source timer compatibility was reintroduced into $file" >&2
+              exit 1
+            fi
+          done
+          if [ "$(grep -F -o 'window.PollRegistryRuntime?.replaceSourceTimer?.()' static/app.js | wc -l)" -ne 1 ]; then
+            echo 'renderSources422 must hand polling lifecycle explicitly to PollRegistry exactly once' >&2
+            exit 1
+          fi
+          file=static/modules/poll-registry.js
+          for token in \
+            installSourceCreationBridge \
+            __pollRegistrySourceWrapped \
+            originalRenderSources \
+            wrappedRenderSources \
+            "registry.adopt('sources'"; do
+            if grep -F -n "$token" "$file"; then
+              echo "source wrapper/adoption compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'replaceSourceTimer();' "$file"
+      - name: Training PollRegistry direct owner guard
+        run: |
+          for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do
+            if grep -F -n 'jobPollTimer' "$file"; then
+              echo "retired training polling state timer was reintroduced into $file" >&2
+              exit 1
+            fi
+          done
+          if grep -F -n 'setupPagePolling' static/app.js; then
+            echo 'retired setupPagePolling shell was reintroduced into active app.js' >&2
+            exit 1
+          fi
+          file=static/modules/poll-registry.js
+          for token in \
+            installPollingCreationBridge \
+            __pollRegistryCreationWrapped \
+            originalSetupPagePolling \
+            wrappedSetupPagePolling \
+            "registry.adopt('training-jobs'" \
+            adoptLegacy \
+            rebindCreation; do
+            if grep -F -n "$token" "$file"; then
+              echo "training polling wrapper/adoption compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'replaceTrainingJobTimer,' "$file"
+          grep -Fq 'replaceTrainingJobTimer();' "$file"
+          grep -Fq 'window.PollRegistryRuntime?.replaceTrainingJobTimer?.()' static/app.js
+      - name: Retired navigation setPage guard
+        run: |
+          for token in set423Base setBase424 oldSetV39 oldSet42 set422Base; do
+            if grep -F -n "$token" static/app.js; then
+              echo "retired setPage compatibility was reintroduced: $token" >&2
+              exit 1
+            fi
+          done
+          if grep -Fq 'window.setPage=' static/app.js; then
+            echo 'classic app.js setPage owner was reintroduced' >&2
+            exit 1
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          app = Path('static/app.js').read_text(encoding='utf-8')
+          retired = """window.setPage=function(p){
+              state.page=p;
+              saveUiState();
+              render();
+            };"""
+          if retired in app:
+              raise SystemExit('v34 persistence setPage owner was reintroduced')
+          retired_alias = "window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}"
+          if retired_alias in app:
+              raise SystemExit('v42.7 direct alias owner was reintroduced')
+          if 'setPageReady414' in app:
+              raise SystemExit('classic startup readiness setPage owner was reintroduced')
+          if 'baseSetPage417' in app:
+              raise SystemExit('classic V417 sidebar setPage owner was reintroduced')
+          bootstrap = 'function setPage(p){state.page=p;render()} window.setPage=setPage;'
+          if bootstrap in app:
+              raise SystemExit('initial bootstrap setPage owner was reintroduced')
+          navigation = Path('static/modules/navigation-stability.js').read_text(encoding='utf-8')
+          if 'export function normalizeNavigationPage(page)' not in navigation:
+              raise SystemExit('semantic navigation normalizer is missing')
+          if "requested === '自动标注' ? '自动标注及清洗' : requested" not in navigation:
+              raise SystemExit('legacy auto-label alias normalization is missing')
+          for required in ('waitForNavigationReady', 'beforeInvokeNavigation', 'performNavigation'):
+              if required not in navigation:
+                  raise SystemExit(f'final navigation named owner is missing: {required}')
+          main = Path('static/main.mjs').read_text(encoding='utf-8')
+          if 'if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;' not in main:
+              raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')
+          if 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' not in main:
+              raise SystemExit('mobile sidebar close semantic wiring is missing from final navigation runtime')
+          named_apply = """performNavigation: page => {
+              state.page = page;
+              render();
+            },"""
+          if named_apply not in main:
+              raise SystemExit('named actual page mutation/render owner is missing from final navigation runtime')
+          PY
+      - name: Frontend unit tests
+        run: node --test tests/frontend/*.test.mjs
+
+  browser-navigation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome runtime regressions
+        run: >-
+          npx playwright test
+          tests/browser/navigation-stability.spec.mjs
+          tests/browser/navigation-readiness.spec.mjs
+          tests/browser/training-label-selector.spec.mjs
+          tests/browser/auto-label-polling.spec.mjs
+          tests/browser/algorithm-list-performance.spec.mjs
+          tests/browser/training-task-performance.spec.mjs
+          tests/browser/material-pagination-performance.spec.mjs
+          tests/browser/source-import-completion-scope.spec.mjs

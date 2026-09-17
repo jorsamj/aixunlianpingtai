@@ -1,0 +1,231 @@
+name: v42.25 Release Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - .github/workflows/v42.25-release-regression.yml
+      - a800_rc_acceptance.py
+      - app.py
+      - launcher.py
+      - task_worker.py
+      - remote_train_server.py
+      - static/app.js
+      - static/modules/auto-label-poll-runtime.js
+      - static/modules/deployment-tests.js
+      - train_worker.py
+      - platform_core/annotation_batches.py
+      - platform_core/annotation_candidates.py
+      - platform_core/annotation_task_service.py
+      - platform_core/build_identity.py
+      - platform_core/cleaning_batches.py
+      - platform_core/deployment/inference_tasks.py
+      - platform_core/gpu_resources.py
+      - platform_core/material_batches.py
+      - platform_core/storage/import_tasks.py
+      - platform_core/task_runtime/repository.py
+      - platform_core/task_runtime/fenced_repository.py
+      - platform_core/task_runtime/process_control.py
+      - platform_core/task_runtime/public.py
+      - platform_core/task_runtime/worker_instances.py
+      - platform_core/training_devices.py
+      - platform_core/training_metrics.py
+      - platform_core/training_evaluation.py
+      - platform_core/training_tasks.py
+      - platform_core/upgrade_guard.py
+      - platform_core/video_tasks.py
+      - tests/api/test_durable_training_controls.py
+      - tests/api/test_clean_unified_execution_truth.py
+      - tests/api/test_deployment_test_runtime.py
+      - tests/api/test_training_terminal_runtime.py
+      - tests/api/test_upload_clean_flow.py
+      - tests/api/test_training_unified_task_overlay.py
+      - tests/api/test_unified_task_process_cancel.py
+      - tests/api/test_unified_task_paused_public_status.py
+      - tests/browser/navigation-stability.spec.mjs
+      - tests/frontend/auto-label-poll-runtime.test.mjs
+      - tests/frontend/conversion-unified-task-truth.test.mjs
+      - tests/frontend/deployment-runtime-source.test.mjs
+      - tests/frontend/deployment-task-view.test.mjs
+      - tests/frontend/image-upload-overall-progress.test.mjs
+      - tests/frontend/zip-import-overall-progress.test.mjs
+      - tests/integration/test_completed_deployment_recovery.py
+      - tests/integration/test_storage_import_progress_truth.py
+      - tests/integration/test_storage_import_worker.py
+      - tests/integration/test_storage_index_cancel_fencing.py
+      - tests/integration/test_video_task_worker.py
+      - tests/unit/storage/test_import_candidates.py
+      - tests/unit/storage/test_import_scan_cancel_fencing.py
+      - tests/unit/storage/test_yolo_import.py
+      - tests/unit/test_annotation_batch_cancel_fencing.py
+      - tests/unit/test_annotation_candidates.py
+      - tests/unit/test_annotation_task_service.py
+      - tests/unit/test_conversion.py
+      - tests/unit/test_conversion_tasks.py
+      - tests/unit/test_conversion_process_fencing.py
+      - tests/unit/test_deployment_inference_process_fencing.py
+      - tests/unit/test_deployment_upgrade_safety.py
+      - tests/unit/test_gpu_resource_connection_lifecycle.py
+      - tests/unit/test_material_batch_public_truth.py
+      - tests/unit/test_training_ai_continuation_progress.py
+      - tests/unit/test_training_blind_test_contract.py
+      - tests/unit/test_training_early_stopping_reason.py
+      - tests/unit/test_training_evaluation.py
+      - tests/unit/test_training_progress_v2.py
+      - tests/unit/test_training_realtime_progress.py
+      - tests/unit/test_training_resource_contract.py
+      - tests/unit/test_portable_dataset.py
+      - tests/unit/test_video_commit_fencing.py
+      - tests/unit/task_runtime/test_connection_lifecycle.py
+      - tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
+      - tests/unit/task_runtime/test_progress_monotonicity.py
+      - tests/unit/task_runtime/test_fenced_progress_monotonicity.py
+      - tests/unit/task_runtime/test_control_stage_fencing.py
+      - tests/unit/task_runtime/test_material_import_progress_phases.py
+      - tests/unit/task_runtime/test_process_control.py
+      - tests/unit/task_runtime/test_public_projection.py
+      - tests/unit/test_a800_rc_acceptance.py
+      - tests/unit/test_training_metrics_fd.py
+
+# Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
+# Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
+# Deployment-test guard: inference runners must bind exact process identity and terminate the tree on execution fencing.
+# Deployment-upgrade guard: same VERSION must still match Build identity; a new Build must not silently take over active durable tasks, and legacy remote training must satisfy the explicit device-assignment contract.
+# Completed-work recovery guard: conversion/deployment recovery must reuse durable success evidence instead of rerunning completed work after worker restart.
+# Deployment queue-display guard: v61 business projection must preserve the same WAITING_RESOURCE/queue/worker/progress truth as v62; deployment UI-only changes still run this backend regression gate.
+# Plain-image upload progress guard: browser byte transfer must stay below terminal 100%; successful server commit owns 100%.
+# ZIP whole-task progress guard: upload owns 0..35, validation reaches 38, backend processing is projected monotonically through 38..99, and only terminal success reaches 100.
+# Video-publish guard: cancellation or stale execution must stop frame fan-out before later material/result commits.
+# AI-annotation guard: cancellation during materialization/inference must fence billable calls and candidate writes.
+# AI-annotation queue-display guard: polling rows must preserve durable resource_queue_position/resource_wait_reason instead of erasing runtimeText.
+# Cleaning execution guard: manual and upload-batch clean_task_id values must publish one MATERIAL_BATCH/CLEAN TaskRepository truth.
+# Storage-scan guard: cancellation during a remote object read must stop follow-up I/O and terminal scan publication.
+# Storage-index guard: once cancellation is durable truth, indexing must not start later material/annotation writes.
+# Storage-progress guard: confirmation is partial progress, resume never regresses, and indexing advances 50..99 before success=100.
+# Storage-browser guard: confirmation must follow v62 durable task truth through terminal success while preserving narrow refresh scope.
+# Training-progress guard: preparation owns 0..20, active training advances 20..90 with throttled per-batch durable truth.
+# Training blind-test guard: independent test GT stays outside Ultralytics labels/data.yaml; all image-only predictions finish before hidden GT scoring begins.
+# Training-terminal guard: terminal completion preserves actual epoch count, freezes elapsed time, and exposes the explicit stop reason.
+# AI-continuation progress guard: a new continuation YOLO instance must rebind epoch/batch/resource callbacks and advance cumulative epoch truth through 90..95.
+# Release-path guard: every explicit tests/*.py reference in this workflow must exist on the checked-out head.
+jobs:
+  runtime-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install contract-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Validate release contract test paths
+        run: |
+          missing=0
+          while IFS= read -r test_path; do
+            if [ ! -f "$test_path" ]; then
+              echo "missing release contract path: $test_path"
+              missing=1
+            fi
+          done < <(grep -oE 'tests/[A-Za-z0-9_./-]+\.py' .github/workflows/v42.25-release-regression.yml | sort -u)
+          test "$missing" -eq 0
+      - name: Runtime, resource and conversion contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_durable_training_controls.py
+          tests/api/test_clean_unified_execution_truth.py
+          tests/api/test_deployment_test_runtime.py
+          tests/api/test_training_terminal_runtime.py
+          tests/api/test_upload_clean_flow.py
+          tests/api/test_training_unified_task_overlay.py
+          tests/api/test_unified_task_process_cancel.py
+          tests/api/test_unified_task_paused_public_status.py
+          tests/integration/test_completed_deployment_recovery.py
+          tests/integration/test_storage_import_progress_truth.py
+          tests/integration/test_storage_import_worker.py
+          tests/integration/test_storage_index_cancel_fencing.py
+          tests/integration/test_video_task_worker.py
+          tests/unit/storage/test_import_candidates.py
+          tests/unit/storage/test_import_scan_cancel_fencing.py
+          tests/unit/storage/test_yolo_import.py
+          tests/unit/test_annotation_batch_cancel_fencing.py
+          tests/unit/test_annotation_candidates.py
+          tests/unit/test_annotation_task_service.py
+          tests/unit/test_conversion.py
+          tests/unit/test_conversion_tasks.py
+          tests/unit/test_conversion_process_fencing.py
+          tests/unit/test_deployment_inference_process_fencing.py
+          tests/unit/test_deployment_upgrade_safety.py
+          tests/unit/test_gpu_resource_connection_lifecycle.py
+          tests/unit/test_material_batch_public_truth.py
+          tests/unit/test_training_ai_continuation_progress.py
+          tests/unit/test_training_early_stopping_reason.py
+          tests/unit/test_training_progress_v2.py
+          tests/unit/test_training_realtime_progress.py
+          tests/unit/test_video_commit_fencing.py
+          tests/unit/task_runtime/test_repository.py
+          tests/unit/task_runtime/test_connection_lifecycle.py
+          tests/unit/task_runtime/test_worker_instance_connection_lifecycle.py
+          tests/unit/task_runtime/test_progress_monotonicity.py
+          tests/unit/task_runtime/test_fenced_progress_monotonicity.py
+          tests/unit/task_runtime/test_control_stage_fencing.py
+          tests/unit/task_runtime/test_material_import_progress_phases.py
+          tests/unit/task_runtime/test_scheduler.py
+          tests/unit/task_runtime/test_process_control.py
+          tests/unit/task_runtime/test_public_projection.py
+          tests/unit/task_runtime/test_fencing.py
+          tests/unit/task_runtime/test_resource_fencing.py
+          tests/unit/task_runtime/test_gpu_recovery_fencing.py
+          tests/unit/task_runtime/test_artifact_fencing.py
+          tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_metrics_fd.py
+      - name: Worker execution-fencing smoke check
+        run: >-
+          python task_worker.py --check --data-dir "${RUNNER_TEMP}/platform-data"
+
+  training-data-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install contract-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Validate release contract test paths
+        run: |
+          missing=0
+          while IFS= read -r test_path; do
+            if [ ! -f "$test_path" ]; then
+              echo "missing release contract path: $test_path"
+              missing=1
+            fi
+          done < <(grep -oE 'tests/[A-Za-z0-9_./-]+\.py' .github/workflows/v42.25-release-regression.yml | sort -u)
+          test "$missing" -eq 0
+      - name: A800 RC verifier syntax
+        run: python -m py_compile a800_rc_acceptance.py
+      - name: Training data, labels, snapshot and RC evidence contracts
+        run: >-
+          python -m pytest --noconftest -q
+          tests/unit/test_training_label_contract.py
+          tests/unit/test_negative_sample_contract.py
+          tests/unit/test_annotation_repository_scope.py
+          tests/unit/test_training_splits.py
+          tests/unit/test_training_components.py
+          tests/unit/test_snapshots.py
+          tests/unit/test_portable_dataset.py
+          tests/unit/test_training_blind_test_contract.py
+          tests/unit/test_training_evaluation.py
+          tests/unit/test_training_resource_contract.py
+          tests/unit/test_launcher_workers.py
+          tests/unit/test_a800_rc_acceptance.py
+          tests/integration/test_task_worker_without_web.py

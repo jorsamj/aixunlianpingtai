@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from .artifacts import ArtifactStore
 from .models import TaskLease, TaskRecord, TaskStatus
-from .process_control import ProcessController, ProcessIdentity
+from .process_control import ProcessController, ProcessIdentity, ProcessIdentityMismatchError
 
 
 class ExecutionFencedError(RuntimeError):
@@ -222,6 +222,26 @@ class WorkerContext:
             self._process_identity = identity
         return result
 
+    def begin_finalization(self) -> TaskRecord:
+        self.assert_current_execution()
+        transition = getattr(self.repository, "begin_finalization")
+        try:
+            try:
+                return transition(
+                    self.task.task_id,
+                    self.lease.lease_token,
+                    execution_generation=self.execution_generation,
+                )
+            except TypeError as type_error:
+                if "unexpected keyword" not in str(type_error):
+                    raise
+                return transition(self.task.task_id, self.lease.lease_token)
+        except InterruptedError:
+            raise
+        except (KeyError, PermissionError) as execution_error:
+            self.mark_lease_lost()
+            raise ExecutionFencedError("task finalization lost execution ownership") from execution_error
+
     def _persisted_process_identity(self) -> ProcessIdentity | None:
         try:
             current = self.repository.get(self.task.task_id)
@@ -251,9 +271,12 @@ class WorkerContext:
             return False
         try:
             ProcessController().terminate_tree(identity, timeout=timeout)
+        except ProcessIdentityMismatchError:
+            # PID reuse proves the exact process owned by this execution no
+            # longer exists. Never signal the unrelated replacement process.
+            return True
         except (ProcessLookupError, PermissionError):
-            # PermissionError also covers identity mismatch. Fail closed rather
-            # than ever signalling a PID that cannot be proven to be ours.
+            # Access-denied inspection cannot prove cleanup, so fail closed.
             return False
         return True
 

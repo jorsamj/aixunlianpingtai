@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,11 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 
+import psutil
 import yaml
+from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
 
 from .annotations import atomic_write_json
 from .annotation_repository import AnnotationRepository
-from .algorithms import attach_version, choose_iteration_base, list_algorithms
+from .algorithms import attach_version, choose_algorithm_iteration_base, list_algorithms
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import build_snapshot
@@ -29,12 +32,25 @@ from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_proces
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
+from .training_bundle_cache import TrainingBundleCache
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
 TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
+TRAINING_COMPLETION_GRACE_SECONDS = 5.0
+TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
+_JPEG_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".jfif"}
+_JPEG_NORMALIZATION_LOCK = threading.Lock()
+_SUCCESSFUL_TRAINING_OUTCOMES = {
+    "completed",
+    "target_reached",
+    "early_stopping",
+    # Existing quality-gate semantics: the run completed and produced a
+    # verified checkpoint, but the result recommends another iteration.
+    "needs_optimization",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -72,7 +88,7 @@ def _resolve_relative(root: Path, reference: str) -> Path:
     return resolved
 
 
-def _atomic_text(path: Path, text: str) -> None:
+def _atomic_text(path: Path, text: str, *, durable: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     temporary = Path(name)
@@ -80,7 +96,8 @@ def _atomic_text(path: Path, text: str) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
             stream.write(text)
             stream.flush()
-            os.fsync(stream.fileno())
+            if durable:
+                os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -107,6 +124,20 @@ def _same_physical_file(left: Path, right: Path) -> bool:
     except (NotImplementedError, OSError):
         # Unknown identity is never sufficient proof that reuse is safe.
         return True
+
+
+class _HashingReader:
+    """Read-through wrapper so the copied bytes are hashed in the copy pass."""
+
+    def __init__(self, stream, digest):
+        self.stream = stream
+        self.digest = digest
+
+    def read(self, size: int = -1):
+        chunk = self.stream.read(size)
+        if chunk:
+            self.digest.update(chunk)
+        return chunk
 
 
 def _prepare_bundle_root(task_root: str | Path) -> tuple[Path, Path]:
@@ -148,14 +179,12 @@ def _copy_verified_isolated(
     expected_hash: str,
     *,
     bundle_root: Path | None = None,
+    durable: bool = True,
 ) -> None:
     source_info = source.stat() if source.is_file() else None
     if source_info is None or source_info.st_size <= 0:
         raise FileNotFoundError(f"training image does not exist: {source.name}")
     source_size = source_info.st_size
-    actual = _sha256(source)
-    if actual != expected_hash:
-        raise ValueError(f"source image SHA256 changed: {source.name}")
     if bundle_root is None:
         destination.parent.mkdir(parents=True, exist_ok=True)
     else:
@@ -182,21 +211,26 @@ def _copy_verified_isolated(
         suffix=".copy",
     )
     temporary = Path(name)
+    digest = hashlib.sha256()
     try:
         with source.open("rb") as input_stream:
+            hashing_stream = _HashingReader(input_stream, digest)
             with os.fdopen(descriptor, "wb") as output_stream:
                 descriptor = -1
-                shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+                shutil.copyfileobj(hashing_stream, output_stream, length=1024 * 1024)
                 output_stream.flush()
-                os.fsync(output_stream.fileno())
+                if durable:
+                    os.fsync(output_stream.fileno())
         copied_size = temporary.stat().st_size
         if copied_size != source_size:
             raise OSError(
                 f"portable image size verification failed: {destination.name}; "
                 f"expected={source_size}, actual={copied_size}"
             )
-        if copied_size <= 0 or _sha256(temporary) != expected_hash:
+        if copied_size <= 0:
             raise OSError(f"portable image verification failed: {destination.name}")
+        if digest.hexdigest() != expected_hash:
+            raise ValueError(f"source image SHA256 changed: {source.name}")
         os.replace(temporary, destination)
     finally:
         if descriptor >= 0:
@@ -204,16 +238,101 @@ def _copy_verified_isolated(
         temporary.unlink(missing_ok=True)
 
 
+def _normalize_training_image(
+    destination: Path,
+    source_content_sha256: str,
+    source_size_bytes: int,
+) -> dict[str, Any]:
+    """Normalize a task-local JPEG trainer input without rewriting source material."""
+    identity = {
+        "source_content_sha256": str(source_content_sha256),
+        "source_size_bytes": int(source_size_bytes),
+        "training_content_sha256": str(source_content_sha256),
+        "training_size_bytes": int(source_size_bytes),
+        "training_input_policy": TRAINING_INPUT_POLICY,
+        "normalized": False,
+        "normalization_reason": None,
+    }
+    if destination.suffix.lower() not in _JPEG_SUFFIXES:
+        return identity
+    current_size = destination.stat().st_size
+    if current_size < 2:
+        raise ValueError(
+            f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=jpeg_too_small"
+        )
+    with destination.open("rb") as stream:
+        jpeg_soi = stream.read(2)
+        stream.seek(-2, os.SEEK_END)
+        jpeg_eoi = stream.read(2)
+    # Extension alone is not proof of JPEG bytes. Keep opaque content format-neutral.
+    if jpeg_soi != b"\xff\xd8":
+        return identity
+    if jpeg_eoi == b"\xff\xd9":
+        return identity
+
+    temporary = destination.with_name(
+        f".{destination.name}.{uuid.uuid4().hex}.normalize.tmp"
+    )
+    try:
+        try:
+            # This Pillow switch is process-global, so serialize the narrow repair
+            # window and restore the previous value immediately afterwards.
+            with _JPEG_NORMALIZATION_LOCK:
+                previous_truncated = ImageFile.LOAD_TRUNCATED_IMAGES
+                ImageFile.LOAD_TRUNCATED_IMAGES = True
+                try:
+                    with Image.open(destination) as image:
+                        repaired = ImageOps.exif_transpose(image)
+                        try:
+                            repaired.save(
+                                temporary,
+                                format="JPEG",
+                                subsampling=0,
+                                quality=100,
+                            )
+                        finally:
+                            if repaired is not image:
+                                repaired.close()
+                finally:
+                    ImageFile.LOAD_TRUNCATED_IMAGES = previous_truncated
+        except (OSError, UnidentifiedImageError) as error:
+            raise ValueError(
+                f"TRAINING_IMAGE_INVALID: filename={destination.name}; "
+                f"reason=jpeg_missing_eoi_repair_failed; detail={error}"
+            ) from error
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise ValueError(
+                f"TRAINING_IMAGE_INVALID: filename={destination.name}; "
+                "reason=jpeg_repair_empty_output"
+            )
+        with temporary.open("rb") as stream:
+            stream.seek(-2, os.SEEK_END)
+            if stream.read(2) != b"\xff\xd9":
+                raise ValueError(
+                    f"TRAINING_IMAGE_INVALID: filename={destination.name}; "
+                    "reason=jpeg_repair_missing_eoi"
+                )
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    identity.update(
+        training_content_sha256=_sha256(destination),
+        training_size_bytes=destination.stat().st_size,
+        normalized=True,
+        normalization_reason="jpeg_missing_eoi",
+    )
+    return identity
+
 def _process_is_running(process_id: int) -> bool:
     if process_id <= 0:
         return False
-    try:
-        os.kill(process_id, 0)
-    except ProcessLookupError:
-        return False
-    except (PermissionError, OSError):
-        return True
-    return True
+    # POSIX commonly uses os.kill(pid, 0) as a non-signalling existence probe,
+    # but that contract is unsafe on Windows: signal value 0 is CTRL_C_EVENT
+    # there. Use psutil's cross-platform, non-signalling PID probe instead. A
+    # reused PID intentionally counts as live so orphan cleanup remains
+    # conservative and never deletes a temporary copy owned by another process.
+    return bool(psutil.pid_exists(int(process_id)))
 
 
 def _cleanup_orphan_bundle_copies(
@@ -324,6 +443,7 @@ def materialize_portable_dataset(
     materialize: Callable[[Mapping[str, Any]], str | Path],
     *,
     safety_reserve_bytes: int | None = None,
+    progress: Callable[[int, int, Mapping[str, Any]], None] | None = None,
 ) -> Path:
     work, root = _prepare_bundle_root(task_root)
     _cleanup_orphan_bundle_copies(root, expected_work=work)
@@ -378,7 +498,9 @@ def materialize_portable_dataset(
 
     splits: dict[str, list[dict[str, Any]]] = {"train": [], "validation": [], "test": []}
     remaining_bytes = total_size_bytes
-    for item in planned:
+    training_total_size_bytes = 0
+    total_items = len(planned)
+    for completed, item in enumerate(planned, start=1):
         role = str(item["role"])
         image_id = str(item["image_id"])
         row = item["row"]
@@ -387,10 +509,24 @@ def materialize_portable_dataset(
         source_path = Path(item["source_path"])
         size_bytes = int(item["size_bytes"])
         image_ref = f"dataset/images/{role}/{stored_name}"
-        label_ref = f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
+        label_ref = (
+            f"evaluation/ground_truth/test/{Path(stored_name).stem}.txt"
+            if role == "test"
+            else f"dataset/labels/{role}/{Path(stored_name).stem}.txt"
+        )
         destination = _bundle_output_path(root, image_ref)
         _check_bundle_disk_space(root, remaining_bytes, size_bytes, reserve_bytes)
-        _copy_verified_isolated(source_path, destination, expected_hash, bundle_root=root)
+        # The task bundle is derived/rebuildable. Avoid a per-image fsync storm;
+        # manifest/job durability remains authoritative and recovery revalidates reused files.
+        _copy_verified_isolated(
+            source_path, destination, expected_hash, bundle_root=root, durable=False
+        )
+        image_identity = _normalize_training_image(
+            destination, expected_hash, size_bytes
+        )
+        training_hash = str(image_identity["training_content_sha256"])
+        training_size_bytes = int(image_identity["training_size_bytes"])
+        training_total_size_bytes += training_size_bytes
         remaining_bytes -= size_bytes
         lines = []
         for box in row.get("boxes") or []:
@@ -401,41 +537,57 @@ def materialize_portable_dataset(
                 _yolo_line(box, float(row.get("width") or 0), float(row.get("height") or 0), class_ids[label])
             )
         label_path = _bundle_output_path(root, label_ref)
-        _atomic_text(label_path, "\n".join(lines))
+        _atomic_text(label_path, "\n".join(lines), durable=False)
         splits[role].append(
             {
                 "image_id": image_id,
                 "image_ref": image_ref,
                 "label_ref": label_ref,
-                "content_sha256": expected_hash,
-                "size_bytes": size_bytes,
+                "source_content_sha256": expected_hash,
+                "source_size_bytes": size_bytes,
+                "content_sha256": training_hash,
+                "size_bytes": training_size_bytes,
+                "training_input_policy": TRAINING_INPUT_POLICY,
+                "normalized": bool(image_identity["normalized"]),
+                "normalization_reason": image_identity["normalization_reason"],
                 "label_sha256": _sha256(label_path),
             }
         )
+        if progress is not None:
+            progress(completed, total_items, item)
+    # Independent test images stay portable, but their hidden answers are deliberately
+    # absent from the Ultralytics training YAML. Final evaluation is image-only inference
+    # followed by a separate scorer that opens evaluation/ground_truth/test afterwards.
     data_yaml = {
         "path": ".",
         "train": "images/train",
         "val": "images/validation",
-        "test": "images/test",
         "names": names,
     }
     _atomic_text(
         _bundle_output_path(root, "dataset/data.yaml"),
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
+        durable=False,
     )
     snapshot_path = root / "snapshot.json"
     atomic_write_json(snapshot_path, dict(snapshot))
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "training_input_policy": TRAINING_INPUT_POLICY,
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": _sha256(snapshot_path),
         "data_yaml_ref": "dataset/data.yaml",
-        "total_size_bytes": total_size_bytes,
+        "total_size_bytes": training_total_size_bytes,
         "splits": splits,
+        "construction_verification": {
+            "image_integrity": "source_sha256_verified_then_training_input_normalized",
+            "training_input_policy": TRAINING_INPUT_POLICY,
+            "post_write_check": "path_size_label_sha256_and_snapshot_sha256",
+        },
     }
     atomic_write_json(manifest_path, manifest)
-    verify_portable_dataset(manifest_path)
+    _verify_materialized_dataset_evidence(manifest_path)
     return root
 
 
@@ -462,6 +614,40 @@ def materialize_runtime_yaml(manifest_path: str | Path, destination: str | Path)
     return output
 
 
+def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str, Any]:
+    # Fresh copies SHA256 the exact source bytes while streaming them into their
+    # isolated temporary destination; reused destinations are SHA256 checked
+    # before reuse. Remote/received bundles and post-training finalization still
+    # use verify_portable_dataset for full image SHA256 verification.
+    path = Path(manifest_path).resolve()
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    resolve_dataset_yaml(path)
+    snapshot = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
+    expected_snapshot = str(manifest.get("snapshot_sha256") or "")
+    if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:
+        raise ValueError("portable training snapshot SHA256 mismatch")
+    verified = 0
+    for role in ("train", "validation", "test"):
+        for member in (manifest.get("splits") or {}).get(role, []):
+            image_path = _resolve_relative(path.parent, str(member.get("image_ref") or ""))
+            label_path = _resolve_relative(path.parent, str(member.get("label_ref") or ""))
+            if _is_link_like(image_path) or not image_path.is_file():
+                raise ValueError(f"portable image is missing or link-like: {member.get('image_id')}")
+            expected_size = int(member.get("size_bytes") or 0)
+            if expected_size <= 0 or image_path.stat().st_size != expected_size:
+                raise ValueError(f"portable image size mismatch: {member.get('image_id')}")
+            if _is_link_like(label_path) or not label_path.is_file():
+                raise ValueError(f"portable label is missing or link-like: {member.get('image_id')}")
+            if _sha256(label_path) != str(member.get("label_sha256") or ""):
+                raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
+            verified += 1
+    return {
+        "snapshot_id": manifest.get("snapshot_id"),
+        "verified_files": verified,
+        "verification_mode": "materialization_evidence",
+    }
+
+
 def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     path = Path(manifest_path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -471,8 +657,17 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
         for member in (manifest.get("splits") or {}).get(role, []):
             image_path = _resolve_relative(path.parent, str(member.get("image_ref") or ""))
             label_path = _resolve_relative(path.parent, str(member.get("label_ref") or ""))
-            if not image_path.is_file() or _sha256(image_path) != str(member.get("content_sha256") or ""):
-                raise ValueError(f"portable image SHA256 mismatch: {member.get('image_id')}")
+            expected_training_sha = str(member.get("content_sha256") or "")
+            actual_training_sha = _sha256(image_path) if image_path.is_file() else ""
+            if not image_path.is_file() or actual_training_sha != expected_training_sha:
+                raise ValueError(
+                    "TRAINING_BUNDLE_IMAGE_MUTATED: portable image SHA256 mismatch; "
+                    f"image_id={member.get('image_id')}; "
+                    f"expected_training_sha256={expected_training_sha or '<missing>'}; "
+                    f"actual_sha256={actual_training_sha or '<missing>'}; "
+                    f"source_sha256={member.get('source_content_sha256') or expected_training_sha or '<missing>'}; "
+                    f"normalization_policy={member.get('training_input_policy') or manifest.get('training_input_policy') or '<missing>'}"
+                )
             if not label_path.is_file() or _sha256(label_path) != str(member.get("label_sha256") or ""):
                 raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
             verified += 1
@@ -525,6 +720,23 @@ def _json(path: Path, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return default
+
+
+def _indexed_content_identity_ready(images: Sequence[Mapping[str, Any]]) -> bool:
+    """Return true only when the durable material index can reproduce the Snapshot ID without source reads."""
+    if not images:
+        return False
+    for row in images:
+        digest = str(row.get("content_sha256") or "").strip().lower()
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            return False
+        try:
+            size_bytes = int(row.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            return False
+        if size_bytes <= 0:
+            return False
+    return True
 
 
 def _selected_project_images(
@@ -625,11 +837,79 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     return argv
 
 
+def _verified_job_model_paths(job: Mapping[str, Any]) -> list[Path]:
+    paths = []
+    for value in job.get("verified_models") or []:
+        if isinstance(value, Mapping):
+            value = value.get("path") or value.get("stored_path") or value.get("source")
+        raw = str(value or "").strip()
+        if raw:
+            paths.append(Path(raw))
+    return paths
+
+
+def _training_completion_error(
+    job: Mapping[str, Any],
+    *,
+    expected_task_id: str | None = None,
+    expected_snapshot_id: str | None = None,
+    expected_models_root: Path | None = None,
+) -> str | None:
+    if expected_task_id:
+        job_task_id = str(job.get("task_id") or job.get("id") or "").strip()
+        if job_task_id != str(expected_task_id):
+            return "training job identity does not match the durable task"
+    if expected_snapshot_id:
+        if str(job.get("snapshot_id") or "").strip() != str(expected_snapshot_id):
+            return "training snapshot identity does not match the durable task"
+    if str(job.get("status") or "").strip().lower() != "done":
+        return "job status is not done"
+    if job.get("artifact_verified") is not True:
+        return "model artifact verification is incomplete"
+    if not str(job.get("finished_at") or "").strip():
+        return "training finished_at is missing"
+    outcome = str(job.get("training_outcome") or "").strip().lower()
+    if outcome not in _SUCCESSFUL_TRAINING_OUTCOMES:
+        return f"training outcome is not terminal success: {outcome or '<missing>'}"
+    paths = _verified_job_model_paths(job)
+    if not paths:
+        return "verified model list is empty"
+    if expected_models_root is not None:
+        models_root = expected_models_root.resolve()
+        for path in paths:
+            try:
+                path.resolve().relative_to(models_root)
+            except ValueError:
+                return "verified model is outside the project model directory"
+    best_or_last = {
+        str(Path(str(job.get(key))).resolve())
+        for key in ("best_path", "last_path")
+        if str(job.get(key) or "").strip()
+    }
+    if not best_or_last:
+        return "verified best/last model is missing"
+    verified_existing = {
+        str(path.resolve())
+        for path in paths
+        if path.is_file() and path.stat().st_size > 0
+    }
+    if not verified_existing.intersection(best_or_last):
+        return "verified best/last model file is missing or empty"
+    return None
+
+
 def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[str, Any]:
     artifact_log = context.artifacts.artifact_path(context.task.task_id, context.task.log_ref)
     artifact_log.parent.mkdir(parents=True, exist_ok=True)
     log_path = job_file.parent / "train.log"
     root = Path(__file__).resolve().parent.parent
+    snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
+    expected_snapshot_id = (
+        str(snapshot.get("snapshot_id") or "").strip()
+        if isinstance(snapshot, Mapping)
+        else ""
+    )
+    expected_models_root = (job_file.parent.parent.parent / "models").resolve()
     try:
         with log_path.open("a", encoding="utf-8", newline="") as log:
             launched = launch_process(
@@ -643,10 +923,62 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
             context.repository.bind_process(context.task.task_id, context.lease.lease_token, launched.identity)
             controller = ProcessController()
             next_metrics = 0.0
+            completion_seen_at = None
             while launched.process.poll() is None:
                 if context.cancel_requested():
-                    controller.terminate_tree(launched.identity)
+                    try:
+                        controller.terminate_tree(launched.identity)
+                    except PermissionError as error:
+                        # Do not release the task/GPU lease while the exact
+                        # process tree cannot be proven stopped. Keep managing
+                        # the cancellation and retry instead of publishing a
+                        # false CANCELLED terminal state.
+                        context.repository.heartbeat(
+                            context.task.task_id,
+                            context.lease.lease_token,
+                            stage="cancelling",
+                            current_item=f"waiting for verified process cleanup: {error}",
+                        )
+                        time.sleep(0.25)
+                        continue
                     raise InterruptedError("training cancelled")
+                job = _json(job_file, {})
+                if _training_completion_error(
+                    job,
+                    expected_task_id=context.task.task_id,
+                    expected_snapshot_id=expected_snapshot_id or None,
+                    expected_models_root=expected_models_root,
+                ) is None:
+                    completion_seen_at = completion_seen_at or time.monotonic()
+                    context.repository.heartbeat(
+                        context.task.task_id,
+                        context.lease.lease_token,
+                        progress=95,
+                        stage="finalizing",
+                        current_item="verified training complete; finalizing",
+                    )
+                    if time.monotonic() - completion_seen_at >= TRAINING_COMPLETION_GRACE_SECONDS:
+                        # Business completion is already durable and the model files
+                        # are verified. End only this exact bound process tree so
+                        # lingering DataLoader/telemetry threads cannot block commit.
+                        try:
+                            controller.terminate_tree(launched.identity)
+                        except PermissionError as error:
+                            # A verified model is not permission to release a
+                            # GPU that an unverified process may still use.
+                            context.repository.heartbeat(
+                                context.task.task_id,
+                                context.lease.lease_token,
+                                progress=95,
+                                stage="finalizing",
+                                current_item=f"waiting for verified process cleanup: {error}",
+                            )
+                            time.sleep(0.25)
+                            continue
+                        break
+                    time.sleep(0.1)
+                    continue
+                completion_seen_at = None
                 current_task = context.repository.get(context.task.task_id)
                 if current_task is not None and current_task.stage == "paused":
                     context.repository.heartbeat(
@@ -656,7 +988,6 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     )
                     time.sleep(0.25)
                     continue
-                job = _json(job_file, {})
                 if time.monotonic() >= next_metrics:
                     metrics = read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3"))
                     # Feed scheduler evidence with ownership fencing; never infer unknown CPU/IO pressure.
@@ -664,12 +995,15 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     update_reservation_evidence(context.repository, context.lease, metrics)
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
-                current = str(job.get("current_epoch") or "") or None
+                current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
+                training_started = bool(
+                    job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
+                )
                 context.repository.heartbeat(
                     context.task.task_id,
                     context.lease.lease_token,
                     progress=max(20, min(95, progress)),
-                    stage="training",
+                    stage="training" if training_started else "trainer_startup",
                     current_item=current,
                 )
                 time.sleep(0.25)
@@ -677,9 +1011,67 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
         if log_path.is_file():
             shutil.copy2(log_path, artifact_log)
     job = _json(job_file, {})
+    if context.cancel_requested():
+        raise InterruptedError("training cancelled")
+    completion_error = _training_completion_error(
+        job,
+        expected_task_id=context.task.task_id,
+        expected_snapshot_id=expected_snapshot_id or None,
+        expected_models_root=expected_models_root,
+    )
+    if completion_error is None:
+        return job
     if launched.process.returncode != 0:
         raise RuntimeError(str(job.get("message") or f"training process exited {launched.process.returncode}"))
-    return job
+    raise RuntimeError(f"training process exited without a trusted completion handshake: {completion_error}")
+
+
+def _completion_int(*values: Any) -> int:
+    for value in values:
+        try:
+            number = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if number >= 0:
+            return number
+    return 0
+
+
+def _training_completion_metadata(job: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+    progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
+    completed_epochs = _completion_int(job.get("completed_epochs"), progress.get("epoch"), job.get("current_epoch"))
+    requested_epochs = _completion_int(
+        job.get("requested_epochs"), progress.get("total_epochs"), job.get("total_epochs"), job.get("epochs"), payload.get("epochs")
+    )
+    outcome = str(job.get("training_outcome") or "completed").strip() or "completed"
+    report = job.get("training_report") if isinstance(job.get("training_report"), dict) else {}
+    quality_gate_reason = str(job.get("quality_gate_reason") or report.get("quality_gate_reason") or "").strip()
+    explicit_reason = str(job.get("completion_reason") or "").strip()
+    if explicit_reason:
+        completion_reason = explicit_reason
+    elif outcome == "target_reached":
+        completion_reason = "quality_target_reached"
+    elif outcome == "needs_optimization":
+        completion_reason = "quality_gate_below_continue_threshold"
+    elif completed_epochs > 0 and requested_epochs > 0 and completed_epochs < requested_epochs:
+        completion_reason = "early_stopping"
+    elif completed_epochs > 0 and requested_epochs > 0:
+        completion_reason = "requested_epochs_completed"
+    else:
+        completion_reason = "completed"
+    return {
+        "completed_epochs": completed_epochs,
+        "requested_epochs": requested_epochs,
+        "training_outcome": outcome,
+        "completion_reason": completion_reason,
+        "quality_gate_reason": quality_gate_reason or None,
+        "early_stopping_reason": job.get("early_stopping_reason"),
+        "early_stopping_patience": job.get("early_stopping_patience"),
+        "best_epoch": job.get("best_epoch"),
+        "completion_message": job.get("message"),
+        "training_finished_at": job.get("finished_at"),
+        "training_message": job.get("message"),
+    }
 
 
 class TrainingHandler:
@@ -692,6 +1084,15 @@ class TrainingHandler:
         self.process_runner = process_runner or _run_training_process
 
     def _committed(self, context) -> str | None:
+        checkpoint = context.load_checkpoint()
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("stage") != "committed"
+            or checkpoint.get("result_ref") != "result.json"
+        ):
+            # result.json is written before the algorithm version. It is not a
+            # complete transaction until the post-version checkpoint exists.
+            return None
         result = context.artifacts.read_json(context.task.task_id, "result.json", default=None)
         if not isinstance(result, dict):
             return None
@@ -700,6 +1101,205 @@ class TrainingHandler:
             if not path.is_file() or path.stat().st_size <= 0 or _sha256(path) != model.get("sha256"):
                 return None
         return "result.json"
+
+    def _finalize_completed_job(
+        self,
+        context,
+        payload: Mapping[str, Any],
+        project: Path,
+        job: Mapping[str, Any],
+        *,
+        recovered: bool = False,
+    ):
+        snapshot = context.artifacts.read_json(context.task.task_id, "snapshot.json", default={})
+        if not isinstance(snapshot, dict) or not str(snapshot.get("snapshot_id") or ""):
+            raise RuntimeError("completed training is missing its durable dataset snapshot")
+        snapshot_id = str(snapshot["snapshot_id"])
+        completion_error = _training_completion_error(
+            job,
+            expected_task_id=context.task.task_id,
+            expected_snapshot_id=snapshot_id,
+            expected_models_root=project / "models",
+        )
+        if completion_error is not None:
+            raise RuntimeError(f"training completion handshake is not trustworthy: {completion_error}")
+        manifest_ref = "work/bundle/manifest.json"
+        manifest_path = context.artifacts.artifact_path(context.task.task_id, manifest_ref)
+        verification = verify_portable_dataset(manifest_path)
+        if str(verification.get("snapshot_id") or "") != snapshot_id:
+            raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
+
+        cache_runtime = context.artifacts.read_json(
+            context.task.task_id,
+            "bundle-cache.json",
+            default={},
+        )
+        bundle_cache_evidence = {
+            **(cache_runtime if isinstance(cache_runtime, dict) else {}),
+            "publish": {
+                "status": "pending_commit",
+                "snapshot_id": snapshot_id,
+            },
+        }
+
+        algorithms_path = project / "algorithms.json"
+        algorithms = list_algorithms(algorithms_path)
+        algorithm_id = str(job.get("asset_algorithm_id") or payload.get("algorithm_asset_id") or "")
+        algorithm = next((row for row in algorithms if str(row.get("id")) == algorithm_id), None)
+        if algorithm is None:
+            raise RuntimeError("completed training algorithm no longer exists")
+
+        source_values = list(job.get("verified_models") or [])
+        if not source_values:
+            raise RuntimeError("training reported done without verified model paths")
+        models_root = (project / "models").resolve()
+        resolved_sources = []
+        for source_value in source_values:
+            if isinstance(source_value, Mapping):
+                source_value = (
+                    source_value.get("path")
+                    or source_value.get("stored_path")
+                    or source_value.get("source")
+                )
+            source = Path(str(source_value or "")).resolve()
+            try:
+                source.relative_to(models_root)
+            except ValueError as error:
+                raise RuntimeError("completed training model is outside the project model directory") from error
+            if not source.is_file() or source.stat().st_size <= 0:
+                raise RuntimeError(f"verified training model is missing: {source.name}")
+            resolved_sources.append(source)
+        # Atomically settle the stop/completion race before writing any official
+        # task result or algorithm version. A cancellation already persisted
+        # wins; after this transition the verified completion owns the commit.
+        context.begin_finalization()
+        verified_models = []
+        output_by_source = {}
+        for index, source in enumerate(resolved_sources):
+            ref = f"outputs/{index:02d}_{source.name}"
+            destination = context.artifacts.artifact_path(context.task.task_id, ref)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            artifact = {
+                "ref": ref,
+                "sha256": _sha256(destination),
+                "size_bytes": destination.stat().st_size,
+            }
+            verified_models.append(artifact)
+            output_by_source[str(source)] = destination.resolve()
+        if not verified_models:
+            raise RuntimeError("training recovery found no deliverable model")
+
+        training_report = job.get("training_report") if isinstance(job.get("training_report"), dict) else {}
+        partial = (training_report.get("test_result") or {}).get("status") == "failed"
+        final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
+        requested = snapshot.get("requested") if isinstance(snapshot.get("requested"), dict) else {}
+        result = {
+            "schema_version": 1,
+            "requested_device": job.get("requested_device") or payload.get("requested_device") or payload.get("device"),
+            "assigned_device": job.get("assigned_device"),
+            "actual_device": job.get("actual_device"),
+            "device_evidence": job.get("device_evidence"),
+            "device_validation": job.get("device_evidence") or job.get("device_validation") or {},
+            "actual_train_params": job.get("actual_train_params"),
+            **_training_completion_metadata(job, payload),
+            "snapshot_id": snapshot_id,
+            "snapshot_ref": "snapshot.json",
+            "dataset_manifest_ref": manifest_ref,
+            "counts": snapshot.get("counts") or {},
+            "actual_ratios": snapshot.get("actual_ratios") or {},
+            "test_source": requested.get("test_source"),
+            "test_seed": snapshot.get("test_seed"),
+            "validation_seed": snapshot.get("validation_seed"),
+            "base_version_id": job.get("base_version_id"),
+            "base_version_name": job.get("base_version_name"),
+            "base_selection_reason": job.get("base_selection_reason"),
+            "verified_models": verified_models,
+            "training_report": training_report,
+            "dataset_verification": verification,
+            "bundle_cache": bundle_cache_evidence,
+            "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
+            "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
+            "recovered_from_completed_job": bool(recovered),
+        }
+        best_output = output_by_source.get(str(Path(str(job.get("best_path") or "")).resolve())) if job.get("best_path") else None
+        last_output = output_by_source.get(str(Path(str(job.get("last_path") or "")).resolve())) if job.get("last_path") else None
+        result["best_model_ref"] = next(
+            (model["ref"] for model in verified_models if best_output == context.artifacts.artifact_path(context.task.task_id, model["ref"]).resolve()),
+            None,
+        )
+        result["last_model_ref"] = next(
+            (model["ref"] for model in verified_models if last_output == context.artifacts.artifact_path(context.task.task_id, model["ref"]).resolve()),
+            None,
+        )
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        primary = best_output or last_output or context.artifacts.artifact_path(
+            context.task.task_id, verified_models[0]["ref"]
+        ).resolve()
+        finished_at = str(job.get("finished_at") or datetime.now(timezone.utc).isoformat())
+        attach_version(
+            algorithms_path,
+            str(algorithm.get("id")),
+            {
+                "id": uuid.uuid4().hex[:12],
+                "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+                "stored_path": str(primary),
+                "best_path": str(best_output) if best_output else "",
+                "last_path": str(last_output) if last_output else "",
+                "model_name": primary.name,
+                "verified_models": verified_models,
+                "training_status": final_status.value,
+                "training_outcome": job.get("training_outcome"),
+                "completion_reason": job.get("completion_reason"),
+                "base_version_id": job.get("base_version_id"),
+                "base_version_name": job.get("base_version_name"),
+                "base_selection_reason": job.get("base_selection_reason"),
+                "metrics": training_report.get("metrics") or {},
+                "artifact_verified": True,
+                "trainable": True,
+                "framework": "ultralytics",
+                "snapshot_id": snapshot_id,
+                "result_ref": "result.json",
+                "task_id": context.task.task_id,
+                "job_id": context.task.task_id,
+                "created_at": finished_at,
+                "finished_at": finished_at,
+            },
+        )
+        # Seed the shared cache only after the official algorithm version has
+        # been attached successfully. A task that fails before this point must
+        # not become the source of a future fast-path training bundle.
+        try:
+            cache_entry, cache_stats = TrainingBundleCache(
+                self.data_dir,
+                context.task.project_id,
+            ).publish_verified(
+                manifest_path.parent,
+                snapshot_id,
+                verified_files=int(verification.get("verified_files") or 0),
+            )
+            cache_publish = {
+                "status": "ready",
+                "snapshot_id": cache_entry.snapshot_id,
+                "manifest_sha256": cache_entry.manifest_sha256,
+                **cache_stats,
+            }
+        except Exception as error:
+            # Cache publication is only a performance optimization; failure here
+            # cannot invalidate a model/version that already passed final truth.
+            cache_publish = {
+                "status": "publish_failed",
+                "snapshot_id": snapshot_id,
+                "error": str(error),
+            }
+        bundle_cache_evidence = {
+            **(cache_runtime if isinstance(cache_runtime, dict) else {}),
+            "publish": cache_publish,
+        }
+        result["bundle_cache"] = bundle_cache_evidence
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot_id, "result_ref": "result.json"})
+        return final_status, "result.json"
 
     def run(self, context):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
@@ -722,6 +1322,13 @@ class TrainingHandler:
                 f"TRAINING_DEVICE_ASSIGNMENT_MISMATCH: requested={requested_device}; assigned={assigned_device}"
             )
         python_executable = _training_python(self.data_dir)
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=1,
+            stage="device_admission",
+            current_item="验证训练设备分配",
+        )
         device_evidence = validate_training_device(python_executable, assigned_device)
         if assigned_device.startswith("cuda:"):
             with context.repository._connect() as database:
@@ -741,24 +1348,19 @@ class TrainingHandler:
         project = self.data_dir / "projects" / context.task.project_id
         if not (project / "meta.json").is_file():
             raise FileNotFoundError("training project does not exist")
-        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 2, "hashing")
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=2,
+            stage="preparing_materials",
+            current_item="读取本次训练素材",
+        )
         train_image_ids = tuple(payload.get("train_image_ids") or ())
         test_image_ids = tuple(payload.get("test_image_ids") or ())
         if payload.get("train_dataset_ids") or payload.get("test_dataset_ids"):
             raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止数据集分组回退")
         materials = MaterialRepository(project)
         images = _selected_project_images(materials, project, (*train_image_ids, *test_image_ids))
-        credentials = SecretCredentialStore(KeyringSecretStore())
-        storage = StorageManager(
-            data_dir=self.data_dir,
-            project_id=context.task.project_id,
-            materials=materials,
-            credentials=credentials,
-        )
-        for row in images:
-            resolved = storage.materialize(row)
-            row["content_sha256"] = resolved.content_sha256
-            row["size_bytes"] = resolved.size_bytes
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
             train_image_ids=train_image_ids,
@@ -766,18 +1368,135 @@ class TrainingHandler:
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
-        manifest = build_split_manifest(images, split_request, seed=int(payload.get("seed") or 0))
-        snapshot = build_snapshot(images, manifest, _label_schema(project))
+        label_schema = _label_schema(project)
+        seed = int(payload.get("seed") or 0)
+        bundle_cache = TrainingBundleCache(self.data_dir, context.task.project_id)
+        manifest = None
+        snapshot = None
+        cache_entry = None
+
+        # A completed cache entry is itself the verified materialization of the
+        # indexed Snapshot. On a hit, do not re-read 10k source objects merely
+        # to rediscover the same content hashes.
+        if _indexed_content_identity_ready(images):
+            manifest = build_split_manifest(images, split_request, seed=seed)
+            snapshot = build_snapshot(images, manifest, label_schema)
+            cache_entry = bundle_cache.resolve(str(snapshot["snapshot_id"]))
+
+        materialized_paths: dict[str, Path] = {}
+        if cache_entry is None:
+            credentials = SecretCredentialStore(KeyringSecretStore())
+            storage = StorageManager(
+                data_dir=self.data_dir,
+                project_id=context.task.project_id,
+                materials=materials,
+                credentials=credentials,
+            )
+            total_materials = len(images)
+            material_progress_step = max(1, total_materials // 100) if total_materials else 1
+            for index, row in enumerate(images, start=1):
+                if context.cancel_requested():
+                    raise InterruptedError("training cancelled during material preparation")
+                resolved = storage.materialize(row)
+                row["content_sha256"] = resolved.content_sha256
+                row["size_bytes"] = resolved.size_bytes
+                materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
+                if index == 1 or index == total_materials or index % material_progress_step == 0:
+                    progress = 2 + (6 * index / max(1, total_materials))
+                    context.repository.heartbeat(
+                        context.task.task_id,
+                        context.lease.lease_token,
+                        progress=progress,
+                        stage="preparing_materials",
+                        current_item=f"校验训练素材 {index}/{total_materials}",
+                    )
+            manifest = build_split_manifest(images, split_request, seed=seed)
+            snapshot = build_snapshot(images, manifest, label_schema)
+
+        if manifest is None or snapshot is None:
+            raise RuntimeError("training snapshot preparation did not produce a manifest")
+
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
         context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
-        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 10, "materializing")
-        bundle = materialize_portable_dataset(
-            context.artifacts.artifact_path(context.task.task_id, "work"),
-            snapshot,
-            images,
-            lambda row: storage.materialize(row).path,
-        )
-        verification = verify_portable_dataset(bundle / "manifest.json")
+        if context.cancel_requested():
+            raise InterruptedError("training cancelled before dataset materialization")
+
+        bundle_progress_step = max(1, len(images) // 100) if images else 1
+
+        if cache_entry is not None:
+            context.repository.heartbeat(
+                context.task.task_id,
+                context.lease.lease_token,
+                progress=10,
+                stage="materializing",
+                current_item=f"复用已验证训练数据 0/{len(images)}",
+            )
+
+            def cache_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
+                if completed != 1 and completed != total and completed % bundle_progress_step != 0:
+                    return
+                context.repository.heartbeat(
+                    context.task.task_id,
+                    context.lease.lease_token,
+                    progress=10 + (8 * completed / max(1, total)),
+                    stage="materializing",
+                    current_item=f"复用已验证训练数据 {completed}/{total}",
+                )
+
+            bundle, cache_stats = bundle_cache.restore(
+                cache_entry,
+                context.artifacts.artifact_path(context.task.task_id, "work"),
+                progress=cache_progress,
+            )
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "bundle-cache.json",
+                {
+                    "cache_hit": True,
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "source_validation": "verified_snapshot_cache",
+                    **cache_stats,
+                },
+            )
+        else:
+            context.repository.heartbeat(
+                context.task.task_id,
+                context.lease.lease_token,
+                progress=10,
+                stage="materializing",
+                current_item=f"准备训练数据 0/{len(images)}",
+            )
+
+            def bundle_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
+                if completed != 1 and completed != total and completed % bundle_progress_step != 0:
+                    return
+                context.repository.heartbeat(
+                    context.task.task_id,
+                    context.lease.lease_token,
+                    progress=10 + (8 * completed / max(1, total)),
+                    stage="materializing",
+                    current_item=f"准备训练数据 {completed}/{total}",
+                )
+
+            bundle = materialize_portable_dataset(
+                context.artifacts.artifact_path(context.task.task_id, "work"),
+                snapshot,
+                images,
+                lambda row: materialized_paths[str(row.get("id"))],
+                progress=bundle_progress,
+            )
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "bundle-cache.json",
+                {
+                    "cache_hit": False,
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "source_validation": "materialized_from_source",
+                },
+            )
+
+        if context.cancel_requested():
+            raise InterruptedError("training cancelled after dataset materialization")
 
         algorithms_path = project / "algorithms.json"
         algorithms = list_algorithms(algorithms_path)
@@ -788,8 +1507,8 @@ class TrainingHandler:
         if algorithm is None:
             raise ValueError("training algorithm no longer exists")
         mother = str(payload.get("model") or "").strip()
-        base = choose_iteration_base(
-            algorithm.get("versions") or [],
+        base = choose_algorithm_iteration_base(
+            algorithm,
             mother,
             "ultralytics",
             strict_latest=bool(algorithm.get("versions")),
@@ -838,11 +1557,14 @@ class TrainingHandler:
             "assigned_device": assigned_device,
             "actual_device": None,
             "device_validation": device_evidence,
+            "current_item": "启动训练进程",
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
         }
         atomic_write_json(job_file, job)
+        if context.cancel_requested():
+            raise InterruptedError("training cancelled before trainer launch")
         argv = _training_argv(
             self.data_dir,
             project,
@@ -855,80 +1577,15 @@ class TrainingHandler:
             model,
             python_executable=python_executable,
         )
-        context.repository.heartbeat(context.task.task_id, context.lease.lease_token, 20, "starting_trainer")
-        job = self.process_runner(context, argv, job_file)
-        if not job.get("artifact_verified"):
-            raise RuntimeError(str(job.get("message") or "training produced no verified model"))
-        verified_models = []
-        for index, source_value in enumerate(job.get("verified_models") or []):
-            source = Path(str(source_value)).resolve()
-            if not source.is_file() or source.stat().st_size <= 0:
-                raise RuntimeError(f"verified training model is missing: {source.name}")
-            ref = f"outputs/{index:02d}_{source.name}"
-            destination = context.artifacts.artifact_path(context.task.task_id, ref)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if source != destination.resolve():
-                shutil.copy2(source, destination)
-            digest = _sha256(destination)
-            verified_models.append({"ref": ref, "sha256": digest, "size_bytes": destination.stat().st_size})
-        if not verified_models:
-            raise RuntimeError("training reported success without a verified model")
-        training_report = job.get("training_report") or {}
-        partial = (training_report.get("test_result") or {}).get("status") == "failed"
-        final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
-        result = {
-            "schema_version": 1,
-            "requested_device": requested_device,
-            "assigned_device": assigned_device,
-            "actual_device": job.get("actual_device"),
-            "device_evidence": job.get("device_evidence"),
-            "device_validation": device_evidence,
-            "actual_train_params": job.get("actual_train_params"),
-            "snapshot_id": snapshot["snapshot_id"],
-            "snapshot_ref": "snapshot.json",
-            "dataset_manifest_ref": "work/bundle/manifest.json",
-            "counts": manifest.counts,
-            "actual_ratios": manifest.actual_ratios,
-            "test_source": manifest.requested["test_source"],
-            "test_seed": manifest.test_seed,
-            "validation_seed": manifest.validation_seed,
-            "base_version_id": base.get("base_version_id"),
-            "base_version_name": base.get("base_version_name"),
-            "base_selection_reason": base.get("base_selection_reason"),
-            "verified_models": verified_models,
-            "training_report": training_report,
-            "dataset_verification": verification,
-            "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
-            "training_metrics": read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")),
-        }
-        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-        existing = next(
-            (version for version in algorithm.get("versions") or [] if version.get("task_id") == context.task.task_id),
-            None,
+        context.repository.heartbeat(
+            context.task.task_id,
+            context.lease.lease_token,
+            progress=20,
+            stage="starting_trainer",
+            current_item="启动训练进程",
         )
-        if existing is None:
-            primary = context.artifacts.artifact_path(context.task.task_id, verified_models[0]["ref"])
-            attach_version(
-                algorithms_path,
-                str(algorithm.get("id")),
-                {
-                    "id": uuid.uuid4().hex[:12],
-                    "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
-                    "stored_path": str(primary),
-                    "model_name": primary.name,
-                    "training_status": final_status.value,
-                    "artifact_verified": True,
-                    "trainable": True,
-                    "framework": "ultralytics",
-                    "snapshot_id": snapshot["snapshot_id"],
-                    "result_ref": "result.json",
-                    "task_id": context.task.task_id,
-                    "job_id": context.task.task_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot["snapshot_id"], "result_ref": "result.json"})
-        return final_status, "result.json"
+        job = self.process_runner(context, argv, job_file)
+        return self._finalize_completed_job(context, payload, project, job)
 
     def recover(self, context):
         committed = self._committed(context)
@@ -936,6 +1593,13 @@ class TrainingHandler:
             result = context.artifacts.read_json(context.task.task_id, committed, default={})
             partial = ((result.get("training_report") or {}).get("test_result") or {}).get("status") == "failed"
             return (TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED), committed
+        project = self.data_dir / "projects" / context.task.project_id
+        job = _json(project / "jobs" / context.task.task_id / "job.json", {})
+        if isinstance(job, dict) and str(job.get("status") or "").lower() == "done":
+            payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+            if not isinstance(payload, dict):
+                raise RuntimeError("completed training task payload is invalid")
+            return self._finalize_completed_job(context, payload, project, job, recovered=True)
         return self.run(context)
 
 

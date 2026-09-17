@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -103,7 +105,7 @@ class FencedTaskRepository(TaskRepository):
         execution_generation: int,
     ):
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 """
                 SELECT * FROM tasks
@@ -134,17 +136,21 @@ class FencedTaskRepository(TaskRepository):
         updates = ["updated_at=?", "lease_expires_at=?"]
         parameters: list[object] = [now_text, expires_at]
         if progress is not None:
-            updates.append("progress=?")
+            updates.append("progress=MAX(progress, ?)")
             parameters.append(max(0.0, min(100.0, float(progress))))
         if stage is not None:
-            updates.append("stage=?")
-            parameters.append(str(stage))
+            stage_value = str(stage)
+            updates.append(
+                "stage=CASE WHEN stage IN ('paused','cancelling') AND stage<>? "
+                "THEN stage ELSE ? END"
+            )
+            parameters.extend([stage_value, stage_value])
         if current_item is not None:
             updates.append("current_item=?")
             parameters.append(str(current_item))
         generation_sql, generation_parameters = self._generation_clause(execution_generation)
         parameters.extend([str(task_id), str(lease_token), now_text, *generation_parameters])
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 f"UPDATE tasks SET {','.join(updates)} "
                 "WHERE task_id=? AND lease_token=? "
@@ -170,7 +176,7 @@ class FencedTaskRepository(TaskRepository):
     ):
         now = utc_now()
         generation_sql, generation_parameters = self._generation_clause(execution_generation)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET process_pid=?, process_create_time=?,
@@ -219,11 +225,16 @@ class FencedTaskRepository(TaskRepository):
             TaskStatus.SUCCEEDED,
         } else None
         generation_sql, generation_parameters = self._generation_clause(execution_generation)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET status=?, result_ref=?, error=?, accepted=?, stage=?,
-                    progress=COALESCE(?, progress), finished_at=?, updated_at=?,
+                    progress=CASE
+                        WHEN ?='AWAITING_CONFIRMATION' AND kind='MATERIAL_IMPORT'
+                            THEN MAX(progress, 50.0)
+                        ELSE COALESCE(?, progress)
+                    END,
+                    finished_at=?, updated_at=?,
                     worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
@@ -235,6 +246,7 @@ class FencedTaskRepository(TaskRepository):
                     error,
                     None if accepted is None else int(accepted),
                     stage,
+                    status.value,
                     progress,
                     finished_at,
                     now,
@@ -381,7 +393,7 @@ class FencedTaskRepository(TaskRepository):
         until an operator or a later Worker can prove process identity.
         """
         now_text = _iso(now)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 """
                 SELECT * FROM tasks

@@ -102,7 +102,7 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     )
 
     def fake_runner(context, argv, job_file):
-        model = context.artifacts.artifact_path(context.task.task_id, "fake-trained.pt")
+        model = project / "models" / "fake-trained.pt"
         model.parent.mkdir(parents=True, exist_ok=True)
         model.write_bytes(b"verified-model")
         job = json.loads(job_file.read_text(encoding="utf-8"))
@@ -112,6 +112,8 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
                 "artifact_verified": True,
                 "verified_models": [str(model)],
                 "best_path": str(model),
+                "training_outcome": "completed",
+                "finished_at": "2026-09-15T01:02:03+00:00",
                 "training_report": {"metrics": {"metrics/mAP50(B)": 0.75}},
             }
         )

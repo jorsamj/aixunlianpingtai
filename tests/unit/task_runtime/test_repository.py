@@ -210,7 +210,7 @@ def test_resume_after_confirmation_requeues_material_import_and_is_idempotent(tm
 
     assert resumed.status is TaskStatus.QUEUED
     assert resumed.stage == "indexing_queued"
-    assert resumed.progress == 0
+    assert resumed.progress == 75
     assert resumed.current_item is None
     assert resumed.error is None
     assert resumed.accepted is True

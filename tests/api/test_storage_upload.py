@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import io
-import time
 import uuid
 
 import app as app_module
 from PIL import Image
+from platform_core.task_runtime import ArtifactStore, FencedTaskRepository, Scheduler, TaskStatus
+from platform_core.worker_registry import build_worker_registration
 
 
 def image_bytes(color="orange"):
@@ -49,14 +50,30 @@ def test_upload_to_selected_storage_source_enters_unified_pool(client, tmp_path)
     )
     clean.raise_for_status()
     task_id = clean.json()["id"]
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        result = client.get(
-            f"/api/v47/projects/{project['id']}/clean-tasks/{task_id}/result"
-        ).json()
-        if result["task"]["status"] in {"awaiting_confirmation", "failed"}:
+
+    runtime = app_module.DATA_DIR / "task_runtime"
+    repository = FencedTaskRepository(runtime / "tasks.sqlite3")
+    artifacts = ArtifactStore(runtime / "artifacts")
+    handlers, capabilities = build_worker_registration(app_module.DATA_DIR, {"materials"})
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        f"storage-upload-contract-{uuid.uuid4().hex[:8]}",
+        handlers,
+        capabilities,
+        lease_seconds=5,
+        poll_seconds=0.01,
+    )
+    for _ in range(10):
+        current = app_module.shared_task_repository().get(task_id)
+        assert current is not None
+        if current.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS}:
             break
-        time.sleep(0.05)
+        assert scheduler.run_once() is True
+
+    result = client.get(
+        f"/api/v47/projects/{project['id']}/clean-tasks/{task_id}/result"
+    ).json()
     assert result["task"]["status"] == "awaiting_confirmation", result["task"]
     assert result["task"]["processed_images"] == 1
 

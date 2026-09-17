@@ -1,0 +1,225 @@
+name: Training Recovery Guard
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - platform_core/training_recovery_api.py
+      - platform_core/training_recovery_tasks.py
+      - platform_core/training_checkpoint_resume_tasks.py
+      - platform_core/training_runtime_tasks.py
+      - platform_core/training_job_projection.py
+      - platform_core/worker_registry.py
+      - platform_core/material_batches.py
+      - train_checkpoint_resume_worker.py
+      - static/index.html
+      - static/training-checkpoint-resume-bootstrap.mjs
+      - static/modules/training-checkpoint-resume-ui.js
+      - static/modules/training-recovery-runtime.js
+      - static/modules/training-task-runtime.js
+      - static/main.mjs
+      - tests/test_training_checkpoint_resume.py
+      - tests/test_training_checkpoint_resume_projection.py
+      - tests/unit/test_training_recovery_api.py
+      - tests/frontend/training-checkpoint-resume-ui.test.mjs
+      - tests/frontend/training-recovery-runtime.test.mjs
+      - tests/browser/training-checkpoint-resume.spec.mjs
+      - tests/browser/training-recovery.spec.mjs
+      - .github/workflows/training-recovery-guard.yml
+  workflow_dispatch:
+
+jobs:
+  recovery-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Compile recovery runtime
+        run: >-
+          python -m py_compile
+          platform_core/training_recovery_api.py
+          platform_core/training_recovery_tasks.py
+          platform_core/material_batches.py
+
+      - name: Backend recovery contracts
+        run: python -m pytest -q tests/unit/test_training_recovery_api.py
+
+      - name: Frontend recovery syntax and contracts
+        run: |
+          node --check static/modules/training-recovery-runtime.js
+          node --check static/modules/training-task-runtime.js
+          node --check static/main.mjs
+          node --test tests/frontend/training-recovery-runtime.test.mjs tests/frontend/training-task-runtime.test.mjs
+
+      - name: Permanent recovery guards
+        run: |
+          grep -Fq 'verify_checkpoint_hash=True' platform_core/training_recovery_api.py
+          grep -Fq 'repository.retry(task_id)' platform_core/training_recovery_api.py
+          grep -Fq 'RECOVERY_ACTION_REVALIDATE = "revalidate_checkpoint"' platform_core/training_recovery_api.py
+          grep -Fq 'recoveryRuntime?.hydrateJobs' static/modules/training-task-runtime.js
+          grep -Fq 'installTrainingRecoveryRuntime' static/main.mjs
+          grep -Fq "build: 'training-recovery-runtime-422506'" static/modules/training-recovery-runtime.js
+          grep -Fq '100/100 epochs never grant recovery without backend recovery truth' tests/frontend/training-recovery-runtime.test.mjs
+          if grep -F -n -E 'setTimeout\(|setInterval\(' static/modules/training-recovery-runtime.js; then
+            echo 'TrainingRecoveryRuntime must reuse PollRegistry and must not own a polling timer' >&2
+            exit 1
+          fi
+
+  checkpoint-resume-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install backend test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check -r requirements-dev.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Compile checkpoint resume runtime
+        run: >-
+          python -m py_compile
+          train_checkpoint_resume_worker.py
+          platform_core/training_checkpoint_resume_tasks.py
+          platform_core/training_runtime_tasks.py
+          platform_core/training_job_projection.py
+          platform_core/worker_registry.py
+
+      - name: Backend checkpoint resume contracts
+        run: >-
+          python -m pytest -q
+          tests/test_training_checkpoint_resume.py
+          tests/test_training_checkpoint_resume_projection.py
+
+      - name: Frontend checkpoint resume contracts
+        run: |
+          node --check static/modules/training-checkpoint-resume-ui.js
+          node --check static/training-checkpoint-resume-bootstrap.mjs
+          node --test tests/frontend/training-checkpoint-resume-ui.test.mjs
+
+      - name: Permanent checkpoint resume guards
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          checks = {
+              "platform_core/worker_registry.py": [
+                  '"training": "platform_core.training_runtime_tasks"',
+              ],
+              "train_checkpoint_resume_worker.py": [
+                  "model.train(resume=True, device=logical_device)",
+                  'getattr(trainer, "start_epoch"',
+                  'resume_epoch_source="checkpoint_start_epoch"',
+              ],
+              "platform_core/training_checkpoint_resume_tasks.py": [
+                  "stage=RESUME_STAGE",
+                  '"--resume-checkpoint-sha256"',
+                  "checkpoint_sha = base._sha256(checkpoint)",
+                  'FINALIZATION_REPLAY_MODE = "finalization_replay"',
+                  "inspect_finalization_replay_candidate",
+                  "final_validation_reused=True",
+              ],
+              "platform_core/training_runtime_tasks.py": [
+                  'FINALIZING_COMMIT_STAGE = "finalizing_commit"',
+                  "stage=FINALIZING_COMMIT_STAGE",
+              ],
+              "tests/test_training_checkpoint_resume.py": [
+                  "test_algorithm_version_replay_is_idempotent_by_training_task",
+                  "test_successful_final_validation_replays_only_persistence",
+                  "test_finalization_replay_fails_closed_without_success_manifest",
+              ],
+              "tests/test_training_checkpoint_resume_projection.py": [
+                  "test_training_job_projection_preserves_checkpoint_resume_fields",
+                  "test_training_job_projection_preserves_finalization_replay_fields",
+              ],
+              "static/index.html": [
+                  "training-checkpoint-resume-bootstrap.mjs",
+              ],
+              "static/modules/training-checkpoint-resume-ui.js": [
+                  "const RESUME_MODE = 'training_checkpoint_resume';",
+                  "const FINALIZATION_REPLAY_MODE = 'finalization_replay';",
+                  "不重新训练，也不重新执行 Final Validation",
+              ],
+              "tests/frontend/training-checkpoint-resume-ui.test.mjs": [
+                  "finalizing commit phase comes from backend task truth",
+                  "finalization replay shows validation as already complete and archive as active",
+              ],
+          }
+
+          missing = []
+          for filename, needles in checks.items():
+              text = Path(filename).read_text(encoding="utf-8")
+              for needle in needles:
+                  if needle not in text:
+                      missing.append(f"{filename}: {needle}")
+
+          if missing:
+              raise SystemExit("Missing permanent training recovery contract(s):\n- " + "\n- ".join(missing))
+          print(f"Verified {sum(map(len, checks.values()))} permanent training recovery contracts")
+          PY
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+  real-chrome-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Real Chrome checkpoint recovery
+        run: >-
+          npx playwright test
+          tests/browser/training-recovery.spec.mjs
+          tests/browser/training-checkpoint-resume.spec.mjs

@@ -4,7 +4,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .task_runtime import ArtifactStore
 
@@ -48,28 +48,51 @@ class CandidateStore:
         """)
         return db
 
-    def initialize(self, *, labels: list[str], total_images: int) -> None:
-        with closing(self._connect()) as db, db:
-            db.execute("DELETE FROM candidates")
-            db.execute("DELETE FROM commits")
-            db.execute("INSERT OR REPLACE INTO metadata VALUES ('initialized','1')")
+    def initialize(
+        self,
+        *,
+        labels: list[str],
+        total_images: int,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> None:
+        """Reset a new candidate store, fencing the SQLite commit when requested."""
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute("DELETE FROM candidates")
+                db.execute("DELETE FROM commits")
+                db.execute("INSERT OR REPLACE INTO metadata VALUES ('initialized','1')")
+                if commit_guard is not None:
+                    commit_guard()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
         self.artifacts.atomic_write_json(self.task_id, "candidates/manifest.json", {
             "schema_version": 2, "labels": list(labels), "total_images": max(0, int(total_images)),
             "page_size": self.page_size, "database_ref": "candidates/items.sqlite3",
         })
 
-    def _ready(self):
+    def _ready(self, *, commit_guard: Callable[[], Any] | None = None):
         manifest = self.artifacts.read_json(self.task_id, "candidates/manifest.json", default=None)
         if not isinstance(manifest, dict):
             raise FileNotFoundError("annotation candidate manifest does not exist")
-        with closing(self._connect()) as db, db:
+        with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            if db.execute("SELECT 1 FROM metadata WHERE key='initialized'").fetchone():
-                return
-            for number in range(len(manifest.get("pages") or [])):
-                for item in self.artifacts.read_json(self.task_id, self._page_ref(number), default=[]):
-                    self._put(db, item, normalize=False)
-            db.execute("INSERT INTO metadata VALUES ('initialized','1')")
+            try:
+                if db.execute("SELECT 1 FROM metadata WHERE key='initialized'").fetchone():
+                    db.rollback()
+                    return
+                for number in range(len(manifest.get("pages") or [])):
+                    for item in self.artifacts.read_json(self.task_id, self._page_ref(number), default=[]):
+                        self._put(db, item, normalize=False)
+                db.execute("INSERT INTO metadata VALUES ('initialized','1')")
+                if commit_guard is not None:
+                    commit_guard()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
     @staticmethod
     def _put(db, item, *, normalize=True):
@@ -86,11 +109,74 @@ class CandidateStore:
                 boxes_count=excluded.boxes_count,item_json=excluded.item_json""",
             (image_id, str(item.get("status") or "failed"), accepted, len(item["boxes"]), json.dumps(item, ensure_ascii=False)))
 
-    def append_items(self, items: Iterable[dict[str, Any]]) -> None:
-        self._ready()
-        with closing(self._connect()) as db, db:
-            for item in items:
-                self._put(db, item)
+    def append_items(
+        self,
+        items: Iterable[dict[str, Any]],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> None:
+        """Append/update candidates and optionally prove task ownership before commit.
+
+        Candidate rows live in their own SQLite file, so obtaining the fenced
+        artifact path alone is not enough to fence a later SQLite commit.  The
+        production AI annotation handler supplies a WorkerContext-backed guard
+        so a stale execution cannot commit model output after losing its lease.
+        """
+        self._ready(commit_guard=commit_guard)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                for item in items:
+                    self._put(db, item)
+                if commit_guard is not None:
+                    commit_guard()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    def generation_prefix(
+        self,
+        image_ids: Iterable[str],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> dict[str, int]:
+        """Return the durable contiguous generation prefix in request order.
+
+        Candidate SQLite is stronger recovery evidence than worker.json for the
+        crash window where a candidate transaction committed but the following
+        checkpoint write did not. Generation is sequential, therefore stored
+        rows must form an exact prefix of the immutable request image order.
+        A guard also fences the rare legacy-page migration performed by _ready().
+        """
+        expected = [str(value) for value in image_ids]
+        self._ready(commit_guard=commit_guard)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT image_id,status FROM candidates ORDER BY ordinal"
+            ).fetchall()
+        if len(rows) > len(expected):
+            raise ValueError("annotation candidate store contains more rows than task input")
+        succeeded = 0
+        failed = 0
+        for index, row in enumerate(rows):
+            image_id = str(row["image_id"])
+            if image_id != expected[index]:
+                raise ValueError(
+                    "annotation candidate recovery order does not match immutable task input"
+                )
+            status = str(row["status"])
+            if status == "failed":
+                failed += 1
+            elif status in {"success", "empty"}:
+                succeeded += 1
+            else:
+                raise ValueError(f"annotation candidate has invalid generation status: {status}")
+        return {
+            "next_index": len(rows),
+            "succeeded": succeeded,
+            "failed": failed,
+        }
 
     @staticmethod
     def _decode(row):
@@ -160,7 +246,7 @@ class CandidateStore:
                 summary["boxes"] += row["boxes"]
                 if row["status"] in {"success", "empty", "failed"}:
                     summary[row["status"]] += count
-                # Failed generation has no human decision to make.
+                # Failed provider generations have no human decision to make.
                 if row["status"] in {"success", "empty"}:
                     summary["unreviewed" if row["accepted"] is None else "accepted" if row["accepted"] else "rejected"] += count
         return summary

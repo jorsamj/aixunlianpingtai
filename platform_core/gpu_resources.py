@@ -5,6 +5,8 @@ admission is supported. Resource samples and reservations live in tasks.sqlite3.
 """
 from __future__ import annotations
 
+from contextlib import closing
+
 import csv
 import io
 import os
@@ -14,20 +16,53 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from .node_identity import resolve_node_identity
 from .training_devices import normalize_training_device, probe_training_devices
 
 
-GPU_SCHEMA = """
+_GPU_INVENTORY_CREATE = """
 CREATE TABLE IF NOT EXISTS gpu_inventory (
-    uuid TEXT PRIMARY KEY, gpu_index INTEGER NOT NULL, model TEXT NOT NULL,
-    total_bytes INTEGER, free_bytes INTEGER, utilization REAL,
-    sampled_at TEXT NOT NULL, source TEXT NOT NULL, healthy INTEGER NOT NULL
-);
+    node_id TEXT NOT NULL,
+    gpu_uuid TEXT NOT NULL,
+    physical_index INTEGER,
+    model TEXT NOT NULL,
+    total_bytes INTEGER,
+    free_bytes INTEGER,
+    utilization REAL,
+    sampled_at TEXT NOT NULL,
+    telemetry_source TEXT NOT NULL,
+    telemetry_available INTEGER NOT NULL DEFAULT 0,
+    mig_mode TEXT NOT NULL DEFAULT 'unknown',
+    PRIMARY KEY(node_id, gpu_uuid)
+)
+"""
+
+_GPU_SAMPLES_CREATE = """
 CREATE TABLE IF NOT EXISTS gpu_samples (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL,
-    free_bytes INTEGER, utilization REAL, sampled_at TEXT NOT NULL
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL,
+    gpu_uuid TEXT NOT NULL,
+    free_bytes INTEGER,
+    utilization REAL,
+    sampled_at TEXT NOT NULL
+)
+"""
+
+_GPU_AUX_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_gpu_inventory_node ON gpu_inventory(node_id, physical_index);
+CREATE INDEX IF NOT EXISTS idx_gpu_inventory_sampled ON gpu_inventory(sampled_at);
+CREATE INDEX IF NOT EXISTS idx_gpu_samples ON gpu_samples(node_id, gpu_uuid, id DESC);
+CREATE TABLE IF NOT EXISTS worker_gpu_visibility (
+    worker_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    gpu_uuid TEXT NOT NULL,
+    logical_cuda_index INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(worker_id, node_id, gpu_uuid),
+    UNIQUE(worker_id, logical_cuda_index)
 );
-CREATE INDEX IF NOT EXISTS idx_gpu_samples ON gpu_samples(uuid, id DESC);
+CREATE INDEX IF NOT EXISTS idx_worker_gpu_visibility_node
+    ON worker_gpu_visibility(node_id, gpu_uuid, observed_at);
 CREATE TABLE IF NOT EXISTS gpu_reservations (
     task_id TEXT PRIMARY KEY, gpu_uuid TEXT NOT NULL, gpu_index INTEGER NOT NULL,
     reserved_bytes INTEGER NOT NULL, estimated_bytes INTEGER,
@@ -50,6 +85,60 @@ BEGIN
          NEW.lease_token IS NULL OR lease_token<>NEW.lease_token);
 END;
 """
+
+GPU_SCHEMA = _GPU_INVENTORY_CREATE + ";" + _GPU_SAMPLES_CREATE + ";" + _GPU_AUX_SCHEMA
+
+
+def ensure_gpu_runtime_schema(database, *, legacy_node_id: str | None = None) -> None:
+    """Create or migrate the GPU runtime tables without touching reservations."""
+
+    fallback_node_id = str(legacy_node_id or "").strip() or "legacy-unscoped"
+    database.execute("BEGIN IMMEDIATE")
+    try:
+        inventory_columns = {
+            str(row[1]) for row in database.execute("PRAGMA table_info(gpu_inventory)").fetchall()
+        }
+        sample_columns = {
+            str(row[1]) for row in database.execute("PRAGMA table_info(gpu_samples)").fetchall()
+        }
+        if inventory_columns and "node_id" not in inventory_columns:
+            database.execute("ALTER TABLE gpu_inventory RENAME TO gpu_inventory_v1")
+        database.execute(_GPU_INVENTORY_CREATE)
+        if inventory_columns and "node_id" not in inventory_columns:
+            database.execute(
+                """
+                INSERT INTO gpu_inventory(
+                    node_id,gpu_uuid,physical_index,model,total_bytes,free_bytes,
+                    utilization,sampled_at,telemetry_source,telemetry_available,mig_mode
+                )
+                SELECT ?,uuid,gpu_index,model,total_bytes,free_bytes,utilization,
+                       sampled_at,source,
+                       CASE WHEN total_bytes IS NOT NULL AND free_bytes IS NOT NULL
+                                  AND utilization IS NOT NULL THEN 1 ELSE 0 END,
+                       'unknown'
+                  FROM gpu_inventory_v1
+                """,
+                (fallback_node_id,),
+            )
+            database.execute("DROP TABLE gpu_inventory_v1")
+
+        if sample_columns and "node_id" not in sample_columns:
+            database.execute("ALTER TABLE gpu_samples RENAME TO gpu_samples_v1")
+        database.execute(_GPU_SAMPLES_CREATE)
+        if sample_columns and "node_id" not in sample_columns:
+            database.execute(
+                """
+                INSERT INTO gpu_samples(id,node_id,gpu_uuid,free_bytes,utilization,sampled_at)
+                SELECT id,?,uuid,free_bytes,utilization,sampled_at FROM gpu_samples_v1
+                """,
+                (fallback_node_id,),
+            )
+            database.execute("DROP TABLE gpu_samples_v1")
+        database.commit()
+    except Exception:
+        database.rollback()
+        raise
+    database.executescript(_GPU_AUX_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -81,15 +170,80 @@ def _text(value):
     return value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
 
 
+def _metrics_are_fresh(sampled_at, now, max_age_seconds):
+    try:
+        sampled = datetime.fromisoformat(str(sampled_at).replace("Z", "+00:00"))
+        if sampled.tzinfo is None:
+            sampled = sampled.replace(tzinfo=timezone.utc)
+        age = (now - sampled.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age <= max(0, int(max_age_seconds))
+
+
 def _cuda_index(gpu):
+    explicit = gpu.get("logical_cuda_index")
+    if explicit is not None:
+        return int(explicit)
+    physical_index = gpu.get("physical_index", gpu.get("gpu_index"))
+    gpu_uuid = str(gpu.get("gpu_uuid") or gpu.get("uuid") or "")
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     if visible is None:
-        return gpu["gpu_index"]
+        return None if physical_index is None else int(physical_index)
     for ordinal, token in enumerate(visible.split(",")):
         token = token.strip()
-        if token == str(gpu["gpu_index"]) or (token.startswith("GPU-") and gpu["uuid"].startswith(token)):
+        if token == str(physical_index) or (token.startswith("GPU-") and gpu_uuid.startswith(token)):
             return ordinal
     return None
+
+
+def _normalized_gpu_row(row):
+    gpu_uuid = str(row.get("gpu_uuid") or row.get("uuid") or "").strip()
+    if not gpu_uuid:
+        raise ValueError("GPU sample is missing gpu_uuid")
+    source = str(row.get("telemetry_source") or row.get("source") or "unknown")
+    total_bytes = _number(row.get("total_bytes"))
+    free_bytes = _number(row.get("free_bytes"))
+    utilization = row.get("utilization")
+    try:
+        utilization = None if utilization is None else max(0.0, float(utilization))
+    except (TypeError, ValueError, OverflowError):
+        utilization = None
+    physical_index = row.get("physical_index", row.get("gpu_index"))
+    try:
+        physical_index = None if physical_index is None else int(physical_index)
+    except (TypeError, ValueError, OverflowError):
+        physical_index = None
+    telemetry_available = bool(
+        row.get("telemetry_available")
+        if "telemetry_available" in row
+        else source in {"nvml", "nvidia-smi"}
+    )
+    telemetry_available = bool(
+        telemetry_available
+        and total_bytes is not None
+        and total_bytes > 0
+        and free_bytes is not None
+        and free_bytes <= total_bytes
+        and utilization is not None
+        and utilization <= 100.0
+    )
+    mig_mode = str(row.get("mig_mode") or "unknown").lower()
+    if mig_mode not in {"enabled", "disabled", "unknown"}:
+        mig_mode = "unknown"
+    return {
+        "gpu_uuid": gpu_uuid,
+        "physical_index": physical_index,
+        "logical_cuda_index": _cuda_index(row),
+        "model": str(row.get("model") or "unknown"),
+        "total_bytes": total_bytes if telemetry_available else None,
+        "free_bytes": free_bytes if telemetry_available else None,
+        "utilization": utilization if telemetry_available else None,
+        "sampled_at": str(row.get("sampled_at") or datetime.now(timezone.utc).isoformat()),
+        "telemetry_source": source,
+        "telemetry_available": telemetry_available,
+        "mig_mode": mig_mode,
+    }
 
 
 def sample_gpus(python_executable=None):
@@ -108,10 +262,12 @@ def sample_gpus(python_executable=None):
                     mig = pynvml.nvmlDeviceGetMigMode(handle)[0] != 0
                 except pynvml.NVMLError_NotSupported:
                     mig = False
-                rows.append(dict(uuid=_text(pynvml.nvmlDeviceGetUUID(handle)), gpu_index=index,
+                gpu_uuid = _text(pynvml.nvmlDeviceGetUUID(handle))
+                rows.append(dict(gpu_uuid=gpu_uuid, uuid=gpu_uuid, physical_index=index, gpu_index=index,
                                  model=_text(pynvml.nvmlDeviceGetName(handle)), total_bytes=int(memory.total),
                                  free_bytes=int(memory.free), utilization=float(utilization),
-                                 sampled_at=sampled_at, source="nvml", healthy=not mig))
+                                 sampled_at=sampled_at, telemetry_source="nvml", source="nvml",
+                                 telemetry_available=True, mig_mode="enabled" if mig else "disabled"))
         finally:
             pynvml.nvmlShutdown()
         return rows
@@ -129,10 +285,13 @@ def sample_gpus(python_executable=None):
             if len(values) != 7:
                 continue
             index, uuid, model, total, free, utilization, mig = (value.strip() for value in values)
-            rows.append(dict(uuid=uuid, gpu_index=int(index), model=model,
+            rows.append(dict(gpu_uuid=uuid, uuid=uuid, physical_index=int(index), gpu_index=int(index), model=model,
                              total_bytes=_number(total, 1024 ** 2), free_bytes=_number(free, 1024 ** 2),
-                             utilization=_number(utilization), sampled_at=sampled_at, source="nvidia-smi",
-                             healthy=mig.lower() in {"disabled", "[n/a]", "n/a", "[not supported]"}))
+                             utilization=_number(utilization), sampled_at=sampled_at,
+                             telemetry_source="nvidia-smi", source="nvidia-smi", telemetry_available=True,
+                             mig_mode=("enabled" if mig.lower() == "enabled" else
+                                       "disabled" if mig.lower() in {"disabled", "[n/a]", "n/a", "[not supported]"}
+                                       else "unknown")))
         if rows:
             return rows
     except (OSError, subprocess.SubprocessError, ValueError, RuntimeError):
@@ -140,9 +299,17 @@ def sample_gpus(python_executable=None):
     if python_executable:
         report = probe_training_devices(python_executable, timeout=10)
         for gpu in report.get("gpus") or []:
-            rows.append(dict(uuid=gpu.get("uuid") or f"torch-index:{gpu['index']}", gpu_index=gpu["index"],
+            logical_index = int(gpu["index"])
+            visible_tokens = [token.strip() for token in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")]
+            physical_index = logical_index if "CUDA_VISIBLE_DEVICES" not in os.environ else None
+            if logical_index < len(visible_tokens) and visible_tokens[logical_index].isdigit():
+                physical_index = int(visible_tokens[logical_index])
+            gpu_uuid = gpu.get("uuid") or f"torch-logical:{logical_index}"
+            rows.append(dict(gpu_uuid=gpu_uuid, uuid=gpu_uuid, physical_index=physical_index,
+                             gpu_index=physical_index, logical_cuda_index=logical_index,
                              model=gpu.get("name") or "unknown", total_bytes=None, free_bytes=None,
-                             utilization=None, sampled_at=sampled_at, source="torch-identity", healthy=False))
+                             utilization=None, sampled_at=sampled_at, telemetry_source="torch-identity",
+                             source="torch-identity", telemetry_available=False, mig_mode="unknown"))
     return rows
 
 
@@ -168,7 +335,7 @@ def update_reservation_evidence(repository, lease, metrics):
     eligible = bool(known and diagnostic.get("cpu_bottleneck") is False and
                     diagnostic.get("io_bottleneck") is False and
                     diagnostic.get("code") not in {"memory_pressure", "memory_pressure_oom"})
-    with repository._connect() as database:
+    with closing(repository._connect()) as database:
         database.execute("BEGIN IMMEDIATE")
         row = database.execute("SELECT * FROM gpu_reservations WHERE task_id=? AND lease_token=? AND worker_id=?",
                                (lease.task.task_id, lease.lease_token, lease.worker_id)).fetchone()
@@ -186,13 +353,15 @@ def update_reservation_evidence(repository, lease, metrics):
 
 class GPUResourceManager:
     def __init__(self, repository, artifacts, *, worker_slot="default", python_executable=None,
-                 config=None, sampler=None):
+                 config=None, sampler=None, node_id=None, worker_id=None):
         self.repository = repository
         self.artifacts = artifacts
         self.worker_slot = str(worker_slot)
         self.python_executable = python_executable
         self.config = config or GPUConfig.from_env()
         self.sampler = sampler or sample_gpus
+        self.node_id = str(node_id or "").strip() or resolve_node_identity().node_id
+        self.worker_id = str(worker_id or "").strip() or None
         self._last_refresh = 0.0
         self._lock = threading.Lock()
 
@@ -201,19 +370,88 @@ class GPUResourceManager:
         with self._lock:
             if time.monotonic() - self._last_refresh < 2:
                 return
-            rows = self.sampler(self.python_executable)
-            with self.repository._connect() as database:
+            rows = [_normalized_gpu_row(row) for row in self.sampler(self.python_executable)]
+            with closing(self.repository._connect()) as database:
                 database.execute("BEGIN IMMEDIATE")
-                database.execute("UPDATE gpu_inventory SET healthy=0")
                 for row in rows:
-                    values = (row["uuid"], row["gpu_index"], row["model"], row["total_bytes"],
-                              row["free_bytes"], row["utilization"], row["sampled_at"], row["source"], int(row["healthy"]))
-                    database.execute("INSERT OR REPLACE INTO gpu_inventory VALUES (?,?,?,?,?,?,?,?,?)", values)
-                    database.execute("INSERT INTO gpu_samples(uuid,free_bytes,utilization,sampled_at) VALUES (?,?,?,?)",
-                                     (row["uuid"], row["free_bytes"], row["utilization"], row["sampled_at"]))
-                    database.execute("DELETE FROM gpu_samples WHERE uuid=? AND id NOT IN "
-                                     "(SELECT id FROM gpu_samples WHERE uuid=? ORDER BY id DESC LIMIT 60)",
-                                     (row["uuid"], row["uuid"]))
+                    database.execute(
+                        "DELETE FROM gpu_inventory WHERE node_id='legacy-unscoped' AND gpu_uuid=?",
+                        (row["gpu_uuid"],),
+                    )
+                    database.execute(
+                        "DELETE FROM gpu_samples WHERE node_id='legacy-unscoped' AND gpu_uuid=?",
+                        (row["gpu_uuid"],),
+                    )
+                    database.execute(
+                        """
+                        INSERT INTO gpu_inventory(
+                            node_id,gpu_uuid,physical_index,model,total_bytes,free_bytes,
+                            utilization,sampled_at,telemetry_source,telemetry_available,mig_mode
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(node_id,gpu_uuid) DO UPDATE SET
+                            physical_index=excluded.physical_index, model=excluded.model,
+                            total_bytes=excluded.total_bytes, free_bytes=excluded.free_bytes,
+                            utilization=excluded.utilization, sampled_at=excluded.sampled_at,
+                            telemetry_source=excluded.telemetry_source,
+                            telemetry_available=excluded.telemetry_available,
+                            mig_mode=excluded.mig_mode
+                        """,
+                        (
+                            self.node_id,
+                            row["gpu_uuid"],
+                            row["physical_index"],
+                            row["model"],
+                            row["total_bytes"],
+                            row["free_bytes"],
+                            row["utilization"],
+                            row["sampled_at"],
+                            row["telemetry_source"],
+                            int(row["telemetry_available"]),
+                            row["mig_mode"],
+                        ),
+                    )
+                    database.execute(
+                        """
+                        INSERT INTO gpu_samples(node_id,gpu_uuid,free_bytes,utilization,sampled_at)
+                        VALUES (?,?,?,?,?)
+                        """,
+                        (
+                            self.node_id,
+                            row["gpu_uuid"],
+                            row["free_bytes"],
+                            row["utilization"],
+                            row["sampled_at"],
+                        ),
+                    )
+                    database.execute(
+                        """
+                        DELETE FROM gpu_samples
+                         WHERE node_id=? AND gpu_uuid=? AND id NOT IN (
+                            SELECT id FROM gpu_samples
+                             WHERE node_id=? AND gpu_uuid=? ORDER BY id DESC LIMIT 60
+                         )
+                        """,
+                        (self.node_id, row["gpu_uuid"], self.node_id, row["gpu_uuid"]),
+                    )
+                if self.worker_id:
+                    database.execute("DELETE FROM worker_gpu_visibility WHERE worker_id=?", (self.worker_id,))
+                    for row in rows:
+                        if row["logical_cuda_index"] is None:
+                            continue
+                        database.execute(
+                            """
+                            INSERT INTO worker_gpu_visibility(
+                                worker_id,node_id,gpu_uuid,logical_cuda_index,observed_at
+                            ) VALUES (?,?,?,?,?)
+                            """,
+                            (
+                                self.worker_id,
+                                self.node_id,
+                                row["gpu_uuid"],
+                                row["logical_cuda_index"],
+                                row["sampled_at"],
+                            ),
+                        )
                 database.commit()
             self._last_refresh = time.monotonic()
 
@@ -250,15 +488,23 @@ class GPUResourceManager:
         cutoff = (datetime.fromisoformat(now) - timedelta(seconds=self.config.sample_max_age_seconds)).isoformat()
         candidates = []
         reasons = []
-        for gpu in database.execute("SELECT * FROM gpu_inventory ORDER BY gpu_index").fetchall():
+        for gpu_row in database.execute(
+            "SELECT * FROM gpu_inventory WHERE node_id=? ORDER BY physical_index",
+            (self.node_id,),
+        ).fetchall():
+            gpu = dict(gpu_row)
             cuda_index = _cuda_index(gpu)
             if cuda_index is None or (device != "auto" and device != f"cuda:{cuda_index}"):
                 continue
             total, free = gpu["total_bytes"], gpu["free_bytes"]
-            if not gpu["healthy"] or gpu["sampled_at"] < cutoff or total is None or free is None or gpu["utilization"] is None:
+            if (not gpu["telemetry_available"] or gpu["mig_mode"] == "enabled" or
+                    gpu["sampled_at"] < cutoff or total is None or free is None or
+                    gpu["utilization"] is None):
                 reasons.append("GPU_TELEMETRY_UNAVAILABLE: fresh memory/utilization and non-MIG device required")
                 continue
-            active = database.execute("SELECT * FROM gpu_reservations WHERE gpu_uuid=?", (gpu["uuid"],)).fetchall()
+            active = database.execute(
+                "SELECT * FROM gpu_reservations WHERE gpu_uuid=?", (gpu["gpu_uuid"],)
+            ).fetchall()
             count = len(active)
             if count >= self.config.max_concurrent or (count and (policy == "exclusive" or any(r["policy"] == "exclusive" for r in active))):
                 reasons.append("GPU_CONCURRENCY_LIMIT: GPU is reserved")
@@ -272,8 +518,14 @@ class GPUResourceManager:
                 continue
             eligible = bool(estimated and estimated <= total * self.config.small_job_ratio and self._sharing_evidence(payload, now))
             if count and (policy == "auto" or any(row["policy"] == "auto" for row in active)):
-                samples = database.execute("SELECT utilization FROM gpu_samples WHERE uuid=? AND sampled_at>=? "
-                                           "ORDER BY id DESC LIMIT 5", (gpu["uuid"], cutoff)).fetchall()
+                samples = database.execute(
+                    """
+                    SELECT utilization FROM gpu_samples
+                     WHERE node_id=? AND gpu_uuid=? AND sampled_at>=?
+                     ORDER BY id DESC LIMIT 5
+                    """,
+                    (self.node_id, gpu["gpu_uuid"], cutoff),
+                ).fetchall()
                 low_utilization = (len(samples) >= 2 and all(sample["utilization"] is not None and
                                    sample["utilization"] <= self.config.shared_utilization_limit for sample in samples))
                 if not eligible or not low_utilization or not all(row["share_eligible"] and (row["sharing_evidence_at"] or "") >= cutoff for row in active):
@@ -281,13 +533,13 @@ class GPUResourceManager:
                     continue
             # Lexicographic score always spreads to idle GPUs before considering sharing.
             score = (count == 0, -count, (free - reserved - self.config.safety_bytes) / total,
-                     -gpu["utilization"], -gpu["gpu_index"])
+                     -gpu["utilization"], -int(gpu["physical_index"] or 0))
             candidates.append((score, gpu, requested, eligible))
         if not candidates:
             return False, reasons[0] if reasons else f"GPU_NOT_AVAILABLE: waiting for {device}"
         _, gpu, requested, eligible = max(candidates, key=lambda item: item[0])
         database.execute("INSERT INTO gpu_reservations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (task["task_id"], gpu["uuid"], _cuda_index(gpu), requested, estimated, worker_id,
+                         (task["task_id"], gpu["gpu_uuid"], _cuda_index(gpu), requested, estimated, worker_id,
                           self.worker_slot, token, policy, int(eligible),
                           (payload.get("gpu_sharing_evidence") or {}).get("sampled_at") if eligible else None,
                           now, now, expires_at))
@@ -299,7 +551,7 @@ class GPUResourceManager:
         if requested == "cpu":
             return {"requested_device": "cpu", "assigned_device": "cpu", "lease_token": lease.lease_token,
                     "worker_id": lease.worker_id}
-        with self.repository._connect() as database:
+        with closing(self.repository._connect()) as database:
             row = database.execute("SELECT * FROM gpu_reservations WHERE task_id=? AND lease_token=?",
                                    (lease.task.task_id, lease.lease_token)).fetchone()
         if row is None:
@@ -307,13 +559,98 @@ class GPUResourceManager:
         return {**dict(row), "requested_device": requested, "assigned_device": f"cuda:{row['gpu_index']}"}
 
     def summary(self):
-        now = datetime.now(timezone.utc).isoformat()
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.config.sample_max_age_seconds)).isoformat()
-        with self.repository._connect() as database:
+        now = datetime.now(timezone.utc)
+        now_text = now.isoformat()
+        with closing(self.repository._connect()) as database:
             rows = database.execute("SELECT g.*, COUNT(r.task_id) AS active_tasks, "
                                     "COALESCE(SUM(r.reserved_bytes),0) AS reserved_bytes FROM gpu_inventory g "
-                                    "LEFT JOIN gpu_reservations r ON r.gpu_uuid=g.uuid AND r.expires_at>? "
-                                    "GROUP BY g.uuid ORDER BY g.gpu_index", (now,)).fetchall()
-        return {"gpus": [{**dict(row), "metrics_fresh": row["sampled_at"] >= cutoff} for row in rows],
+                                    "LEFT JOIN gpu_reservations r ON r.gpu_uuid=g.gpu_uuid AND r.expires_at>? "
+                                    "WHERE g.node_id=? GROUP BY g.node_id,g.gpu_uuid "
+                                    "ORDER BY g.physical_index", (now_text, self.node_id)).fetchall()
+        return {"node_id": self.node_id,
+                "gpus": [self._public_gpu(dict(row), now, self.config.sample_max_age_seconds) for row in rows],
                 "policy_default": "auto", "max_concurrent_per_gpu": self.config.max_concurrent,
                 "memory_safety_bytes": self.config.safety_bytes, "max_reserved_ratio": self.config.max_reserved_ratio}
+
+    @staticmethod
+    def _public_gpu(row, now, max_age_seconds):
+        total = row.get("total_bytes")
+        free = row.get("free_bytes")
+        telemetry_available = bool(row.get("telemetry_available"))
+        return {
+            **row,
+            "telemetry_available": telemetry_available,
+            "metrics_fresh": bool(
+                telemetry_available
+                and _metrics_are_fresh(row.get("sampled_at"), now, max_age_seconds)
+            ),
+            "used_bytes": max(0, int(total) - int(free)) if total is not None and free is not None else None,
+            "health_status": "unknown",
+        }
+
+    def runtime_truth(self, *, now=None):
+        return read_gpu_runtime_truth(self.repository, config=self.config, now=now)
+
+
+def read_gpu_runtime_truth(repository, *, config=None, now=None):
+    """Return the durable GPU runtime projection without sampling or scheduling."""
+
+    runtime_config = config or GPUConfig.from_env()
+    generated_at = now or datetime.now(timezone.utc)
+    if isinstance(generated_at, str):
+        generated_at = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    generated_at = generated_at.astimezone(timezone.utc)
+    with closing(repository._connect()) as database:
+        gpu_rows = database.execute(
+            "SELECT * FROM gpu_inventory ORDER BY node_id,physical_index,gpu_uuid"
+        ).fetchall()
+        visibility_rows = database.execute(
+            """
+            SELECT worker_id,node_id,gpu_uuid,logical_cuda_index,observed_at
+              FROM worker_gpu_visibility
+             ORDER BY node_id,worker_id,logical_cuda_index
+            """
+        ).fetchall()
+    from .task_runtime.worker_instances import WorkerInstanceService
+
+    workers = WorkerInstanceService(repository).list_runtime(now=generated_at)
+    gpus = [
+        GPUResourceManager._public_gpu(
+            dict(row), generated_at, runtime_config.sample_max_age_seconds
+        )
+        for row in gpu_rows
+    ]
+    node_map = {}
+    for worker in workers:
+        node = node_map.setdefault(
+            worker["node_id"],
+            {"node_id": worker["node_id"], "hostnames": set(), "online_worker_count": 0, "gpu_count": 0},
+        )
+        if worker["hostname"]:
+            node["hostnames"].add(worker["hostname"])
+        if worker["online"]:
+            node["online_worker_count"] += 1
+    for gpu in gpus:
+        node = node_map.setdefault(
+            gpu["node_id"],
+            {"node_id": gpu["node_id"], "hostnames": set(), "online_worker_count": 0, "gpu_count": 0},
+        )
+        node["gpu_count"] += 1
+    nodes = [
+        {**value, "hostnames": sorted(value["hostnames"])}
+        for _, value in sorted(node_map.items())
+    ]
+    return {
+        "generated_at": generated_at.isoformat(),
+        "metrics_max_age_seconds": runtime_config.sample_max_age_seconds,
+        "nodes": nodes,
+        "workers": workers,
+        "gpus": gpus,
+        "worker_gpu_visibility": [dict(row) for row in visibility_rows],
+        "telemetry": {
+            "available_gpu_count": sum(1 for gpu in gpus if gpu["telemetry_available"]),
+            "fresh_gpu_count": sum(1 for gpu in gpus if gpu["metrics_fresh"]),
+        },
+    }

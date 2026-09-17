@@ -1,0 +1,155 @@
+name: Training Final Validation Hardening
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - checkpoint_validation_worker.py
+      - train_worker.py
+      - train_worker_safe.py
+      - platform_core/training_hardened_tasks.py
+      - platform_core/training_recovery_tasks.py
+      - platform_core/training_tasks.py
+      - platform_core/training_bundle_cache.py
+      - platform_core/snapshots.py
+      - platform_core/training_label_tasks.py
+      - platform_core/training_metrics.py
+      - platform_core/training_devices.py
+      - platform_core/worker_registry.py
+      - platform_core/task_runtime/process_control.py
+      - platform_core/task_runtime/scheduler.py
+      - tests/unit/test_training_final_validation_oom_hardening.py
+      - tests/unit/test_training_finalization_handshake.py
+      - tests/unit/test_training_resource_contract.py
+      - tests/unit/test_training_startup_performance_contract.py
+      - tests/unit/test_training_bundle_cache.py
+      - tests/unit/test_training_worker_startup_callbacks.py
+      - tests/unit/test_portable_dataset.py
+      - tests/unit/test_training_bundle_isolation.py
+      - tests/unit/test_snapshots.py
+      - tests/unit/task_runtime/test_process_control.py
+      - tests/unit/task_runtime/test_training_terminal_truth.py
+      - tests/unit/task_runtime/test_worker_registry.py
+      - .github/workflows/training-final-validation-hardening.yml
+  workflow_dispatch:
+
+jobs:
+  hardening-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Compile hardening runtime
+        run: >-
+          python -m py_compile
+          checkpoint_validation_worker.py
+          train_worker.py
+          train_worker_safe.py
+          platform_core/training_hardened_tasks.py
+          platform_core/training_recovery_tasks.py
+          platform_core/training_tasks.py
+          platform_core/training_bundle_cache.py
+          platform_core/snapshots.py
+          platform_core/training_metrics.py
+          platform_core/training_devices.py
+          platform_core/task_runtime/process_control.py
+          platform_core/task_runtime/scheduler.py
+          platform_core/worker_registry.py
+
+      - name: Focused training finalization and startup regressions
+        run: >-
+          python -m pytest -q
+          tests/unit/test_training_final_validation_oom_hardening.py
+          tests/unit/test_training_finalization_handshake.py
+          tests/unit/test_training_resource_contract.py
+          tests/unit/test_training_startup_performance_contract.py
+          tests/unit/test_training_bundle_cache.py
+          tests/unit/test_training_worker_startup_callbacks.py
+          tests/unit/test_portable_dataset.py
+          tests/unit/test_training_bundle_isolation.py
+          tests/unit/test_snapshots.py
+          tests/unit/task_runtime/test_process_control.py
+          tests/unit/task_runtime/test_training_terminal_truth.py
+          tests/unit/task_runtime/test_worker_registry.py
+
+      - name: Permanent hardening guards
+        run: |
+          grep -Fq '"training": "platform_core.training_recovery_tasks"' platform_core/worker_registry.py
+          grep -Fq 'RecoveryHardenedLabelContractTrainingHandler' platform_core/training_recovery_tasks.py
+          grep -Fq 'failure_stage' platform_core/training_recovery_tasks.py
+          grep -Fq 'verify_portable_dataset' platform_core/training_recovery_tasks.py
+          grep -Fq 'DEFAULT_AUTO_WORKER_CAP = 2' train_worker_safe.py
+          grep -Fq 'TRAINING_AUTO_MAX_DATALOADER_WORKERS' train_worker_safe.py
+          grep -Fq 'DEFAULT_FINAL_VALIDATION_WORKERS = 0' platform_core/training_hardened_tasks.py
+          grep -Fq 'DEFAULT_FINAL_VALIDATION_BATCH = 1' platform_core/training_hardened_tasks.py
+          grep -Fq 'checkpoint_validation_worker.py' platform_core/training_hardened_tasks.py
+          grep -Fq 'recovery_action_available' platform_core/training_hardened_tasks.py
+          grep -Fq 'process_returncode' platform_core/training_hardened_tasks.py
+          grep -Fq 'process_signal' platform_core/training_hardened_tasks.py
+          grep -Fq 'completion_error' platform_core/training_hardened_tasks.py
+          grep -Fq 'stage="training" if training_started else "trainer_startup"' platform_core/training_hardened_tasks.py
+          grep -Fq 'returncode=-9' tests/unit/test_training_final_validation_oom_hardening.py
+          grep -Fq '99a99b479ecf' tests/unit/test_training_final_validation_oom_hardening.py
+          grep -Fq '45d5851805c3' tests/unit/test_training_final_validation_oom_hardening.py
+          grep -Fq 'start_new_session' platform_core/task_runtime/process_control.py
+          grep -Fq '_terminate_posix_group' platform_core/task_runtime/process_control.py
+          grep -Fq 'test_terminate_tree_reaps_group_after_leader_was_killed' tests/unit/task_runtime/test_process_control.py
+          grep -Fq 'validation_mode' platform_core/training_devices.py
+          grep -Fq 'class _HashingReader' platform_core/training_tasks.py
+          grep -Fq '_verify_materialized_dataset_evidence' platform_core/training_tasks.py
+          grep -Fq 'TrainingBundleCache' platform_core/training_tasks.py
+          grep -Fq '_indexed_content_identity_ready' platform_core/training_tasks.py
+          grep -Fq 'verified_snapshot_cache' platform_core/training_tasks.py
+          grep -Fq 'class TrainingBundleCache' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_SCHEMA_VERSION = 3' platform_core/training_bundle_cache.py
+          grep -Fq 'data_yaml_sha256' platform_core/training_bundle_cache.py
+          grep -Fq 'portable bundle reference must not traverse a link or reparse point' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_MAX_BYTES_ENV = "TRAINING_BUNDLE_CACHE_MAX_BYTES"' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_TTL_SECONDS_ENV = "TRAINING_BUNDLE_CACHE_TTL_SECONDS"' platform_core/training_bundle_cache.py
+          grep -Fq 'DEFAULT_CACHE_MAX_BYTES = 64 * 1024 * 1024 * 1024' platform_core/training_bundle_cache.py
+          grep -Fq 'DEFAULT_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60' platform_core/training_bundle_cache.py
+          grep -Fq 'CACHE_RECENT_ACCESS_GRACE_SECONDS = 5 * 60' platform_core/training_bundle_cache.py
+          grep -Fq 'def maintain(' platform_core/training_bundle_cache.py
+          grep -Fq 'with self._lock(candidate.snapshot_id, timeout=0)' platform_core/training_bundle_cache.py
+          grep -Fq '"hardlinked_image_bytes"' platform_core/training_bundle_cache.py
+          grep -Fq '"maintenance": maintenance' platform_core/training_bundle_cache.py
+          if grep -Fq 'os.link(source_image, destination_image)' platform_core/training_bundle_cache.py; then echo 'trainer-writable cache restore must not hardlink images' >&2; exit 1; fi
+          grep -Fq 'test_verified_bundle_cache_restores_isolated_trainer_writable_images' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_restore_never_attempts_image_hardlinks' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_schema_v2_is_rejected_after_writable_hardlink_fix' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"' platform_core/training_tasks.py
+          grep -Fq 'source_content_sha256' platform_core/training_tasks.py
+          grep -Fq 'TRAINING_BUNDLE_IMAGE_MUTATED' platform_core/training_tasks.py
+          grep -Fq '_JPEG_NORMALIZATION_LOCK' platform_core/training_tasks.py
+          grep -Fq 'test_missing_jpeg_eoi_is_normalized_before_ultralytics_without_mutating_source' tests/unit/test_training_bundle_isolation.py
+          grep -Fq 'training_input_policy' platform_core/snapshots.py
+          grep -Fq 'test_cache_resolve_rejects_tampered_label' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_resolve_rejects_tampered_data_yaml' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_resolve_rejects_in_bundle_symlink_component' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_publication_is_ordered_after_algorithm_version_attachment' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_resolve_refreshes_lru_access_metadata' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_ttl_expiry_blocks_reuse_and_maintenance_evicts' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_quota_evicts_lru_entry_but_protects_new_publish' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'test_cache_maintenance_skips_locked_active_entry' tests/unit/test_training_bundle_cache.py
+          grep -Fq 'durable=False' platform_core/training_tasks.py
+          grep -Fq 'next_oom_retry_resources' train_worker.py
+          grep -Fq 'startup_stage' train_worker.py
+          grep -Fq 'on_train_batch_start' train_worker.py
+          grep -Fq 'test_manual_workers_are_not_coupled_to_batch' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq 'test_materialization_uses_construction_evidence_instead_of_full_image_rehash' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq 'test_oom_retry_keeps_workers_independent_from_batch' tests/unit/test_training_startup_performance_contract.py
+          grep -Fq 'on_train_batch_start' tests/unit/test_training_worker_startup_callbacks.py
+          grep -Fq '_failure_current_item' platform_core/task_runtime/scheduler.py
+          grep -Fq 'test_training_failure_prefers_durable_failure_evidence_for_terminal_detail' tests/unit/task_runtime/test_training_terminal_truth.py

@@ -22,7 +22,7 @@ from .storage.errors import redact_storage_error
 from .storage.import_tasks import _provider
 from .storage.manager import StorageManager
 from .storage.source_repository import StorageSource, StorageSourceRepository
-from .task_runtime import TaskKind, TaskRecord, TaskStatus
+from .task_runtime import TaskKind, TaskRecord, TaskStatus, task_to_public
 from .task_runtime.models import utc_now
 from .task_runtime.task_logs import append_task_log
 
@@ -108,7 +108,8 @@ def estimate_batch(project_id, materials, payload):
     return result
 
 
-def create_batch(project_id, materials, repository, artifacts, payload):
+def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
+    """Freeze a batch selection durably without publishing executable queue truth yet."""
     operation, selection, options = parse_request(payload)
     if operation is BatchOperation.AI_ANNOTATE:
         from .annotation_runtime import prepare_request
@@ -119,10 +120,25 @@ def create_batch(project_id, materials, repository, artifacts, payload):
         project_id, operation, selection, options,
     ):
         raise BatchRequestError("DELETE_SOURCE_CONFIRMATION_REQUIRED", "confirm source deletion using the estimate confirmation_token", 409)
-    task_id = uuid.uuid4().hex
+    task_id = str(task_id or uuid.uuid4().hex)
+    request_payload = {
+        "operation": operation.value,
+        "selection_spec": selection.as_dict(),
+        "options": options,
+    }
+    selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+    existing_request = artifacts.read_json(task_id, "request.json", default=None)
+    if existing_request is not None:
+        if existing_request != request_payload:
+            raise BatchRequestError("BATCH_TASK_ID_CONFLICT", "task id is already prepared for a different material batch", 409)
+        with closing(BatchSelection(selection_path)) as manifest:
+            if not manifest.frozen():
+                raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "prepared batch selection is incomplete", 409)
+        return TaskRecord.new(
+            task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+            f"materials:{project_id}", required_capabilities=("materials.batch",),
+        )
     try:
-        selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
-        # Prepare the schema before taking the material lock. No task exists yet.
         with closing(BatchSelection(selection_path)):
             pass
         clauses, params = _predicate(materials, selection)
@@ -133,9 +149,6 @@ def create_batch(project_id, materials, repository, artifacts, payload):
             database.execute("BEGIN IMMEDIATE")
             if materials._revision(database) != selection.repository_revision:
                 raise BatchRequestError("MATERIAL_REVISION_CHANGED", "material repository changed; re-estimate before confirming", 409)
-            # Revision and membership use this single consistent transaction.
-            # Only the attached manifest is written, so correctness does not
-            # depend on cross-database atomic commits (unsupported with WAL).
             inserted = database.execute(
                 "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
                 params,
@@ -147,27 +160,50 @@ def create_batch(project_id, materials, repository, artifacts, payload):
                 (("frozen", utc_now()), ("repository_revision", str(selection.repository_revision))),
             )
             database.commit()
-        # Every prerequisite is durable before publishing the executable row.
-        # A failure here leaves only unqueued artifacts, never a partial task.
-        artifacts.atomic_write_json(task_id, "request.json", {
-            "operation": operation.value, "selection_spec": selection.as_dict(), "options": options,
-        })
+        artifacts.atomic_write_json(task_id, "request.json", request_payload)
         with closing(BatchSelection(selection_path)) as manifest:
             artifacts.atomic_write_json(task_id, CHECKPOINT_REF, manifest.summary())
-        return repository.create(TaskRecord.new(
+        return TaskRecord.new(
             task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
             f"materials:{project_id}", required_capabilities=("materials.batch",),
-        ), artifacts=artifacts)
+        )
     except Exception as error:
         try:
             artifacts.atomic_write_json(task_id, "creation_failure.json", {
                 "task_id": task_id, "status": "CREATION_FAILED", "error": redact_storage_error(error),
             })
         except Exception:
-            pass  # An unavailable artifact volume must not hide the submit error.
+            pass
         if isinstance(error, BatchRequestError):
             raise
         raise BatchRequestError("BATCH_CREATION_FAILED", f"material batch creation failed: {redact_storage_error(error)}", 500) from error
+
+
+def publish_prepared_batch(task, repository, artifacts):
+    """Publish one previously frozen batch exactly once into TaskRepository."""
+    existing = repository.get(task.task_id)
+    if existing is not None:
+        if existing.project_id != task.project_id or existing.kind is not TaskKind.MATERIAL_BATCH:
+            raise BatchRequestError("BATCH_TASK_ID_CONFLICT", "task id is already owned by another durable task", 409)
+        return existing
+    request = artifacts.read_json(task.task_id, task.payload_ref, default=None)
+    selection_path = artifacts.artifact_path(task.task_id, SELECTION_REF)
+    if not isinstance(request, dict) or not selection_path.is_file():
+        raise BatchRequestError("BATCH_NOT_PREPARED", "material batch artifacts are incomplete", 409)
+    with closing(BatchSelection(selection_path)) as manifest:
+        if not manifest.frozen():
+            raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "material batch selection is incomplete", 409)
+    try:
+        return repository.create(task, artifacts=artifacts)
+    except Exception as error:
+        if isinstance(error, BatchRequestError):
+            raise
+        raise BatchRequestError("BATCH_PUBLICATION_FAILED", f"material batch publication failed: {redact_storage_error(error)}", 500) from error
+
+
+def create_batch(project_id, materials, repository, artifacts, payload):
+    task = prepare_batch(project_id, materials, artifacts, payload)
+    return publish_prepared_batch(task, repository, artifacts)
 
 
 _SCHEMA = """
@@ -288,14 +324,12 @@ class MaterialBatchHandler:
     def run(self, context):
         selection_path = context.artifacts.artifact_path(context.task.task_id, SELECTION_REF)
         selection_path.parent.mkdir(parents=True, exist_ok=True)
-        # A recovering owner must not run alongside a still-exiting stale owner.
         with FileLock(str(selection_path) + ".lock", timeout=60):
             with closing(BatchSelection(selection_path)) as manifest:
                 try:
                     return self._run(context, manifest)
                 except BaseException as error:
                     append_task_log(context, "error", f"{type(error).__name__}: {error}")
-                    # A stale worker must not overwrite a replacement's checkpoint.
                     if not isinstance(error, PermissionError):
                         context.save_checkpoint(manifest.summary())
                     raise
@@ -303,13 +337,22 @@ class MaterialBatchHandler:
     def _run(self, context, manifest):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
         operation, selection, options = parse_request(payload)
-        project = context.artifacts._validate_task_id(context.task.project_id)
-        materials = MaterialRepository(self.data_dir / "projects" / project)
+        project = str(context.task.project_id or '').strip()
+        if (
+            not project
+            or any(character in project for character in ('/', '\\'))
+            or not all(character.isalnum() or character in {'_', '-'} for character in project)
+        ):
+            raise ValueError('project id must be one safe path component')
+        projects_root = (self.data_dir / 'projects').resolve()
+        project_path = (projects_root / project).resolve()
+        if project_path.parent != projects_root:
+            raise ValueError('project id escaped projects root')
+        materials = MaterialRepository(project_path)
         confirmed_revision = manifest.database.execute("SELECT value FROM meta WHERE key='repository_revision'").fetchone()
         if not manifest.frozen() or confirmed_revision is None or confirmed_revision[0] != str(selection.repository_revision):
             raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "batch has no confirmed immutable selection; create and confirm a new batch", 409)
         if context.task.retry_of:
-            # Failed rows are replayed only by explicit retry, never in a tight loop.
             while batch := manifest.rows(("failed",)):
                 _check_active(context)
                 manifest.transition([row["image_id"] for row in batch], "pending")
@@ -353,7 +396,6 @@ class MaterialBatchHandler:
                     else:
                         raise BatchRequestError("BATCH_OPERATION_NOT_READY", operation.value)
                     manifest.transition(found, "succeeded")
-                    # Index deletion is idempotent after a crash between deletion and checkpoint.
                     manifest.transition(missing, "succeeded" if operation is BatchOperation.DELETE_INDEX else "failed",
                                         None if operation is BatchOperation.DELETE_INDEX else "MATERIAL_NOT_FOUND")
                 except (PermissionError, InterruptedError):
@@ -397,7 +439,6 @@ class MaterialBatchHandler:
                     if source_id not in source_cache:
                         source_cache[source_id] = sources.get(source_id)
                     source = source_cache[source_id]
-                    # Retain the full material reference even when source config is missing.
                     tombstone = {"material": material, "source": asdict(source) if source else None, "created_at": utc_now()}
                     manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
                                               (json.dumps(tombstone, ensure_ascii=False), image_id))
@@ -420,8 +461,6 @@ class MaterialBatchHandler:
                     live_source = source_cache[source.id]
                     if live_source is None or not live_source.enabled:
                         raise ValueError("STORAGE_SOURCE_DISABLED: restore and enable the source before retrying")
-                    # The captured location remains immutable, while enabling a
-                    # source or rotating its credential reference permits retry.
                     source = replace(source, enabled=True, secret_ref=live_source.secret_ref)
                     cache_key = json.dumps(source_data, sort_keys=True)
                     if cache_key not in providers:
@@ -432,8 +471,6 @@ class MaterialBatchHandler:
                     previously_attempted = bool(tombstone.get("delete_attempted_at"))
                     if not previously_attempted:
                         tombstone["delete_attempted_at"] = utc_now()
-                        # Commit intent before the external side effect so a
-                        # crash after deletion can recover without losing index cleanup.
                         manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
                                                   (json.dumps(tombstone, ensure_ascii=False), image_id))
                     try:
@@ -450,7 +487,6 @@ class MaterialBatchHandler:
                 public_error = redact_storage_error(error)
                 manifest.transition([image_id], "failed", public_error)
                 append_task_log(context, "source_delete_error", f"image_id={image_id} {public_error}")
-        # Never remove an index until that row's source deletion is durably recorded.
         if deletable:
             _check_active(context, "deleting_index")
             try:
@@ -464,17 +500,31 @@ class MaterialBatchHandler:
         return self.run(context)
 
 
-def public_batch(task, artifacts):
+def public_batch(task, artifacts, repository=None):
     checkpoint = artifacts.read_json(task.task_id, CHECKPOINT_REF, default={})
     request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    truth = task_to_public(task, repository) if repository is not None else None
     frozen = bool(checkpoint.get("selection_frozen"))
     error_examples = checkpoint.get("error_examples", [])[:10]
     if task.error and not error_examples:
         error_examples = [{"error": redact_storage_error(task.error)}]
     available = artifacts.artifact_path(task.task_id, task.log_ref).is_file()
     return {"id": task.task_id, "task_id": task.task_id, "project_id": task.project_id,
-            "kind": task.kind.value, "operation": request.get("operation"), "status": task.status.value,
-            "stage": task.stage, "total": checkpoint.get("total") if frozen else None,
+            "kind": task.kind.value, "operation": request.get("operation"),
+            "status": truth["status"] if truth else task.status.value,
+            "persisted_status": truth["persisted_status"] if truth else task.status.value,
+            "priority": truth["priority"] if truth else task.priority,
+            "queue_rank": truth["queue_rank"] if truth else task.queue_rank,
+            "resource_queue_position": truth["resource_queue_position"] if truth else None,
+            "resource_queue_position_exact": truth["resource_queue_position_exact"] if truth else False,
+            "resource_wait_reason": truth["resource_wait_reason"] if truth else task.resource_wait_reason,
+            "worker_id": truth["worker_id"] if truth else task.worker_id,
+            "lease_expires_at": truth["lease_expires_at"] if truth else task.lease_expires_at,
+            "progress_percent": truth["progress_percent"] if truth else task.progress,
+            "stage": truth["phase"] if truth else task.stage,
+            "phase": truth["phase"] if truth else task.stage,
+            "current_item": truth["current_item"] if truth else task.current_item,
+            "total": checkpoint.get("total") if frozen else None,
             "processed": checkpoint.get("processed", 0), "succeeded": checkpoint.get("succeeded", 0),
             "failed": checkpoint.get("failed", 0), "current_image_id": checkpoint.get("current_image_id"),
             "flagged": checkpoint.get("flagged", 0),
@@ -519,16 +569,16 @@ def material_batch_router(get_project, material_store, task_repository, task_art
     def create(project_id: str, payload: dict = Body(...)):
         get_project(project_id)
         task = invoke(create_batch, project_id, material_store(project_id), task_repository(), task_artifacts(), payload)
-        return public_batch(task, task_artifacts())
+        return public_batch(task, task_artifacts(), task_repository())
 
     @router.get("/{task_id}")
     def get(project_id: str, task_id: str):
-        return public_batch(require_task(project_id, task_id), task_artifacts())
+        return public_batch(require_task(project_id, task_id), task_artifacts(), task_repository())
 
     @router.post("/{task_id}/cancel")
     def cancel(project_id: str, task_id: str):
         require_task(project_id, task_id)
-        return public_batch(task_repository().request_cancel(task_id), task_artifacts())
+        return public_batch(task_repository().request_cancel(task_id), task_artifacts(), task_repository())
 
     @router.get("/{task_id}/results")
     def results(project_id: str, task_id: str, cursor: str = "", limit: int = 100):
@@ -560,7 +610,7 @@ def material_batch_router(get_project, material_store, task_repository, task_art
         if task.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.CANCELLED,
                                TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE}:
             raise HTTPException(409, detail="only incomplete terminal batches can be retried")
-        return public_batch(task_repository().retry(task_id), task_artifacts())
+        return public_batch(task_repository().retry(task_id), task_artifacts(), task_repository())
 
     @router.get("/{task_id}/log")
     def log(project_id: str, task_id: str):
@@ -570,7 +620,14 @@ def material_batch_router(get_project, material_store, task_repository, task_art
             raise HTTPException(404, detail="task log unavailable")
         return FileResponse(path, media_type="text/plain", filename=f"{task_id}.log")
 
-    return router
+    # app.py has one additive runtime-router mount today.  Keep material-batch
+    # URLs untouched while composing the independent training recovery API at
+    # that existing integration point instead of adding route side effects.
+    from .training_recovery_api import training_recovery_router
+    root = APIRouter()
+    root.include_router(router)
+    root.include_router(training_recovery_router(get_project, task_repository, task_artifacts))
+    return root
 
 
 def worker_registration(data_dir):

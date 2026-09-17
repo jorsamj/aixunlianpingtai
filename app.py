@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
 import requests
 import yaml
@@ -33,19 +33,26 @@ from platform_core.annotations import annotation_summary, atomic_write_json, nor
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.storage.import_confirmation import confirm_import, public_quality
 from platform_core.algorithms import (
+    attach_version as attach_algorithm_version,
+    choose_algorithm_iteration_base,
     choose_iteration_base,
+    delete_algorithm_version,
     is_trainable_version,
+    project_current_version,
+    rollback_algorithm_version,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
     save_algorithms as save_algorithm_assets,
     update_algorithm as update_algorithm_asset,
+    update_algorithm_version,
 )
 from platform_core import auto_label as auto_label_core
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
 from platform_core.annotation_task_service import commit_candidate_decisions
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
+from platform_core.build_identity import resolve_build_id
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
 from platform_core.labels import active_label_options
@@ -63,6 +70,7 @@ from platform_core.resource_discovery import (
     OFFICIAL_DOWNLOADABLE_MODELS,
     probe_python_environment,
 )
+from platform_core.resource_discovery.request_scope import resolve_discovery_request_roots
 from platform_core.resource_discovery.tasks import (
     CACHE_FILENAME as RESOURCE_DISCOVERY_CACHE_FILENAME,
     PROGRESS_REF as RESOURCE_DISCOVERY_PROGRESS_REF,
@@ -90,6 +98,7 @@ from platform_core.storage.zip_import import (
 )
 from platform_core.snapshots import build_snapshot, persist_snapshot
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
+from platform_core.training_job_projection import apply_training_task_truth
 from platform_core.task_runtime import (
     ArtifactStore,
     ProcessController,
@@ -98,13 +107,25 @@ from platform_core.task_runtime import (
     TaskRecord,
     TaskRepository,
     TaskStatus,
+    WorkerInstanceService,
+    task_to_public,
+    training_queue_truth,
 )
 from platform_core.training_splits import SplitMode, SplitRequest
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
-from platform_core.gpu_resources import GPUResourceManager
+from platform_core.gpu_resources import GPUResourceManager, read_gpu_runtime_truth
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
+from platform_core.material_batches import (
+    BatchOperation as MaterialBatchOperation,
+    SELECTION_REF as MATERIAL_BATCH_SELECTION_REF,
+    estimate_batch as estimate_material_batch,
+    prepare_batch as prepare_material_batch,
+    publish_prepared_batch as publish_prepared_material_batch,
+    public_batch as public_material_batch,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
+BUILD_ID = resolve_build_id(BASE_DIR)
 def _read_app_version() -> str:
     env_v = os.environ.get("MC_PLATFORM_VERSION", "").strip()
     if env_v:
@@ -256,11 +277,111 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
 def system_version():
     return {
         "version": APP_VERSION,
+        "build_id": BUILD_ID,
         "name": "畅联云算法训练",
         "data_dir": str(DATA_DIR),
         "base_dir": str(BASE_DIR),
         "persistent": True,
     }
+
+
+@app.get("/api/v62/workers")
+def list_worker_runtime():
+    return {"items": WorkerInstanceService(shared_task_repository()).list_runtime()}
+
+
+@app.get("/api/v62/gpu-runtime")
+def gpu_runtime_truth():
+    return read_gpu_runtime_truth(shared_task_repository())
+
+
+def _runtime_task_for_project(project_id: str, task_id: str) -> TaskRecord:
+    get_project(project_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+@app.get("/api/v62/projects/{project_id}/tasks")
+def list_unified_runtime_tasks(
+    project_id: str,
+    kind: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+):
+    get_project(project_id)
+    kinds = None
+    if kind:
+        try:
+            kinds = (TaskKind(str(kind).strip().upper()),)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=f"未知任务类型：{kind}") from error
+    repository = shared_task_repository()
+    try:
+        page = repository.list(project_id=project_id, kinds=kinds, limit=limit, cursor=cursor)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
+    return {
+        "items": [
+            task_to_public(
+                task, repository,
+                worker_runtime=worker_runtime,
+                queued_candidates=queued_candidates,
+            )
+            for task in page.items
+        ],
+        "next_cursor": page.next_cursor,
+    }
+
+
+@app.get("/api/v62/projects/{project_id}/tasks/{task_id}")
+def get_unified_runtime_task(project_id: str, task_id: str):
+    repository = shared_task_repository()
+    return task_to_public(_runtime_task_for_project(project_id, task_id), repository)
+
+
+@app.post("/api/v62/projects/{project_id}/tasks/{task_id}/promote")
+def promote_unified_runtime_task(project_id: str, task_id: str):
+    _runtime_task_for_project(project_id, task_id)
+    repository = shared_task_repository()
+    try:
+        task = repository.promote(task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return task_to_public(task, repository)
+
+
+@app.post("/api/v62/projects/{project_id}/tasks/{task_id}/cancel")
+def cancel_unified_runtime_task(project_id: str, task_id: str):
+    current = _runtime_task_for_project(project_id, task_id)
+    repository = shared_task_repository()
+    try:
+        task = repository.request_cancel(task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if (
+        current.status is TaskStatus.RUNNING
+        and current.process_pid is not None
+        and current.process_create_time is not None
+        and str(current.process_command_hash or "").strip()
+    ):
+        identity = ProcessIdentity(
+            pid=int(current.process_pid),
+            create_time=float(current.process_create_time),
+            command_hash=str(current.process_command_hash),
+        )
+        try:
+            ProcessController().terminate_tree(identity)
+        except PermissionError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=f"取消请求已记录，但任务进程无法安全终止：{error}",
+            ) from error
+    return task_to_public(task, repository)
+
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 LABEL_EXTS = {".txt"}
@@ -608,9 +729,20 @@ def now_iso() -> str:
 def _parse_dt_value(value: Any) -> Optional[datetime]:
     if not value:
         return None
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        # Runtime jobs historically store local naive timestamps while durable tasks
+        # use UTC offsets. Normalize aware values to the server local clock before
+        # mixing the two representations.
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except Exception:
+        pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
         try:
-            return datetime.strptime(str(value)[:26], fmt)
+            return datetime.strptime(text[:26], fmt)
         except Exception:
             pass
     return None
@@ -695,11 +827,19 @@ def _terminate_pid_tree(pid: Any) -> bool:
         return False
 
 
-def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
+def enrich_job_runtime(
+    project_id: str,
+    job: Dict[str, Any],
+    *,
+    repository=None,
+    worker_runtime=None,
+    queued_candidates=None,
+) -> Dict[str, Any]:
     if not job:
         return job
+    repository = repository or shared_task_repository()
     job_id = job.get("id") or ""
-    durable = shared_task_repository().get(str(job_id)) if job_id else None
+    durable = repository.get(str(job_id)) if job_id else None
     if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
         mapped = {
             TaskStatus.QUEUED: "queued",
@@ -712,19 +852,31 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             TaskStatus.BLOCKED_BY_ENVIRONMENT: "failed",
             TaskStatus.BLOCKED_BY_HARDWARE: "failed",
         }.get(durable.status, str(job.get("status") or "queued"))
+        public_runtime = task_to_public(durable, repository)
+        if durable.status is TaskStatus.QUEUED:
+            public_runtime.update(
+                training_queue_truth(
+                    durable,
+                    repository,
+                    worker_runtime=worker_runtime,
+                    queued_candidates=queued_candidates,
+                )
+            )
+        if public_runtime["status"] == "WAITING_RESOURCE":
+            mapped = "waiting"
+        apply_training_task_truth(job, public_runtime, legacy_status=mapped)
         job.update(
-            status=mapped,
-            progress_percent=float(durable.progress),
-            task_stage=durable.stage,
-            task_status=durable.status.value,
-            current_item=durable.current_item,
             result_ref=durable.result_ref or job.get("result_ref"),
+            queue_priority=int(durable.priority),
+            priority_scheme="lower_number_first",
         )
         if durable.error:
             job["error"] = durable.error
             job["message"] = durable.error
         if durable.finished_at:
-            job["finished_at"] = durable.finished_at
+            # Keep the worker's own finished_at when present so started/finished use
+            # the same clock representation; durable UTC is the recovery fallback.
+            job.setdefault("finished_at", durable.finished_at)
     proc = PROCESS_REGISTRY.get(job_id) if job_id else None
     status = job.get("status") or "queued"
     if proc:
@@ -761,18 +913,29 @@ def enrich_job_runtime(project_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
             status = "failed"
             job["message"] = "训练进程已结束，但没有写入成功结果，请查看训练日志"
             job.setdefault("finished_at", now_iso())
-    total = int(job.get("epochs") or 0)
+    training_progress = job.get("training_progress") if isinstance(job.get("training_progress"), dict) else {}
+    try:
+        total = int(float(training_progress.get("total_epochs") or job.get("total_epochs") or job.get("epochs") or 0))
+    except (TypeError, ValueError):
+        total = 0
+    try:
+        persisted_cur = int(float(training_progress.get("epoch") or job.get("current_epoch") or 0))
+    except (TypeError, ValueError):
+        persisted_cur = 0
     log_text = _job_log_text(project_id, job_id)
-    cur = _infer_epoch_from_log(log_text, total)
-    if status in {"done", "finished"}:
-        cur = total or cur
+    cur = max(persisted_cur, _infer_epoch_from_log(log_text, total))
+    if status in {"done", "finished", "completed"}:
+        # 100% means the task lifecycle is terminal. It must not fabricate 300/300
+        # when Ultralytics legitimately stopped at 180/300.
         progress = 100
     elif status in {"failed", "stopped"}:
         progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
     else:
         progress = int(min(99, round((cur / total) * 100))) if total and cur else int(job.get("progress_percent") or 0)
     started = _parse_dt_value(job.get("started_at") or job.get("created_at"))
-    elapsed = int((datetime.now() - started).total_seconds()) if started else 0
+    finished = _parse_dt_value(job.get("finished_at")) if status in {"done", "finished", "completed", "failed", "stopped"} else None
+    clock = finished or datetime.now()
+    elapsed = int((clock - started).total_seconds()) if started else 0
     # 暂停期间不计入真实训练耗时/ETA。
     paused_seconds = int(job.get("paused_seconds") or 0)
     if status == "paused" and job.get("paused_at"):
@@ -1599,7 +1762,38 @@ def _v50_begin_image_batch(project_id: str):
         "project_id": project_id,
         "records": {},
         "patches": {},
+        # New-image annotations are buffered with the material rows and
+        # committed once per request/import batch. Existing-image writes
+        # stay immediate so their independent update semantics do not change.
+        "annotations": {},
+        "annotation_repository": None,
+        # Storage source schema/provider/credential setup is request-scoped,
+        # not image-scoped. Reuse one manager across the whole import batch.
+        "storage_manager": None,
     }
+
+
+def _v50_annotation_repository(project_id: str) -> AnnotationRepository:
+    batch = _v50_active_image_batch(project_id)
+    if batch is not None:
+        repository = batch.get("annotation_repository")
+        if repository is None:
+            repository = AnnotationRepository(project_dir(project_id))
+            batch["annotation_repository"] = repository
+        return repository
+    return AnnotationRepository(project_dir(project_id))
+
+
+def _v50_storage_manager(project_id: str) -> StorageManager:
+    batch = _v50_active_image_batch(project_id)
+    if batch is not None:
+        manager = batch.get("storage_manager")
+        if manager is None:
+            manager = storage_manager(project_id)
+            batch["storage_manager"] = manager
+        return manager
+    return storage_manager(project_id)
+
 
 def _v50_queue_image_patch(project_id: str, image_id: str, patch: Dict[str, Any]) -> bool:
     batch = _v50_active_image_batch(project_id)
@@ -1634,13 +1828,23 @@ def _v50_cleanup_buffered_image_batch_files(
                 path.unlink(missing_ok=True)
             except OSError as error:
                 errors.append(f"{path.name}: {error}")
+    image_ids = [
+        str(record.get("id") or "")
+        for record in records
+        if str(record.get("id") or "")
+    ]
+    if image_ids:
+        try:
+            AnnotationRepository(p).remove(image_ids)
+        except Exception as error:
+            errors.append(f"annotation sqlite cleanup: {error}")
     return errors
 
 
 def _v50_end_image_batch(save: bool = True):
     batch = getattr(_IMAGE_BATCH_CTX, "batch", None)
     _IMAGE_BATCH_CTX.batch = None
-    if not save or not batch:
+    if not batch:
         return []
     project_id = str(batch.get("project_id") or "")
     records = [dict(record) for record in batch.get("records", {}).values()]
@@ -1648,60 +1852,101 @@ def _v50_end_image_batch(save: bool = True):
         str(image_id): dict(patch)
         for image_id, patch in batch.get("patches", {}).items()
     }
-    if not records and not patches:
+    annotations = [
+        dict(row) for row in batch.get("annotations", {}).values()
+    ]
+    if not save:
+        cleanup_errors = _v50_cleanup_buffered_image_batch_files(project_id, records)
+        if cleanup_errors:
+            raise RuntimeError(
+                "批量导入回滚失败：" + "; ".join(cleanup_errors)
+            )
+        return []
+    if not records and not patches and not annotations:
         return []
 
-    def commit(rows):
-        by_id = {}
-        for row in rows:
-            by_id.setdefault(str(row.get("id")), row)
-        changed_ids = []
-        for incoming in records:
-            image_id = str(incoming.get("id"))
-            row = by_id.get(image_id)
-            if row is None:
-                row = dict(incoming)
-                rows.append(row)
-                by_id[image_id] = row
-            else:
-                row.update(incoming)
-            changed_ids.append(image_id)
-        for image_id, patch in patches.items():
-            row = by_id.get(image_id)
-            if row is None:
-                continue
-            row.update(patch)
-            if image_id not in changed_ids:
-                changed_ids.append(image_id)
-        return [dict(by_id[image_id]) for image_id in changed_ids]
-
-    target_dataset_ids = {
-        str(record.get("dataset_id") or "default")
-        for record in records
-    }
-    target_dataset_ids.update(
-        str(patch.get("dataset_id") or "default")
-        for patch in patches.values()
-        if "dataset_id" in patch
-    )
     try:
+        if annotations:
+            annotation_repository = (
+                batch.get("annotation_repository")
+                or AnnotationRepository(project_dir(project_id))
+            )
+            saved_annotations = annotation_repository.upsert_many(
+                annotations,
+                project_material=False,
+                return_rows=True,
+            )
+            records_by_id = {
+                str(record.get("id")): record for record in records
+            }
+            for saved in saved_annotations:
+                image_id = str(saved.get("image_id") or "")
+                patch = _v50_material_annotation_patch(saved)
+                record = records_by_id.get(image_id)
+                if record is not None:
+                    record.update(patch)
+                else:
+                    patches.setdefault(image_id, {}).update(patch)
+
+        records_by_id = {
+            str(record.get("id")): record for record in records
+        }
+        for image_id in list(patches):
+            record = records_by_id.get(image_id)
+            if record is not None:
+                record.update(patches.pop(image_id))
+
+        target_dataset_ids = {
+            str(record.get("dataset_id") or "default")
+            for record in records
+        }
+        target_dataset_ids.update(
+            str(patch.get("dataset_id") or "default")
+            for patch in patches.values()
+            if "dataset_id" in patch
+        )
         with _v50_dataset_locks(project_id, target_dataset_ids):
             for dataset_id in sorted(target_dataset_ids):
                 _v50_assert_dataset_writable_locked(project_id, dataset_id)
-            return material_store(project_id).mutate(commit)
-    except HTTPException as error:
-        if error.status_code != 409:
-            raise
+            repository = material_store(project_id)
+            if not patches:
+                return repository.upsert_many(records)
+
+            # Rare compatibility fallback: a batch may contain patches for
+            # pre-existing rows. Preserve the old single-transaction mutate
+            # semantics for that case instead of splitting atomicity.
+            def commit(rows):
+                by_id = {}
+                for row in rows:
+                    by_id.setdefault(str(row.get("id")), row)
+                changed_ids = []
+                for incoming in records:
+                    image_id = str(incoming.get("id"))
+                    row = by_id.get(image_id)
+                    if row is None:
+                        row = dict(incoming)
+                        rows.append(row)
+                        by_id[image_id] = row
+                    else:
+                        row.update(incoming)
+                    changed_ids.append(image_id)
+                for image_id, patch in patches.items():
+                    row = by_id.get(image_id)
+                    if row is None:
+                        continue
+                    row.update(patch)
+                    if image_id not in changed_ids:
+                        changed_ids.append(image_id)
+                return [dict(by_id[image_id]) for image_id in changed_ids]
+
+            return repository.mutate(commit)
+    except Exception as error:
         cleanup_errors = _v50_cleanup_buffered_image_batch_files(
             project_id, records
         )
         if cleanup_errors:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "批量导入被拒绝，部分缓冲文件未能清理",
-                    "errors": cleanup_errors,
-                },
+            raise RuntimeError(
+                f"{error}; 批量上传回滚未完全完成：" + "; ".join(cleanup_errors)
             ) from error
         raise
 
@@ -1715,42 +1960,103 @@ def _v50_mark_image_processed(project_id: str, image_id: str, annotated: bool = 
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
-def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
-    saved = AnnotationRepository(project_dir(project_id)).upsert(image_id, boxes, annotation_state)
-    updated = saved['updated_at']
-    # v42.11：把标注摘要同步进 images.json。列表页/首次启动无需逐张再次读取 annotation json，
-    # 同时保留前 32 个框用于数据卡片和预览叠加显示。
+def _v50_material_annotation_patch(saved: Dict[str, Any]) -> Dict[str, Any]:
+    boxes = list(saved.get("boxes") or [])
+    state = str(saved.get("annotation_state") or ("annotated" if boxes else "unannotated"))
+    updated = str(saved.get("updated_at") or now_iso())
     patch = {
-        **annotation_summary(boxes, saved['annotation_state']),
+        **annotation_summary(boxes, state),
+        "annotation_scope": list(saved.get("annotation_scope") or []),
+        "annotation_hash": str(saved.get("content_digest") or ""),
         "annotation_summary_at": updated,
     }
-    if saved['annotation_state'] in {'annotated', 'confirmed_empty'}:
+    if state in {"annotated", "confirmed_empty"}:
         patch["processing_status"] = "processed"
         patch["annotated_at"] = updated
+    return patch
+
+
+def write_annotation(project_id: str, image_id: str, boxes: List[Dict[str, Any]], annotation_state=None):
+    batch = _v50_active_image_batch(project_id)
+    normalized_id = str(image_id)
+    if batch is not None and normalized_id in batch.get("records", {}):
+        batch.setdefault("annotations", {})[normalized_id] = {
+            "image_id": normalized_id,
+            "boxes": [dict(box) for box in boxes],
+            "annotation_state": annotation_state,
+        }
+        return
+
+    # Existing-image writes remain immediately durable. New images inside
+    # an import/upload batch are persisted together by _v50_end_image_batch.
+    saved = _v50_annotation_repository(project_id).upsert(
+        image_id, boxes, annotation_state, project_material=False
+    )
+    patch = _v50_material_annotation_patch(saved)
     if not _v50_queue_image_patch(project_id, image_id, patch):
         material_store(project_id).patch({str(image_id): patch})
 
 
 def read_annotation(project_id: str, image_id: str) -> Dict[str, Any]:
-    return AnnotationRepository(project_dir(project_id)).get(image_id)
+    return _v50_annotation_repository(project_id).get(image_id)
 
+
+class _NonClosingImageStream:
+    """Let Pillow inspect a caller-owned stream without closing it."""
+    def __init__(self, stream):
+        self._stream = stream
+
+    def read(self, *args, **kwargs):
+        return self._stream.read(*args, **kwargs)
+
+    def seek(self, *args, **kwargs):
+        return self._stream.seek(*args, **kwargs)
+
+    def tell(self):
+        return self._stream.tell()
+
+    def readline(self, *args, **kwargs):
+        return self._stream.readline(*args, **kwargs)
+
+    def close(self):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 def add_image_record(
-    project_id: str, src: Path, original_name: str,
+    project_id: str, src: Any, original_name: str,
     source_type: str = "raw", dataset_id: str = "default",
-    storage_source_id: str = "default_local",
+    storage_source_id: str = "default_local", annotation_builder=None,
+    content_sha256: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
-    ext = src.suffix.lower()
+    path_source = isinstance(src, (str, Path))
+    ext = (Path(src).suffix if path_source else Path(original_name).suffix).lower()
     if ext not in IMAGE_EXTS:
         return None
     img_id = uuid.uuid4().hex[:16]
     dst_name = f"{img_id}{ext}"
     try:
-        info = image_info(src)
+        if path_source:
+            info = image_info(Path(src))
+        else:
+            src.seek(0)
+            image = Image.open(_NonClosingImageStream(src))
+            try:
+                info = {"width": image.width, "height": image.height}
+            finally:
+                image.close()
+            src.seek(0)
     except Exception:
+        try:
+            if not path_source:
+                src.seek(0)
+        except Exception:
+            pass
         return None
-    source_config = storage_source_repository().get(storage_source_id)
+    manager = _v50_storage_manager(project_id)
+    source_config = manager.sources.get(storage_source_id)
     if source_config is None:
         raise StorageError(
             code="STORAGE_SOURCE_NOT_FOUND", message="素材保存位置不存在",
@@ -1758,11 +2064,21 @@ def add_image_record(
             solution="请刷新保存位置后重试。",
         )
     object_key = f"uploads/{dst_name}"
-    metadata = storage_manager(project_id).upload_object(
+    metadata = manager.upload_object(
         storage_source_id, object_key, src,
         content_type=f"image/{'jpeg' if ext in {'.jpg', '.jpeg'} else ext.lstrip('.')}",
     )
-    content_hash = sha256_file(src)
+    content_hash = str(content_sha256 or metadata.sha256 or "").strip().lower()
+    if not content_hash:
+        if path_source:
+            content_hash = sha256_file(Path(src))
+        else:
+            src.seek(0)
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                digest.update(chunk)
+            content_hash = digest.hexdigest()
+            src.seek(0)
     target_dataset_id = dataset_id or "default"
     record = {
         "id": img_id,
@@ -1788,6 +2104,9 @@ def add_image_record(
     annotation_path = p / "annotations" / f"{img_id}.json"
     batch = None
     try:
+        prepared_annotation_boxes = None
+        if annotation_builder is not None:
+            prepared_annotation_boxes = list(annotation_builder(dict(record)) or [])
         with _v50_dataset_locks(project_id, [target_dataset_id]):
             _v50_assert_dataset_writable_locked(project_id, target_dataset_id)
             batch = _v50_active_image_batch(project_id)
@@ -1800,13 +2119,17 @@ def add_image_record(
                 batch["records"][image_id] = buffered
             else:
                 record = material_store(project_id).upsert(record)
-            if not annotation_path.exists():
+            if prepared_annotation_boxes is not None:
+                # Structured import paths already know the final GT. Persist it once
+                # before returning instead of durable unannotated -> final double writes.
+                write_annotation(project_id, img_id, prepared_annotation_boxes)
+            elif not annotation_path.exists():
                 write_annotation(project_id, img_id, [], 'unannotated')
     except Exception:
         annotation_path.unlink(missing_ok=True)
-        AnnotationRepository(p).remove([img_id])
+        _v50_annotation_repository(project_id).remove([img_id])
         try:
-            storage_manager(project_id).delete_source_file(record)
+            manager.delete_source_file(record)
         except Exception:
             pass
         raise
@@ -2395,6 +2718,9 @@ def _v50_finish_absent_dataset_deletion(
 def _v50_cleanup_dataset_delete_artifacts(journal: Dict[str, Any]):
     project_id = str(journal.get("project_id") or "")
     token = str(journal.get("token") or "")
+    # The SQLite backup is part of the deletion journal. Clear it before
+    # removing filesystem recovery evidence so a DB failure leaves the journal.
+    AnnotationRepository(project_dir(project_id)).complete_delete(token)
     staging_dir = _v50_dataset_delete_staging_dir(project_id, token)
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
@@ -2422,12 +2748,15 @@ def _v50_recover_one_dataset_deletion(
         dataset_present = any(
             str(item.get("id") or "") == dataset_id for item in datasets
         )
+        annotation_repository = AnnotationRepository(project_dir(project_id))
         if dataset_present:
             _v50_restore_dataset_delete_files(project_id, journal)
             _v50_restore_dataset_delete_rows(project_id, journal)
+            annotation_repository.restore_delete(token)
             journal["status"] = "recovered"
         else:
             _v50_finish_absent_dataset_deletion(project_id, journal)
+            annotation_repository.finalize_delete(token)
             journal["status"] = "deletion_finished"
         _v50_write_dataset_delete_journal(journal)
         _v50_cleanup_dataset_delete_artifacts(journal)
@@ -2645,6 +2974,10 @@ def delete_dataset(project_id: str, dataset_id: str):
             )
             journal["status"] = "claimed"
             _v50_write_dataset_delete_journal(journal)
+            AnnotationRepository(project_dir(project_id)).prepare_delete(
+                claim_token,
+                [str(row.get("id")) for row in journal["claimed_rows"]],
+            )
 
         journal["status"] = "staging"
         _v50_write_dataset_delete_journal(journal)
@@ -2671,6 +3004,9 @@ def delete_dataset(project_id: str, dataset_id: str):
                 _v50_restore_dataset_delete_files(project_id, journal)
                 with coordination_lock:
                     _v50_restore_dataset_delete_rows(project_id, journal)
+                    AnnotationRepository(project_dir(project_id)).restore_delete(
+                        claim_token
+                    )
                     journal["status"] = "rolled_back"
                     _v50_write_dataset_delete_journal(journal)
                 _v50_cleanup_dataset_delete_artifacts(journal)
@@ -2719,6 +3055,7 @@ def delete_dataset(project_id: str, dataset_id: str):
             finalized = material_store(project_id).mutate(finalize_dataset_rows)
             if len(finalized) != len(journal["claimed_rows"]):
                 raise RuntimeError("数据集删除锁定的素材数量已变化")
+            AnnotationRepository(project_dir(project_id)).finalize_delete(claim_token)
             journal["status"] = "finalized"
             _v50_write_dataset_delete_journal(journal)
             datasets = _v50_read_datasets_strict(project_id)
@@ -2876,37 +3213,56 @@ async def upload_images(
     uploaded, failed = [], []
     batch_id = uuid.uuid4().hex[:12]
     started = time.time()
-    # v42.11：分块写盘，避免多张大图一次性占满内存；逐文件返回失败原因。
-    for file in files:
-        filename = safe_filename(file.filename or "image.jpg")
-        ext = Path(filename).suffix.lower()
-        if ext not in IMAGE_EXTS:
-            failed.append({"name": filename, "reason": "不支持的图片格式"})
-            continue
-        tmp = p / "imports" / f"upload_{uuid.uuid4().hex}{ext}"
-        try:
-            with tmp.open("wb") as out:
-                while True:
-                    chunk = await file.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-            if not tmp.exists() or tmp.stat().st_size <= 0:
-                failed.append({"name": filename, "reason": "文件为空"})
+    _v50_begin_image_batch(project_id)
+    try:
+        # Starlette already owns a seekable/spooled UploadFile. Send that stream
+        # directly to StorageManager instead of writing imports/upload_* and then
+        # copying the same bytes into the final object a second time.
+        for file in files:
+            filename = safe_filename(file.filename or "image.jpg")
+            ext = Path(filename).suffix.lower()
+            if ext not in IMAGE_EXTS:
+                failed.append({"name": filename, "reason": "不支持的图片格式"})
                 continue
-            record = add_image_record(
-                project_id, tmp, filename, "raw", dataset_id, storage_source_id
-            )
-            if record:
-                uploaded.append(record)
-            else:
-                failed.append({"name": filename, "reason": "图片损坏或无法识别"})
-        except StorageError as error:
-            failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
-        except Exception as e:
-            failed.append({"name": filename, "reason": str(e)})
-        finally:
-            tmp.unlink(missing_ok=True)
+            try:
+                await file.seek(0)
+                stream = file.file
+                stream.seek(0, os.SEEK_END)
+                size_bytes = stream.tell()
+                stream.seek(0)
+                if size_bytes <= 0:
+                    failed.append({"name": filename, "reason": "文件为空"})
+                    continue
+                record = add_image_record(
+                    project_id,
+                    stream,
+                    filename,
+                    "raw",
+                    dataset_id,
+                    storage_source_id,
+                )
+                if record:
+                    uploaded.append(record)
+                else:
+                    failed.append({"name": filename, "reason": "图片损坏或无法识别"})
+            except StorageError as error:
+                failed.append({"name": filename, "reason": f"{error.message}：{error.detail}"})
+            except Exception as error:
+                failed.append({"name": filename, "reason": str(error)})
+        committed = _v50_end_image_batch(save=True)
+        if committed:
+            committed_by_id = {
+                str(item.get("id")): item for item in committed
+            }
+            uploaded = [
+                dict(committed_by_id.get(str(item.get("id"))) or item)
+                for item in uploaded
+            ]
+    except Exception:
+        if _v50_active_image_batch(project_id):
+            _v50_end_image_batch(save=False)
+        raise
+
     upload_batch_store(project_id).create(
         batch_id,
         [str(item.get("id")) for item in uploaded],
@@ -2918,7 +3274,7 @@ async def upload_images(
         "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
         "elapsed_seconds": round(max(0.0, time.time()-started), 2),
-        "total": material_store(project_id).count()
+        "total": material_store(project_id).count(),
     }
 
 
@@ -4398,6 +4754,19 @@ def _public_discovery_task(task: TaskRecord) -> Dict[str, Any]:
     response = _public_task(task)
     response["task_id"] = task.task_id
     response["progress_determinate"] = False
+    request_payload = shared_task_artifacts().read_json(
+        task.task_id, "request.json", default={}
+    )
+    if not isinstance(request_payload, dict):
+        request_payload = {}
+    scan_roots = [
+        str(root).strip()
+        for root in (request_payload.get("roots") or [])
+        if str(root).strip()
+    ]
+    response["discovery_scope"] = str(request_payload.get("scope") or "").strip().lower()
+    response["scan_roots"] = scan_roots
+    response["scan_root_count"] = len(scan_roots)
     progress = shared_task_artifacts().read_json(
         task.task_id, RESOURCE_DISCOVERY_PROGRESS_REF, default={}
     )
@@ -4474,10 +4843,14 @@ def list_local_models(limit: int = 200, cursor: Optional[str] = None):
 
 @app.post("/api/local_models/scan", status_code=202)
 def scan_local_models(payload: LocalModelScanReq):
-    roots = [value for value in (payload.roots or []) if str(value).strip()]
-    scope = payload.scope or ("directory" if roots else "full")
-    if scope == "directory" and not roots:
+    submitted_roots = [value for value in (payload.roots or []) if str(value).strip()]
+    scope = payload.scope or ("directory" if submitted_roots else "full")
+    if scope == "directory" and not submitted_roots:
         raise HTTPException(status_code=422, detail="指定目录扫描至少需要一个目录")
+    try:
+        roots = resolve_discovery_request_roots(scope, submitted_roots)
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     return _public_discovery_task(_create_discovery_task("local_models", scope, roots))
 
 
@@ -4499,8 +4872,12 @@ def get_ultralytics_env():
 
 @app.post("/api/ultralytics_env/detect", status_code=202)
 def detect_ultralytics_env(payload: UltralyticsEnvDetectReq):
+    try:
+        roots = resolve_discovery_request_roots(payload.scope, payload.roots)
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     return _public_discovery_task(
-        _create_discovery_task("ultralytics_environment", payload.scope, payload.roots)
+        _create_discovery_task("ultralytics_environment", payload.scope, roots)
     )
 
 
@@ -4986,7 +5363,10 @@ class TrainReq(BaseModel):
         if isinstance(value, dict) and (value.get("train_dataset_ids") or value.get("test_dataset_ids")):
             raise ValueError("训练任务只按素材 image_id 选择，不能提交数据集分组")
         if isinstance(value, dict):
-            value = {**value, "device": normalize_training_device(value.get("device", "auto"))}
+            value = dict(value)
+            if isinstance(value.get("cache"), bool):
+                value["cache"] = "True" if value["cache"] else "False"
+            value["device"] = normalize_training_device(value.get("device", "auto"))
         return value
 
     framework: str = "ultralytics"  # ultralytics / paddle
@@ -5520,11 +5900,20 @@ def list_jobs(project_id: str):
     except Exception: pass
     sync_jobs_index(project_id)
     rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    repository = shared_task_repository()
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
     out=[]
     for row in rows:
         jf=project_dir(project_id)/"jobs"/str(row.get("id") or "")/"job.json"
         full=read_json(jf,row) if jf.exists() else row
-        full=enrich_job_runtime(project_id,full)
+        full=enrich_job_runtime(
+            project_id,
+            full,
+            repository=repository,
+            worker_runtime=worker_runtime,
+            queued_candidates=queued_candidates,
+        )
         if jf.exists(): write_json(jf,full)
         out.append(full)
     return out
@@ -5834,12 +6223,17 @@ class VersionPatchReq(BaseModel):
     remark: Optional[str] = None
 
 
+class AlgorithmVersionRollbackReq(BaseModel):
+    delete_current_version: bool = False
+    expected_current_version_id: Optional[str] = None
+
+
 def algorithms_file(project_id: str) -> Path:
     return project_dir(project_id) / "algorithms.json"
 
 
 def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
-    """Fast algorithm asset read. Existing report snapshots are reused."""
+    """Fast, read-only algorithm projection. Existing report snapshots are reused."""
     get_project(project_id)
     data = list_algorithm_assets(algorithms_file(project_id))
     changed = False
@@ -5857,11 +6251,214 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
                     fresh=job_report(project_id,v.get("job_id",""),sp)
                     if fresh: v["report"]=fresh; v["report_updated_at"]=now_iso(); changed=True
                 except Exception: pass
-    if changed: write_json(algorithms_file(project_id),data)
-    return data
+    # A GET must never overwrite a concurrent rollback/current-pointer update.
+    # Legacy defaults remain a read projection and are persisted on the next
+    # explicit algorithm/version mutation through platform_core.algorithms.
+    return [project_current_version(item) for item in data]
 
 def save_algorithms_internal(project_id: str, data: List[Dict[str, Any]]):
     save_algorithm_assets(algorithms_file(project_id), data)
+
+
+_ACTIVE_VERSION_REFERENCE_STATUSES = {
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.CANCEL_REQUESTED,
+}
+
+
+def _iter_active_project_tasks(project_id: str):
+    repository = shared_task_repository()
+    cursor = None
+    while True:
+        page = repository.list(
+            project_id=project_id,
+            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION, TaskKind.DEPLOYMENT_TEST),
+            statuses=_ACTIVE_VERSION_REFERENCE_STATUSES,
+            limit=100,
+            cursor=cursor,
+        )
+        yield from page.items
+        cursor = page.next_cursor
+        if not cursor:
+            break
+
+
+def _version_model_paths(version: Mapping[str, Any]) -> set[Path]:
+    paths: set[Path] = set()
+    for field in ("stored_path", "best_path", "last_path", "path"):
+        raw = str(version.get(field) or "").strip()
+        if raw:
+            try:
+                paths.add(Path(raw).expanduser().resolve())
+            except (OSError, RuntimeError):
+                continue
+    return paths
+
+
+def _deploy_job_references_version(job: Mapping[str, Any], algorithm_id: str, version_id: str) -> bool:
+    source = job.get("source_meta") or {}
+    trace = job.get("source_trace") or {}
+    return bool(
+        (str(source.get("algorithm_id") or "") == algorithm_id and str(source.get("version_id") or "") == version_id)
+        or (str(trace.get("algorithm_id") or "") == algorithm_id and str(trace.get("version_id") or "") == version_id)
+        or str(job.get("source_id") or "") == f"version::{algorithm_id}::{version_id}"
+    )
+
+
+def _algorithm_version_active_references(
+    project_id: str,
+    algorithm: Mapping[str, Any],
+    version: Mapping[str, Any],
+) -> List[Dict[str, str]]:
+    """Return only references the current persistence model can prove."""
+    algorithm_id = str(algorithm.get("id") or "")
+    version_id = str(version.get("id") or "")
+    model_paths = _version_model_paths(version)
+    references: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(kind: str, reference_id: str, reason: str):
+        key = (kind, reference_id)
+        if key not in seen:
+            seen.add(key)
+            references.append({"kind": kind, "id": reference_id, "reason": reason})
+
+    for task in _iter_active_project_tasks(project_id):
+        request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+        if task.kind is TaskKind.TRAINING:
+            task_job = read_json(project_dir(project_id) / "jobs" / task.task_id / "job.json", {})
+            base_id = str(task_job.get("base_version_id") or (request or {}).get("base_version_id") or "")
+            task_algorithm_id = str(
+                task_job.get("asset_algorithm_id")
+                or task_job.get("algorithm_asset_id")
+                or (request or {}).get("algorithm_asset_id")
+                or ""
+            )
+            if task_algorithm_id == algorithm_id and (not base_id or base_id == version_id):
+                add("TRAINING", task.task_id, f"算法仍有活动训练任务 {task.task_id}")
+        elif task.kind is TaskKind.MODEL_CONVERSION:
+            job = read_json(_deploy_job_dir(project_id, task.task_id) / "job.json", {})
+            if _deploy_job_references_version(job, algorithm_id, version_id):
+                add("MODEL_CONVERSION", task.task_id, f"该版本仍有活动模型转换任务 {task.task_id}")
+        elif task.kind is TaskKind.DEPLOYMENT_TEST:
+            raw = str((request or {}).get("model_path") or "").strip()
+            if raw:
+                try:
+                    if Path(raw).expanduser().resolve() in model_paths:
+                        add("DEPLOYMENT_TEST", task.task_id, f"该版本仍有活动部署测试任务 {task.task_id}")
+                except (OSError, RuntimeError):
+                    continue
+
+    jobs_root = project_dir(project_id) / "jobs"
+    for job_file in jobs_root.glob("*/job.json") if jobs_root.exists() else ():
+        job = read_json(job_file, {})
+        status = str(job.get("status") or "").lower()
+        if status not in {"queued", "running", "paused", "cancel_requested", "waiting", "pending"}:
+            continue
+        if str(job.get("asset_algorithm_id") or job.get("algorithm_asset_id") or "") != algorithm_id:
+            continue
+        base_id = str(job.get("base_version_id") or "")
+        if not base_id or base_id == version_id:
+            add("TRAINING", str(job.get("id") or job_file.parent.name), f"算法仍有活动训练任务 {job.get('id') or job_file.parent.name}")
+
+    deploy_jobs_root = deploy_root(project_id) / "jobs"
+    for job_file in deploy_jobs_root.glob("*/job.json") if deploy_jobs_root.exists() else ():
+        job = read_json(job_file, {})
+        if str(job.get("status") or "").lower() not in {"queued", "running", "cancel_requested", "waiting", "pending"}:
+            continue
+        if _deploy_job_references_version(job, algorithm_id, version_id):
+            add("MODEL_CONVERSION", str(job.get("id") or job_file.parent.name), f"该版本仍有活动模型转换任务 {job.get('id') or job_file.parent.name}")
+    return references
+
+
+def _cleanup_algorithm_version_artifacts(
+    project_id: str,
+    algorithm: Mapping[str, Any],
+    version: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Remove only exact version-owned files; keep task/audit artifacts."""
+    algorithm_id = str(algorithm.get("id") or "")
+    version_id = str(version.get("id") or "")
+    version_root = (project_dir(project_id) / "algorithm_versions" / algorithm_id / version_id).resolve()
+    algorithm_versions_root = (project_dir(project_id) / "algorithm_versions" / algorithm_id).resolve()
+    targets: List[str] = []
+    errors: List[str] = []
+
+    # Task state lives in a separate durable store, so repeat the dependency
+    # check after the metadata transaction and before touching any file. This
+    # closes the create-task/preflight race without pretending both stores can
+    # share one filesystem transaction.
+    late_references = _algorithm_version_active_references(project_id, algorithm, version)
+    if late_references:
+        return {
+            "status": "cleanup_failed",
+            "targets": [],
+            "errors": [
+                "元数据提交后发现新的活动引用，已保留全部版本产物："
+                + "；".join(str(item.get("reason") or item.get("id") or "存在活动引用") for item in late_references)
+            ],
+        }
+
+    other_paths: set[Path] = set()
+    for other in algorithm.get("versions") or []:
+        if str(other.get("id") or "") != version_id:
+            other_paths.update(_version_model_paths(other))
+    if version_root.exists():
+        if algorithm_versions_root not in version_root.parents or version_root == algorithm_versions_root:
+            errors.append(f"拒绝清理越界版本目录：{version_root}")
+        elif any(version_root == path or version_root in path.parents for path in other_paths):
+            errors.append(f"版本目录仍被其他算法版本引用：{version_root}")
+        else:
+            try:
+                shutil.rmtree(version_root)
+                targets.append(str(version_root))
+            except OSError as error:
+                errors.append(f"删除版本目录失败 {version_root}：{error}")
+
+    # Completed conversion records remain auditable, while their exact output
+    # files are retired when they are owned by the deleted source version.
+    deploy_jobs_root = deploy_root(project_id) / "jobs"
+    for job_file in deploy_jobs_root.glob("*/job.json") if deploy_jobs_root.exists() else ():
+        job = read_json(job_file, {})
+        if not _deploy_job_references_version(job, algorithm_id, version_id):
+            continue
+        if str(job.get("status") or "").lower() in {"queued", "running", "cancel_requested", "waiting", "pending"}:
+            errors.append(f"转换任务在清理阶段重新变为活动状态：{job.get('id') or job_file.parent.name}")
+            continue
+        job_root = job_file.parent.resolve()
+        changed = False
+        for output in job.get("outputs") or []:
+            raw = str(output.get("path") or "").strip()
+            if not raw:
+                continue
+            try:
+                output_path = Path(raw).expanduser().resolve()
+            except (OSError, RuntimeError) as error:
+                errors.append(f"转换产物路径无效 {raw}：{error}")
+                continue
+            if job_root not in output_path.parents:
+                errors.append(f"拒绝清理非任务专属转换产物：{output_path}")
+                continue
+            try:
+                if output_path.is_file():
+                    output_path.unlink()
+                    targets.append(str(output_path))
+                output["available"] = False
+                output["deleted_with_version_at"] = now_iso()
+                changed = True
+            except OSError as error:
+                errors.append(f"删除转换产物失败 {output_path}：{error}")
+        if changed:
+            job["source_version_status"] = "deleted"
+            job["updated_at"] = now_iso()
+            write_json(job_file, job)
+
+    return {
+        "status": "cleanup_failed" if errors else "cleanup_completed",
+        "targets": targets,
+        "errors": errors,
+    }
 
 
 def used_model_keys(project_id: str) -> set:
@@ -6626,8 +7223,8 @@ def _v54_iteration_base(
     algo = next((a for a in list_algorithms_internal(project_id) if str(a.get("id")) == str(algorithm_id)), None)
     if not algo:
         return None
-    selection = choose_iteration_base(
-        algo.get("versions") or [],
+    selection = choose_algorithm_iteration_base(
+        algo,
         "",
         framework,
         strict_latest=strict_latest,
@@ -6647,6 +7244,7 @@ def _v54_iteration_base(
         "version_id": selection["base_version_id"], "version_name": selection["base_version_name"],
         "path": str(path), "model_name": path.name,
         "is_latest_version": bool(latest and str(latest[0].get("id")) == str(selection["base_version_id"])),
+        "is_current_version": True,
         "latest_version_name": (latest[0] if latest else {}).get("version_name") or "",
     }
 
@@ -6672,7 +7270,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
             "base_version_name": iteration_base.get("version_name") or "",
             "base_model_path": iteration_base.get("path") or "",
             "base_model_kind": "train_checkpoint",
-            "base_selection_reason": "latest_verified_version",
+            "base_selection_reason": iteration_base.get("base_selection_reason") or "current_verified_version",
         }
     else:
         base_selection = choose_iteration_base((asset_algorithm or {}).get("versions") or [], mother_model, framework)
@@ -7191,8 +7789,17 @@ def v48_stop_job(project_id: str, job_id: str):
     if not job: raise HTTPException(status_code=404,detail="训练任务不存在")
     durable = _durable_training_task(project_id, job_id)
     if durable is not None:
+        if durable.status not in {
+            TaskStatus.QUEUED,
+            TaskStatus.RUNNING,
+            TaskStatus.CANCEL_REQUESTED,
+        }:
+            raise HTTPException(status_code=409, detail="训练任务已经结束，不能再次停止")
         was_queued = durable.status is TaskStatus.QUEUED
-        updated = shared_task_repository().request_cancel(job_id)
+        try:
+            updated = shared_task_repository().request_cancel(job_id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         if not was_queued and updated.process_pid is not None:
             try:
                 ProcessController().terminate_tree(_durable_process_identity(updated))
@@ -7322,55 +7929,83 @@ def v12_assign_version(project_id: str, algorithm_id: str, payload: AlgorithmVer
         "report": report,
         "report_updated_at": now_iso(),
         "status": "已归属",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": version_file.suffix.lower() in {".pt", ".pdparams", ".pdmodel", ".pdiparams"},
+        "framework": "paddle" if version_file.suffix.lower() in {".pdparams", ".pdmodel", ".pdiparams"} else "ultralytics",
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
-    algo.setdefault("versions", []).insert(0, version)
-    algo["updated_at"] = now_iso()
-    save_algorithms_internal(project_id, algos)
-    return {"ok": True, "version": version}
+    stored = attach_algorithm_version(algorithms_file(project_id), algorithm_id, version)
+    return {"ok": True, "version": stored}
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
 def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payload: VersionPatchReq):
-    algos = list_algorithms_internal(project_id)
-    for a in algos:
-        if a.get("id") == algorithm_id:
-            for v in a.get("versions", []):
-                if v.get("id") == version_id:
-                    # v42.8 起版本号由训练结束时间唯一生成，不允许人工改写。
-                    if payload.remark is not None: v["remark"] = payload.remark or ""
-                    v["updated_at"] = now_iso(); a["updated_at"] = now_iso()
-                    save_algorithms_internal(project_id, algos)
-                    return v
-    raise HTTPException(status_code=404, detail="版本不存在")
+    # v42.8 起版本号由训练结束时间唯一生成，不允许人工改写。
+    patch: Dict[str, Any] = {}
+    if payload.remark is not None:
+        patch["remark"] = payload.remark or ""
+    return update_algorithm_version(
+        algorithms_file(project_id), algorithm_id, version_id, patch, now=now_iso(),
+    )
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
 def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
-    algos = list_algorithms_internal(project_id)
-    for a in algos:
-        if a.get("id") == algorithm_id:
-            target = next((v for v in a.get("versions", []) if v.get("id") == version_id), None)
-            if not target:
-                raise HTTPException(status_code=404, detail="版本不存在")
-            try:
-                stored = str(target.get("stored_path") or "").strip()
-                if stored:
-                    sp = Path(stored).resolve()
-                    root = (project_dir(project_id) / "algorithm_versions" / algorithm_id).resolve()
-                    # 只允许删除算法版本专属目录，避免空路径 Path("") 误指向当前目录。
-                    if sp.exists() and (root == sp.parent or root in sp.parents):
-                        version_folder = sp.parent
-                        if root in version_folder.parents or version_folder == root:
-                            shutil.rmtree(version_folder, ignore_errors=True)
-            except Exception:
-                pass
-            a["versions"] = [v for v in a.get("versions", []) if v.get("id") != version_id]
-            a["updated_at"] = now_iso()
-            save_algorithms_internal(project_id, algos)
-            return {"ok": True}
-    raise HTTPException(status_code=404, detail="算法不存在")
+    get_project(project_id)
+    result = delete_algorithm_version(
+        algorithms_file(project_id),
+        algorithm_id,
+        version_id,
+        now=now_iso(),
+        operator="local_user",
+        dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
+    )
+    return {
+        "ok": result.get("cleanup_status") != "cleanup_failed",
+        **result,
+        "reference_check": {
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "not_verifiable": ["online_deployment_instances"],
+        },
+    }
+
+
+@app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/rollback")
+def v12_rollback_version(
+    project_id: str,
+    algorithm_id: str,
+    version_id: str,
+    payload: AlgorithmVersionRollbackReq,
+):
+    get_project(project_id)
+    if not str(payload.expected_current_version_id or "").strip():
+        raise PlatformError(
+            "ALGORITHM_VERSION_EXPECTATION_REQUIRED", "缺少当前版本并发校验",
+            "回退请求必须携带页面确认时看到的 current_version_id。",
+            "请刷新算法版本列表后重新确认回退。", 409,
+        )
+    result = rollback_algorithm_version(
+        algorithms_file(project_id),
+        algorithm_id,
+        version_id,
+        now=now_iso(),
+        delete_current_version=bool(payload.delete_current_version),
+        operator="local_user",
+        expected_current_version_id=payload.expected_current_version_id,
+        dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
+    )
+    return {
+        "ok": result.get("cleanup_status") != "cleanup_failed",
+        **result,
+        "reference_check": {
+            "verified": ["training_tasks", "model_conversion_tasks", "deployment_test_tasks"],
+            "not_verifiable": ["online_deployment_instances"],
+        },
+    }
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/download")
@@ -7527,14 +8162,18 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "snapshot_id": str(job.get("snapshot_id") or ""),
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
+        "base_version_id": str(job.get("base_version_id") or "").strip() or None,
         "status":"可用" if stored_path else "无可用模型产物","created_at":job.get("finished_at") or now_iso(),"updated_at":now_iso(),
     }
-    algo.setdefault("versions",[]).insert(0,version);algo["updated_at"]=now_iso();save_algorithms_internal(project_id,algos)
+    version=attach_algorithm_version(algorithms_file(project_id),algorithm_id,version)
     job["auto_version_id"]=version_id;job["auto_version_name"]=version_name
     try:write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
-    version["auto_conversion"]=_v48_auto_convert_version(project_id,algorithm_id,version,job)
-    save_algorithms_internal(project_id,algos)
+    auto_conversion=_v48_auto_convert_version(project_id,algorithm_id,version,job)
+    version=update_algorithm_version(
+        algorithms_file(project_id),algorithm_id,version_id,
+        {"auto_conversion":auto_conversion},now=now_iso(),
+    )
     try:
         job["auto_conversion"]=version.get("auto_conversion");write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
@@ -7833,9 +8472,14 @@ def v12_test_models(project_id: str, probe_optional: bool = True):
             items.append({"label": "飞桨内置：PP-YOLOE-S_human 人员检测", "model_name": "PP-YOLOE-S_human", "model_source": "paddle_builtin", "framework": "paddle", "path": "PP-YOLOE-S_human"})
     # 算法版本
     for a in list_algorithms_internal(project_id):
-        for v in a.get("versions", []):
+        current_version_id = str(a.get("current_version_id") or "")
+        versions = list(a.get("versions", []) or [])
+        versions.sort(key=lambda version: 0 if str(version.get("id") or "") == current_version_id else 1)
+        for v in versions:
             if str(v.get("stored_path", "")).lower().endswith(".pt"):
-                items.append({"label": f"算法版本：{a.get('name')} / {v.get('version_name')}", "algorithm_id": a.get("id"), "version_id": v.get("id"), "model_source": "algorithm_version", "framework": "ultralytics", "path": v.get("stored_path")})
+                is_current = str(v.get("id") or "") == current_version_id
+                current_suffix = "（当前）" if is_current else ""
+                items.append({"label": f"算法版本：{a.get('name')} / {v.get('version_name')}{current_suffix}", "algorithm_id": a.get("id"), "version_id": v.get("id"), "is_current_version": is_current, "model_source": "algorithm_version", "framework": "ultralytics", "path": v.get("stored_path")})
     # Real conversion artifacts are selectable in the deployment test page.
     try:
         for artifact in v39_list_deploy_artifacts(project_id).get("items", []):
@@ -7967,7 +8611,6 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             label = normalize_label(c.get('name') or f'class_{c.get("id")}')
             cid = int(c.get('id'))
             cat_to_class[cid] = ensure_label(project, label)
-            project = get_project(project_id)
         anns_by_img: Dict[int, List[Dict[str, Any]]] = {}
         for a in coco.get('annotations', []):
             try:
@@ -7982,26 +8625,33 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             if not src or not src.exists():
                 report['missing_images'] += 1
                 continue
-            rec = add_image_record(project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id)
+            boxes=[]
+            image_annotations = anns_by_img.get(int(im.get('id')), [])
+
+            def build_final_annotation(record):
+                for a in image_annotations:
+                    cid = int(a.get('category_id', -1))
+                    if cid not in cat_to_class:
+                        continue
+                    bbox = a.get('bbox') or []
+                    if len(bbox) < 4:
+                        continue
+                    x,y,w,h = [float(v) for v in bbox[:4]]
+                    if w < 2 or h < 2:
+                        report['invalid_boxes'] += 1
+                        continue
+                    cls = cat_to_class[cid]
+                    boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(record['width'],x+w),2), 'y2':round(min(record['height'],y+h),2)})
+                return boxes
+
+            rec = add_image_record(
+                project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
+                annotation_builder=build_final_annotation,
+            )
             if not rec:
                 report['skipped_images'] += 1
                 continue
             _v18_set_image_split(project_id, rec['id'], split)
-            boxes=[]
-            for a in anns_by_img.get(int(im.get('id')), []):
-                cid = int(a.get('category_id', -1))
-                if cid not in cat_to_class:
-                    continue
-                bbox = a.get('bbox') or []
-                if len(bbox) < 4:
-                    continue
-                x,y,w,h = [float(v) for v in bbox[:4]]
-                if w < 2 or h < 2:
-                    report['invalid_boxes'] += 1
-                    continue
-                cls = cat_to_class[cid]
-                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':get_project(project_id)['labels'][cls], 'x1':round(max(0,x),2), 'y1':round(max(0,y),2), 'x2':round(min(rec['width'],x+w),2), 'y2':round(min(rec['height'],y+h),2)})
-            write_annotation(project_id, rec['id'], boxes)
             report.setdefault('imported_image_ids', []).append(rec['id'])
             for _b in boxes:
                 _lab = str(_b.get('label') or '').strip()
@@ -8034,28 +8684,36 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         if not src:
             report['missing_images'] += 1
             continue
-        rec = add_image_record(project_id, src, src.name, 'imported_voc', dataset_id)
+        split = _v18_split_from_path(xp)
+        boxes=[]
+        objects = list(r.findall('object'))
+
+        def build_final_annotation(record):
+            for obj in objects:
+                label = normalize_label(obj.findtext('name') or 'object')
+                if not label: continue
+                cls = ensure_label(project, label)
+                bb = obj.find('bndbox')
+                if bb is None: continue
+                try:
+                    x1=float(bb.findtext('xmin')); y1=float(bb.findtext('ymin')); x2=float(bb.findtext('xmax')); y2=float(bb.findtext('ymax'))
+                except Exception:
+                    report['invalid_boxes'] += 1
+                    continue
+                if x2-x1<2 or y2-y1<2:
+                    report['invalid_boxes'] += 1
+                    continue
+                boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x1),2), 'y1':round(max(0,y1),2), 'x2':round(min(record['width'],x2),2), 'y2':round(min(record['height'],y2),2)})
+            return boxes
+
+        rec = add_image_record(
+            project_id, src, src.name, 'imported_voc', dataset_id,
+            annotation_builder=build_final_annotation,
+        )
         if not rec:
             report['skipped_images'] += 1
             continue
-        _v18_set_image_split(project_id, rec['id'], _v18_split_from_path(xp))
-        boxes=[]
-        for obj in r.findall('object'):
-            label = normalize_label(obj.findtext('name') or 'object')
-            if not label: continue
-            cls = ensure_label(project, label); project = get_project(project_id)
-            bb = obj.find('bndbox')
-            if bb is None: continue
-            try:
-                x1=float(bb.findtext('xmin')); y1=float(bb.findtext('ymin')); x2=float(bb.findtext('xmax')); y2=float(bb.findtext('ymax'))
-            except Exception:
-                report['invalid_boxes'] += 1
-                continue
-            if x2-x1<2 or y2-y1<2:
-                report['invalid_boxes'] += 1
-                continue
-            boxes.append({'id':uuid.uuid4().hex[:10], 'class_id':cls, 'label':project['labels'][cls], 'x1':round(max(0,x1),2), 'y1':round(max(0,y1),2), 'x2':round(min(rec['width'],x2),2), 'y2':round(min(rec['height'],y2),2)})
-        write_annotation(project_id, rec['id'], boxes)
+        _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
         for _b in boxes:
             _lab = str(_b.get('label') or '').strip()
@@ -8080,9 +8738,8 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
     if names:
         for n in names:
             ensure_label(project, n)
-        project = get_project(project_id)
     elif not project.get('labels'):
-        ensure_label(project, 'object'); project = get_project(project_id)
+        ensure_label(project, 'object')
         names = ['object']
     imported_names = names or project.get('labels', [])
     label_by_stem: Dict[str, List[Path]] = {}
@@ -8091,46 +8748,50 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
     any_imported = False
     total_expected=max(1,len(image_files)); progress_done=0
     for img in image_files:
-        rec = add_image_record(project_id, img, img.name, 'imported_yolo', dataset_id)
-        if not rec:
-            report['skipped_images'] += 1
-            continue
         split = _v18_split_from_path(img)
-        _v18_set_image_split(project_id, rec['id'], split)
         cands = label_by_stem.get(img.stem, [])
         label_file = None
         if cands:
             # 优先选与图片同 split 且路径包含 labels 的 txt
-            img_split = _v18_split_from_path(img)
-            same_split = [x for x in cands if _v18_split_from_path(x) == img_split]
+            same_split = [x for x in cands if _v18_split_from_path(x) == split]
             label_file = next((x for x in same_split if any(part.lower()=='labels' for part in x.parts)), same_split[0] if same_split else cands[0])
         boxes=[]
-        if label_file and label_file.exists():
-            for line in label_file.read_text(encoding='utf-8', errors='ignore').splitlines():
-                box = yolo_line_to_box(line, rec['width'], rec['height'])
-                if not box:
-                    report['invalid_boxes'] += 1
-                    continue
-                old_cls = int(box.get('class_id', -1))
-                if old_cls < 0:
-                    report['invalid_boxes'] += 1
-                    continue
-                if old_cls < len(imported_names):
-                    label = normalize_label(imported_names[old_cls])
-                    new_cls = get_label_id(project, label)
-                    project = get_project(project_id)
-                elif old_cls < len(project.get('labels', [])):
-                    new_cls = old_cls
-                else:
-                    report['skipped_labels'] += 1
-                    continue
-                box['class_id'] = new_cls
-                box['label'] = get_project(project_id)['labels'][new_cls]
-                box['id'] = uuid.uuid4().hex[:10]
-                boxes.append(box)
-        else:
-            report['unmatched_labels'] += 1
-        write_annotation(project_id, rec['id'], boxes)
+
+        def build_final_annotation(record):
+            if label_file and label_file.exists():
+                for line in label_file.read_text(encoding='utf-8', errors='ignore').splitlines():
+                    box = yolo_line_to_box(line, record['width'], record['height'])
+                    if not box:
+                        report['invalid_boxes'] += 1
+                        continue
+                    old_cls = int(box.get('class_id', -1))
+                    if old_cls < 0:
+                        report['invalid_boxes'] += 1
+                        continue
+                    if old_cls < len(imported_names):
+                        label = normalize_label(imported_names[old_cls])
+                        new_cls = get_label_id(project, label)
+                    elif old_cls < len(project.get('labels', [])):
+                        new_cls = old_cls
+                    else:
+                        report['skipped_labels'] += 1
+                        continue
+                    box['class_id'] = new_cls
+                    box['label'] = project['labels'][new_cls]
+                    box['id'] = uuid.uuid4().hex[:10]
+                    boxes.append(box)
+            else:
+                report['unmatched_labels'] += 1
+            return boxes
+
+        rec = add_image_record(
+            project_id, img, img.name, 'imported_yolo', dataset_id,
+            annotation_builder=build_final_annotation,
+        )
+        if not rec:
+            report['skipped_images'] += 1
+            continue
+        _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
         for _b in boxes:
             _lab = str(_b.get('label') or '').strip()
@@ -8222,6 +8883,47 @@ def v19_job_file(project_id: str, job_id: str) -> Path:
     return v19_job_dir(project_id, job_id) / "job.json"
 
 
+def v19_scan_images_file(project_id: str, job_id: str) -> Path:
+    return v19_job_dir(project_id, job_id) / "scan-images.json"
+
+
+def v19_report_file(project_id: str, job_id: str) -> Path:
+    return v19_job_dir(project_id, job_id) / "report.json"
+
+
+def v19_write_import_report(project_id: str, job_id: str, report: Dict[str, Any]):
+    path = v19_report_file(project_id, job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, dict(report or {}))
+
+
+def v19_read_import_report(project_id: str, job_id: str, job: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    current = dict(job or v19_read_job(project_id, job_id) or {})
+    if current.get("report_ref"):
+        value = read_json(v19_report_file(project_id, job_id), {})
+        if isinstance(value, dict):
+            return value
+    value = current.get("report")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def v19_write_scan_images(project_id: str, job_id: str, images: List[Dict[str, Any]]):
+    path = v19_scan_images_file(project_id, job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, list(images or []))
+
+
+def v19_read_scan_images(project_id: str, job_id: str) -> List[Dict[str, Any]]:
+    path = v19_scan_images_file(project_id, job_id)
+    if path.is_file():
+        value = read_json(path, [])
+        return value if isinstance(value, list) else []
+    # Backward compatibility for historical jobs created before the manifest split.
+    legacy = read_json(v19_job_file(project_id, job_id), {})
+    value = legacy.get("images") if isinstance(legacy, dict) else []
+    return value if isinstance(value, list) else []
+
+
 def v19_normalize_zip_path(name: str) -> str:
     return str(name or "").replace("\\", "/").lstrip("/")
 
@@ -8237,7 +8939,32 @@ def v19_write_job(project_id: str, job: Dict[str, Any]):
     job["updated_at"] = now_iso()
     f = v19_job_file(project_id, job["id"])
     f.parent.mkdir(parents=True, exist_ok=True)
-    write_json(f, job)
+    persisted = dict(job)
+    images = persisted.pop("images", None)
+    if isinstance(images, list):
+        v19_write_scan_images(project_id, str(job["id"]), images)
+        persisted["scan_images_ref"] = "scan-images.json"
+    report = persisted.get("report")
+    if isinstance(report, dict) and "imported_image_ids" in report:
+        v19_write_import_report(project_id, str(job["id"]), report)
+        compact_report = dict(report)
+        compact_report.pop("imported_image_ids", None)
+        persisted["report"] = compact_report
+        persisted["report_ref"] = "report.json"
+    # v19 job.json is the browser-visible progress truth. Never expose a
+    # truncated JSON document while the worker is updating progress.
+    atomic_write_json(f, persisted)
+
+
+def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
+    result = dict(job or {})
+    result.pop("images", None)
+    limit = max(0, min(500, int(image_limit or 0)))
+    if limit:
+        images = v19_read_scan_images(project_id, str(result.get("id") or ""))
+        result["images"] = images[:limit]
+        result["images_truncated"] = len(images) > limit
+    return result
 
 
 def v19_update_job(project_id: str, job_id: str, **kwargs):
@@ -8388,7 +9115,15 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 if report.get("skipped_images", 0):
                     report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
                 report["labels"] = get_project(project_id).get("labels", [])
-            finally:
+            except BaseException:
+                # Importers persist image bytes and annotation truth before the
+                # buffered material projection is committed. A failed import must
+                # remove those durable side effects instead of publishing a partial
+                # dataset under a failed job.
+                if _v50_active_image_batch(project_id):
+                    _v50_end_image_batch(save=False)
+                raise
+            else:
                 # 图片与摘要先按 ID 缓冲，在这里基于最新索引一次性提交。
                 _v50_end_image_batch(save=True)
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
@@ -8399,13 +9134,11 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
             message=f"导入完成：{report.get('imported_images',0)} 图，{report.get('annotated_images',0)} 张带标注，{report.get('boxes',0)} 框",
         )
     except HTTPException as e:
-        _v50_end_image_batch(save=True)
         v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
                        error=str(e.detail), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
                        finished_at=now_iso(), message=str(e.detail))
     except Exception as e:
-        _v50_end_image_batch(save=True)
         v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=100,
                        error=str(e), report=report,
                        processing_seconds=round(max(0.0, time.time()-processing_started),2),
@@ -8456,6 +9189,8 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
     if scan.get("image_count", 0) == 0:
         shutil.rmtree(jd, ignore_errors=True)
         raise HTTPException(status_code=400, detail="ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
+    scan_images = list(scan.pop("images", []) or [])
+    v19_write_scan_images(project_id, job_id, scan_images)
     job = {
         "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
         "batch_id": job_id,
@@ -8463,10 +9198,11 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
         "status": "selecting", "stage": "上传与校验完成", "progress": 0,
         "message": "上传与ZIP校验完成，等待开始后台导入",
+        "scan_images_ref": "scan-images.json",
         "created_at": now_iso(), "uploaded_at": now_iso(), "updated_at": now_iso(), **scan,
     }
     v19_write_job(project_id, job)
-    return job
+    return v19_public_job(project_id, job, image_limit=500)
 
 
 @app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/start")
@@ -8478,7 +9214,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
         raise HTTPException(status_code=400, detail="当前导入任务状态不允许重新开始")
     selected_paths = payload.selected_paths or []
     if selected_paths:
-        allowed = {x.get("path") for x in job.get("images", [])}
+        allowed = {x.get("path") for x in v19_read_scan_images(project_id, job_id)}
         selected_paths = [x for x in selected_paths if x in allowed]
         if not selected_paths:
             raise HTTPException(status_code=400, detail="没有选择有效图片")
@@ -8486,7 +9222,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
     v19_update_job(project_id, job_id, status="running", stage="准备后台解析", progress=3, selected_count=len(selected_paths) or job.get("image_count", 0), message="已缩放到后台解析")
     th = threading.Thread(target=v19_import_worker, args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths), daemon=True)
     th.start()
-    return v19_read_job(project_id, job_id)
+    return v19_public_job(project_id, v19_read_job(project_id, job_id))
 
 
 @app.get("/api/v19/projects/{project_id}/import/jobs")
@@ -8497,17 +9233,17 @@ def v19_list_import_jobs(project_id: str):
     for jf in d.glob("*/job.json"):
         job = read_json(jf, {})
         if job:
-            # 列表里最多返回前 300 个图片候选，避免巨大 JSON 卡页面；详情接口返回完整。
-            if isinstance(job.get("images"), list) and len(job["images"]) > 300:
-                job = {**job, "images": job["images"][:300], "images_truncated": True}
-            jobs.append(job)
+            # Selecting jobs keep a bounded preview for compatibility. Running/terminal polling stays O(1).
+            preview = 300 if job.get("status") == "selecting" else 0
+            jobs.append(v19_public_job(project_id, job, image_limit=preview))
     jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     return {"ok": True, "items": jobs}
 
 
 @app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}")
-def v19_get_import_job(project_id: str, job_id: str):
-    return v19_read_job(project_id, job_id)
+def v19_get_import_job(project_id: str, job_id: str, include_images: bool = False, image_limit: int = 500):
+    job = v19_read_job(project_id, job_id)
+    return v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
 
 
 @app.delete("/api/v19/projects/{project_id}/import/jobs/{job_id}")
@@ -8992,6 +9728,8 @@ def _v33_tasks_file(project_id: str, kind: str) -> Path:
 
 
 def _v33_load_tasks(project_id: str, kind: str) -> List[Dict[str, Any]]:
+    if kind == 'clean_tasks' and '_v47_list_durable_clean_tasks' in globals():
+        return _v47_list_durable_clean_tasks(project_id)
     with _v33_task_lock:
         return read_json(_v33_tasks_file(project_id, kind), [])
 
@@ -9129,29 +9867,35 @@ def _v33_run_video_frame_task(project_id: str, task_id: str):
         _v33_update_task(project_id, "video_frame_tasks", task_id, status="failed", status_text="失败", error=str(e), finished_at=now_iso())
 
 
-def _public_task(task: TaskRecord) -> Dict[str, Any]:
+def _public_task(
+    task: TaskRecord,
+    *,
+    worker_runtime=None,
+    queued_candidates=None,
+) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    truth = task_to_public(
+        task,
+        repository,
+        worker_runtime=worker_runtime,
+        queued_candidates=queued_candidates,
+    )
     return {
+        **truth,
         "id": task.task_id,
-        "project_id": task.project_id,
-        "kind": task.kind.value,
-        "status": task.status.value,
-        "priority": task.priority,
-        "progress": task.progress,
-        "stage": task.stage,
-        "resource_wait_reason": task.resource_wait_reason,
-        "current_item": task.current_item,
-        "attempt": task.attempt,
-        "accepted": task.accepted,
-        "error": task.error,
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
-        "finished_at": task.finished_at,
-        "result_ref": task.result_ref,
+        "task_id": task.task_id,
+        "task_status": truth["status"],
+        "progress": truth["progress_percent"],
+        "stage": truth["phase"],
     }
 
 
-def _public_video_task(task: TaskRecord) -> Dict[str, Any]:
-    response = _public_task(task)
+def _public_video_task(task: TaskRecord, *, worker_runtime=None, queued_candidates=None) -> Dict[str, Any]:
+    response = _public_task(
+        task,
+        worker_runtime=worker_runtime,
+        queued_candidates=queued_candidates,
+    )
     payload = shared_task_artifacts().read_json(
         task.task_id,
         task.payload_ref,
@@ -9190,13 +9934,26 @@ def _require_shared_task(project_id: str, task_id: str, kind: TaskKind) -> TaskR
 @app.get("/api/v33/projects/{project_id}/video-tasks")
 def v33_list_video_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
     get_project(project_id)
-    page = shared_task_repository().list(
+    repository = shared_task_repository()
+    page = repository.list(
         project_id=project_id,
         kinds={TaskKind.VIDEO_FRAMES},
         limit=max(1, min(100, int(limit))),
         cursor=cursor,
     )
-    return {"items": [_public_video_task(task) for task in page.items], "next_cursor": page.next_cursor}
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
+    return {
+        "items": [
+            _public_video_task(
+                task,
+                worker_runtime=worker_runtime,
+                queued_candidates=queued_candidates,
+            )
+            for task in page.items
+        ],
+        "next_cursor": page.next_cursor,
+    }
 
 
 @app.get("/api/v33/projects/{project_id}/video-tasks/{task_id}")
@@ -10728,10 +11485,15 @@ def _deploy_source_models(project_id: str) -> List[Dict[str, Any]]:
         if ext in {".pt", ".pth", ".onnx", ".pdparams", ".pdmodel", ".pdiparams", ".engine", ".bmodel", ".om"}:
             items.append({"id":f"model::{m.get('name')}","kind":"project_model","name":m.get("name"),"path":m.get("path"),"type":m.get("type"),"framework":m.get("framework"),"job_id":m.get("job_id"),"config_path":m.get("config_path"),"size_mb":m.get("size_mb"),"label":m.get("name")})
     for a in list_algorithms_internal(project_id):
-        for v in a.get("versions", []) or []:
+        current_version_id = str(a.get("current_version_id") or "")
+        versions = list(a.get("versions", []) or [])
+        versions.sort(key=lambda version: 0 if str(version.get("id") or "") == current_version_id else 1)
+        for v in versions:
             p=Path(str(v.get("stored_path") or ""))
             if p.exists():
-                items.append({"id":f"version::{a.get('id')}::{v.get('id')}","kind":"algorithm_version","name":v.get("model_name") or p.name,"path":str(p),"type":p.suffix.lower().lstrip('.'),"framework":v.get("report",{}).get("framework", ""),"job_id":v.get("job_id", ""),"config_path":"","size_mb":v.get("size_mb",0),"algorithm_id":a.get("id"),"algorithm_name":a.get("name"),"version_id":v.get("id"),"version_name":v.get("version_name"),"label":f"{a.get('name')} / {v.get('version_name')} / {p.name}"})
+                is_current = str(v.get("id") or "") == current_version_id
+                current_suffix = "（当前）" if is_current else ""
+                items.append({"id":f"version::{a.get('id')}::{v.get('id')}","kind":"algorithm_version","name":v.get("model_name") or p.name,"path":str(p),"type":p.suffix.lower().lstrip('.'),"framework":v.get("report",{}).get("framework", ""),"job_id":v.get("job_id", ""),"config_path":"","size_mb":v.get("size_mb",0),"algorithm_id":a.get("id"),"algorithm_name":a.get("name"),"version_id":v.get("id"),"version_name":v.get("version_name"),"is_current_version":is_current,"label":f"{a.get('name')} / {v.get('version_name')}{current_suffix} / {p.name}"})
     return items
 
 
@@ -10802,12 +11564,28 @@ def _read_deploy_job(project_id: str, job_id: str) -> Dict[str, Any]:
 def _overlay_durable_deploy_job(job: Dict[str, Any]) -> Dict[str, Any]:
     result = dict(job or {})
     task_id = str(result.get("task_id") or "")
-    durable = shared_task_repository().get(task_id) if task_id else None
+    repository = shared_task_repository()
+    durable = repository.get(task_id) if task_id else None
     if not durable or durable.kind is not TaskKind.MODEL_CONVERSION:
         return result
-    result["durable_status"] = durable.status.value
-    if durable.status in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
-        result.update(status="queued" if durable.status is TaskStatus.QUEUED else "running", progress=durable.progress, stage=durable.stage)
+    truth = task_to_public(durable, repository)
+    result.update(
+        durable_status=durable.status.value,
+        task_status=truth["status"],
+        progress=truth["progress_percent"],
+        stage=truth["phase"],
+        current_item=truth["current_item"],
+        priority=truth["priority"],
+        queue_rank=truth["queue_rank"],
+        resource_queue_position=truth["resource_queue_position"],
+        resource_wait_reason=truth["resource_wait_reason"],
+        worker_id=truth["worker_id"],
+        lease_expires_at=truth["lease_expires_at"],
+    )
+    if durable.status is TaskStatus.QUEUED:
+        result["status"] = "waiting_resource" if truth["status"] == "WAITING_RESOURCE" else "queued"
+    elif durable.status in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+        result["status"] = "running"
     elif durable.status is TaskStatus.BLOCKED_BY_HARDWARE:
         result["status"] = "blocked_by_hardware"
     elif durable.status is TaskStatus.BLOCKED_BY_ENVIRONMENT:
@@ -12471,6 +13249,160 @@ def v47_list_clean_tasks(project_id: str):
     return {'items': _v33_load_tasks(project_id, 'clean_tasks')}
 
 
+
+def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[str, Any]:
+    data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
+    image_ids = list(dict.fromkeys(str(x) for x in (data.pop('image_ids', None) or []) if str(x)))
+    selection: Dict[str, Any]
+    if image_ids:
+        selection = {'scope': 'SELECTED', 'image_ids': image_ids}
+    else:
+        selection = {'scope': 'FILTERED', 'filters': {}}
+    draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data}
+    estimate = estimate_material_batch(project_id, material_store(project_id), draft)
+    draft['selection_spec'] = estimate['selection_spec']
+    return draft
+
+
+def _v47_material_batch_request(task_id: str) -> Dict[str, Any]:
+    return shared_task_artifacts().read_json(task_id, 'request.json', default={}) or {}
+
+
+def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    artifacts = shared_task_artifacts()
+    body = public_material_batch(task, artifacts, repository if repository.get(task.task_id) is not None else None)
+    request = _v47_material_batch_request(task.task_id)
+    options = dict(request.get('options') or {})
+    selection = dict(request.get('selection_spec') or {})
+    request_payload = {**options, 'image_ids': list(selection.get('image_ids') or [])}
+    confirmed = artifacts.read_json(task.task_id, 'clean_confirmation.json', default=None)
+    public_status = str(body.get('status') or task.status.value)
+    if public_status in {'QUEUED', 'WAITING_RESOURCE'}:
+        status = 'queued'
+        status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
+    elif public_status == 'RUNNING':
+        status, status_text = 'running', '清洗中'
+    elif public_status == 'CANCEL_REQUESTED':
+        status, status_text = 'running', '正在停止'
+    elif public_status == 'CANCELLED':
+        status, status_text = 'cancelled', '已停止'
+    elif public_status == 'SUCCEEDED':
+        status, status_text = ('done', '已确认') if confirmed else ('awaiting_confirmation', '待确认')
+    elif public_status == 'PARTIAL_SUCCESS':
+        status, status_text = 'failed', '部分失败，请重试'
+    elif public_status in {'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE'}:
+        status, status_text = 'failed', '运行环境不可用'
+    else:
+        status, status_text = 'failed', '失败'
+    return {
+        'id': task.task_id,
+        'name': options.get('task_name') or '自动清洗任务',
+        'status': status,
+        'status_text': status_text,
+        'stage': 'review' if status == 'awaiting_confirmation' else body.get('phase'),
+        'progress': body.get('progress_percent') or 0,
+        'processed_images': body.get('processed') or 0,
+        'total_images': body.get('total') or 0,
+        'flagged_images': body.get('flagged') or 0,
+        'created_at': body.get('created_at'),
+        'finished_at': body.get('finished_at'),
+        'request_payload': request_payload,
+        'resource_queue_position': body.get('resource_queue_position'),
+        'resource_wait_reason': body.get('resource_wait_reason'),
+        'worker_id': body.get('worker_id'),
+        'lease_expires_at': body.get('lease_expires_at'),
+        'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
+    }
+
+
+def _v47_list_durable_clean_tasks(project_id: str) -> List[Dict[str, Any]]:
+    repository = shared_task_repository()
+    page = repository.list(project_id=project_id, kinds={TaskKind.MATERIAL_BATCH}, limit=100)
+    rows = []
+    for task in page.items:
+        request = _v47_material_batch_request(task.task_id)
+        if request.get('operation') == MaterialBatchOperation.CLEAN.value:
+            rows.append(_v47_clean_compat_task(task))
+    return rows
+
+
+def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Optional[str] = None) -> Tuple[Dict[str, Any], bool]:
+    get_project(project_id)
+    requested_id = str(task_id or uuid.uuid4().hex[:12])
+    repository = shared_task_repository()
+    existing = repository.get(requested_id)
+    if existing is not None:
+        if existing.project_id != project_id or existing.kind is not TaskKind.MATERIAL_BATCH:
+            raise ValueError('清洗任务 ID 已被其他任务占用')
+        request = _v47_material_batch_request(requested_id)
+        if request.get('operation') != MaterialBatchOperation.CLEAN.value:
+            raise ValueError('清洗任务 ID 已被其他批处理占用')
+        return _v47_clean_compat_task(existing), False
+
+    batch_payload = _v47_material_batch_payload(project_id, payload)
+    prepared_request = _v47_material_batch_request(requested_id)
+    if prepared_request:
+        def semantic_request(value: Dict[str, Any]) -> Dict[str, Any]:
+            value = dict(value or {})
+            selection = dict(value.get('selection_spec') or {})
+            selection.pop('repository_revision', None)
+            return {
+                'operation': value.get('operation'),
+                'selection_spec': selection,
+                'options': dict(value.get('options') or {}),
+            }
+
+        if semantic_request(prepared_request) != semantic_request(batch_payload):
+            raise ValueError('清洗任务 ID 已关联不同请求')
+        prepared = TaskRecord.new(
+            requested_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
+            f'materials:{project_id}', required_capabilities=('materials.batch',),
+        )
+        return _v47_clean_compat_task(prepared), False
+
+    prepared = prepare_material_batch(
+        project_id,
+        material_store(project_id),
+        shared_task_artifacts(),
+        batch_payload,
+        task_id=requested_id,
+    )
+    return _v47_clean_compat_task(prepared), True
+
+def _v62_publish_clean_compat(project_id: str, task_id: str) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    existing = repository.get(task_id)
+    if existing is not None:
+        compat = _v47_clean_compat_task(existing)
+        if compat.get('status') == 'failed':
+            existing = repository.retry(task_id)
+        return _v47_clean_compat_task(existing)
+    request = _v47_material_batch_request(task_id)
+    if request.get('operation') != MaterialBatchOperation.CLEAN.value:
+        raise ValueError('清洗任务尚未准备完成')
+    prepared = TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
+        f'materials:{project_id}', required_capabilities=('materials.batch',),
+    )
+    published = publish_prepared_material_batch(prepared, repository, shared_task_artifacts())
+    return _v47_clean_compat_task(published)
+
+
+def _v47_durable_clean_results(task_id: str) -> Dict[str, Any]:
+    artifacts = shared_task_artifacts()
+    path = artifacts.artifact_path(task_id, MATERIAL_BATCH_SELECTION_REF)
+    if not path.is_file():
+        return {'items': []}
+    with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as database:
+        if database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clean_results'").fetchone() is None:
+            return {'items': []}
+        rows = database.execute(
+            'SELECT r.result_json,s.state,s.error FROM clean_results r '
+            'JOIN selection s ON s.image_id=r.image_id ORDER BY r.image_id'
+        ).fetchall()
+    return {'items': [{**json.loads(row[0]), 'item_state': row[1], 'item_error': row[2]} for row in rows]}
+
 _V47_ACTIVE_CLEAN_WORKERS: set[Tuple[str, str]] = set()
 
 
@@ -12609,24 +13541,8 @@ def _v47_start_clean_task_record(project_id: str, task_id: str) -> Dict[str, Any
 
 
 def _v47_recover_clean_tasks(project_id: str) -> list[str]:
-    """Restart persisted clean tasks whose process-local worker was lost."""
-    tasks = read_json(_v33_tasks_file(project_id, 'clean_tasks'), [])
-    recovered = []
-    for task in tasks:
-        status = str(task.get('status') or '')
-        if status not in {'prepared', 'queued', 'running'}:
-            continue
-        task_id = str(task.get('id') or '')
-        if not task_id:
-            continue
-        try:
-            _v47_start_clean_task_record(project_id, task_id)
-            recovered.append(task_id)
-        except Exception:
-            # Keep the durable task record for a later explicit retry; startup
-            # recovery must not prevent the rest of the platform from loading.
-            continue
-    return recovered
+    get_project(project_id)
+    return []
 
 
 def _v47_create_clean_task_record(
@@ -12640,7 +13556,8 @@ def _v47_create_clean_task_record(
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks')
 def v47_create_clean_task(project_id: str, payload: V47CleanReq):
-    return _v47_create_clean_task_record(project_id, payload)
+    task, _ = _v62_prepare_clean_compat(project_id, payload)
+    return _v62_publish_clean_compat(project_id, str(task['id']))
 
 
 class V55UploadDecisionsReq(BaseModel):
@@ -12777,7 +13694,7 @@ def v55_apply_upload_batch_decisions(
                 failed_task_snapshot = dict(existing_task or {})
                 _v47_reset_failed_clean_task_record(project_id, clean_task_id)
             try:
-                _, prepared_created = _v47_prepare_clean_task_record(
+                _, prepared_created = _v62_prepare_clean_compat(
                     project_id,
                     clean_request,
                     task_id=clean_task_id,
@@ -12842,7 +13759,7 @@ def v55_apply_upload_batch_decisions(
             store._write_unlocked(batch_id, updated)
             material_store(project_id).mutate(apply_material_decisions)
             if clean_task_id:
-                _v47_start_clean_task_record(project_id, clean_task_id)
+                _v62_publish_clean_compat(project_id, clean_task_id)
         except Exception as error:
             store._write_unlocked(batch_id, original)
             if backups:
@@ -12878,9 +13795,10 @@ def v55_apply_upload_batch_decisions(
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/stop')
 def v47_stop_clean_task(project_id: str, task_id: str):
-    if not _v33_get_task(project_id, 'clean_tasks', task_id):
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_BATCH:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    _v33_update_task(project_id, 'clean_tasks', task_id, stop_requested=True, status_text='正在停止')
+    shared_task_repository().request_cancel(task_id)
     return {'ok': True}
 
 
@@ -12889,7 +13807,7 @@ def v47_clean_result(project_id: str, task_id: str):
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    return {'task': task, 'result': read_json(_v47_file_for(project_id, 'clean_results', task_id), {'items': []})}
+    return {'task': task, 'result': _v47_durable_clean_results(task_id)}
 
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm')
@@ -12897,7 +13815,7 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     task = _v33_get_task(project_id, 'clean_tasks', task_id)
     if not task:
         raise HTTPException(status_code=404, detail='清洗任务不存在')
-    allowed = {str(x.get('image_id')) for x in read_json(_v47_file_for(project_id, 'clean_results', task_id), {'items': []}).get('items', [])}
+    allowed = {str(x.get('image_id')) for x in _v47_durable_clean_results(task_id).get('items', [])}
     ids = {str(x) for x in payload.delete_ids if str(x) in allowed}
     deleted = 0
     deleted_images = []
@@ -12924,7 +13842,10 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
         return processed_ids
     processed_ids = material_store(project_id).mutate(mark_confirmed)
     deleted_ids = [str(item.get('id')) for item in deleted_images]
-    _v33_update_task(project_id, 'clean_tasks', task_id, status='done', status_text='已确认', deleted_images=deleted, delete_failures=len(failed_items), processed_confirmed=len(processed_ids), confirmed_at=now_iso(), finished_at=now_iso())
+    shared_task_artifacts().atomic_write_json(task_id, 'clean_confirmation.json', {
+        'confirmed_at': now_iso(), 'deleted': deleted, 'deleted_ids': deleted_ids,
+        'delete_failures': len(failed_items), 'processed_ids': processed_ids,
+    })
     return {'ok': not failed_items, 'deleted': deleted, 'deleted_ids': deleted_ids, 'deleted_images': deleted_images, 'failed_items': failed_items, 'processed_ids': processed_ids}
 
 
@@ -13223,8 +14144,21 @@ def v47_confirm_ai_label(project_id: str, task_id: str, payload: V47AutoLabelCon
     return {'ok':True,'applied_images':applied,'applied_image_ids':sorted(chosen),'boxes_added':boxes,'labels':get_project(project_id).get('labels',[])}
 
 
-def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) -> Dict[str, Any]:
+def public_annotation_task(
+    task: TaskRecord,
+    *,
+    summary: Optional[dict] = None,
+    worker_runtime=None,
+    queued_candidates=None,
+) -> Dict[str, Any]:
     progress_summary = summary or {}
+    repository = shared_task_repository()
+    truth = task_to_public(
+        task,
+        repository,
+        worker_runtime=worker_runtime,
+        queued_candidates=queued_candidates,
+    )
     request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
     checkpoint = shared_task_artifacts().read_json(task.task_id, "checkpoints/worker.json", default={})
     is_batch = task.kind is TaskKind.MATERIAL_BATCH and request.get("operation") == "AI_ANNOTATE"
@@ -13249,11 +14183,19 @@ def public_annotation_task(task: TaskRecord, *, summary: Optional[dict] = None) 
         "id": task.task_id,
         "project_id": task.project_id,
         "kind": task.kind.value,
-        "status": task.status.value,
-        "priority": task.priority,
-        "progress": task.progress,
-        "stage": task.stage,
-        "current_item": task.current_item,
+        "status": truth["status"],
+        "persisted_status": truth["persisted_status"],
+        "priority": truth["priority"],
+        "queue_rank": truth["queue_rank"],
+        "resource_queue_position": truth["resource_queue_position"],
+        "resource_wait_reason": truth["resource_wait_reason"],
+        "worker_id": truth["worker_id"],
+        "lease_expires_at": truth["lease_expires_at"],
+        "progress": truth["progress_percent"],
+        "progress_percent": truth["progress_percent"],
+        "stage": truth["phase"],
+        "phase": truth["phase"],
+        "current_item": truth["current_item"],
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "finished_at": task.finished_at,
@@ -13343,13 +14285,26 @@ def create_annotation_task(project_id: str, payload: AnnotationTaskCreateReq):
 @app.get("/api/v60/projects/{project_id}/annotation-tasks")
 def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
     get_project(project_id)
-    page = shared_task_repository().list(
+    repository = shared_task_repository()
+    page = repository.list(
         project_id=project_id,
         kinds={TaskKind.AI_ANNOTATION},
         limit=max(1, min(100, int(limit))),
         cursor=cursor,
     )
-    return {"items": [public_annotation_task(task) for task in page.items], "next_cursor": page.next_cursor}
+    worker_runtime = WorkerInstanceService(repository).list_runtime()
+    queued_candidates = repository.queued_candidates()
+    return {
+        "items": [
+            public_annotation_task(
+                task,
+                worker_runtime=worker_runtime,
+                queued_candidates=queued_candidates,
+            )
+            for task in page.items
+        ],
+        "next_cursor": page.next_cursor,
+    }
 
 
 def _require_annotation_review_task(project_id: str, task_id: str):
@@ -13506,13 +14461,16 @@ def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: s
 
 
 def public_deployment_test(task: TaskRecord) -> Dict[str, Any]:
+    repository = shared_task_repository()
+    truth = task_to_public(task, repository)
     result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
     return {
-        "id": task.task_id, "project_id": task.project_id, "kind": task.kind.value,
-        "status": task.status.value, "progress": task.progress, "stage": task.stage,
-        "current_item": task.current_item, "created_at": task.created_at,
-        "updated_at": task.updated_at, "finished_at": task.finished_at,
-        "error": task.error, "result": result or {},
+        **truth,
+        # v61 compatibility aliases remain for the existing deployment UI/API contract.
+        "id": task.task_id,
+        "progress": truth.get("progress_percent", task.progress),
+        "stage": truth.get("phase", task.stage),
+        "result": result or {},
     }
 
 
@@ -13652,10 +14610,10 @@ def v52_mark_ready(project_id: str, payload: V52ReadyReq):
 @app.get('/api/v52/projects/{project_id}/import/jobs/{job_id}/review')
 def v52_import_review(project_id: str, job_id: str):
     job = v19_read_job(project_id, job_id)
-    report = job.get('report') or {}
+    report = v19_read_import_report(project_id, job_id, job)
     ids = [str(x) for x in (report.get('imported_image_ids') or [])]
     wanted = set(ids)
-    images = [x for x in list_images(project_id) if str(x.get('id')) in wanted]
+    images = [x for x in load_images(project_id) if str(x.get('id')) in wanted]
     counts: Dict[str, int] = {}
     for img in images:
         ann = read_annotation(project_id, str(img.get('id')))
@@ -13726,9 +14684,10 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
         if j.get('status') in {'done','finished','completed'}: success += 1
         trend.append({'job_id':j.get('id'),'version':j.get('auto_version_name') or '', 'finished_at':j.get('finished_at') or j.get('updated_at') or j.get('created_at'), 'map50':m, 'status':j.get('status'), 'labels':lc, 'images':int((j.get('dataset_counts') or {}).get('train') or 0)})
     versions=algo.get('versions') or []
-    latest=versions[0] if versions else None
+    current_id=str(algo.get('current_version_id') or '')
+    current=next((v for v in versions if str(v.get('id') or '')==current_id), versions[0] if versions else None)
     aggregate=build_algorithm_report(versions)
-    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions)}, 'summary':{'training_count':len(jobs),'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':latest.get('version_name') if latest else '', 'latest_accuracy': _v49_metric_from_report((latest or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if latest else None}, 'trend':trend, 'jobs':jobs[-20:]}
+    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':len(jobs),'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:]}
 
 @app.post('/api/v49/projects/{project_id}/images/mark-processed')
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):

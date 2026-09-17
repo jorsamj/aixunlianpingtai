@@ -1,20 +1,23 @@
-const ACTIVE = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED']);
+import {
+  canonicalTaskProgressPercent,
+  canonicalTaskStatus,
+  isCanonicalTaskActive,
+} from './task-runtime-truth.js';
 
 export function normalizeTaskStatus(value) {
-  return String(value || '').trim().toUpperCase();
+  return canonicalTaskStatus(value);
 }
 
 export function isTaskActive(value) {
-  return ACTIVE.has(normalizeTaskStatus(value));
+  return isCanonicalTaskActive(value);
 }
 
 export function taskProgress(task = {}) {
-  const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
   return {
-    percent: clamp(task.progress),
-    completed: Math.max(0, Number(task.completed_count) || 0),
-    total: Math.max(0, Number(task.total_count) || 0),
-    failed: Math.max(0, Number(task.failed_count) || 0)
+    percent: canonicalTaskProgressPercent(task),
+    completed: Math.max(0, Number(task.completed_units ?? task.completed_count) || 0),
+    total: Math.max(0, Number(task.total_units ?? task.total_count) || 0),
+    failed: Math.max(0, Number(task.failed_units ?? task.failed_count) || 0)
   };
 }
 
@@ -29,7 +32,7 @@ export function createTaskPoller({load, onUpdate, onError = () => {}, delay = 16
       const task = await load();
       if (stopped || token !== generation) return null;
       onUpdate(task);
-      if (isTaskActive(task?.status)) timer = schedule(refresh, delay);
+      if (isTaskActive(task)) timer = schedule(refresh, delay);
       return task;
     } catch (error) {
       if (!stopped && token === generation) onError(error);

@@ -3,12 +3,26 @@ import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {applyAnnotationResult} from './modules/annotation.js?v=422500';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422503';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422500';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422512';
+import {persistUiState} from './modules/ui-state.js?v=422500';
+import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
+import {installPollRegistry} from './modules/poll-registry.js?v=422518';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422500';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422523';
+import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
+import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
+import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
+import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422505';
+import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422501';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
-import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422000';
-import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422000';
-import {applyCleanConfirmation} from './modules/cleaning.js?v=421800';
+import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
+import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422001';
+import {applyCleanConfirmation, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422517';
+import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
 import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
@@ -18,15 +32,28 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation} from './modules/reports.js?v=421800';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422203';
-import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422400';
-import {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView} from './modules/server-material-import.js?v=422400';
+import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422206';
+import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422520';
+import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422520';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422400';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
 
+function fallbackToast(message) {
+  const element = document.getElementById('toast');
+  if (!element) return;
+  element.textContent = String(message ?? '');
+  element.classList.remove('hidden');
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = window.setTimeout(() => element.classList.add('hidden'), 2600);
+}
+
+if (typeof window.toast !== 'function') window.toast = fallbackToast;
+
+// Training owns its own paged material picker/summary and must never request the whole image pool.
+FULL_MATERIAL_PAGES.delete('训练任务');
 for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
 
 registerAction('algorithm.create', () => {
@@ -43,11 +70,19 @@ document.addEventListener('click', async event => {
   try {
     await invokeAction(target.dataset.action, {event, target});
   } catch (error) {
-    const message = messageFromApiError(error);
-    if (typeof window.toast === 'function') window.toast(message);
-    else console.error(message);
+    window.toast(messageFromApiError(error));
   }
 });
+
+const pageRequestScope = installPageRequestScope({getPage: () => state.page});
+const pollRegistry = installPollRegistry({getState: () => state});
+const trainingDraftRuntime = installTrainingDraftRuntime({
+  getState: () => state,
+  createTrainingDraft,
+  trainingInheritanceFromAlgorithm,
+  directControlIds: TRAINING_DRAFT_CONTROL_IDS,
+});
+const trainingDraftControlsRuntime = installTrainingDraftControls({trainingDraftRuntime});
 
 window.PlatformCore = {
   actions: actionRegistry,
@@ -57,71 +92,137 @@ window.PlatformCore = {
   annotationWorkbench: {createAnnotationWorkbench, queueWindow},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
-  cleaning: {applyCleanConfirmation},
+  cleaning: {applyCleanConfirmation, cleanTaskView, isActiveCleanTask},
+  deployment: {deploymentTaskView},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
+  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm},
+  trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, trainingSubmitReadiness, validateTrainingDevice},
   quality: {qualityChartModel},
   reports: {reportPresentation},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
   storageImport: {storageImportProgressText},
-  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, pollServerImport, serverImportView},
+  serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, serverImportView},
+  runtime: {pageRequestScope, pollRegistry, trainingDraftRuntime, trainingDraftControlsRuntime},
   uiBuildVersion: UI_BUILD_VERSION,
 };
 
-const notify = message => {
-  if (typeof window.toast === 'function') window.toast(message);
-  else {
-    const toast = document.getElementById('toast');
-    if (toast) {
-      toast.textContent = message;
-      toast.classList.remove('hidden');
-      setTimeout(() => toast.classList.add('hidden'), 2600);
-    }
-  }
-};
+const notify = message => window.toast(message);
+installNegativeSampleRuntime({getState: () => state, notify});
 
-installNegativeSampleRuntime({
+const trainingMaterialSummaryRuntime = installTrainingMaterialSummaryRuntime({
   getState: () => state,
+  projectId: () => state.project?.id,
+  trainingDraftRuntime,
   notify,
 });
-installTrainingLabelRuntime({
+window.PlatformCore.runtime.trainingMaterialSummaryRuntime = trainingMaterialSummaryRuntime;
+
+const trainingLabelRuntime = installTrainingLabelRuntime({
   getState: () => state,
   notify,
+  trainingDraftRuntime,
+  materialSummaryRuntime: trainingMaterialSummaryRuntime,
 });
+window.PlatformCore.runtime.trainingLabelRuntime = trainingLabelRuntime;
+
+const algorithmListRuntime = installAlgorithmListRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+});
+window.PlatformCore.runtime.algorithmListRuntime = algorithmListRuntime;
+
+const trainingRecoveryRuntime = installTrainingRecoveryRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+});
+window.PlatformCore.runtime.trainingRecoveryRuntime = trainingRecoveryRuntime;
+
+const trainingMaterialPickerRuntime = installTrainingMaterialPickerRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  trainingDraftRuntime,
+  notify,
+});
+window.PlatformCore.runtime.trainingMaterialPickerRuntime = trainingMaterialPickerRuntime;
+
+const trainingTaskRuntime = installTrainingTaskRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+  recoveryRuntime: trainingRecoveryRuntime,
+});
+window.PlatformCore.runtime.trainingTaskRuntime = trainingTaskRuntime;
+
+const trainingSubmitRuntime = installTrainingSubmitRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  trainingDraftRuntime,
+  trainingDraftToRequest,
+  reloadRelated: async () => {
+    if (state.page === '算法列表' && algorithmListRuntime) return algorithmListRuntime.refresh({render: false});
+    if (typeof loadRelated === 'function') return loadRelated();
+    return window.loadRelated?.();
+  },
+  renderAlgorithms: () => {
+    if (state.page === '算法列表' && algorithmListRuntime?.renderCards?.()) return true;
+    if (typeof window.renderAlgorithms423 === 'function') return window.renderAlgorithms423();
+    if (typeof renderAlgorithms423 === 'function') return renderAlgorithms423();
+    return undefined;
+  },
+  closeModal: () => window.closeModal?.(),
+  notify,
+});
+window.PlatformCore.runtime.trainingSubmitRuntime = trainingSubmitRuntime;
+
+const autoLabelPollRuntime = installAutoLabelPollRuntime({
+  getState: () => state,
+  pollRegistry,
+  annotationTaskView,
+  notify,
+});
+window.PlatformCore.runtime.autoLabelPollRuntime = autoLabelPollRuntime;
+
 installMaterialPaginationRuntime();
 installMaterialBatchRuntime({
   projectId: () => state.project?.id,
   currentPageIds: () => window.materialCurrentPageIds61?.() || [],
   selectedIds: () => window.materialSelectedIds61?.() || [],
   filteredSpec: () => window.materialBatchFilters61?.() || {},
-  notify: message => window.toast?.(message),
+  notify,
   refresh: async () => {
     state.data412Selected?.clear?.();
     state.data412DeleteMode = false;
     if (state.page === '数据集') await window.reloadMaterialPage61?.();
   },
 });
-installStorageImportProgressRuntime();
 window.installServerMaterialImport61?.();
+const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRegistry, getState: () => state});
+window.PlatformCore.runtime.storageImportProgressRuntime = storageImportProgressRuntime;
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 
 installNavigationStability({
   getState: () => state,
   notify,
+  requestScope: pageRequestScope,
+  pollRegistry,
+  persistNavigationState: currentState => persistUiState(currentState),
+  waitForNavigationReady: () => {
+    if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
+    return Promise.resolve();
+  },
+  beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
+  performNavigation: page => {
+    state.page = page;
+    render();
+  },
 });
 
-function applyBuildVersion() {
-  const badge = document.getElementById('versionBadge');
-  if (badge) badge.textContent = `v${UI_BUILD_VERSION}`;
-  const footer = document.querySelector('.nav-footer b');
-  if (footer) footer.textContent = `v${UI_BUILD_VERSION}`;
-  document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;
-}
-
-applyBuildVersion();
-for (const delay of [80, 500, 1800, 3600, 8000]) setTimeout(applyBuildVersion, delay);
+document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;

@@ -12,6 +12,20 @@ def _load_boto3():
     return boto3
 
 
+def _load_s3_client_config():
+    from botocore.config import Config
+    return Config(signature_version="s3v4")
+
+
+def _object_conflict(error: Exception) -> bool:
+    response = getattr(error, "response", {}) or {}
+    error_info = response.get("Error") or {}
+    metadata = response.get("ResponseMetadata") or {}
+    code = str(error_info.get("Code") or "")
+    status = metadata.get("HTTPStatusCode")
+    return status in {409, 412} or code in {"PreconditionFailed", "ConditionalRequestConflict", "ObjectAlreadyExists"}
+
+
 class S3StorageProvider:
     storage_type = StorageType.S3
 
@@ -22,18 +36,21 @@ class S3StorageProvider:
         self.region = str(config.get("region") or "").strip() or None
         self.prefix = str(config.get("prefix") or "").strip("/")
         self.use_ssl = bool(config.get("use_ssl", True))
+        self.protect_existing_objects = config.get("protect_existing_objects", True) is not False
         if not self.bucket:
             raise StorageError(code="STORAGE_CONFIG_INVALID", message="S3 配置不完整", detail="Bucket 为必填项。", solution="请补全 S3 存储配置。")
         try:
             boto3 = _load_boto3()
+            client_config = _load_s3_client_config()
         except ImportError as error:
-            raise StorageError(code="STORAGE_SDK_MISSING", message="缺少 S3 SDK", detail="未安装 boto3。", solution="请执行 pip install boto3 后重启服务。") from error
+            raise StorageError(code="STORAGE_SDK_MISSING", message="缺少 S3 SDK", detail="未安装 boto3 / botocore。", solution="请执行 pip install boto3 后重启服务。") from error
         try:
             self.client = boto3.client(
                 "s3", endpoint_url=self.endpoint, region_name=self.region, use_ssl=self.use_ssl,
                 aws_access_key_id=credentials.get("access_key_id"),
                 aws_secret_access_key=credentials.get("secret_access_key"),
                 aws_session_token=credentials.get("session_token"),
+                config=client_config,
             )
         except Exception as error:
             raise StorageError(code="STORAGE_CONFIG_INVALID", message="S3 客户端初始化失败", detail=redact_storage_error(error), solution="请检查 Endpoint、Region 和凭据。") from error
@@ -65,8 +82,7 @@ class S3StorageProvider:
             self._error("stat", error)
 
     def exists(self, object_key: str) -> bool:
-        try:
-            self.client.head_object(Bucket=self.bucket, Key=self._key(object_key)); return True
+        try: self.client.head_object(Bucket=self.bucket, Key=self._key(object_key)); return True
         except Exception as error:
             response = getattr(error, "response", {}) or {}
             if str((response.get("Error") or {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
@@ -74,10 +90,8 @@ class S3StorageProvider:
             self._error("exists", error)
 
     def open_reader(self, object_key: str) -> BinaryIO:
-        try:
-            return self.client.get_object(Bucket=self.bucket, Key=self._key(object_key))["Body"]
-        except Exception as error:
-            self._error("read", error)
+        try: return self.client.get_object(Bucket=self.bucket, Key=self._key(object_key))["Body"]
+        except Exception as error: self._error("read", error)
 
     def download(self, object_key: str, destination: str | Path) -> ObjectMetadata:
         target = Path(destination); target.parent.mkdir(parents=True, exist_ok=True)
@@ -92,9 +106,27 @@ class S3StorageProvider:
         stream = Path(source).open("rb") if isinstance(source, (str, Path)) else source
         close = isinstance(source, (str, Path))
         try:
-            self.client.upload_fileobj(stream, self.bucket, self._key(object_key), ExtraArgs={"ContentType": content_type, "Metadata": dict(metadata or {})})
+            if self.protect_existing_objects:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Key=self._key(object_key),
+                    Body=stream,
+                    ContentType=content_type,
+                    Metadata=dict(metadata or {}),
+                    IfNoneMatch="*",
+                )
+            else:
+                self.client.upload_fileobj(stream, self.bucket, self._key(object_key), ExtraArgs={"ContentType": content_type, "Metadata": dict(metadata or {})})
             return self.stat(object_key)
         except Exception as error:
+            if self.protect_existing_objects and _object_conflict(error):
+                raise StorageError(
+                    code="STORAGE_OBJECT_EXISTS",
+                    message="远程素材对象已存在，禁止原地覆盖",
+                    detail=f"S3 对象 {object_key} 已存在。",
+                    solution="请使用新的 object_key / 版本写入；如源内容确需变化，请重新扫描并确认素材变更。",
+                    context={"source_id": self.source_id, "object_key": str(object_key)},
+                ) from error
             self._error("upload", error)
         finally:
             if close: stream.close()
@@ -117,10 +149,41 @@ class S3StorageProvider:
         try: return self.client.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": self._key(object_key)}, ExpiresIn=max(1, min(3600, int(expires_seconds))))
         except Exception as error: self._error("presign", error)
 
+    def generate_upload_contract(self, object_key: str, *, expires_seconds: int = 900, content_type: str = "application/octet-stream") -> dict[str, object]:
+        """Return the signed PUT URL together with every header the client must send."""
+        expires = max(1, min(3600, int(expires_seconds)))
+        params: dict[str, object] = {
+            "Bucket": self.bucket,
+            "Key": self._key(object_key),
+            "ContentType": content_type,
+        }
+        headers = {"Content-Type": content_type}
+        if self.protect_existing_objects:
+            params["IfNoneMatch"] = "*"
+            headers["If-None-Match"] = "*"
+        try:
+            url = self.client.generate_presigned_url(
+                "put_object",
+                Params=params,
+                ExpiresIn=expires,
+            )
+            return {
+                "url": str(url),
+                "method": "PUT",
+                "headers": dict(headers),
+                "expires_seconds": expires,
+                "overwrite_protected": bool(self.protect_existing_objects),
+            }
+        except Exception as error:
+            self._error("presign upload", error)
+
     def generate_upload_url(self, object_key: str, *, expires_seconds: int = 900, content_type: str = "application/octet-stream") -> str | None:
-        try: return self.client.generate_presigned_url("put_object", Params={"Bucket": self.bucket, "Key": self._key(object_key), "ContentType": content_type}, ExpiresIn=max(1, min(3600, int(expires_seconds))))
-        except Exception as error: self._error("presign upload", error)
+        contract = self.generate_upload_contract(
+            object_key,
+            expires_seconds=expires_seconds,
+            content_type=content_type,
+        )
+        return str(contract.get("url") or "") or None
 
     def materialize_to_local(self, object_key: str, destination: str | Path) -> ObjectMetadata:
         return self.download(object_key, destination)
-

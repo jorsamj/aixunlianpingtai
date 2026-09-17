@@ -1,10 +1,32 @@
+import {isTaskActive, taskProgress} from './task-poller.js?v=422001';
+import {canonicalTaskPhase, canonicalTaskStatus, exactTaskQueuePosition} from './task-runtime-truth.js';
+
+const POLL_KEY = 'storage-import-scan-v61';
+const OWNER_PAGE = '素材存储配置';
+const POLL_DELAY = 1200;
+
 export function storageImportProgressText(task = {}) {
-  const stage = String(task.stage || task.status || 'SCANNING');
+  const status = canonicalTaskStatus(task);
+  const stage = (canonicalTaskPhase(task) || status || 'SCANNING').toUpperCase();
   const current = String(task.current_item || '').trim();
-  if (current) return `${stage} · ${current}`;
-  if (stage === 'QUEUED') return '已进入扫描队列';
-  if (stage === 'FINALIZING') return '正在整理扫描结果';
-  return `${stage} · 正在扫描对象`;
+  const {percent} = taskProgress(task);
+  const queuePosition = exactTaskQueuePosition(task);
+  const priority = Number(task.priority || 0);
+  const worker = String(task.worker_id || task.task_worker_id || '').trim();
+  const waitReason = String(task.resource_wait_reason || '').trim();
+  if (status === 'WAITING_RESOURCE') {
+    return ['等待资源', queuePosition ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
+  }
+  if (status === 'QUEUED') {
+    return ['排队中', queuePosition ? `队列第 ${queuePosition} 位` : '', priority > 0 ? `优先级 ${priority}` : ''].filter(Boolean).join(' · ');
+  }
+  if (stage === 'FINALIZING') return percent > 0 ? `正在整理扫描结果 · ${percent.toFixed(0)}%` : '正在整理扫描结果';
+  const parts = [stage];
+  if (percent > 0) parts.push(`${percent.toFixed(0)}%`);
+  if (current) parts.push(current);
+  if (worker) parts.push(`执行节点 ${worker}`);
+  if (parts.length === 1) parts.push('正在扫描对象');
+  return parts.join(' · ');
 }
 
 async function responseJson(response) {
@@ -15,71 +37,109 @@ async function responseJson(response) {
   throw new Error(body.message || body.detail || `HTTP ${response.status}`);
 }
 
-export function installStorageImportProgressRuntime() {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return false;
-  if (window.__storageImportProgressRuntimeInstalled) return true;
-  if (typeof window.startStorageImport61 !== 'function') return false;
+export function installStorageImportProgressRuntime({pollRegistry, getState} = {}) {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return null;
+  if (window.StorageImportProgressRuntime?.build === 'storage-import-progress-422520') {
+    return window.StorageImportProgressRuntime;
+  }
 
-  window.__storageImportProgressRuntimeInstalled = true;
+  const registry = pollRegistry || window.PollRegistryRuntime;
+  if (!registry?.startTimeout || !registry?.clear) return null;
 
-  window.startStorageImport61 = async function truthfulStorageImportScan() {
-    const status = document.getElementById('si61Status');
-    const source = document.getElementById('si61Source')?.value || '';
-    if (!source) {
-      window.toast?.('请选择存储源');
-      return;
+  let trackedTaskId = '';
+  let currentTask = null;
+  let settle = null;
+  let rejectCurrent = null;
+
+  const state = () => getState?.() || {};
+
+  function statusElement() {
+    return document.getElementById('si61Status');
+  }
+
+  function render(task) {
+    currentTask = task || currentTask;
+    if (!currentTask) return;
+    const status = statusElement();
+    if (status) status.textContent = storageImportProgressText(currentTask);
+    if (typeof window.renderStorageImportTask61 === 'function') {
+      window.renderStorageImportTask61(currentTask);
     }
-    const projectId = String(state?.project?.id || '');
-    if (!projectId) {
-      window.toast?.('当前项目不可用');
-      return;
-    }
+  }
 
-    try {
-      const body = {
-        storage_source_id: source,
-        prefix: document.getElementById('si61Prefix')?.value || '',
-        recursive: document.getElementById('si61Recursive')?.checked !== false,
-      };
-      const task = await responseJson(await fetch(
-        `/api/v61/projects/${encodeURIComponent(projectId)}/storage-imports/scan`,
-        {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(body),
-        },
-      ));
-      if (status) status.textContent = '扫描任务已进入 Storage Worker 队列';
+  function finish(task) {
+    const resolve = settle;
+    settle = null;
+    rejectCurrent = null;
+    trackedTaskId = '';
+    currentTask = task || currentTask;
+    registry.clear(POLL_KEY);
+    resolve?.(currentTask);
+  }
 
-      let current = task;
-      while (['QUEUED', 'RUNNING'].includes(String(current.status || '').toUpperCase())) {
-        await new Promise(resolve => setTimeout(resolve, 1200));
-        // Closing the dialog only stops browser polling; the durable worker task keeps running.
-        if (status && !status.isConnected) return;
-        current = await responseJson(await fetch(
-          `/api/v61/projects/${encodeURIComponent(projectId)}/storage-imports/${encodeURIComponent(task.task_id)}`,
+  function fail(error) {
+    const reject = rejectCurrent;
+    settle = null;
+    rejectCurrent = null;
+    trackedTaskId = '';
+    registry.clear(POLL_KEY);
+    reject?.(error);
+  }
+
+  function schedule() {
+    if (!trackedTaskId || !isTaskActive(currentTask)) return finish(currentTask);
+    return registry.startTimeout(POLL_KEY, OWNER_PAGE, async () => {
+      if (!trackedTaskId) return;
+      const s = state();
+      const projectId = String(s.project?.id || '');
+      if (!projectId) return fail(new Error('当前项目不可用'));
+      try {
+        const task = await responseJson(await fetch(
+          `/api/v62/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(trackedTaskId)}`,
         ));
-        if (status) status.textContent = storageImportProgressText(current);
+        if (!trackedTaskId) return;
+        render(task);
+        if (isTaskActive(task)) schedule();
+        else finish(task);
+      } catch (error) {
+        fail(error);
       }
+    }, POLL_DELAY);
+  }
 
-      if (String(current.status || '').toUpperCase() !== 'SUCCEEDED') {
-        throw new Error(current.error || `扫描未成功：${current.status || 'UNKNOWN'}`);
-      }
-      const result = current.result || {};
-      const scanned = Number(result.scanned_files ?? result.scanned ?? 0);
-      const importable = Number(result.importable_images ?? result.importable ?? 0);
-      const duplicates = Number(result.duplicates ?? 0);
-      const failed = Number(result.failed ?? 0);
-      if (status) {
-        status.innerHTML = `扫描完成：发现 <b>${scanned}</b> 个对象，可导入 <b>${importable}</b> 张，重复 <b>${duplicates}</b> 张，失败 <b>${failed}</b> 张。 <button class="btn mini primary" onclick="confirmStorageImport61('${String(task.task_id).replace(/'/g, '')}')">确认建立索引</button>`;
-      }
-    } catch (error) {
-      if (status) {
-        const message = String(error?.message || error || '扫描失败')
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        status.innerHTML = `<span class="err">${message}</span>`;
-      }
-    }
-  };
-  return true;
+  function stop() {
+    registry.clear(POLL_KEY);
+    trackedTaskId = '';
+    const resolve = settle;
+    settle = null;
+    rejectCurrent = null;
+    const last = currentTask;
+    currentTask = null;
+    resolve?.(last || null);
+    return true;
+  }
+
+  function track(taskId, initialTask = null) {
+    stop();
+    trackedTaskId = String(taskId || '').trim();
+    currentTask = initialTask || null;
+    if (!trackedTaskId) return Promise.resolve(null);
+    render(currentTask || {task_id: trackedTaskId, status: 'QUEUED'});
+    const promise = new Promise((resolve, reject) => {
+      settle = resolve;
+      rejectCurrent = reject;
+    });
+    if (isTaskActive(currentTask || 'QUEUED')) schedule();
+    else finish(currentTask);
+    return promise;
+  }
+
+  const runtime = Object.freeze({
+    build: 'storage-import-progress-422520',
+    track,
+    stop,
+    current: () => currentTask,
+  });
+  window.StorageImportProgressRuntime = runtime;
+  return runtime;
 }

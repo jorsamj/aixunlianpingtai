@@ -1,0 +1,84 @@
+name: AI Annotation Recovery
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - platform_core/annotation_candidates.py
+      - platform_core/annotation_task_service.py
+      - static/modules/annotation-task-view.js
+      - tests/unit/test_annotation_candidates.py
+      - tests/unit/test_annotation_task_service.py
+      - tests/frontend/annotation-task-view.test.mjs
+      - .github/workflows/ai-annotation-recovery.yml
+  pull_request:
+    paths:
+      - platform_core/annotation_candidates.py
+      - platform_core/annotation_task_service.py
+      - static/modules/annotation-task-view.js
+      - tests/unit/test_annotation_candidates.py
+      - tests/unit/test_annotation_task_service.py
+      - tests/frontend/annotation-task-view.test.mjs
+      - .github/workflows/ai-annotation-recovery.yml
+  workflow_dispatch:
+
+jobs:
+  recovery-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest pillow pyyaml filelock requests psutil pydantic
+      - name: Compile annotation recovery contract
+        run: >-
+          python -m py_compile
+          platform_core/annotation_candidates.py
+          platform_core/annotation_task_service.py
+          tests/unit/test_annotation_candidates.py
+          tests/unit/test_annotation_task_service.py
+      - name: Candidate recovery and fencing guards
+        run: >-
+          python -m pytest --confcutdir=tests/unit -q
+          tests/unit/test_annotation_candidates.py
+          tests/unit/test_annotation_task_service.py
+      - name: Annotation recovery frontend truth
+        run: node --test tests/frontend/annotation-task-view.test.mjs
+      - name: Permanent recovery source guard
+        shell: python
+        run: |
+          from pathlib import Path
+
+          service = Path('platform_core/annotation_task_service.py').read_text(encoding='utf-8')
+          candidates = Path('platform_core/annotation_candidates.py').read_text(encoding='utf-8')
+          frontend = Path('static/modules/annotation-task-view.js').read_text(encoding='utf-8')
+
+          required_service = (
+              'store.generation_prefix',
+              'commit_guard=lambda: _assert_generation_commit(context)',
+              'context.heartbeat(',
+          )
+          missing = [token for token in required_service if token not in service]
+          if missing:
+              raise SystemExit(f'missing annotation recovery service contracts: {missing}')
+          if 'context.repository.heartbeat(' in service:
+              raise SystemExit('annotation task service must not bypass WorkerContext.heartbeat')
+          if 'def generation_prefix(' not in candidates or 'commit_guard' not in candidates:
+              raise SystemExit('CandidateStore durable recovery/fencing contract is missing')
+          if '恢复执行 · 第 ${attempt} 次执行' not in frontend:
+              raise SystemExit('annotation recovery frontend truth is missing')

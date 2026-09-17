@@ -98,6 +98,14 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     }
 
 
+def _assert_generation_commit(context) -> None:
+    # CandidateStore owns a separate SQLite file. Re-check both execution
+    # generation and cancellation immediately before that SQLite transaction
+    # commits so a stale/late Worker cannot publish model output.
+    if context.cancel_requested():
+        raise InterruptedError("AI annotation task cancelled before candidate commit")
+
+
 def run_ai_annotation(
     context,
     *,
@@ -115,14 +123,47 @@ def run_ai_annotation(
         images = images[:preview_count]
     if not images:
         raise ValueError("AI annotation task has no images")
-    checkpoint = dict(context.load_checkpoint() or {})
-    start = max(0, int(checkpoint.get("next_index") or 0))
-    store = CandidateStore(context.artifacts, task_id=context.task.task_id, page_size=50)
-    if start == 0:
-        store.initialize(labels=list(runtime_request.get("labels") or []), total_images=len(images))
 
-    succeeded = int(checkpoint.get("succeeded") or 0)
-    failed = int(checkpoint.get("failed") or 0)
+    store = CandidateStore(context.artifacts, task_id=context.task.task_id, page_size=50)
+    manifest = context.artifacts.read_json(
+        context.task.task_id,
+        "candidates/manifest.json",
+        default=None,
+    )
+    labels = [str(value) for value in runtime_request.get("labels") or []]
+    if not isinstance(manifest, dict):
+        context.assert_current_execution()
+        store.initialize(labels=labels, total_images=len(images))
+    else:
+        if "total_images" in manifest and int(manifest.get("total_images") or 0) != len(images):
+            raise ValueError("annotation candidate manifest does not match immutable task image count")
+        if "labels" in manifest and [str(value) for value in manifest.get("labels") or []] != labels:
+            raise ValueError("annotation candidate manifest does not match immutable task labels")
+
+    durable = store.generation_prefix(str(image["id"]) for image in images)
+    checkpoint = dict(context.load_checkpoint() or {})
+    start = int(durable["next_index"])
+    succeeded = int(durable["succeeded"])
+    failed = int(durable["failed"])
+    checkpoint_start = max(0, int(checkpoint.get("next_index") or 0))
+    if (
+        checkpoint_start != start
+        or int(checkpoint.get("succeeded") or 0) != succeeded
+        or int(checkpoint.get("failed") or 0) != failed
+    ):
+        context.save_checkpoint({
+            "next_index": start,
+            "succeeded": succeeded,
+            "failed": failed,
+            "source": "candidate_store",
+        })
+    if start:
+        context.heartbeat(
+            progress=int(start / max(1, len(images)) * 100),
+            stage="AI_ANNOTATION",
+            current_item=str(images[start - 1].get("id") or ""),
+        )
+
     for index in range(start, len(images)):
         if context.cancel_requested():
             return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
@@ -140,7 +181,8 @@ def run_ai_annotation(
                     "raw_response_hash", "request_id", "latency_ms", "provider", "model"
                 ) if generated.get(key) not in (None, "")},
             }
-            succeeded += 1
+            next_succeeded = succeeded + 1
+            next_failed = failed
         except Exception as error:
             item = {
                 "image_id": str(image.get("id") or ""),
@@ -150,12 +192,26 @@ def run_ai_annotation(
                 "boxes": [],
                 "error": _public_error(error),
             }
-            failed += 1
-        store.append_items([item])
-        context.save_checkpoint({"next_index": index + 1, "succeeded": succeeded, "failed": failed})
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+            next_succeeded = succeeded
+            next_failed = failed + 1
+
+        # A provider call can outlive the lease/cancellation decision. Never
+        # publish its result without re-checking current execution ownership.
+        if context.cancel_requested():
+            return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+        store.append_items(
+            [item],
+            commit_guard=lambda: _assert_generation_commit(context),
+        )
+        succeeded = next_succeeded
+        failed = next_failed
+        context.save_checkpoint({
+            "next_index": index + 1,
+            "succeeded": succeeded,
+            "failed": failed,
+            "source": "candidate_store",
+        })
+        context.heartbeat(
             progress=int((index + 1) / max(1, len(images)) * 100),
             stage="AI_ANNOTATION",
             current_item=str(image.get("id") or ""),

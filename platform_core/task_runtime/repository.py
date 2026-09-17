@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import base64
 import json
 import sqlite3
@@ -11,7 +13,7 @@ from typing import Iterable
 
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
-from ..gpu_resources import GPU_SCHEMA
+from ..gpu_resources import ensure_gpu_runtime_schema
 
 
 SCHEMA = """
@@ -54,7 +56,13 @@ CREATE TABLE IF NOT EXISTS worker_instances (
     instance_key TEXT PRIMARY KEY,
     owner_token TEXT NOT NULL,
     worker_id TEXT NOT NULL,
+    node_id TEXT NOT NULL DEFAULT 'legacy-unscoped',
     pid INTEGER NOT NULL,
+    hostname TEXT NOT NULL DEFAULT '',
+    build_id TEXT NOT NULL DEFAULT '',
+    roles TEXT NOT NULL DEFAULT '[]',
+    task_kinds TEXT NOT NULL DEFAULT '[]',
+    capabilities TEXT NOT NULL DEFAULT '[]',
     started_at TEXT NOT NULL,
     heartbeat_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
@@ -123,6 +131,9 @@ def _from_row(row: sqlite3.Row) -> TaskRecord:
         updated_at=str(row["updated_at"]),
         finished_at=row["finished_at"],
         resource_wait_reason=row["resource_wait_reason"],
+        queue_rank=int(row["queue_rank"] or 0),
+        worker_id=row["worker_id"],
+        lease_expires_at=row["lease_expires_at"],
     )
 
 
@@ -146,14 +157,28 @@ class TaskRepository:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.executescript(SCHEMA)
             columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
             if "queue_rank" not in columns:
                 database.execute("ALTER TABLE tasks ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0")
             if "resource_wait_reason" not in columns:
                 database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
-            database.executescript(GPU_SCHEMA)
+            worker_columns = {
+                str(row[1]) for row in database.execute("PRAGMA table_info(worker_instances)").fetchall()
+            }
+            additive_worker_columns = (
+                ("node_id", "TEXT NOT NULL DEFAULT 'legacy-unscoped'"),
+                ("hostname", "TEXT NOT NULL DEFAULT ''"),
+                ("build_id", "TEXT NOT NULL DEFAULT ''"),
+                ("roles", "TEXT NOT NULL DEFAULT '[]'"),
+                ("task_kinds", "TEXT NOT NULL DEFAULT '[]'"),
+                ("capabilities", "TEXT NOT NULL DEFAULT '[]'"),
+            )
+            for name, definition in additive_worker_columns:
+                if name not in worker_columns:
+                    database.execute(f"ALTER TABLE worker_instances ADD COLUMN {name} {definition}")
+            ensure_gpu_runtime_schema(database)
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
@@ -164,7 +189,7 @@ class TaskRepository:
         return database
 
     def journal_mode(self) -> str:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
     def create(self, record: TaskRecord, *, artifacts=None) -> TaskRecord:
@@ -176,7 +201,7 @@ class TaskRepository:
         values = _to_values(record)
         columns = ",".join(values)
         placeholders = ",".join("?" for _ in values)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             database.execute(
                 f"INSERT INTO tasks ({columns}) VALUES ({placeholders})",
@@ -192,12 +217,65 @@ class TaskRepository:
         return created
 
     def get(self, task_id: str) -> TaskRecord | None:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 "SELECT * FROM tasks WHERE task_id=?",
                 (str(task_id),),
             ).fetchone()
         return _from_row(row) if row is not None else None
+
+    def resource_queue_position(self, task_id: str) -> int | None:
+        """Return the truthful ordering position among queued peers sharing a resource key.
+
+        This is intentionally resource-scoped rather than a fake global queue position:
+        different worker roles/capabilities may consume independent queues concurrently.
+        """
+        with closing(self._connect()) as database:
+            row = database.execute(
+                "SELECT task_id,status,priority,queue_rank,resource_key,created_at FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(task_id)
+            if str(row["status"]) != TaskStatus.QUEUED.value:
+                return None
+            ahead = database.execute(
+                """
+                SELECT COUNT(*) FROM tasks
+                 WHERE status='QUEUED' AND resource_key=? AND task_id<>?
+                   AND (
+                        priority < ?
+                        OR (priority = ? AND queue_rank > ?)
+                        OR (priority = ? AND queue_rank = ? AND created_at < ?)
+                        OR (priority = ? AND queue_rank = ? AND created_at = ? AND task_id < ?)
+                   )
+                """,
+                (
+                    str(row["resource_key"]), str(row["task_id"]),
+                    int(row["priority"]),
+                    int(row["priority"]), int(row["queue_rank"] or 0),
+                    int(row["priority"]), int(row["queue_rank"] or 0), str(row["created_at"]),
+                    int(row["priority"]), int(row["queue_rank"] or 0), str(row["created_at"]), str(row["task_id"]),
+                ),
+            ).fetchone()[0]
+        return int(ahead) + 1
+
+    def queued_candidates(self) -> tuple[TaskRecord, ...]:
+        """Return the current durable claim-order candidates for read projections.
+
+        This does not apply Worker capability or admission rules. Callers may use
+        the rows to prove a narrower view, but must not treat them as a second
+        Scheduler or mutate queue state from a GET path.
+        """
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT * FROM tasks
+                 WHERE status='QUEUED'
+                 ORDER BY priority ASC, queue_rank DESC, created_at ASC, task_id ASC
+                """
+            ).fetchall()
+        return tuple(_from_row(row) for row in rows)
 
     def list(
         self,
@@ -226,7 +304,7 @@ class TaskRepository:
             clauses.append("(created_at < ? OR (created_at = ? AND task_id < ?))")
             parameters.extend([created_at, created_at, task_id])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 f"SELECT * FROM tasks {where} ORDER BY created_at DESC, task_id DESC LIMIT ?",
                 (*parameters, bounded_limit + 1),
@@ -262,7 +340,7 @@ class TaskRepository:
 
     def release_expired(self, now: datetime | str | None = None) -> int:
         now_text = _iso(now)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             count = self._release_expired_in(database, now_text)
             database.commit()
@@ -287,7 +365,7 @@ class TaskRepository:
         expires_at = (now + timedelta(seconds=max(1, int(lease_seconds)))).isoformat()
         token = uuid.uuid4().hex
         placeholders = ",".join("?" for _ in kind_values)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             self._release_expired_in(database, now_text)
             rows = database.execute(
@@ -361,16 +439,20 @@ class TaskRepository:
         now = datetime.now(timezone.utc)
         parameters: list[object] = [now.isoformat(), (now + timedelta(seconds=30)).isoformat()]
         if progress is not None:
-            updates.append("progress=?")
+            updates.append("progress=MAX(progress, ?)")
             parameters.append(max(0.0, min(100.0, float(progress))))
         if stage is not None:
-            updates.append("stage=?")
-            parameters.append(str(stage))
+            stage_value = str(stage)
+            updates.append(
+                "stage=CASE WHEN stage IN ('paused','cancelling') AND stage<>? "
+                "THEN stage ELSE ? END"
+            )
+            parameters.extend([stage_value, stage_value])
         if current_item is not None:
             updates.append("current_item=?")
             parameters.append(str(current_item))
         parameters.extend([str(task_id), str(lease_token)])
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 f"UPDATE tasks SET {','.join(updates)} "
                 "WHERE task_id=? AND lease_token=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
@@ -390,7 +472,7 @@ class TaskRepository:
         identity: ProcessIdentity,
     ) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET process_pid=?, process_create_time=?,
@@ -419,13 +501,72 @@ class TaskRepository:
         if not value:
             raise ValueError("task stage cannot be empty")
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
-                "UPDATE tasks SET stage=?, updated_at=? WHERE task_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                "UPDATE tasks SET stage=?, updated_at=? WHERE task_id=? AND status='RUNNING'",
                 (value, now, str(task_id)),
             ).rowcount
         if changed != 1:
-            raise ValueError("only active tasks can change stage")
+            raise ValueError("only running tasks can change stage")
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result
+
+    def begin_finalization(
+        self,
+        task_id: str,
+        lease_token: str,
+        *,
+        execution_generation: int | None = None,
+    ) -> TaskRecord:
+        """Atomically choose successful commit over a competing cancellation.
+
+        A cancellation already persisted as ``CANCEL_REQUESTED`` wins. Once the
+        owned execution enters ``finalizing_commit``, later stop requests are
+        rejected so a committed algorithm version can never belong to a task
+        subsequently published as cancelled.
+        """
+        now = utc_now()
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            if current.status is TaskStatus.CANCEL_REQUESTED:
+                database.rollback()
+                raise InterruptedError("task cancellation won before finalization")
+            owned = (
+                current.status is TaskStatus.RUNNING
+                and str(row["lease_token"] or "") == str(lease_token)
+                and (
+                    execution_generation is None
+                    or int(row["attempt"]) == int(execution_generation)
+                )
+            )
+            if not owned:
+                database.rollback()
+                raise PermissionError("task execution does not own finalization")
+            if execution_generation is not None and (
+                not row["lease_expires_at"] or str(row["lease_expires_at"]) <= now
+            ):
+                database.rollback()
+                raise PermissionError("task execution lease expired before finalization")
+            if current.stage != "finalizing_commit":
+                database.execute(
+                    """
+                    UPDATE tasks SET stage='finalizing_commit',
+                        current_item='训练已完成，正在归档已验证产物',
+                        updated_at=? WHERE task_id=?
+                    """,
+                    (now, str(task_id)),
+                )
+            database.commit()
         result = self.get(task_id)
         if result is None:
             raise KeyError(task_id)
@@ -433,7 +574,7 @@ class TaskRepository:
 
     def promote(self, task_id: str) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT status, resource_key FROM tasks WHERE task_id=?",
@@ -465,16 +606,19 @@ class TaskRepository:
 
     def request_cancel(self, task_id: str) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                "SELECT status FROM tasks WHERE task_id=?",
+                "SELECT status, stage FROM tasks WHERE task_id=?",
                 (str(task_id),),
             ).fetchone()
             if row is None:
                 database.rollback()
                 raise KeyError(task_id)
             status = TaskStatus(row["status"])
+            if status is TaskStatus.RUNNING and str(row["stage"]) == "finalizing_commit":
+                database.rollback()
+                raise ValueError("训练已完成并正在归档，无法再停止")
             if status is TaskStatus.QUEUED or status is TaskStatus.AWAITING_CONFIRMATION:
                 database.execute(
                     """
@@ -514,11 +658,16 @@ class TaskRepository:
             TaskStatus.PARTIAL_SUCCESS,
             TaskStatus.SUCCEEDED,
         } else None
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 """
                 UPDATE tasks SET status=?, result_ref=?, error=?, accepted=?, stage=?,
-                    progress=COALESCE(?, progress), finished_at=?, updated_at=?,
+                    progress=CASE
+                        WHEN ?='AWAITING_CONFIRMATION' AND kind='MATERIAL_IMPORT'
+                            THEN MAX(progress, 50.0)
+                        ELSE COALESCE(?, progress)
+                    END,
+                    finished_at=?, updated_at=?,
                     worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                  WHERE task_id=? AND lease_token=?
                    AND status IN ('RUNNING','CANCEL_REQUESTED')
@@ -529,6 +678,7 @@ class TaskRepository:
                     error,
                     None if accepted is None else int(accepted),
                     stage,
+                    status.value,
                     progress,
                     finished_at,
                     now,
@@ -554,7 +704,7 @@ class TaskRepository:
         if status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
             raise ValueError("review must finish as success or partial success")
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT * FROM tasks WHERE task_id=?",
@@ -602,7 +752,7 @@ class TaskRepository:
 
     def resume_after_confirmation(self, task_id: str) -> TaskRecord:
         now = utc_now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
                 "SELECT * FROM tasks WHERE task_id=?",
@@ -621,7 +771,7 @@ class TaskRepository:
             if current.status is TaskStatus.AWAITING_CONFIRMATION:
                 database.execute(
                     """
-                    UPDATE tasks SET status='QUEUED', stage='indexing_queued', progress=0,
+                    UPDATE tasks SET status='QUEUED', stage='indexing_queued', progress=MAX(progress, 50.0),
                         current_item=NULL, error=NULL, accepted=1, finished_at=NULL,
                         updated_at=?, worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
                      WHERE task_id=? AND status='AWAITING_CONFIRMATION'
@@ -648,7 +798,7 @@ class TaskRepository:
         now = utc_now()
         terminal_values = tuple(status.value for status in TERMINAL_STATUSES)
         placeholders = ",".join("?" for _ in terminal_values)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             changed = database.execute(
                 f"""
                 UPDATE tasks SET status='QUEUED', stage='queued', progress=0,

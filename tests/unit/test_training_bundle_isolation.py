@@ -1,10 +1,12 @@
 import hashlib
+import json
 import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from platform_core import training_tasks
 
@@ -170,6 +172,28 @@ def test_cleanup_refuses_linked_bundle_root_and_preserves_active_copy(tmp_path: 
     assert protected.read_bytes() == b"active"
 
 
+def test_process_liveness_probe_never_sends_os_signal(monkeypatch: pytest.MonkeyPatch):
+    observed: list[int] = []
+
+    monkeypatch.setattr(
+        training_tasks.psutil,
+        "pid_exists",
+        lambda process_id: observed.append(int(process_id)) or True,
+    )
+    monkeypatch.setattr(
+        training_tasks.os,
+        "kill",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("process liveness probe must never signal a process")
+        ),
+    )
+
+    assert training_tasks._process_is_running(43210) is True
+    assert observed == [43210]
+    assert training_tasks._process_is_running(0) is False
+    assert observed == [43210]
+
+
 def test_cleanup_requires_work_boundary_and_keeps_live_owner_copy(tmp_path: Path):
     work = tmp_path / "work"
     bundle = work / "bundle"
@@ -208,3 +232,74 @@ def test_copy_verification_compares_exact_source_size(tmp_path: Path, monkeypatc
         training_tasks._copy_verified_isolated(source, destination, expected_hash)
 
     assert not destination.exists()
+
+def test_missing_jpeg_eoi_is_normalized_before_ultralytics_without_mutating_source(tmp_path: Path):
+    source = tmp_path / "WEB07552.jpg"
+    Image.new("RGB", (8, 8), (120, 30, 10)).save(source, format="JPEG")
+    valid = source.read_bytes()
+    assert valid[:2] == b"\xff\xd8"
+    assert valid[-2:] == b"\xff\xd9"
+    broken = valid[:-2] + b"t\n"
+    source.write_bytes(broken)
+    source_sha = hashlib.sha256(broken).hexdigest()
+    source_size = len(broken)
+
+    bundle = _materialize(tmp_path / "task-jpeg-repair", source)
+    destination = bundle / "dataset/images/train/image-one.jpg"
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    member = manifest["splits"]["train"][0]
+
+    assert source.read_bytes() == broken
+    assert source.stat().st_size == source_size
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_sha
+    assert destination.read_bytes()[-2:] == b"\xff\xd9"
+    assert member["source_content_sha256"] == source_sha
+    assert member["source_size_bytes"] == source_size
+    assert member["content_sha256"] == hashlib.sha256(destination.read_bytes()).hexdigest()
+    assert member["size_bytes"] == destination.stat().st_size
+    assert member["normalized"] is True
+    assert member["normalization_reason"] == "jpeg_missing_eoi"
+    assert member["training_input_policy"] == "ultralytics_jpeg_repair_v1"
+    assert manifest["training_input_policy"] == "ultralytics_jpeg_repair_v1"
+    assert training_tasks.verify_portable_dataset(bundle / "manifest.json")["verified_files"] == 1
+
+
+def test_standard_jpeg_keeps_exact_training_bytes(tmp_path: Path):
+    source = tmp_path / "normal.jpg"
+    Image.new("RGB", (8, 8), (20, 40, 60)).save(source, format="JPEG")
+    original = source.read_bytes()
+    bundle = _materialize(tmp_path / "task-jpeg-normal", source)
+    destination = bundle / "dataset/images/train/image-one.jpg"
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    member = manifest["splits"]["train"][0]
+
+    assert destination.read_bytes() == original
+    assert member["source_content_sha256"] == member["content_sha256"]
+    assert member["source_size_bytes"] == member["size_bytes"]
+    assert member["normalized"] is False
+    assert member["normalization_reason"] is None
+
+
+def test_jpg_extension_without_jpeg_magic_remains_format_neutral(tmp_path: Path):
+    source = tmp_path / "opaque.jpg"
+    original = b"opaque-test-payload"
+    source.write_bytes(original)
+    bundle = _materialize(tmp_path / "task-opaque", source)
+    destination = bundle / "dataset/images/train/image-one.jpg"
+    assert destination.read_bytes() == original
+
+
+def test_training_bundle_mutation_error_reports_image_id_and_expected_actual_sha(tmp_path: Path):
+    source = tmp_path / "normal-error.jpg"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(source, format="JPEG")
+    bundle = _materialize(tmp_path / "task-jpeg-error", source)
+    destination = bundle / "dataset/images/train/image-one.jpg"
+    destination.write_bytes(b"mutated-after-materialization")
+
+    with pytest.raises(ValueError) as error:
+        training_tasks.verify_portable_dataset(bundle / "manifest.json")
+    message = str(error.value)
+    assert "TRAINING_BUNDLE_IMAGE_MUTATED" in message
+    assert "image_id=image-one" in message
+    assert "expected_training_sha256=" in message
+    assert "actual_sha256=" in message

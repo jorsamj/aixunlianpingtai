@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,7 +118,7 @@ class StorageSourceRepository:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.reference_counter = reference_counter or (lambda _source_id: 0)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.executescript(_SCHEMA)
             stamp = _now()
             database.execute(
@@ -138,25 +139,25 @@ class StorageSourceRepository:
         return database
 
     def journal_mode(self) -> str:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             return str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
 
     def list(self) -> list[StorageSource]:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             rows = database.execute(
                 "SELECT * FROM storage_sources ORDER BY is_default DESC, created_at, id"
             ).fetchall()
         return [_from_row(row) for row in rows]
 
     def get(self, source_id: str) -> StorageSource | None:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 "SELECT * FROM storage_sources WHERE id = ?", (str(source_id),)
             ).fetchone()
         return _from_row(row) if row else None
 
     def default(self) -> StorageSource:
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             row = database.execute(
                 "SELECT * FROM storage_sources WHERE is_default = 1"
             ).fetchone()
@@ -174,7 +175,7 @@ class StorageSourceRepository:
         source_type = StorageType.parse(value.get("type")).value
         config = _safe_config(value.get("config") if isinstance(value.get("config"), Mapping) else {})
         stamp = _now()
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 database.execute(
@@ -218,7 +219,7 @@ class StorageSourceRepository:
             enabled=bool(changes.get("enabled", current.enabled)),
             updated_at=_now(),
         )
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute(
                 """
                 UPDATE storage_sources
@@ -242,7 +243,7 @@ class StorageSourceRepository:
             raise KeyError(f"storage source does not exist: {source_id}")
         if not source.enabled:
             raise ValueError("disabled storage source cannot be the default")
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
                 database.execute("UPDATE storage_sources SET is_default = 0 WHERE is_default = 1")
@@ -259,7 +260,7 @@ class StorageSourceRepository:
     def record_health(self, source_id: str, *, ok: bool, message: str) -> StorageSource:
         checked = _now()
         safe_message = redact_storage_error(message)
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             cursor = database.execute(
                 """
                 UPDATE storage_sources
@@ -283,7 +284,7 @@ class StorageSourceRepository:
             raise ValueError(f"storage source is referenced by {references} materials")
         if source.is_default:
             raise ValueError("default storage source cannot be deleted")
-        with self._connect() as database:
+        with closing(self._connect()) as database:
             cursor = database.execute(
                 "DELETE FROM storage_sources WHERE id = ?", (str(source_id),)
             )

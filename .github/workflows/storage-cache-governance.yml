@@ -1,0 +1,109 @@
+name: Storage Cache Governance
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'platform_core/storage/**'
+      - 'platform_core/task_runtime/worker_instances.py'
+      - 'task_worker.py'
+      - 'static/modules/storage.js'
+      - 'static/modules/storage-cache-runtime.js'
+      - 'static/index.html'
+      - 'tests/unit/storage/**'
+      - 'tests/frontend/storage-*.test.mjs'
+      - '.github/workflows/storage-cache-governance.yml'
+      - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
+  pull_request:
+    paths:
+      - 'platform_core/storage/**'
+      - 'platform_core/task_runtime/worker_instances.py'
+      - 'task_worker.py'
+      - 'static/modules/storage.js'
+      - 'static/modules/storage-cache-runtime.js'
+      - 'static/index.html'
+      - 'tests/unit/storage/**'
+      - 'tests/frontend/storage-*.test.mjs'
+      - '.github/workflows/storage-cache-governance.yml'
+      - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
+
+jobs:
+  storage-cache-governance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install focused storage test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --disable-pip-version-check \
+            fastapi uvicorn python-multipart pillow pyyaml requests \
+            opencv-python-headless onnx onnxruntime onnxslim psutil \
+            keyring filelock boto3 oss2 pytest httpx
+
+      - name: Run storage cache and object-store unit guards
+        run: >-
+          python -m pytest -q
+          tests/unit/storage/test_material_cache.py
+          tests/unit/storage/test_material_cache_lifecycle.py
+          tests/unit/storage/test_material_cache_runtime.py
+          tests/unit/storage/test_optional_providers.py
+          tests/unit/storage/test_object_store_immutability.py
+          tests/unit/storage/test_source_repository.py
+
+      - name: Run storage frontend guards
+        run: >-
+          node --test
+          tests/frontend/storage-source-ui.test.mjs
+          tests/frontend/storage-policy-payload.test.mjs
+          tests/frontend/storage-cache-runtime.test.mjs
+
+      - name: Guard cache lifecycle, node runtime truth, immutable objects, and presigned PUT contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'MC_MATERIAL_CACHE_DIR' platform_core/storage/cache.py
+          grep -Fq 'cache_scope="configured_cache_dir"' tests/unit/storage/test_material_cache_lifecycle.py
+          grep -Fq 'MATERIAL_CACHE_MAX_BYTES' platform_core/storage/cache.py
+          grep -Fq 'MATERIAL_CACHE_TTL_SECONDS' platform_core/storage/cache.py
+          grep -Fq 'status.json' platform_core/storage/cache.py
+          grep -Fq 'node_cache_runtime' platform_core/storage/material_cache_runtime.py
+          grep -Fq 'PRIMARY KEY(node_id, cache_kind)' platform_core/storage/material_cache_runtime.py
+          grep -Fq 'worker instance lease is no longer owned' platform_core/storage/material_cache_runtime.py
+          grep -Fq 'load_node_cache_reports' platform_core/task_runtime/worker_instances.py
+          grep -Fq 'add_renew_hook(cache_reporter.report)' task_worker.py
+          grep -Fq "fetchImpl('/api/v62/workers'" static/modules/storage-cache-runtime.js
+          grep -Fq "aggregation: 'per_node_only_no_sum'" static/modules/storage-cache-runtime.js
+          grep -Fq 'REPORT_HEARTBEAT_SKEW_MS' static/modules/storage-cache-runtime.js
+          grep -Fq 'report hook stops advancing' tests/frontend/storage-cache-runtime.test.mjs
+          grep -Fq '按 node_id 去重展示，不跨节点累加容量' static/modules/storage-cache-runtime.js
+          if grep -Fq '/data/cache/materials/status.json' static/modules/storage-cache-runtime.js; then
+            echo 'storage cache UI must not read one web-node status.json as cluster truth' >&2
+            exit 1
+          fi
+          grep -Fq 'protect_existing_objects' platform_core/storage/oss.py
+          grep -Fq 'x-oss-forbid-overwrite' platform_core/storage/oss.py
+          grep -Fq 'def generate_upload_contract' platform_core/storage/oss.py
+          grep -Fq 'overwrite_protected' platform_core/storage/oss.py
+          grep -Fq 'signature_version="s3v4"' platform_core/storage/s3.py
+          grep -Fq 'IfNoneMatch="*"' platform_core/storage/s3.py
+          grep -Fq 'params["IfNoneMatch"] = "*"' platform_core/storage/s3.py
+          grep -Fq 'headers["If-None-Match"] = "*"' platform_core/storage/s3.py
+          grep -Fq 'def generate_upload_contract' platform_core/storage/s3.py
+          grep -Fq 'overwrite_protected' platform_core/storage/s3.py
+          grep -Fq 'test_s3_real_sdk_presign_uses_sigv4_and_signs_conditional_headers' tests/unit/storage/test_object_store_immutability.py
+          grep -Fq 'test_oss_real_sdk_presign_accepts_conditional_signed_headers_without_network' tests/unit/storage/test_object_store_immutability.py
+          grep -Fq 'storage-cache-runtime.js?v=422527' static/index.html
+          grep -Fq '外部变更需重新扫描' static/modules/storage-cache-runtime.js
+          grep -Fq 'Worker 节点素材缓存' static/modules/storage-cache-runtime.js
+          test "$(tr -d '\r\n' < VERSION.txt)" = '42.24.0'

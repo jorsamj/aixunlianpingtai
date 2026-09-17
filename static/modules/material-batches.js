@@ -1,5 +1,22 @@
+import {canonicalTaskStatus, exactTaskQueuePosition, isCanonicalTaskActive} from './task-runtime-truth.js';
+
 const STORAGE_KEY = 'aixunlian.material-batches.v62';
-const ACTIVE = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED']);
+export function isMaterialBatchActive(value) {
+  return isCanonicalTaskActive(value);
+}
+
+
+export function materialBatchTaskText(task = {}) {
+  const status = canonicalTaskStatus(task);
+  const label = ({QUEUED:'排队中', WAITING_RESOURCE:'等待资源', RUNNING:'处理中', CANCEL_REQUESTED:'正在取消', AWAITING_CONFIRMATION:'等待确认', PARTIAL_SUCCESS:'部分成功', SUCCEEDED:'已完成', CANCELLED:'已取消', FAILED:'失败', BLOCKED_BY_ENVIRONMENT:'环境不可用', BLOCKED_BY_HARDWARE:'硬件不可用'})[status] || status || '未知';
+  const queuePosition = exactTaskQueuePosition(task) || 0;
+  const waitReason = String(task.resource_wait_reason || '').trim();
+  const workerId = String(task.worker_id || '').trim();
+  const runtime = ['QUEUED', 'WAITING_RESOURCE'].includes(status)
+    ? (queuePosition ? ` · 资源队列第 ${queuePosition} 位${waitReason ? ` · ${waitReason}` : ''}` : (waitReason ? ` · ${waitReason}` : ''))
+    : (workerId ? ` · Worker ${workerId}` : '');
+  return `${label}${runtime}`;
+}
 
 async function json(response) {
   const text = await response.text();
@@ -32,7 +49,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
 
   function remember(task) {
     const items = saved();
-    if (ACTIVE.has(String(task.status || '').toUpperCase()) || task.review_required) items[task.task_id] = {project_id: pid()};
+    if (isMaterialBatchActive(task) || task.review_required) items[task.task_id] = {project_id: pid()};
     else delete items[task.task_id];
     save(items);
   }
@@ -46,7 +63,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     const processed = Number(task.processed || 0);
     const failed = Number(task.failed || 0);
     const cleaning = task.operation === 'CLEAN' ? `，发现问题 ${Number(task.flagged || 0)} 张（仅检查，待复核）` : '';
-    tell(`${task.operation || '批量任务'}：${task.status} ${processed}/${total}${failed ? `，失败 ${failed}` : ''}${cleaning}`);
+    tell(`${task.operation || '批量任务'}：${materialBatchTaskText(task)} ${processed}/${total}${failed ? `，失败 ${failed}` : ''}${cleaning}`);
   }
 
   function poll(taskId) {
@@ -56,7 +73,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
         const task = await get(taskId);
         remember(task);
         announce(task);
-        if (ACTIVE.has(String(task.status || '').toUpperCase())) {
+        if (isMaterialBatchActive(task)) {
           timers.set(taskId, setTimeout(tick, 1500));
         } else {
           timers.delete(taskId);

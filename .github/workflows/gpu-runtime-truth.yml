@@ -1,0 +1,78 @@
+name: GPU Runtime Truth
+
+on:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'platform_core/gpu_resources.py'
+      - 'platform_core/gpu_reservations_v2.py'
+      - 'platform_core/task_runtime/**'
+      - 'task_worker.py'
+      - 'tests/unit/test_gpu_resource_connection_lifecycle.py'
+      - 'tests/unit/test_gpu_node_scoped_reservations.py'
+      - '.github/workflows/gpu-runtime-truth.yml'
+  pull_request:
+    paths:
+      - 'platform_core/gpu_resources.py'
+      - 'platform_core/gpu_reservations_v2.py'
+      - 'platform_core/task_runtime/**'
+      - 'task_worker.py'
+      - 'tests/unit/test_gpu_resource_connection_lifecycle.py'
+      - 'tests/unit/test_gpu_node_scoped_reservations.py'
+      - '.github/workflows/gpu-runtime-truth.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-scoped-reservations:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused test dependencies
+        run: python -m pip install pytest 'filelock>=3.13,<4' 'psutil>=5.9'
+      - name: Compile GPU runtime modules
+        run: >-
+          python -m py_compile
+          platform_core/gpu_resources.py
+          platform_core/gpu_reservations_v2.py
+          task_worker.py
+      - name: Run GPU runtime truth contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_gpu_resource_connection_lifecycle.py
+          tests/unit/test_gpu_node_scoped_reservations.py
+      - name: Guard formal Worker wiring
+        shell: python
+        run: |
+          from pathlib import Path
+          worker = Path('task_worker.py').read_text(encoding='utf-8')
+          runtime = Path('platform_core/gpu_reservations_v2.py').read_text(encoding='utf-8')
+          required_worker = [
+              'from platform_core.gpu_reservations_v2 import NodeScopedGPUResourceManager',
+              'gpu_resources=NodeScopedGPUResourceManager(',
+              'node_id=node_identity.node_id',
+              'worker_id=worker_id',
+          ]
+          required_runtime = [
+              'UNIQUE(node_id, worker_slot)',
+              'UNIQUE(worker_id, node_id, logical_cuda_index)',
+              'DELETE FROM worker_gpu_visibility WHERE worker_id=? AND node_id=?',
+              'GPU_LEGACY_RESERVATION_UNSCOPED',
+              'GPU_VISIBILITY_UNAVAILABLE',
+              'GPU_ASSIGNMENT_FENCED',
+              'r.node_id=g.node_id',
+          ]
+          missing = [item for item in required_worker if item not in worker]
+          missing += [item for item in required_runtime if item not in runtime]
+          if missing:
+              raise SystemExit('Missing GPU Runtime Truth contracts: ' + ', '.join(missing))

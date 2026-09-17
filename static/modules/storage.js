@@ -37,6 +37,7 @@ export function buildStorageSourcePayload(values) {
   if (type === 'local') copy(config, 'root', values.root);
   if (type === 'oss') {
     copy(config, 'endpoint', values.endpoint); copy(config, 'bucket', values.bucket); copy(config, 'prefix', values.prefix);
+    config.protect_existing_objects = values?.protect_existing_objects !== false;
     copy(credentials, 'access_key_id', values.access_key_id); copy(credentials, 'access_key_secret', values.access_key_secret);
     if (Boolean(credentials.access_key_id) !== Boolean(credentials.access_key_secret)) {
       throw new Error('AccessKey ID 和 AccessKey Secret 必须同时填写');
@@ -45,6 +46,7 @@ export function buildStorageSourcePayload(values) {
   if (type === 's3') {
     copy(config, 'endpoint', values.endpoint); copy(config, 'region', values.region); copy(config, 'bucket', values.bucket); copy(config, 'prefix', values.prefix);
     config.use_ssl = values.use_ssl !== false;
+    config.protect_existing_objects = values?.protect_existing_objects !== false;
     copy(credentials, 'access_key_id', values.access_key_id); copy(credentials, 'secret_access_key', values.secret_access_key);
     if (Boolean(credentials.access_key_id) !== Boolean(credentials.secret_access_key)) {
       throw new Error('Access Key 和 Secret Key 必须同时填写');

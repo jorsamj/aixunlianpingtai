@@ -1,0 +1,121 @@
+name: Material Upload Cleaning Performance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'app.py'
+      - 'platform_core/storage/local.py'
+      - 'platform_core/material_repository_batch.py'
+      - 'platform_core/cleaning.py'
+      - 'platform_core/cleaning_analysis_runtime.py'
+      - 'platform_core/cleaning_batches.py'
+      - 'static/modules/cleaning.js'
+      - 'tests/unit/test_material_upload_cleaning_performance.py'
+      - 'tests/unit/test_cleaning_analysis_runtime.py'
+      - 'tests/api/test_upload_batch_performance_truth.py'
+      - 'tests/api/test_upload_clean_flow.py'
+      - 'tests/api/test_clean_unified_execution_truth.py'
+      - 'tests/frontend/clean-task-view.test.mjs'
+      - '.github/workflows/material-upload-cleaning-performance.yml'
+
+jobs:
+  cross-platform-hot-path:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install focused dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx python-multipart pillow pyyaml requests
+          numpy opencv-python-headless onnx onnxruntime onnxslim psutil keyring
+          filelock boto3 oss2
+      - name: Compile optimized material paths
+        run: >-
+          python -m py_compile
+          app.py
+          platform_core/storage/local.py
+          platform_core/material_repository_batch.py
+          platform_core/cleaning.py
+          platform_core/cleaning_analysis_runtime.py
+          platform_core/cleaning_batches.py
+          tests/unit/test_cleaning_analysis_runtime.py
+          tests/api/test_upload_batch_performance_truth.py
+      - name: Plain upload direct-stream contract
+        run: python -m pytest -q tests/api/test_upload_batch_performance_truth.py
+      - name: Upload and cleaning hot-path contracts
+        run: >-
+          python -m pytest --confcutdir=tests/unit -q
+          tests/unit/test_material_upload_cleaning_performance.py
+          tests/unit/test_cleaning_analysis_runtime.py
+      - name: Cleaning frontend runtime truth
+        run: node --test tests/frontend/clean-task-view.test.mjs
+
+  durable-api-flow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Real upload and durable cleaning contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_upload_batch_performance_truth.py
+          tests/api/test_upload_clean_flow.py
+          tests/api/test_clean_unified_execution_truth.py
+      - name: Permanent performance and runtime guards
+        shell: bash
+        run: |
+          grep -Fq '_install_repository_initialization_cache' platform_core/material_repository_batch.py
+          grep -Fq '_MATERIAL_INIT_READY' platform_core/material_repository_batch.py
+          grep -Fq '_ANNOTATION_INIT_READY' platform_core/material_repository_batch.py
+          grep -Fq 'content_sha256=local.content_sha256' platform_core/cleaning_batches.py
+          grep -Fq 'MAX_ANALYSIS_PIXELS = 16_000_000' platform_core/cleaning.py
+          grep -Fq 'dhash_value = _dhash_image(bounded_rgb)' platform_core/cleaning.py
+          grep -Fq 'DEFAULT_ANALYSIS_TIMEOUT_SECONDS = 30.0' platform_core/cleaning_analysis_runtime.py
+          grep -Fq 'multiprocessing.get_context("spawn")' platform_core/cleaning_analysis_runtime.py
+          grep -Fq 'raise CleaningAnalysisTimeout' platform_core/cleaning_analysis_runtime.py
+          grep -Fq 'analysis = CleaningAnalysisRuntime()' platform_core/cleaning_batches.py
+          grep -Fq 'metrics = analysis.analyze(' platform_core/cleaning_batches.py
+          grep -Fq '"materializing"' platform_core/cleaning_batches.py
+          grep -Fq '"analyzing"' platform_core/cleaning_batches.py
+          grep -Fq 'resource_queue_position_exact === true' static/modules/cleaning.js
+          grep -Fq '_v50_begin_image_batch(project_id)' app.py
+          grep -Fq 'annotation_repository.upsert_many(' app.py
+          grep -Fq 'return repository.upsert_many(records)' app.py
+          grep -Fq 'def _v50_storage_manager(project_id: str) -> StorageManager:' app.py
+          grep -Fq 'source_config = manager.sources.get(storage_source_id)' app.py
+          grep -Fq 'metadata = manager.upload_object(' app.py
+          grep -Fq 'committed = _v50_end_image_batch(save=True)' app.py
+          grep -Fq 'class _NonClosingImageStream:' app.py
+          grep -Fq 'path_source = isinstance(src, (str, Path))' app.py
+          grep -Fq 'Image.open(_NonClosingImageStream(src))' app.py
+          grep -Fq 'await file.seek(0)' app.py
+          grep -Fq 'stream = file.file' app.py
+          if grep -Fq 'p / "imports" / f"upload_' app.py; then
+            echo 'plain upload still writes a second app-level temp copy'
+            exit 1
+          fi
+          grep -Fq 'assert direct_stream_sources == [True] * 12' tests/api/test_upload_batch_performance_truth.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check

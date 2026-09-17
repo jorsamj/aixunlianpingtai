@@ -42,9 +42,11 @@ ERROR_RESULT_REF = "scan/error.json"
 BATCH_SIZE = 500
 
 
-def _sha256_stream(stream) -> str:
+def _sha256_stream(stream, *, cancelled=None) -> str:
     digest = hashlib.sha256()
     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        if cancelled is not None and cancelled():
+            raise InterruptedError("storage scan cancelled")
         digest.update(chunk)
     return digest.hexdigest()
 
@@ -124,8 +126,14 @@ class StorageImportHandler:
         return source, provider
 
     @staticmethod
-    def _inspect(provider, source, item) -> dict[str, Any]:
+    def _inspect(provider, source, item, *, cancelled=None) -> dict[str, Any]:
         key = str(item.key)
+
+        def ensure_active() -> None:
+            if cancelled is not None and cancelled():
+                raise InterruptedError("storage scan cancelled")
+
+        ensure_active()
         base = {
             "filename": Path(key).name,
             "storage_source_id": source.id,
@@ -147,12 +155,17 @@ class StorageImportHandler:
                 with Image.open(stream) as image:
                     width, height = image.size
                     image.verify()
+            # A remote image read/decode may take seconds. Re-check before any
+            # follow-up reader (for example SHA calculation) so Stop does not
+            # start more remote I/O after cancellation became durable.
+            ensure_active()
             content_sha256 = str(item.sha256 or "").strip().lower()
             if len(content_sha256) != 64 or any(
                 character not in "0123456789abcdef" for character in content_sha256
             ):
                 with closing(provider.open_reader(key)) as stream:
-                    content_sha256 = _sha256_stream(stream)
+                    content_sha256 = _sha256_stream(stream, cancelled=cancelled)
+            ensure_active()
             if int(item.size_bytes or 0) <= 0:
                 raise ValueError("image object is empty")
             base.update({
@@ -161,6 +174,8 @@ class StorageImportHandler:
                 "height": int(height),
                 "status": "IMPORTABLE",
             })
+        except InterruptedError:
+            raise
         except (UnidentifiedImageError, OSError, ValueError) as error:
             base.update({"status": "INVALID", "error": redact_storage_error(error)})
         except Exception as error:
@@ -280,7 +295,23 @@ class StorageImportHandler:
                 self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
                 return TaskStatus.CANCELLED, None
             current_key = str(item.key)
-            batch.append(self._inspect(provider, source, item))
+            try:
+                inspected = self._inspect(
+                    provider, source, item, cancelled=context.cancel_requested,
+                )
+            except InterruptedError:
+                # Preserve only work that completed before the cancelled object.
+                # The in-flight object itself must never enter the candidate truth.
+                self._flush_scan_batch(
+                    store, materials, batch, import_format == "yolo",
+                )
+                return TaskStatus.CANCELLED, None
+            if context.cancel_requested():
+                self._flush_scan_batch(
+                    store, materials, batch, import_format == "yolo",
+                )
+                return TaskStatus.CANCELLED, None
+            batch.append(inspected)
             if len(batch) >= BATCH_SIZE:
                 self._flush_scan_batch(store, materials, batch, import_format == 'yolo')
                 self._checkpoint_scan(context, store, current_key)
@@ -320,7 +351,7 @@ class StorageImportHandler:
         context.repository.heartbeat(
             context.task.task_id,
             context.lease.lease_token,
-            progress=99,
+            progress=50,
             stage="FINALIZING",
             current_item=(
                 f"扫描完成：{scanned} 个对象，可导入 {counts.get('IMPORTABLE', 0)} 张"
@@ -569,6 +600,8 @@ class StorageImportHandler:
         )
         if not isinstance(confirmation, dict) or confirmation.get("accepted") is not True:
             raise ValueError("material import confirmation is missing")
+        if context.cancel_requested():
+            return TaskStatus.CANCELLED, None
         store = ImportCandidateStore(
             context.artifacts.artifact_path(context.task.task_id, MANIFEST_REF)
         )
@@ -591,7 +624,11 @@ class StorageImportHandler:
             ):
                 store.confirm(row["object_key"] for row in store.iter_status("IMPORTABLE"))
 
+        if context.cancel_requested():
+            return TaskStatus.CANCELLED, None
         store.assign_image_ids(context.task.task_id, batch_size=BATCH_SIZE)
+        if context.cancel_requested():
+            return TaskStatus.CANCELLED, None
         materials = MaterialRepository(
             self.data_dir / "projects" / context.task.project_id
         )
@@ -616,9 +653,13 @@ class StorageImportHandler:
             by_reference = materials.get_by_storage_references(
                 (row["storage_source_id"], row["object_key"]) for row in batch
             )
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             existing_hashes = materials.find_existing_content_hashes(
                 row["content_sha256"] for row in batch
             )
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             resolved: list[dict[str, Any]] = []
             duplicate_rows: list[dict[str, Any]] = []
             accepted_hashes: set[str] = set()
@@ -635,10 +676,14 @@ class StorageImportHandler:
                     continue
                 accepted_hashes.add(content_hash)
                 resolved.append(row)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             store.bind_index_batch(resolved)
             by_id = {r['id']: r for r in materials.get_many(row['image_id'] for row in resolved)}
             imported_annotations = store.annotations_for_keys(row['object_key'] for row in resolved)
             skipped = store.skipped_boxes_for_keys(row['object_key'] for row in resolved)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             records, annotation_rows = [], []
             for row in resolved:
                 current = by_id.get(row['image_id'])
@@ -676,9 +721,17 @@ class StorageImportHandler:
                 records.append(record)
             # Material identity is durable before annotation writes. Replaying the
             # same deterministic boxes preserves annotation version/content digest.
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             materials.upsert_many(records)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             annotations.upsert_many(annotation_rows)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             store.record_annotation_outcomes(resolved)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             store.mark_indexed(batch)
             index_duplicates += len(duplicate_rows)
             for row in resolved:
@@ -699,9 +752,15 @@ class StorageImportHandler:
                 **progress_counts,
             }
             context.save_checkpoint(checkpoint)
+            indexing_progress = (
+                50.0
+                if selected_count <= 0
+                else min(99.0, 50.0 + 49.0 * indexed_at_least / selected_count)
+            )
             context.repository.heartbeat(
                 context.task.task_id,
                 context.lease.lease_token,
+                progress=indexing_progress,
                 stage="indexing",
                 current_item=f"正在建立素材索引：已处理 {checkpoint['indexed_at_least']} / {selected_count}",
             )
