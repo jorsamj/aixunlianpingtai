@@ -86,6 +86,23 @@ test('WAITING_RESOURCE video row remains active and preserves durable wait reaso
 });
 
 
+test('recovered video execution is surfaced from durable attempt truth', () => {
+  const task = normalizeVideoTask({
+    id: 'vr1', status: 'RUNNING', phase: 'extracting', progress_percent: 42,
+    current_item: '19', attempt: 2,
+    video_name: 'recovering.mp4', mode: 'fixed_count', fixed_count: 5,
+  });
+  assert.equal(isActiveVideoTask(task), true);
+  assert.equal(task.statusText, '处理中');
+  assert.equal(task.attempt, 2);
+  assert.equal(task.runtimeText, '恢复执行 · 第 2 次执行');
+  const html = finalVideoRowRenderer()(task);
+  assert.match(html, /恢复执行/);
+  assert.match(html, /第 2 次执行/);
+  assert.match(html, />19</);
+});
+
+
 test('final video page exposes fixed count and polls by row patching', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /option value="fixed_count"/);
