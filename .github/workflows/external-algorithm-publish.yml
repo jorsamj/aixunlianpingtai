@@ -9,6 +9,7 @@ on:
       - static/main.mjs
       - static/index.html
       - static/modules/external-algorithm-publish.js
+      - static/modules/algorithm-list-runtime.js
       - tests/unit/test_external_algorithm_publish.py
       - tests/frontend/external-algorithm-publish.test.mjs
       - .github/workflows/external-algorithm-publish.yml
@@ -21,6 +22,7 @@ on:
       - static/main.mjs
       - static/index.html
       - static/modules/external-algorithm-publish.js
+      - static/modules/algorithm-list-runtime.js
       - tests/unit/test_external_algorithm_publish.py
       - tests/frontend/external-algorithm-publish.test.mjs
       - .github/workflows/external-algorithm-publish.yml
@@ -46,9 +48,13 @@ jobs:
         run: |
           python -m py_compile app.py platform_core/external_algorithm_publish.py
           node --check static/modules/external-algorithm-publish.js
+          node --check static/modules/algorithm-list-runtime.js
           grep -q "external_algorithm_publish_router" app.py
           grep -q "request_external_auto_publish_if_enabled" app.py
           grep -q "installExternalAlgorithmPublishRuntime" static/main.mjs
           grep -q "external-algorithm-auto-publish" platform_core/external_algorithm_publish.py
           grep -q "external_version_publications" platform_core/external_algorithm_publish.py
           grep -q "model-artifacts" platform_core/external_algorithm_publish.py
+          grep -q "registerDecorator('external-algorithm-publish'" static/modules/external-algorithm-publish.js
+          if grep -q "window.renderAlg412 =" static/modules/external-algorithm-publish.js; then echo "external publish must not wrap renderAlg412" >&2; exit 1; fi
+          test "$(cat VERSION.txt)" = "42.24.0"
