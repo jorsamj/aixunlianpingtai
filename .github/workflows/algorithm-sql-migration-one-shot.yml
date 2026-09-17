@@ -56,7 +56,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add platform_core/algorithms.py
-          git diff --cached --quiet && { echo 'no algorithms.py migration diff produced' >&2; exit 1; }
+          git add platform_core/algorithms.py platform_core/algorithm_sql_store.py
+          git diff --cached --quiet && { echo 'no SQL migration diff produced' >&2; exit 1; }
           git commit -m 'refactor(algorithms): switch runtime storage to SQL'
           git push
