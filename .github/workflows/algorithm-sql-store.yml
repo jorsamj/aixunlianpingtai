@@ -59,6 +59,8 @@ jobs:
           grep -q 'algorithms.sqlite3' platform_core/algorithm_sql_store.py
           grep -q 'algorithms.json.pre-sql-migration-backup' platform_core/algorithm_sql_store.py
           grep -q 'def attach_version(self, algorithm_id' platform_core/algorithm_sql_store.py
+          grep -q 'def patch_version' platform_core/algorithm_sql_store.py
+          grep -q 'def rollback_version' platform_core/algorithm_sql_store.py
           grep -q 'def sync_external_algorithms' platform_core/algorithm_sql_store.py
           grep -q 'AlgorithmSqlStore(Path(path)).attach_version' platform_core/algorithms.py
           grep -q 'merged\["id"\] = algorithm_id' platform_core/algorithm_sql_store.py
