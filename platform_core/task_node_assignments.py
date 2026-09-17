@@ -1,10 +1,9 @@
 """Durable central task-to-node assignment truth.
 
-This is deliberately an assignment layer, not a second task state machine. Tasks
-remain owned by TaskRepository; an active node assignment fences legacy Workers
-from self-claiming that task until the assignment is explicitly released. The
-future HTTP Agent executor can claim these assignments without requiring remote
-SQLite/NFS access.
+Assignments are control-plane truth, not a second task state machine. An active
+assignment fences legacy Workers from self-claiming that queued task. The HTTP
+Agent executor will later turn a claimed assignment into the one real task
+execution lease without requiring remote SQLite/NFS access.
 """
 from __future__ import annotations
 
@@ -14,11 +13,11 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from .service_nodes import HEARTBEAT_TTL_SECONDS
-from .task_runtime import TaskKind, TaskStatus
+from .service_nodes import HEARTBEAT_TTL_SECONDS, ServiceNodeRepository
+from .task_runtime import TaskKind
 from .task_runtime.fenced_repository import FencedTaskRepository
-from .task_runtime.repository import _from_row
 from .task_runtime.models import utc_now
+from .task_runtime.repository import _from_row
 
 
 ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED", "RELEASED")
@@ -84,7 +83,7 @@ def _utc(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def _public_assignment(row) -> dict[str, Any]:
+def _public(row) -> dict[str, Any]:
     return {
         "task_id": str(row["task_id"]),
         "generation": int(row["generation"]),
@@ -102,20 +101,17 @@ def _public_assignment(row) -> dict[str, Any]:
 
 
 def task_node_capability(task, artifacts) -> str | None:
-    if task.kind is TaskKind.MATERIAL_IMPORT:
-        return "material-import"
-    if task.kind is TaskKind.CLEANING:
-        return "cleaning"
-    if task.kind is TaskKind.AI_ANNOTATION:
-        return "annotation"
-    if task.kind is TaskKind.VIDEO_FRAMES:
-        return "video"
-    if task.kind is TaskKind.TRAINING:
-        return "training"
-    if task.kind is TaskKind.MODEL_CONVERSION:
-        return "conversion"
-    if task.kind is TaskKind.DEPLOYMENT_TEST:
-        return "deployment-test"
+    fixed = {
+        TaskKind.MATERIAL_IMPORT: "material-import",
+        TaskKind.CLEANING: "cleaning",
+        TaskKind.AI_ANNOTATION: "annotation",
+        TaskKind.VIDEO_FRAMES: "video",
+        TaskKind.TRAINING: "training",
+        TaskKind.MODEL_CONVERSION: "conversion",
+        TaskKind.DEPLOYMENT_TEST: "deployment-test",
+    }
+    if task.kind in fixed:
+        return fixed[task.kind]
     if task.kind is TaskKind.MATERIAL_BATCH:
         payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
         operation = str(payload.get("operation") or "").strip().upper() if isinstance(payload, Mapping) else ""
@@ -124,52 +120,53 @@ def task_node_capability(task, artifacts) -> str | None:
         if operation == "AI_ANNOTATE":
             return "annotation"
         return "material-import"
-    # RESOURCE_DISCOVERY remains control-plane/local runtime work for now.
+    # Resource discovery remains local control-plane work for now.
     return None
 
 
-def _online_node_rows(database, capability: str, *, now: datetime, ttl_seconds: int):
+def _online_nodes(database, capability: str, *, now: datetime, ttl_seconds: int):
     rows = database.execute(
         "SELECT * FROM service_nodes WHERE enabled=1 AND last_heartbeat_at IS NOT NULL"
     ).fetchall()
-    eligible = []
+    result = []
     for row in rows:
         heartbeat = _utc(row["last_heartbeat_at"])
         if heartbeat is None or (now - heartbeat).total_seconds() > ttl_seconds:
             continue
         allowed = set(_loads(row["allowed_capabilities"], []))
         reported = set(_loads(row["reported_capabilities"], []))
-        if capability not in allowed or capability not in reported:
-            continue
-        eligible.append(row)
-    return eligible
+        if capability in allowed and capability in reported:
+            result.append(row)
+    return result
 
 
-def _node_resource_score(row, capability: str, active_assignments: int) -> tuple[float, str]:
+def _score_node(row, capability: str, active: int) -> tuple[float, str]:
     resources = _loads(row["resource_json"], {})
-    memory = resources.get("memory") if isinstance(resources, Mapping) else {}
-    disk = resources.get("disk") if isinstance(resources, Mapping) else {}
-    cpu = resources.get("cpu") if isinstance(resources, Mapping) else {}
-    gpu = resources.get("gpu") if isinstance(resources, Mapping) else {}
-    available_memory = float((memory or {}).get("available_bytes") or 0)
-    free_disk = float((disk or {}).get("free_bytes") or 0)
-    logical_cores = float((cpu or {}).get("logical_cores") or 0)
+    memory = resources.get("memory", {}) if isinstance(resources, Mapping) else {}
+    disk = resources.get("disk", {}) if isinstance(resources, Mapping) else {}
+    cpu = resources.get("cpu", {}) if isinstance(resources, Mapping) else {}
+    gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
+    memory_free = float((memory or {}).get("available_bytes") or 0)
+    disk_free = float((disk or {}).get("free_bytes") or 0)
+    cores = float((cpu or {}).get("logical_cores") or 0)
     gpus = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
     gpus = gpus if isinstance(gpus, list) else []
-    gpu_free = max((float(item.get("memory_free_bytes") or 0) for item in gpus if isinstance(item, Mapping)), default=0.0)
-    # Prefer fewer active assignments first. Within the same load, training
-    # favors free VRAM; CPU/material workloads favor RAM/cores/disk.
-    load_penalty = float(active_assignments) * 1e18
-    if capability == "training":
-        score = gpu_free * 1000.0 + available_memory * 10.0 + logical_cores * 1e9 - load_penalty
-    else:
-        score = available_memory * 10.0 + free_disk + logical_cores * 1e9 - load_penalty
+    vram_free = max(
+        (float(item.get("memory_free_bytes") or 0) for item in gpus if isinstance(item, Mapping)),
+        default=0.0,
+    )
+    penalty = float(active) * 1e18
+    score = (
+        vram_free * 1000.0 + memory_free * 10.0 + cores * 1e9 - penalty
+        if capability == "training"
+        else memory_free * 10.0 + disk_free + cores * 1e9 - penalty
+    )
     return score, str(row["node_id"])
 
 
 def _selected_gpu(row) -> dict[str, Any] | None:
     resources = _loads(row["resource_json"], {})
-    gpu = resources.get("gpu") if isinstance(resources, Mapping) else {}
+    gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
     items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
     items = [item for item in items or [] if isinstance(item, Mapping)]
     if not items:
@@ -190,12 +187,15 @@ class CentralTaskAllocator:
         self.repository = repository
         self.artifacts = artifacts
         self.heartbeat_ttl_seconds = max(10, int(heartbeat_ttl_seconds))
+        # Ensure both authoritative tables before any scheduling transaction.
+        # Never run executescript() after BEGIN IMMEDIATE: sqlite3 may issue an
+        # implicit COMMIT around scripts and would break allocator atomicity.
+        ServiceNodeRepository(repository)
         with closing(self.repository._connect()) as database:
             ensure_task_node_assignment_schema(database)
 
     def list(self, *, active_only: bool = False, node_id: str | None = None) -> list[dict[str, Any]]:
-        clauses = []
-        values: list[object] = []
+        clauses, values = [], []
         if active_only:
             clauses.append("state IN ('ASSIGNED','CLAIMED')")
         if node_id is not None:
@@ -207,27 +207,22 @@ class CentralTaskAllocator:
                 f"SELECT * FROM task_node_assignments{where} ORDER BY assigned_at DESC,task_id DESC,generation DESC",
                 values,
             ).fetchall()
-        return [_public_assignment(row) for row in rows]
+        return [_public(row) for row in rows]
 
     def get_active(self, task_id: str) -> dict[str, Any] | None:
         with closing(self.repository._connect()) as database:
             row = database.execute(
-                """
-                SELECT * FROM task_node_assignments
-                 WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED')
-                 ORDER BY generation DESC LIMIT 1
-                """,
+                "SELECT * FROM task_node_assignments WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED') ORDER BY generation DESC LIMIT 1",
                 (str(task_id),),
             ).fetchone()
-        return _public_assignment(row) if row is not None else None
+        return _public(row) if row is not None else None
 
     def assign_next(self) -> dict[str, Any] | None:
         current = datetime.now(timezone.utc)
         now = current.isoformat()
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
-            ensure_task_node_assignment_schema(database)
-            tasks = database.execute(
+            task_rows = database.execute(
                 """
                 SELECT task.* FROM tasks task
                  WHERE task.status='QUEUED'
@@ -239,49 +234,43 @@ class CentralTaskAllocator:
                  ORDER BY task.priority ASC,task.queue_rank DESC,task.created_at ASC,task.task_id ASC
                 """
             ).fetchall()
-            chosen_task = None
-            chosen_node = None
-            chosen_capability = None
-            for task_row in tasks:
+            selected = None
+            for task_row in task_rows:
                 task = _from_row(task_row)
                 capability = task_node_capability(task, self.artifacts)
                 if capability is None:
                     continue
-                node_rows = _online_node_rows(
-                    database,
-                    capability,
-                    now=current,
-                    ttl_seconds=self.heartbeat_ttl_seconds,
-                )
-                if not node_rows:
+                nodes = _online_nodes(database, capability, now=current, ttl_seconds=self.heartbeat_ttl_seconds)
+                if not nodes:
                     continue
-                scored = []
-                for node_row in node_rows:
+                ranked = []
+                for node in nodes:
                     active = int(database.execute(
                         "SELECT COUNT(*) FROM task_node_assignments WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')",
-                        (str(node_row["node_id"]),),
+                        (str(node["node_id"]),),
                     ).fetchone()[0])
-                    score, node_key = _node_resource_score(node_row, capability, active)
-                    scored.append((score, node_key, node_row))
-                scored.sort(key=lambda item: (-item[0], item[1]))
-                chosen_task, chosen_capability, chosen_node = task, capability, scored[0][2]
+                    score, node_id = _score_node(node, capability, active)
+                    ranked.append((score, node_id, node))
+                ranked.sort(key=lambda item: (-item[0], item[1]))
+                selected = (task, capability, ranked[0][2])
                 break
-            if chosen_task is None or chosen_node is None or chosen_capability is None:
+            if selected is None:
                 database.commit()
                 return None
+            task, capability, node = selected
             generation = int(database.execute(
                 "SELECT COALESCE(MAX(generation),0)+1 FROM task_node_assignments WHERE task_id=?",
-                (chosen_task.task_id,),
+                (task.task_id,),
             ).fetchone()[0])
-            gpu = _selected_gpu(chosen_node) if chosen_capability == "training" else None
-            config = {
+            gpu = _selected_gpu(node) if capability == "training" else None
+            resolved = {
                 "protocol": "agent-http-v1",
-                "node_id": str(chosen_node["node_id"]),
-                "capability": chosen_capability,
+                "node_id": str(node["node_id"]),
+                "capability": capability,
                 "selected_device": gpu["id"] if gpu else "cpu",
                 "selected_gpu": gpu,
-                "node_build_id": str(chosen_node["build_id"] or ""),
-                "node_runtime": _loads(chosen_node["runtime_json"], {}),
+                "node_build_id": str(node["build_id"] or ""),
+                "node_runtime": _loads(node["runtime_json"], {}),
                 "assigned_at": now,
             }
             database.execute(
@@ -290,33 +279,21 @@ class CentralTaskAllocator:
                     (task_id,generation,node_id,capability,state,assigned_at,updated_at,resolved_execution_config)
                 VALUES (?,?,?,?, 'ASSIGNED',?,?,?)
                 """,
-                (
-                    chosen_task.task_id,
-                    generation,
-                    str(chosen_node["node_id"]),
-                    chosen_capability,
-                    now,
-                    now,
-                    _dumps(config),
-                ),
+                (task.task_id, generation, str(node["node_id"]), capability, now, now, _dumps(resolved)),
             )
             row = database.execute(
                 "SELECT * FROM task_node_assignments WHERE task_id=? AND generation=?",
-                (chosen_task.task_id, generation),
+                (task.task_id, generation),
             ).fetchone()
             database.commit()
-        return _public_assignment(row)
+        return _public(row)
 
     def release(self, task_id: str, reason: str = "operator_release") -> dict[str, Any]:
         now = utc_now()
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             row = database.execute(
-                """
-                SELECT * FROM task_node_assignments
-                 WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED')
-                 ORDER BY generation DESC LIMIT 1
-                """,
+                "SELECT * FROM task_node_assignments WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED') ORDER BY generation DESC LIMIT 1",
                 (str(task_id),),
             ).fetchone()
             if row is None:
@@ -325,8 +302,7 @@ class CentralTaskAllocator:
             database.execute(
                 """
                 UPDATE task_node_assignments
-                   SET state='RELEASED',updated_at=?,released_at=?,release_reason=?,
-                       lease_token=NULL,lease_expires_at=NULL
+                   SET state='RELEASED',updated_at=?,released_at=?,release_reason=?,lease_token=NULL,lease_expires_at=NULL
                  WHERE task_id=? AND generation=? AND state IN ('ASSIGNED','CLAIMED')
                 """,
                 (now, now, str(reason or "operator_release")[:1000], str(task_id), int(row["generation"])),
@@ -336,13 +312,14 @@ class CentralTaskAllocator:
                 (str(task_id), int(row["generation"])),
             ).fetchone()
             database.commit()
-        return _public_assignment(released)
+        return _public(released)
 
     def claim_for_node(self, node_id: str, *, lease_seconds: int = DEFAULT_ASSIGNMENT_LEASE_SECONDS) -> dict[str, Any] | None:
-        """Reserve one assigned task for a future HTTP Agent executor.
+        """Reserve one assignment for the future HTTP Agent executor.
 
-        This does not transition TaskRepository to RUNNING yet. That transition
-        belongs to the executor protocol so task fencing remains single-owner.
+        TaskRepository is intentionally still QUEUED here. The executor protocol
+        will own the one atomic QUEUED->RUNNING transition and task execution
+        lease, preserving the existing fencing model.
         """
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
@@ -350,7 +327,6 @@ class CentralTaskAllocator:
         token = secrets.token_urlsafe(24)
         with closing(self.repository._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
-            ensure_task_node_assignment_schema(database)
             database.execute(
                 """
                 UPDATE task_node_assignments
@@ -388,13 +364,13 @@ class CentralTaskAllocator:
                 (str(row["task_id"]), int(row["generation"])),
             ).fetchone()
             database.commit()
-        public = _public_assignment(claimed)
-        public["assignment_lease_token"] = token
-        return public
+        result = _public(claimed)
+        result["assignment_lease_token"] = token
+        return result
 
 
 class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
-    """Legacy Worker repository that refuses centrally assigned tasks."""
+    """Production Worker repository that refuses centrally assigned tasks."""
 
     def claim_next(self, worker_id, kinds, capabilities, lease_seconds: int = 30, admission=None):
         caller = admission
@@ -405,11 +381,7 @@ class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
             ).fetchone()
             if table is not None:
                 row = database.execute(
-                    """
-                    SELECT node_id,state FROM task_node_assignments
-                     WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED')
-                     ORDER BY generation DESC LIMIT 1
-                    """,
+                    "SELECT node_id FROM task_node_assignments WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED') ORDER BY generation DESC LIMIT 1",
                     (str(candidate["task_id"]),),
                 ).fetchone()
                 if row is not None:
@@ -441,8 +413,8 @@ def central_scheduler_router(task_repository, task_artifacts):
 
     @router.post("/allocate-next")
     def allocate_next():
-        assigned = allocator().assign_next()
-        return {"assigned": assigned is not None, "assignment": assigned}
+        assignment = allocator().assign_next()
+        return {"assigned": assignment is not None, "assignment": assignment}
 
     @router.post("/assignments/{task_id}/release")
     def release_assignment(task_id: str, payload: dict = Body(default={})):
