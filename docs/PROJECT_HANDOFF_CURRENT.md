@@ -3,11 +3,11 @@
 > **新 AI / 新开发人员先读本文件。**  
 > 目标：10 分钟内知道“当前在哪个分支、什么已经做完、什么绝对不能重做、下一步该做什么”。
 
-更新时间：2026-09-17  
+更新时间：2026-09-18  
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`9873610ae75804348da73b6afd8212abecf4be95`  
+本轮产品实现基线：`d951937ef1dfac2d90b378e536518f2e15d2e921`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -37,6 +37,7 @@ docs/TECH_DEBT_CLOSURE_V42_25.md
 docs/frontend-legacy-audit.md
 docs/FRONTEND_OWNER_MAP_V42_25.md
 docs/EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md
+docs/NODE_CONTROL_PLANE_V42_25.md
 ```
 
 ### 绝对约束
@@ -60,6 +61,27 @@ revert: keep external algorithm integration off main
 如果接手时 `main` 不再是这个 SHA，先查是谁、为什么改，不要自动把 feature 内容合进去。
 
 ---
+
+
+# 最新关闭：服务节点控制面 + 中央任务分配
+
+2026-09-18 已完成并验收：
+
+- 服务节点 registry / heartbeat / 一次性 Agent Token / Windows+Linux 本机资源探测。
+- 服务节点管理 UI，包含 CPU / RAM / disk / GPU / VRAM / Torch / CUDA / Worker / durable task 状态。
+- 中央 durable task → node assignment truth。
+- TRAINING 节点/GPU 选择及 resolved execution snapshot。
+- MATERIAL_BATCH → cleaning / annotation / material-import 能力映射。
+- active assignment partial unique fence。
+- legacy Worker 的 `CENTRAL_NODE_ASSIGNED` 自抢保护。
+- Scheduler API：allocate / list / release。
+- permanent CI：API、Ubuntu 24.04、Windows latest 全绿，验证 run `35288111906`。
+
+权威设计与下一步边界：
+
+`docs/NODE_CONTROL_PLANE_V42_25.md`
+
+**下一步唯一主线是 HTTP Agent Executor Protocol。** Agent 不得直接连接控制面的 SQLite，也不得把“远端挂 NFS + 运行现有 task_worker.py”包装成真实多机调度。真正的 `QUEUED → RUNNING`、execution generation、lease fencing、进度、日志、取消、完成和失败仍必须由中央 TaskRepository 作为唯一 truth。
 
 # 1. 产品定位
 
