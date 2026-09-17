@@ -47,6 +47,30 @@ def test_candidate_pages_default_to_unreviewed_and_keep_explicit_false(tmp_path:
     }
 
 
+def test_generation_prefix_uses_candidate_sqlite_as_durable_recovery_truth(tmp_path: Path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="recovery-prefix", page_size=50)
+    store.initialize(labels=["fire"], total_images=3)
+    store.append_items([
+        {"image_id": "one", "status": "success", "boxes": [{"id": "a", "label": "fire"}]},
+        {"image_id": "two", "status": "failed", "boxes": [], "error": "timeout"},
+    ])
+    assert store.generation_prefix(["one", "two", "three"]) == {
+        "next_index": 2,
+        "succeeded": 1,
+        "failed": 1,
+    }
+
+
+def test_generation_prefix_fails_closed_when_candidate_order_differs_from_request(tmp_path: Path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="recovery-order", page_size=50)
+    store.initialize(labels=["fire"], total_images=2)
+    store.append_items([
+        {"image_id": "two", "status": "success", "boxes": []},
+    ])
+    with pytest.raises(ValueError, match="recovery order"):
+        store.generation_prefix(["one", "two"])
+
+
 def test_candidate_artifact_rejects_path_traversal(tmp_path: Path):
     # ArtifactStore now rejects an unsafe task id before CandidateStore can even
     # create a database path; keep the guard at the earliest security boundary.
