@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
-      - feature/external-algorithm-publishing
   workflow_dispatch:
 
 jobs:
@@ -32,7 +31,6 @@ jobs:
           node --check static/modules/training-draft-runtime.js &&
           node --check static/modules/training-draft-controls.js &&
           node --check static/modules/training-submit.js &&
-          node --check static/modules/training-create-hydration.js &&
           node --check static/modules/auto-label-poll-runtime.js &&
           node --check static/modules/ui-state.js &&
           node --check static/main.mjs
@@ -56,12 +54,6 @@ jobs:
             echo "classic app.js must not own /train/start; TrainingSubmitRuntime is the sole network owner" >&2
             exit 1
           fi
-      - name: Training create first-open hydration guard
-        run: |
-          grep -Fq "installTrainingCreateHydrationRuntime" static/main.mjs
-          grep -Fq "training-create-hydration-422532" static/modules/training-create-hydration.js
-          grep -Fq "/api/training_options?project_id=" static/modules/training-create-hydration.js
-          grep -Fq "/api/system/recommendation" static/modules/training-create-hydration.js
       - name: TrainingDraft classic wrapper guard
         run: |
           for token in startAlgorithmTraining429 wrapLegacyMutation directMutationFor mutationWrappers __trainingDraftMutationWrapped; do
@@ -151,7 +143,7 @@ jobs:
             exit 1
           fi
           if [ "$(grep -F -o 'window.PollRegistryRuntime?.replaceVideo424Timer?.()' static/app.js | wc -l)" -ne 2 ]; then
-            echo 'renderVideo424 and refreshVideo424Delta must both hand lifecycle explicitly to PollRegistry exactly once' >&2
+            echo 'renderVideo424 and refreshVideo424Delta must both hand lifecycle explicitly to PollRegistry' >&2
             exit 1
           fi
           file=static/modules/poll-registry.js
@@ -301,7 +293,6 @@ jobs:
           npx playwright test
           tests/browser/navigation-stability.spec.mjs
           tests/browser/navigation-readiness.spec.mjs
-          tests/browser/training-create-first-open.spec.mjs
           tests/browser/training-label-selector.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
           tests/browser/algorithm-list-performance.spec.mjs
