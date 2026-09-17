@@ -1,5 +1,6 @@
 name: External Algorithm Publish
 
+# Phase 2 focused contract: artifact upload, idempotent remote registration, and UI wiring.
 on:
   pull_request:
     paths:
