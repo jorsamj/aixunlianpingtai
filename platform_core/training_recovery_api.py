@@ -204,6 +204,7 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
     # than adding import-time route side effects or a second scheduler surface.
     from .training_material_picker_api import training_material_picker_router
     from .service_nodes import service_node_router
+    from .task_node_assignments import central_scheduler_router
 
     root = APIRouter()
     root.include_router(recovery_router)
@@ -212,4 +213,5 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
         lambda: task_artifacts().root.parent.parent,
     ))
     root.include_router(service_node_router(task_repository))
+    root.include_router(central_scheduler_router(task_repository, task_artifacts))
     return root
