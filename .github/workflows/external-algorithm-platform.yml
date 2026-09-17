@@ -47,3 +47,7 @@ jobs:
           node --check static/modules/external-algorithm-platform.js
           grep -q "external_algorithm_platform_router" app.py
           grep -q "installExternalAlgorithmPlatformRuntime" static/main.mjs
+          grep -q "DEFAULT_AUTO_SYNC_INTERVAL_SECONDS" platform_core/external_algorithm_platform.py
+          grep -q "external-algorithm-platform-auto-sync" platform_core/external_algorithm_platform.py
+          grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
+          grep -q "test_sign_bridge" platform_core/external_algorithm_platform.py
