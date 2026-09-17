@@ -823,3 +823,8 @@ VERSION.txt 仍为 42.24.0
 # 12. 给下一位 AI 的一句话
 
 **不要从头重构。先读取远端真实 HEAD 和本文件，从当前已验证 owner / SQL / durable task / upload runtime 上继续，把 OPEN 项逐个关闭；任何“性能更快”必须用真实阶段数据证明，任何“可恢复”必须经过刷新/中断测试证明。**
+
+
+## CLOSED — Training label filter task-derived negatives
+
+2026-09-17 product rule: selected materials stay in the training task. The training label checkbox defines the positive schema. If all source boxes are excluded by that schema, the task projection becomes an auditable background sample (`negative_origin=filtered_by_training_labels`) without mutating source annotations. Mixed-label images retain selected boxes. Explicit `确认无目标` remains distinct.

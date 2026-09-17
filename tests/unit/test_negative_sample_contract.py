@@ -166,3 +166,29 @@ def test_confirmed_empty_materializes_as_real_empty_yolo_label_file(tmp_path: Pa
     label = bundle / "dataset" / "labels" / "train" / "negative-yolo.txt"
     assert label.is_file()
     assert label.read_text(encoding="utf-8") == ""
+
+
+def test_snapshot_preserves_task_filtered_negative_origin():
+    row = {
+        "id": "task-negative",
+        "content_sha256": "hash-task-negative",
+        "stored_name": "task-negative.jpg",
+        "annotation_state": "confirmed_empty",
+        "annotation_scope": ["fire"],
+        "annotated": True,
+        "processing_status": "processed",
+        "boxes": [],
+        "negative_origin": "filtered_by_training_labels",
+        "source_annotation_state": "annotated",
+        "source_labels": ["people"],
+    }
+    snapshot = build_snapshot(
+        [row],
+        _manifest("task-negative", "hash-task-negative"),
+        [{"code": "fire", "class_id": 0}],
+    )
+    locked = snapshot["images"][0]
+    assert locked["negative_origin"] == "filtered_by_training_labels"
+    assert locked["source_annotation_state"] == "annotated"
+    assert locked["source_labels"] == ["people"]
+    assert snapshot["negative_origin_counts"] == {"filtered_by_training_labels": 1}

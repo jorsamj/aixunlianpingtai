@@ -217,12 +217,16 @@ def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_pa
         _LABEL_CONTRACT.reset(token)
     assert [box["label"] for box in rows[0]["boxes"]] == ["fire"]
     assert rows[0]["annotation_scope"] == ["fire"]
+    assert rows[0]["source_annotation_state"] == "annotated"
+    assert rows[0]["source_labels"] == ["fire", "person"]
+    assert "negative_origin" not in rows[0]
     assert "annotation_hash" not in rows[0]
 
 
-def test_projection_rejects_positive_material_with_only_unselected_labels(tmp_path: Path):
+def test_projection_turns_only_unselected_labels_into_task_negative_without_mutating_source(tmp_path: Path):
     _, project = _project(tmp_path)
-    AnnotationRepository(project).upsert("a", [_box("person")], annotation_state="annotated")
+    annotations = AnnotationRepository(project)
+    annotations.upsert("a", [_box("person")], annotation_state="annotated")
 
     class Materials:
         def get_many(self, _ids):
@@ -235,10 +239,23 @@ def test_projection_rejects_positive_material_with_only_unselected_labels(tmp_pa
     }
     token = _LABEL_CONTRACT.set(contract)
     try:
-        with pytest.raises(ValueError, match="不能通过过滤其他标签制造负样本"):
-            _scoped_selected_project_images(Materials(), project, ["a"])
+        rows = _scoped_selected_project_images(Materials(), project, ["a"])
     finally:
         _LABEL_CONTRACT.reset(token)
+
+    projected = rows[0]
+    assert projected["annotation_state"] == "confirmed_empty"
+    assert projected["annotated"] is True
+    assert projected["boxes"] == []
+    assert projected["annotation_scope"] == ["fire"]
+    assert projected["negative_origin"] == "filtered_by_training_labels"
+    assert projected["source_annotation_state"] == "annotated"
+    assert projected["source_labels"] == ["person"]
+
+    # The task projection must never rewrite material-library Ground Truth.
+    source = annotations.get("a")
+    assert source["annotation_state"] == "annotated"
+    assert [box["label"] for box in source["boxes"]] == ["person"]
 
 
 def test_portable_data_yaml_contains_only_effective_task_schema(tmp_path: Path):
@@ -293,3 +310,41 @@ def test_portable_data_yaml_contains_only_effective_task_schema(tmp_path: Path):
     label_lines = (bundle / "dataset" / "labels" / "train" / "a.txt").read_text(encoding="utf-8").splitlines()
     assert {line.split()[0] for line in label_lines} == {"0", "1"}
     assert all("person" not in line for line in label_lines)
+
+
+def test_task_filtered_negative_materializes_as_empty_yolo_label(tmp_path: Path):
+    _, project = _project(tmp_path)
+    AnnotationRepository(project).upsert("a", [_box("person")], annotation_state="annotated")
+    image_file = tmp_path / "task-negative.jpg"
+    image_file.write_bytes(b"task-negative-source")
+    content_hash = hashlib.sha256(image_file.read_bytes()).hexdigest()
+
+    class Materials:
+        def get_many(self, _ids):
+            return [{
+                "id": "a", "filename": image_file.name, "width": 100, "height": 100
+            }]
+
+    contract = {
+        "project_path": str(project.resolve()),
+        "effective_label_codes": ["fire"],
+        "effective_label_schema": [{"code": "fire", "class_id": 0}],
+    }
+    token = _LABEL_CONTRACT.set(contract)
+    try:
+        rows = _scoped_selected_project_images(Materials(), project, ["a"])
+    finally:
+        _LABEL_CONTRACT.reset(token)
+    rows[0]["content_sha256"] = content_hash
+    snapshot = {
+        "snapshot_id": "filtered-negative",
+        "label_schema": contract["effective_label_schema"],
+        "ids": {"train": ["a"], "validation": [], "test": []},
+        "images": [{"image_id": "a", "content_sha256": content_hash}],
+    }
+    bundle = materialize_portable_dataset(
+        tmp_path / "work-negative", snapshot, rows, lambda _row: image_file, safety_reserve_bytes=0
+    )
+    label = bundle / "dataset" / "labels" / "train" / "a.txt"
+    assert label.is_file()
+    assert label.read_text(encoding="utf-8") == ""

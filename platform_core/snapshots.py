@@ -149,6 +149,9 @@ def build_snapshot(
             "annotation_state": state,
             "annotation_scope": scope,
             "annotation_hash": annotation_hash,
+            "negative_origin": str(image.get("negative_origin") or ""),
+            "source_annotation_state": str(image.get("source_annotation_state") or ""),
+            "source_labels": sorted({str(value) for value in (image.get("source_labels") or []) if str(value)}),
             "box_count": len(boxes),
             "labels": sorted({
                 str(box.get("label") or "").strip()
@@ -184,6 +187,7 @@ def _build_snapshot_v2(
     records: list[dict[str, Any]] = []
     label_counts: dict[str, int] = {}
     negative_scope_counts: dict[str, int] = {}
+    negative_origin_counts: dict[str, int] = {}
     for role in ("train", "validation", "test"):
         for image_id in manifest.ids[role]:
             image = by_id.get(image_id)
@@ -217,6 +221,8 @@ def _build_snapshot_v2(
                 if label:
                     label_counts[label] = label_counts.get(label, 0) + 1
             if state == "confirmed_empty":
+                origin = str(image.get("negative_origin") or "explicit_confirmed_empty")
+                negative_origin_counts[origin] = negative_origin_counts.get(origin, 0) + 1
                 for label in scope:
                     negative_scope_counts[label] = negative_scope_counts.get(label, 0) + 1
             records.append(
@@ -234,6 +240,9 @@ def _build_snapshot_v2(
                     "annotation_state": state,
                     "annotation_scope": scope,
                     "annotation_hash": annotation_hash,
+                    "negative_origin": str(image.get("negative_origin") or ""),
+                    "source_annotation_state": str(image.get("source_annotation_state") or ""),
+                    "source_labels": sorted({str(value) for value in (image.get("source_labels") or []) if str(value)}),
                     "stored_name": str(image.get("stored_name") or ""),
                     "box_count": len(boxes),
                     "labels": labels,
@@ -262,6 +271,7 @@ def _build_snapshot_v2(
         "label_schema": stable_schema,
         "label_counts": dict(sorted(label_counts.items())),
         "negative_scope_counts": dict(sorted(negative_scope_counts.items())),
+        "negative_origin_counts": dict(sorted(negative_origin_counts.items())),
         "images": records,
     }
     snapshot_id = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
