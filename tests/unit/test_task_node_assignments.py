@@ -174,14 +174,15 @@ def test_repeated_and_concurrent_allocate_next_create_only_one_active_assignment
         resources=training_resources(free0=20 * 1024**3),
     )
 
+    allocator = CentralTaskAllocator(repository, artifacts)
+
     def allocate():
-        return CentralTaskAllocator(repository, artifacts).assign_next()
+        return allocator.assign_next()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _index: allocate(), range(2)))
 
     assert sum(result is not None for result in results) == 1
-    allocator = CentralTaskAllocator(repository, artifacts)
     active = allocator.list(active_only=True)
     assert len(active) == 1
     assert active[0]["task_id"] == "train-once"
