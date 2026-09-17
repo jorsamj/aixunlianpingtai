@@ -63,8 +63,7 @@ jobs:
             static/modules/algorithm-list-runtime.js static/modules/external-algorithm-platform.js \
             static/modules/external-algorithm-publish.js static/modules/training-submit.js static/main.mjs static/index.html \
             tests/unit/test_external_algorithm_platform.py tests/frontend/external-algorithm-platform.test.mjs \
-            tests/frontend/algorithm-list-runtime.test.mjs .github/workflows/external-algorithm-platform.yml \
-            .github/workflows/external-algorithm-publish.yml
+            tests/frontend/algorithm-list-runtime.test.mjs
           git diff --cached --quiet && { echo 'no refinement diff produced' >&2; exit 1; }
           git commit -m 'refactor(external): harden master data and publishing integration'
           git push
