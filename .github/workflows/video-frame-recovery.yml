@@ -6,16 +6,20 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - platform_core/video_tasks.py
+      - static/modules/video-tasks.js
       - tests/unit/test_video_sampling.py
       - tests/unit/test_video_commit_fencing.py
       - tests/integration/test_video_task_worker.py
+      - tests/frontend/video-tasks.test.mjs
       - .github/workflows/video-frame-recovery.yml
   pull_request:
     paths:
       - platform_core/video_tasks.py
+      - static/modules/video-tasks.js
       - tests/unit/test_video_sampling.py
       - tests/unit/test_video_commit_fencing.py
       - tests/integration/test_video_task_worker.py
+      - tests/frontend/video-tasks.test.mjs
       - .github/workflows/video-frame-recovery.yml
   workflow_dispatch:
 
@@ -54,3 +58,5 @@ jobs:
         run: >-
           python -m pytest --confcutdir=tests/integration -q
           tests/integration/test_video_task_worker.py
+      - name: Video recovery frontend truth
+        run: node --test tests/frontend/video-tasks.test.mjs
