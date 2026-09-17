@@ -21,6 +21,8 @@ on:
       - tests/frontend/external-algorithm-platform.test.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
+      - docs/PROJECT_HANDOFF_CURRENT.md
+      - docs/BUG_AUDIT_2026-09-17.md
       - .github/workflows/external-algorithm-platform.yml
   push:
     branches:
@@ -45,6 +47,8 @@ on:
       - tests/frontend/external-algorithm-platform.test.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
+      - docs/PROJECT_HANDOFF_CURRENT.md
+      - docs/BUG_AUDIT_2026-09-17.md
       - .github/workflows/external-algorithm-platform.yml
 
 jobs:
@@ -101,6 +105,10 @@ jobs:
           grep -q "EncryptedFileSecretStore" platform_core/secrets.py
           grep -q "MC_CHANGLIAN_ACCESS_KEY" platform_core/secrets.py
           grep -q "cryptography>=" requirements.txt
+          grep -q "CLOSED — Headless Linux Secret 持久化" docs/PROJECT_HANDOFF_CURRENT.md
+          grep -q "CLOSED — Multipart session TTL / GC" docs/PROJECT_HANDOFF_CURRENT.md
+          grep -q "CLOSED-04 — Headless Linux 新畅联 Secret 安全持久化" docs/BUG_AUDIT_2026-09-17.md
+          grep -q "CLOSED-05 — Multipart session TTL / GC" docs/BUG_AUDIT_2026-09-17.md
           grep -q "const payload = collectForm();" static/modules/external-algorithm-platform.js
           if grep -q "window.renderAlg412 =" static/modules/external-algorithm-platform.js; then echo "external platform must not wrap renderAlg412" >&2; exit 1; fi
           if grep -q "下一阶段" static/modules/external-algorithm-platform.js; then echo "stale phase wording remains" >&2; exit 1; fi
@@ -111,4 +119,6 @@ jobs:
           test ! -e .github/workflows/external-platform-credentials-one-shot.yml
           test ! -e tools/_one_shot_secret_gc_ui.py
           test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
+          test ! -e tools/_one_shot_secret_gc_docs.py
+          test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
           test "$(cat VERSION.txt)" = "42.24.0"
