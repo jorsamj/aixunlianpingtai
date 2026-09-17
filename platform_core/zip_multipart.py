@@ -132,21 +132,48 @@ class ZipMultipartRepository:
             shutil.rmtree(upload_dir, ignore_errors=True)
         return released
 
-    def cleanup_expired(self, *, now: datetime | None = None) -> dict[str, int]:
-        current = now or _utc_now()
+    def _cleanup_expired_locked(self, current: datetime) -> dict[str, int]:
         removed = 0
         released = 0
-        with self.lock:
-            for meta_path in list(self.root.glob('*/upload.json')):
-                try:
-                    meta = json.loads(meta_path.read_text(encoding='utf-8'))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                if not isinstance(meta, dict) or not self._expired(meta, meta_path, now=current):
-                    continue
-                released += self._remove_upload_dir(meta_path.parent)
-                removed += 1
+        for meta_path in list(self.root.glob('*/upload.json')):
+            try:
+                meta = json.loads(meta_path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict) or not self._expired(meta, meta_path, now=current):
+                continue
+            released += self._remove_upload_dir(meta_path.parent)
+            removed += 1
         return {'removed_uploads': removed, 'released_bytes': released}
+
+    def cleanup_expired(self, *, now: datetime | None = None) -> dict[str, int]:
+        current = now or _utc_now()
+        with self.lock:
+            return self._cleanup_expired_locked(current)
+
+    def cleanup_expired_if_due(
+        self, *, interval_seconds: int = 60, now: datetime | None = None
+    ) -> dict[str, int]:
+        current = now or _utc_now()
+        interval = max(10, min(3600, int(interval_seconds or 60)))
+        marker = self.root / '.gc.json'
+        with self.lock:
+            last_run = None
+            if marker.is_file():
+                try:
+                    body = json.loads(marker.read_text(encoding='utf-8'))
+                    last_run = _parse_iso(body.get('last_run_at')) if isinstance(body, dict) else None
+                except (OSError, json.JSONDecodeError):
+                    last_run = None
+            if last_run is not None and (current - last_run).total_seconds() < interval:
+                return {'removed_uploads': 0, 'released_bytes': 0, 'skipped': 1}
+            result = self._cleanup_expired_locked(current)
+            _atomic_json(marker, {
+                'last_run_at': _iso(current),
+                'removed_uploads': result['removed_uploads'],
+                'released_bytes': result['released_bytes'],
+            })
+            return {**result, 'skipped': 0}
 
     def get(self, upload_id: str) -> dict[str, Any]:
         with self.lock:

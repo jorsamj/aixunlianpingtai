@@ -34,7 +34,7 @@ test('external platform config keeps local as safe default and normalizes endpoi
       mode: 'external',
       provider: 'changlian',
       base_url: 'https://example.test',
-      credentials: {configured: true, masked: 'ak-****1234'},
+      credentials: {configured: true, masked: 'ak-****1234', available: true, backend: 'encrypted_file', writable: true},
       cache: {product_count: 5},
       endpoints: {product_list: '/custom/products'},
     },
@@ -42,6 +42,8 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(external.mode, 'external');
   assert.equal(external.baseUrl, 'https://example.test');
   assert.equal(external.credentials.configured, true);
+  assert.equal(external.credentials.backend, 'encrypted_file');
+  assert.equal(external.credentials.writable, true);
   assert.equal(external.cache.product_count, 5);
   assert.equal(external.endpoints.product_list, '/custom/products');
   assert.equal(external.endpoints.category_tree, '/algorithm-category/tree');
@@ -91,4 +93,7 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(block, /JSON\.stringify\(payload\)/);
   assert.match(source, /id="externalSecretToggle"/);
   assert.match(source, /id="externalConnectionResult"/);
+  assert.match(source, /credentialBackendText/);
+  assert.match(source, /MC_SECRET_MASTER_KEY/);
+  assert.match(source, /安全存储不可用/);
 });

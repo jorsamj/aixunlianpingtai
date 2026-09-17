@@ -9404,6 +9404,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
 @app.get("/api/v19/projects/{project_id}/import/jobs")
 def v19_list_import_jobs(project_id: str):
     get_project(project_id)
+    _v19_multipart_repository(project_id).cleanup_expired_if_due(interval_seconds=60)
     jobs = []
     d = v19_import_jobs_dir(project_id)
     for jf in d.glob("*/job.json"):

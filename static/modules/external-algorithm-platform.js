@@ -392,6 +392,23 @@ export function installExternalAlgorithmPlatformRuntime({
     const external = c.mode === 'external';
     const last = c.lastSync;
     const cache = c.cache || {};
+    const credential = c.credentials || {};
+    const credentialBackendText = ({
+      environment: '环境变量',
+      keyring: '系统密钥环',
+      encrypted_file: '服务器加密文件',
+      memory: '内存',
+      unavailable: '不可用',
+    })[String(credential.backend || '')] || '待检测';
+    const credentialManaged = credential.backend === 'environment';
+    const credentialStatusText = credential.configured
+      ? `已配置（${escapeHtml(credential.masked || 'AccessKey 已保存')}）`
+      : credential.available === false ? '安全存储不可用' : '未配置';
+    const credentialHelpText = credential.available === false
+      ? '服务器没有可用的安全 Secret 后端。请配置系统 SecretService，或设置 MC_SECRET_MASTER_KEY 启用服务器加密文件。'
+      : credentialManaged
+        ? `当前凭据由 ${escapeHtml(credential.environment_name || '环境变量')} 管理，只读；页面不会覆盖。`
+        : 'AccessSecret 仅提交给后端安全存储，页面不会读取已保存的明文 Secret。';
     return `<section class="label414-shell" data-external-platform-page="1">
       <div class="label414-head">
         <div>
@@ -418,9 +435,9 @@ export function installExternalAlgorithmPlatformRuntime({
             </div>
             <div class="field"><label>外部平台</label><select id="externalProvider" class="select"><option value="changlian">新畅联</option></select></div>
             <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com"></div>
-            <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(c.credentials?.masked || '请输入 AccessKey')}"></div>
-            <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" placeholder="${c.credentials?.configured ? '已配置，留空表示继续使用原 Secret' : '请输入 AccessSecret'}"><button type="button" class="btn" id="externalSecretToggle">显示</button></div></div>
-            <div class="field full"><div class="subline">凭据状态：${c.credentials?.configured ? `已配置（${escapeHtml(c.credentials?.masked || 'AccessKey 已保存')}）` : '未配置'}。AccessSecret 仅提交给后端保存，页面不会读取已保存的明文 Secret。</div></div>
+            <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialManaged ? 'disabled' : ''} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
+            <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" ${credentialManaged ? 'disabled' : ''} placeholder="${credentialManaged ? '由环境变量管理' : (credential.configured ? '已配置，留空表示继续使用原 Secret' : '请输入 AccessSecret')}"><button type="button" class="btn" id="externalSecretToggle" ${credentialManaged ? 'disabled' : ''}>显示</button></div></div>
+            <div class="field full"><div class="subline">凭据状态：${credentialStatusText} · 存储后端：${escapeHtml(credentialBackendText)}。${credentialHelpText}</div>${credential.available === false ? '<div class="alert warn" style="margin-top:10px">当前只能查看公开配置，保存 AccessKey / AccessSecret 会失败关闭（fail-closed），不会降级成明文 JSON。</div>' : ''}</div>
             <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（后台每 ${Math.round(c.autoSyncIntervalSeconds / 60)} 分钟检查）</label>
             <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布</label>
           </div>
