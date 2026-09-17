@@ -8,6 +8,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'requirements.txt'
       - 'platform_core/secrets.py'
       - 'platform_core/zip_multipart.py'
       - 'platform_core/storage/import_tasks.py'
@@ -72,6 +73,13 @@ jobs:
           grep -Fq 'INDEX_BATCH_SIZE = 50' platform_core/storage/import_tasks.py
           grep -Fq 'UploadTaskCenterRuntime' static/modules/storage-import-progress.js
           grep -Fq 'resumeRequired' static/modules/upload-task-center.js
+          grep -Fq 'DEFAULT_TTL_SECONDS = 24 * 60 * 60' platform_core/zip_multipart.py
+          grep -Fq 'cleanup_expired' platform_core/zip_multipart.py
+          grep -Fq 'released_bytes' platform_core/zip_multipart.py
+          grep -Fq 'MC_SECRET_MASTER_KEY' platform_core/secrets.py
+          grep -Fq 'EncryptedFileSecretStore' platform_core/secrets.py
+          grep -Fq 'MC_CHANGLIAN_ACCESS_KEY' platform_core/secrets.py
+          grep -Fq 'cryptography>=' requirements.txt
           test ! -e tools/_one_shot_upload_pipeline_v2.py
           test ! -e tools/_one_shot_upload_pipeline_v2_fix.py
           test ! -e tools/_one_shot_upload_pipeline_v2_postfix.py
@@ -91,7 +99,7 @@ jobs:
         run: >-
           python -m pip install --disable-pip-version-check
           pytest fastapi httpx python-multipart pillow pyyaml requests
-          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring cryptography filelock boto3 oss2
       - name: Secret store and multipart storage contracts
         run: >-
           PYTHONPATH=. pytest -q --confcutdir=tests/unit
@@ -112,6 +120,8 @@ jobs:
           grep -Fq 'mapping_labels' platform_core/storage/import_tasks.py
           grep -Fq 'writing_annotations' platform_core/storage/import_tasks.py
           grep -Fq 'SECRET_STORE_UNAVAILABLE' platform_core/secrets.py
+          grep -Fq 'encrypted_file' platform_core/secrets.py
+          grep -Fq 'expires_at' platform_core/zip_multipart.py
 
   real-chrome-refresh:
     runs-on: ubuntu-24.04
@@ -128,7 +138,7 @@ jobs:
         run: >-
           python -m pip install --disable-pip-version-check
           fastapi uvicorn python-multipart pillow pyyaml requests
-          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring cryptography filelock boto3 oss2
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome refresh recovery
