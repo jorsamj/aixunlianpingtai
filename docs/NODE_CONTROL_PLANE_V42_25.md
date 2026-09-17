@@ -136,34 +136,112 @@ Central Node Assignment permanent workflow：
 
 因此远端执行必须通过后续 HTTP Agent executor protocol。
 
-## 6. 下一步唯一主线：HTTP Agent Executor Protocol
+## 6. 已关闭：HTTP Agent Executor Control Protocol
 
-下一阶段要把“已分配”真正变成“远端执行”，但仍保持单一 durable task truth。
+控制面已经把“中央 assignment”安全转换成唯一真实 execution lease，不要求远端 Agent 访问中央 SQLite / NFS。
 
-目标链路：
+核心文件：
+
+- `platform_core/agent_execution.py`
+- `platform_core/service_nodes.py`
+- `platform_core/training_recovery_api.py`
+- `tests/unit/test_agent_execution.py`
+- `tests/api/test_agent_executor_api.py`
+- `.github/workflows/node-agent-executor.yml`
+
+已实现协议：
 
 ```text
 Task QUEUED
 → CentralTaskAllocator 选择 node
-→ Agent 使用 node token 拉取自己 assignment
-→ 控制面原子创建真正 execution lease / generation
-→ Agent 通过 HTTP 获取执行描述与必要 artifact/object-storage 引用
-→ Agent 本机执行对应 handler
-→ Agent heartbeat / progress / log / result 回传控制面
-→ 控制面更新原 TaskRepository
-→ finish / cancel / failure / lease expiry recovery
+→ Agent 用 Node Token claim 自己的 assignment
+→ 控制面签发 Assignment Lease Token
+→ Agent start
+→ 控制面在 BEGIN IMMEDIATE 内再次验证：
+   Node Token / enabled / heartbeat / capability / Assignment Lease
+→ 唯一 QUEUED → RUNNING
+→ tasks.attempt + 1 作为 execution generation
+→ 签发 Execution Lease Token
+→ assignment RELEASED(reason=execution_started)
+→ Agent heartbeat / log / begin-finalization / finish
+→ 中央 TaskRepository 继续作为唯一任务 truth
 ```
 
-下一阶段必须满足：
+三个 token / fence 的职责不可混用：
 
-1. Agent 不直接访问中央 SQLite。
-2. Agent 不依赖共享 NFS 才能 claim task。
-3. node token 和 assignment lease token 分离。
-4. `QUEUED → RUNNING` 只能在控制面原子发生一次。
-5. execution generation / lease fencing 必须沿用现有 TaskRepository 语义，不能新造第二套状态。
-6. 进度、日志、取消、失败、完成全部回到中央 truth。
-7. 任务结束/异常后必须清理 GPU reservation、进程、临时文件、assignment lease。
-8. Windows Agent 与 NVIDIA Linux Agent 均保持可运行；GPU 训练以 Linux NVIDIA 为生产目标。
-9. 素材导入节点最终通过对象存储上传结果；模型训练/转换产物继续走统一模型资产存储。
-10. HTTP Agent executor 完成前，不能宣称“真实跨机器任务执行已关闭”。
+1. **Node Token**：证明请求来自哪个已登记服务节点；支持 rotate，旧 token 立即失效。
+2. **Assignment Lease Token**：只允许该节点启动这一条已 claim assignment；不能重复 start。
+3. **Execution Lease Token + generation**：只允许当前执行代 heartbeat / log / finalization / finish；旧 generation 永久失效。
 
+关键生产语义：
+
+- start 的 `QUEUED → RUNNING` 与 assignment 释放在同一个 `BEGIN IMMEDIATE` 事务。
+- Node Token 在 start 事务内再次对照最新 `token_hash`，堵住“前置鉴权后刚好 rotate”的并发窗口。
+- 启动前必须先证明 task payload 可读；payload 缺失/损坏时 task 仍保持 QUEUED。
+- 节点 disabled 后不再 claim/start 新任务，但已有有效 execution 仍可 heartbeat/finish，避免只能等 lease 超时。
+- RUNNING task 的 cancellation truth 仍由中央 TaskRepository 决定；`CANCEL_REQUESTED` 只能 finish 为 `CANCELLED`。
+- `begin_finalization` 沿用现有 finalization/cancel 原子语义。
+- remote log 只能追加到 task 自己的服务端 `log_ref`，单次 64 KiB 限制，并受 execution fence。
+- 控制面不会接受远端 PID 作为本机进程 PID；远端进程树后续由 Agent 本机负责终止。
+- start 响应明确声明：
+  - `shared_sqlite_required = false`
+  - `shared_nfs_required = false`
+  - 大型 artifact 使用后续 object-storage transport。
+
+控制面 API：
+
+- `POST /api/v63/node-executor/{node_id}/assignments/claim`
+- `POST /api/v63/node-executor/{node_id}/assignments/{task_id}/start`
+- `POST /api/v63/node-executor/{node_id}/executions/{task_id}/heartbeat`
+- `POST /api/v63/node-executor/{node_id}/executions/{task_id}/logs`
+- `POST /api/v63/node-executor/{node_id}/executions/{task_id}/begin-finalization`
+- `POST /api/v63/node-executor/{node_id}/executions/{task_id}/finish`
+
+永久 CI：
+
+`.github/workflows/node-agent-executor.yml`
+
+验证 run：
+
+`35288805083`
+
+结果：
+
+- API：success
+- Ubuntu 24.04 contract：success
+- Windows latest contract：success
+
+覆盖了单次原子 start、错误/重复 assignment token、跨节点冒领、disabled 节点收尾、取消优先、finalization、remote log、lease expiry 后 generation fencing、Node Token rotate race、payload 缺失不启动、非法 generation 422、以及 VERSION / source guards。
+
+临时 CI 草稿 PR #7 已关闭，未 merge。
+
+## 7. OPEN：Agent-side Remote Execution Runtime + Object Storage Transport
+
+**不能因为控制面协议已完成，就宣称“真实跨机器任务执行 CLOSED”。**
+
+下一步必须让 `node_agent.py` 真正消费上述 HTTP 协议，并在远端节点本机执行任务。目标链路：
+
+```text
+Node Agent heartbeat
+→ poll /assignments/claim
+→ /start 获取 Execution Lease + resolved execution config
+→ 准备对象存储输入 / task-local 工作目录
+→ 本机启动对应 task handler / 子进程
+→ 周期 heartbeat + progress + log
+→ cancel 时本机终止精确进程树
+→ 上传结果/模型/素材到对象存储或统一模型资产存储
+→ /begin-finalization
+→ /finish
+→ 清理本机临时目录、进程、GPU reservation / execution state
+```
+
+下一阶段硬约束：
+
+1. Agent 客户端不得 import / 打开中央 `TaskRepository` 或 `tasks.sqlite3`。
+2. Agent 不依赖共享 NFS 才能 claim/execute。
+3. 输入/输出大文件通过对象存储或明确的 artifact transport，不把中央绝对路径直接当远端路径使用。
+4. Agent lease 丢失后必须停止本机执行并清理子进程树，禁止旧 generation 继续训练。
+5. cancel 必须能从中央 truth 下发到 Agent 并实际停止本机任务。
+6. Windows Agent 与 NVIDIA Linux Agent 都需要协议级验证；正式 GPU 训练仍以 NVIDIA Linux 为生产目标。
+7. 素材导入节点最终负责解压/解析/清洗/标签转换并上传 OSS；模型训练/转换输出走统一模型资产存储。
+8. Agent-side runtime + 至少一个真实 task kind 跑通前，不能宣称跨机器执行关闭。
