@@ -1,0 +1,64 @@
+name: Service Node Control Plane
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'platform_core/service_nodes.py'
+      - 'platform_core/node_agent_runtime.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'node_agent.py'
+      - 'tests/unit/test_service_nodes.py'
+      - 'tests/unit/test_node_agent_runtime.py'
+      - 'tests/api/test_service_node_api.py'
+      - '.github/workflows/service-node-control-plane.yml'
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx
+      - name: Service node and Agent contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_service_nodes.py
+          tests/unit/test_node_agent_runtime.py
+      - name: Cross-platform local Agent detection
+        run: python node_agent.py --check --data-dir . --capabilities training material-import
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused API dependencies
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx
+      - name: Service node API contract
+        run: python -m pytest -q --confcutdir=tests/api tests/api/test_service_node_api.py
+      - name: Permanent service-node guards
+        shell: bash
+        run: |
+          grep -Fq 'CREATE TABLE IF NOT EXISTS service_nodes' platform_core/service_nodes.py
+          grep -Fq 'hmac.compare_digest' platform_core/service_nodes.py
+          grep -Fq 'effective_capabilities' platform_core/service_nodes.py
+          grep -Fq 'shell=False' platform_core/node_agent_runtime.py
+          grep -Fq 'service_node_router(task_repository)' platform_core/training_recovery_api.py
+          grep -Fq 'MC_CONTROL_PLANE_URL' node_agent.py
+          grep -Fq 'MC_NODE_AGENT_TOKEN' node_agent.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check

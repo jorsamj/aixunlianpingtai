@@ -199,10 +199,11 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
             "recovery_action": before["recovery_action"],
         }
 
-    # app.py intentionally owns a single additive runtime-router mount.  Keep
-    # recovery URLs unchanged and compose the independent training picker at
-    # that same integration point instead of creating route side effects.
+    # app.py intentionally owns a single additive runtime-router mount. Keep all
+    # independent v62/v63 runtime APIs composed at that integration point rather
+    # than adding import-time route side effects or a second scheduler surface.
     from .training_material_picker_api import training_material_picker_router
+    from .service_nodes import service_node_router
 
     root = APIRouter()
     root.include_router(recovery_router)
@@ -210,4 +211,5 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
         get_project,
         lambda: task_artifacts().root.parent.parent,
     ))
+    root.include_router(service_node_router(task_repository))
     return root
