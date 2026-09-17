@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - app.py
+      - requirements.txt
+      - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
       - platform_core/integration_audit.py
       - static/main.mjs
@@ -12,6 +14,7 @@ on:
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - static/modules/training-submit.js
+      - tests/unit/test_secrets.py
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
@@ -25,6 +28,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - requirements.txt
+      - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
       - platform_core/integration_audit.py
       - static/main.mjs
@@ -33,6 +38,7 @@ on:
       - static/modules/model-artifact-runtime.js
       - static/modules/algorithm-list-runtime.js
       - static/modules/training-submit.js
+      - tests/unit/test_secrets.py
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
@@ -53,10 +59,11 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused Python dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring cryptography
       - name: Backend external-platform contracts
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
+            tests/unit/test_secrets.py \
             tests/unit/test_external_algorithm_platform.py \
             tests/unit/test_integration_audit.py \
             tests/unit/test_changlian_audit_client.py
@@ -68,7 +75,7 @@ jobs:
             tests/frontend/algorithm-list-runtime.test.mjs
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py platform_core/external_algorithm_platform.py platform_core/integration_audit.py
+          python -m py_compile app.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/integration_audit.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/model-artifact-runtime.js
           node --check static/modules/algorithm-list-runtime.js
@@ -89,6 +96,11 @@ jobs:
           grep -q "复制诊断信息" static/modules/model-artifact-runtime.js
           grep -q "id=\"externalConnectionResult\"" static/modules/external-algorithm-platform.js
           grep -q "id=\"externalSecretToggle\"" static/modules/external-algorithm-platform.js
+          grep -q "credentialBackendText" static/modules/external-algorithm-platform.js
+          grep -q "MC_SECRET_MASTER_KEY" static/modules/external-algorithm-platform.js
+          grep -q "EncryptedFileSecretStore" platform_core/secrets.py
+          grep -q "MC_CHANGLIAN_ACCESS_KEY" platform_core/secrets.py
+          grep -q "cryptography>=" requirements.txt
           grep -q "const payload = collectForm();" static/modules/external-algorithm-platform.js
           if grep -q "window.renderAlg412 =" static/modules/external-algorithm-platform.js; then echo "external platform must not wrap renderAlg412" >&2; exit 1; fi
           if grep -q "下一阶段" static/modules/external-algorithm-platform.js; then echo "stale phase wording remains" >&2; exit 1; fi
@@ -97,4 +109,6 @@ jobs:
           test ! -e tools/finalize_external_platform_credentials_ui.py
           test ! -e tools/fix_external_platform_connectivity_result.py
           test ! -e .github/workflows/external-platform-credentials-one-shot.yml
+          test ! -e tools/_one_shot_secret_gc_ui.py
+          test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
           test "$(cat VERSION.txt)" = "42.24.0"
