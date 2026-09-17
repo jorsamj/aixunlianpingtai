@@ -1,0 +1,69 @@
+name: One Shot Model Asset Integration
+
+on:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - '.github/workflows/_one_shot_model_asset_integration.yml'
+      - 'tools/_one_shot_model_asset_integration.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/external-algorithm-publishing
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest fastapi pydantic filelock requests pillow pyyaml psutil keyring
+      - name: Apply precise integration patch
+        run: python tools/_one_shot_model_asset_integration.py
+      - name: Python syntax
+        run: |
+          python -m py_compile \
+            platform_core/integration_audit.py \
+            platform_core/model_artifacts.py \
+            platform_core/external_algorithm_platform.py \
+            platform_core/external_algorithm_publish.py
+      - name: Backend contracts
+        run: |
+          python -m pytest -q \
+            tests/unit/test_model_artifacts.py \
+            tests/unit/test_integration_audit.py \
+            tests/unit/test_external_algorithm_platform.py \
+            tests/unit/test_external_algorithm_publish.py
+      - name: Frontend syntax and contracts
+        run: |
+          node --check static/modules/model-artifact-runtime.js
+          node --check static/modules/external-algorithm-publish.js
+          node --check static/main.mjs
+          node --test \
+            tests/frontend/model-artifact-runtime.test.mjs \
+            tests/frontend/external-algorithm-platform.test.mjs \
+            tests/frontend/external-algorithm-publish.test.mjs
+      - name: Commit validated production wiring
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            platform_core/external_algorithm_platform.py \
+            platform_core/external_algorithm_publish.py \
+            static/modules/external-algorithm-publish.js \
+            static/main.mjs
+          if git diff --cached --quiet; then
+            echo "No integration changes to commit"
+          else
+            git commit -m "feat: wire model asset storage and changlian audit"
+            git push origin HEAD:feature/external-algorithm-publishing
+          fi
