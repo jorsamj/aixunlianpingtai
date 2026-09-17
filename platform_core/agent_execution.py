@@ -649,7 +649,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            _execution_generation(payload.get("execution_generation")),
+            invoke(_execution_generation, payload.get("execution_generation")),
             progress=payload.get("progress"),
             stage=payload.get("stage"),
             current_item=payload.get("current_item"),
@@ -668,7 +668,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            _execution_generation(payload.get("execution_generation")),
+            invoke(_execution_generation, payload.get("execution_generation")),
             str(payload.get("text") or ""),
         )
 
@@ -685,7 +685,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            _execution_generation(payload.get("execution_generation")),
+            invoke(_execution_generation, payload.get("execution_generation")),
         )
 
     @router.post("/executions/{task_id}/finish")
@@ -701,7 +701,7 @@ def agent_executor_router(task_repository, task_artifacts):
             token(authorization),
             task_id,
             str(payload.get("execution_lease_token") or ""),
-            _execution_generation(payload.get("execution_generation")),
+            invoke(_execution_generation, payload.get("execution_generation")),
             status=str(payload.get("status") or ""),
             result_ref=payload.get("result_ref"),
             error=payload.get("error"),
