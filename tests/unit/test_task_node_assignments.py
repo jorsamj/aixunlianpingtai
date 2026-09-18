@@ -3,11 +3,14 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.task_node_assignments import (
     AssignmentAwareFencedTaskRepository,
     CentralTaskAllocator,
     task_node_capability,
+    task_remote_execution_contract,
 )
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
@@ -174,6 +177,132 @@ def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     assert task_node_capability(clean, artifacts) == "cleaning"
     assert task_node_capability(annotate, artifacts) == "annotation"
     assert task_node_capability(default, artifacts) == "material-import"
+
+
+def test_legacy_task_is_never_assigned_to_remote_agent_without_portable_contract(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-legacy-remote",
+        TaskKind.TRAINING,
+        {
+            "model_path": "/control-plane/models/base.pt",
+            "dataset_path": "C:\\control-plane\\datasets\\train",
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-remote-only",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+
+    allocator = CentralTaskAllocator(repository, artifacts)
+    assert allocator.assign_next() is None
+    assert allocator.list(active_only=True) == []
+    assert repository.get("train-legacy-remote").status is TaskStatus.QUEUED
+
+
+def test_local_node_can_execute_legacy_path_bound_task_without_remote_contract(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-local-legacy",
+        TaskKind.TRAINING,
+        {"model_path": "/control-plane/models/base.pt"},
+    )
+    create_online_node(
+        repository,
+        "gpu-local",
+        ["training"],
+        connection_mode="local",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-remote",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-local"
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["connection_mode"] == "local"
+    assert resolved["remote_execution"] is None
+
+
+def test_portable_contract_allows_remote_agent_and_scheduler_snapshot_is_sanitized(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-portable",
+        TaskKind.TRAINING,
+        {
+            "epochs": 30,
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+                "credentials": {"secret": "must-not-enter-scheduler-truth"},
+                "download_url": "https://signed.example.test/private",
+                "control_plane_path": "/srv/private/model.pt",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-portable-agent",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=30 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-portable-agent"
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["connection_mode"] == "agent"
+    assert resolved["remote_execution"] == {
+        "version": 1,
+        "task_kind": "TRAINING",
+        "transport": "object-storage-v1",
+    }
+    serialized = str(resolved)
+    assert "must-not-enter-scheduler-truth" not in serialized
+    assert "signed.example.test" not in serialized
+    assert "/srv/private/model.pt" not in serialized
+
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        None,
+        "not-an-object",
+        {"version": 2, "task_kind": "TRAINING", "transport": "object-storage-v1"},
+        {"version": 1, "task_kind": "MODEL_CONVERSION", "transport": "object-storage-v1"},
+        {"version": 1, "task_kind": "TRAINING", "transport": "shared-nfs"},
+    ],
+)
+def test_invalid_remote_execution_contracts_fail_closed(tmp_path, contract):
+    repository, artifacts = runtime(tmp_path)
+    payload = {"epochs": 30}
+    if contract is not None:
+        payload["remote_execution"] = contract
+    task = create_task(
+        repository,
+        artifacts,
+        "train-contract-check",
+        TaskKind.TRAINING,
+        payload,
+    )
+    assert task_remote_execution_contract(task, artifacts) is None
 
 
 def test_repeated_and_concurrent_allocate_next_create_only_one_active_assignment(tmp_path):
