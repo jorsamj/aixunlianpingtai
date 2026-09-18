@@ -1407,102 +1407,163 @@ class RemoteExecutionTransportService:
             }
 
         verified_models = result.get("verified_models")
-        if not isinstance(verified_models, list) or not verified_models:
+        training_models = confirmed.get("training_models")
+        if (
+            not isinstance(verified_models, list)
+            or not verified_models
+            or not isinstance(training_models, Mapping)
+            or str(training_models.get("version_id") or "") != version_id
+            or not isinstance(training_models.get("models"), list)
+        ):
             raise RemoteExecutionTransportError(
                 "REMOTE_TRAINING_MODEL_MISSING",
-                "verified training result contains no deliverable model",
+                "verified training result has no confirmed model artifact uploads",
                 409,
             )
+        uploaded_models = list(training_models["models"])
+        by_role = {
+            str(item.get("role") or "").strip().lower(): item
+            for item in uploaded_models
+            if isinstance(item, Mapping)
+        }
+        primary_role = "best" if "best" in by_role else "last" if "last" in by_role else ""
+        if not primary_role:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_PRIMARY_MODEL_MISSING",
+                "confirmed remote training artifacts contain no best/last model",
+                409,
+            )
+        primary_item = by_role[primary_role]
+        primary_storage = primary_item.get("storage_ref")
+        if not isinstance(primary_storage, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_STORAGE_INVALID",
+                "primary remote training model storage reference is invalid",
+                409,
+            )
+        primary_sha = _normalized_sha256(
+            primary_item.get("sha256"),
+            "training.primary.sha256",
+        )
+        primary_size = _positive_int(
+            primary_item.get("size_bytes"),
+            "training.primary.size_bytes",
+        )
+        suffix = Path(str(primary_item.get("file_name") or "model.pt")).suffix.lower() or ".pt"
+        primary_path = (
+            models_root
+            / f"remote_{_safe_segment(task.task_id, 'task')}_g{generation}_{primary_role}_{primary_sha[:12]}{suffix}"
+        ).resolve()
+        if models_root not in primary_path.parents:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_DESTINATION_INVALID",
+                "training model destination escaped project model directory",
+                500,
+            )
+        if primary_path.exists():
+            if (
+                not primary_path.is_file()
+                or int(primary_path.stat().st_size) != primary_size
+                or _sha256(primary_path) != primary_sha
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_CONFLICT",
+                    "existing primary training model path has different content",
+                    409,
+                )
+        else:
+            _source, provider = self._source_provider(
+                str(task.project_id),
+                primary_storage,
+            )
+            object_key = str(primary_storage.get("object_key") or "")
+            temporary = primary_path.with_name(f".{primary_path.name}.{version_id}.tmp")
+            temporary.unlink(missing_ok=True)
+            try:
+                downloaded = provider.download(object_key, temporary)
+                downloaded_sha = str(downloaded.sha256 or "").strip().lower()
+                if (
+                    int(downloaded.size_bytes) != primary_size
+                    or (downloaded_sha and downloaded_sha != primary_sha)
+                    or int(temporary.stat().st_size) != primary_size
+                    or _sha256(temporary) != primary_sha
+                ):
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_TRAINING_PRIMARY_MODEL_DOWNLOAD_CHANGED",
+                        "downloaded primary training model failed size/SHA256 verification",
+                        409,
+                    )
+                temporary.replace(primary_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
         committed_models: list[dict[str, Any]] = []
-        best_path = ""
-        last_path = ""
-        for index, item in enumerate(verified_models):
+        artifact_rows: list[dict[str, Any]] = []
+        for item in uploaded_models:
             if not isinstance(item, Mapping):
                 raise RemoteExecutionTransportError(
                     "REMOTE_TRAINING_MODEL_INVALID",
-                    "verified training model metadata is invalid",
+                    "confirmed model artifact metadata is invalid",
                     422,
                 )
-            ref = str(item.get("ref") or "").strip().replace("\\", "/")
-            if not ref.startswith("models/") or ".." in ref.split("/"):
-                raise RemoteExecutionTransportError(
-                    "REMOTE_TRAINING_MODEL_INVALID",
-                    "verified training model reference is unsafe",
-                    422,
-                )
-            source = (extracted / Path(*ref.split("/"))).resolve()
-            if extracted not in source.parents or not source.is_file():
-                raise RemoteExecutionTransportError(
-                    "REMOTE_TRAINING_MODEL_MISSING",
-                    "verified training model is missing from staged result",
-                    409,
-                )
-            expected_sha = _normalized_sha256(
+            role = str(item.get("role") or "").strip().lower()
+            digest = _normalized_sha256(
                 item.get("sha256"),
-                "training.model.sha256",
+                f"training.models.{role}.sha256",
             )
-            expected_size = _positive_int(
+            size = _positive_int(
                 item.get("size_bytes"),
-                "training.model.size_bytes",
+                f"training.models.{role}.size_bytes",
             )
-            if int(source.stat().st_size) != expected_size or _sha256(source) != expected_sha:
+            storage_ref = item.get("storage_ref")
+            if not isinstance(storage_ref, Mapping):
                 raise RemoteExecutionTransportError(
-                    "REMOTE_TRAINING_MODEL_EVIDENCE_MISMATCH",
-                    "staged training model changed after result verification",
-                    409,
+                    "REMOTE_TRAINING_MODEL_STORAGE_INVALID",
+                    "confirmed model artifact storage reference is invalid",
+                    422,
                 )
-            role = str(item.get("role") or "model").strip().lower()
-            suffix = source.suffix.lower() or ".pt"
-            destination = (
-                models_root
-                / f"remote_{_safe_segment(task.task_id, 'task')}_g{generation}_{role}_{expected_sha[:12]}{suffix}"
-            ).resolve()
-            if models_root not in destination.parents:
+            local_path = str(primary_path) if role == primary_role else ""
+            try:
+                artifact_row = self.model_artifacts.register_verified_remote_artifact(
+                    project_id=str(task.project_id),
+                    algorithm_id=algorithm_id,
+                    version_id=version_id,
+                    target=role,
+                    file_name=str(item.get("file_name") or f"{role}.pt"),
+                    sha256=digest,
+                    size_bytes=size,
+                    storage_source_id=str(storage_ref.get("storage_source_id") or ""),
+                    object_key=str(storage_ref.get("object_key") or ""),
+                    source_path=local_path,
+                    artifact_kind="original",
+                    metadata={
+                        "remote_training": True,
+                        "task_id": str(task.task_id),
+                        "execution_generation": generation,
+                        "snapshot_id": str(training.get("snapshot_id") or ""),
+                        "role": role,
+                    },
+                )
+            except Exception as error:
                 raise RemoteExecutionTransportError(
-                    "REMOTE_TRAINING_MODEL_DESTINATION_INVALID",
-                    "training model destination escaped project model directory",
-                    500,
-                )
-            if destination.exists():
-                if (
-                    not destination.is_file()
-                    or int(destination.stat().st_size) != expected_size
-                    or _sha256(destination) != expected_sha
-                ):
-                    raise RemoteExecutionTransportError(
-                        "REMOTE_TRAINING_MODEL_CONFLICT",
-                        "existing committed model path has different content",
-                        409,
-                    )
-            else:
-                temporary = destination.with_name(f".{destination.name}.{version_id}.tmp")
-                temporary.unlink(missing_ok=True)
-                try:
-                    shutil.copy2(source, temporary)
-                    if (
-                        int(temporary.stat().st_size) != expected_size
-                        or _sha256(temporary) != expected_sha
-                    ):
-                        raise RemoteExecutionTransportError(
-                            "REMOTE_TRAINING_MODEL_COPY_FAILED",
-                            "copied training model failed size/SHA256 verification",
-                            500,
-                        )
-                    temporary.replace(destination)
-                finally:
-                    temporary.unlink(missing_ok=True)
+                    str(getattr(error, "code", "") or "REMOTE_TRAINING_MODEL_ASSET_COMMIT_FAILED"),
+                    str(error),
+                    int(getattr(error, "status_code", 409) or 409),
+                ) from error
+            artifact_rows.append(artifact_row)
             committed_models.append({
                 "role": role,
-                "path": str(destination),
-                "sha256": expected_sha,
-                "size_bytes": expected_size,
+                "path": local_path,
+                "sha256": digest,
+                "size_bytes": size,
+                "artifact_id": str(artifact_row.get("artifact_id") or item.get("artifact_id") or ""),
+                "storage_source_id": str(artifact_row.get("storage_source_id") or ""),
+                "object_key": str(artifact_row.get("object_key") or ""),
             })
-            if role == "best":
-                best_path = str(destination)
-            elif role == "last":
-                last_path = str(destination)
 
-        primary = best_path or last_path or str(committed_models[0]["path"])
+        best_path = str(primary_path) if primary_role == "best" else ""
+        last_path = str(primary_path) if primary_role == "last" else ""
+        primary = str(primary_path)
         report = result.get("training_report")
         report = dict(report) if isinstance(report, Mapping) else {}
         completion = result.get("completion")
@@ -1524,6 +1585,11 @@ class RemoteExecutionTransportService:
             "last_path": last_path,
             "model_name": Path(primary).name,
             "verified_models": committed_models,
+            "model_artifact_ids": [
+                str(row.get("artifact_id") or "")
+                for row in artifact_rows
+                if str(row.get("artifact_id") or "")
+            ],
             "training_status": "PARTIAL_SUCCESS" if partial else "SUCCEEDED",
             "training_outcome": str(result.get("training_outcome") or ""),
             "completion_reason": str(completion.get("completion_reason") or ""),
@@ -1543,25 +1609,6 @@ class RemoteExecutionTransportService:
             "finished_at": finished_at,
         }
 
-        # Upload/register the verified models in the unified model-asset store
-        # before exposing the algorithm version. A retry is safe because both
-        # the version id and model content identity are deterministic.
-        artifact_summary = self.model_artifacts.ingest_version(
-            str(task.project_id),
-            algorithm,
-            version,
-        )
-        if (
-            int(artifact_summary.get("discovered") or 0) <= 0
-            or int(artifact_summary.get("failed") or 0) > 0
-            or int(artifact_summary.get("pending") or 0) > 0
-        ):
-            raise RemoteExecutionTransportError(
-                "REMOTE_TRAINING_MODEL_ASSET_COMMIT_FAILED",
-                "verified remote training models were not fully committed to model asset storage",
-                409,
-            )
-
         attach_version(
             self.algorithms_file(str(task.project_id)),
             algorithm_id,
@@ -1573,10 +1620,10 @@ class RemoteExecutionTransportService:
             "version_name": version_name,
             "model_artifacts_committed": True,
             "model_artifact_summary": {
-                "discovered": int(artifact_summary.get("discovered") or 0),
-                "uploaded": int(artifact_summary.get("uploaded") or 0),
-                "failed": int(artifact_summary.get("failed") or 0),
-                "pending": int(artifact_summary.get("pending") or 0),
+                "discovered": len(artifact_rows),
+                "uploaded": len(artifact_rows),
+                "failed": 0,
+                "pending": 0,
             },
         }
 
