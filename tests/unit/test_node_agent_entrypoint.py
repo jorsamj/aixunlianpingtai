@@ -95,16 +95,18 @@ def test_check_mode_reports_only_capabilities_this_agent_build_can_execute(
         "training",
         "deployment-test",
         "conversion",
+        "material-import",
     ])
 
     assert code == 0
     body = json.loads(capsys.readouterr().out)
-    assert body["capabilities"] == ["conversion", "deployment-test", "training"]
-    assert body["reported_capabilities"] == ["conversion", "deployment-test", "training"]
+    assert body["capabilities"] == ["conversion", "deployment-test", "material-import", "training"]
+    assert body["reported_capabilities"] == ["conversion", "deployment-test", "material-import", "training"]
     assert body["unsupported_remote_capabilities"] == []
     assert body["executor"]["enabled"] is True
     assert body["executor"]["supported_task_kinds"] == [
         "DEPLOYMENT_TEST",
+        "MATERIAL_IMPORT",
         "MODEL_CONVERSION",
         "TRAINING",
     ]
