@@ -133,6 +133,37 @@ Phase 1 历史验收保持：
 - Portable Deployment `35316129051`、Remote Training `35316128920`、Remote Conversion `35316129033`：success。
 - `VERSION.txt` 仍为 `42.24.0`。
 
+## 0. 最新关闭：Remote MATERIAL_IMPORT Phase 6 — COCO / Pascal VOC Agent server_zip
+
+2026-09-18，COCO / Pascal VOC 的 **Agent server_zip** portable import 已完成真实闭环并 CLOSED。Phase 5 的 storage_scan annotation truth 继续复用，本批没有创建第二套 COCO/VOC 导入链。
+
+真实闭环：
+
+- `server_zip + execution_mode=agent + import_format=coco|voc` 与 images / YOLO 共用同一个 `MATERIAL_IMPORT` durable task、assignment / execution lease 和 object-storage-v1 transport。
+- 控制面只接受安全相对 ZIP 路径；Agent ZIP 目标必须是已启用 OSS / S3 / MinIO，不允许把中央本地目录/NFS 当成远程共享盘。
+- 中央端把原 ZIP 以 size/SHA256 证据暂存为 task-owned input object；Agent 只拿短期 GET，不获得长期对象存储凭据。
+- Agent 继续使用既有安全 ZIP extraction，随后复用 `DetectionDatasetScanner` 解析 COCO / Pascal VOC。
+- detection ZIP review 与 storage_scan 使用同一 candidate / normalized box / split / issue / external-class schema；ZIP 模式仅额外把用户确认后需要入库的 IMPORTABLE 图片作为 `files/...` payload 嵌入 task-owned review。
+- review 上传继续走 generation-scoped immutable PUT；server-confirm 重新核对 review ZIP、候选图片 size/SHA256/尺寸、embedded payload、annotation coverage、class/box/issue 约束。
+- 用户仍必须确认外部类别 → 平台标签映射；确认后 local Storage Worker 把已验证 payload 写入正式对象存储，并写现有 MaterialRepository / AnnotationRepository truth。
+- `dataset_yaml` 仍只属于 YOLO；COCO/VOC ZIP 提交 dataset_yaml 会 fail closed。
+- 产品“服务器 ZIP”新增执行位置：**中央 Worker / 远程 Agent**。中央 Worker 保持旧本地导入行为且不开放 COCO/VOC；切到远程 Agent 后目标存储改为 OSS/S3/MinIO，并开放 COCO/VOC。
+- Agent ZIP 不允许 `import_format=auto`，用户必须明确选择 images / YOLO / COCO / VOC。
+- Real Chrome 已覆盖：服务器 ZIP 默认中央 Worker → COCO 禁用 → 切换远程 Agent → 对象存储目标 → 选择 COCO → 提交真实 `execution_mode=agent` request → 等待确认。
+
+最终验收（代码 HEAD `3f5c34ae587aee04971e8e5160073898f288cba4`）：
+
+- Remote Material Import `35357183468`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35357183397`：全绿。
+- Central Node Assignment `35357183504`：全绿。
+- Task Runtime Truth `35357183682`：全绿。
+- Portable Deployment `35357183477`：全绿。
+- Remote Training Runtime `35357183476`：全绿。
+- Remote Conversion Runtime `35357183564`：全绿。
+- Remote Cleaning Runtime `35357183532`：全绿。
+- Remote RKNN Board Runtime Protocol `35357183788`：API / Ubuntu / Windows / Real Chrome 全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
 ## 0. 最新关闭：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC
 
 2026-09-18，COCO / Pascal VOC 的远程 annotation 格式已 CLOSED，范围为 **Agent storage_scan**：
@@ -143,7 +174,7 @@ Phase 1 历史验收保持：
 - server-confirm 对 review schema、candidate coverage、class、normalized box、issue、prefix 再做 fail-closed 校验。
 - 用户确认外部类别到平台标签映射后，local indexer 再次校验原对象 size / ETag / SHA256，并写 MaterialRepository / AnnotationRepository。
 - XML DOCTYPE / ENTITY 拒绝；对象/标注文件/标注框均有明确上限。
-- 产品 UI 只在“对象存储目录”Agent 模式开放 COCO/VOC；本地目录与 server_zip 不误宣称支持。
+- Phase 5 产品 UI 先只在“对象存储目录”Agent 模式开放 COCO/VOC；Phase 6 已进一步开放远程 Agent server_zip。本地目录与中央 Worker server_zip 仍不误宣称支持。
 - dataset_yaml 继续只允许 YOLO。
 - Integration 永久覆盖 COCO 与 VOC 从 review → mapping confirmation → local indexing → AnnotationRepository；Real Chrome 覆盖 COCO 实际提交。
 
@@ -260,7 +291,7 @@ Phase 1 历史验收保持：
 
 1. 真实用户自有 RK3568 / RK3576 板卡现场 acceptance；CI 只证明软件协议。
 2. 若现场所谓“RK3578”设备存在，必须先读取真实 SoC compatible，再决定映射，不能直接当 RK3576。
-3. COCO/VOC Agent server_zip 仍未关闭。
+3. COCO/VOC Agent server_zip 已于 Phase 6 CLOSED；不要重新实现平行导入链。
 4. TensorRT / Sophon / Ascend 暂不推进。
 
 ## 0. 最新关闭：Rockchip 实机接入软件工具链
@@ -289,7 +320,7 @@ Phase 1 历史验收保持：
 
 1. 用户真实 RK3568 / RK3576 板卡的现场 hardware acceptance。
 2. 若设备被销售/标注为“RK3578”，先读取真实 SoC compatible，不能直接映射为 RK3576。
-3. COCO/VOC Agent server_zip 仍未关闭。
+3. COCO/VOC Agent server_zip 已于 Phase 6 CLOSED；不要重新实现平行导入链。
 4. TensorRT / Sophon / Ascend 暂不推进。
 
 2026-09-18 capability probe hardening 已完成（HEAD `b20470c8f57ee99fcde3ff0da5f26a5be4b7124f`）：不再依赖 Toolkit 版本号猜测 RK3576 支持，而是实际执行目标平台 config probe。Remote Conversion `35344315905`、RKNN Board `35344315931`、Agent Executor `35344315955`、Central Assignment `35344316219`、Portable Deployment `35344315907` 均全绿。

@@ -145,11 +145,42 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Task Runtime Truth `35316128916`：全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
+# 最新关闭：Remote MATERIAL_IMPORT Phase 6 — COCO / Pascal VOC Agent server_zip
+
+2026-09-18，COCO / Pascal VOC 的 **Agent server_zip** portable import 已完成真实闭环并 CLOSED。Phase 5 的 storage_scan annotation truth 继续复用，本批没有创建第二套 COCO/VOC 导入链。
+
+真实闭环：
+
+- `server_zip + execution_mode=agent + import_format=coco|voc` 与 images / YOLO 共用同一个 `MATERIAL_IMPORT` durable task、assignment / execution lease 和 object-storage-v1 transport。
+- 控制面只接受安全相对 ZIP 路径；Agent ZIP 目标必须是已启用 OSS / S3 / MinIO，不允许把中央本地目录/NFS 当成远程共享盘。
+- 中央端把原 ZIP 以 size/SHA256 证据暂存为 task-owned input object；Agent 只拿短期 GET，不获得长期对象存储凭据。
+- Agent 继续使用既有安全 ZIP extraction，随后复用 `DetectionDatasetScanner` 解析 COCO / Pascal VOC。
+- detection ZIP review 与 storage_scan 使用同一 candidate / normalized box / split / issue / external-class schema；ZIP 模式仅额外把用户确认后需要入库的 IMPORTABLE 图片作为 `files/...` payload 嵌入 task-owned review。
+- review 上传继续走 generation-scoped immutable PUT；server-confirm 重新核对 review ZIP、候选图片 size/SHA256/尺寸、embedded payload、annotation coverage、class/box/issue 约束。
+- 用户仍必须确认外部类别 → 平台标签映射；确认后 local Storage Worker 把已验证 payload 写入正式对象存储，并写现有 MaterialRepository / AnnotationRepository truth。
+- `dataset_yaml` 仍只属于 YOLO；COCO/VOC ZIP 提交 dataset_yaml 会 fail closed。
+- 产品“服务器 ZIP”新增执行位置：**中央 Worker / 远程 Agent**。中央 Worker 保持旧本地导入行为且不开放 COCO/VOC；切到远程 Agent 后目标存储改为 OSS/S3/MinIO，并开放 COCO/VOC。
+- Agent ZIP 不允许 `import_format=auto`，用户必须明确选择 images / YOLO / COCO / VOC。
+- Real Chrome 已覆盖：服务器 ZIP 默认中央 Worker → COCO 禁用 → 切换远程 Agent → 对象存储目标 → 选择 COCO → 提交真实 `execution_mode=agent` request → 等待确认。
+
+最终验收（代码 HEAD `3f5c34ae587aee04971e8e5160073898f288cba4`）：
+
+- Remote Material Import `35357183468`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35357183397`：全绿。
+- Central Node Assignment `35357183504`：全绿。
+- Task Runtime Truth `35357183682`：全绿。
+- Portable Deployment `35357183477`：全绿。
+- Remote Training Runtime `35357183476`：全绿。
+- Remote Conversion Runtime `35357183564`：全绿。
+- Remote Cleaning Runtime `35357183532`：全绿。
+- Remote RKNN Board Runtime Protocol `35357183788`：API / Ubuntu / Windows / Real Chrome 全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
 # 最新关闭：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC
 
 2026-09-18，COCO / Pascal VOC 已接入真实远程 `MATERIAL_IMPORT + storage_scan + Agent` 闭环并 CLOSED。
 
-当前 CLOSED 范围明确为 **对象存储目录的 Agent storage_scan**；本批不宣称 COCO/VOC 的 Agent server_zip 已支持。
+Phase 5 当时 CLOSED 的范围为 **对象存储目录的 Agent storage_scan**；Agent server_zip 已在上方 Phase 6 正式 CLOSED。
 
 真实闭环：
 
@@ -162,7 +193,7 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - 控制面 server-confirm 后重新验证 candidate / class / box / split / issue evidence，生成 external class mapping suggestions。
 - 用户必须确认外部类别 → 平台标签映射；确认后 local Storage Worker 再次 stat 原对象并验证 size / ETag / SHA256，再写正式 MaterialRepository / AnnotationRepository。
 - 正式索引阶段沿用统一 annotation truth：normalized evidence 转回实际像素坐标；COCO/VOC 不走旧 `ensure_label + add_image_record` 直写逻辑。
-- 前端“对象存储目录”已正式开放 **COCO 检测标注 / Pascal VOC 检测标注**；切到本地目录/服务器 ZIP 时自动禁用；dataset YAML 仍只属于 YOLO。
+- 前端“对象存储目录”已正式开放 **COCO 检测标注 / Pascal VOC 检测标注**；Phase 6 又开放了远程 Agent 的服务器 ZIP。中央 Worker 本地目录/本地 ZIP仍不开放 COCO/VOC；dataset YAML 仍只属于 YOLO。
 - Real Chrome 已验证页面真实选择 COCO 并提交 `storage_scan + execution_mode=agent + import_format=coco`。
 
 最终验收（代码 HEAD `9fb67096718e5ece1b72a2acf601662fe337e1d7`）：

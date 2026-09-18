@@ -4,14 +4,53 @@
 
 
 
+## Current closure — Remote MATERIAL_IMPORT Phase 6 COCO / Pascal VOC Agent server_zip CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+COCO and Pascal VOC now also run through the existing portable Agent
+`server_zip` MATERIAL_IMPORT path. This does not create a second annotation
+truth: the Agent safely downloads/extracts the task-owned ZIP, reuses
+`DetectionDatasetScanner`, and emits the same candidate/class/normalized-box/
+split/issue evidence used by the already-closed storage_scan path.
+
+The ZIP variant embeds only the IMPORTABLE image payloads needed after user
+confirmation. Server-confirm revalidates the review archive, payload
+size/SHA256/dimensions, candidate coverage and detection evidence before any
+formal material is indexed. Users still confirm external-class to platform-label
+mappings; the local Storage Worker then publishes verified payloads and commits
+the existing MaterialRepository / AnnotationRepository truth.
+
+Long-lived object-store credentials and central SQLite/NFS never reach the
+Agent. The source ZIP is staged as a task-owned verified object; review
+publication remains generation-fenced and immutable. dataset_yaml stays
+YOLO-only.
+
+The server-ZIP UI now has an explicit Central Worker / Remote Agent execution
+choice. Local execution retains the previous local-storage behavior and does
+not expose COCO/VOC. Agent execution switches the target to an enabled
+OSS/S3/MinIO source, requires an explicit format (no auto), and exposes
+COCO/VOC. Real Chrome covers that exact switch and request body.
+
+Acceptance at code HEAD `3f5c34ae587aee04971e8e5160073898f288cba4`:
+- Remote Material Import `35357183468`: API / Ubuntu / Windows / Real Chrome success.
+- Node Agent Executor `35357183397`: success.
+- Central Node Assignment `35357183504`: success.
+- Task Runtime Truth `35357183682`: success.
+- Portable Deployment `35357183477`: success.
+- Remote Training Runtime `35357183476`: success.
+- Remote Conversion Runtime `35357183564`: success.
+- Remote Cleaning Runtime `35357183532`: success.
+- Remote RKNN Board Runtime Protocol `35357183788`: success.
+
 ## Current closure — Remote MATERIAL_IMPORT Phase 5 COCO / Pascal VOC CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
 
 COCO and Pascal VOC are now real remote annotation formats for
-`MATERIAL_IMPORT + storage_scan + execution_mode=agent`. This closure is
-deliberately limited to object-storage directory scanning; Agent server_zip is
-not claimed for these formats.
+`MATERIAL_IMPORT + storage_scan + execution_mode=agent`. This was the Phase 5
+closure boundary; Agent server_zip for these formats is now separately CLOSED in
+Phase 6 above.
 
 A project-database-agnostic `DetectionDatasetScanner` reads only the brokered
 StorageProvider and persists task-owned candidate/annotation evidence. COCO
@@ -29,9 +68,9 @@ MaterialRepository and AnnotationRepository truth and converts normalized boxes
 back to pixel coordinates. The Agent never creates labels or writes central
 project databases directly.
 
-The product UI exposes COCO and Pascal VOC only for object-storage Agent scans.
-Local directory/server ZIP modes disable those options, and dataset_yaml
-remains YOLO-only. Real Chrome verifies a COCO storage_scan submission.
+The Phase 5 product UI exposed COCO and Pascal VOC for object-storage Agent scans.
+Phase 6 now also exposes them for Agent server_zip; local directory and Central
+Worker ZIP modes still disable those options. dataset_yaml remains YOLO-only.
 
 Acceptance at code HEAD `9fb67096718e5ece1b72a2acf601662fe337e1d7`:
 - Remote Material Import `35318574008`: API / Ubuntu / Windows / Real Chrome success.
