@@ -258,6 +258,97 @@ def test_explicit_remote_training_with_portable_contract_uses_agent_even_if_loca
     assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
 
 
+def test_portable_conversion_stays_local_until_execution_mode_is_agent(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "convert-portable-local",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "local",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "conversion-local",
+        ["conversion"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "conversion-local"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "local"
+
+
+def test_explicit_agent_conversion_requires_portable_contract_and_agent_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "convert-agent-no-contract",
+        TaskKind.MODEL_CONVERSION,
+        {"execution_mode": "agent"},
+    )
+    create_online_node(
+        repository,
+        "conversion-local",
+        ["conversion"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+
+    repository2, artifacts2 = runtime(tmp_path / "ready")
+    create_task(
+        repository2,
+        artifacts2,
+        "convert-agent-ready",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository2,
+        "conversion-local",
+        ["conversion"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository2,
+        "conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+    assignment = CentralTaskAllocator(repository2, artifacts2).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "conversion-agent"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
 def test_legacy_task_is_never_assigned_to_remote_agent_without_portable_contract(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(
