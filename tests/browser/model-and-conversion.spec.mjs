@@ -267,6 +267,8 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => typeof window.renderDeployCenter)).toBe('function');
   await page.evaluate(async () => {
+    if (window.__clInit) await window.__clInit();
+    window.setPage('部署转换');
     await window.loadDeployData(true);
     window.renderDeployCenter();
   });
