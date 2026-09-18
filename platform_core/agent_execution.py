@@ -59,6 +59,10 @@ def _remote_result_ref(execution_generation: int) -> str:
     return f"remote-results/{int(execution_generation)}/result.json"
 
 
+def _remote_training_models_state_ref(execution_generation: int) -> str:
+    return f"remote-results/{int(execution_generation)}/training-models.json"
+
+
 def _json(value: object, fallback):
     try:
         return json.loads(str(value or ""))
@@ -224,6 +228,8 @@ class AgentExecutionService:
         result_upload_preparer=None,
         result_upload_confirmer=None,
         result_commit_handler=None,
+        training_model_upload_preparer=None,
+        training_model_upload_confirmer=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -233,6 +239,8 @@ class AgentExecutionService:
         self.result_upload_preparer = result_upload_preparer
         self.result_upload_confirmer = result_upload_confirmer
         self.result_commit_handler = result_commit_handler
+        self.training_model_upload_preparer = training_model_upload_preparer
+        self.training_model_upload_confirmer = training_model_upload_confirmer
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -781,6 +789,315 @@ class AgentExecutionService:
             )
         return state
 
+    @staticmethod
+    def _model_evidence_projection(items: object) -> list[dict[str, Any]]:
+        if not isinstance(items, list) or not items or len(items) > 4:
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_INVALID",
+                "training model upload response must contain 1-4 entries",
+                500,
+            )
+        projected = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "training model upload entry must be an object",
+                    500,
+                )
+            role = str(item.get("role") or "").strip().lower()
+            digest = str(item.get("sha256") or "").strip().lower()
+            try:
+                size = int(item.get("size_bytes") or 0)
+            except (TypeError, ValueError) as error:
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "training model size evidence is invalid",
+                    500,
+                ) from error
+            file_name = str(item.get("file_name") or "").strip()
+            artifact_id = str(item.get("artifact_id") or "").strip()
+            storage_ref = item.get("storage_ref")
+            if (
+                role not in {"best", "last"}
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or size <= 0
+                or not file_name
+                or "/" in file_name
+                or "\\" in file_name
+                or not artifact_id
+                or not isinstance(storage_ref, dict)
+                or not str(storage_ref.get("storage_source_id") or "").strip()
+                or not str(storage_ref.get("object_key") or "").strip()
+            ):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "training model upload response contains invalid evidence",
+                    500,
+                )
+            projected.append({
+                "role": role,
+                "file_name": file_name,
+                "sha256": digest,
+                "size_bytes": size,
+                "artifact_id": artifact_id,
+                "storage_ref": {
+                    "storage_source_id": str(storage_ref.get("storage_source_id") or ""),
+                    "object_key": str(storage_ref.get("object_key") or ""),
+                    "file_name": str(storage_ref.get("file_name") or file_name),
+                    "content_type": str(storage_ref.get("content_type") or "application/octet-stream"),
+                },
+            })
+        roles = [item["role"] for item in projected]
+        if len(set(roles)) != len(roles):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_INVALID",
+                "training model roles must be unique",
+                500,
+            )
+        return sorted(projected, key=lambda item: item["role"])
+
+    def prepare_training_model_uploads(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        models: object,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot prepare training model uploads",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        if current.kind is not TaskKind.TRAINING or not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable training model protocol",
+                409,
+            )
+        if not callable(self.training_model_upload_preparer):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_UPLOAD_UNAVAILABLE",
+                "training model upload preparer is not configured",
+                409,
+            )
+        try:
+            prepared = self.training_model_upload_preparer(
+                current,
+                payload,
+                execution_generation=int(execution_generation),
+                models=models,
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_TRAINING_MODEL_PREPARE_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(prepared, dict):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PREPARE_INVALID",
+                "training model upload preparer returned a non-object",
+                500,
+            )
+        projected = self._model_evidence_projection(prepared.get("items"))
+        version_id = str(prepared.get("version_id") or "").strip()
+        if not version_id:
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PREPARE_INVALID",
+                "training model upload preparer returned no version id",
+                500,
+            )
+
+        # Re-prove execution ownership after signing ephemeral PUT URLs.
+        owned_after_signing = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if owned_after_signing.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won while preparing training model uploads",
+                409,
+            )
+        state_ref = _remote_training_models_state_ref(execution_generation)
+        existing = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if isinstance(existing, dict) and existing:
+            existing_models = existing.get("models")
+            if (
+                int(existing.get("execution_generation") or 0) != int(execution_generation)
+                or str(existing.get("node_id") or "") != str(node_id)
+                or str(existing.get("version_id") or "") != version_id
+                or existing_models != projected
+            ):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODEL_EVIDENCE_CONFLICT",
+                    "prepared training model evidence conflicts with this execution generation",
+                    409,
+                )
+        _, prepared_at = _iso_now()
+        state = {
+            "task_id": current.task_id,
+            "project_id": current.project_id,
+            "node_id": str(node_id),
+            "execution_generation": int(execution_generation),
+            "version_id": version_id,
+            "models": projected,
+            "prepared_at": str(existing.get("prepared_at") or prepared_at) if isinstance(existing, dict) else prepared_at,
+            "confirmed": bool(existing.get("confirmed")) if isinstance(existing, dict) else False,
+            "confirmed_at": existing.get("confirmed_at") if isinstance(existing, dict) else None,
+        }
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return prepared
+
+    def confirm_training_model_uploads(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot confirm training model uploads",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        if current.kind is not TaskKind.TRAINING or not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable training model protocol",
+                409,
+            )
+        if not callable(self.training_model_upload_confirmer):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_CONFIRM_UNAVAILABLE",
+                "training model upload confirmer is not configured",
+                409,
+            )
+        state_ref = _remote_training_models_state_ref(execution_generation)
+        state = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if (
+            not isinstance(state, dict)
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or str(state.get("node_id") or "") != str(node_id)
+            or not str(state.get("version_id") or "")
+            or not isinstance(state.get("models"), list)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_NOT_PREPARED",
+                "training model uploads must be prepared by this execution generation first",
+                409,
+            )
+        if state.get("confirmed") is True:
+            return {
+                "confirmed": True,
+                "version_id": str(state["version_id"]),
+                "items": list(state["models"]),
+            }
+        try:
+            confirmed = self.training_model_upload_confirmer(
+                current,
+                payload,
+                execution_generation=int(execution_generation),
+                models=state["models"],
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_TRAINING_MODEL_CONFIRM_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(confirmed, dict):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_CONFIRM_INVALID",
+                "training model upload confirmer returned a non-object",
+                500,
+            )
+        projected = self._model_evidence_projection(confirmed.get("items"))
+        if (
+            str(confirmed.get("version_id") or "") != str(state["version_id"])
+            or projected != state["models"]
+            or confirmed.get("confirmed") is not True
+        ):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_CONFIRM_INVALID",
+                "confirmed training model evidence changed after upload",
+                500,
+            )
+        self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        _, confirmed_at = _iso_now()
+        state.update({
+            "confirmed": True,
+            "confirmed_at": confirmed_at,
+        })
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return {
+            "confirmed": True,
+            "version_id": str(state["version_id"]),
+            "items": list(state["models"]),
+        }
+
+    def _confirmed_training_models(
+        self,
+        task,
+        execution_generation: int,
+    ) -> dict[str, Any] | None:
+        if task.kind is not TaskKind.TRAINING:
+            return None
+        state = self.artifacts.read_json(
+            task.task_id,
+            _remote_training_models_state_ref(execution_generation),
+            default={},
+        )
+        if (
+            not isinstance(state, dict)
+            or state.get("confirmed") is not True
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or not str(state.get("version_id") or "")
+            or not isinstance(state.get("models"), list)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_NOT_CONFIRMED",
+                "remote training models must be uploaded and verified before result finalization",
+                409,
+            )
+        return state
+
     def prepare_result_upload(
         self,
         node_id: str,
@@ -992,6 +1309,53 @@ class AgentExecutionService:
                 "result upload confirmer returned an invalid response",
                 500,
             )
+        training_models = self._confirmed_training_models(
+            current,
+            int(execution_generation),
+        )
+        if training_models is not None:
+            manifest_models = confirmed["result"].get("verified_models")
+            if not isinstance(manifest_models, list):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_RESULT_MODELS_INVALID",
+                    "training result manifest contains no model evidence",
+                    409,
+                )
+            manifest_projection = sorted(
+                [
+                    {
+                        "role": str(item.get("role") or "").strip().lower(),
+                        "file_name": str(item.get("file_name") or "").strip(),
+                        "sha256": str(item.get("sha256") or "").strip().lower(),
+                        "size_bytes": int(item.get("size_bytes") or 0),
+                    }
+                    for item in manifest_models
+                    if isinstance(item, dict)
+                ],
+                key=lambda item: item["role"],
+            )
+            state_projection = [
+                {
+                    "role": str(item["role"]),
+                    "file_name": str(item["file_name"]),
+                    "sha256": str(item["sha256"]),
+                    "size_bytes": int(item["size_bytes"]),
+                }
+                for item in training_models["models"]
+            ]
+            if manifest_projection != state_projection:
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_RESULT_MODELS_MISMATCH",
+                    "training result manifest does not match confirmed model artifact uploads",
+                    409,
+                )
+            confirmed = {
+                **confirmed,
+                "training_models": {
+                    "version_id": str(training_models["version_id"]),
+                    "models": list(training_models["models"]),
+                },
+            }
 
         # Object verification happens before the commit gate. Then reuse the
         # durable finalization transaction so cancellation and result publication
@@ -1203,6 +1567,8 @@ def agent_executor_router(
     result_upload_preparer=None,
     result_upload_confirmer=None,
     result_commit_handler=None,
+    training_model_upload_preparer=None,
+    training_model_upload_confirmer=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -1216,6 +1582,8 @@ def agent_executor_router(
             result_upload_preparer=result_upload_preparer,
             result_upload_confirmer=result_upload_confirmer,
             result_commit_handler=result_commit_handler,
+            training_model_upload_preparer=training_model_upload_preparer,
+            training_model_upload_confirmer=training_model_upload_confirmer,
         )
 
     def token(authorization: str | None) -> str:
@@ -1293,6 +1661,39 @@ def agent_executor_router(
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
             str(payload.get("text") or ""),
+        )
+
+    @router.post("/executions/{task_id}/training-models/prepare")
+    def prepare_training_models(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().prepare_training_model_uploads,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            models=payload.get("models"),
+        )
+
+    @router.post("/executions/{task_id}/training-models/confirm")
+    def confirm_training_models(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().confirm_training_model_uploads,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
         )
 
     @router.post("/executions/{task_id}/result-upload/prepare")
