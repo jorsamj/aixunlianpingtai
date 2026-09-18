@@ -311,6 +311,7 @@ def test_material_scan_broker_requires_current_execution_lease(tmp_path):
     )
     task_id = "material-api-agent"
     artifacts.atomic_write_json(task_id, "request.json", {
+        "execution_mode": "agent",
         "remote_execution": {
             "version": 1,
             "task_kind": "MATERIAL_IMPORT",

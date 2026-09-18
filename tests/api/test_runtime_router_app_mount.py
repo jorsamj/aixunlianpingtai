@@ -53,6 +53,8 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "agent_result_commit_handler",
         "agent_training_model_upload_preparer",
         "agent_training_model_upload_confirmer",
+        "agent_material_scan_page_provider",
+        "agent_material_scan_read_provider",
     }
     assert isinstance(keywords["agent_execution_payload_resolver"], ast.Name)
     assert keywords["agent_execution_payload_resolver"].id == "_resolve_agent_execution_payload"
@@ -72,6 +74,10 @@ def test_production_app_mounts_runtime_router_exactly_once():
         keywords["agent_training_model_upload_confirmer"].id
         == "_confirm_agent_training_model_uploads"
     )
+    assert isinstance(keywords["agent_material_scan_page_provider"], ast.Name)
+    assert keywords["agent_material_scan_page_provider"].id == "_agent_material_scan_page"
+    assert isinstance(keywords["agent_material_scan_read_provider"], ast.Name)
+    assert keywords["agent_material_scan_read_provider"].id == "_agent_material_scan_read"
 
 
 def test_v63_subrouters_keep_single_composition_owner():
@@ -106,6 +112,12 @@ def test_v63_subrouters_keep_single_composition_owner():
     ) == 1
     assert runtime_source.count(
         "training_model_upload_confirmer=agent_training_model_upload_confirmer"
+    ) == 1
+    assert runtime_source.count(
+        "material_scan_page_provider=agent_material_scan_page_provider"
+    ) == 1
+    assert runtime_source.count(
+        "material_scan_read_provider=agent_material_scan_read_provider"
     ) == 1
 
 
