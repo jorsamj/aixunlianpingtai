@@ -106,7 +106,9 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_deployment_test_runtime.py
+          tests/api/test_agent_result_upload_api.py
           tests/api/test_runtime_router_app_mount.py
+          tests/unit/storage/test_object_store_immutability.py
       - name: Permanent portable deployment guards
         shell: bash
         run: |
