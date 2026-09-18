@@ -1,0 +1,140 @@
+name: Remote Training Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'app.py'
+      - 'platform_core/remote_training_transport.py'
+      - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/task_runtime/models.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'platform_core/worker_registry.py'
+      - 'platform_core/worker_supervisor.py'
+      - 'tests/unit/test_remote_training_transport.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/unit/task_runtime/test_worker_registry.py'
+      - 'tests/unit/task_runtime/test_repository.py'
+      - 'tests/integration/test_remote_training_prepare_task.py'
+      - 'tests/api/test_training_request.py'
+      - '.github/workflows/remote-training-runtime.yml'
+  pull_request:
+    branches:
+      - main
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'app.py'
+      - 'platform_core/remote_training_transport.py'
+      - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/task_runtime/models.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'platform_core/worker_registry.py'
+      - 'platform_core/worker_supervisor.py'
+      - 'tests/unit/test_remote_training_transport.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/unit/task_runtime/test_worker_registry.py'
+      - 'tests/unit/task_runtime/test_repository.py'
+      - 'tests/integration/test_remote_training_prepare_task.py'
+      - 'tests/api/test_training_request.py'
+      - '.github/workflows/remote-training-runtime.yml'
+
+jobs:
+  preparation-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused training preparation dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest pillow pyyaml filelock requests psutil keyring cryptography
+      - name: Compile remote training preparation chain
+        run: >-
+          python -m py_compile
+          platform_core/remote_training_transport.py
+          platform_core/remote_training_tasks.py
+          platform_core/task_node_assignments.py
+          platform_core/task_runtime/models.py
+          platform_core/task_runtime/repository.py
+          platform_core/worker_registry.py
+          platform_core/worker_supervisor.py
+          tests/unit/test_remote_training_transport.py
+          tests/unit/test_task_node_assignments.py
+          tests/unit/task_runtime/test_worker_registry.py
+          tests/unit/task_runtime/test_repository.py
+          tests/integration/test_remote_training_prepare_task.py
+      - name: Portable bundle and scheduler contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_remote_training_transport.py
+          tests/unit/test_task_node_assignments.py
+      - name: Worker registration and repository fencing
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit/task_runtime
+          tests/unit/task_runtime/test_worker_registry.py
+          tests/unit/task_runtime/test_repository.py
+      - name: Durable preparation integration
+        run: >-
+          python -m pytest -q --confcutdir=tests/integration
+          tests/integration/test_remote_training_prepare_task.py
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused training API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography
+      - name: Compile production training creation path
+        run: >-
+          python -m py_compile
+          app.py
+          platform_core/remote_training_transport.py
+          platform_core/remote_training_tasks.py
+          platform_core/task_node_assignments.py
+          platform_core/worker_registry.py
+      - name: Remote training creation API
+        run: >-
+          python -m pytest -q
+          tests/api/test_training_request.py
+      - name: Permanent remote training preparation guards
+        shell: bash
+        run: |
+          grep -Fq 'TRAINING_PREPARE = "TRAINING_PREPARE"' platform_core/task_runtime/models.py
+          grep -Fq '"training-prep": "platform_core.remote_training_tasks"' platform_core/worker_registry.py
+          grep -Fq '"training-prep",' platform_core/worker_supervisor.py
+          grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
+          grep -Fq '"remote_input_state": "PREPARING"' app.py
+          grep -Fq '"remote_input_state": "READY"' platform_core/remote_training_tasks.py
+          grep -Fq '"task_kind": "TRAINING"' platform_core/remote_training_tasks.py
+          grep -Fq '"transport": "object-storage-v1"' platform_core/remote_training_tasks.py
+          grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
+          grep -Fq 'return "agent"' platform_core/task_node_assignments.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST"})' platform_core/node_agent_executor_loop.py
+          if grep -Fq '"training"' platform_core/node_agent_executor_loop.py; then
+            echo 'Agent training capability must stay closed until the real training runner exists' >&2
+            exit 1
+          fi
+          ! grep -Fq 'sqlite3' platform_core/remote_training_transport.py
+          ! grep -Fq 'TaskRepository' platform_core/remote_training_transport.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
