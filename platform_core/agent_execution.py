@@ -32,6 +32,7 @@ from .task_runtime.repository import TERMINAL_STATUSES, _from_row
 
 DEFAULT_EXECUTION_LEASE_SECONDS = 30
 MAX_REMOTE_LOG_BYTES = 64 * 1024
+MAX_REMOTE_RESULT_METADATA_BYTES = 64 * 1024
 
 
 class AgentExecutionError(RuntimeError):
@@ -63,6 +64,132 @@ def _json(value: object, fallback):
         return json.loads(str(value or ""))
     except (TypeError, ValueError):
         return fallback
+
+
+def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise AgentExecutionError(
+            "REMOTE_RESULT_METADATA_INVALID",
+            "runtime_result must be an object",
+            422,
+        )
+
+    result: dict[str, Any] = {}
+    if "ok" in value:
+        result["ok"] = bool(value.get("ok"))
+
+    for key in (
+        "preprocess_ms",
+        "inference_ms",
+        "postprocess_ms",
+        "elapsed_ms",
+        "total_elapsed_ms",
+    ):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                f"{key} must be numeric",
+                422,
+            )
+        result[key] = float(raw)
+
+    for key, maximum in (
+        ("engine", 120),
+        ("model", 240),
+        ("note", 2000),
+    ):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        text = str(raw)
+        if len(text) > maximum:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                f"{key} exceeds maximum length",
+                422,
+            )
+        if key == "model" and ("/" in text or "\\" in text):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "model must not disclose a local path",
+                422,
+            )
+        result[key] = text
+
+    labels = value.get("labels")
+    if labels is not None:
+        if not isinstance(labels, list) or len(labels) > 1000:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "labels must be a list with at most 1000 entries",
+                422,
+            )
+        clean_labels = []
+        for item in labels:
+            text = str(item)
+            if len(text) > 256:
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_METADATA_INVALID",
+                    "label exceeds maximum length",
+                    422,
+                )
+            clean_labels.append(text)
+        result["labels"] = clean_labels
+
+    detections = value.get("detections")
+    if detections is not None:
+        if not isinstance(detections, list) or len(detections) > 1000:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "detections must be a list with at most 1000 entries",
+                422,
+            )
+        clean_detections = []
+        allowed_numeric = ("class_id", "confidence", "x1", "y1", "x2", "y2")
+        for item in detections:
+            if not isinstance(item, dict):
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_METADATA_INVALID",
+                    "each detection must be an object",
+                    422,
+                )
+            clean: dict[str, Any] = {}
+            if "label" in item:
+                label = str(item.get("label") or "")
+                if len(label) > 256:
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        "detection label exceeds maximum length",
+                        422,
+                    )
+                clean["label"] = label
+            for key in allowed_numeric:
+                raw = item.get(key)
+                if raw is None:
+                    continue
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        f"detection {key} must be numeric",
+                        422,
+                    )
+                clean[key] = int(raw) if key == "class_id" else float(raw)
+            clean_detections.append(clean)
+        result["detections"] = clean_detections
+
+    encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_REMOTE_RESULT_METADATA_BYTES:
+        raise AgentExecutionError(
+            "REMOTE_RESULT_METADATA_TOO_LARGE",
+            "runtime_result exceeds 64 KiB",
+            413,
+        )
+    return result
 
 
 def _task_public(task) -> dict[str, Any]:
@@ -677,6 +804,7 @@ class AgentExecutionService:
                 409,
             )
         payload = self._read_task_payload(current)
+        runtime_metadata = _sanitize_runtime_result_metadata(runtime_result)
         if not self._requires_remote_result_confirmation(current, payload):
             raise AgentExecutionError(
                 "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
@@ -787,6 +915,8 @@ class AgentExecutionService:
         task_id: str,
         execution_lease_token: str,
         execution_generation: int,
+        *,
+        runtime_result: object = None,
     ) -> dict[str, Any]:
         current = self._owned_execution(
             node_id,
@@ -890,7 +1020,10 @@ class AgentExecutionService:
                 409,
             ) from error
         result_ref = _remote_result_ref(execution_generation)
-        result = dict(confirmed["result"])
+        result = {
+            **runtime_metadata,
+            **dict(confirmed["result"]),
+        }
         result["execution_generation"] = int(execution_generation)
         result["output_sha256"] = evidence["sha256"]
         result["output_size_bytes"] = evidence["size_bytes"]
@@ -1163,6 +1296,7 @@ def agent_executor_router(
             task_id,
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
+            runtime_result=payload.get("runtime_result"),
         )
 
     @router.post("/executions/{task_id}/begin-finalization")
@@ -1209,5 +1343,6 @@ __all__ = [
     "AgentExecutionService",
     "DEFAULT_EXECUTION_LEASE_SECONDS",
     "MAX_REMOTE_LOG_BYTES",
+    "MAX_REMOTE_RESULT_METADATA_BYTES",
     "agent_executor_router",
 ]
