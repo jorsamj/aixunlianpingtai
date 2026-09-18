@@ -185,7 +185,7 @@ Phase 1 历史验收保持：
 2026-09-18，Rockchip RKNN Agent conversion 已 CLOSED。
 
 - 细粒度 capability：ONNX 继续使用 `conversion`；RKNN 使用 `conversion.rknn`。
-- Node Agent 通过真实 RKNN-Toolkit2 Python import/version probe 后才上报 `conversion.rknn`，runtime truth 包含 supported_chips。
+- Node Agent 通过真实 RKNN-Toolkit2 import + `RKNN.config(target_platform=...)` 探测后才上报 `conversion.rknn`；runtime truth 的 `supported_chips` 只包含节点本机实际通过 config probe 的目标。
 - 控制面仅把 online + agent + effective `conversion.rknn` + probe available 的节点作为 Rockchip 转换资源。
 - portable Agent 当前严格支持 RK3568 / RK3576，FP16、batch=1、静态 shape；INT8 未关闭。
 - RKNN 输出由节点本地 RKNN-Toolkit2 真转换，Agent 只接受唯一非空 `.rknn`。
@@ -291,6 +291,8 @@ Phase 1 历史验收保持：
 2. 若设备被销售/标注为“RK3578”，先读取真实 SoC compatible，不能直接映射为 RK3576。
 3. COCO/VOC Agent server_zip 仍未关闭。
 4. TensorRT / Sophon / Ascend 暂不推进。
+
+2026-09-18 capability probe hardening 已完成（HEAD `b20470c8f57ee99fcde3ff0da5f26a5be4b7124f`）：不再依赖 Toolkit 版本号猜测 RK3576 支持，而是实际执行目标平台 config probe。Remote Conversion `35344315905`、RKNN Board `35344315931`、Agent Executor `35344315955`、Central Assignment `35344316219`、Portable Deployment `35344315907` 均全绿。
 
 **下一主线：Rockchip 真实板卡 acceptance。**
 

@@ -89,7 +89,7 @@ Formal `VERSION.txt` remains `42.24.0`.
 Rockchip RKNN is now a real remote MODEL_CONVERSION target. ONNX keeps the
 existing `conversion` capability while Rockchip uses the independent
 `conversion.rknn` capability. The Agent reports that capability only after a
-real RKNN-Toolkit2 import/version probe; control-plane resource discovery also
+real RKNN-Toolkit2 import plus target-platform config probe; control-plane resource discovery also
 requires the node to be online, Agent-connected, effective for
 `conversion.rknn`, and to publish an available RKNN probe with supported chips.
 
@@ -245,6 +245,8 @@ Acceptance at code HEAD `b8caf7753994988d5161321c2536ae75e64d3252`:
 
 This closes the **software onboarding tooling only**. It does not prove that any
 specific user-owned board has passed hardware acceptance.
+
+Capability probing was hardened again at code HEAD `b20470c8f57ee99fcde3ff0da5f26a5be4b7124f`: `supported_chips` now comes from actual `RKNN.config(target_platform=...)` calls for RK3568/RK3576 rather than a Toolkit-version threshold. Remote Conversion `35344315905`, RKNN Board `35344315931`, Node Agent Executor `35344315955`, Central Assignment `35344316219`, Task Runtime Truth `35344315903`, and Portable Deployment `35344315907` all passed.
 
 **OPEN / next:** Rockchip physical-board acceptance. A real RK3568/RK3576 (or a
 device whose actual SoC is first identified) must run the Agent, become online

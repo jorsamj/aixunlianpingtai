@@ -208,6 +208,15 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Remote Training Runtime `35324895079`：API / Ubuntu / Windows 全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
+2026-09-18 probe hardening（代码 HEAD `b20470c8f57ee99fcde3ff0da5f26a5be4b7124f`）：
+
+- RKNN-Toolkit2 capability 从“版本阈值推断”收紧为真实 `RKNN.config(target_platform=...)` 探测。
+- Remote Conversion Runtime `35344315905`：control-plane / Ubuntu / Windows / Real Chrome 全绿。
+- Remote RKNN Board Runtime Protocol `35344315931`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35344315955`、Central Node Assignment `35344316219`：全绿。
+- Task Runtime Truth `35344315903`、Portable Deployment `35344315907`：全绿。
+- Remote Training `35344315916`、Remote Material Import `35344315983`、Remote Cleaning `35344315908`：全绿。
+
 # 最新关闭：Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN
 
 2026-09-18，远程 Rockchip RKNN 转换已完成真实 Agent 闭环并 CLOSED。
@@ -221,9 +230,9 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 真实闭环：
 
 - 服务节点新增细粒度 `conversion.rknn` capability；通用 `conversion` 继续服务已 CLOSED 的 ONNX，二者不能互相冒充。
-- Node Agent 只有在真实 Python 环境可导入 `rknn.api.RKNN` 且探测到 RKNN-Toolkit2 版本后才上报 `conversion.rknn`。
+- Node Agent 只有在真实 Python 环境可导入 `rknn.api.RKNN`，并且至少一个目标芯片通过真实 `RKNN.config(target_platform=...)` 探测后才上报 `conversion.rknn`。
 - heartbeat runtime 持久化 `rknn_toolkit2.available/version/supported_chips`；控制面只把 online + agent + effective `conversion.rknn` + probe 可用的节点作为 Rockchip 资源。
-- 当前 Toolkit 探测对 RK3568 保持基础支持；RK3576 仅在 Toolkit 2.x 及以上开放。
+- Toolkit capability 不再按版本号猜测：Node Agent 会在节点本机真实调用 `RKNN.config(target_platform='rk3568'/'rk3576')`，只有实际 config probe 成功的芯片才进入 `supported_chips`；`conversion.rknn` 至少有一个支持目标时才可上报。
 - MODEL_CONVERSION 调度按目标细分 capability：Agent ONNX → `conversion`，Agent Rockchip → `conversion.rknn`。
 - portable contract 只接受 RK3568 / RK3576、FP16、batch=1、静态 shape，并保留 mean / rknn_std 等 RKNN 参数；不支持的芯片/INT8/dynamic/batch>1 在任务持久化前 fail closed。
 - Agent 下载 verified model object 后在节点本地执行现有 `deployment_worker.py` + RKNN-Toolkit2，生成唯一非空 `.rknn`。
