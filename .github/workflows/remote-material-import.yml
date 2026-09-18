@@ -126,6 +126,14 @@ jobs:
           grep -Fq '"agent.remote",' app.py
           grep -Fq 'class AgentMaterialImportRunner' platform_core/node_agent_material_runtime.py
           grep -Fq 'build_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'build_yolo_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'REVIEW_ANNOTATIONS_MEMBER = "yolo/annotations.jsonl"' platform_core/remote_material_import.py
+          grep -Fq 'def _commit_yolo_review_annotations' platform_core/remote_material_import.py
+          grep -Fq 'store.annotation_batch(states, boxes, issues)' platform_core/remote_material_import.py
+          grep -Fq "annotations = AnnotationRepository" platform_core/storage/import_tasks.py
+          grep -Fq "confirmation.get('label_mapping')" platform_core/storage/import_tasks.py
+          grep -Fq 'annotations.upsert_many(annotation_rows)' platform_core/storage/import_tasks.py
+          grep -Fq 'test_agent_yolo_review_label_mapping_writes_annotation_repository' tests/integration/test_storage_import_worker.py
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
           grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
           grep -Fq 'commit_material_review_archive' platform_core/remote_execution_transport.py
