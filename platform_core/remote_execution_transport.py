@@ -786,6 +786,266 @@ class RemoteExecutionTransportService:
             ),
         }
 
+    @staticmethod
+    def _remote_training_version_id(task_id: str, generation: int, snapshot_id: str) -> str:
+        return "rt" + hashlib.sha256(
+            f"{task_id}:{int(generation)}:{snapshot_id}".encode("utf-8")
+        ).hexdigest()[:10]
+
+    def _normalized_training_model_evidence(self, models: object) -> list[dict[str, Any]]:
+        if not isinstance(models, (list, tuple)) or not models or len(models) > 4:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODELS_INVALID",
+                "remote training model evidence must contain 1-4 model entries",
+                422,
+            )
+        result: list[dict[str, Any]] = []
+        seen_roles: set[str] = set()
+        for item in models:
+            if not isinstance(item, Mapping):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "remote training model evidence entry must be an object",
+                    422,
+                )
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"best", "last"} or role in seen_roles:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "remote training model roles must be unique best/last entries",
+                    422,
+                )
+            seen_roles.add(role)
+            digest = _normalized_sha256(
+                item.get("sha256"),
+                f"training.models.{role}.sha256",
+            )
+            size = _positive_int(
+                item.get("size_bytes"),
+                f"training.models.{role}.size_bytes",
+            )
+            raw_file_name = str(item.get("file_name") or f"{role}.pt")
+            file_name = Path(raw_file_name).name
+            if (
+                not file_name
+                or file_name in {".", ".."}
+                or "/" in raw_file_name
+                or "\\" in raw_file_name
+                or Path(file_name).suffix.lower() != ".pt"
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "remote training model file_name must be a .pt basename",
+                    422,
+                )
+            result.append({
+                "role": role,
+                "file_name": file_name,
+                "sha256": digest,
+                "size_bytes": size,
+            })
+        return result
+
+    def _training_model_storage_ref(
+        self,
+        *,
+        task,
+        payload: Mapping[str, Any],
+        generation: int,
+        model: Mapping[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        _remote, training = self._training_remote(task, payload)
+        algorithm_id = str(payload.get("algorithm_asset_id") or "").strip()
+        if not algorithm_id:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_ALGORITHM_MISSING",
+                "remote training payload has no algorithm id",
+                422,
+            )
+        snapshot_id = str(training.get("snapshot_id") or "").strip()
+        version_id = self._remote_training_version_id(
+            str(task.task_id),
+            int(generation),
+            snapshot_id,
+        )
+        config = self.model_artifacts.repository.config()
+        source_id = str(config.get("storage_source_id") or "").strip()
+        if not source_id:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_STORAGE_REQUIRED",
+                "unified model artifact storage is not configured",
+                409,
+            )
+        source = self.storage_sources_factory().get(source_id)
+        if source is None or not source.enabled:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_STORAGE_UNAVAILABLE",
+                "unified model artifact storage source is unavailable",
+                409,
+            )
+        try:
+            storage_type = StorageType.parse(source.type)
+        except ValueError as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_STORAGE_UNAVAILABLE",
+                "unified model artifact storage type is invalid",
+                409,
+            ) from error
+        if storage_type not in {StorageType.OSS, StorageType.S3}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_STORAGE_NOT_PORTABLE",
+                "remote training models require OSS/S3/MinIO object storage",
+                409,
+            )
+        prefix = str(config.get("object_prefix") or "model-assets").strip().strip("/") or "model-assets"
+        role = str(model["role"])
+        digest = str(model["sha256"])
+        file_name = Path(str(model["file_name"])).name
+        object_key = "/".join([
+            prefix,
+            _safe_segment(task.project_id, "project"),
+            _safe_segment(algorithm_id, "algorithm"),
+            _safe_segment(version_id, "version"),
+            _safe_segment(role, "model"),
+            f"{digest[:16]}-{_safe_segment(file_name, role + '.pt')}",
+        ])
+        artifact_id = hashlib.sha256(
+            f"{task.project_id}:{algorithm_id}:{version_id}:{role}:{digest}".encode("utf-8")
+        ).hexdigest()[:32]
+        return version_id, {
+            "artifact_id": artifact_id,
+            "storage_source_id": source_id,
+            "object_key": object_key,
+            "file_name": file_name,
+            "content_type": "application/octet-stream",
+            "role": role,
+            "sha256": digest,
+            "size_bytes": int(model["size_bytes"]),
+        }
+
+    def prepare_training_model_uploads(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        *,
+        execution_generation: int,
+        models: object,
+    ) -> dict[str, Any]:
+        self._training_remote(task, payload)
+        generation = _positive_int(
+            execution_generation,
+            "training.execution_generation",
+        )
+        normalized = self._normalized_training_model_evidence(models)
+        items = []
+        version_id = ""
+        for model in normalized:
+            version_id, storage_ref = self._training_model_storage_ref(
+                task=task,
+                payload=payload,
+                generation=generation,
+                model=model,
+            )
+            _source, provider = self._source_provider(str(task.project_id), storage_ref)
+            object_key = str(storage_ref["object_key"])
+            if provider.exists(object_key):
+                metadata = provider.stat(object_key)
+                actual_sha = str(metadata.sha256 or "").strip().lower()
+                if (
+                    int(metadata.size_bytes) != int(model["size_bytes"])
+                    or actual_sha != str(model["sha256"])
+                ):
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_TRAINING_MODEL_OBJECT_CONFLICT",
+                        "remote training model object already exists with different or unverifiable evidence",
+                        409,
+                    )
+                upload = None
+                already_uploaded = True
+            else:
+                upload = self._upload_contract(
+                    str(task.project_id),
+                    storage_ref,
+                    sha256=str(model["sha256"]),
+                    size_bytes=int(model["size_bytes"]),
+                )
+                already_uploaded = False
+            items.append({
+                **dict(model),
+                "artifact_id": str(storage_ref["artifact_id"]),
+                "storage_ref": {
+                    key: value
+                    for key, value in storage_ref.items()
+                    if key not in {"artifact_id", "sha256", "size_bytes", "role"}
+                },
+                "already_uploaded": already_uploaded,
+                "upload": upload,
+            })
+        return {
+            "version_id": version_id,
+            "execution_generation": generation,
+            "items": items,
+        }
+
+    def confirm_training_model_uploads(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        *,
+        execution_generation: int,
+        models: object,
+    ) -> dict[str, Any]:
+        self._training_remote(task, payload)
+        generation = _positive_int(
+            execution_generation,
+            "training.execution_generation",
+        )
+        normalized = self._normalized_training_model_evidence(models)
+        items = []
+        version_id = ""
+        for model in normalized:
+            version_id, storage_ref = self._training_model_storage_ref(
+                task=task,
+                payload=payload,
+                generation=generation,
+                model=model,
+            )
+            _source, provider = self._source_provider(str(task.project_id), storage_ref)
+            object_key = str(storage_ref["object_key"])
+            if not provider.exists(object_key):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_NOT_UPLOADED",
+                    f"remote training {model['role']} model object does not exist",
+                    409,
+                )
+            metadata = provider.stat(object_key)
+            actual_sha = str(metadata.sha256 or "").strip().lower()
+            if (
+                int(metadata.size_bytes) != int(model["size_bytes"])
+                or not actual_sha
+                or actual_sha != str(model["sha256"])
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_EVIDENCE_MISMATCH",
+                    f"remote training {model['role']} model does not match prepared size/SHA256 evidence",
+                    409,
+                )
+            items.append({
+                **dict(model),
+                "artifact_id": str(storage_ref["artifact_id"]),
+                "storage_ref": {
+                    key: value
+                    for key, value in storage_ref.items()
+                    if key not in {"artifact_id", "sha256", "size_bytes", "role"}
+                },
+            })
+        return {
+            "version_id": version_id,
+            "execution_generation": generation,
+            "confirmed": True,
+            "items": items,
+        }
+
     def _training_result_stage_root(self, task_id: str, generation: int) -> Path:
         return (
             self.data_dir
@@ -863,6 +1123,7 @@ class RemoteExecutionTransportService:
                         expected_task_id=str(task.task_id),
                         expected_execution_generation=generation,
                         expected_snapshot_id=str(training.get("snapshot_id") or ""),
+                        allow_separate_model_objects=True,
                     )
                 except RemoteTrainingResultError as error:
                     raise RemoteExecutionTransportError(
