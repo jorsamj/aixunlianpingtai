@@ -7,13 +7,22 @@ execution and are never persisted into scheduler assignment truth.
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .algorithms import list_algorithms
+from filelock import FileLock
+
 from .model_artifacts import ModelArtifactService
+from .remote_training_results import (
+    RemoteTrainingResultError,
+    verify_training_result_archive,
+)
+from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
 
 
@@ -381,6 +390,8 @@ class RemoteExecutionTransportService:
         self,
         project_id: str,
         ref: Mapping[str, Any],
+        *,
+        require_server_sha256: bool = False,
     ) -> dict[str, Any]:
         object_key = str(ref.get("object_key") or "").strip()
         expected_size = _positive_int(ref.get("size_bytes"), "object.size_bytes")
@@ -399,7 +410,14 @@ class RemoteExecutionTransportService:
                 "remote object size no longer matches durable task evidence",
                 409,
             )
-        if metadata.sha256 and str(metadata.sha256).lower() != expected_sha:
+        actual_sha = str(metadata.sha256 or "").strip().lower()
+        if require_server_sha256 and not actual_sha:
+            raise RemoteExecutionTransportError(
+                "REMOTE_OBJECT_HASH_UNVERIFIED",
+                "remote object is missing server-visible sha256 metadata",
+                409,
+            )
+        if actual_sha and actual_sha != expected_sha:
             raise RemoteExecutionTransportError(
                 "REMOTE_OBJECT_CHANGED",
                 "remote object sha256 no longer matches durable task evidence",
@@ -531,6 +549,390 @@ class RemoteExecutionTransportService:
         return remote, deployment
 
     @staticmethod
+    def _training_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        if str(getattr(task.kind, "value", task.kind)) != "TRAINING":
+            raise RemoteExecutionTransportError(
+                "REMOTE_TASK_KIND_UNSUPPORTED",
+                "portable training transport requires a TRAINING task",
+                409,
+            )
+        remote = payload.get("remote_execution")
+        if not isinstance(remote, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_MISSING",
+                "portable remote training contract is missing",
+                409,
+            )
+        if (
+            int(remote.get("version") or 0) != 1
+            or str(remote.get("task_kind") or "") != "TRAINING"
+            or str(remote.get("transport") or "") != "object-storage-v1"
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable remote training contract is invalid",
+                422,
+            )
+        training = remote.get("training")
+        if not isinstance(training, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable remote training payload is missing",
+                422,
+            )
+        if (
+            int(training.get("schema_version") or 0) != 1
+            or str(training.get("framework") or "") != "ultralytics"
+            or not str(training.get("snapshot_id") or "").strip()
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable remote training payload identity is invalid",
+                422,
+            )
+        return remote, training
+
+    @staticmethod
+    def _training_result_ref(training: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = training.get("result")
+        if not isinstance(result, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable remote training result reference is missing",
+                422,
+            )
+        if (
+            not str(result.get("storage_source_id") or "").strip()
+            or not str(result.get("object_key") or "").strip()
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable remote training result reference is incomplete",
+                422,
+            )
+        return result
+
+    def _resolve_training_execution_payload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        assignment: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, training = self._training_remote(task, payload)
+        bundle = training.get("bundle")
+        model_ref = training.get("model")
+        result_ref = self._training_result_ref(training)
+        if not isinstance(bundle, Mapping) or not isinstance(model_ref, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable remote training bundle/model references are incomplete",
+                422,
+            )
+        bundle_download = self._download_contract(
+            str(task.project_id),
+            bundle,
+            require_server_sha256=True,
+        )
+        bundle_download.update({
+            "uncompressed_size_bytes": _positive_int(
+                bundle.get("uncompressed_size_bytes"),
+                "training.bundle.uncompressed_size_bytes",
+            ),
+            "member_count": _positive_int(
+                bundle.get("member_count"),
+                "training.bundle.member_count",
+            ),
+            "snapshot_id": str(training.get("snapshot_id") or ""),
+        })
+
+        model_type = str(model_ref.get("type") or "").strip()
+        if model_type == "official":
+            reference = str(model_ref.get("reference") or "").strip()
+            canonical = next(
+                (
+                    item
+                    for item in OFFICIAL_DOWNLOADABLE_MODELS
+                    if str(item).casefold() == reference.casefold()
+                ),
+                None,
+            )
+            if (
+                canonical is None
+                or Path(reference).is_absolute()
+                or "/" in reference
+                or "\\" in reference
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MODEL_REFERENCE_INVALID",
+                    "remote training official model reference is not allow-listed",
+                    422,
+                )
+            model = {"type": "official", "reference": str(canonical)}
+        elif model_type == "object":
+            model = {
+                "type": "object",
+                "download": self._download_contract(
+                    str(task.project_id),
+                    model_ref,
+                    require_server_sha256=True,
+                ),
+                "artifact_id": str(model_ref.get("artifact_id") or ""),
+                "base_version_id": str(model_ref.get("base_version_id") or ""),
+                "base_version_name": str(model_ref.get("base_version_name") or ""),
+                "base_selection_reason": str(model_ref.get("base_selection_reason") or ""),
+            }
+        else:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MODEL_REFERENCE_INVALID",
+                "remote training model reference is unsupported",
+                422,
+            )
+
+        resolved = assignment.get("resolved_execution_config")
+        selected_device = ""
+        selected_gpu = None
+        if isinstance(resolved, Mapping):
+            selected_device = str(resolved.get("selected_device") or "")
+            selected_gpu = resolved.get("selected_gpu")
+        if not selected_device:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_DEVICE_MISSING",
+                "remote training assignment has no concrete selected device",
+                409,
+            )
+
+        params = training.get("params")
+        if not isinstance(params, Mapping):
+            params = {}
+        safe_params = {
+            str(key): value
+            for key, value in params.items()
+            if value is None or isinstance(value, (str, int, float, bool))
+        }
+        return {
+            "schema_version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+            "framework": "ultralytics",
+            "snapshot_id": str(training.get("snapshot_id") or ""),
+            "selected_device": selected_device,
+            "selected_gpu": dict(selected_gpu) if isinstance(selected_gpu, Mapping) else None,
+            "bundle": {
+                "type": "object",
+                "download": bundle_download,
+            },
+            "model": model,
+            "params": safe_params,
+            "counts": dict(training.get("counts") or {}) if isinstance(training.get("counts"), Mapping) else {},
+            "result": {
+                "type": "object",
+                "storage_ref": {
+                    "storage_source_id": str(result_ref.get("storage_source_id") or ""),
+                    "object_key": str(result_ref.get("object_key") or ""),
+                    "file_name": Path(str(result_ref.get("file_name") or "training-result.zip")).name,
+                    "content_type": str(result_ref.get("content_type") or "application/zip"),
+                },
+                "upload_protocol": "prepare-after-local-hash-v1",
+            },
+        }
+
+    def _prepare_training_result_upload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, training = self._training_remote(task, payload)
+        output_ref = self._training_result_ref(training)
+        expected_sha = _normalized_sha256(evidence.get("sha256"), "result.sha256")
+        expected_size = _positive_int(evidence.get("size_bytes"), "result.size_bytes")
+        storage_ref = self._execution_output_ref(output_ref, evidence)
+        storage_ref["content_type"] = "application/zip"
+        storage_ref["file_name"] = "training-result.zip"
+        _source, provider = self._source_provider(str(task.project_id), storage_ref)
+        object_key = str(storage_ref["object_key"])
+        if provider.exists(object_key):
+            metadata = provider.stat(object_key)
+            actual_sha = str(metadata.sha256 or "").strip().lower()
+            if int(metadata.size_bytes) != expected_size or actual_sha != expected_sha:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_RESULT_OBJECT_CONFLICT",
+                    "remote training result object already exists with different or unverifiable evidence",
+                    409,
+                )
+            return {
+                "already_uploaded": True,
+                "storage_ref": storage_ref,
+                "sha256": expected_sha,
+                "size_bytes": expected_size,
+                "upload": None,
+            }
+        return {
+            "already_uploaded": False,
+            "storage_ref": storage_ref,
+            "sha256": expected_sha,
+            "size_bytes": expected_size,
+            "upload": self._upload_contract(
+                str(task.project_id),
+                storage_ref,
+                sha256=expected_sha,
+                size_bytes=expected_size,
+            ),
+        }
+
+    def _training_result_stage_root(self, task_id: str, generation: int) -> Path:
+        return (
+            self.data_dir
+            / "task_runtime"
+            / "remote-training-results"
+            / _safe_segment(task_id, "task")
+            / f"generation-{int(generation)}"
+        ).resolve()
+
+    def _confirm_training_result_upload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, training = self._training_remote(task, payload)
+        output_ref = self._training_result_ref(training)
+        expected_sha = _normalized_sha256(evidence.get("sha256"), "result.sha256")
+        expected_size = _positive_int(evidence.get("size_bytes"), "result.size_bytes")
+        generation = _positive_int(
+            evidence.get("execution_generation"),
+            "result.execution_generation",
+        )
+        storage_ref = self._execution_output_ref(output_ref, evidence)
+        storage_ref["content_type"] = "application/zip"
+        storage_ref["file_name"] = "training-result.zip"
+        _source, provider = self._source_provider(str(task.project_id), storage_ref)
+        object_key = str(storage_ref["object_key"])
+        if not provider.exists(object_key):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_NOT_UPLOADED",
+                "remote training result object does not exist",
+                409,
+            )
+        metadata = provider.stat(object_key)
+        actual_sha = str(metadata.sha256 or "").strip().lower()
+        if (
+            int(metadata.size_bytes) != expected_size
+            or not actual_sha
+            or actual_sha != expected_sha
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_EVIDENCE_MISMATCH",
+                "remote training result object does not match prepared size/SHA256 evidence",
+                409,
+            )
+
+        stage = self._training_result_stage_root(str(task.task_id), generation)
+        stage.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(stage) + ".lock", timeout=60)
+        try:
+            with lock:
+                archive = stage.parent / f"generation-{generation}.zip"
+                extracted = stage / "verified"
+                marker = stage / "verified.json"
+                reusable = False
+                if marker.is_file() and extracted.is_dir():
+                    try:
+                        value = json.loads(marker.read_text(encoding="utf-8"))
+                        reusable = (
+                            str(value.get("sha256") or "") == expected_sha
+                            and int(value.get("size_bytes") or 0) == expected_size
+                            and str(value.get("snapshot_id") or "") == str(training.get("snapshot_id") or "")
+                        )
+                    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                        reusable = False
+                if not reusable:
+                    shutil.rmtree(stage, ignore_errors=True)
+                    stage.mkdir(parents=True, exist_ok=True)
+                    archive.unlink(missing_ok=True)
+                    downloaded = provider.download(object_key, archive)
+                    downloaded_sha = str(downloaded.sha256 or "").strip().lower()
+                    if (
+                        int(downloaded.size_bytes) != expected_size
+                        or (downloaded_sha and downloaded_sha != expected_sha)
+                    ):
+                        raise RemoteExecutionTransportError(
+                            "REMOTE_RESULT_DOWNLOAD_CHANGED",
+                            "downloaded training result no longer matches object evidence",
+                            409,
+                        )
+                    try:
+                        verified = verify_training_result_archive(
+                            archive,
+                            extracted,
+                            expected_sha256=expected_sha,
+                            expected_size_bytes=expected_size,
+                            expected_task_id=str(task.task_id),
+                            expected_execution_generation=generation,
+                            expected_snapshot_id=str(training.get("snapshot_id") or ""),
+                        )
+                    except RemoteTrainingResultError as error:
+                        raise RemoteExecutionTransportError(
+                            error.code,
+                            str(error),
+                            error.status_code,
+                        ) from error
+                    marker.write_text(
+                        json.dumps(
+                            {
+                                "sha256": expected_sha,
+                                "size_bytes": expected_size,
+                                "snapshot_id": str(training.get("snapshot_id") or ""),
+                                "model_count": len(verified.models),
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        encoding="utf-8",
+                    )
+                else:
+                    try:
+                        verified = verify_training_result_archive(
+                            archive,
+                            extracted,
+                            expected_sha256=expected_sha,
+                            expected_size_bytes=expected_size,
+                            expected_task_id=str(task.task_id),
+                            expected_execution_generation=generation,
+                            expected_snapshot_id=str(training.get("snapshot_id") or ""),
+                        )
+                    except (RemoteTrainingResultError, FileNotFoundError):
+                        archive.unlink(missing_ok=True)
+                        shutil.rmtree(stage, ignore_errors=True)
+                        return self._confirm_training_result_upload(task, payload, evidence)
+        except TimeoutError as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_VERIFY_BUSY",
+                "training result verification is already in progress",
+                409,
+            ) from error
+
+        manifest = dict(verified.manifest)
+        return {
+            "result_ref": "result.json",
+            "result": {
+                "task_id": str(task.task_id),
+                "project_id": str(task.project_id),
+                "remote_execution": True,
+                "transport": "object-storage-v1",
+                "framework": "ultralytics",
+                "snapshot_id": str(training.get("snapshot_id") or ""),
+                "training_outcome": str(manifest.get("training_outcome") or ""),
+                "completion": dict(manifest.get("completion") or {}) if isinstance(manifest.get("completion"), Mapping) else {},
+                "training_report": dict(manifest.get("training_report") or {}) if isinstance(manifest.get("training_report"), Mapping) else {},
+                "verified_models": [dict(item) for item in verified.models],
+                "output_storage": storage_ref,
+                "runtime_log_ref": str(getattr(task, "log_ref", "") or ""),
+                "recovered_from_completed_work": False,
+            },
+        }
+
+    @staticmethod
     def _execution_output_ref(
         output_ref: Mapping[str, Any],
         evidence: Mapping[str, Any],
@@ -567,6 +969,8 @@ class RemoteExecutionTransportService:
         payload: Mapping[str, Any],
         evidence: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if str(getattr(task.kind, "value", task.kind)) == "TRAINING":
+            return self._prepare_training_result_upload(task, payload, evidence)
         _remote, deployment = self._deployment_remote(task, payload)
         output_ref = deployment.get("output")
         if not isinstance(output_ref, Mapping):
@@ -616,6 +1020,8 @@ class RemoteExecutionTransportService:
         payload: Mapping[str, Any],
         evidence: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if str(getattr(task.kind, "value", task.kind)) == "TRAINING":
+            return self._confirm_training_result_upload(task, payload, evidence)
         _remote, deployment = self._deployment_remote(task, payload)
         output_ref = deployment.get("output")
         if not isinstance(output_ref, Mapping):
@@ -680,6 +1086,8 @@ class RemoteExecutionTransportService:
         payload: Mapping[str, Any],
         assignment: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if str(getattr(task.kind, "value", task.kind)) == "TRAINING":
+            return self._resolve_training_execution_payload(task, payload, assignment)
         _remote, deployment = self._deployment_remote(task, payload)
         input_ref = deployment.get("input")
         model_ref = deployment.get("model")
