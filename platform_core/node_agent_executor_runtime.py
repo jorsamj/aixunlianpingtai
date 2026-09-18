@@ -543,8 +543,15 @@ class AgentExecutionWorkdir:
         return identity
 
     def clear_process_identity(self, lease: RemoteExecutionLease) -> None:
-        task_id = _safe_component(lease.task_id, "task_id")
-        generation = str(int(lease.generation))
+        self.clear_process_identity_record(lease.task_id, lease.generation)
+
+    def clear_process_identity_record(
+        self,
+        task_id: str,
+        generation: int,
+    ) -> None:
+        task_id = _safe_component(task_id, "task_id")
+        generation = str(int(generation))
         executions = self._contained_directory(
             self.root / "executions",
             create=False,
