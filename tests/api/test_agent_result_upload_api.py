@@ -232,11 +232,21 @@ def test_result_upload_http_protocol_requires_confirm_before_success(tmp_path):
     confirmed = client.post(
         f"{base}/result-upload/confirm",
         headers=auth(token),
-        json=execution_body(execution),
+        json={
+            **execution_body(execution),
+            "runtime_result": {
+                "engine": "ultralytics",
+                "model": "yolo11n.pt",
+                "elapsed_ms": 22.5,
+                "detections": [{"class_id": 0, "label": "person", "confidence": 0.9}],
+            },
+        },
     )
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["result_ref"] == "remote-results/1/result.json"
     assert confirmed.json()["result"]["execution_generation"] == 1
+    assert confirmed.json()["result"]["engine"] == "ultralytics"
+    assert confirmed.json()["result"]["model"] == "yolo11n.pt"
 
     finalizing = client.post(
         f"{base}/begin-finalization",
