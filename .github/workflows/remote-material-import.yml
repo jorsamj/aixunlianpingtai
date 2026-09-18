@@ -120,6 +120,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Classic app syntax guard
+        run: node --check static/app.js
       - name: Storage import frontend contracts
         run: >-
           node --test
