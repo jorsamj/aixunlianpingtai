@@ -142,6 +142,7 @@ test('storage import final wiring retires direct polling loops and installs mana
   assert.match(appSource, /data-import-mode="storage_scan"/);
   assert.match(appSource, /si61RemoteSource/);
   assert.match(appSource, /长期存储凭据/);
+  assert.doesNotMatch(appSource, /=async function\s*(?:\r?\n)\s*window\./);
   assert.match(mainSource, /window\.installServerMaterialImport61\?\.\(\);[\s\S]*installStorageImportProgressRuntime/);
 });
 
