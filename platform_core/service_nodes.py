@@ -27,6 +27,7 @@ SUPPORTED_NODE_CAPABILITIES = (
     "annotation",
     "video",
     "conversion",
+    "conversion.rknn",
     "deployment-test",
     "model-upload",
 )

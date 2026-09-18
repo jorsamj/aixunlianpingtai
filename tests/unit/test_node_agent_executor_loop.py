@@ -107,9 +107,9 @@ def claimed(task_id="task-1", kind="DEPLOYMENT_TEST"):
 
 def test_executor_reports_only_capabilities_this_agent_build_can_run():
     assert executable_agent_capabilities(
-        ["training", "deployment-test", "conversion", "material-import", "cleaning", "deployment-test"]
-    ) == ["cleaning", "conversion", "deployment-test", "material-import", "training"]
-    assert executable_agent_capabilities(["training", "conversion"]) == ["conversion", "training"]
+        ["training", "deployment-test", "conversion", "conversion.rknn", "material-import", "cleaning", "deployment-test"]
+    ) == ["cleaning", "conversion", "conversion.rknn", "deployment-test", "material-import", "training"]
+    assert executable_agent_capabilities(["training", "conversion", "conversion.rknn"]) == ["conversion", "conversion.rknn", "training"]
 
 
 def test_executor_withdraws_training_capability_when_runner_recovery_is_unsafe():

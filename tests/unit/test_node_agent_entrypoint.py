@@ -314,3 +314,31 @@ def test_entrypoint_keeps_executor_start_after_heartbeat_and_stop_in_finally():
     assert len(start_lines) == 1
     assert send_lines[0] < start_lines[0]
     assert stop_in_finally is True
+
+
+def test_check_mode_reports_rknn_capability_only_when_toolkit_probe_succeeds(tmp_path, monkeypatch, capsys):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(node_agent, "probe_rknn_toolkit", lambda _python: {
+        "available": True, "python_executable": sys.executable, "version": "2.3.2",
+        "supported_chips": ["rk3568", "rk3576"], "error": "",
+    })
+    code = node_agent.main(["--check", "--state-dir", str(tmp_path), "--capabilities", "conversion.rknn"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["reported_capabilities"] == ["conversion.rknn"]
+    assert body["unsupported_remote_capabilities"] == []
+    assert body["snapshot"]["runtime"]["rknn_toolkit2"]["version"] == "2.3.2"
+    assert "MODEL_CONVERSION" in body["executor"]["supported_task_kinds"]
+
+
+def test_check_mode_withholds_rknn_capability_when_toolkit_probe_fails(tmp_path, monkeypatch, capsys):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(node_agent, "probe_rknn_toolkit", lambda _python: {
+        "available": False, "python_executable": sys.executable, "version": "",
+        "supported_chips": [], "error": "missing toolkit",
+    })
+    code = node_agent.main(["--check", "--state-dir", str(tmp_path), "--capabilities", "conversion.rknn"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["reported_capabilities"] == []
+    assert body["unsupported_remote_capabilities"] == ["conversion.rknn"]

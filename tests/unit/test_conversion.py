@@ -4,10 +4,11 @@ from platform_core.conversion import build_manifest, file_record, validate_targe
 
 
 def test_rknn_chip_must_be_explicit_and_supported():
-    with pytest.raises(ValueError, match="rk3588|rk3568"):
+    with pytest.raises(ValueError, match="rk3588|rk3576|rk3568"):
         validate_target("rockchip", {})
-    with pytest.raises(ValueError, match="rk3588|rk3568"):
-        validate_target("rockchip", {"chip": "rk3576"})
+    assert validate_target("rockchip", {"chip": "rk3576"})["chip"] == "rk3576"
+    with pytest.raises(ValueError, match="rk3588|rk3576|rk3568"):
+        validate_target("rockchip", {"chip": "rk3578"})
 
 
 def test_atlas_soc_and_tensorrt_environment_are_required():

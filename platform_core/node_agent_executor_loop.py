@@ -24,6 +24,7 @@ from .node_agent_executor_runtime import (
 SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({
     "cleaning",
     "conversion",
+    "conversion.rknn",
     "deployment-test",
     "material-import",
     "training",
@@ -105,6 +106,7 @@ class NodeAgentExecutorLoop:
             capability: kind
             for kind, capability in _CAPABILITY_BY_TASK_KIND.items()
         }
+        kind_by_capability["conversion.rknn"] = "MODEL_CONVERSION"
         effective = []
         for capability in self.capabilities:
             kind = kind_by_capability.get(str(capability))

@@ -124,3 +124,20 @@ def test_capability_contract_rejects_unknown_values(tmp_path):
             "allowed_capabilities": ["training", "arbitrary-root-shell"],
         })
     assert failure.value.code == "UNSUPPORTED_NODE_CAPABILITY"
+
+
+def test_rknn_conversion_capability_requires_both_allow_and_report(tmp_path):
+    _repository, nodes = registry(tmp_path)
+    _node, token = nodes.create({
+        "node_id": "rknn-agent", "display_name": "RKNN Agent",
+        "allowed_capabilities": ["conversion.rknn"],
+    })
+    node = nodes.heartbeat("rknn-agent", token, {
+        "reported_capabilities": ["conversion.rknn"],
+        "runtime": {"rknn_toolkit2": {
+            "available": True, "version": "2.3.2",
+            "supported_chips": ["rk3568", "rk3576"],
+        }},
+    })
+    assert node["effective_capabilities"] == ["conversion.rknn"]
+    assert node["runtime"]["rknn_toolkit2"]["supported_chips"] == ["rk3568", "rk3576"]

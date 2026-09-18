@@ -29,6 +29,7 @@ from platform_core.node_agent_runtime import (
     send_heartbeat,
 )
 from platform_core.node_identity import default_node_state_dir, resolve_node_identity
+from platform_core.rknn_runtime import probe_rknn_toolkit
 
 
 def _env_capabilities() -> list[str]:
@@ -88,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--paddle-python",
         default=os.environ.get("MC_AGENT_PADDLE_PYTHON", ""),
+    )
+    parser.add_argument(
+        "--rknn-python",
+        default=os.environ.get("MC_AGENT_RKNN_PYTHON", ""),
     )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--check", action="store_true")
@@ -149,7 +154,7 @@ def _build_executor(
         heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
     )
     runners = {}
-    if "conversion" in reported_capabilities:
+    if {"conversion", "conversion.rknn"} & set(reported_capabilities):
         from platform_core.node_agent_conversion_runtime import AgentConversionRunner
 
         runners["MODEL_CONVERSION"] = AgentConversionRunner(
@@ -212,10 +217,14 @@ def main(argv=None) -> int:
         print(str(error), file=sys.stderr)
         return 2
     reported_capabilities = executable_agent_capabilities(requested_capabilities)
-    unsupported_remote_capabilities = sorted(
-        set(requested_capabilities) - set(reported_capabilities)
-    )
     runtime_probe = collect_runtime_probe(data_dir)
+    if "conversion.rknn" in reported_capabilities:
+        rknn_python = str(args.rknn_python or "").strip() or sys.executable
+        rknn_probe = probe_rknn_toolkit(rknn_python)
+        runtime_probe["rknn_toolkit2"] = rknn_probe
+        if not bool(rknn_probe.get("available")):
+            reported_capabilities = [c for c in reported_capabilities if c != "conversion.rknn"]
+    unsupported_remote_capabilities = sorted(set(requested_capabilities) - set(reported_capabilities))
     build_id = resolve_build_id(Path(__file__).resolve().parent)
 
     if args.check:
@@ -234,7 +243,7 @@ def main(argv=None) -> int:
                     for kind in SUPPORTED_AGENT_TASK_KINDS
                     if (
                         (kind == "DEPLOYMENT_TEST" and "deployment-test" in reported_capabilities)
-                        or (kind == "MODEL_CONVERSION" and "conversion" in reported_capabilities)
+                        or (kind == "MODEL_CONVERSION" and bool({"conversion", "conversion.rknn"} & set(reported_capabilities)))
                         or (kind == "TRAINING" and "training" in reported_capabilities)
                         or (kind == "MATERIAL_IMPORT" and "material-import" in reported_capabilities)
                         or (kind == "MATERIAL_BATCH" and "cleaning" in reported_capabilities)
@@ -244,6 +253,7 @@ def main(argv=None) -> int:
                 "ultralytics_python": str(args.ultralytics_python or "").strip()
                 or str(runtime_probe.get("python_executable") or sys.executable),
                 "paddle_python": str(args.paddle_python or "").strip() or sys.executable,
+                "rknn_python": str(args.rknn_python or "").strip() or sys.executable,
             },
             "build_id": build_id,
             "snapshot": snapshot,
@@ -261,7 +271,7 @@ def main(argv=None) -> int:
 
     if unsupported_remote_capabilities:
         print(
-            "Node Agent will not report unimplemented remote capabilities: "
+            "Node Agent will not report unavailable remote capabilities: "
             + ", ".join(unsupported_remote_capabilities),
             file=sys.stderr,
             flush=True,
