@@ -219,6 +219,58 @@ def test_resume_after_confirmation_requeues_material_import_and_is_idempotent(tm
     assert repository.resume_after_confirmation("import-1") == resumed
 
 
+def test_resume_after_confirmation_can_atomically_switch_remote_scan_to_local_indexer(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(
+        TaskRecord.new(
+            "import-remote-review",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "material-import:agent",
+            required_capabilities=("agent.remote",),
+        )
+    )
+    lease = repository.claim_next(
+        "agent-owner",
+        [TaskKind.MATERIAL_IMPORT],
+        {"agent.remote"},
+    )
+    assert lease is not None
+    repository.finish(
+        "import-remote-review",
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        result_ref="remote-results/1/result.json",
+    )
+
+    resumed = repository.resume_after_confirmation(
+        "import-remote-review",
+        required_capabilities=("storage.import",),
+    )
+
+    assert resumed.status is TaskStatus.QUEUED
+    assert resumed.stage == "indexing_queued"
+    assert resumed.required_capabilities == ("storage.import",)
+    assert resumed.result_ref == "remote-results/1/result.json"
+
+    # Confirmation is idempotent and must preserve/repair the local-write owner.
+    same = repository.resume_after_confirmation(
+        "import-remote-review",
+        required_capabilities=("storage.import",),
+    )
+    assert same.required_capabilities == ("storage.import",)
+
+    local = repository.claim_next(
+        "storage-import-worker",
+        [TaskKind.MATERIAL_IMPORT],
+        {"storage.import"},
+    )
+    assert local is not None
+    assert local.task.task_id == "import-remote-review"
+    assert local.task.stage == "indexing"
+
+
 def test_resume_after_confirmation_rejects_rejected_material_import(tmp_path):
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     repository.create(
