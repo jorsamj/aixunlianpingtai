@@ -32,14 +32,18 @@ class FakeClient:
         self.claim_calls = 0
         self.start_calls = []
         self.finish_calls = []
+        self.last_claimed_kind = "DEPLOYMENT_TEST"
 
     def claim_assignment(self):
         self.claim_calls += 1
-        return self.claims.pop(0) if self.claims else None
+        item = self.claims.pop(0) if self.claims else None
+        if item is not None:
+            self.last_claimed_kind = str((item.get("task") or {}).get("kind") or "DEPLOYMENT_TEST")
+        return item
 
     def start_execution(self, task_id, assignment_token):
         self.start_calls.append((task_id, assignment_token))
-        return lease(task_id)
+        return lease(task_id, self.last_claimed_kind)
 
     def finish(self, current, status, *, result_ref=None, error=None, accepted=None):
         self.finish_calls.append({
@@ -95,8 +99,8 @@ def claimed(task_id="task-1", kind="DEPLOYMENT_TEST"):
 def test_executor_reports_only_capabilities_this_agent_build_can_run():
     assert executable_agent_capabilities(
         ["training", "deployment-test", "conversion", "deployment-test"]
-    ) == ["deployment-test"]
-    assert executable_agent_capabilities(["training", "conversion"]) == []
+    ) == ["deployment-test", "training"]
+    assert executable_agent_capabilities(["training", "conversion"]) == ["training"]
 
 
 def test_run_once_claims_starts_and_dispatches_one_deployment_task():
@@ -120,24 +124,27 @@ def test_run_once_claims_starts_and_dispatches_one_deployment_task():
     assert status.last_error == ""
 
 
-def test_unimplemented_capabilities_never_claim_remote_work():
-    client = FakeClient([claimed(kind="TRAINING")])
-    runner = FakeRunner()
+def test_training_capability_dispatches_to_registered_training_runner():
+    client = FakeClient([claimed(kind="MODEL_CONVERSION")])
+    deployment_runner = FakeRunner()
+    training_runner = FakeRunner()
     loop = NodeAgentExecutorLoop(
         client,
-        runner,
+        deployment_runner,
         capabilities=["training"],
+        runners={"TRAINING": training_runner},
     )
 
-    assert loop.enabled is False
-    assert loop.run_once() is False
-    assert client.claim_calls == 0
-    assert client.start_calls == []
-    assert runner.calls == []
+    assert loop.enabled is True
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert deployment_runner.calls == []
+    assert training_runner.calls == ["task-1"]
+    assert loop.status().completed_tasks == 1
 
 
 def test_inconsistent_unsupported_claim_is_not_started_and_waits_for_claim_lease_expiry():
-    client = FakeClient([claimed(kind="TRAINING")])
+    client = FakeClient([claimed(kind="MODEL_CONVERSION")])
     runner = FakeRunner()
     loop = NodeAgentExecutorLoop(
         client,
