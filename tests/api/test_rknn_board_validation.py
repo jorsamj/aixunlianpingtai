@@ -132,6 +132,18 @@ def test_rknn_hardware_test_creates_agent_only_deployment_task(
     monkeypatch.setattr(app_module, "ServiceNodeRepository", ReadyBoardNodes)
     monkeypatch.setattr(app_module, "_remote_execution_transport_service", lambda: transport)
 
+    preflight = client.get(
+        f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight"
+    )
+    assert preflight.status_code == 200, preflight.text
+    readiness = preflight.json()
+    assert readiness["ready"] is True
+    assert readiness["already_verified"] is False
+    assert readiness["chip"] == "rk3568"
+    assert readiness["model"]["sha256"] == _digest
+    assert readiness["board_nodes"][0]["node_id"] == "rk3568-board"
+    assert readiness["board_nodes"][0]["rknn_lite_version"] == "2.3.2"
+
     response = client.post(
         f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests",
         files={"file": ("verify.jpg", b"real-board-verification-image", "image/jpeg")},
@@ -157,6 +169,18 @@ def test_rknn_hardware_test_fails_before_task_creation_without_matching_board(
     project_id, _image = seeded_project
     job_id, _digest = seed_rknn_job(project_id, "convert-no-board")
     monkeypatch.setattr(app_module, "ServiceNodeRepository", NoBoardNodes)
+
+    preflight = client.get(
+        f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight"
+    )
+    assert preflight.status_code == 200, preflight.text
+    readiness = preflight.json()
+    assert readiness["ready"] is False
+    assert readiness["already_verified"] is False
+    assert readiness["board_nodes"] == []
+    assert "RK3568" in readiness["reason"]
+    assert "deployment-test.rknn" in readiness["solution"]
+
     before = app_module.shared_task_repository().list(
         project_id=project_id,
         kinds=(TaskKind.DEPLOYMENT_TEST,),
@@ -177,3 +201,33 @@ def test_rknn_hardware_test_fails_before_task_creation_without_matching_board(
         limit=200,
     )
     assert len(after.items) == len(before.items)
+
+
+def test_rknn_hardware_preflight_reports_already_verified_without_allowing_new_task(
+    client, seeded_project, monkeypatch
+):
+    project_id, _image = seeded_project
+    job_id, _digest = seed_rknn_job(project_id, "convert-already-verified")
+    job_dir = app_module._deploy_job_dir(project_id, job_id)
+    manifest_path = job_dir / "artifacts" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["hardware_verified"] = True
+    manifest["status"] = "hardware_verified"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(app_module, "ServiceNodeRepository", ReadyBoardNodes)
+
+    preflight = client.get(
+        f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight"
+    )
+    assert preflight.status_code == 200
+    body = preflight.json()
+    assert body["ready"] is False
+    assert body["already_verified"] is True
+    assert "已完成板端 Runtime 验证" in body["reason"]
+
+    response = client.post(
+        f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests",
+        files={"file": ("verify.jpg", b"image", "image/jpeg")},
+    )
+    assert response.status_code == 409
+    assert "已完成板端 Runtime 验证" in response.text

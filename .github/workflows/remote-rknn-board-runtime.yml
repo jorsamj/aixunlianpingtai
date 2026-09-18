@@ -191,7 +191,10 @@ jobs:
         run: |
           grep -Fq 'openRknnHardwareVerify' static/app.js
           grep -Fq '/hardware-tests' static/app.js
+          grep -Fq '/hardware-tests/preflight' static/app.js
+          grep -Fq 'v39_rknn_hardware_test_preflight' app.py
           grep -Fq '实机已验证' static/app.js
           grep -Fq '板端验证' tests/browser/model-and-conversion.spec.mjs
+          grep -Fq '验收条件已满足' tests/browser/model-and-conversion.spec.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check

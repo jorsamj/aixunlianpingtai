@@ -12278,12 +12278,7 @@ def _eligible_rknn_board_nodes(chip: str) -> list[dict[str, Any]]:
     return eligible
 
 
-@app.post("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests")
-async def v39_create_rknn_hardware_test(
-    project_id: str,
-    job_id: str,
-    file: UploadFile = File(...),
-):
+def _rknn_hardware_validation_context(project_id: str, job_id: str) -> dict[str, Any]:
     get_project(project_id)
     job = _read_deploy_job(project_id, job_id)
     if str(job.get("target") or "").strip().lower() not in {"rockchip", "rknn"}:
@@ -12307,8 +12302,6 @@ async def v39_create_rknn_hardware_test(
     chip = str(target.get("chip") or "").strip().lower()
     if chip not in {"rk3568", "rk3576"}:
         raise HTTPException(status_code=400, detail=f"当前板端验证不支持芯片 {chip or '未指定'}")
-    if manifest.get("hardware_verified") is True:
-        raise HTTPException(status_code=409, detail="该 RKNN 产物已完成板端 Runtime 验证")
 
     model_name = Path(str(output.get("file_name") or "")).name
     model_path = (job_dir / "artifacts" / model_name).resolve()
@@ -12333,7 +12326,64 @@ async def v39_create_rknn_hardware_test(
     ):
         raise HTTPException(status_code=409, detail="RKNN 模型与转换 manifest 的 size/SHA256 不一致")
 
-    nodes = _eligible_rknn_board_nodes(chip)
+    return {
+        "job": job,
+        "job_dir": job_dir,
+        "manifest": manifest,
+        "chip": chip,
+        "model_name": model_name,
+        "model_path": model_path,
+        "model_sha256": expected_sha,
+        "model_size_bytes": expected_size,
+        "hardware_verified": manifest.get("hardware_verified") is True,
+        "board_nodes": _eligible_rknn_board_nodes(chip),
+    }
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight")
+def v39_rknn_hardware_test_preflight(project_id: str, job_id: str):
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    nodes = list(context["board_nodes"])
+    already_verified = bool(context["hardware_verified"])
+    ready = bool(nodes) and not already_verified
+    reason = ""
+    solution = ""
+    if already_verified:
+        reason = "该 RKNN 产物已完成板端 Runtime 验证"
+    elif not nodes:
+        reason = f"当前没有匹配 {str(context['chip']).upper()} 的在线瑞芯微板端节点"
+        solution = "请先在对应 Rockchip 设备安装 Node Agent / RKNNLite，并确认节点 ONLINE 且 effective capability 包含 deployment-test.rknn。"
+    return {
+        "ok": True,
+        "ready": ready,
+        "already_verified": already_verified,
+        "chip": context["chip"],
+        "model": {
+            "file_name": context["model_name"],
+            "size_bytes": context["model_size_bytes"],
+            "sha256": context["model_sha256"],
+        },
+        "board_nodes": nodes,
+        "reason": reason,
+        "solution": solution,
+    }
+
+
+@app.post("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests")
+async def v39_create_rknn_hardware_test(
+    project_id: str,
+    job_id: str,
+    file: UploadFile = File(...),
+):
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    job = context["job"]
+    job_dir = context["job_dir"]
+    chip = str(context["chip"])
+    model_path = context["model_path"]
+    if context["hardware_verified"]:
+        raise HTTPException(status_code=409, detail="该 RKNN 产物已完成板端 Runtime 验证")
+
+    nodes = list(context["board_nodes"])
     if not nodes:
         raise PlatformError(
             code="RKNN_BOARD_NODE_UNAVAILABLE",

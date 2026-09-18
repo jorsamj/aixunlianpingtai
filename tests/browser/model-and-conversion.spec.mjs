@@ -228,6 +228,32 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
       resource: {name: 'RKNN Agent'}
     }]})
   }));
+  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs/rk-job-1/hardware-tests/preflight`, async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        ready: true,
+        already_verified: false,
+        chip: 'rk3568',
+        model: {
+          file_name: 'model_rk3568.rknn',
+          size_bytes: 1024,
+          sha256: 'a'.repeat(64)
+        },
+        board_nodes: [{
+          node_id: 'rk3568-board-01',
+          display_name: 'RK3568 验收板',
+          build_id: 'board-build',
+          chip: 'rk3568',
+          rknn_lite_version: '2.3.2'
+        }],
+        reason: '',
+        solution: ''
+      })
+    });
+  });
   await page.route(`**/api/v39/projects/${project.id}/deploy/jobs/rk-job-1/hardware-tests`, async route => {
     hardwarePost = route.request().postDataBuffer();
     await route.fulfill({
@@ -277,6 +303,9 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   await expect(job.getByText('RKNN 已转换，尚未完成瑞芯微实机 Runtime 验证')).toBeVisible();
   await job.getByRole('button', {name: '板端验证'}).click();
   const dialog = page.getByRole('dialog', {name: 'RKNN 板端验证'});
+  await expect(dialog.getByText(/验收条件已满足/)).toBeVisible();
+  await expect(dialog.getByText(/RK3568 验收板 · RKNNLite 2\.3\.2/)).toBeVisible();
+  await expect(dialog.getByRole('button', {name: '开始板端验证'})).toBeEnabled();
   await dialog.locator('#rknnVerifyFile').setInputFiles({
     name: 'board-test.bmp',
     mimeType: 'image/bmp',
