@@ -139,7 +139,7 @@ jobs:
           pyyaml python-multipart uvicorn
       - name: Cleaning broker API contracts
         run: >-
-          python -m pytest -q --confcutdir=tests/api
+          python -m pytest -q
           tests/api/test_agent_executor_api.py
           tests/api/test_runtime_router_app_mount.py
       - name: Unified cleaning API truth
