@@ -35,6 +35,7 @@ def create_training_node(repository):
     _node, token = nodes.create({
         "node_id": "gpu-api",
         "display_name": "GPU API",
+        "connection_mode": "local",
         "allowed_capabilities": ["training"],
     })
     nodes.heartbeat("gpu-api", token, {
