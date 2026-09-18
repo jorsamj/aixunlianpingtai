@@ -17,7 +17,14 @@ def client_for(tmp_path):
 
 
 def create_task(repository, artifacts, task_id="train-api-agent"):
-    artifacts.atomic_write_json(task_id, "request.json", {"epochs": 30})
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "epochs": 30,
+        "remote_execution": {
+            "version": 1,
+            "task_kind": TaskKind.TRAINING.value,
+            "transport": "object-storage-v1",
+        },
+    })
     repository.create(
         TaskRecord.new(
             task_id=task_id,
@@ -35,6 +42,7 @@ def create_node(repository, node_id="gpu-api-agent"):
     _node, token = nodes.create({
         "node_id": node_id,
         "display_name": node_id,
+        "connection_mode": "agent",
         "allowed_capabilities": ["training"],
     })
     nodes.heartbeat(node_id, token, {
@@ -95,7 +103,14 @@ def test_agent_executor_http_happy_flow_and_cancellation_truth(tmp_path):
     assert start_body["task"]["status"] == "RUNNING"
     assert start_body["task"]["worker_id"] == "agent:gpu-api-agent"
     assert execution["generation"] == 1
-    assert start_body["payload"] == {"epochs": 30}
+    assert start_body["payload"] == {
+        "epochs": 30,
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    }
     assert start_body["transport"]["shared_sqlite_required"] is False
     assert start_body["transport"]["shared_nfs_required"] is False
 
