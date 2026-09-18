@@ -260,9 +260,14 @@ def main(argv=None) -> int:
     try:
         while not stop_event.is_set():
             snapshot = collect_local_snapshot(data_dir=data_dir, runtime_probe=runtime_probe)
+            effective_capabilities = reported_capabilities
+            if executor is not None:
+                resolver = getattr(executor, "effective_capabilities", None)
+                if callable(resolver):
+                    effective_capabilities = list(resolver())
             payload = build_heartbeat_payload(
                 snapshot,
-                capabilities=reported_capabilities,
+                capabilities=effective_capabilities,
                 build_id=build_id,
                 active_tasks=executor.active_tasks() if executor is not None else (),
                 last_error=_combined_error(heartbeat_error, executor),
