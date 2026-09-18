@@ -804,7 +804,6 @@ class AgentExecutionService:
                 409,
             )
         payload = self._read_task_payload(current)
-        runtime_metadata = _sanitize_runtime_result_metadata(runtime_result)
         if not self._requires_remote_result_confirmation(current, payload):
             raise AgentExecutionError(
                 "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
@@ -932,6 +931,7 @@ class AgentExecutionService:
                 409,
             )
         payload = self._read_task_payload(current)
+        runtime_metadata = _sanitize_runtime_result_metadata(runtime_result)
         if not self._requires_remote_result_confirmation(current, payload):
             raise AgentExecutionError(
                 "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
