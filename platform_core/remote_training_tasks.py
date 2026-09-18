@@ -82,13 +82,22 @@ def _portable_params(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class RemoteTrainingPrepareHandler:
-    def __init__(self, data_dir: str | Path):
+    def __init__(
+        self,
+        data_dir: str | Path,
+        *,
+        sources=None,
+        credentials=None,
+        provider_factory=None,
+        model_artifacts=None,
+    ):
         self.data_dir = Path(data_dir).resolve()
-        self.sources = StorageSourceRepository(
+        self.sources = sources or StorageSourceRepository(
             self.data_dir / "storage" / "storage_sources.sqlite3"
         )
-        self.credentials = SecretCredentialStore(KeyringSecretStore())
-        self.model_artifacts = ModelArtifactService(
+        self.credentials = credentials or SecretCredentialStore(KeyringSecretStore())
+        self.provider_factory = provider_factory
+        self.model_artifacts = model_artifacts or ModelArtifactService(
             data_dir=self.data_dir,
             project_dir=lambda project_id: self.data_dir / "projects" / str(project_id),
             algorithms_file=lambda project_id: (
@@ -149,11 +158,14 @@ class RemoteTrainingPrepareHandler:
                 "remote training requires OSS/S3/MinIO object storage; local storage is not portable",
             )
         secret = self.credentials.get(source.secret_ref) if source.secret_ref else {}
-        provider = StorageProviderFactory(
-            data_dir=self.data_dir,
-            project_dir=self.data_dir / "projects" / str(project_id),
-            credentials={source.id: secret or {}},
-        ).create(source)
+        if self.provider_factory is not None:
+            provider = self.provider_factory(str(project_id), source, secret or {})
+        else:
+            provider = StorageProviderFactory(
+                data_dir=self.data_dir,
+                project_dir=self.data_dir / "projects" / str(project_id),
+                credentials={source.id: secret or {}},
+            ).create(source)
         return source, provider
 
     def _heartbeat(self, context, progress: float, stage: str, current_item: str) -> None:
