@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`5ca0fc0fca20d1120b96317a3cf0e745dc7b394a`  
+本轮产品实现基线：`3d9c2f8ed3e113d1d500dc0fc71ac432a17c7362`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -109,8 +109,31 @@ revert: keep external algorithm integration off main
 - CI 临时 PR #11 / #12 均已关闭，未 merge。
 - `VERSION.txt` 始终保持 `42.24.0`。
 
-**当前唯一主线：Agent-side real deployment runtime。**
-下一步要让 Agent 真正下载并校验输入/模型、启动节点本地推理进程、持续 heartbeat/log/cancel、计算结果 hash、prepare/PUT/confirm、finalize/finish，并在 lease 丢失时精确终止本机进程树。完成真实 Agent runner 并接入 `node_agent.py` 前，不能宣称跨机器部署测试 CLOSED。
+# 最新关闭：Agent-side Real Deployment Runtime
+
+2026-09-18 已完成第一个真实跨机器 task kind：
+
+- `node_agent.py` 已接入 database-free `NodeExecutorClient`。
+- 仅上报当前 build 真正可执行的 `deployment-test` 远程能力，不虚报 training/conversion。
+- 单并发 executor loop 真实 claim → start → dispatch。
+- 输入与对象模型下载后逐字节校验 size/SHA256；官方模型只接受 allow-list reference。
+- 推理使用节点本地 Python 与节点本地 runner，不解释控制面绝对路径。
+- heartbeat/cancel/lease fencing 真实作用于节点本地 subprocess。
+- cancel、lease loss、Agent shutdown 均通过 ProcessIdentity 终止精确进程树。
+- 结果执行本地 hash → prepare → generation-scoped PUT → confirm → finalization → finish。
+- workdir 在终态/fence 后清理。
+- Agent executor 只在首次控制面 heartbeat 成功后启动。
+- `node_agent.py` / executor loop / entrypoint 测试已进入永久 CI。
+
+最新验收：
+
+- Node Agent Executor `35297453169`：API / Ubuntu / Windows 全绿。
+- Portable Deployment `35297453136`：production API / Ubuntu / Windows 全绿。
+- `VERSION.txt` 仍为 `42.24.0`。
+
+**当前主线：Remote TRAINING Runtime。**
+下一步优先让 TRAINING 成为第二个真实 portable task kind：dataset/bundle 对象化、Agent 本地真实训练、GPU/进程 fencing、metrics/log 回传、模型资产上传与 server-confirmed finalization。素材导入/转换继续复用同一执行框架，不能退回共享 SQLite/NFS。
+
 
 # 1. 产品定位
 
