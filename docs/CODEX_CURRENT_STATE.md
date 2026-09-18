@@ -4,6 +4,67 @@
 
 
 
+## Current closure — Remote TRAINING Runtime CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+`TRAINING` is now the second real cross-machine Agent task kind after
+`DEPLOYMENT_TEST`. The control plane does not use the old remote-train ZIP
+server as execution truth and the Agent never opens central SQLite or requires
+shared NFS.
+
+A remote request creates the durable TRAINING task plus an isolated
+`TRAINING_PREPARE` task. Preparation freezes the split/snapshot, builds or
+restores the verified v3 portable dataset bundle, safely archives it, records
+SHA256/size/member-count/snapshot evidence, uploads it to configured
+OSS/S3/MinIO and revalidates provider metadata. Explicit remote training cannot
+fall back to a local node while this contract is still PREPARING.
+
+Base-model semantics remain strict: a first run may use an allow-listed official
+Ultralytics reference; an iterative run must resolve the current/latest
+trainable previous version and publish/reuse its verified ModelArtifact object.
+Control-plane absolute model paths are not executable Agent inputs.
+
+`AgentTrainingRunner` downloads and verifies the portable bundle/base model,
+uses node-local Python plus node-local `train_worker.py`, starts a real
+subprocess, renews the execution lease, forwards bounded logs/progress, and
+terminates the exact process tree when cancel/fencing/shutdown wins. Process
+identity is persisted without execution secrets. Natural worker exit is not
+enough to publish success: descendant/process-group cleanup must also be
+provable. Cleanup uncertainty fails closed and makes the runner unready.
+
+Agent capability reporting is runtime-safe:
+`SUPPORTED_AGENT_EXECUTOR_CAPABILITIES` includes
+`deployment-test` and `training`, but `effective_capabilities()` removes
+training whenever its runner reports unsafe recovery state. Heartbeat advertises
+that effective set, so a node with unresolved stale training processes cannot
+claim another training task.
+
+Successful training recomputes local best/last SHA256 and size, requests
+generation-scoped immutable upload contracts, uploads and confirms each model,
+then publishes a manifest-only training result bundle. The server verifies
+result/model evidence before the finalization gate and only then commits the
+verified model assets/algorithm-version truth. Old generations cannot publish
+current terminal state.
+
+A real production bug discovered by the subprocess tests was fixed:
+portable scalar parameters that are absent or explicitly null now use their
+defaults rather than propagating `None` into `int()`/numeric conversion.
+
+Final acceptance on the verified implementation:
+- Remote Training Runtime `35303815439`: Ubuntu / Windows / API success.
+- Node Agent Executor `35303815460`: Ubuntu / Windows / API success.
+- Central Node Assignment `35303815499`: Ubuntu / Windows / API success.
+- Portable Deployment `35303815438`: Ubuntu / Windows / production API success.
+- Temporary draft PR #14 was closed without merge.
+
+**OPEN / next:** Remote MODEL_CONVERSION Runtime. Existing conversion payloads
+still carry control-plane path-bound fields such as job_dir/worker_path/python_path.
+Refactor conversion to verified model object inputs, node-local tool/SDK/runtime
+resolution, execution-lease/process-tree fencing, immutable output upload and
+server-confirmed finalization. Do not expose conversion as a remote Agent
+capability until its real runner and permanent Windows/Linux gates exist.
+
 ## Current closure — Agent-side Real Deployment Runtime CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
