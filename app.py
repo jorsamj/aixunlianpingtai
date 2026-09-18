@@ -75,6 +75,7 @@ from platform_core.resource_discovery.tasks import (
     PROGRESS_REF as RESOURCE_DISCOVERY_PROGRESS_REF,
 )
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore, secret_ref
+from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.storage import (
     StorageError,
     StorageManager,
@@ -11599,10 +11600,46 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(item)
+    nodes = ServiceNodeRepository(shared_task_repository()).list_public()
+    eligible = [
+        node
+        for node in nodes
+        if str(node.get("connection_mode") or "") == "agent"
+        and bool(node.get("online"))
+        and "conversion" in set(node.get("effective_capabilities") or [])
+    ]
+    if eligible:
+        item.update(
+            status="ready",
+            targets=["onnx"],
+            message=f"检测到 {len(eligible)} 个在线 Agent 可执行 ONNX 转换",
+            agent_nodes=[
+                {
+                    "node_id": str(node.get("node_id") or ""),
+                    "display_name": str(node.get("display_name") or ""),
+                    "build_id": str(node.get("build_id") or ""),
+                }
+                for node in eligible
+            ],
+            last_checked_at=now_iso(),
+        )
+    else:
+        item.update(
+            status="missing",
+            targets=[],
+            message="没有在线且已授权 conversion 能力的 Agent 节点",
+            agent_nodes=[],
+            last_checked_at=now_iso(),
+        )
+    return item
+
+
 class DeployResourceReq(BaseModel):
     name: str
     kind: str  # ultralytics / paddle / tensorrt / sophon / ascend / rockchip
-    mode: str = "local"  # local / remote
+    mode: Literal["local", "remote", "agent"] = "local"
     base_url: str = ""
     api_key: str = ""
     python_path: str = ""
@@ -11672,7 +11709,13 @@ def v39_detect_deploy_resource(resource_id: str):
     idx = next((i for i,x in enumerate(items) if x.get("id") == resource_id), None)
     if idx is None: raise HTTPException(status_code=404, detail="部署资源不存在")
     item = items[idx]; runtime = _deploy_resource_runtime(item)
-    checked = _detect_remote_deploy_resource(runtime) if str(item.get("mode")) == "remote" else _detect_local_deploy_resource(runtime)
+    mode = str(item.get("mode") or "local").strip().lower()
+    if mode == "remote":
+        checked = _detect_remote_deploy_resource(runtime)
+    elif mode == "agent":
+        checked = _detect_agent_deploy_resource(runtime)
+    else:
+        checked = _detect_local_deploy_resource(runtime)
     checked.pop("api_key", None)
     if item.get("secret_ref"): checked["secret_ref"] = item.get("secret_ref")
     items[idx] = checked; _save_deploy_resources(items)
@@ -11899,6 +11942,9 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
 @app.post("/api/v39/projects/{project_id}/deploy/jobs")
 def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     source=_resolve_deploy_source(project_id,payload.source_id);resource=_deploy_resource_by_id(payload.resource_id)
+    resource_mode = str(resource.get("mode") or "local").strip().lower()
+    if resource_mode == "agent":
+        resource = _detect_agent_deploy_resource(resource)
     if resource.get("status") != "ready":
         raise HTTPException(status_code=400, detail="当前部署资源不可用，请先到“部署资源”执行检测")
     if payload.target not in (resource.get("targets") or []):
@@ -11946,7 +11992,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     }
     job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
     portable_conversion = None
-    if str(resource.get("mode")) != "remote" and str(payload.target or "").strip().lower() == "onnx":
+    if resource_mode != "remote" and str(payload.target or "").strip().lower() == "onnx":
         try:
             portable_conversion = _remote_execution_transport_service().stage_model_conversion(
                 project_id=project_id,
@@ -11964,22 +12010,29 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
                 "task_kind": "MODEL_CONVERSION",
             }
         except RemoteExecutionTransportError as error:
-            # Portable staging is additive for the existing local conversion
-            # path. It must never turn a valid local conversion into a failure.
+            if resource_mode == "agent":
+                raise PlatformError(
+                    code=error.code,
+                    message="Agent ONNX 转换准备失败",
+                    detail=str(error),
+                    solution="请检查模型资产对象存储、源模型完整性和 Agent conversion 节点状态后重试。",
+                    status_code=error.status_code,
+                ) from error
+            # Portable staging remains additive for the existing local path.
             job["remote_portability"] = {
                 "status": "unavailable",
                 "code": error.code,
                 "message": str(error),
             }
     _write_deploy_job(project_id,job)
-    if str(resource.get("mode"))=="remote":
+    if resource_mode=="remote":
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
         request_payload = {
             "job_dir": str(jd),
             "worker_path": str(BASE_DIR / "deployment_worker.py"),
             "python_path": sys.executable,
-            "execution_mode": "local",
+            "execution_mode": "agent" if resource_mode == "agent" else "local",
         }
         if portable_conversion is not None:
             request_payload["remote_execution"] = portable_conversion
@@ -11987,7 +12040,11 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
         shared_task_repository().create(TaskRecord.new(
             job_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
             f"conversion:{resource.get('id') or payload.target}",
-            required_capabilities=("conversion.runtime",),
+            required_capabilities=(
+                ("agent.remote",)
+                if resource_mode == "agent"
+                else ("conversion.runtime",)
+            ),
         ))
         job["task_id"] = job_id
         _write_deploy_job(project_id, job)
@@ -12183,7 +12240,7 @@ def _v40_run_component_scan(scan_id: str):
         saved=_load_saved_deploy_resources()
         checked=[]
         for r in saved:
-            if str(r.get("mode"))=="remote":
+            if str(r.get("mode")) in {"remote", "agent"}:
                 continue
             try:
                 cr=_detect_local_deploy_resource(r)
