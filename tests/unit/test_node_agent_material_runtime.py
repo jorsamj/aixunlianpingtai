@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import io
+import json
+import zipfile
+from pathlib import Path
+
+from PIL import Image
+
+from platform_core.node_agent_executor_runtime import AgentExecutionWorkdir, RemoteExecutionLease
+from platform_core.node_agent_material_runtime import AgentMaterialImportRunner
+
+
+def _image_bytes():
+    stream = io.BytesIO()
+    Image.new("RGB", (40, 30), (20, 50, 80)).save(stream, format="JPEG")
+    return stream.getvalue()
+
+
+def _input_zip(*, unsafe=False):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("../escape.jpg" if unsafe else "camera/a.jpg", _image_bytes())
+        if not unsafe:
+            archive.writestr("readme.txt", b"notes")
+    return stream.getvalue()
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, body=b"", headers=None):
+        self.status_code = status_code
+        self.body = body
+        self.headers = dict(headers or {})
+
+    @property
+    def ok(self):
+        return 200 <= self.status_code < 300
+
+    def iter_content(self, chunk_size=1024 * 1024):
+        for offset in range(0, len(self.body), chunk_size):
+            yield self.body[offset:offset + chunk_size]
+
+    def close(self):
+        pass
+
+
+class FakeSession:
+    def __init__(self, input_bytes):
+        self.input_bytes = input_bytes
+        self.uploaded = b""
+        self.put_headers = {}
+
+    def get(self, url, **kwargs):
+        assert url == "https://objects.example.test/input.zip"
+        return FakeResponse(
+            200,
+            self.input_bytes,
+            {"Content-Length": str(len(self.input_bytes))},
+        )
+
+    def put(self, url, *, headers, data, **kwargs):
+        assert url == "https://objects.example.test/review.zip"
+        self.put_headers = dict(headers)
+        self.uploaded = b"".join(data)
+        return FakeResponse(200)
+
+
+class FakeClient:
+    def __init__(self):
+        self.prepared = None
+        self.confirmed_runtime = None
+        self.finished = []
+
+    def heartbeat(self, _lease, **kwargs):
+        return {"cancel_requested": False, "task": {"status": "RUNNING"}}
+
+    def prepare_result_upload(self, _lease, *, sha256, size_bytes):
+        self.prepared = {"sha256": sha256, "size_bytes": size_bytes}
+        return {
+            "already_uploaded": False,
+            "upload": {
+                "method": "PUT",
+                "url": "https://objects.example.test/review.zip",
+                "headers": {
+                    "Content-Length": str(size_bytes),
+                    "x-amz-meta-sha256": sha256,
+                    "If-None-Match": "*",
+                    "Content-Type": "application/zip",
+                },
+                "overwrite_protected": True,
+            },
+        }
+
+    def confirm_result_upload(self, _lease, *, runtime_result=None):
+        self.confirmed_runtime = dict(runtime_result or {})
+        return {
+            "confirmed": True,
+            "result_ref": "remote-results/1/result.json",
+            "result": {},
+        }
+
+    def finish(self, _lease, status, **kwargs):
+        self.finished.append((status, dict(kwargs)))
+        return {
+            "task": {
+                "status": status,
+            }
+        }
+
+
+def _lease(zip_bytes):
+    import hashlib
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+    return RemoteExecutionLease(
+        task_id="material-task",
+        kind="MATERIAL_IMPORT",
+        project_id="project-one",
+        generation=1,
+        lease_token="lease-secret",
+        lease_expires_at="2099-01-01T00:00:00+00:00",
+        worker_id="agent:node-one",
+        payload={
+            "schema_version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+            "mode": "zip_scan",
+            "import_format": "images",
+            "target": {
+                "storage_source_id": "s3-target",
+                "storage_type": "s3",
+                "target_prefix": "incoming/2026",
+            },
+            "input": {
+                "type": "object",
+                "download": {
+                    "method": "GET",
+                    "url": "https://objects.example.test/input.zip",
+                    "headers": {},
+                    "file_name": "input.zip",
+                    "size_bytes": len(zip_bytes),
+                    "sha256": digest,
+                    "content_type": "application/zip",
+                },
+            },
+            "output": {
+                "type": "object",
+                "storage_ref": {
+                    "storage_source_id": "s3-target",
+                    "object_key": "reviews/review.zip",
+                    "file_name": "material-review.zip",
+                    "content_type": "application/zip",
+                },
+                "upload_protocol": "prepare-after-local-hash-v1",
+            },
+        },
+        assignment={},
+        transport={},
+    )
+
+
+def test_agent_material_runner_reviews_zip_uploads_and_waits_for_confirmation(tmp_path):
+    zip_bytes = _input_zip()
+    client = FakeClient()
+    session = FakeSession(zip_bytes)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    runner = AgentMaterialImportRunner(
+        client,
+        workdirs,
+        transfer_session=session,
+        heartbeat_interval=60,
+    )
+
+    outcome = runner.run(_lease(zip_bytes))
+
+    assert outcome.status == "AWAITING_CONFIRMATION"
+    assert outcome.result_ref == "remote-results/1/result.json"
+    assert client.finished[-1][0] == "AWAITING_CONFIRMATION"
+    assert client.prepared is not None
+    assert len(session.uploaded) == client.prepared["size_bytes"]
+    assert session.put_headers["x-amz-meta-sha256"] == client.prepared["sha256"]
+    assert client.confirmed_runtime == {
+        "ok": True,
+        "engine": "material-import",
+        "note": "review_bundle_verified",
+    }
+
+    with zipfile.ZipFile(io.BytesIO(session.uploaded), "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        rows = [
+            json.loads(line)
+            for line in review.read("review.jsonl").decode("utf-8").splitlines()
+        ]
+        assert meta["task_id"] == "material-task"
+        assert meta["execution_generation"] == 1
+        assert meta["target_prefix"] == "incoming/2026"
+        assert {row["status"] for row in rows} == {"IMPORTABLE", "SKIPPED"}
+        importable = next(row for row in rows if row["status"] == "IMPORTABLE")
+        assert importable["object_key"] == "incoming/2026/camera/a.jpg"
+        assert review.read(importable["payload_member"])
+
+    execution_dir = tmp_path / "agent-state" / "executions" / "material-task" / "1"
+    assert not execution_dir.exists()
+
+
+def test_agent_material_runner_rejects_zip_slip_before_result_publication(tmp_path):
+    zip_bytes = _input_zip(unsafe=True)
+    client = FakeClient()
+    session = FakeSession(zip_bytes)
+    runner = AgentMaterialImportRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "agent-state"),
+        transfer_session=session,
+        heartbeat_interval=60,
+    )
+
+    outcome = runner.run(_lease(zip_bytes))
+
+    assert outcome.status == "FAILED"
+    assert "ZIP safety validation failed" in outcome.error
+    assert client.prepared is None
+    assert session.uploaded == b""
+    assert client.finished[-1][0] == "FAILED"
+    assert not (tmp_path / "escape.jpg").exists()
