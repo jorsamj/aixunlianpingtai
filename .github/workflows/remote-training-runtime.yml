@@ -58,7 +58,7 @@ jobs:
       - name: Install focused training preparation dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest pillow pyyaml filelock requests psutil keyring cryptography
+          pytest pillow pyyaml filelock requests psutil keyring cryptography pydantic
       - name: Compile remote training preparation chain
         run: >-
           python -m py_compile
