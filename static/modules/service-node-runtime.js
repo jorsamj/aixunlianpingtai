@@ -10,7 +10,9 @@ export const CAPABILITY_LABELS = Object.freeze({
   annotation: '标注',
   video: '视频抽帧',
   conversion: '模型转换',
+  'conversion.rknn': '瑞芯微 RKNN 转换',
   'deployment-test': '部署测试',
+  'deployment-test.rknn': '瑞芯微板端验证',
   'model-upload': '模型上传',
 });
 
@@ -83,10 +85,18 @@ export function buildAgentCommands({origin, nodeId, token, capabilities = []}) {
   const base = String(origin || '').replace(/\/$/, '');
   const id = String(nodeId || '');
   const secret = String(token || '');
-  const cap = capabilities.map(String).join(',');
+  const rows = capabilities.map(String);
+  const cap = rows.join(',');
+  const rockchipBoard = rows.includes('deployment-test.rknn');
   return {
     linux: `MC_CONTROL_PLANE_URL='${base}' MC_NODE_ID='${id}' MC_NODE_AGENT_TOKEN='${secret}' MC_NODE_CAPABILITIES='${cap}' python node_agent.py`,
     windows: `$env:MC_CONTROL_PLANE_URL='${base}'; $env:MC_NODE_ID='${id}'; $env:MC_NODE_AGENT_TOKEN='${secret}'; $env:MC_NODE_CAPABILITIES='${cap}'; python node_agent.py`,
+    rockchipDoctor: rockchipBoard
+      ? `MC_NODE_CAPABILITIES='deployment-test.rknn' MC_AGENT_RKNN_LITE_PYTHON='/path/to/rknn-lite/python' python node_agent.py --doctor`
+      : '',
+    rockchipInstall: rockchipBoard
+      ? `sudo bash tools/install_rockchip_agent.sh --control-plane '${base}' --node-id '${id}' --app-root "$PWD" --rknn-lite-python '/path/to/rknn-lite/python'`
+      : '',
   };
 }
 
@@ -141,6 +151,12 @@ export function renderNodeCard(node) {
   const disk = node?.resources?.disk || {};
   const process = node?.process || {};
   const runtime = node?.runtime || {};
+  const rknnBoard = runtime?.rknn_board && typeof runtime.rknn_board === 'object' ? runtime.rknn_board : null;
+  const rknnToolkit = runtime?.rknn_toolkit2 && typeof runtime.rknn_toolkit2 === 'object' ? runtime.rknn_toolkit2 : null;
+  const rockchipRuntime = [
+    rknnBoard ? `<div><span>Rockchip 板卡</span><b>${rknnBoard.available ? escapeHtml(String(rknnBoard.chip || '-').toUpperCase()) : '未就绪'} · RKNNLite ${escapeHtml(rknnBoard.rknn_lite_version || '-')}</b></div>` : '',
+    rknnToolkit ? `<div><span>RKNN-Toolkit2</span><b>${rknnToolkit.available ? escapeHtml(rknnToolkit.version || '-') : '未就绪'} · ${escapeHtml((rknnToolkit.supported_chips || []).map(x => String(x).toUpperCase()).join(' / ') || '-')}</b></div>` : '',
+  ].join('');
   const memoryPercent = safePercent(memory.usage_percent) ?? (Number(memory.total_bytes) > 0 ? Number(memory.used_bytes || 0) / Number(memory.total_bytes) * 100 : null);
   const diskPercent = safePercent(disk.usage_percent) ?? (Number(disk.total_bytes) > 0 ? Number(disk.used_bytes || 0) / Number(disk.total_bytes) * 100 : null);
   return `<article class="node633-card" data-node-card="${escapeHtml(node?.node_id || '')}">
@@ -149,7 +165,7 @@ export function renderNodeCard(node) {
     <section class="node633-cap-section"><div><span>允许能力</span>${capabilityChips(node?.allowed_capabilities, 'allowed')}</div><div><span>已上报能力</span>${capabilityChips(node?.reported_capabilities, 'reported')}</div><div><span>当前可调度能力</span>${capabilityChips(node?.effective_capabilities, 'effective')}</div></section>
     <div class="node633-resource-grid">${meter('CPU', cpu.usage_percent, `${cpu.physical_cores ?? '-'} 物理核 / ${cpu.logical_cores ?? '-'} 逻辑核`)}${meter('内存', memoryPercent, `${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)} · 可用 ${formatBytes(memory.available_bytes)}`)}${meter('磁盘', diskPercent, `${disk.path || '-'} · ${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} · 空闲 ${formatBytes(disk.free_bytes)}`)}</div>
     <div class="node633-gpus">${gpuCards(node)}</div>
-    <div class="node633-runtime-grid"><div><span>PyTorch</span><b>${escapeHtml(runtime.torch_version || '-')}</b></div><div><span>CUDA</span><b>${escapeHtml(runtime.cuda_version || '-')}</b></div><div><span>CUDA 可用</span><b>${runtime.cuda_available === true ? '是' : runtime.cuda_available === false ? '否' : '-'}</b></div><div><span>Agent 进程</span><b>PID ${escapeHtml(process.pid ?? '-')} · RSS ${formatBytes(process.rss_bytes)} · ${escapeHtml(process.threads ?? '-')} 线程</b></div><div><span>文件句柄</span><b>open files ${escapeHtml(process.open_files ?? '-')} · fd/handle ${escapeHtml(process.file_descriptors ?? process.handles ?? '-')}</b></div><div><span>Agent 地址</span><b>${escapeHtml(node?.agent_url || '-')}</b></div></div>
+    <div class="node633-runtime-grid"><div><span>PyTorch</span><b>${escapeHtml(runtime.torch_version || '-')}</b></div><div><span>CUDA</span><b>${escapeHtml(runtime.cuda_version || '-')}</b></div><div><span>CUDA 可用</span><b>${runtime.cuda_available === true ? '是' : runtime.cuda_available === false ? '否' : '-'}</b></div>${rockchipRuntime}<div><span>Agent 进程</span><b>PID ${escapeHtml(process.pid ?? '-')} · RSS ${formatBytes(process.rss_bytes)} · ${escapeHtml(process.threads ?? '-')} 线程</b></div><div><span>文件句柄</span><b>open files ${escapeHtml(process.open_files ?? '-')} · fd/handle ${escapeHtml(process.file_descriptors ?? process.handles ?? '-')}</b></div><div><span>Agent 地址</span><b>${escapeHtml(node?.agent_url || '-')}</b></div></div>
     <details class="node633-detail"><summary>Worker 与当前任务</summary><div class="node633-detail-grid"><section><h4>Worker</h4>${workerRows(node)}</section><section><h4>执行中任务</h4>${taskRows(node)}</section></div></details>
     ${node?.last_error ? `<div class="alert warn node633-error"><b>最近上报错误</b><div>${escapeHtml(node.last_error)}</div></div>` : ''}
   </article>`;
@@ -158,12 +174,18 @@ export function renderNodeCard(node) {
 function nodeFormHtml(node, capabilities) {
   const edit = Boolean(node);
   const selected = new Set(node?.allowed_capabilities || []);
-  return `<div class="form node633-form" data-node-form="1"><div class="field"><label>节点 ID</label><input id="node633Id" class="input" ${edit ? 'disabled' : ''} value="${escapeHtml(node?.node_id || '')}" placeholder="例如 gpu-a800-01"></div><div class="field"><label>节点名称</label><input id="node633Name" class="input" value="${escapeHtml(node?.display_name || '')}" placeholder="例如 A800 训练节点"></div><div class="field"><label>连接方式</label><select id="node633Mode" class="select"><option value="agent" ${node?.connection_mode !== 'local' ? 'selected' : ''}>远程 Agent</option><option value="local" ${node?.connection_mode === 'local' ? 'selected' : ''}>本机 Agent</option></select></div><div class="field"><label>Agent 地址</label><input id="node633Url" class="input" value="${escapeHtml(node?.agent_url || '')}" placeholder="可选，例如 http://10.0.0.20:8030"></div><label class="field check"><input id="node633Enabled" type="checkbox" ${node?.enabled !== false ? 'checked' : ''}> 启用该节点</label><div class="field full"><label>允许执行的能力</label><div class="node633-cap-picker">${capabilities.map(capability => `<label><input type="checkbox" value="${escapeHtml(capability)}" ${selected.has(capability) ? 'checked' : ''}><span>${escapeHtml(capabilityLabel(capability))}</span><small>${escapeHtml(capability)}</small></label>`).join('')}</div></div><div class="row end"><button class="btn soft" data-node-form-cancel>取消</button><button class="btn primary" id="node633Save">${edit ? '保存修改' : '创建节点'}</button></div></div>`;
+  const rockchipPreset = capabilities.includes('deployment-test.rknn')
+    ? '<div class="field full"><label>快捷配置</label><div class="row"><button type="button" class="btn small" data-node-preset="rockchip-board">Rockchip 板端节点</button></div><small>自动使用远程 Agent，并只启用瑞芯微板端验证能力。</small></div>'
+    : '';
+  return `<div class="form node633-form" data-node-form="1"><div class="field"><label>节点 ID</label><input id="node633Id" class="input" ${edit ? 'disabled' : ''} value="${escapeHtml(node?.node_id || '')}" placeholder="例如 gpu-a800-01"></div><div class="field"><label>节点名称</label><input id="node633Name" class="input" value="${escapeHtml(node?.display_name || '')}" placeholder="例如 A800 训练节点"></div><div class="field"><label>连接方式</label><select id="node633Mode" class="select"><option value="agent" ${node?.connection_mode !== 'local' ? 'selected' : ''}>远程 Agent</option><option value="local" ${node?.connection_mode === 'local' ? 'selected' : ''}>本机 Agent</option></select></div><div class="field"><label>Agent 地址</label><input id="node633Url" class="input" value="${escapeHtml(node?.agent_url || '')}" placeholder="可选，例如 http://10.0.0.20:8030"></div><label class="field check"><input id="node633Enabled" type="checkbox" ${node?.enabled !== false ? 'checked' : ''}> 启用该节点</label>${rockchipPreset}<div class="field full"><label>允许执行的能力</label><div class="node633-cap-picker">${capabilities.map(capability => `<label><input type="checkbox" value="${escapeHtml(capability)}" ${selected.has(capability) ? 'checked' : ''}><span>${escapeHtml(capabilityLabel(capability))}</span><small>${escapeHtml(capability)}</small></label>`).join('')}</div></div><div class="row end"><button class="btn soft" data-node-form-cancel>取消</button><button class="btn primary" id="node633Save">${edit ? '保存修改' : '创建节点'}</button></div></div>`;
 }
 
 function tokenModalHtml(node, token) {
   const commands = buildAgentCommands({origin: window.location.origin, nodeId: node.node_id, token, capabilities: node.allowed_capabilities || []});
-  return `<div class="node633-token" data-node-token="1"><div class="alert warn"><b>Agent Token 只显示这一次</b><div>关闭后平台不会再返回明文 Token；如遗失，请执行“轮换 Token”。</div></div><div class="field"><label>节点</label><div class="node633-secret-row"><code>${escapeHtml(node.node_id)}</code></div></div><div class="field"><label>Agent Token</label><div class="node633-secret-row"><code id="node633TokenValue">${escapeHtml(token)}</code><button class="btn small" data-copy-target="node633TokenValue">复制</button></div></div><div class="field"><label>Linux 启动命令</label><div class="node633-command"><code id="node633LinuxCommand">${escapeHtml(commands.linux)}</code><button class="btn small" data-copy-target="node633LinuxCommand">复制</button></div></div><div class="field"><label>Windows PowerShell 启动命令</label><div class="node633-command"><code id="node633WindowsCommand">${escapeHtml(commands.windows)}</code><button class="btn small" data-copy-target="node633WindowsCommand">复制</button></div></div><div class="row end"><button class="btn primary" data-node-token-close>我已保存 Token</button></div></div>`;
+  const rockchip = commands.rockchipDoctor
+    ? `<div class="field"><label>Rockchip 板端预检</label><div class="node633-command"><code id="node633RockchipDoctor">${escapeHtml(commands.rockchipDoctor)}</code><button class="btn small" data-copy-target="node633RockchipDoctor">复制</button></div><small>先把 /path/to/rknn-lite/python 替换为板端实际 RKNNLite Python；doctor 未通过时不要安装服务。</small></div><div class="field"><label>Rockchip systemd 安装</label><div class="node633-command"><code id="node633RockchipInstall">${escapeHtml(commands.rockchipInstall)}</code><button class="btn small" data-copy-target="node633RockchipInstall">复制</button></div><small>安装脚本会再次执行 strict doctor，并静默提示输入上方 Token；Token 不进入 systemd ExecStart。</small></div>`
+    : '';
+  return `<div class="node633-token" data-node-token="1"><div class="alert warn"><b>Agent Token 只显示这一次</b><div>关闭后平台不会再返回明文 Token；如遗失，请执行“轮换 Token”。</div></div><div class="field"><label>节点</label><div class="node633-secret-row"><code>${escapeHtml(node.node_id)}</code></div></div><div class="field"><label>Agent Token</label><div class="node633-secret-row"><code id="node633TokenValue">${escapeHtml(token)}</code><button class="btn small" data-copy-target="node633TokenValue">复制</button></div></div>${rockchip}<div class="field"><label>Linux 启动命令</label><div class="node633-command"><code id="node633LinuxCommand">${escapeHtml(commands.linux)}</code><button class="btn small" data-copy-target="node633LinuxCommand">复制</button></div></div><div class="field"><label>Windows PowerShell 启动命令</label><div class="node633-command"><code id="node633WindowsCommand">${escapeHtml(commands.windows)}</code><button class="btn small" data-copy-target="node633WindowsCommand">复制</button></div></div><div class="row end"><button class="btn primary" data-node-token-close>我已保存 Token</button></div></div>`;
 }
 
 export function installServiceNodeRuntime({notify = message => window.toast?.(message)} = {}) {
@@ -276,6 +298,15 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     const root = document.querySelector('[data-node-form]');
     if (!root) return;
     root.querySelector('[data-node-form-cancel]')?.addEventListener('click', () => window.closeModal?.());
+    root.querySelector('[data-node-preset="rockchip-board"]')?.addEventListener('click', () => {
+      const mode = root.querySelector('#node633Mode');
+      if (mode) mode.value = 'agent';
+      root.querySelectorAll('.node633-cap-picker input').forEach(input => {
+        input.checked = input.value === 'deployment-test.rknn';
+      });
+      const name = root.querySelector('#node633Name');
+      if (name && !String(name.value || '').trim()) name.value = 'Rockchip 板端节点';
+    });
     root.querySelector('#node633Save')?.addEventListener('click', async event => {
       const button = event.currentTarget;
       const nodeId = String(root.querySelector('#node633Id')?.value || '').trim();

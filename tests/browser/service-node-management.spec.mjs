@@ -40,7 +40,7 @@ function node(overrides = {}) {
 }
 
 test('service node page shows live resources and creates Agent credentials', async ({page}) => {
-  const capabilities = ['training', 'material-import', 'cleaning', 'annotation', 'video', 'conversion', 'deployment-test', 'model-upload'];
+  const capabilities = ['training', 'material-import', 'cleaning', 'annotation', 'video', 'conversion', 'conversion.rknn', 'deployment-test', 'deployment-test.rknn', 'model-upload'];
   let nodes = [node()];
   let createdPayload = null;
 
@@ -106,21 +106,24 @@ test('service node page shows live resources and creates Agent credentials', asy
 
   await page.getByRole('button', {name: /新增服务节点/}).click();
   await expect(page.locator('[data-node-form="1"]')).toBeVisible();
-  await page.locator('#node633Id').fill('worker-material-01');
-  await page.locator('#node633Name').fill('素材处理节点');
-  await page.locator('.node633-cap-picker input[value="material-import"]').check();
-  await page.locator('.node633-cap-picker input[value="cleaning"]').check();
+  await page.locator('#node633Id').fill('rk3568-board-01');
+  await page.locator('[data-node-preset="rockchip-board"]').click();
+  await expect(page.locator('#node633Name')).toHaveValue('Rockchip 板端节点');
+  await expect(page.locator('.node633-cap-picker input[value="deployment-test.rknn"]')).toBeChecked();
   await page.locator('#node633Save').click();
 
   await expect(page.locator('[data-node-token="1"]')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#node633TokenValue')).toHaveText('browser-agent-token-once');
-  await expect(page.locator('#node633LinuxCommand')).toContainText('MC_NODE_ID=\'worker-material-01\'');
+  await expect(page.locator('#node633LinuxCommand')).toContainText('MC_NODE_ID=\'rk3568-board-01\'');
   await expect(page.locator('#node633WindowsCommand')).toContainText("$env:MC_NODE_AGENT_TOKEN='browser-agent-token-once'");
+  await expect(page.locator('#node633RockchipDoctor')).toContainText('node_agent.py --doctor');
+  await expect(page.locator('#node633RockchipInstall')).toContainText('tools/install_rockchip_agent.sh');
+  await expect(page.locator('#node633RockchipInstall')).not.toContainText('browser-agent-token-once');
   expect(createdPayload).toMatchObject({
-    node_id: 'worker-material-01',
-    display_name: '素材处理节点',
+    node_id: 'rk3568-board-01',
+    display_name: 'Rockchip 板端节点',
     connection_mode: 'agent',
     enabled: true,
   });
-  expect(createdPayload.allowed_capabilities).toEqual(['material-import', 'cleaning']);
+  expect(createdPayload.allowed_capabilities).toEqual(['deployment-test.rknn']);
 });

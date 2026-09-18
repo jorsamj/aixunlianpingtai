@@ -38,13 +38,16 @@ jobs:
       - name: Permanent service-node UI guards
         shell: bash
         run: |
-          grep -Fq 'service-node-bootstrap.mjs?v=422533' static/index.html
+          grep -Fq 'service-node-bootstrap.mjs?v=422534' static/index.html
           grep -Fq 'service-nodes.css?v=422533' static/index.html
           grep -Fq "const PAGE = '服务节点'" static/modules/service-node-runtime.js
           grep -Fq "POLL_KEY = 'service-node-runtime'" static/modules/service-node-runtime.js
           grep -Fq 'PollRegistryRuntime' static/modules/service-node-runtime.js
           grep -Fq '/api/v63/service-nodes' static/modules/service-node-runtime.js
           grep -Fq 'Agent Token 只显示这一次' static/modules/service-node-runtime.js
+          grep -Fq "'deployment-test.rknn': '瑞芯微板端验证'" static/modules/service-node-runtime.js
+          grep -Fq 'Rockchip 板端预检' static/modules/service-node-runtime.js
+          grep -Fq 'tools/install_rockchip_agent.sh' static/modules/service-node-runtime.js
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
 

@@ -16,6 +16,8 @@ test('service node helpers keep resource values truthful', () => {
   assert.equal(safePercent(117), 100);
   assert.equal(safePercent(-2), 0);
   assert.equal(capabilityLabel('material-import'), '素材导入');
+  assert.equal(capabilityLabel('conversion.rknn'), '瑞芯微 RKNN 转换');
+  assert.equal(capabilityLabel('deployment-test.rknn'), '瑞芯微板端验证');
   assert.deepEqual(nodeStatusMeta('ONLINE'), {label: '在线', className: 'ok'});
 });
 
@@ -66,4 +68,41 @@ test('agent launch commands carry the one-time token for both Linux and Windows'
   assert.match(commands.linux, /MC_NODE_AGENT_TOKEN='secret-once'/);
   assert.match(commands.windows, /\$env:MC_NODE_ID='gpu-01'/);
   assert.match(commands.windows, /training,conversion/);
+  assert.equal(commands.rockchipDoctor, '');
+  assert.equal(commands.rockchipInstall, '');
+});
+
+test('Rockchip board commands expose strict doctor and token-safe systemd installer command', () => {
+  const commands = buildAgentCommands({
+    origin: 'https://control.example.com/',
+    nodeId: 'rk3568-board-01',
+    token: 'secret-once',
+    capabilities: ['deployment-test.rknn'],
+  });
+  assert.match(commands.rockchipDoctor, /node_agent\.py --doctor/);
+  assert.match(commands.rockchipDoctor, /deployment-test\.rknn/);
+  assert.match(commands.rockchipInstall, /tools\/install_rockchip_agent\.sh/);
+  assert.match(commands.rockchipInstall, /--node-id 'rk3568-board-01'/);
+  assert.doesNotMatch(commands.rockchipInstall, /secret-once/);
+});
+
+test('service node card surfaces observed Rockchip SoC and RKNN runtime truth', () => {
+  const html = renderNodeCard({
+    node_id: 'rk-board',
+    display_name: 'RK3568 板端',
+    status: 'ONLINE',
+    enabled: true,
+    connection_mode: 'agent',
+    allowed_capabilities: ['deployment-test.rknn'],
+    reported_capabilities: ['deployment-test.rknn'],
+    effective_capabilities: ['deployment-test.rknn'],
+    runtime: {
+      rknn_board: {available: true, chip: 'rk3568', rknn_lite_version: '2.3.2'},
+    },
+    resources: {},
+    process: {},
+  });
+  assert.match(html, /瑞芯微板端验证/);
+  assert.match(html, /RK3568/);
+  assert.match(html, /RKNNLite 2\.3\.2/);
 });
