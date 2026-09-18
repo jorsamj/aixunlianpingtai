@@ -75,16 +75,49 @@ Phase 1 历史验收保持：
 - Portable Deployment `35308672842`
 - Central Node Assignment `35308672962`
 
+## 0. 最新关闭：Remote MATERIAL_IMPORT Phase 3 — staging object lifecycle / GC
+
+2026-09-18，远程素材导入临时对象生命周期已 CLOSED。
+
+治理范围只包含 Agent MATERIAL_IMPORT 的 task-owned staging 对象：
+
+- source ZIP：`remote-execution/<project>/<task>/material-input/...`
+- generation-scoped review ZIP：`remote-execution/<project>/<task>/material-review/generation-N/...`
+
+不会触碰正式目标素材对象。
+
+真实策略：
+
+- server-confirm review 成功后，控制面先把 review ZIP、candidate/annotation truth 写入 task artifact。
+- result commit 阶段只写 durable cleanup ledger，**不在 result.json/upload-state 落盘前删除远端对象**，避免崩溃后 confirm 重试失去 review。
+- task 进入 `AWAITING_CONFIRMATION` 后，storage Worker 的既有 WorkerInstance renew hook 执行精确 cleanup。
+- cleanup 前重新验证 exact storage_source_id / object_key / size / SHA256 / task-owned prefix。
+- size/hash 不匹配时标记 `CONFLICT`，拒绝删除。
+- 对象不存在按幂等 `ABSENT` 完成。
+- provider 删除失败记 `PENDING`，不反向把已 server-confirm 的导入任务标失败。
+- FAILED/CANCELLED/BLOCKED 等未完成 Agent task 默认保留 7 天（`MC_REMOTE_MATERIAL_STAGING_RETENTION_SECONDS` 可配置）后再回收。
+- orphan generation 的精确 review ref 从 task-owned `remote-results/N/upload.json` 恢复，不通过 key 推测。
+- GC 每 5 分钟由 `storage` Worker heartbeat hook 节流运行，一次最多分页扫描 100 个任务并持久化 cursor。
+- 不新增 timer/scheduler，不在 training-only Worker 读取存储凭据。
+- GC 实现禁止 `list_objects` / prefix delete；只执行 exact `provider.delete(key)`。
+- cleanup ledger 路径：`remote-material/staging-cleanup.json`。
+
+永久验收：
+
+- Remote Material Import `35312109805`：API / Ubuntu / Windows success。
+- Task Runtime Truth `35312109707`：Ubuntu / Windows success。
+- Storage Cache Governance `35312109834`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
 **仍然 OPEN：**
 
-1. Agent 端 `storage_scan` / 对象列表扫描模式。
-2. COCO / VOC 等远程 annotation 格式。
-3. remote input/review staging objects 的保留策略与 GC。
-4. 如要做大规模远程清洗/去重，需单独形成真实 task kind/runner，不能借 MATERIAL_IMPORT closure 宣称完成。
+1. Agent `storage_scan` / 对象列表扫描模式。
+2. COCO / VOC 远程 annotation 格式。
+3. 大规模远程清洗/去重如需独立节点执行，必须形成真实 task kind/runner。
 
-**下一主线：Remote MATERIAL_IMPORT Phase 3 — staging object lifecycle / GC，然后再扩展 storage_scan。**
+**下一主线：Remote MATERIAL_IMPORT Phase 4 — Agent storage_scan。**
 
-先治理 remote source ZIP / review ZIP 的生命周期：必须区分运行中、待确认、已完成、失败/取消和审计保留期，且只能删除当前 task/generation 明确拥有、已不再被 retry/audit 依赖的 immutable objects。GC 不得误删正式 MaterialRepository 指向的目标对象，也不得依赖 prefix 全量盲删。
+目标：远端 Agent 直接扫描 OSS/S3/MinIO source prefix，而不是控制面 Worker 做重 I/O；但仍不得给 Agent 长期对象存储凭据。控制面需要提供受约束的分页/list/read transport 或 broker contract，Agent 返回 server-confirmed review truth，用户确认后继续复用现有 local indexer 写 Material/Annotation truth。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
