@@ -576,7 +576,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
 
     outcome = runner.run(current)
 
-    assert outcome.status == "SUCCEEDED"
+    assert outcome.status == "SUCCEEDED", outcome.error
     assert outcome.result_ref == "remote-results/3/result.json"
     assert client.prepare_calls[0]["generation"] == 3
     assert client.confirm_calls[0]["training_outcome"] == "completed"
@@ -668,7 +668,7 @@ def test_training_object_model_is_downloaded_before_worker(tmp_path):
 
     outcome = runner.run(current)
 
-    assert outcome.status == "SUCCEEDED"
+    assert outcome.status == "SUCCEEDED", outcome.error
     assert [call["url"] for call in transfer.get_calls] == [
         "https://storage.example.test/training-bundle",
         model_url,
@@ -697,7 +697,7 @@ def test_training_cancellation_kills_worker_and_never_publishes_success(tmp_path
     outcome = runner.run(current)
 
     assert time.monotonic() - started < 8
-    assert outcome.status == "CANCELLED"
+    assert outcome.status == "CANCELLED", outcome.error
     assert client.finish_calls[-1]["status"] == "CANCELLED"
     assert not client.model_prepare_calls
     assert not client.prepare_calls
@@ -863,7 +863,7 @@ def test_training_result_put_can_recover_after_lost_response(tmp_path):
 
     outcome = runner.run(current)
 
-    assert outcome.status == "SUCCEEDED"
+    assert outcome.status == "SUCCEEDED", outcome.error
     assert len(client.prepare_calls) == 2
     assert len(transfer.put_calls) == 3
     assert transfer.put_calls[-1]["url"] == (
