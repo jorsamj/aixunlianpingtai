@@ -107,6 +107,7 @@ def test_legacy_training_route_also_requires_strict_latest_iteration_base(client
     monkeypatch.setattr(app_module, "_v54_iteration_base", strict_spy)
     monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
     monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value, _project_id=None: value)
+    monkeypatch.setattr(app_module, "check_ultralytics_train_runtime", lambda _python_path: "ok")
     monkeypatch.setattr(
         app_module,
         "build_dataset",
@@ -194,7 +195,7 @@ def test_product_training_ignores_requested_mother_model_when_latest_version_exi
     assert response.status_code == 200, response.text
     job = response.json()["job"]
     assert job["base_version_id"] == "latest-version"
-    assert job["base_selection_reason"] == "latest_verified_version"
+    assert job["base_selection_reason"] == "current_verified_version"
     assert job["model"] == str(latest_model.resolve())
 
 
