@@ -993,3 +993,166 @@ def test_remote_training_model_uploads_reject_stale_generation_and_cancellation(
             models=_training_models(),
         )
     assert cancelled.value.code == "CANCELLATION_WON"
+
+
+
+def create_portable_material_import(repository, artifacts, task_id="material-agent"):
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "execution_mode": "agent",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+            "material_import": {
+                "mode": "zip_scan",
+                "output": {
+                    "storage_source_id": "s3-main",
+                    "object_key": "material-review/review.zip",
+                    "file_name": "material-review.zip",
+                    "content_type": "application/zip",
+                },
+            },
+        },
+    })
+    return repository.create(
+        TaskRecord.new(
+            task_id=task_id,
+            project_id="project-material",
+            kind=TaskKind.MATERIAL_IMPORT,
+            payload_ref="request.json",
+            resource_key="material-import:agent",
+            required_capabilities=("agent.remote",),
+        ),
+        artifacts=artifacts,
+    )
+
+
+def create_material_agent_node(repository, node_id="material-agent-node"):
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": node_id,
+        "display_name": node_id,
+        "connection_mode": "agent",
+        "allowed_capabilities": ["material-import"],
+    })
+    nodes.heartbeat(node_id, token, {
+        "hostname": node_id,
+        "reported_capabilities": ["material-import"],
+        "resources": {
+            "cpu": {"logical_cores": 8},
+            "memory": {"available_bytes": 16 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {"available": False, "gpus": []},
+        },
+        "runtime": {"python_version": "3.12"},
+    })
+    return nodes, token
+
+
+def test_portable_material_import_requires_confirmed_review_before_awaiting_confirmation(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_portable_material_import(repository, artifacts)
+    _nodes, token = create_material_agent_node(repository)
+    svc = service(repository, artifacts)
+
+    assignment = svc.allocator.assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "material-agent-node"
+    claimed = svc.claim_assignment("material-agent-node", token)
+    started = svc.start_execution(
+        "material-agent-node",
+        token,
+        "material-agent",
+        claimed["assignment"]["assignment_lease_token"],
+    )
+    execution = started["execution"]
+
+    with pytest.raises(AgentExecutionError) as unconfirmed:
+        svc.finish_execution(
+            "material-agent-node",
+            token,
+            "material-agent",
+            execution["lease_token"],
+            execution["generation"],
+            status="AWAITING_CONFIRMATION",
+            result_ref="attacker.json",
+        )
+    assert unconfirmed.value.code == "REMOTE_RESULT_NOT_CONFIRMED"
+
+    svc.prepare_result_upload(
+        "material-agent-node",
+        token,
+        "material-agent",
+        execution["lease_token"],
+        execution["generation"],
+        sha256="d" * 64,
+        size_bytes=4321,
+    )
+    confirmed = svc.confirm_result_upload(
+        "material-agent-node",
+        token,
+        "material-agent",
+        execution["lease_token"],
+        execution["generation"],
+        runtime_result={
+            "ok": True,
+            "engine": "material-import",
+            "note": "review_bundle_verified",
+        },
+    )
+    assert confirmed["confirmed"] is True
+    assert confirmed["result_ref"] == "remote-results/1/result.json"
+
+    finished = svc.finish_execution(
+        "material-agent-node",
+        token,
+        "material-agent",
+        execution["lease_token"],
+        execution["generation"],
+        status="AWAITING_CONFIRMATION",
+        result_ref="attacker.json",
+    )
+    task = repository.get("material-agent")
+    assert finished["task"]["status"] == "AWAITING_CONFIRMATION"
+    assert task is not None
+    assert task.status is TaskStatus.AWAITING_CONFIRMATION
+    assert task.stage == "awaiting_confirmation"
+    assert task.result_ref == "remote-results/1/result.json"
+    assert task.finished_at is None
+
+
+def test_only_material_import_may_finish_remote_execution_as_awaiting_confirmation(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_portable_deployment(repository, artifacts)
+    _nodes, token = create_agent_node(repository)
+    svc = service(repository, artifacts)
+    started = start_execution(repository, artifacts, svc, token)
+    execution = started["execution"]
+
+    svc.prepare_result_upload(
+        "deploy-agent-node",
+        token,
+        "deploy-agent",
+        execution["lease_token"],
+        execution["generation"],
+        sha256="e" * 64,
+        size_bytes=111,
+    )
+    svc.confirm_result_upload(
+        "deploy-agent-node",
+        token,
+        "deploy-agent",
+        execution["lease_token"],
+        execution["generation"],
+    )
+
+    with pytest.raises(AgentExecutionError) as invalid:
+        svc.finish_execution(
+            "deploy-agent-node",
+            token,
+            "deploy-agent",
+            execution["lease_token"],
+            execution["generation"],
+            status="AWAITING_CONFIRMATION",
+        )
+    assert invalid.value.code == "INVALID_FINISH_STATUS"
