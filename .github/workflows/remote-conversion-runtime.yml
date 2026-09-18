@@ -159,6 +159,12 @@ jobs:
           grep -Fq 'probe_rknn_toolkit' node_agent.py
           grep -Fq 'rk3576' platform_core/conversion.py
           grep -Fq 'value="rk3576"' static/app.js
+          grep -Fq 'build_rknn_calibration_snapshot' platform_core/remote_execution_transport.py
+          grep -Fq 'REMOTE_CONVERSION_DOWNLOADING_CALIBRATION' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'calibration_snapshot=portable_calibration' app.py
+          grep -Fq 'test_rknn_int8_calibration_snapshot_uses_exact_object_refs_and_start_time_downloads' tests/unit/test_remote_execution_transport.py
+          grep -Fq 'test_agent_conversion_runner_downloads_frozen_rknn_int8_calibration_before_worker' tests/unit/test_node_agent_conversion_runtime.py
+          grep -Fq 'test_agent_rknn_int8_freezes_calibration_snapshot_before_task_staging' tests/api/test_conversion_portable_contract.py
           grep -Fq '"deployment-test",' platform_core/node_agent_executor_loop.py
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
           grep -Fq '"training",' platform_core/node_agent_executor_loop.py

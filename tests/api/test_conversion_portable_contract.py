@@ -28,10 +28,19 @@ class FakeRepository:
 
 
 class FakeTransport:
-    def __init__(self, result=None, error=None):
+    def __init__(self, result=None, error=None, calibration_result=None, calibration_error=None):
         self.result = result
         self.error = error
         self.calls = []
+        self.calibration_result = calibration_result
+        self.calibration_error = calibration_error
+        self.calibration_calls = []
+
+    def build_rknn_calibration_snapshot(self, **kwargs):
+        self.calibration_calls.append(dict(kwargs))
+        if self.calibration_error is not None:
+            raise self.calibration_error
+        return dict(self.calibration_result or {})
 
     def stage_model_conversion(self, **kwargs):
         self.calls.append(dict(kwargs))
@@ -82,6 +91,7 @@ def _agent_rknn_resource():
         "targets": ["rockchip"],
         "kind": "rockchip",
         "supported_chips": ["rk3568", "rk3576"],
+        "supported_precisions": ["fp16", "int8"],
     }
 
 
@@ -147,6 +157,54 @@ def _rknn_contract():
         "file_name": "model_rk3568.rknn",
         "content_type": "application/octet-stream",
     }
+    return value
+
+
+def _rknn_int8_snapshot():
+    return {
+        "schema_version": 1,
+        "snapshot_id": "c" * 64,
+        "dataset_id": "default",
+        "split": "train",
+        "material_revision": 7,
+        "requested_count": 100,
+        "item_count": 2,
+        "items": [
+            {
+                "image_id": "cal-1",
+                "file_name": "a.jpg",
+                "storage_source_id": "remote-models",
+                "storage_type": "s3",
+                "object_key": "datasets/calibration/a.jpg",
+                "size_bytes": 11,
+                "etag": "etag-a",
+                "sha256": "1" * 64,
+            },
+            {
+                "image_id": "cal-2",
+                "file_name": "b.jpg",
+                "storage_source_id": "remote-models",
+                "storage_type": "s3",
+                "object_key": "datasets/calibration/b.jpg",
+                "size_bytes": 12,
+                "etag": "etag-b",
+                "sha256": "2" * 64,
+            },
+        ],
+    }
+
+
+def _rknn_int8_contract(snapshot=None):
+    snapshot = dict(snapshot or _rknn_int8_snapshot())
+    value = _rknn_contract()
+    value["conversion"] = dict(value["conversion"])
+    value["conversion"]["params"] = {
+        **dict(value["conversion"]["params"]),
+        "precision": "int8",
+        "calibration_count": int(snapshot["item_count"]),
+        "calibration_snapshot": str(snapshot["snapshot_id"]),
+    }
+    value["conversion"]["calibration"] = snapshot
     return value
 
 
@@ -516,10 +574,88 @@ def test_explicit_agent_rknn_creation_persists_target_and_portable_contract(
     assert request["remote_execution"]["conversion"]["target"] == "rockchip"
 
 
-def test_agent_rknn_int8_is_rejected_before_job_staging(
+def test_agent_rknn_int8_freezes_calibration_snapshot_before_task_staging(
     tmp_path, monkeypatch
 ):
-    transport = FakeTransport(result=_rknn_contract())
+    snapshot = _rknn_int8_snapshot()
+    transport = FakeTransport(
+        result=_rknn_int8_contract(snapshot),
+        calibration_result=snapshot,
+    )
+    _model, jobs, artifacts, repository = _patch_creation(
+        monkeypatch, tmp_path, transport
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_deploy_resource_by_id",
+        lambda _resource_id: _agent_rknn_resource(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_detect_agent_deploy_resource",
+        lambda resource: dict(resource),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_deploy_prepare_calibration",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Agent INT8 must not build a central calibration_dir")
+        ),
+    )
+
+    response = app_module.v39_create_deploy_job(
+        "p1",
+        app_module.DeployJobReq(
+            source_id="version::algorithm-a::version-1",
+            target="rockchip",
+            resource_id="agent-rknn",
+            params={
+                "input_size": 640,
+                "batch": 1,
+                "chip": "rk3568",
+                "precision": "int8",
+            },
+            dataset_id="default",
+            calibration_split="train",
+            calibration_count=100,
+        ),
+    )
+
+    assert transport.calibration_calls == [{
+        "project_id": "p1",
+        "dataset_id": "default",
+        "split": "train",
+        "limit": 100,
+    }]
+    assert len(transport.calls) == 1
+    assert transport.calls[0]["calibration_snapshot"] == snapshot
+    assert transport.calls[0]["params"]["precision"] == "int8"
+    assert transport.calls[0]["params"]["calibration_count"] == 2
+    assert transport.calls[0]["params"]["calibration_snapshot"] == snapshot["snapshot_id"]
+    job = response["job"]
+    assert job["params"]["precision"] == "int8"
+    assert job["params"]["calibration_count"] == 2
+    assert job["params"]["calibration_snapshot"] == snapshot["snapshot_id"]
+    assert job["calibration_dir"] == ""
+    task = repository.created[0]
+    assert task.kind is TaskKind.MODEL_CONVERSION
+    assert task.required_capabilities == ("agent.remote",)
+    request = artifacts.rows[(task.task_id, "request.json")]
+    assert request["execution_mode"] == "agent"
+    assert request["remote_execution"]["conversion"]["calibration"]["snapshot_id"] == snapshot["snapshot_id"]
+
+
+def test_agent_rknn_int8_calibration_failure_leaves_no_task(
+    tmp_path, monkeypatch
+):
+    transport = FakeTransport(
+        result=_rknn_int8_contract(),
+        calibration_error=RemoteExecutionTransportError(
+            "REMOTE_CONVERSION_CALIBRATION_EMPTY",
+            "no portable calibration images",
+            409,
+        ),
+    )
     _model, _jobs, _artifacts, repository = _patch_creation(
         monkeypatch, tmp_path, transport
     )
@@ -534,22 +670,17 @@ def test_agent_rknn_int8_is_rejected_before_job_staging(
         lambda resource: dict(resource),
     )
 
-    with pytest.raises(app_module.HTTPException) as failure:
+    with pytest.raises(PlatformError) as failure:
         app_module.v39_create_deploy_job(
             "p1",
             app_module.DeployJobReq(
                 source_id="version::algorithm-a::version-1",
                 target="rockchip",
                 resource_id="agent-rknn",
-                params={
-                    "chip": "rk3568",
-                    "precision": "int8",
-                    "calibration_snapshot": "snapshot",
-                },
+                params={"chip": "rk3568", "precision": "int8"},
             ),
         )
-    assert failure.value.status_code == 400
-    assert "INT8" in str(failure.value.detail)
+    assert failure.value.code == "REMOTE_CONVERSION_CALIBRATION_EMPTY"
     assert repository.created == []
     assert transport.calls == []
 

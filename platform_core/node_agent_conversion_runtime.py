@@ -497,6 +497,7 @@ class AgentConversionRunner:
         payload: Mapping[str, Any],
         workdir: Path,
         source_path: Path,
+        calibration_dir: Path | None = None,
     ) -> tuple[Path, Path, list[str]]:
         if not self.ultralytics_python.is_file():
             raise AgentConversionRuntimeError(
@@ -524,6 +525,7 @@ class AgentConversionRunner:
         allowed_param_keys = (
             "input_size", "batch", "opset", "dynamic", "simplify",
             "chip", "precision", "mean", "rknn_std",
+            "calibration_count", "calibration_snapshot",
         )
         safe_params = {
             key: params.get(key)
@@ -539,6 +541,39 @@ class AgentConversionRunner:
             if chip not in {"rk3568", "rk3576"}:
                 raise AgentConversionRuntimeError(
                     f"portable RKNN target chip {chip or '<empty>'} is unsupported"
+                )
+            precision = str(safe_params.get("precision") or "fp16").strip().lower()
+            if precision not in {"fp16", "int8"}:
+                raise AgentConversionRuntimeError(
+                    f"portable RKNN precision {precision or '<empty>'} is unsupported"
+                )
+            if precision == "int8":
+                if calibration_dir is None or not calibration_dir.is_dir():
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 conversion requires downloaded calibration images"
+                    )
+                snapshot = str(safe_params.get("calibration_snapshot") or "").strip().lower()
+                if not _SHA256.fullmatch(snapshot):
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 calibration snapshot is invalid"
+                    )
+                try:
+                    count = int(safe_params.get("calibration_count") or 0)
+                except (TypeError, ValueError) as error:
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 calibration_count is invalid"
+                    ) from error
+                actual_count = sum(
+                    1 for path in calibration_dir.iterdir()
+                    if path.is_file() and not path.is_symlink()
+                )
+                if count <= 0 or actual_count != count:
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 calibration image count does not match the durable snapshot"
+                    )
+            elif calibration_dir is not None:
+                raise AgentConversionRuntimeError(
+                    "portable RKNN FP16 conversion must not receive calibration images"
                 )
         job_dir = workdir / "conversion"
         artifacts = job_dir / "artifacts"
@@ -568,6 +603,7 @@ class AgentConversionRunner:
                 ),
             },
             "params": safe_params,
+            "calibration_dir": str(calibration_dir) if calibration_dir is not None else "",
             "outputs": [],
         }
         job_file.write_text(
@@ -761,11 +797,92 @@ class AgentConversionRunner:
                 workdir / "input" / source_name,
                 monitor,
             )
+            calibration_dir = None
+            params = payload.get("params")
+            precision = (
+                str(params.get("precision") or "fp16").strip().lower()
+                if isinstance(params, Mapping)
+                else "fp16"
+            )
+            calibration = payload.get("calibration")
+            if target == "rockchip" and precision == "int8":
+                if not isinstance(calibration, Mapping):
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 calibration payload is missing"
+                    )
+                snapshot = str(calibration.get("snapshot_id") or "").strip().lower()
+                raw_items = calibration.get("items")
+                try:
+                    item_count = int(calibration.get("item_count") or 0)
+                except (TypeError, ValueError) as error:
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 calibration item_count is invalid"
+                    ) from error
+                try:
+                    params_count = int(params.get("calibration_count") or 0) if isinstance(params, Mapping) else 0
+                except (TypeError, ValueError) as error:
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 calibration_count is invalid"
+                    ) from error
+                if (
+                    int(calibration.get("schema_version") or 0) != 1
+                    or not _SHA256.fullmatch(snapshot)
+                    or not isinstance(raw_items, list)
+                    or item_count <= 0
+                    or item_count > 1000
+                    or len(raw_items) != item_count
+                    or not isinstance(params, Mapping)
+                    or str(params.get("calibration_snapshot") or "").strip().lower() != snapshot
+                    or params_count != item_count
+                ):
+                    raise AgentConversionRuntimeError(
+                        "portable RKNN INT8 calibration contract is invalid"
+                    )
+                calibration_dir = workdir / "calibration"
+                calibration_dir.mkdir(parents=True, exist_ok=True)
+                for index, item in enumerate(raw_items):
+                    self._assert_active(monitor)
+                    if not isinstance(item, Mapping) or not isinstance(item.get("download"), Mapping):
+                        raise AgentConversionRuntimeError(
+                            "portable RKNN calibration item download is missing"
+                        )
+                    image_id = str(item.get("image_id") or "").strip()
+                    if not image_id:
+                        raise AgentConversionRuntimeError(
+                            "portable RKNN calibration image_id is missing"
+                        )
+                    item_download = item["download"]
+                    file_name = _safe_filename(
+                        item_download.get("file_name"),
+                        f"calibration-{index:05d}.jpg",
+                    )
+                    self._heartbeat(
+                        monitor,
+                        progress=5 + (8.0 * float(index) / float(max(1, item_count))),
+                        stage="REMOTE_CONVERSION_DOWNLOADING_CALIBRATION",
+                        current_item=file_name,
+                    )
+                    self._download(
+                        item_download,
+                        calibration_dir / f"{index:05d}_{file_name}",
+                        monitor,
+                    )
+                self._heartbeat(
+                    monitor,
+                    progress=13,
+                    stage="REMOTE_CONVERSION_CALIBRATION_READY",
+                    current_item=f"{item_count} images",
+                )
+            elif calibration is not None:
+                raise AgentConversionRuntimeError(
+                    "portable non-INT8 conversion must not receive calibration payload"
+                )
             job_dir, job_file, command = self._prepare_job(
                 lease,
                 payload,
                 workdir,
                 source_path,
+                calibration_dir,
             )
             runtime_log = workdir / "runtime.log"
             self._append_log(

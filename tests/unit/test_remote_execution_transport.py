@@ -1892,3 +1892,153 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
             },
         )
     assert changed.value.code == "REMOTE_RKNN_BOARD_SOURCE_CHANGED"
+
+
+def test_rknn_int8_calibration_snapshot_uses_exact_object_refs_and_start_time_downloads(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    project_id = "p-rknn-int8"
+    repository = MaterialRepository(tmp_path / "projects" / project_id)
+
+    calibration_bytes = {
+        "datasets/calibration/a.jpg": b"calibration-a",
+        "datasets/calibration/b.jpg": b"calibration-b",
+    }
+    for index, (key, body) in enumerate(calibration_bytes.items(), start=1):
+        digest = hashlib.sha256(body).hexdigest()
+        provider.objects[key] = {
+            "data": body,
+            "content_type": "image/jpeg",
+            "sha256": digest,
+        }
+        repository.upsert({
+            "id": f"img-{index}",
+            "filename": Path(key).name,
+            "storage_source_id": "remote-models",
+            "storage_type": "s3",
+            "object_key": key,
+            "content_sha256": digest,
+            "size_bytes": len(body),
+            "etag": f"etag-{index}",
+            "dataset_id": "default",
+            "split": "train",
+            "processing_status": "cleaned",
+        })
+
+    snapshot = transport.build_rknn_calibration_snapshot(
+        project_id=project_id,
+        dataset_id="default",
+        split="train",
+        limit=100,
+    )
+    assert snapshot["item_count"] == 2
+    assert snapshot["requested_count"] == 100
+    assert len(snapshot["snapshot_id"]) == 64
+    assert "signed.example.test" not in str(snapshot)
+    assert [item["image_id"] for item in snapshot["items"]] == ["img-1", "img-2"]
+
+    source_bytes = b"portable-source-model"
+    source_sha = hashlib.sha256(source_bytes).hexdigest()
+    provider.objects["model-assets/source.pt"] = {
+        "data": source_bytes,
+        "content_type": "application/octet-stream",
+        "sha256": source_sha,
+    }
+    contract = {
+        "version": 1,
+        "task_kind": "MODEL_CONVERSION",
+        "transport": "object-storage-v1",
+        "conversion": {
+            "schema_version": 1,
+            "target": "rockchip",
+            "source": {
+                "type": "object",
+                "artifact_id": "artifact-source",
+                "storage_source_id": "remote-models",
+                "object_key": "model-assets/source.pt",
+                "file_name": "source.pt",
+                "size_bytes": len(source_bytes),
+                "sha256": source_sha,
+                "content_type": "application/octet-stream",
+            },
+            "source_trace": {
+                "source_id": "version::algorithm-a::version-1",
+                "algorithm_id": "algorithm-a",
+                "version_id": "version-1",
+                "sha256": source_sha,
+            },
+            "params": {
+                "input_size": 640,
+                "batch": 1,
+                "opset": 12,
+                "dynamic": False,
+                "simplify": False,
+                "chip": "rk3568",
+                "precision": "int8",
+                "mean": "0,0,0",
+                "rknn_std": "255,255,255",
+                "calibration_count": 2,
+                "calibration_snapshot": snapshot["snapshot_id"],
+            },
+            "calibration": snapshot,
+            "output": {
+                "storage_source_id": "remote-models",
+                "object_key": "remote-execution/p-rknn-int8/task/conversion-output/model_rk3568.rknn",
+                "file_name": "model_rk3568.rknn",
+                "content_type": "application/octet-stream",
+            },
+        },
+    }
+    task = SimpleNamespace(
+        task_id="rknn-int8-task",
+        project_id=project_id,
+        kind=TaskKind.MODEL_CONVERSION,
+    )
+    resolved = transport.resolve_execution_payload(
+        task,
+        {"remote_execution": contract},
+        {"resolved_execution_config": {"capability": "conversion.rknn"}},
+    )
+
+    assert resolved["target"] == "rockchip"
+    assert resolved["params"]["precision"] == "int8"
+    assert resolved["params"]["calibration_count"] == 2
+    assert resolved["calibration"]["snapshot_id"] == snapshot["snapshot_id"]
+    assert resolved["calibration"]["item_count"] == 2
+    assert all(
+        "signed.example.test/get/" in item["download"]["url"]
+        for item in resolved["calibration"]["items"]
+    )
+    assert len(provider.download_signatures) == 3  # source model + two calibration images
+    assert "signed.example.test" not in str(contract)
+
+
+def test_rknn_int8_calibration_snapshot_rejects_nonportable_material(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    project_id = "p-rknn-local-calibration"
+    repository = MaterialRepository(tmp_path / "projects" / project_id)
+    body = b"local-calibration"
+    repository.upsert({
+        "id": "local-1",
+        "filename": "local.jpg",
+        "storage_source_id": "default_local",
+        "storage_type": "local",
+        "object_key": "uploads/local.jpg",
+        "content_sha256": hashlib.sha256(body).hexdigest(),
+        "size_bytes": len(body),
+        "dataset_id": "default",
+        "split": "train",
+    })
+
+    with pytest.raises(RemoteExecutionTransportError) as failure:
+        transport.build_rknn_calibration_snapshot(
+            project_id=project_id,
+            dataset_id="default",
+            split="train",
+            limit=10,
+        )
+    assert failure.value.code in {
+        "REMOTE_STORAGE_SOURCE_UNAVAILABLE",
+        "REMOTE_STORAGE_NOT_PORTABLE",
+    }

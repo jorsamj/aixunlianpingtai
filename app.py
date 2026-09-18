@@ -11693,6 +11693,7 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             message="服务节点 Agent 当前只开放 ONNX 与瑞芯微 RKNN 转换",
             agent_nodes=[],
             supported_chips=[],
+            supported_precisions=[],
             last_checked_at=now_iso(),
         )
         return item
@@ -11702,6 +11703,7 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     nodes = ServiceNodeRepository(shared_task_repository()).list_public()
     eligible = []
     supported_chips = set()
+    supported_precisions = set()
     for node in nodes:
         if (
             str(node.get("connection_mode") or "") != "agent"
@@ -11712,6 +11714,7 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
         node_runtime = node.get("runtime")
         node_runtime = dict(node_runtime) if isinstance(node_runtime, Mapping) else {}
         node_chips = []
+        node_precisions = ["fp32"] if kind != "rockchip" else []
         if kind == "rockchip":
             rknn = node_runtime.get("rknn_toolkit2")
             rknn = dict(rknn) if isinstance(rknn, Mapping) else {}
@@ -11722,13 +11725,16 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             ]
             if not bool(rknn.get("available")) or not node_chips:
                 continue
+            node_precisions = ["fp16", "int8"]
             supported_chips.update(node_chips)
+        supported_precisions.update(node_precisions)
         eligible.append({
             "node_id": str(node.get("node_id") or ""),
             "display_name": str(node.get("display_name") or ""),
             "build_id": str(node.get("build_id") or ""),
             "capability": required_capability,
             "supported_chips": sorted(set(node_chips)),
+            "supported_precisions": sorted(set(node_precisions)),
         })
 
     if eligible:
@@ -11743,6 +11749,7 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             message=detail,
             agent_nodes=eligible,
             supported_chips=sorted(supported_chips),
+            supported_precisions=sorted(supported_precisions),
             last_checked_at=now_iso(),
         )
     else:
@@ -11757,10 +11764,12 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             message=detail,
             agent_nodes=[],
             supported_chips=[],
+            supported_precisions=[],
             last_checked_at=now_iso(),
         )
     return item
 
+class DeployResourceReq(BaseModel):
 
 class DeployResourceReq(BaseModel):
     name: str
@@ -12076,8 +12085,9 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     if payload.target not in (resource.get("targets") or []):
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
+    params=dict(payload.params or {})
     if resource_mode == "agent" and str(payload.target or "").strip().lower() == "rockchip":
-        requested = dict(payload.params or {})
+        requested = dict(params)
         precision = str(requested.get("precision") or "fp16").strip().lower()
         chip = str(requested.get("chip") or "").strip().lower()
         supported_chips = {
@@ -12085,10 +12095,16 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
             for value in (resource.get("supported_chips") or [])
             if str(value or "").strip()
         }
-        if precision != "fp16":
+        supported_precisions = {
+            str(value or "").strip().lower()
+            for value in (resource.get("supported_precisions") or ["fp16", "int8"])
+            if str(value or "").strip()
+        }
+        if precision not in supported_precisions:
+            allowed_precision = "、".join(sorted(supported_precisions)) or "fp16、int8"
             raise HTTPException(
                 status_code=400,
-                detail="服务节点 Agent 的 RKNN 转换当前只开放浮点模型；INT8 校准传输尚未开放",
+                detail=f"该 RKNN Agent 当前不支持精度 {precision or '未选择'}；可用：{allowed_precision}",
             )
         if not chip or (supported_chips and chip not in supported_chips):
             allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3576"
@@ -12096,9 +12112,31 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
                 status_code=400,
                 detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
             )
+    portable_calibration = None
+    if (
+        resource_mode == "agent"
+        and str(payload.target or "").strip().lower() == "rockchip"
+        and str(params.get("precision") or "fp16").strip().lower() == "int8"
+    ):
+        try:
+            portable_calibration = _remote_execution_transport_service().build_rknn_calibration_snapshot(
+                project_id=project_id,
+                dataset_id=payload.dataset_id,
+                split=payload.calibration_split,
+                limit=max(1, int(payload.calibration_count)),
+            )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message="RKNN INT8 校准集准备失败",
+                detail=str(error),
+                solution="请确认校准图片位于已启用 OSS/S3/MinIO，且每张图片都有稳定 object_key、size 与 SHA256，然后重试。",
+                status_code=error.status_code,
+            ) from error
+        params["calibration_count"] = int(portable_calibration["item_count"])
+        params["calibration_snapshot"] = str(portable_calibration["snapshot_id"])
     job_id=uuid.uuid4().hex[:12];jd=_deploy_job_dir(project_id,job_id);srcd=jd/"source";srcd.mkdir(parents=True,exist_ok=True)
     src=Path(str(source.get("path")));local_src=srcd/src.name;shutil.copy2(src,local_src)
-    params=dict(payload.params or {})
     params.setdefault("config_path",source.get("config_path") or "")
     params.setdefault("model_name",src.stem)
 
@@ -12116,7 +12154,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     if paddle_env.get("paddle2onnx_path") and not resource_for_job.get("paddle2onnx_path"):
         resource_for_job["paddle2onnx_path"]=paddle_env.get("paddle2onnx_path")
     cal_dir=None
-    if payload.target in {"sophon", "rockchip", "tensorrt"} and str(params.get("precision") or "").lower()=="int8":
+    if resource_mode != "agent" and payload.target in {"sophon", "rockchip", "tensorrt"} and str(params.get("precision") or "").lower()=="int8":
         cal_dir=jd/"calibration"
         count=_deploy_prepare_calibration(project_id,payload.dataset_id,payload.calibration_split,max(1,int(payload.calibration_count)),cal_dir)
         if count<=0: raise HTTPException(status_code=400,detail="INT8 转换需要校准图片，但当前选择的数据集/分组没有可用图片")
@@ -12154,6 +12192,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
                 version_id=str(source.get("version_id") or ""),
                 target=payload.target,
                 params=params,
+                calibration_snapshot=portable_calibration,
             )
             job["remote_portability"] = {
                 "status": "ready",

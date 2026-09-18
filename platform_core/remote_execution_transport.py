@@ -838,10 +838,10 @@ class RemoteExecutionTransportService:
                 422,
             )
         precision = str(values.get("precision") or "fp16").strip().lower()
-        if precision != "fp16":
+        if precision not in {"fp16", "int8"}:
             raise RemoteExecutionTransportError(
                 "REMOTE_CONVERSION_PARAMS_INVALID",
-                "portable Agent RKNN conversion currently supports floating model conversion only; INT8 calibration transport is not closed",
+                "portable Agent RKNN conversion supports fp16 or int8 precision",
                 422,
             )
         if common["dynamic"]:
@@ -881,11 +881,221 @@ class RemoteExecutionTransportService:
 
         common.update({
             "chip": chip,
-            "precision": "fp16",
+            "precision": precision,
             "mean": triplet("mean", "0,0,0"),
             "rknn_std": triplet("rknn_std", "255,255,255"),
         })
+        if precision == "int8":
+            common["calibration_count"] = integer(
+                "calibration_count", 100, 1, 1000
+            )
+            snapshot = str(values.get("calibration_snapshot") or "").strip().lower()
+            if snapshot:
+                common["calibration_snapshot"] = _normalized_sha256(
+                    snapshot,
+                    "conversion.params.calibration_snapshot",
+                )
         return common
+
+    def build_rknn_calibration_snapshot(
+        self,
+        *,
+        project_id: str,
+        dataset_id: str,
+        split: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        try:
+            requested = max(1, min(1000, int(limit)))
+        except (TypeError, ValueError) as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                "RKNN calibration_count must be an integer",
+                422,
+            ) from error
+        dataset = str(dataset_id or "default").strip() or "default"
+        split_name = str(split or "train").strip().lower() or "train"
+        if split_name not in {"train", "val", "test", "all"}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                "RKNN calibration split must be train, val, test or all",
+                422,
+            )
+        repository = MaterialRepository(self.project_dir(str(project_id)))
+        revision = repository.current_revision()
+        selected = []
+        for material in repository.read().rows:
+            if str(material.get("dataset_id") or "default") != dataset:
+                continue
+            material_split = str(material.get("split") or "train").strip().lower() or "train"
+            if split_name != "all" and material_split != split_name:
+                continue
+            selected.append(material)
+            if len(selected) >= requested:
+                break
+        if not selected:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_EMPTY",
+                "RKNN INT8 conversion requires calibration images in the selected dataset/split",
+                409,
+            )
+        items = []
+        for material in selected:
+            ref = self._portable_clean_material(None, material)
+            _source, provider = self._source_provider(str(project_id), ref)
+            metadata = provider.stat(str(ref["object_key"]))
+            actual_sha = str(metadata.sha256 or "").strip().lower()
+            if (
+                int(metadata.size_bytes) != int(ref["size_bytes"])
+                or not actual_sha
+                or actual_sha != str(ref["sha256"])
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_CALIBRATION_CHANGED",
+                    f"calibration material {ref['image_id']} does not match durable size/SHA256 evidence",
+                    409,
+                )
+            items.append({
+                "image_id": str(ref["image_id"]),
+                "file_name": str(ref["file_name"]),
+                "storage_source_id": str(ref["storage_source_id"]),
+                "storage_type": str(ref["storage_type"]),
+                "object_key": str(ref["object_key"]),
+                "size_bytes": int(ref["size_bytes"]),
+                "etag": str(ref.get("etag") or ""),
+                "sha256": str(ref["sha256"]),
+            })
+        digest_payload = {
+            "dataset_id": dataset,
+            "split": split_name,
+            "material_revision": int(revision),
+            "items": [
+                {
+                    "image_id": item["image_id"],
+                    "storage_source_id": item["storage_source_id"],
+                    "object_key": item["object_key"],
+                    "size_bytes": item["size_bytes"],
+                    "sha256": item["sha256"],
+                }
+                for item in items
+            ],
+        }
+        snapshot_id = hashlib.sha256(
+            json.dumps(
+                digest_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema_version": 1,
+            "snapshot_id": snapshot_id,
+            "dataset_id": dataset,
+            "split": split_name,
+            "material_revision": int(revision),
+            "requested_count": requested,
+            "item_count": len(items),
+            "items": items,
+        }
+
+    @staticmethod
+    def _normalized_rknn_calibration(
+        calibration: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(calibration, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_REQUIRED",
+                "RKNN INT8 conversion requires a frozen portable calibration snapshot",
+                422,
+            )
+        if int(calibration.get("schema_version") or 0) != 1:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                "RKNN calibration snapshot schema version is invalid",
+                422,
+            )
+        snapshot_id = _normalized_sha256(
+            calibration.get("snapshot_id"),
+            "conversion.calibration.snapshot_id",
+        )
+        try:
+            item_count = int(calibration.get("item_count") or 0)
+            requested_count = int(calibration.get("requested_count") or item_count)
+            revision = int(calibration.get("material_revision") or 0)
+        except (TypeError, ValueError) as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                "RKNN calibration snapshot counters are invalid",
+                422,
+            ) from error
+        raw_items = calibration.get("items")
+        if (
+            not isinstance(raw_items, list)
+            or item_count <= 0
+            or item_count > 1000
+            or len(raw_items) != item_count
+            or requested_count < item_count
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                "RKNN calibration snapshot item count is invalid",
+                422,
+            )
+        items = []
+        seen_ids = set()
+        for raw in raw_items:
+            if not isinstance(raw, Mapping):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                    "RKNN calibration item must be an object reference",
+                    422,
+                )
+            image_id = str(raw.get("image_id") or "").strip()
+            source_id = str(raw.get("storage_source_id") or "").strip()
+            object_key = str(raw.get("object_key") or "").strip()
+            file_name = Path(str(raw.get("file_name") or object_key)).name
+            sha256 = _normalized_sha256(
+                raw.get("sha256"),
+                "conversion.calibration.item.sha256",
+            )
+            size_bytes = _positive_int(
+                raw.get("size_bytes"),
+                "conversion.calibration.item.size_bytes",
+            )
+            if (
+                not image_id
+                or image_id in seen_ids
+                or not source_id
+                or not object_key
+                or not file_name
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                    "RKNN calibration item identity is invalid",
+                    422,
+                )
+            seen_ids.add(image_id)
+            items.append({
+                "image_id": image_id,
+                "file_name": file_name,
+                "storage_source_id": source_id,
+                "storage_type": str(raw.get("storage_type") or ""),
+                "object_key": object_key,
+                "size_bytes": size_bytes,
+                "etag": str(raw.get("etag") or ""),
+                "sha256": sha256,
+            })
+        return {
+            "schema_version": 1,
+            "snapshot_id": snapshot_id,
+            "dataset_id": str(calibration.get("dataset_id") or "default"),
+            "split": str(calibration.get("split") or "train"),
+            "material_revision": revision,
+            "requested_count": requested_count,
+            "item_count": item_count,
+            "items": items,
+        }
 
     def stage_model_conversion(
         self,
@@ -898,11 +1108,23 @@ class RemoteExecutionTransportService:
         version_id: str,
         target: str,
         params: Mapping[str, Any] | None,
+        calibration_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         target = str(target or "").strip().lower()
         if target == "rknn":
             target = "rockchip"
         portable_params = self._portable_conversion_params(target, params)
+        calibration = None
+        if target == "rockchip" and portable_params.get("precision") == "int8":
+            calibration = self._normalized_rknn_calibration(calibration_snapshot)
+            portable_params["calibration_count"] = int(calibration["item_count"])
+            portable_params["calibration_snapshot"] = str(calibration["snapshot_id"])
+        elif calibration_snapshot is not None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                "calibration snapshot is only valid for Rockchip INT8 conversion",
+                422,
+            )
         source = self._configured_source()
         if source is None:
             raise RemoteExecutionTransportError(
@@ -967,6 +1189,7 @@ class RemoteExecutionTransportService:
                     "sha256": expected_sha,
                 },
                 "params": portable_params,
+                **({"calibration": calibration} if calibration is not None else {}),
                 "output": {
                     "storage_source_id": str(source.id),
                     "object_key": output_key,
@@ -1016,10 +1239,30 @@ class RemoteExecutionTransportService:
             )
         target = str(conversion.get("target") or "").strip().lower()
         # Re-normalize instead of trusting task-supplied nested parameters.
-        RemoteExecutionTransportService._portable_conversion_params(
+        params = RemoteExecutionTransportService._portable_conversion_params(
             target,
             conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
         )
+        calibration = conversion.get("calibration")
+        if target == "rockchip" and params.get("precision") == "int8":
+            normalized = RemoteExecutionTransportService._normalized_rknn_calibration(
+                calibration if isinstance(calibration, Mapping) else None
+            )
+            if (
+                str(params.get("calibration_snapshot") or "") != str(normalized["snapshot_id"])
+                or int(params.get("calibration_count") or 0) != int(normalized["item_count"])
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                    "RKNN calibration snapshot does not match portable conversion parameters",
+                    422,
+                )
+        elif calibration is not None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_CALIBRATION_INVALID",
+                "unexpected calibration snapshot for non-INT8 conversion",
+                422,
+            )
         return remote, conversion
 
     def _resolve_conversion_execution_payload(
@@ -1063,6 +1306,32 @@ class RemoteExecutionTransportService:
             )
         trace = conversion.get("source_trace")
         trace = dict(trace) if isinstance(trace, Mapping) else {}
+        resolved_calibration = None
+        if target == "rockchip" and params.get("precision") == "int8":
+            calibration = self._normalized_rknn_calibration(
+                conversion.get("calibration")
+                if isinstance(conversion.get("calibration"), Mapping)
+                else None
+            )
+            resolved_items = []
+            for item in calibration["items"]:
+                resolved_items.append({
+                    "image_id": str(item["image_id"]),
+                    "download": self._download_contract(
+                        str(task.project_id),
+                        item,
+                        require_server_sha256=True,
+                    ),
+                })
+            resolved_calibration = {
+                "schema_version": 1,
+                "snapshot_id": str(calibration["snapshot_id"]),
+                "dataset_id": str(calibration["dataset_id"]),
+                "split": str(calibration["split"]),
+                "material_revision": int(calibration["material_revision"]),
+                "item_count": int(calibration["item_count"]),
+                "items": resolved_items,
+            }
         return {
             "schema_version": 1,
             "task_kind": "MODEL_CONVERSION",
@@ -1084,6 +1353,7 @@ class RemoteExecutionTransportService:
                 "version_id": str(trace.get("version_id") or ""),
                 "sha256": str(trace.get("sha256") or "").strip().lower(),
             },
+            **({"calibration": resolved_calibration} if resolved_calibration is not None else {}),
             "output": {
                 "type": "object",
                 "storage_ref": {

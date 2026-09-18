@@ -519,3 +519,221 @@ def test_agent_conversion_runner_rejects_rknn_claimed_as_hardware_verified(tmp_p
 
     assert outcome.status == "FAILED"
     assert not any(event[0] == "prepare" for event in client.events)
+
+
+class MappedDownloadSession(FakeSession):
+    def __init__(self, bodies):
+        self.bodies = {str(key): bytes(value) for key, value in bodies.items()}
+        self.puts = []
+
+    def get(self, url, *, headers=None, stream=True, timeout=None, allow_redirects=False):
+        if str(url) not in self.bodies:
+            return FakeResponse(404, b"")
+        body = self.bodies[str(url)]
+        return FakeResponse(
+            200,
+            body,
+            {"Content-Length": str(len(body))},
+        )
+
+
+def _rknn_int8_lease(source_bytes: bytes, calibration_bodies: list[bytes]):
+    lease = _rknn_lease(source_bytes, chip="rk3568")
+    payload = dict(lease.payload)
+    params = dict(payload["params"])
+    item_evidence = []
+    for index, body in enumerate(calibration_bodies, start=1):
+        item_evidence.append({
+            "image_id": f"cal-{index}",
+            "download": {
+                "method": "GET",
+                "url": f"https://objects.example.test/calibration/{index}.jpg",
+                "headers": {},
+                "file_name": f"cal-{index}.jpg",
+                "size_bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+            },
+        })
+    snapshot_payload = {
+        "dataset_id": "default",
+        "split": "train",
+        "material_revision": 7,
+        "items": [
+            {
+                "image_id": item["image_id"],
+                "sha256": item["download"]["sha256"],
+                "size_bytes": item["download"]["size_bytes"],
+            }
+            for item in item_evidence
+        ],
+    }
+    snapshot_id = hashlib.sha256(
+        json.dumps(snapshot_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    params.update({
+        "precision": "int8",
+        "calibration_count": len(calibration_bodies),
+        "calibration_snapshot": snapshot_id,
+    })
+    payload["params"] = params
+    payload["calibration"] = {
+        "schema_version": 1,
+        "snapshot_id": snapshot_id,
+        "dataset_id": "default",
+        "split": "train",
+        "material_revision": 7,
+        "item_count": len(calibration_bodies),
+        "items": item_evidence,
+    }
+    return RemoteExecutionLease(
+        task_id=lease.task_id,
+        kind=lease.kind,
+        project_id=lease.project_id,
+        generation=lease.generation,
+        lease_token=lease.lease_token,
+        lease_expires_at=lease.lease_expires_at,
+        worker_id=lease.worker_id,
+        payload=payload,
+        assignment=lease.assignment,
+        transport=lease.transport,
+    )
+
+
+def _rknn_int8_worker_script(root: Path, *, expected_count=2):
+    script = root / "deployment_worker.py"
+    script.write_text(
+        f"""
+import argparse, json
+from pathlib import Path
+
+p=argparse.ArgumentParser()
+p.add_argument('--job-dir', required=True)
+args=p.parse_args()
+job_dir=Path(args.job_dir)
+job=json.loads((job_dir/'job.json').read_text(encoding='utf-8'))
+params=job.get('params') or {{}}
+assert params.get('precision') == 'int8'
+assert int(params.get('calibration_count') or 0) == {int(expected_count)}
+snapshot=str(params.get('calibration_snapshot') or '')
+assert len(snapshot) == 64
+calibration_dir=Path(str(job.get('calibration_dir') or ''))
+files=sorted(path for path in calibration_dir.iterdir() if path.is_file())
+assert len(files) == {int(expected_count)}
+assert all(path.stat().st_size > 0 for path in files)
+artifacts=job_dir/'artifacts'
+artifacts.mkdir(parents=True, exist_ok=True)
+chip=str(params.get('chip') or 'rk3568')
+out=artifacts/f'model_{{chip}}.rknn'
+out.write_bytes(b'verified-rknn-int8-result')
+manifest={{
+    'status': 'converted_unverified',
+    'runtime_verified': False,
+    'hardware_verified': False,
+    'target': {{'kind': 'rockchip', 'chip': chip, 'precision': 'int8'}},
+    'outputs': [{{'name': out.name}}],
+}}
+(artifacts/'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+job.update(
+    status='done',
+    progress=100,
+    stage='done',
+    runtime_verified=False,
+    hardware_verified=False,
+    validation_status='converted_unverified',
+)
+(job_dir/'job.json').write_text(json.dumps(job), encoding='utf-8')
+(job_dir/'convert.log').write_text('rknn int8 conversion worker complete\\n', encoding='utf-8')
+""",
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_agent_conversion_runner_downloads_frozen_rknn_int8_calibration_before_worker(tmp_path):
+    source = b"portable-rknn-int8-source-model"
+    calibration = [b"calibration-image-a", b"calibration-image-b"]
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _rknn_int8_worker_script(runtime_root, expected_count=2)
+    client = FakeClient()
+    bodies = {"https://objects.example.test/source": source}
+    for index, body in enumerate(calibration, start=1):
+        bodies[f"https://objects.example.test/calibration/{index}.jpg"] = body
+    session = MappedDownloadSession(bodies)
+    runner = AgentConversionRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        rknn_python=sys.executable,
+        transfer_session=session,
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(_rknn_int8_lease(source, calibration))
+
+    assert outcome.status == "BLOCKED_BY_HARDWARE"
+    assert outcome.result_ref == "remote-results/3/result.json"
+    assert session.puts[0]["body"] == b"verified-rknn-int8-result"
+    stages = [
+        event[1].get("stage")
+        for event in client.events
+        if event[0] == "heartbeat"
+    ]
+    assert "REMOTE_CONVERSION_DOWNLOADING_CALIBRATION" in stages
+    assert "REMOTE_CONVERSION_CALIBRATION_READY" in stages
+    confirm = next(event for event in client.events if event[0] == "confirm")
+    assert confirm[1]["engine"] == "rknn-toolkit2"
+    assert confirm[1]["chip"] == "rk3568"
+    assert client.finish_calls[-1]["status"] == "BLOCKED_BY_HARDWARE"
+
+
+def test_agent_conversion_runner_rejects_rknn_int8_calibration_hash_mismatch(tmp_path):
+    source = b"portable-rknn-int8-source-model"
+    calibration = [b"calibration-image-a"]
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _rknn_int8_worker_script(runtime_root, expected_count=1)
+    client = FakeClient()
+    lease = _rknn_int8_lease(source, calibration)
+    payload = dict(lease.payload)
+    calibration_payload = dict(payload["calibration"])
+    items = [dict(item) for item in calibration_payload["items"]]
+    items[0] = dict(items[0])
+    items[0]["download"] = dict(items[0]["download"])
+    items[0]["download"]["sha256"] = "0" * 64
+    calibration_payload["items"] = items
+    payload["calibration"] = calibration_payload
+    bad_lease = RemoteExecutionLease(
+        task_id=lease.task_id,
+        kind=lease.kind,
+        project_id=lease.project_id,
+        generation=lease.generation,
+        lease_token=lease.lease_token,
+        lease_expires_at=lease.lease_expires_at,
+        worker_id=lease.worker_id,
+        payload=payload,
+        assignment=lease.assignment,
+        transport=lease.transport,
+    )
+    session = MappedDownloadSession({
+        "https://objects.example.test/source": source,
+        "https://objects.example.test/calibration/1.jpg": calibration[0],
+    })
+    runner = AgentConversionRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        rknn_python=sys.executable,
+        transfer_session=session,
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(bad_lease)
+
+    assert outcome.status == "FAILED"
+    assert not any(event[0] == "prepare" for event in client.events)
+    assert client.finish_calls[-1]["status"] == "FAILED"
