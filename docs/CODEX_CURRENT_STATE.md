@@ -4,6 +4,69 @@
 
 
 
+## Current closure — Remote MODEL_CONVERSION / ONNX Runtime CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+`MODEL_CONVERSION` is now the third real cross-machine Agent task kind. The
+closed remote target is ONNX only. Vendor conversions such as TensorRT, RKNN,
+Sophon and Ascend remain environment-specific and must not be inferred as
+remote-capable from this closure.
+
+The deployment resource model now accepts explicit `mode=agent`. Agent resource
+health is derived from the Service Node Registry: the resource is ready only
+when at least one fresh enabled Agent has effective `conversion` capability.
+Creation rechecks that state and portable staging failures fail closed rather
+than silently falling back to a local conversion.
+
+The durable conversion request keeps verified object references, source trace,
+portable ONNX params and an Agent execution-mode marker. A dedicated Worker
+capability fence prevents the legacy path-bound ConversionHandler from claiming
+an Agent conversion while Central Scheduler assignment owns it.
+
+`AgentConversionRunner` is database-free. It verifies model downloads against
+size/SHA256 evidence, resolves Python and `deployment_worker.py` locally on the
+node, persists ProcessIdentity before running a real subprocess, renews the
+execution lease, forwards bounded logs/progress, and kills the exact process
+tree when cancellation/fencing/shutdown wins. Runtime startup recovery is
+fail-closed; unresolved stale conversion processes make the runner unready and
+heartbeat withdraws the conversion capability.
+
+Success requires the local worker to report `status=done`,
+`runtime_verified=true`, `validation_status=runtime_verified`, a verified
+ONNX manifest, and exactly one non-empty ONNX artifact. The Agent recomputes
+output hash/size, uses generation-scoped immutable prepare/PUT/confirm transport,
+and enters finalization only after server confirmation.
+
+A further usability gap is closed on the server: after the finalization fence,
+the control plane downloads the verified object again, checks size/SHA256, and
+commits `deploy/jobs/<task>/artifacts/model.onnx`, `manifest.json`, and
+`job.json`. Existing deployment artifact listing/download packaging therefore
+continues to use the same local deploy-job truth instead of exposing a second UI
+result model.
+
+A real executor race discovered by the conversion tests was also fixed: a
+globally supported task kind is no longer enough to call `start_execution`.
+The loop now checks that this concrete Agent still has the corresponding
+effective capability and a ready runner before acquiring the execution lease.
+A stale assignment to an Agent whose runtime became unsafe therefore remains an
+assignment/retry problem, not a false RUNNING execution.
+
+Final acceptance:
+- Remote Conversion Runtime `35306100598`: control-plane / Ubuntu / Windows success.
+- Node Agent Executor `35306100599`: API / Ubuntu / Windows success.
+- Central Node Assignment `35306100621`: API / Ubuntu / Windows success.
+- Portable Deployment `35306100612`: production API / Ubuntu / Windows success.
+- Remote Training Runtime `35306100615`: production API / Ubuntu / Windows success.
+- Temporary draft PR #15 was closed without merge.
+
+**OPEN / next:** Remote MATERIAL_IMPORT Runtime. Move large archive/image import
+work to a real material-import Agent without granting access to central
+MaterialRepository/SQLite/NFS. The Agent should safely unpack/parse, identify
+label formats, perform deterministic conversion/basic validation, upload
+immutable source/material objects to configured object storage, and let the
+control plane commit only server-confirmed metadata/object refs.
+
 ## Current closure — Remote TRAINING Runtime CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
