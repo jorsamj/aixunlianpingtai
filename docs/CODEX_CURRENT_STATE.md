@@ -4,6 +4,45 @@
 
 
 
+## Current closure — Portable Deployment + Fenced Result Publication CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Deployment test is now the first task kind with a real version-1
+`object-storage-v1` portable contract. Durable task truth keeps only object
+references and content evidence. Temporary signed transport URLs are minted
+just in time and never stored in Scheduler truth.
+
+Remote output publication is execution-fenced. The Agent must compute local
+SHA256 and size before requesting `result-upload/prepare`. S3/MinIO and OSS
+PUT signatures bind size, SHA256 metadata, content type and no-overwrite
+semantics. Actual output keys are scoped by execution generation. The control
+plane then verifies the uploaded object through provider `stat()`, requires
+matching size and SHA256 metadata, and uses the existing finalization
+transaction as the atomic cancellation-vs-commit gate.
+
+Confirmed durable truth lives under
+`remote-results/<generation>/upload.json` and
+`remote-results/<generation>/result.json`; signed URLs are not persisted.
+Portable remote deployment cannot finalize or finish successfully before
+confirmation. A successful finish ignores any Agent-provided result_ref and
+uses the current generation's confirmed server result.
+
+Validation:
+- Portable transport closure run `35292400487`.
+- Result publication Agent run `35295427105`.
+- Result publication Portable run `35295427110`.
+- Central regression run `35295427100`.
+All directly relevant API / Ubuntu / Windows jobs passed. Temporary CI PRs
+were closed without merge.
+
+**OPEN / next:** implement the real database-free Agent-side deployment runner,
+then integrate it into `node_agent.py`. The runner must verify downloads,
+use node-local runtime/runner paths, kill the exact local process tree on
+cancel/fence, compute output evidence, execute prepare/PUT/confirm, finalize,
+finish, and clean the task-local workdir. Real cross-machine deployment test
+is not CLOSED until that path is exercised.
+
 ## Current closure — Remote Portability Gate + Production Runtime Mount CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
