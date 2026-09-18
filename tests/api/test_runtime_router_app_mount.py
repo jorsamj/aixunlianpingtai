@@ -50,6 +50,9 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "agent_execution_payload_resolver",
         "agent_result_upload_preparer",
         "agent_result_upload_confirmer",
+        "agent_result_commit_handler",
+        "agent_training_model_upload_preparer",
+        "agent_training_model_upload_confirmer",
     }
     assert isinstance(keywords["agent_execution_payload_resolver"], ast.Name)
     assert keywords["agent_execution_payload_resolver"].id == "_resolve_agent_execution_payload"
@@ -57,6 +60,18 @@ def test_production_app_mounts_runtime_router_exactly_once():
     assert keywords["agent_result_upload_preparer"].id == "_prepare_agent_result_upload"
     assert isinstance(keywords["agent_result_upload_confirmer"], ast.Name)
     assert keywords["agent_result_upload_confirmer"].id == "_confirm_agent_result_upload"
+    assert isinstance(keywords["agent_result_commit_handler"], ast.Name)
+    assert keywords["agent_result_commit_handler"].id == "_commit_agent_result_publication"
+    assert isinstance(keywords["agent_training_model_upload_preparer"], ast.Name)
+    assert (
+        keywords["agent_training_model_upload_preparer"].id
+        == "_prepare_agent_training_model_uploads"
+    )
+    assert isinstance(keywords["agent_training_model_upload_confirmer"], ast.Name)
+    assert (
+        keywords["agent_training_model_upload_confirmer"].id
+        == "_confirm_agent_training_model_uploads"
+    )
 
 
 def test_v63_subrouters_keep_single_composition_owner():
@@ -82,6 +97,15 @@ def test_v63_subrouters_keep_single_composition_owner():
     ) == 1
     assert runtime_source.count(
         "result_upload_confirmer=agent_result_upload_confirmer"
+    ) == 1
+    assert runtime_source.count(
+        "result_commit_handler=agent_result_commit_handler"
+    ) == 1
+    assert runtime_source.count(
+        "training_model_upload_preparer=agent_training_model_upload_preparer"
+    ) == 1
+    assert runtime_source.count(
+        "training_model_upload_confirmer=agent_training_model_upload_confirmer"
     ) == 1
 
 
