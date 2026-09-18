@@ -108,8 +108,8 @@ def claimed(task_id="task-1", kind="DEPLOYMENT_TEST"):
 def test_executor_reports_only_capabilities_this_agent_build_can_run():
     assert executable_agent_capabilities(
         ["training", "deployment-test", "conversion", "deployment-test"]
-    ) == ["deployment-test", "training"]
-    assert executable_agent_capabilities(["training", "conversion"]) == ["training"]
+    ) == ["conversion", "deployment-test", "training"]
+    assert executable_agent_capabilities(["training", "conversion"]) == ["conversion", "training"]
 
 
 def test_executor_withdraws_training_capability_when_runner_recovery_is_unsafe():
@@ -150,6 +150,45 @@ def test_run_once_claims_starts_and_dispatches_one_deployment_task():
     assert status.completed_tasks == 1
     assert status.last_outcome == "SUCCEEDED"
     assert status.last_error == ""
+
+
+def test_conversion_capability_dispatches_to_registered_conversion_runner():
+    client = FakeClient([claimed(kind="MODEL_CONVERSION")])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.enabled is True
+    assert loop.effective_capabilities() == ("conversion",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert deployment_runner.calls == []
+    assert conversion_runner.calls == ["task-1"]
+    assert loop.status().completed_tasks == 1
+
+
+def test_executor_withdraws_conversion_capability_when_cleanup_is_unsafe():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner(
+        ready=False,
+        recovery_error="stale conversion process cleanup could not be verified",
+    )
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion", "deployment-test"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.capabilities == ("conversion", "deployment-test")
+    assert loop.effective_capabilities() == ("deployment-test",)
+    assert "conversion process cleanup" in loop.status().last_error
 
 
 def test_training_capability_dispatches_to_registered_training_runner():
