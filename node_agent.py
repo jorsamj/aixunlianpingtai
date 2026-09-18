@@ -14,6 +14,7 @@ from platform_core.build_identity import resolve_build_id
 from platform_core.node_agent_deployment_runtime import AgentDeploymentRunner
 from platform_core.node_agent_executor_loop import (
     NodeAgentExecutorLoop,
+    SUPPORTED_AGENT_TASK_KINDS,
     executable_agent_capabilities,
 )
 from platform_core.node_agent_executor_runtime import (
@@ -147,10 +148,24 @@ def _build_executor(
         },
         heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
     )
+    runners = {}
+    if "training" in reported_capabilities:
+        # Keep the training dependency surface lazy: a deployment-only node
+        # must not require Pillow/YAML/training packages merely to heartbeat.
+        from platform_core.node_agent_training_runtime import AgentTrainingRunner
+
+        runners["TRAINING"] = AgentTrainingRunner(
+            client,
+            workdirs,
+            runtime_root=Path(__file__).resolve().parent,
+            ultralytics_python=ultralytics_python,
+            heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+        )
     return NodeAgentExecutorLoop(
         client,
         deployment_runner,
         capabilities=reported_capabilities,
+        runners=runners,
         poll_interval=max(0.5, float(args.executor_poll_interval)),
     )
 
@@ -188,7 +203,14 @@ def main(argv=None) -> int:
             "unsupported_remote_capabilities": unsupported_remote_capabilities,
             "executor": {
                 "enabled": bool(reported_capabilities),
-                "supported_task_kinds": ["DEPLOYMENT_TEST"],
+                "supported_task_kinds": sorted(
+                    kind
+                    for kind in SUPPORTED_AGENT_TASK_KINDS
+                    if (
+                        (kind == "DEPLOYMENT_TEST" and "deployment-test" in reported_capabilities)
+                        or (kind == "TRAINING" and "training" in reported_capabilities)
+                    )
+                ),
                 "state_dir": str(state_dir / "executor"),
                 "ultralytics_python": str(args.ultralytics_python or "").strip()
                 or str(runtime_probe.get("python_executable") or sys.executable),
