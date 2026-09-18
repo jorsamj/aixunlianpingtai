@@ -169,7 +169,11 @@ def task_remote_execution_contract(task, artifacts) -> dict[str, Any] | None:
 
 def task_node_connection_mode(task, artifacts) -> str | None:
     """Return an explicit node connection-mode requirement when product intent demands it."""
-    if task.kind not in {TaskKind.TRAINING, TaskKind.MODEL_CONVERSION}:
+    if task.kind not in {
+        TaskKind.TRAINING,
+        TaskKind.MODEL_CONVERSION,
+        TaskKind.MATERIAL_IMPORT,
+    }:
         return None
     try:
         payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
@@ -181,9 +185,9 @@ def task_node_connection_mode(task, artifacts) -> str | None:
         if str(payload.get("target") or "local").strip().lower() == "remote":
             return "agent"
         return None
-    # Conversion remains local until the real Agent-side conversion runner is
-    # enabled. A portable contract may be staged ahead of time without making
-    # the task remotely executable.
+    # Conversion/material import remain local unless the producer explicitly
+    # publishes an Agent execution mode. A portable contract alone never changes
+    # product intent or silently migrates a local task to a remote node.
     mode = str(payload.get("execution_mode") or "local").strip().lower()
     return "agent" if mode == "agent" else "local"
 
