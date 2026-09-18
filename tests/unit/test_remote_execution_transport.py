@@ -2117,6 +2117,7 @@ def test_detection_zip_import_rejects_dataset_yaml(tmp_path):
 
 def test_material_storage_rescan_allows_root_only_for_explicit_rescan_intent(tmp_path):
     provider = FakeProvider()
+    provider.health_check = lambda: SimpleNamespace(ok=True, message="ok")
     transport = service(tmp_path, provider)
 
     with pytest.raises(RemoteExecutionTransportError) as root_blocked:
