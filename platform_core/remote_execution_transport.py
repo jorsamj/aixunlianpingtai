@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .algorithms import list_algorithms
+from .algorithms import attach_version, list_algorithms, resolve_current_version_id
 from filelock import FileLock, Timeout
 
 from .model_artifacts import ModelArtifactService
@@ -1051,6 +1051,279 @@ class RemoteExecutionTransportService:
                 "recovered_from_completed_work": False,
             },
         }
+
+    def _commit_training_result(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, training = self._training_remote(task, payload)
+        generation = _positive_int(
+            evidence.get("execution_generation"),
+            "result.execution_generation",
+        )
+        result = confirmed.get("result")
+        if not isinstance(result, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified training result metadata is missing",
+                500,
+            )
+        stage = self._training_result_stage_root(str(task.task_id), generation)
+        extracted = stage / "verified"
+        marker = stage / "verified.json"
+        if not marker.is_file() or not extracted.is_dir():
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_RESULT_STAGE_MISSING",
+                "verified training result staging is missing before commit",
+                409,
+            )
+
+        project = self.project_dir(str(task.project_id)).resolve()
+        models_root = (project / "models").resolve()
+        models_root.mkdir(parents=True, exist_ok=True)
+        algorithms = list_algorithms(self.algorithms_file(str(task.project_id)))
+        algorithm_id = str(payload.get("algorithm_asset_id") or "").strip()
+        algorithm = next(
+            (row for row in algorithms if str(row.get("id") or "") == algorithm_id),
+            None,
+        )
+        if algorithm is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_ALGORITHM_MISSING",
+                "training algorithm no longer exists at commit time",
+                409,
+            )
+
+        model_contract = training.get("model")
+        if not isinstance(model_contract, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "training base model contract is missing at commit time",
+                422,
+            )
+        expected_base_id = str(model_contract.get("base_version_id") or "").strip()
+        current_base_id = str(resolve_current_version_id(algorithm, framework="ultralytics") or "")
+        if expected_base_id:
+            if current_base_id != expected_base_id:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_BASE_VERSION_STALE",
+                    "algorithm current version changed while remote training was running",
+                    409,
+                )
+        elif current_base_id:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_BASE_VERSION_STALE",
+                "algorithm gained a newer current version while first-run remote training was running",
+                409,
+            )
+
+        version_id = "rt" + hashlib.sha256(
+            f"{task.task_id}:{generation}:{training.get('snapshot_id')}".encode("utf-8")
+        ).hexdigest()[:10]
+        existing_version = next(
+            (
+                row
+                for row in (algorithm.get("versions") or [])
+                if str(row.get("id") or "") == version_id
+            ),
+            None,
+        )
+        if existing_version is not None:
+            return {
+                "algorithm_id": algorithm_id,
+                "version_id": version_id,
+                "version_name": str(existing_version.get("version_name") or ""),
+                "model_artifacts_committed": True,
+            }
+
+        verified_models = result.get("verified_models")
+        if not isinstance(verified_models, list) or not verified_models:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_MISSING",
+                "verified training result contains no deliverable model",
+                409,
+            )
+        committed_models: list[dict[str, Any]] = []
+        best_path = ""
+        last_path = ""
+        for index, item in enumerate(verified_models):
+            if not isinstance(item, Mapping):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_INVALID",
+                    "verified training model metadata is invalid",
+                    422,
+                )
+            ref = str(item.get("ref") or "").strip().replace("\\", "/")
+            if not ref.startswith("models/") or ".." in ref.split("/"):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_INVALID",
+                    "verified training model reference is unsafe",
+                    422,
+                )
+            source = (extracted / Path(*ref.split("/"))).resolve()
+            if extracted not in source.parents or not source.is_file():
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_MISSING",
+                    "verified training model is missing from staged result",
+                    409,
+                )
+            expected_sha = _normalized_sha256(
+                item.get("sha256"),
+                "training.model.sha256",
+            )
+            expected_size = _positive_int(
+                item.get("size_bytes"),
+                "training.model.size_bytes",
+            )
+            if int(source.stat().st_size) != expected_size or _sha256(source) != expected_sha:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_EVIDENCE_MISMATCH",
+                    "staged training model changed after result verification",
+                    409,
+                )
+            role = str(item.get("role") or "model").strip().lower()
+            suffix = source.suffix.lower() or ".pt"
+            destination = (
+                models_root
+                / f"remote_{_safe_segment(task.task_id, 'task')}_g{generation}_{role}_{expected_sha[:12]}{suffix}"
+            ).resolve()
+            if models_root not in destination.parents:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_TRAINING_MODEL_DESTINATION_INVALID",
+                    "training model destination escaped project model directory",
+                    500,
+                )
+            if destination.exists():
+                if (
+                    not destination.is_file()
+                    or int(destination.stat().st_size) != expected_size
+                    or _sha256(destination) != expected_sha
+                ):
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_TRAINING_MODEL_CONFLICT",
+                        "existing committed model path has different content",
+                        409,
+                    )
+            else:
+                temporary = destination.with_name(f".{destination.name}.{version_id}.tmp")
+                temporary.unlink(missing_ok=True)
+                try:
+                    shutil.copy2(source, temporary)
+                    if (
+                        int(temporary.stat().st_size) != expected_size
+                        or _sha256(temporary) != expected_sha
+                    ):
+                        raise RemoteExecutionTransportError(
+                            "REMOTE_TRAINING_MODEL_COPY_FAILED",
+                            "copied training model failed size/SHA256 verification",
+                            500,
+                        )
+                    temporary.replace(destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            committed_models.append({
+                "role": role,
+                "path": str(destination),
+                "sha256": expected_sha,
+                "size_bytes": expected_size,
+            })
+            if role == "best":
+                best_path = str(destination)
+            elif role == "last":
+                last_path = str(destination)
+
+        primary = best_path or last_path or str(committed_models[0]["path"])
+        report = result.get("training_report")
+        report = dict(report) if isinstance(report, Mapping) else {}
+        completion = result.get("completion")
+        completion = dict(completion) if isinstance(completion, Mapping) else {}
+        test_result = report.get("test_result")
+        partial = (
+            isinstance(test_result, Mapping)
+            and str(test_result.get("status") or "").strip().lower() == "failed"
+        )
+        finished_at = str(completion.get("finished_at") or "")
+        if not finished_at:
+            finished_at = str(getattr(task, "updated_at", "") or "")
+        version_name = f"remote-g{generation}-{version_id[-6:]}"
+        version = {
+            "id": version_id,
+            "version_name": version_name,
+            "stored_path": primary,
+            "best_path": best_path,
+            "last_path": last_path,
+            "model_name": Path(primary).name,
+            "verified_models": committed_models,
+            "training_status": "PARTIAL_SUCCESS" if partial else "SUCCEEDED",
+            "training_outcome": str(result.get("training_outcome") or ""),
+            "completion_reason": str(completion.get("completion_reason") or ""),
+            "base_version_id": expected_base_id or None,
+            "base_version_name": str(model_contract.get("base_version_name") or ""),
+            "base_selection_reason": str(model_contract.get("base_selection_reason") or ""),
+            "metrics": dict(report.get("metrics") or {}) if isinstance(report.get("metrics"), Mapping) else {},
+            "artifact_verified": True,
+            "trainable": True,
+            "framework": "ultralytics",
+            "snapshot_id": str(training.get("snapshot_id") or ""),
+            "result_ref": f"remote-results/{generation}/result.json",
+            "task_id": str(task.task_id),
+            "job_id": str(task.task_id),
+            "execution_generation": generation,
+            "created_at": finished_at,
+            "finished_at": finished_at,
+        }
+
+        # Upload/register the verified models in the unified model-asset store
+        # before exposing the algorithm version. A retry is safe because both
+        # the version id and model content identity are deterministic.
+        artifact_summary = self.model_artifacts.ingest_version(
+            str(task.project_id),
+            algorithm,
+            version,
+        )
+        if (
+            int(artifact_summary.get("discovered") or 0) <= 0
+            or int(artifact_summary.get("failed") or 0) > 0
+            or int(artifact_summary.get("pending") or 0) > 0
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_MODEL_ASSET_COMMIT_FAILED",
+                "verified remote training models were not fully committed to model asset storage",
+                409,
+            )
+
+        attach_version(
+            self.algorithms_file(str(task.project_id)),
+            algorithm_id,
+            version,
+        )
+        return {
+            "algorithm_id": algorithm_id,
+            "version_id": version_id,
+            "version_name": version_name,
+            "model_artifacts_committed": True,
+            "model_artifact_summary": {
+                "discovered": int(artifact_summary.get("discovered") or 0),
+                "uploaded": int(artifact_summary.get("uploaded") or 0),
+                "failed": int(artifact_summary.get("failed") or 0),
+                "pending": int(artifact_summary.get("pending") or 0),
+            },
+        }
+
+    def commit_result_publication(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        kind = str(getattr(task.kind, "value", task.kind))
+        if kind == "TRAINING":
+            return self._commit_training_result(task, payload, evidence, confirmed)
+        return {}
 
     def resolve_execution_payload(
         self,
