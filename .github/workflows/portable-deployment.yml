@@ -167,8 +167,9 @@ jobs:
           grep -Fq 'parser.add_argument("--device", default="")' predict_ultralytics_runner.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
-          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"conversion", "deployment-test", "training"})' platform_core/node_agent_executor_loop.py
-          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "MODEL_CONVERSION", "TRAINING"})' platform_core/node_agent_executor_loop.py
+          grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_IMPORT": "material-import"' platform_core/node_agent_executor_loop.py
           grep -Fq 'def effective_capabilities' platform_core/node_agent_executor_loop.py
           grep -Fq 'getattr(runner, "ready", True) is False' platform_core/node_agent_executor_loop.py
           grep -Fq 'getattr(runner, "recovery_error", "")' platform_core/node_agent_executor_loop.py
