@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import os
 import time
+import zipfile
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
@@ -595,6 +597,97 @@ class StorageImportHandler:
         reconcile_page()
         return selected, indexed, imported
 
+    def _remote_material_publisher(self, context, request):
+        if str(request.get("execution_mode") or "local").strip().lower() != "agent":
+            return None
+        if not context.task.result_ref:
+            raise RuntimeError("confirmed Agent material import has no verified review result")
+        result = context.artifacts.read_json(
+            context.task.task_id,
+            context.task.result_ref,
+            default={},
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("confirmed Agent material review result is unavailable")
+        archive_ref = str(result.get("material_review_archive_ref") or "")
+        staging_ref = str(result.get("material_staging_ref") or "")
+        expected_sha = str(result.get("output_sha256") or "").strip().lower()
+        expected_size = int(result.get("output_size_bytes") or 0)
+        if not archive_ref or not staging_ref or len(expected_sha) != 64 or expected_size <= 0:
+            raise RuntimeError("confirmed Agent material review metadata is incomplete")
+        archive_path = context.artifacts.artifact_path(
+            context.task.task_id,
+            archive_ref,
+        )
+        if not archive_path.is_file() or archive_path.is_symlink():
+            raise RuntimeError("verified Agent material review archive is missing")
+        if int(archive_path.stat().st_size) != expected_size:
+            raise RuntimeError("verified Agent material review archive size changed")
+        with archive_path.open("rb") as stream:
+            if _sha256_stream(stream) != expected_sha:
+                raise RuntimeError("verified Agent material review archive hash changed")
+
+        from platform_core.remote_material_import import RemoteMaterialStagingStore
+        staging = RemoteMaterialStagingStore(
+            context.artifacts.artifact_path(
+                context.task.task_id,
+                staging_ref,
+            )
+        )
+        _source, provider = self._source_and_provider(context, request)
+
+        def publish(rows):
+            rows = list(rows)
+            if not rows:
+                return
+            mappings = staging.get_many(row["object_key"] for row in rows)
+            with zipfile.ZipFile(archive_path, "r") as review:
+                for row in rows:
+                    if context.cancel_requested():
+                        raise InterruptedError("material import cancelled before object publication")
+                    key = str(row["object_key"])
+                    mapping = mappings.get(key)
+                    if mapping is None:
+                        raise RuntimeError("confirmed material has no verified review payload mapping")
+                    expected_row_sha = str(row["content_sha256"] or "").strip().lower()
+                    expected_row_size = int(row["size_bytes"] or 0)
+                    if (
+                        str(mapping.get("sha256") or "").lower() != expected_row_sha
+                        or int(mapping.get("size_bytes") or 0) != expected_row_size
+                    ):
+                        raise RuntimeError("verified review payload evidence changed before publication")
+                    if provider.exists(key):
+                        metadata = provider.stat(key)
+                    else:
+                        member = str(mapping.get("payload_member") or "")
+                        try:
+                            info = review.getinfo(member)
+                        except KeyError as error:
+                            raise RuntimeError("verified review payload member is missing") from error
+                        if int(info.file_size) != expected_row_size:
+                            raise RuntimeError("verified review ZIP member size changed")
+                        with review.open(info, "r") as stream:
+                            metadata = provider.upload(
+                                key,
+                                stream,
+                                content_type=(
+                                    mimetypes.guess_type(str(row.get("filename") or key))[0]
+                                    or "application/octet-stream"
+                                ),
+                                metadata={
+                                    "sha256": expected_row_sha,
+                                    "purpose": "confirmed-agent-material-import",
+                                },
+                            )
+                    if (
+                        int(metadata.size_bytes) != expected_row_size
+                        or str(metadata.sha256 or "").strip().lower() != expected_row_sha
+                    ):
+                        raise RuntimeError(
+                            "published material object does not match verified review evidence"
+                        )
+        return publish
+
     def _index_confirmed(self, context, request):
         confirmation = context.artifacts.read_json(
             context.task.task_id, "scan/confirmation.json", default=None,
@@ -644,6 +737,7 @@ class StorageImportHandler:
         index_duplicates = max(0, int(checkpoint.get("index_duplicates", 0) or 0))
         indexed_at_least = max(0, int(checkpoint.get("indexed_at_least", 0) or 0))
         progress_counts = store.indexing_counts()
+        remote_publisher = self._remote_material_publisher(context, request)
 
         while True:
             if context.cancel_requested():
@@ -685,6 +779,10 @@ class StorageImportHandler:
                     continue
                 accepted_hashes.add(content_hash)
                 resolved.append(row)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
+            if remote_publisher is not None:
+                remote_publisher(resolved)
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
             store.bind_index_batch(resolved)
