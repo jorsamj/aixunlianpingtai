@@ -11,7 +11,7 @@ import json
 import mimetypes
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from .algorithms import attach_version, list_algorithms, resolve_current_version_id
@@ -372,6 +372,120 @@ class RemoteExecutionTransportService:
                     "object_key": output_key,
                     "file_name": "result.jpg",
                     "content_type": "image/jpeg",
+                },
+            },
+        }
+
+    def stage_material_storage_scan(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        storage_source_id: str,
+        prefix: str,
+        recursive: bool,
+        import_format: str = "images",
+        dataset_yaml: str = "",
+    ) -> dict[str, Any]:
+        source = self.storage_sources_factory().get(str(storage_source_id))
+        if source is None or not source.enabled:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_STORAGE_UNAVAILABLE",
+                "selected material storage source is unavailable",
+                409,
+            )
+        try:
+            storage_type = StorageType.parse(source.type)
+        except ValueError as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_STORAGE_INVALID",
+                "selected material storage source type is invalid",
+                422,
+            ) from error
+        if storage_type not in {StorageType.OSS, StorageType.S3}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_STORAGE_NOT_PORTABLE",
+                "Agent storage scan requires OSS/S3/MinIO object storage",
+                409,
+            )
+        normalized_format = str(import_format or "images").strip().lower()
+        if normalized_format not in {"images", "yolo"}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
+                "Agent storage scan currently supports images or yolo",
+                422,
+            )
+        raw_prefix = str(prefix or "").strip().replace("\\", "/").strip("/")
+        if raw_prefix:
+            try:
+                raw_prefix = safe_member_path(raw_prefix).as_posix()
+            except Exception as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_PREFIX_INVALID",
+                    "storage scan prefix must be a safe relative object prefix",
+                    422,
+                ) from error
+        yaml_member = str(dataset_yaml or "").strip().replace("\\", "/")
+        if yaml_member:
+            try:
+                yaml_member = safe_member_path(yaml_member).as_posix()
+            except Exception as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_DATASET_YAML_INVALID",
+                    "dataset_yaml must be a safe relative object key",
+                    422,
+                ) from error
+        if normalized_format == "images" and yaml_member:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_DATASET_YAML_INVALID",
+                "images-only storage scan must not include dataset_yaml",
+                422,
+            )
+
+        provider = self._provider(str(project_id), source)
+        health = provider.health_check()
+        if not health.ok:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_STORAGE_UNAVAILABLE",
+                str(health.message or "material storage source health check failed"),
+                409,
+            )
+        safe_project = _safe_segment(project_id, "project")
+        safe_task = _safe_segment(task_id, "task")
+        output_key = "/".join(
+            (
+                _REMOTE_PREFIX,
+                safe_project,
+                safe_task,
+                "material-review",
+                "review.zip",
+            )
+        )
+        return {
+            "version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+            "material_import": {
+                "schema_version": 1,
+                "mode": "storage_scan",
+                "import_format": normalized_format,
+                "dataset_yaml": yaml_member,
+                "source": {
+                    "storage_source_id": str(source.id),
+                    "storage_type": str(storage_type.value),
+                    "prefix": raw_prefix,
+                    "recursive": bool(recursive),
+                },
+                "target": {
+                    "storage_source_id": str(source.id),
+                    "storage_type": str(storage_type.value),
+                    "target_prefix": raw_prefix,
+                },
+                "output": {
+                    "storage_source_id": str(source.id),
+                    "object_key": output_key,
+                    "file_name": "material-review.zip",
+                    "content_type": "application/zip",
                 },
             },
         }
@@ -2500,6 +2614,132 @@ class RemoteExecutionTransportService:
         if kind == "MATERIAL_IMPORT":
             return self._commit_material_import_result(task, payload, evidence, confirmed)
         return {}
+
+    @staticmethod
+    def _material_scan_source(material: Mapping[str, Any]) -> Mapping[str, Any]:
+        if str(material.get("mode") or "") != "storage_scan":
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_SCAN_UNAVAILABLE",
+                "material task is not a brokered storage_scan",
+                409,
+            )
+        source = material.get("source")
+        if not isinstance(source, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "storage_scan source contract is missing",
+                422,
+            )
+        return source
+
+    @staticmethod
+    def _material_scan_key_allowed(source: Mapping[str, Any], object_key: str) -> bool:
+        key = str(object_key or "").replace("\\", "/").lstrip("/")
+        prefix = str(source.get("prefix") or "").replace("\\", "/").strip("/")
+        if not key or ".." in PurePosixPath(key).parts:
+            return False
+        if prefix and not (key == prefix or key.startswith(prefix.rstrip("/") + "/")):
+            return False
+        if not bool(source.get("recursive", True)) and prefix:
+            relative = key[len(prefix):].lstrip("/")
+            if "/" in relative:
+                return False
+        return True
+
+    def material_scan_page(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        _remote, material = self._material_remote(task, payload)
+        source = self._material_scan_source(material)
+        provider_ref = {
+            "storage_source_id": str(source.get("storage_source_id") or ""),
+        }
+        _configured, provider = self._source_provider(str(task.project_id), provider_ref)
+        bounded = max(1, min(100, int(limit)))
+        page = provider.list_objects(
+            str(source.get("prefix") or ""),
+            recursive=bool(source.get("recursive", True)),
+            cursor=str(cursor) if cursor else None,
+            limit=bounded,
+        )
+        items = []
+        for item in page.items:
+            key = str(item.key or "")
+            if not self._material_scan_key_allowed(source, key):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_SCAN_PROVIDER_ESCAPE",
+                    "storage provider returned an object outside the task scan scope",
+                    409,
+                )
+            items.append({
+                "key": key,
+                "size_bytes": max(0, int(item.size_bytes or 0)),
+                "etag": str(item.etag or ""),
+                "content_type": str(item.content_type or "application/octet-stream"),
+                "sha256": str(item.sha256 or "").strip().lower(),
+                "last_modified": str(item.last_modified or ""),
+            })
+        return {
+            "items": items,
+            "next_cursor": str(page.next_cursor) if page.next_cursor else None,
+            "prefix": str(source.get("prefix") or ""),
+            "recursive": bool(source.get("recursive", True)),
+        }
+
+    def material_scan_read_contract(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        *,
+        object_key: str,
+    ) -> dict[str, Any]:
+        _remote, material = self._material_remote(task, payload)
+        source = self._material_scan_source(material)
+        key = str(object_key or "").replace("\\", "/").lstrip("/")
+        if not self._material_scan_key_allowed(source, key):
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_SCAN_KEY_FORBIDDEN",
+                "requested object is outside the task storage_scan scope",
+                403,
+            )
+        provider_ref = {
+            "storage_source_id": str(source.get("storage_source_id") or ""),
+        }
+        _configured, provider = self._source_provider(str(task.project_id), provider_ref)
+        if not provider.exists(key):
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_SCAN_OBJECT_MISSING",
+                "requested storage_scan object does not exist",
+                404,
+            )
+        metadata = provider.stat(key)
+        url = provider.generate_preview_url(
+            key,
+            expires_seconds=REMOTE_TRANSFER_TTL_SECONDS,
+        )
+        if not url:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_SCAN_READ_UNAVAILABLE",
+                "storage provider cannot mint an object read URL",
+                409,
+            )
+        return {
+            "method": "GET",
+            "url": str(url),
+            "headers": {},
+            "expires_seconds": REMOTE_TRANSFER_TTL_SECONDS,
+            "key": key,
+            "size_bytes": max(0, int(metadata.size_bytes or 0)),
+            "etag": str(metadata.etag or ""),
+            "content_type": str(metadata.content_type or "application/octet-stream"),
+            "sha256": str(metadata.sha256 or "").strip().lower(),
+            "last_modified": str(metadata.last_modified or ""),
+        }
 
     def resolve_execution_payload(
         self,
