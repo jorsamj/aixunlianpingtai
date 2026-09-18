@@ -794,7 +794,12 @@ class TaskRepository:
             raise KeyError(task_id)
         return result
 
-    def resume_after_confirmation(self, task_id: str) -> TaskRecord:
+    def resume_after_confirmation(
+        self,
+        task_id: str,
+        *,
+        required_capabilities: tuple[str, ...] | None = None,
+    ) -> TaskRecord:
         now = utc_now()
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
@@ -813,14 +818,28 @@ class TaskRepository:
                 database.rollback()
                 raise ValueError("task cannot resume after confirmation")
             if current.status is TaskStatus.AWAITING_CONFIRMATION:
+                capabilities_json = (
+                    json.dumps(
+                        list(required_capabilities),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    if required_capabilities is not None
+                    else json.dumps(
+                        list(current.required_capabilities),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
                 database.execute(
                     """
                     UPDATE tasks SET status='QUEUED', stage='indexing_queued', progress=MAX(progress, 50.0),
                         current_item=NULL, error=NULL, accepted=1, finished_at=NULL,
-                        updated_at=?, worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
+                        required_capabilities=?, updated_at=?, worker_id=NULL,
+                        lease_token=NULL, lease_expires_at=NULL
                      WHERE task_id=? AND status='AWAITING_CONFIRMATION'
                     """,
-                    (now, str(task_id)),
+                    (capabilities_json, now, str(task_id)),
                 )
                 row = database.execute(
                     "SELECT * FROM tasks WHERE task_id=?",
@@ -833,6 +852,30 @@ class TaskRepository:
                 or (current.status is TaskStatus.RUNNING and current.stage == "indexing")
                 or current.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}
             ):
+                if (
+                    required_capabilities is not None
+                    and current.status is TaskStatus.QUEUED
+                    and current.stage == "indexing_queued"
+                    and tuple(current.required_capabilities) != tuple(required_capabilities)
+                ):
+                    capabilities_json = json.dumps(
+                        list(required_capabilities),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    database.execute(
+                        """
+                        UPDATE tasks SET required_capabilities=?, updated_at=?
+                         WHERE task_id=? AND status='QUEUED' AND stage='indexing_queued'
+                        """,
+                        (capabilities_json, now, str(task_id)),
+                    )
+                    row = database.execute(
+                        "SELECT * FROM tasks WHERE task_id=?",
+                        (str(task_id),),
+                    ).fetchone()
+                    database.commit()
+                    return _from_row(row)
                 database.commit()
                 return current
             database.rollback()
