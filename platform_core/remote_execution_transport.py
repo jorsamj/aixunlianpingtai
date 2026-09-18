@@ -530,6 +530,37 @@ class RemoteExecutionTransportService:
             )
         return remote, deployment
 
+    @staticmethod
+    def _execution_output_ref(
+        output_ref: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        generation = _positive_int(
+            evidence.get("execution_generation"),
+            "result.execution_generation",
+        )
+        base_key = str(output_ref.get("object_key") or "").strip()
+        if not base_key:
+            raise RemoteExecutionTransportError(
+                "REMOTE_OBJECT_CONTRACT_INVALID",
+                "output object reference is incomplete",
+                422,
+            )
+        path = Path(base_key.replace("\\", "/"))
+        parent = path.parent.as_posix().strip(".")
+        file_name = Path(str(output_ref.get("file_name") or path.name or "result.jpg")).name
+        object_key = "/".join(
+            part
+            for part in (parent, f"generation-{generation}", file_name)
+            if part
+        )
+        return {
+            "storage_source_id": str(output_ref.get("storage_source_id") or ""),
+            "object_key": object_key,
+            "file_name": file_name,
+            "content_type": str(output_ref.get("content_type") or "image/jpeg"),
+        }
+
     def prepare_result_upload(
         self,
         task,
@@ -546,21 +577,9 @@ class RemoteExecutionTransportService:
             )
         expected_sha = _normalized_sha256(evidence.get("sha256"), "result.sha256")
         expected_size = _positive_int(evidence.get("size_bytes"), "result.size_bytes")
-        _source, provider = self._source_provider(str(task.project_id), output_ref)
-        object_key = str(output_ref.get("object_key") or "").strip()
-        if not object_key:
-            raise RemoteExecutionTransportError(
-                "REMOTE_OBJECT_CONTRACT_INVALID",
-                "output object reference is incomplete",
-                422,
-            )
-
-        storage_ref = {
-            "storage_source_id": str(output_ref.get("storage_source_id") or ""),
-            "object_key": object_key,
-            "file_name": Path(str(output_ref.get("file_name") or "result.jpg")).name,
-            "content_type": str(output_ref.get("content_type") or "image/jpeg"),
-        }
+        storage_ref = self._execution_output_ref(output_ref, evidence)
+        _source, provider = self._source_provider(str(task.project_id), storage_ref)
+        object_key = str(storage_ref["object_key"])
         if provider.exists(object_key):
             metadata = provider.stat(object_key)
             actual_sha = str(metadata.sha256 or "").strip().lower()
@@ -585,7 +604,7 @@ class RemoteExecutionTransportService:
             "size_bytes": expected_size,
             "upload": self._upload_contract(
                 str(task.project_id),
-                output_ref,
+                storage_ref,
                 sha256=expected_sha,
                 size_bytes=expected_size,
             ),
@@ -607,9 +626,10 @@ class RemoteExecutionTransportService:
             )
         expected_sha = _normalized_sha256(evidence.get("sha256"), "result.sha256")
         expected_size = _positive_int(evidence.get("size_bytes"), "result.size_bytes")
-        _source, provider = self._source_provider(str(task.project_id), output_ref)
-        object_key = str(output_ref.get("object_key") or "").strip()
-        if not object_key or not provider.exists(object_key):
+        storage_ref = self._execution_output_ref(output_ref, evidence)
+        _source, provider = self._source_provider(str(task.project_id), storage_ref)
+        object_key = str(storage_ref["object_key"])
+        if not provider.exists(object_key):
             raise RemoteExecutionTransportError(
                 "REMOTE_RESULT_NOT_UPLOADED",
                 "remote result object does not exist",
@@ -636,12 +656,6 @@ class RemoteExecutionTransportService:
                 409,
             )
 
-        storage_ref = {
-            "storage_source_id": str(output_ref.get("storage_source_id") or ""),
-            "object_key": object_key,
-            "file_name": Path(str(output_ref.get("file_name") or "result.jpg")).name,
-            "content_type": str(output_ref.get("content_type") or "image/jpeg"),
-        }
         return {
             "result_ref": "result.json",
             "result": {
