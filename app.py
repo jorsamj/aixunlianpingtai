@@ -1130,10 +1130,15 @@ class StorageImportScanReq(BaseModel):
         if self.execution_mode == "agent":
             if self.mode != "server_zip":
                 raise ValueError("Agent 素材导入当前仅支持服务器 ZIP 模式")
-            if self.import_format != "images":
-                raise ValueError("Agent 素材导入当前仅支持仅图片模式")
+            if self.import_format not in {"images", "yolo"}:
+                raise ValueError("Agent 素材导入当前仅支持仅图片或 YOLO 模式")
+            if self.import_format == "images" and self.dataset_yaml:
+                raise ValueError("Agent 仅图片模式不接受 dataset_yaml")
             if self.dataset_yaml:
-                raise ValueError("Agent 素材导入当前不接受 dataset_yaml")
+                try:
+                    safe_member_path(str(self.dataset_yaml)).as_posix()
+                except ServerZipImportError as error:
+                    raise ValueError("Agent dataset_yaml 必须是 ZIP 根内的安全相对路径") from error
         if self.mode == "server_zip":
             if not zip_path:
                 raise ValueError("服务器 ZIP 模式必须选择 ZIP 文件")
@@ -1537,6 +1542,7 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
                     storage_source_id=source.id,
                     target_prefix=request_payload["target_prefix"],
                     import_format=payload.import_format,
+                    dataset_yaml=str(payload.dataset_yaml or ""),
                 )
             )
         except RemoteExecutionTransportError as error:
