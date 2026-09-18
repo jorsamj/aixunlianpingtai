@@ -340,8 +340,10 @@ def build_yolo_material_review_archive(
         else ""
     )
     provider = LocalStorageProvider("agent-yolo-review", root)
+    review_target = Path(destination).expanduser().resolve()
+    review_target.parent.mkdir(parents=True, exist_ok=True)
     local_fd, local_name = tempfile.mkstemp(
-        dir=Path(destination).expanduser().resolve().parent,
+        dir=review_target.parent,
         prefix=".yolo-review.",
         suffix=".sqlite3",
     )
