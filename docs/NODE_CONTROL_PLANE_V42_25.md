@@ -335,33 +335,75 @@ Agent 本地推理完成
 - Central Node Assignment run `35295427100`：API / Ubuntu / Windows 全绿。
 - 临时 CI PR #12 已关闭，未 merge。
 
-## 10. OPEN：Agent-side Real Deployment Runtime
+## 10. 已关闭：Agent-side Real Deployment Runtime
 
-**不能因为控制面协议已完成，就宣称“真实跨机器任务执行 CLOSED”。**
+远程部署测试现在已经真正由 `node_agent.py` 在服务节点本机执行，不再只是控制面协议或模拟 handler。
 
-下一步必须让 `node_agent.py` 真正消费上述 HTTP 协议，并在远端节点本机执行任务。目标链路：
+核心文件：
+
+- `platform_core/node_agent_executor_runtime.py`
+- `platform_core/node_agent_deployment_runtime.py`
+- `platform_core/node_agent_executor_loop.py`
+- `node_agent.py`
+- `tests/unit/test_node_agent_deployment_runtime.py`
+- `tests/unit/test_node_agent_executor_loop.py`
+- `tests/unit/test_node_agent_entrypoint.py`
+
+真实链路：
 
 ```text
-Node Agent heartbeat
-→ poll /assignments/claim
-→ /start 获取 Execution Lease + resolved execution config
-→ 准备对象存储输入 / task-local 工作目录
-→ 本机启动对应 task handler / 子进程
-→ 周期 heartbeat + progress + log
-→ cancel 时本机终止精确进程树
-→ 上传结果/模型/素材到对象存储或统一模型资产存储
-→ /begin-finalization
-→ /finish
-→ 清理本机临时目录、进程、GPU reservation / execution state
+Node Agent heartbeat ONLINE
+→ 单并发 executor loop claim assignment
+→ /start 获取 Execution Lease + sanitized portable payload
+→ task-local workdir
+→ 下载输入 / 项目模型并校验 size + SHA256
+→ 官方模型仅允许 allow-list reference
+→ 使用节点本地 Python + 节点本地 runner
+→ 启动真实 subprocess
+→ ExecutionLeaseMonitor 周期 heartbeat / cancel / fence
+→ cancel / lease 丢失 / Agent shutdown 时按 ProcessIdentity 精确终止进程树
+→ 本地结果计算 SHA256 + size
+→ result-upload/prepare
+→ generation-scoped PUT
+→ result-upload/confirm
+→ begin-finalization
+→ finish(SUCCEEDED)
+→ 清理 task-local workdir
 ```
 
-下一阶段硬约束：
+关键边界：
 
-1. Agent 客户端不得 import / 打开中央 `TaskRepository` 或 `tasks.sqlite3`。
-2. Agent 不依赖共享 NFS 才能 claim/execute。
-3. 输入/输出大文件通过对象存储或明确的 artifact transport，不把中央绝对路径直接当远端路径使用。
-4. Agent lease 丢失后必须停止本机执行并清理子进程树，禁止旧 generation 继续训练。
-5. cancel 必须能从中央 truth 下发到 Agent 并实际停止本机任务。
-6. Windows Agent 与 NVIDIA Linux Agent 都需要协议级验证；正式 GPU 训练仍以 NVIDIA Linux 为生产目标。
-7. 素材导入节点最终负责解压/解析/清洗/标签转换并上传 OSS；模型训练/转换输出走统一模型资产存储。
-8. Agent-side runtime + 至少一个真实 task kind 跑通前，不能宣称跨机器执行关闭。
+- Agent runtime / executor loop 不 import 中央 `TaskRepository`、不打开 `tasks.sqlite3`、不依赖共享 NFS。
+- `node_agent.py` 只向控制面上报当前 build **真实可执行** 的远程能力；当前只开放 `deployment-test`，不会虚报 training / conversion。
+- executor 只有在首次 heartbeat 成功后才启动；Agent 尚未被控制面确认在线时不会抢任务。
+- 当前 executor 单并发，避免同一 Agent build 在资源隔离尚未扩展前并行抢多个部署测试。
+- 输入/模型下载逐块验证长度和 SHA256；临时文件完成验证后才原子替换。
+- 节点 runner 必须位于 Agent runtime root，禁止把控制面 `runner_path/python_path` 当成远端路径。
+- lease/cancel/shutdown 都会终止精确子进程树；stale generation 不发布终态。
+- 成功/失败/取消后均停止 lease monitor 并清理执行工作目录。
+
+永久验收：
+
+- Node Agent Executor run `35297453169`
+  - API：success
+  - Ubuntu 24.04：success
+  - Windows latest：success
+- Portable Deployment run `35297453136`
+  - production API：success
+  - Ubuntu 24.04：success
+  - Windows latest：success
+
+本轮补充永久 guard 后，`node_agent.py`、`node_agent_executor_loop.py` 以及入口/单并发测试均已进入两套永久 workflow。
+
+**下一主线：Remote TRAINING Runtime。**
+
+目标不是让远端 Agent 访问中央 SQLite/NFS，而是继续沿用当前已验证的控制面与对象存储协议：
+
+1. 将训练输入变成 portable dataset/bundle object contract。
+2. Agent 节点下载并完整校验 dataset/model base。
+3. 节点本地调用真实 Ultralytics/Paddle training runtime。
+4. progress / metrics / logs 继续回到中央 durable task truth。
+5. cancel / lease loss 精确终止训练进程树并释放 GPU/CPU/RAM/临时文件。
+6. best/last 模型通过统一 `ModelArtifactService` / object storage 回传并验证。
+7. 只有 server-confirmed 模型资产完成后才允许训练任务 finalization。
+
