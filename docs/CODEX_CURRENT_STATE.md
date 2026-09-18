@@ -4,6 +4,40 @@
 
 
 
+## Current closure — Remote MATERIAL_IMPORT Phase 3 Staging GC CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Remote material input/review objects now have durable, exact-reference lifecycle
+governance. Server-confirmed review commit first persists the control-plane
+review archive and candidate/annotation truth, then records a cleanup ledger.
+Deletion is deliberately deferred until the task/result state is durable, so a
+crash between commit and result-state publication cannot destroy the only
+retryable remote review object.
+
+The existing local storage Worker heartbeat owns the periodic sweep. It retries
+immediately-eligible cleanup for AWAITING_CONFIRMATION tasks and applies a
+default seven-day retention to FAILED/CANCELLED/BLOCKED orphan staging. Exact
+orphan generation refs are recovered from task-owned upload-state artifacts.
+Every delete revalidates task-owned key prefix, source id, size and SHA256.
+Changed objects are CONFLICT and are not deleted; transient failures remain
+PENDING. Missing objects are idempotently complete.
+
+No prefix list/delete exists in the GC path and formal target material object
+keys are never candidates. The reporter reuses WorkerInstance renew hooks with a
+five-minute throttle and persisted pagination cursor, so there is no new timer
+or competing scheduler.
+
+Acceptance:
+- Remote Material Import `35312109805`: API / Ubuntu / Windows success.
+- Task Runtime Truth `35312109707`: Ubuntu / Windows success.
+- Storage Cache Governance `35312109834`: success.
+
+**OPEN / next:** Agent `storage_scan`. Move source-prefix enumeration/image
+inspection away from the control-plane Worker without giving the Agent long-
+lived object-store credentials or central SQLite/NFS access. Preserve the
+existing server-confirmed review/confirmation/local-indexing truth model.
+
 ## Current closure — Remote MATERIAL_IMPORT Phase 2 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
