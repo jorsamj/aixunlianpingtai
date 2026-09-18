@@ -182,4 +182,9 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   await dialog.locator('#drKind').selectOption('rockchip');
   await expect(dialog.locator('#drLocal')).toHaveClass(/hidden/);
   await expect(dialog.locator('#drRemote')).toHaveClass(/hidden/);
+  await dialog.getByRole('button', {name: '关闭'}).click();
+
+  await page.evaluate(() => window.setPage('部署转换'));
+  await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
+  await expect(page.locator('#dpChip option')).toHaveText(['RK3588', 'RK3576', 'RK3568']);
 });

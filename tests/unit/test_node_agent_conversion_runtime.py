@@ -236,6 +236,7 @@ def test_agent_conversion_runner_executes_real_subprocess_and_publishes_verified
         "engine": "onnxruntime",
         "model": "model.onnx",
         "note": "runtime_verified",
+        "target": "onnx",
     }
     assert client.finish_calls[-1]["status"] == "SUCCEEDED"
     assert not (
@@ -430,7 +431,7 @@ job.update(
     validation_status='converted_unverified',
 )
 (job_dir/'job.json').write_text(json.dumps(job), encoding='utf-8')
-(job_dir/'convert.log').write_text('rknn conversion worker complete\n', encoding='utf-8')
+(job_dir/'convert.log').write_text('rknn conversion worker complete\\n', encoding='utf-8')
 """,
         encoding="utf-8",
     )
