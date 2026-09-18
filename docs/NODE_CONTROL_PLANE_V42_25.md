@@ -215,7 +215,62 @@ Task QUEUED
 
 临时 CI 草稿 PR #7 已关闭，未 merge。
 
-## 7. OPEN：Agent-side Remote Execution Runtime + Object Storage Transport
+## 7. 已关闭：Remote Portability Gate + Production Runtime Mount
+
+为防止“中央绝对路径任务被误发到远程 Agent”，中央调度现在区分：
+
+- `connection_mode=local`：允许现有 legacy/path-bound task，适用于控制面与 Worker 共机或明确共享本地运行环境。
+- `connection_mode=agent`：只有任务显式携带版本化 `remote_execution` portable contract 才能成为调度候选。
+
+当前 contract：
+
+```json
+{
+  "version": 1,
+  "task_kind": "<TaskKind.value>",
+  "transport": "object-storage-v1 | agent-artifact-v1"
+}
+```
+
+关键约束：
+
+- 不根据旧 payload 中的路径“猜测”任务是否可远程执行；无 contract 一律 fail closed。
+- contract 的 `version`、`task_kind`、`transport` 必须全部匹配。
+- Scheduler 的 `resolved_execution_config.remote_execution` 只保存白名单字段，不复制 signed URL、凭据、中央绝对路径或任意嵌套数据。
+- legacy task 在只有 agent 节点时保持 `QUEUED`，不会制造一个必失败的远程 assignment。
+- local 节点仍保持旧任务兼容能力。
+- HTTP Agent executor 测试任务已经显式使用 portable contract，避免测试绕过真实生产语义。
+
+Portability gate 验收：
+
+- Central Node Assignment run `35290891091`：API / Ubuntu / Windows 全绿。
+- Node Agent Executor run `35290891208`：API / Ubuntu / Windows 全绿。
+
+同时修复了一个实际生产挂载缺口：此前 v62/v63 runtime 子路由只在 focused test 中直接实例化，生产 `app.py` 没有挂载组合 router。现在生产 app 只挂载一次：
+
+```python
+app.include_router(training_recovery_router(
+    get_project, shared_task_repository, shared_task_artifacts,
+))
+```
+
+由 `platform_core/training_recovery_api.py` 继续单一拥有：
+
+- training recovery
+- training material picker
+- service nodes
+- central scheduler
+- node executor
+
+新增 AST 永久契约，禁止漏挂载、重复挂载或把 v63 子路由重新散落到 `app.py`。
+
+Production mount 验收：
+
+- Central Node Assignment run `35291195275`：API / Ubuntu / Windows 全绿。
+- Node Agent Executor run `35291195262`：API / Ubuntu / Windows 全绿。
+- 临时 CI PR #9 / #10 均已关闭，未 merge。
+
+## 8. OPEN：Agent-side Remote Execution Runtime + Object Storage Transport
 
 **不能因为控制面协议已完成，就宣称“真实跨机器任务执行 CLOSED”。**
 
