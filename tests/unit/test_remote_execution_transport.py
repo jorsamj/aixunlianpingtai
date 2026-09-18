@@ -416,6 +416,203 @@ def test_resolve_object_model_checks_durable_size_and_sha_before_signing(tmp_pat
     assert changed.value.code == "REMOTE_OBJECT_CHANGED"
 
 
+def _portable_conversion_contract(tmp_path, monkeypatch):
+    provider = FakeProvider()
+    model = tmp_path / "best.pt"
+    model.write_bytes(b"conversion-source-model")
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    object_key = "model-assets/p1/a1/v1/original/best.pt"
+    provider.objects[object_key] = {
+        "data": model.read_bytes(),
+        "content_type": "application/octet-stream",
+        "sha256": digest,
+    }
+    model_artifacts = FakeModelArtifacts(model_row={
+        "artifact_id": "artifact-convert-source",
+        "storage_status": "UPLOADED",
+        "storage_source_id": "remote-models",
+        "object_key": object_key,
+        "file_name": "best.pt",
+        "size_bytes": model.stat().st_size,
+        "sha256": digest,
+    })
+    model_artifacts.discovered = [{
+        "target": "original",
+        "source_path": str(model),
+    }]
+    transport = service(tmp_path, provider, model_artifacts=model_artifacts)
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.list_algorithms",
+        lambda _path: [{"id": "a1", "versions": [{"id": "v1"}]}],
+    )
+    contract = transport.stage_model_conversion(
+        project_id="p1",
+        task_id="convert-1",
+        source_id="version::a1::v1",
+        source_path=model,
+        algorithm_id="a1",
+        version_id="v1",
+        target="onnx",
+        params={
+            "input_size": "640",
+            "batch": 2,
+            "opset": 17,
+            "dynamic": "false",
+            "simplify": True,
+            "config_path": "/central/private/config.yaml",
+            "python_path": "C:\\central\\python.exe",
+            "tool_root": "/central/sdk",
+        },
+    )
+    return transport, provider, model, digest, contract
+
+
+def test_stage_model_conversion_keeps_only_verified_object_and_portable_params(tmp_path, monkeypatch):
+    _transport, _provider, model, digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+
+    assert contract["version"] == 1
+    assert contract["task_kind"] == "MODEL_CONVERSION"
+    assert contract["transport"] == "object-storage-v1"
+    conversion = contract["conversion"]
+    assert conversion["schema_version"] == 1
+    assert conversion["target"] == "onnx"
+    assert conversion["source"]["type"] == "object"
+    assert conversion["source"]["artifact_id"] == "artifact-convert-source"
+    assert conversion["source"]["sha256"] == digest
+    assert conversion["source_trace"] == {
+        "source_id": "version::a1::v1",
+        "algorithm_id": "a1",
+        "version_id": "v1",
+        "sha256": digest,
+    }
+    assert conversion["params"] == {
+        "input_size": 640,
+        "batch": 2,
+        "opset": 17,
+        "dynamic": False,
+        "simplify": True,
+    }
+    serialized = str(contract)
+    assert str(model.resolve()) not in serialized
+    assert "/central/private/config.yaml" not in serialized
+    assert "C:\\central\\python.exe" not in serialized
+    assert "/central/sdk" not in serialized
+    assert "url" not in serialized.lower()
+
+
+def test_resolve_model_conversion_mints_source_url_without_control_plane_paths(tmp_path, monkeypatch):
+    transport, provider, _model, digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    task = SimpleNamespace(
+        task_id="convert-1",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+    payload = {
+        "execution_mode": "agent",
+        "job_dir": "/central/deploy/jobs/convert-1",
+        "worker_path": "/central/deployment_worker.py",
+        "python_path": "C:\\central\\python.exe",
+        "remote_execution": contract,
+    }
+
+    resolved = transport.resolve_execution_payload(
+        task,
+        payload,
+        {"resolved_execution_config": {"node_id": "conversion-agent"}},
+    )
+
+    assert resolved["task_kind"] == "MODEL_CONVERSION"
+    assert resolved["target"] == "onnx"
+    assert resolved["source"]["artifact_id"] == "artifact-convert-source"
+    assert resolved["source"]["download"]["sha256"] == digest
+    assert "signed.example.test/get/" in resolved["source"]["download"]["url"]
+    assert resolved["params"]["opset"] == 17
+    assert resolved["output"]["upload_protocol"] == "prepare-after-local-hash-v1"
+    assert provider.download_signatures[-1][1] == REMOTE_TRANSFER_TTL_SECONDS
+    serialized = str(resolved)
+    assert "/central/deploy/jobs" not in serialized
+    assert "deployment_worker.py" not in serialized
+    assert "C:\\central\\python.exe" not in serialized
+
+
+def test_model_conversion_result_uses_generation_scoped_immutable_output(tmp_path, monkeypatch):
+    transport, provider, _model, _digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    task = SimpleNamespace(
+        task_id="convert-1",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+    payload = {"remote_execution": contract}
+    output = b"onnx-result-bytes"
+    output_sha = hashlib.sha256(output).hexdigest()
+
+    prepared = transport.prepare_result_upload(
+        task,
+        payload,
+        {
+            "sha256": output_sha,
+            "size_bytes": len(output),
+            "execution_generation": 3,
+        },
+    )
+    assert prepared["storage_ref"]["object_key"].endswith(
+        "/conversion-output/generation-3/model.onnx"
+    )
+    assert prepared["upload"]["headers"]["Content-Length"] == str(len(output))
+    assert prepared["upload"]["headers"]["x-amz-meta-sha256"] == output_sha
+
+    provider.objects[prepared["storage_ref"]["object_key"]] = {
+        "data": output,
+        "content_type": "application/octet-stream",
+        "sha256": output_sha,
+    }
+    confirmed = transport.confirm_result_upload(
+        task,
+        payload,
+        {
+            "sha256": output_sha,
+            "size_bytes": len(output),
+            "execution_generation": 3,
+        },
+    )
+    result = confirmed["result"]
+    assert result["target"] == "onnx"
+    assert result["runtime_verified"] is True
+    assert result["output_sha256"] == output_sha
+    assert result["output_storage"]["object_key"].endswith(
+        "/conversion-output/generation-3/model.onnx"
+    )
+    assert result["source_trace"]["version_id"] == "v1"
+    assert "url" not in str(result).lower()
+
+
+def test_model_conversion_portable_contract_rejects_vendor_target_until_real_runner_exists(
+    tmp_path, monkeypatch
+):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    with pytest.raises(RemoteExecutionTransportError) as unsupported:
+        transport.stage_model_conversion(
+            project_id="p1",
+            task_id="convert-vendor",
+            source_id="version::a1::v1",
+            source_path=tmp_path / "missing.pt",
+            algorithm_id="a1",
+            version_id="v1",
+            target="tensorrt",
+            params={"precision": "fp16"},
+        )
+    assert unsupported.value.code == "REMOTE_CONVERSION_TARGET_UNSUPPORTED"
+
+
 def _portable_result_fixture():
     input_data = b"image"
     input_sha = hashlib.sha256(input_data).hexdigest()
