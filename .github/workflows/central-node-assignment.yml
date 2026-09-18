@@ -73,5 +73,10 @@ jobs:
           grep -Fq 'AssignmentAwareFencedTaskRepository' task_worker.py
           grep -Fq 'central_scheduler_router(task_repository, task_artifacts)' platform_core/training_recovery_api.py
           grep -Fq '"protocol": "agent-http-v1"' platform_core/task_node_assignments.py
+          grep -Fq 'REMOTE_EXECUTION_CONTRACT_VERSION = 1' platform_core/task_node_assignments.py
+          grep -Fq 'SUPPORTED_REMOTE_EXECUTION_TRANSPORTS' platform_core/task_node_assignments.py
+          grep -Fq 'task_remote_execution_contract' platform_core/task_node_assignments.py
+          grep -Fq 'connection_mode == "agent" and remote_contract is None' platform_core/task_node_assignments.py
+          grep -Fq '"remote_execution": dict(remote_contract) if remote_contract is not None else None' platform_core/task_node_assignments.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
