@@ -16,8 +16,11 @@ def client_for(tmp_path):
     return TestClient(app), repository, artifacts
 
 
-def create_training_task(repository, artifacts, task_id="train-api"):
-    artifacts.atomic_write_json(task_id, "request.json", {"epochs": 30})
+def create_training_task(repository, artifacts, task_id="train-api", *, remote_execution=None):
+    payload = {"epochs": 30}
+    if remote_execution is not None:
+        payload["remote_execution"] = remote_execution
+    artifacts.atomic_write_json(task_id, "request.json", payload)
     repository.create(
         TaskRecord.new(
             task_id=task_id,
@@ -30,15 +33,15 @@ def create_training_task(repository, artifacts, task_id="train-api"):
     )
 
 
-def create_training_node(repository):
+def create_training_node(repository, *, node_id="gpu-api", connection_mode="local"):
     nodes = ServiceNodeRepository(repository)
     _node, token = nodes.create({
-        "node_id": "gpu-api",
-        "display_name": "GPU API",
-        "connection_mode": "local",
+        "node_id": node_id,
+        "display_name": node_id,
+        "connection_mode": connection_mode,
         "allowed_capabilities": ["training"],
     })
-    nodes.heartbeat("gpu-api", token, {
+    nodes.heartbeat(node_id, token, {
         "build_id": "build-api",
         "reported_capabilities": ["training"],
         "resources": {
@@ -96,6 +99,55 @@ def test_scheduler_allocate_list_and_release_api(tmp_path):
     )
     assert len(history.json()["items"]) == 1
     assert history.json()["items"][0]["state"] == "RELEASED"
+
+
+def test_scheduler_api_fails_closed_for_remote_agent_without_portable_contract(tmp_path):
+    client, repository, artifacts = client_for(tmp_path)
+    create_training_task(repository, artifacts, "train-legacy-agent")
+    create_training_node(
+        repository,
+        node_id="gpu-agent-only",
+        connection_mode="agent",
+    )
+
+    response = client.post("/api/v63/scheduler/allocate-next")
+    assert response.status_code == 200
+    assert response.json() == {"assigned": False, "assignment": None}
+
+
+def test_scheduler_api_allows_explicit_portable_task_on_remote_agent(tmp_path):
+    client, repository, artifacts = client_for(tmp_path)
+    create_training_task(
+        repository,
+        artifacts,
+        "train-portable-agent",
+        remote_execution={
+            "version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+            "signed_url": "https://must-not-be-copied.example.test",
+        },
+    )
+    create_training_node(
+        repository,
+        node_id="gpu-agent-portable",
+        connection_mode="agent",
+    )
+
+    response = client.post("/api/v63/scheduler/allocate-next")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["assigned"] is True
+    assignment = body["assignment"]
+    assert assignment["node_id"] == "gpu-agent-portable"
+    resolved = assignment["resolved_execution_config"]
+    assert resolved["connection_mode"] == "agent"
+    assert resolved["remote_execution"] == {
+        "version": 1,
+        "task_kind": "TRAINING",
+        "transport": "object-storage-v1",
+    }
+    assert "must-not-be-copied.example.test" not in str(resolved)
 
 
 def test_scheduler_release_missing_assignment_is_structured_404(tmp_path):
