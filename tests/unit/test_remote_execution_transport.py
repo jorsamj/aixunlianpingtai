@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,7 +168,7 @@ def source(source_id="remote-models", source_type="s3"):
     )
 
 
-def service(tmp_path, provider, *, source_type="s3", model_artifacts=None):
+def service(tmp_path, provider, *, source_type="s3", model_artifacts=None, task_artifacts=None):
     sources = FakeSources(source(source_type=source_type))
     return RemoteExecutionTransportService(
         data_dir=tmp_path,
@@ -177,7 +178,74 @@ def service(tmp_path, provider, *, source_type="s3", model_artifacts=None):
         storage_credentials_factory=lambda: FakeCredentials(),
         provider_factory=lambda _project_id, _source, _secret: provider,
         model_artifacts=model_artifacts or FakeModelArtifacts(),
+        task_artifacts=task_artifacts,
     )
+
+
+def test_material_import_stage_and_start_use_durable_refs_then_short_lived_download(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    archive = tmp_path / "materials.zip"
+    with zipfile.ZipFile(archive, "w") as writer:
+        writer.writestr("frame.jpg", b"image-bytes")
+
+    contract = transport.stage_material_import(
+        project_id="p1",
+        task_id="material-1",
+        archive_path=archive,
+        storage_source_id="remote-models",
+        target_prefix="incoming/material",
+        import_format="images",
+    )
+
+    assert contract["task_kind"] == "MATERIAL_IMPORT"
+    material = contract["material_import"]
+    assert material["mode"] == "zip_scan"
+    assert material["target"] == {
+        "storage_source_id": "remote-models",
+        "storage_type": "s3",
+        "target_prefix": "incoming/material",
+    }
+    assert material["input"]["sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    assert material["input"]["size_bytes"] == archive.stat().st_size
+    assert "signed.example.test" not in str(contract)
+
+    task = SimpleNamespace(
+        task_id="material-1",
+        project_id="p1",
+        kind=TaskKind.MATERIAL_IMPORT,
+    )
+    resolved = transport.resolve_execution_payload(
+        task,
+        {"remote_execution": contract},
+        {"resolved_execution_config": {}},
+    )
+
+    assert resolved["task_kind"] == "MATERIAL_IMPORT"
+    assert resolved["input"]["download"]["method"] == "GET"
+    assert "signed.example.test/get/" in resolved["input"]["download"]["url"]
+    assert resolved["output"]["upload_protocol"] == "prepare-after-local-hash-v1"
+    assert "upload" not in resolved["output"]
+    assert resolved["target"]["target_prefix"] == "incoming/material"
+    assert provider.download_signatures
+
+
+def test_material_import_rejects_nonportable_target_storage(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider, source_type="local")
+    archive = tmp_path / "materials.zip"
+    with zipfile.ZipFile(archive, "w") as writer:
+        writer.writestr("frame.jpg", b"image-bytes")
+
+    with pytest.raises(RemoteExecutionTransportError) as unavailable:
+        transport.stage_material_import(
+            project_id="p1",
+            task_id="material-1",
+            archive_path=archive,
+            storage_source_id="remote-models",
+            target_prefix="incoming/material",
+        )
+    assert unavailable.value.code == "REMOTE_MATERIAL_STORAGE_NOT_PORTABLE"
 
 
 def test_local_storage_is_not_silently_treated_as_remote_execution(tmp_path):
