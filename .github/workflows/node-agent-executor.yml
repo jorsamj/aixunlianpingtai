@@ -9,6 +9,8 @@ on:
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_deployment_runtime.py'
+      - 'predict_ultralytics_runner.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
@@ -17,6 +19,7 @@ on:
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -29,6 +32,8 @@ on:
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_deployment_runtime.py'
+      - 'predict_ultralytics_runner.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
@@ -37,6 +42,7 @@ on:
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -63,6 +69,8 @@ jobs:
           platform_core/agent_execution.py
           platform_core/remote_execution_transport.py
           platform_core/node_agent_executor_runtime.py
+          platform_core/node_agent_deployment_runtime.py
+          predict_ultralytics_runner.py
           platform_core/service_nodes.py
           platform_core/task_node_assignments.py
           platform_core/training_recovery_api.py
@@ -71,6 +79,7 @@ jobs:
           tests/unit/test_agent_result_upload.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_deployment_runtime.py
       - name: Agent execution contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -78,6 +87,7 @@ jobs:
           tests/unit/test_agent_result_upload.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
 
@@ -128,5 +138,10 @@ jobs:
           ! grep -Fq 'task_runtime.repository' platform_core/node_agent_executor_runtime.py
           grep -Fq 'shared_sqlite_required' tests/unit/test_node_agent_executor_runtime.py
           grep -Fq 'ExecutionLeaseMonitor' platform_core/node_agent_executor_runtime.py
+          grep -Fq 'class AgentDeploymentRunner' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'prepare-after-local-hash-v1' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'ProcessController' platform_core/node_agent_deployment_runtime.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
