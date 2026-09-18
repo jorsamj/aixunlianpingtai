@@ -667,7 +667,11 @@ class RemoteExecutionTransportService:
                     "remote training official model reference is not allow-listed",
                     422,
                 )
-            model = {"type": "official", "reference": str(canonical)}
+            model = {
+                "type": "official",
+                "reference": str(canonical),
+                "base_selection_reason": str(model_ref.get("base_selection_reason") or "mother_model"),
+            }
         elif model_type == "object":
             model = {
                 "type": "object",
@@ -714,7 +718,9 @@ class RemoteExecutionTransportService:
             "task_kind": "TRAINING",
             "transport": "object-storage-v1",
             "framework": "ultralytics",
+            "algorithm_id": str(payload.get("algorithm_asset_id") or ""),
             "snapshot_id": str(training.get("snapshot_id") or ""),
+            "requested_device": str(payload.get("requested_device") or payload.get("device") or "auto"),
             "selected_device": selected_device,
             "selected_gpu": dict(selected_gpu) if isinstance(selected_gpu, Mapping) else None,
             "bundle": {
