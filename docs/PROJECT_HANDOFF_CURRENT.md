@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`dbbcda34316b9265017524b925e759fe0717a071`  
+本轮产品实现基线：`3927fbc65f094b4ee78e3b33e651967e7ac1a38f`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,46 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Remote MATERIAL_IMPORT Phase 1
+
+2026-09-18，第四个真实跨机器 task kind 的第一阶段已 CLOSED：
+
+```text
+MATERIAL_IMPORT
+server_zip + execution_mode=agent + import_format=images
+```
+
+当前真实能力：
+
+- API 可显式创建 Agent ZIP 图片导入；目标必须是 OSS/S3/MinIO。
+- durable task 使用 `agent.remote` fence，本地 storage worker 不会提前领取。
+- Agent 无中央 SQLite/NFS/对象存储长期凭据。
+- 输入 ZIP 经 signed GET 下载并验证 size/SHA256。
+- ZIP 安全解包继续复用现有 Zip Slip / symlink / bomb / CRC / 磁盘空间防护。
+- Agent 生成 server-confirmed review ZIP：候选 metadata + importable 文件内容。
+- result 使用 generation-scoped immutable PUT + server confirm。
+- 控制面二次校验 review ZIP、候选目标前缀、图片 SHA/size/dimensions，写 task-owned candidate/staging truth。
+- 任务进入 `AWAITING_CONFIRMATION` 后才允许用户确认。
+- 确认后原子切回 `storage.import`，本地 indexer 只发布最终选中的对象到目标存储。
+- 目标对象发布后再验证 SHA/size，最后写 MaterialRepository。
+- Agent capability 已真实包含 `material-import`，对应 runner 已进入 Node Agent 永久 CI。
+
+最终验收：
+
+- Remote Material Import `35308672897`：API / Ubuntu / Windows 全绿。
+- Node Agent Executor `35308672844`：API / Ubuntu / Windows 全绿。
+- Portable Deployment `35308672842`：API / Ubuntu / Windows 全绿。
+- Central Node Assignment `35308672962`：API / Ubuntu / Windows 全绿。
+- 临时 draft PR #16 已关闭，未 merge。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**当前主线：Remote MATERIAL_IMPORT Phase 2 — YOLO 标签解析与转换。**
+
+不要重复 Phase 1。下一阶段基于同一个 review bundle 扩展 `import_format=yolo`：
+Agent 解析 dataset YAML / image-label pairing / YOLO boxes，server-confirm annotation evidence；用户确认 label mapping 后由本地 indexer 写 AnnotationRepository。随后再做 storage_scan 和 staging object 生命周期清理。
+
+**当前未 CLOSED：** storage_scan remote、YOLO/COCO/VOC remote annotation、staging object GC。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
