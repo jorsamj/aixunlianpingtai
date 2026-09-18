@@ -106,7 +106,7 @@ def test_legacy_training_route_also_requires_strict_latest_iteration_base(client
 
     monkeypatch.setattr(app_module, "_v54_iteration_base", strict_spy)
     monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
-    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value: value)
+    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value, _project_id=None: value)
     monkeypatch.setattr(
         app_module,
         "build_dataset",
@@ -176,7 +176,8 @@ def test_product_training_ignores_requested_mother_model_when_latest_version_exi
         "trainable": True,
         "framework": "ultralytics",
     }]
-    app_module.save_algorithms_internal(project_id, rows)
+    from platform_core.algorithms import save_algorithms
+    save_algorithms(app_module.algorithms_file(project_id), rows)
 
     response = client.post(
         f"/api/v12/projects/{project_id}/train/start",
@@ -235,7 +236,8 @@ def test_iteration_base_endpoint_ignores_failed_attempt_and_uses_latest_success(
             "framework": "ultralytics",
         },
     ]
-    app_module.save_algorithms_internal(project_id, algorithms)
+    from platform_core.algorithms import save_algorithms
+    save_algorithms(app_module.algorithms_file(project_id), algorithms)
     response = client.get(
         f"/api/v54/projects/{project_id}/algorithms/{algorithm['id']}/iteration-base?framework=ultralytics"
     )
@@ -286,7 +288,7 @@ def test_training_rejects_random_pool_without_two_valid_annotated_materials(clie
 
     project_id, image = seeded_project
     monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
-    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value: value)
+    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value, _project_id=None: value)
 
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
@@ -379,7 +381,7 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
 
     assert response.status_code == 202, response.text
     task = response.json()["task"]
-    assert task["kind"] == "TRAINING"
+    assert task["task_type"] == "TRAINING"
     assert task["status"] == "QUEUED"
     persisted = app_module.shared_task_repository().get(task["id"])
     assert persisted is not None
@@ -416,6 +418,7 @@ def test_explicit_remote_training_enqueues_durable_input_preparation_without_leg
             "train_image_ids": ["train-a", "train-b"],
             "test_image_ids": ["test-a"],
             "validation_percent": 20,
+            "experiment_percent": None,
             "queue_priority": 9,
         },
     )
@@ -423,7 +426,7 @@ def test_explicit_remote_training_enqueues_durable_input_preparation_without_leg
     assert response.status_code == 202, response.text
     body = response.json()
     training = body["task"]
-    assert training["kind"] == "TRAINING"
+    assert training["task_type"] == "TRAINING"
     assert training["status"] == "QUEUED"
     assert body["remote_input_state"] == "PREPARING"
     prep_id = body["preparation_task_id"]
