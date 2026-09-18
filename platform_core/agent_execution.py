@@ -745,13 +745,19 @@ class AgentExecutionService:
         # Re-check ownership after external storage signing. A stale generation
         # may receive a short-lived URL, but generation-scoped object keys keep
         # it isolated and stale evidence is never published as current truth.
-        self._owned_execution(
+        owned_after_signing = self._owned_execution(
             node_id,
             node_token,
             task_id,
             execution_lease_token,
             execution_generation,
         )
+        if owned_after_signing.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won while preparing result upload",
+                409,
+            )
         _, prepared_at = _iso_now()
         state = {
             "task_id": current.task_id,
@@ -855,13 +861,19 @@ class AgentExecutionService:
                 500,
             )
 
-        self._owned_execution(
+        owned_after_verification = self._owned_execution(
             node_id,
             node_token,
             task_id,
             execution_lease_token,
             execution_generation,
         )
+        if owned_after_verification.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won while verifying result upload",
+                409,
+            )
         result_ref = _remote_result_ref(execution_generation)
         result = dict(confirmed["result"])
         result["execution_generation"] = int(execution_generation)
@@ -896,6 +908,12 @@ class AgentExecutionService:
             execution_lease_token,
             execution_generation,
         )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won before finalization",
+                409,
+            )
         self._confirmed_remote_result(current, execution_generation)
         try:
             task = self.fenced.begin_finalization(
