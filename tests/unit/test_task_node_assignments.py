@@ -34,12 +34,22 @@ def create_task(repository, artifacts, task_id, kind, payload=None, *, priority=
     )
 
 
-def create_online_node(repository, node_id, capabilities, *, resources=None, runtime_payload=None, enabled=True):
+def create_online_node(
+    repository,
+    node_id,
+    capabilities,
+    *,
+    resources=None,
+    runtime_payload=None,
+    enabled=True,
+    connection_mode="local",
+):
     nodes = ServiceNodeRepository(repository)
     _node, token = nodes.create({
         "node_id": node_id,
         "display_name": node_id,
         "enabled": enabled,
+        "connection_mode": connection_mode,
         "allowed_capabilities": capabilities,
     })
     return nodes.heartbeat(node_id, token, {
@@ -98,6 +108,7 @@ def test_allocator_requires_online_allowed_and_reported_capability(tmp_path):
     _node, mismatch_token = nodes.create({
         "node_id": "gpu-mismatch",
         "display_name": "gpu-mismatch",
+        "connection_mode": "local",
         "allowed_capabilities": ["training", "conversion"],
     })
     nodes.heartbeat("gpu-mismatch", mismatch_token, {
@@ -108,6 +119,7 @@ def test_allocator_requires_online_allowed_and_reported_capability(tmp_path):
     _node, stale_token = nodes.create({
         "node_id": "gpu-stale",
         "display_name": "gpu-stale",
+        "connection_mode": "local",
         "allowed_capabilities": ["training"],
     })
     nodes.heartbeat("gpu-stale", stale_token, {
