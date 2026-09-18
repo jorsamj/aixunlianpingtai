@@ -242,10 +242,32 @@ def test_portable_deployment_requires_verified_result_before_finalization_or_suc
         "deploy-agent",
         execution["lease_token"],
         execution["generation"],
+        runtime_result={
+            "ok": True,
+            "engine": "ultralytics",
+            "model": "yolo11n.pt",
+            "inference_ms": 11.5,
+            "detections": [{
+                "class_id": 0,
+                "label": "person",
+                "confidence": 0.91,
+                "x1": 1,
+                "y1": 2,
+                "x2": 30,
+                "y2": 40,
+                "ignored": "not persisted",
+            }],
+            "ignored_top_level": "not persisted",
+        },
     )
     assert confirmed["result_ref"] == "remote-results/1/result.json"
     assert confirmed["result"]["execution_generation"] == 1
     assert confirmed["result"]["output_sha256"] == "b" * 64
+    assert confirmed["result"]["engine"] == "ultralytics"
+    assert confirmed["result"]["inference_ms"] == 11.5
+    assert confirmed["result"]["detections"][0]["label"] == "person"
+    assert "ignored" not in confirmed["result"]["detections"][0]
+    assert "ignored_top_level" not in confirmed["result"]
     assert artifacts.read_json(
         "deploy-agent",
         "remote-results/1/upload.json",
@@ -285,6 +307,55 @@ def test_portable_deployment_requires_verified_result_before_finalization_or_suc
             execution["generation"],
         )
     assert stale.value.code == "EXECUTION_FENCED"
+
+
+def test_runtime_result_metadata_rejects_local_paths_and_oversize_content(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_portable_deployment(repository, artifacts, "deploy-metadata")
+    _nodes, token = create_agent_node(repository)
+    svc = service(repository, artifacts)
+    started = start_execution(
+        repository,
+        artifacts,
+        svc,
+        token,
+        task_id="deploy-metadata",
+    )
+    execution = started["execution"]
+    svc.prepare_result_upload(
+        "deploy-agent-node",
+        token,
+        "deploy-metadata",
+        execution["lease_token"],
+        execution["generation"],
+        sha256="f" * 64,
+        size_bytes=77,
+    )
+
+    with pytest.raises(AgentExecutionError) as leaked_path:
+        svc.confirm_result_upload(
+            "deploy-agent-node",
+            token,
+            "deploy-metadata",
+            execution["lease_token"],
+            execution["generation"],
+            runtime_result={"model": "C:\\private\\best.pt"},
+        )
+    assert leaked_path.value.code == "REMOTE_RESULT_METADATA_INVALID"
+
+    with pytest.raises(AgentExecutionError) as too_large:
+        svc.confirm_result_upload(
+            "deploy-agent-node",
+            token,
+            "deploy-metadata",
+            execution["lease_token"],
+            execution["generation"],
+            runtime_result={"note": "x" * 70000},
+        )
+    assert too_large.value.code in {
+        "REMOTE_RESULT_METADATA_INVALID",
+        "REMOTE_RESULT_METADATA_TOO_LARGE",
+    }
 
 
 def test_cancellation_wins_if_requested_while_result_upload_is_being_prepared(tmp_path):
