@@ -55,6 +55,8 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "agent_training_model_upload_confirmer",
         "agent_material_scan_page_provider",
         "agent_material_scan_read_provider",
+        "agent_clean_selection_page_provider",
+        "agent_clean_selection_read_provider",
     }
     assert isinstance(keywords["agent_execution_payload_resolver"], ast.Name)
     assert keywords["agent_execution_payload_resolver"].id == "_resolve_agent_execution_payload"
@@ -78,6 +80,10 @@ def test_production_app_mounts_runtime_router_exactly_once():
     assert keywords["agent_material_scan_page_provider"].id == "_agent_material_scan_page"
     assert isinstance(keywords["agent_material_scan_read_provider"], ast.Name)
     assert keywords["agent_material_scan_read_provider"].id == "_agent_material_scan_read"
+    assert isinstance(keywords["agent_clean_selection_page_provider"], ast.Name)
+    assert keywords["agent_clean_selection_page_provider"].id == "_agent_clean_selection_page"
+    assert isinstance(keywords["agent_clean_selection_read_provider"], ast.Name)
+    assert keywords["agent_clean_selection_read_provider"].id == "_agent_clean_selection_read"
 
 
 def test_v63_subrouters_keep_single_composition_owner():
