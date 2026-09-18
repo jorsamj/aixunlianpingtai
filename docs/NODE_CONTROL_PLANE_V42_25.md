@@ -6,7 +6,100 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
-## 0. 最新关闭：Remote TRAINING Runtime
+## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
+
+2026-09-18，`MODEL_CONVERSION` 已成为继 `DEPLOYMENT_TEST`、`TRAINING` 之后第三个真实跨机器 portable task kind。当前 CLOSED 范围明确为 **ONNX**；TensorRT / RKNN / Sophon / Ascend 等厂商 SDK 目标仍按节点真实环境单独实现，不能借 ONNX closure 宣称远程可用。
+
+核心文件：
+
+- `platform_core/node_agent_conversion_runtime.py`
+- `platform_core/node_agent_executor_loop.py`
+- `platform_core/remote_execution_transport.py`
+- `platform_core/task_node_assignments.py`
+- `deployment_worker.py`
+- `node_agent.py`
+- `tests/unit/test_node_agent_conversion_runtime.py`
+- `tests/api/test_conversion_portable_contract.py`
+- `.github/workflows/remote-conversion-runtime.yml`
+
+当前真实链路：
+
+```text
+部署中心选择显式 mode=agent 的 ONNX 转换资源
+→ 资源状态来自 ServiceNodeRegistry
+→ 只有 fresh / enabled / effective conversion Agent 才 ready
+→ 输入必须是 verified model asset / immutable object reference
+→ 创建 MODEL_CONVERSION durable task(execution_mode=agent)
+→ legacy conversion Worker 因 agent.remote capability fence 无法自抢
+→ Central Scheduler 只分配给 Agent connection_mode
+→ Agent claim / start 获得当前 execution generation
+→ start payload 仅包含 signed object download + portable params
+→ 节点本地下载源模型并校验 size/SHA256
+→ 节点本地 Python + 节点本地 deployment_worker.py
+→ 真实 subprocess 执行 Ultralytics ONNX export
+→ deployment_worker 使用 ONNX Runtime 做真实 runtime verification
+→ heartbeat / bounded logs / progress
+→ cancel / lease loss / Agent shutdown：精确终止 ProcessIdentity 进程树
+→ 本地 ONNX 重新计算 SHA256 + size
+→ result-upload/prepare
+→ generation-scoped immutable PUT
+→ result-upload/confirm
+→ server-side finalization fence
+→ 控制面从对象存储重新下载并复核 size/SHA256
+→ 写回 deploy/jobs/<task>/artifacts/model.onnx + manifest.json + job.json
+→ finish(SUCCEEDED)
+→ deployment center 继续使用原有产物列表/下载 truth
+→ 清理 Agent execution workdir
+```
+
+关键边界：
+
+- Agent conversion runtime 不打开中央 SQLite，不依赖 NFS，也不执行控制面的 `job_dir / worker_path / python_path`。
+- 节点只使用本机 `deployment_worker.py` 和本机 Ultralytics Python。
+- start 前会再次检查“当前 Agent 是否仍有对应 runner + effective capability”；如果 runner 未注册、恢复不安全或 capability 已撤销，**不会调用 start_execution**，只让 assignment lease 失效/重分配。
+- Agent 启动会清理 persisted conversion ProcessIdentity；清理无法证明时 runner `ready=false`，heartbeat 动态撤销 `conversion`。
+- 源模型下载严格校验 Content-Length / size / SHA256。
+- 远程成功只接受 `job.status=done + runtime_verified=true + validation_status=runtime_verified + manifest runtime_verified`。
+- Agent 输出必须唯一且非空的 `.onnx`；未通过 runtime verification 不允许上传成功结果。
+- 输出 PUT 继续绑定 Content-Length + SHA256 metadata + no-overwrite，并按 execution generation 隔离。
+- server-side conversion commit 再次下载对象并校验 hash/size，防止“对象存储成功但部署中心没有产物”的半闭环。
+- 已验证 ONNX 最终落回既有部署产物目录，因此现有产物列表、下载、打包逻辑继续使用同一 truth。
+- 产品不会自动把所有 ONNX 转换迁移到 Agent；只有用户显式选择 `mode=agent` 资源才走远程。
+- `mode=agent` 资源没有在线 effective `conversion` 服务节点时显示不可用，创建时也会再次检查。
+- portable staging 对 Agent 资源失败时 fail closed，禁止静默回退 local。
+- 当前 remote conversion CLOSED 仅包含 ONNX；厂商转换目标仍保持原真实边界。
+
+最终永久验收：
+
+- Remote Conversion Runtime `35306100598`
+  - control-plane：success
+  - Ubuntu 24.04 Agent：success
+  - Windows latest Agent：success
+- Node Agent Executor `35306100599`
+  - API：success
+  - Ubuntu 24.04：success
+  - Windows latest：success
+- Central Node Assignment `35306100621`
+  - API：success
+  - Ubuntu 24.04：success
+  - Windows latest：success
+- Portable Deployment `35306100612`
+  - production API：success
+  - Ubuntu 24.04：success
+  - Windows latest：success
+- Remote Training Runtime `35306100615`
+  - production API：success
+  - Ubuntu 24.04：success
+  - Windows latest：success
+
+临时 draft PR #15 仅用于读取 PR-triggered Actions，已关闭，**未 merge**。  
+当前 formal `VERSION.txt` 仍为 `42.24.0`。
+
+**下一主线：Remote MATERIAL_IMPORT Runtime。**
+
+目标：把素材导入节点做成第四个真实 portable task kind，优先覆盖“ZIP / 图片批量导入 → 解包/解析 → 标签格式识别/转换 → 清洗前置检查 → 上传配置的 OSS/S3/MinIO → 中央 MaterialRepository 只提交已验证 metadata/object refs”。不能让远程节点直接打开中央 `images.sqlite3` / `annotations.sqlite3`，也不能依赖共享 NFS。
+
+## 0.1. 最新关闭：Remote TRAINING Runtime
 
 2026-09-18，`TRAINING` 已成为继 `DEPLOYMENT_TEST` 之后第二个真实跨机器 portable task kind。  
 这不是旧 `remote_train_server.py` 的 ZIP 上传旁路，也不要求远端节点访问控制面 SQLite / NFS。
