@@ -238,7 +238,9 @@ def test_agent_conversion_runner_executes_real_subprocess_and_publishes_verified
         "note": "runtime_verified",
     }
     assert client.finish_calls[-1]["status"] == "SUCCEEDED"
-    assert not workdirs.path_for(_lease(source)).exists()
+    assert not (
+        tmp_path / "state" / "executions" / "convert-agent-task" / "3"
+    ).exists()
 
 
 def test_agent_conversion_runner_rejects_source_hash_mismatch_before_worker_launch(tmp_path):
