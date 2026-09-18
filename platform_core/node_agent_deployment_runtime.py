@@ -583,15 +583,26 @@ class AgentDeploymentRunner:
                         sha256=output_sha,
                     )
                 except AgentDeploymentRuntimeError:
+                    monitor.assert_active()
                     # If the PUT response was lost after the object was accepted,
-                    # prepare is idempotent and can prove the already-uploaded bytes.
+                    # prepare is idempotent. If the old signature merely expired,
+                    # the same evidence may receive one fresh upload contract.
                     recovered = self.client.prepare_result_upload(
                         lease,
                         sha256=output_sha,
                         size_bytes=size_bytes,
                     )
                     if not bool(recovered.get("already_uploaded")):
-                        raise
+                        retry_upload = recovered.get("upload")
+                        if not isinstance(retry_upload, Mapping):
+                            raise
+                        self._upload_result(
+                            retry_upload,
+                            output_path,
+                            monitor,
+                            size_bytes=size_bytes,
+                            sha256=output_sha,
+                        )
 
             monitor.assert_active()
             confirmed = self.client.confirm_result_upload(
@@ -639,9 +650,23 @@ class AgentDeploymentRunner:
             raise
         except Exception as error:
             self._terminate_active()
+            try:
+                monitor.assert_active()
+            except InterruptedError as cancelled:
+                message = str(cancelled)
+                self._append_log(lease, f"[agent] deployment cancelled: {message}\n")
+                self._finish_best_effort(lease, "CANCELLED", error=message)
+                return AgentDeploymentOutcome(
+                    lease.task_id,
+                    lease.generation,
+                    "CANCELLED",
+                    error=message,
+                )
+            except RemoteExecutionFenced:
+                raise
+
             message = f"{type(error).__name__}: {error}"
             self._append_log(lease, f"[agent] deployment failed: {message}\n")
-            monitor.assert_active()
             finished = self._finish_best_effort(lease, "FAILED", error=message)
             if finished is None:
                 raise RemoteExecutionFenced(
