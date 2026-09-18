@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from platform_core.remote_training_results import create_training_result_archive
 from platform_core.remote_execution_transport import (
     REMOTE_TRANSFER_TTL_SECONDS,
     RemoteExecutionTransportError,
@@ -34,12 +35,17 @@ class FakeModelArtifacts:
         self.repository = FakeConfigRepository(source_id)
         self.model_row = model_row
         self.discovered = []
+        self.ingested = []
 
     def discover_version_artifacts(self, project_id, algorithm, version):
         return list(self.discovered)
 
     def ensure_uploaded(self, _candidate):
         return dict(self.model_row or {})
+
+    def ingest_version(self, project_id, algorithm, version):
+        self.ingested.append((project_id, dict(algorithm), dict(version)))
+        return {"discovered": 2, "uploaded": 2, "failed": 0, "pending": 0}
 
 
 class FakeSources:
@@ -85,6 +91,13 @@ class FakeProvider:
             content_type=item["content_type"],
             sha256=item["sha256"],
         )
+
+    def download(self, key, destination):
+        item = self.objects[str(key)]
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(item["data"])
+        return self.stat(key)
 
     def generate_preview_url(self, key, *, expires_seconds=900):
         self.download_signatures.append((str(key), int(expires_seconds)))
@@ -598,3 +611,285 @@ def test_result_upload_evidence_must_be_valid_before_signing(tmp_path):
         )
     assert invalid_size.value.code == "REMOTE_OBJECT_CONTRACT_INVALID"
     assert provider.upload_signatures == []
+
+
+
+def _remote_training_fixture(bundle_bytes=b"portable-bundle", *, model=None):
+    bundle_sha = hashlib.sha256(bundle_bytes).hexdigest()
+    training = {
+        "schema_version": 1,
+        "framework": "ultralytics",
+        "snapshot_id": "snapshot-remote-one",
+        "bundle": {
+            "storage_source_id": "remote-models",
+            "object_key": "training-bundles/p1/snapshot/bundle.zip",
+            "file_name": "training-bundle.zip",
+            "content_type": "application/zip",
+            "sha256": bundle_sha,
+            "size_bytes": len(bundle_bytes),
+            "uncompressed_size_bytes": 1234,
+            "member_count": 5,
+        },
+        "model": model or {
+            "type": "official",
+            "reference": "yolo11n.pt",
+            "base_selection_reason": "mother_model",
+        },
+        "result": {
+            "storage_source_id": "remote-models",
+            "object_key": "training-results/train-one/training-result.zip",
+            "file_name": "training-result.zip",
+            "content_type": "application/zip",
+        },
+        "params": {"epochs": 3, "imgsz": 640, "batch": 4},
+        "counts": {"train": 3, "validation": 1, "test": 1, "total": 5},
+    }
+    payload = {
+        "target": "remote",
+        "algorithm_asset_id": "algorithm-one",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+            "training": training,
+        },
+    }
+    task = SimpleNamespace(
+        task_id="train-one",
+        kind=TaskKind.TRAINING,
+        project_id="p1",
+        log_ref="logs/task.log",
+        updated_at="2026-09-18T02:00:00+00:00",
+    )
+    return task, payload, bundle_bytes, bundle_sha
+
+
+def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment_device(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    task, payload, bundle_bytes, bundle_sha = _remote_training_fixture()
+    provider.objects["training-bundles/p1/snapshot/bundle.zip"] = {
+        "data": bundle_bytes,
+        "content_type": "application/zip",
+        "sha256": bundle_sha,
+    }
+
+    resolved = transport.resolve_execution_payload(
+        task,
+        payload,
+        {
+            "resolved_execution_config": {
+                "selected_device": "cuda:1",
+                "selected_gpu": {"index": 1, "uuid": "GPU-ONE"},
+            }
+        },
+    )
+
+    assert resolved["task_kind"] == "TRAINING"
+    assert resolved["snapshot_id"] == "snapshot-remote-one"
+    assert resolved["selected_device"] == "cuda:1"
+    assert resolved["selected_gpu"]["uuid"] == "GPU-ONE"
+    assert resolved["bundle"]["download"]["sha256"] == bundle_sha
+    assert resolved["bundle"]["download"]["member_count"] == 5
+    assert resolved["model"] == {"type": "official", "reference": "yolo11n.pt"}
+    assert resolved["result"]["upload_protocol"] == "prepare-after-local-hash-v1"
+    assert "signed.example.test" in resolved["bundle"]["download"]["url"]
+    assert "url" not in str(payload)
+
+
+def test_remote_training_bundle_requires_server_visible_sha_before_signing(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    task, payload, bundle_bytes, _bundle_sha = _remote_training_fixture()
+    provider.objects["training-bundles/p1/snapshot/bundle.zip"] = {
+        "data": bundle_bytes,
+        "content_type": "application/zip",
+        "sha256": "",
+    }
+
+    with pytest.raises(RemoteExecutionTransportError) as error:
+        transport.resolve_execution_payload(
+            task,
+            payload,
+            {"resolved_execution_config": {"selected_device": "cuda:0"}},
+        )
+    assert error.value.code == "REMOTE_OBJECT_HASH_UNVERIFIED"
+    assert provider.download_signatures == []
+
+
+def test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate(tmp_path, monkeypatch):
+    provider = FakeProvider()
+    model_artifacts = FakeModelArtifacts()
+    transport = service(tmp_path, provider, model_artifacts=model_artifacts)
+    task, payload, bundle_bytes, bundle_sha = _remote_training_fixture()
+    provider.objects["training-bundles/p1/snapshot/bundle.zip"] = {
+        "data": bundle_bytes,
+        "content_type": "application/zip",
+        "sha256": bundle_sha,
+    }
+
+    agent_project = tmp_path / "agent-project"
+    models = agent_project / "models"
+    models.mkdir(parents=True)
+    best = models / "train-one_best.pt"
+    last = models / "train-one_last.pt"
+    best.write_bytes(b"best-model")
+    last.write_bytes(b"last-model")
+    archive = create_training_result_archive(
+        project_dir=agent_project,
+        job={
+            "status": "done",
+            "artifact_verified": True,
+            "training_outcome": "completed",
+            "completion_reason": "requested_epochs_completed",
+            "completed_epochs": 3,
+            "requested_epochs": 3,
+            "best_path": str(best),
+            "last_path": str(last),
+            "verified_models": [str(best), str(last)],
+            "training_report": {
+                "metrics": {"metrics/mAP50(B)": 0.8},
+                "test_result": {"status": "passed"},
+            },
+            "finished_at": "2026-09-18T02:05:00+00:00",
+        },
+        task_id=task.task_id,
+        execution_generation=2,
+        snapshot_id="snapshot-remote-one",
+        destination=tmp_path / "agent-result.zip",
+    )
+
+    prepared = transport.prepare_result_upload(
+        task,
+        payload,
+        {
+            "sha256": archive.sha256,
+            "size_bytes": archive.size_bytes,
+            "execution_generation": 2,
+        },
+    )
+    assert prepared["storage_ref"]["object_key"].endswith(
+        "training-results/train-one/generation-2/training-result.zip"
+    )
+    provider.objects[prepared["storage_ref"]["object_key"]] = {
+        "data": archive.path.read_bytes(),
+        "content_type": "application/zip",
+        "sha256": archive.sha256,
+    }
+
+    confirmed = transport.confirm_result_upload(
+        task,
+        payload,
+        {
+            "sha256": archive.sha256,
+            "size_bytes": archive.size_bytes,
+            "execution_generation": 2,
+        },
+    )
+    assert confirmed["result"]["snapshot_id"] == "snapshot-remote-one"
+    assert len(confirmed["result"]["verified_models"]) == 2
+    assert confirmed["result"]["training_report"]["metrics"]["metrics/mAP50(B)"] == 0.8
+
+    attached = []
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.list_algorithms",
+        lambda _path: [{"id": "algorithm-one", "current_version_id": "", "versions": []}],
+    )
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.resolve_current_version_id",
+        lambda _algorithm, framework=None: None,
+    )
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.attach_version",
+        lambda _path, algorithm_id, version: attached.append((algorithm_id, dict(version))) or dict(version),
+    )
+
+    committed = transport.commit_result_publication(
+        task,
+        payload,
+        {
+            "sha256": archive.sha256,
+            "size_bytes": archive.size_bytes,
+            "execution_generation": 2,
+        },
+        confirmed,
+    )
+
+    assert committed["algorithm_id"] == "algorithm-one"
+    assert committed["version_id"].startswith("rt")
+    assert committed["model_artifacts_committed"] is True
+    assert attached and attached[0][0] == "algorithm-one"
+    version = attached[0][1]
+    assert version["snapshot_id"] == "snapshot-remote-one"
+    assert version["training_status"] == "SUCCEEDED"
+    assert Path(version["stored_path"]).is_file()
+    assert model_artifacts.ingested
+    serialized = str(confirmed)
+    assert str(tmp_path / "task_runtime" / "remote-training-results") not in serialized
+
+
+def test_remote_training_commit_rejects_stale_iteration_base(tmp_path, monkeypatch):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    task, payload, _bundle_bytes, _bundle_sha = _remote_training_fixture(
+        model={
+            "type": "object",
+            "artifact_id": "base-artifact",
+            "storage_source_id": "remote-models",
+            "object_key": "models/base.pt",
+            "file_name": "base.pt",
+            "content_type": "application/octet-stream",
+            "sha256": "a" * 64,
+            "size_bytes": 10,
+            "base_version_id": "version-old",
+            "base_version_name": "old",
+            "base_selection_reason": "current_verified_version",
+        }
+    )
+    stage = transport._training_result_stage_root(task.task_id, 1)
+    (stage / "verified" / "models").mkdir(parents=True)
+    model_file = stage / "verified" / "models" / "best.pt"
+    model_file.write_bytes(b"best")
+    (stage / "verified.json").write_text("{}", encoding="utf-8")
+    digest = hashlib.sha256(model_file.read_bytes()).hexdigest()
+    confirmed = {
+        "result": {
+            "training_outcome": "completed",
+            "training_report": {},
+            "completion": {},
+            "verified_models": [{
+                "role": "best",
+                "ref": "models/best.pt",
+                "file_name": "best.pt",
+                "sha256": digest,
+                "size_bytes": model_file.stat().st_size,
+            }],
+        }
+    }
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.list_algorithms",
+        lambda _path: [{
+            "id": "algorithm-one",
+            "current_version_id": "version-new",
+            "versions": [{
+                "id": "version-new",
+                "artifact_verified": True,
+                "training_status": "SUCCEEDED",
+                "trainable": True,
+                "framework": "ultralytics",
+            }],
+        }],
+    )
+    monkeypatch.setattr(
+        "platform_core.remote_execution_transport.resolve_current_version_id",
+        lambda _algorithm, framework=None: "version-new",
+    )
+
+    with pytest.raises(RemoteExecutionTransportError) as stale:
+        transport.commit_result_publication(
+            task,
+            payload,
+            {"sha256": "b" * 64, "size_bytes": 100, "execution_generation": 1},
+            confirmed,
+        )
+    assert stale.value.code == "REMOTE_TRAINING_BASE_VERSION_STALE"
