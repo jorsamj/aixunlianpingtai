@@ -258,6 +258,70 @@ def test_explicit_remote_training_with_portable_contract_uses_agent_even_if_loca
     assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
 
 
+def test_material_import_agent_mode_requires_portable_contract_and_never_falls_back_local(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "material-agent-no-contract",
+        TaskKind.MATERIAL_IMPORT,
+        {"execution_mode": "agent"},
+    )
+    create_online_node(
+        repository,
+        "material-local",
+        ["material-import"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "material-agent",
+        ["material-import"],
+        connection_mode="agent",
+    )
+
+    assert task_node_connection_mode(
+        repository.get("material-agent-no-contract"),
+        artifacts,
+    ) == "agent"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+
+
+def test_portable_material_import_agent_mode_selects_only_agent_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "material-agent-ready",
+        TaskKind.MATERIAL_IMPORT,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "material-local",
+        ["material-import"],
+        connection_mode="local",
+    )
+    create_online_node(
+        repository,
+        "material-agent",
+        ["material-import"],
+        connection_mode="agent",
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "material-agent"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
 def test_portable_conversion_stays_local_until_execution_mode_is_agent(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(
