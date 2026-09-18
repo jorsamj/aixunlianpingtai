@@ -8,6 +8,9 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/remote_training_transport.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
@@ -15,6 +18,7 @@ on:
       - 'platform_core/worker_registry.py'
       - 'platform_core/worker_supervisor.py'
       - 'tests/unit/test_remote_training_transport.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
@@ -28,6 +32,9 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/remote_training_transport.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
@@ -35,6 +42,7 @@ on:
       - 'platform_core/worker_registry.py'
       - 'platform_core/worker_supervisor.py'
       - 'tests/unit/test_remote_training_transport.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
@@ -63,13 +71,17 @@ jobs:
         run: >-
           python -m py_compile
           platform_core/remote_training_transport.py
+          platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
+          platform_core/node_agent_training_runtime.py
+          platform_core/node_agent_executor_runtime.py
           platform_core/task_node_assignments.py
           platform_core/task_runtime/models.py
           platform_core/task_runtime/repository.py
           platform_core/worker_registry.py
           platform_core/worker_supervisor.py
           tests/unit/test_remote_training_transport.py
+          tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_task_node_assignments.py
           tests/unit/task_runtime/test_worker_registry.py
           tests/unit/task_runtime/test_repository.py
@@ -79,6 +91,10 @@ jobs:
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_remote_training_transport.py
           tests/unit/test_task_node_assignments.py
+      - name: Agent portable training subprocess lifecycle
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_node_agent_training_runtime.py
       - name: Worker registration and repository fencing
         run: >-
           python -m pytest -q --confcutdir=tests/unit/task_runtime
@@ -127,6 +143,11 @@ jobs:
           grep -Fq '"task_kind": "TRAINING"' platform_core/remote_training_tasks.py
           grep -Fq '"transport": "object-storage-v1"' platform_core/remote_training_tasks.py
           grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
+          grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
+          grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
+          grep -Fq 'include_model_bytes=False' platform_core/node_agent_training_runtime.py
+          ! grep -Fq 'import sqlite3' platform_core/node_agent_training_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           grep -Fq 'return "agent"' platform_core/task_node_assignments.py
           grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test"})' platform_core/node_agent_executor_loop.py
           grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST"})' platform_core/node_agent_executor_loop.py
