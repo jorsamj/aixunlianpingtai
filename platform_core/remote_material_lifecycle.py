@@ -327,6 +327,7 @@ class RemoteMaterialStagingLifecycle:
         confirmed: Mapping[str, Any],
         *,
         now: datetime | str | None = None,
+        cleanup_now: bool = False,
     ) -> dict[str, Any]:
         refs = material_staging_refs(
             task,
@@ -349,7 +350,14 @@ class RemoteMaterialStagingLifecycle:
             "updated_at": _iso(now),
         }
         self._write_ledger(str(task.task_id), ledger)
-        return self.cleanup_task(task, now=now, force=True)
+        if cleanup_now:
+            return self.cleanup_task(task, now=now, force=True)
+        return {
+            "task_id": str(task.task_id),
+            "status": "RECORDED",
+            "deleted": 0,
+            "eligible_after": ledger["eligible_after"],
+        }
 
     def _terminal_eligible_after(self, task) -> str:
         finished = getattr(task, "finished_at", None) or getattr(task, "updated_at", None)
