@@ -42,6 +42,17 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _normalized_sha256(value: object, field: str = "sha256") -> str:
+    normalized = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise RemoteExecutionTransportError(
+            "REMOTE_RESULT_EVIDENCE_INVALID",
+            f"{field} must be a 64-character lowercase/uppercase hexadecimal SHA256",
+            422,
+        )
+    return normalized
+
+
 def _positive_int(value: object, field: str) -> int:
     try:
         result = int(value)
@@ -419,6 +430,9 @@ class RemoteExecutionTransportService:
         self,
         project_id: str,
         ref: Mapping[str, Any],
+        *,
+        sha256: str,
+        size_bytes: int,
     ) -> dict[str, Any]:
         object_key = str(ref.get("object_key") or "").strip()
         if not object_key:
@@ -427,6 +441,8 @@ class RemoteExecutionTransportService:
                 "output object reference is incomplete",
                 422,
             )
+        expected_sha = _normalized_sha256(sha256, "result.sha256")
+        expected_size = _positive_int(size_bytes, "result.size_bytes")
         _source, provider = self._source_provider(project_id, ref)
         content_type = str(ref.get("content_type") or "application/octet-stream")
         contract_factory = getattr(provider, "generate_upload_contract", None)
@@ -440,6 +456,8 @@ class RemoteExecutionTransportService:
             object_key,
             expires_seconds=REMOTE_TRANSFER_TTL_SECONDS,
             content_type=content_type,
+            metadata={"sha256": expected_sha},
+            size_bytes=expected_size,
         )
         if not isinstance(contract, Mapping) or not str(contract.get("url") or ""):
             raise RemoteExecutionTransportError(
@@ -453,26 +471,37 @@ class RemoteExecutionTransportService:
                 "remote result upload must reject overwriting existing objects",
                 409,
             )
+        headers = {str(key): str(value) for key, value in dict(contract.get("headers") or {}).items()}
+        lower_headers = {key.lower(): value for key, value in headers.items()}
+        metadata_hashes = [
+            value
+            for key, value in lower_headers.items()
+            if key in {"x-amz-meta-sha256", "x-oss-meta-sha256"}
+        ]
+        if lower_headers.get("content-length") != str(expected_size) or expected_sha not in metadata_hashes:
+            raise RemoteExecutionTransportError(
+                "REMOTE_UPLOAD_EVIDENCE_UNBOUND",
+                "storage upload contract did not bind result size and sha256 metadata",
+                409,
+            )
         return {
             "method": str(contract.get("method") or "PUT").upper(),
             "url": str(contract["url"]),
-            "headers": dict(contract.get("headers") or {}),
+            "headers": headers,
             "expires_seconds": int(contract.get("expires_seconds") or REMOTE_TRANSFER_TTL_SECONDS),
             "overwrite_protected": True,
             "file_name": Path(str(ref.get("file_name") or "result.bin")).name,
             "content_type": content_type,
+            "size_bytes": expected_size,
+            "sha256": expected_sha,
         }
 
-    def resolve_execution_payload(
-        self,
-        task,
-        payload: Mapping[str, Any],
-        assignment: Mapping[str, Any],
-    ) -> dict[str, Any]:
+    @staticmethod
+    def _deployment_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         if str(getattr(task.kind, "value", task.kind)) != "DEPLOYMENT_TEST":
             raise RemoteExecutionTransportError(
                 "REMOTE_TASK_KIND_UNSUPPORTED",
-                "remote object-storage runner is not implemented for this task kind",
+                "remote object-storage result transport is only implemented for deployment tests",
                 409,
             )
         remote = payload.get("remote_execution")
@@ -499,6 +528,145 @@ class RemoteExecutionTransportService:
                 "portable deployment payload is missing",
                 422,
             )
+        return remote, deployment
+
+    def prepare_result_upload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, deployment = self._deployment_remote(task, payload)
+        output_ref = deployment.get("output")
+        if not isinstance(output_ref, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable deployment output reference is missing",
+                422,
+            )
+        expected_sha = _normalized_sha256(evidence.get("sha256"), "result.sha256")
+        expected_size = _positive_int(evidence.get("size_bytes"), "result.size_bytes")
+        _source, provider = self._source_provider(str(task.project_id), output_ref)
+        object_key = str(output_ref.get("object_key") or "").strip()
+        if not object_key:
+            raise RemoteExecutionTransportError(
+                "REMOTE_OBJECT_CONTRACT_INVALID",
+                "output object reference is incomplete",
+                422,
+            )
+
+        storage_ref = {
+            "storage_source_id": str(output_ref.get("storage_source_id") or ""),
+            "object_key": object_key,
+            "file_name": Path(str(output_ref.get("file_name") or "result.jpg")).name,
+            "content_type": str(output_ref.get("content_type") or "image/jpeg"),
+        }
+        if provider.exists(object_key):
+            metadata = provider.stat(object_key)
+            actual_sha = str(metadata.sha256 or "").strip().lower()
+            if int(metadata.size_bytes) != expected_size or actual_sha != expected_sha:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_RESULT_OBJECT_CONFLICT",
+                    "remote result object already exists with different or unverifiable content evidence",
+                    409,
+                )
+            return {
+                "already_uploaded": True,
+                "storage_ref": storage_ref,
+                "sha256": expected_sha,
+                "size_bytes": expected_size,
+                "upload": None,
+            }
+
+        return {
+            "already_uploaded": False,
+            "storage_ref": storage_ref,
+            "sha256": expected_sha,
+            "size_bytes": expected_size,
+            "upload": self._upload_contract(
+                str(task.project_id),
+                output_ref,
+                sha256=expected_sha,
+                size_bytes=expected_size,
+            ),
+        }
+
+    def confirm_result_upload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, deployment = self._deployment_remote(task, payload)
+        output_ref = deployment.get("output")
+        if not isinstance(output_ref, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable deployment output reference is missing",
+                422,
+            )
+        expected_sha = _normalized_sha256(evidence.get("sha256"), "result.sha256")
+        expected_size = _positive_int(evidence.get("size_bytes"), "result.size_bytes")
+        _source, provider = self._source_provider(str(task.project_id), output_ref)
+        object_key = str(output_ref.get("object_key") or "").strip()
+        if not object_key or not provider.exists(object_key):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_NOT_UPLOADED",
+                "remote result object does not exist",
+                409,
+            )
+        metadata = provider.stat(object_key)
+        actual_sha = str(metadata.sha256 or "").strip().lower()
+        if int(metadata.size_bytes) != expected_size:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_SIZE_MISMATCH",
+                "remote result size does not match prepared execution evidence",
+                409,
+            )
+        if not actual_sha:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_HASH_UNVERIFIED",
+                "remote result object is missing signed sha256 metadata",
+                409,
+            )
+        if actual_sha != expected_sha:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_HASH_MISMATCH",
+                "remote result sha256 does not match prepared execution evidence",
+                409,
+            )
+
+        storage_ref = {
+            "storage_source_id": str(output_ref.get("storage_source_id") or ""),
+            "object_key": object_key,
+            "file_name": Path(str(output_ref.get("file_name") or "result.jpg")).name,
+            "content_type": str(output_ref.get("content_type") or "image/jpeg"),
+        }
+        return {
+            "result_ref": "result.json",
+            "result": {
+                "task_id": str(task.task_id),
+                "project_id": str(task.project_id),
+                "remote_execution": True,
+                "transport": "object-storage-v1",
+                "framework": str(deployment.get("framework") or "ultralytics"),
+                "runtime_format": str(deployment.get("runtime_format") or ""),
+                "confidence": max(0.0, min(1.0, float(deployment.get("confidence") or 0.25))),
+                "output_storage": storage_ref,
+                "output_size_bytes": expected_size,
+                "output_sha256": expected_sha,
+                "runtime_log_ref": str(getattr(task, "log_ref", "") or ""),
+                "recovered_from_completed_work": False,
+            },
+        }
+
+    def resolve_execution_payload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        assignment: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, deployment = self._deployment_remote(task, payload)
         input_ref = deployment.get("input")
         model_ref = deployment.get("model")
         output_ref = deployment.get("output")
@@ -558,7 +726,7 @@ class RemoteExecutionTransportService:
                     "file_name": Path(str(output_ref.get("file_name") or "result.jpg")).name,
                     "content_type": str(output_ref.get("content_type") or "image/jpeg"),
                 },
-                "upload": self._upload_contract(str(task.project_id), output_ref),
+                "upload_protocol": "prepare-after-local-hash-v1",
             },
         }
 
