@@ -149,7 +149,8 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert finalizing["task"]["stage"] == "finalizing_commit"
     assert finished["task"]["status"] == "SUCCEEDED"
     assert all(call["headers"] == {"Authorization": "Bearer node-secret"} for call in session.calls)
-    assert all(call["timeout"] == 7 for call in session.calls)
+    assert all(call["timeout"] == 7 for index, call in enumerate(session.calls) if index != 5)
+    assert session.calls[5]["timeout"] == 300.0
     assert session.calls[0]["url"].endswith("/api/v63/node-executor/node%3A1/assignments/claim")
     assert session.calls[1]["url"].endswith("/assignments/task-1/start")
     assert session.calls[2]["json"]["execution_generation"] == 1
@@ -159,6 +160,92 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert session.calls[4]["json"]["size_bytes"] == 123
     assert session.calls[5]["url"].endswith("/executions/task-1/result-upload/confirm")
     assert session.calls[5]["json"]["runtime_result"]["engine"] == "ultralytics"
+
+
+def test_executor_client_uses_fenced_training_model_upload_routes():
+    current = lease("train-one", generation=4)
+    current = RemoteExecutionLease(
+        task_id=current.task_id,
+        kind="TRAINING",
+        project_id=current.project_id,
+        generation=current.generation,
+        lease_token=current.lease_token,
+        lease_expires_at=current.lease_expires_at,
+        worker_id=current.worker_id,
+        payload={},
+        assignment={},
+        transport={},
+    )
+    prepared_body = {
+        "version_id": "rt123",
+        "execution_generation": 4,
+        "items": [{
+            "role": "best",
+            "file_name": "best.pt",
+            "sha256": "b" * 64,
+            "size_bytes": 456,
+            "artifact_id": "artifact-best",
+            "storage_ref": {
+                "storage_source_id": "s3-main",
+                "object_key": "model-assets/rt123/best.pt",
+                "file_name": "best.pt",
+                "content_type": "application/octet-stream",
+            },
+            "already_uploaded": False,
+            "upload": {
+                "method": "PUT",
+                "url": "https://signed.example.test/best",
+                "headers": {
+                    "Content-Length": "456",
+                    "x-amz-meta-sha256": "b" * 64,
+                    "If-None-Match": "*",
+                },
+            },
+        }],
+    }
+    confirmed_body = {
+        "confirmed": True,
+        "version_id": "rt123",
+        "items": [prepared_body["items"][0] | {"upload": None, "already_uploaded": True}],
+    }
+    session = ScriptedSession(
+        FakeResponse(200, prepared_body),
+        FakeResponse(200, confirmed_body),
+    )
+    client = NodeExecutorClient(
+        "https://control.example.test",
+        "node:1",
+        "node-secret",
+        session=session,
+        timeout=7,
+    )
+
+    prepared = client.prepare_training_model_uploads(
+        current,
+        [{
+            "role": "best",
+            "file_name": "best.pt",
+            "sha256": "b" * 64,
+            "size_bytes": 456,
+        }],
+    )
+    confirmed = client.confirm_training_model_uploads(current)
+
+    assert prepared["version_id"] == "rt123"
+    assert confirmed["confirmed"] is True
+    assert session.calls[0]["url"].endswith(
+        "/executions/train-one/training-models/prepare"
+    )
+    assert session.calls[0]["json"]["execution_generation"] == 4
+    assert session.calls[0]["json"]["models"][0]["sha256"] == "b" * 64
+    assert session.calls[1]["url"].endswith(
+        "/executions/train-one/training-models/confirm"
+    )
+    assert session.calls[1]["json"] == {
+        "execution_lease_token": "execution-secret",
+        "execution_generation": 4,
+    }
+    assert [call["timeout"] for call in session.calls] == [7, 7]
 
 
 def test_executor_client_fails_closed_on_successful_non_json_response():
