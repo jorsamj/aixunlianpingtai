@@ -478,3 +478,49 @@ def test_agent_executor_runtime_has_no_control_plane_database_imports():
         if isinstance(node, ast.ImportFrom):
             assert str(node.module or "") not in forbidden_modules
     assert "tasks.sqlite3" not in source
+
+
+def test_executor_client_uses_fenced_clean_selection_routes():
+    current = lease("clean-one", generation=3)
+    current = RemoteExecutionLease(
+        task_id=current.task_id,
+        kind="MATERIAL_BATCH",
+        project_id=current.project_id,
+        generation=current.generation,
+        lease_token=current.lease_token,
+        lease_expires_at=current.lease_expires_at,
+        worker_id=current.worker_id,
+        payload={},
+        assignment={},
+        transport={},
+    )
+    session = ScriptedSession(
+        FakeResponse(200, {"items": [{"image_id": "img-1"}], "next_cursor": None, "total": 1}),
+        FakeResponse(200, {
+            "image_id": "img-1",
+            "source": {"image_id": "img-1"},
+            "download": {"method": "GET", "url": "https://objects.example.test/img-1.jpg"},
+        }),
+    )
+    client = NodeExecutorClient(
+        "https://control.example.test",
+        "node:1",
+        "node-secret",
+        session=session,
+        timeout=7,
+    )
+
+    page = client.clean_selection_page(current, cursor="img-0", limit=250)
+    read = client.clean_selection_read(current, "img-1")
+
+    assert page["total"] == 1
+    assert read["image_id"] == "img-1"
+    assert session.calls[0]["url"].endswith("/executions/clean-one/clean-selection/page")
+    assert session.calls[0]["json"] == {
+        "execution_lease_token": current.lease_token,
+        "execution_generation": 3,
+        "limit": 250,
+        "cursor": "img-0",
+    }
+    assert session.calls[1]["url"].endswith("/executions/clean-one/clean-selection/read")
+    assert session.calls[1]["json"]["image_id"] == "img-1"

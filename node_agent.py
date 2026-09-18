@@ -179,6 +179,14 @@ def _build_executor(
             workdirs,
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
         )
+    if "cleaning" in reported_capabilities:
+        from platform_core.node_agent_cleaning_runtime import AgentCleaningRunner
+
+        runners["MATERIAL_BATCH"] = AgentCleaningRunner(
+            client,
+            workdirs,
+            heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+        )
     return NodeAgentExecutorLoop(
         client,
         deployment_runner,
@@ -229,6 +237,7 @@ def main(argv=None) -> int:
                         or (kind == "MODEL_CONVERSION" and "conversion" in reported_capabilities)
                         or (kind == "TRAINING" and "training" in reported_capabilities)
                         or (kind == "MATERIAL_IMPORT" and "material-import" in reported_capabilities)
+                        or (kind == "MATERIAL_BATCH" and "cleaning" in reported_capabilities)
                     )
                 ),
                 "state_dir": str(state_dir / "executor"),

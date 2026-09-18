@@ -898,13 +898,17 @@ class AgentExecutionService:
     @staticmethod
     def _requires_remote_result_confirmation(task, payload: dict[str, Any]) -> bool:
         remote = payload.get("remote_execution")
+        supported_kind = task.kind in {
+            TaskKind.DEPLOYMENT_TEST,
+            TaskKind.TRAINING,
+            TaskKind.MODEL_CONVERSION,
+            TaskKind.MATERIAL_IMPORT,
+        } or (
+            task.kind is TaskKind.MATERIAL_BATCH
+            and str(payload.get("operation") or "").strip().upper() == "CLEAN"
+        )
         return (
-            task.kind in {
-                TaskKind.DEPLOYMENT_TEST,
-                TaskKind.TRAINING,
-                TaskKind.MODEL_CONVERSION,
-                TaskKind.MATERIAL_IMPORT,
-            }
+            supported_kind
             and isinstance(remote, dict)
             and int(remote.get("version") or 0) == 1
             and str(remote.get("task_kind") or "") == task.kind.value

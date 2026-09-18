@@ -22,6 +22,7 @@ from .node_agent_executor_runtime import (
 
 
 SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({
+    "cleaning",
     "conversion",
     "deployment-test",
     "material-import",
@@ -29,12 +30,14 @@ SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({
 })
 SUPPORTED_AGENT_TASK_KINDS = frozenset({
     "DEPLOYMENT_TEST",
+    "MATERIAL_BATCH",
     "MATERIAL_IMPORT",
     "MODEL_CONVERSION",
     "TRAINING",
 })
 _CAPABILITY_BY_TASK_KIND = {
     "DEPLOYMENT_TEST": "deployment-test",
+    "MATERIAL_BATCH": "cleaning",
     "MATERIAL_IMPORT": "material-import",
     "MODEL_CONVERSION": "conversion",
     "TRAINING": "training",

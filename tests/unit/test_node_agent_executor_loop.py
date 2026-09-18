@@ -107,8 +107,8 @@ def claimed(task_id="task-1", kind="DEPLOYMENT_TEST"):
 
 def test_executor_reports_only_capabilities_this_agent_build_can_run():
     assert executable_agent_capabilities(
-        ["training", "deployment-test", "conversion", "material-import", "deployment-test"]
-    ) == ["conversion", "deployment-test", "material-import", "training"]
+        ["training", "deployment-test", "conversion", "material-import", "cleaning", "deployment-test"]
+    ) == ["cleaning", "conversion", "deployment-test", "material-import", "training"]
     assert executable_agent_capabilities(["training", "conversion"]) == ["conversion", "training"]
 
 
@@ -228,6 +228,45 @@ def test_material_import_capability_dispatches_to_registered_material_runner():
     assert deployment_runner.calls == []
     assert material_runner.calls == ["task-1"]
     assert loop.status().completed_tasks == 1
+
+
+def test_cleaning_capability_dispatches_material_batch_to_registered_cleaning_runner():
+    client = FakeClient([claimed(kind="MATERIAL_BATCH")])
+    deployment_runner = FakeRunner()
+    cleaning_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["cleaning"],
+        runners={"MATERIAL_BATCH": cleaning_runner},
+    )
+
+    assert loop.enabled is True
+    assert loop.effective_capabilities() == ("cleaning",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert deployment_runner.calls == []
+    assert cleaning_runner.calls == ["task-1"]
+    assert loop.status().completed_tasks == 1
+
+
+def test_cleaning_capability_is_withdrawn_when_runtime_dependencies_are_unavailable():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    cleaning_runner = FakeRunner(
+        ready=False,
+        recovery_error="CLEANING_RUNTIME_UNAVAILABLE: cv2 missing",
+    )
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["cleaning", "deployment-test"],
+        runners={"MATERIAL_BATCH": cleaning_runner},
+    )
+
+    assert loop.capabilities == ("cleaning", "deployment-test")
+    assert loop.effective_capabilities() == ("deployment-test",)
+    assert "CLEANING_RUNTIME_UNAVAILABLE" in loop.status().last_error
 
 
 def test_inconsistent_unsupported_claim_is_not_started_and_waits_for_claim_lease_expiry():

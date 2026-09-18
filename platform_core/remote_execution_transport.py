@@ -29,6 +29,11 @@ from .remote_material_import import (
     RemoteMaterialImportError,
     commit_material_review_archive,
 )
+from .remote_cleaning import (
+    MAX_REMOTE_CLEAN_ITEMS,
+    RemoteCleaningError,
+    commit_remote_cleaning_review,
+)
 from .remote_material_lifecycle import RemoteMaterialStagingLifecycle
 from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
@@ -1349,6 +1354,12 @@ class RemoteExecutionTransportService:
                     409,
                 )
             total = int(database.execute("SELECT COUNT(*) FROM selection").fetchone()[0])
+            if total > MAX_REMOTE_CLEAN_ITEMS:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CLEANING_SELECTION_TOO_LARGE",
+                    "cleaning selection exceeds 250000 items",
+                    413,
+                )
             rows = database.execute(
                 "SELECT image_id FROM selection WHERE image_id>? ORDER BY image_id LIMIT ?",
                 (after, page_limit + 1),
@@ -2189,6 +2200,9 @@ class RemoteExecutionTransportService:
         elif kind == "MATERIAL_IMPORT":
             _remote, material = self._material_remote(task, payload)
             output_ref = material.get("output")
+        elif kind == "MATERIAL_BATCH":
+            _remote, cleaning = self._clean_remote(task, payload)
+            output_ref = cleaning.get("output")
         else:
             _remote, deployment = self._deployment_remote(task, payload)
             output_ref = deployment.get("output")
@@ -2244,12 +2258,16 @@ class RemoteExecutionTransportService:
             return self._confirm_training_result_upload(task, payload, evidence)
         conversion = None
         material = None
+        cleaning = None
         if kind == "MODEL_CONVERSION":
             _remote, conversion = self._conversion_remote(task, payload)
             output_ref = conversion.get("output")
         elif kind == "MATERIAL_IMPORT":
             _remote, material = self._material_remote(task, payload)
             output_ref = material.get("output")
+        elif kind == "MATERIAL_BATCH":
+            _remote, cleaning = self._clean_remote(task, payload)
+            output_ref = cleaning.get("output")
         else:
             _remote, deployment = self._deployment_remote(task, payload)
             output_ref = deployment.get("output")
@@ -2326,6 +2344,12 @@ class RemoteExecutionTransportService:
                     "storage_type": str(target.get("storage_type") or ""),
                     "target_prefix": str(target.get("target_prefix") or ""),
                 },
+                "review_verified": True,
+            })
+        elif kind == "MATERIAL_BATCH" and isinstance(cleaning, Mapping):
+            result.update({
+                "operation": "CLEAN",
+                "selection_protocol": str(cleaning.get("selection_protocol") or ""),
                 "review_verified": True,
             })
         else:
@@ -2961,6 +2985,80 @@ class RemoteExecutionTransportService:
             "remote_staging_cleanup": cleanup,
         }
 
+    def _commit_cleaning_result(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.task_artifacts is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_ARTIFACT_STORE_UNAVAILABLE",
+                "control-plane task artifact store is not configured",
+                500,
+            )
+        self._clean_remote(task, payload)
+        result = confirmed.get("result")
+        if not isinstance(result, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified cleaning review metadata is missing",
+                500,
+            )
+        storage_ref = result.get("output_storage")
+        if not isinstance(storage_ref, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified cleaning review object reference is missing",
+                500,
+            )
+        generation = _positive_int(
+            evidence.get("execution_generation"),
+            "result.execution_generation",
+        )
+        _source, provider = self._source_provider(str(task.project_id), storage_ref)
+        review_ref = f"remote-cleaning/generation-{generation}/review.jsonl"
+        review_path = self.task_artifacts.artifact_path(str(task.task_id), review_ref)
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = review_path.with_name(f".{review_path.name}.download")
+        temporary.unlink(missing_ok=True)
+        try:
+            provider.download(str(storage_ref.get("object_key") or ""), temporary)
+            if (
+                int(temporary.stat().st_size) != int(evidence.get("size_bytes") or 0)
+                or _sha256(temporary) != str(evidence.get("sha256") or "").lower()
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CLEANING_REVIEW_CHANGED",
+                    "downloaded cleaning review object does not match confirmed evidence",
+                    409,
+                )
+            temporary.replace(review_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        try:
+            committed = commit_remote_cleaning_review(
+                artifacts=self.task_artifacts,
+                task=task,
+                project_path=self.project_dir(str(task.project_id)),
+                payload=payload,
+                review_path=review_path,
+                execution_generation=generation,
+                expected_sha256=str(evidence.get("sha256") or ""),
+                expected_size_bytes=int(evidence.get("size_bytes") or 0),
+            )
+        except RemoteCleaningError as error:
+            raise RemoteExecutionTransportError(
+                error.code,
+                str(error),
+                error.status_code,
+            ) from error
+        return {
+            **dict(committed),
+            "remote_cleaning_review_ref": review_ref,
+        }
+
     def commit_result_publication(
         self,
         task,
@@ -2975,6 +3073,8 @@ class RemoteExecutionTransportService:
             return self._commit_conversion_result(task, payload, evidence, confirmed)
         if kind == "MATERIAL_IMPORT":
             return self._commit_material_import_result(task, payload, evidence, confirmed)
+        if kind == "MATERIAL_BATCH":
+            return self._commit_cleaning_result(task, payload, evidence, confirmed)
         return {}
 
     @staticmethod

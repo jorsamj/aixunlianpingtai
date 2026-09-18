@@ -13,6 +13,8 @@ on:
       - 'platform_core/node_agent_training_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
+      - 'platform_core/node_agent_cleaning_runtime.py'
+      - 'platform_core/remote_cleaning.py'
       - 'platform_core/remote_material_import.py'
       - 'platform_core/remote_training_results.py'
       - 'platform_core/model_artifacts.py'
@@ -31,6 +33,8 @@ on:
       - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
+      - 'tests/unit/test_node_agent_cleaning_runtime.py'
+      - 'tests/unit/test_remote_cleaning.py'
       - 'tests/unit/test_remote_material_import.py'
       - 'tests/unit/test_remote_training_results.py'
       - 'tests/unit/test_model_artifacts.py'
@@ -52,6 +56,8 @@ on:
       - 'platform_core/node_agent_training_runtime.py'
       - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/node_agent_material_runtime.py'
+      - 'platform_core/node_agent_cleaning_runtime.py'
+      - 'platform_core/remote_cleaning.py'
       - 'platform_core/remote_material_import.py'
       - 'platform_core/remote_training_results.py'
       - 'platform_core/model_artifacts.py'
@@ -70,6 +76,8 @@ on:
       - 'tests/unit/test_node_agent_training_runtime.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
+      - 'tests/unit/test_node_agent_cleaning_runtime.py'
+      - 'tests/unit/test_remote_cleaning.py'
       - 'tests/unit/test_remote_material_import.py'
       - 'tests/unit/test_remote_training_results.py'
       - 'tests/unit/test_model_artifacts.py'
@@ -105,6 +113,8 @@ jobs:
           platform_core/node_agent_training_runtime.py
           platform_core/node_agent_conversion_runtime.py
           platform_core/node_agent_material_runtime.py
+          platform_core/node_agent_cleaning_runtime.py
+          platform_core/remote_cleaning.py
           platform_core/remote_material_import.py
           platform_core/remote_training_results.py
           platform_core/model_artifacts.py
@@ -123,6 +133,8 @@ jobs:
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_node_agent_conversion_runtime.py
           tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_node_agent_cleaning_runtime.py
+          tests/unit/test_remote_cleaning.py
           tests/unit/test_remote_material_import.py
           tests/unit/test_remote_training_results.py
           tests/unit/test_model_artifacts.py
@@ -139,6 +151,8 @@ jobs:
           tests/unit/test_node_agent_training_runtime.py
           tests/unit/test_node_agent_conversion_runtime.py
           tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_node_agent_cleaning_runtime.py
+          tests/unit/test_remote_cleaning.py
           tests/unit/test_remote_material_import.py
           tests/unit/test_remote_training_results.py
           tests/unit/test_model_artifacts.py
@@ -200,6 +214,12 @@ jobs:
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
           grep -Fq 'class AgentConversionRunner' platform_core/node_agent_conversion_runtime.py
           grep -Fq 'class AgentMaterialImportRunner' platform_core/node_agent_material_runtime.py
+          grep -Fq 'class AgentCleaningRunner' platform_core/node_agent_cleaning_runtime.py
+          grep -Fq 'commit_remote_cleaning_review' platform_core/remote_cleaning.py
+          grep -Fq 'metric_issues(metrics, options, image_id, index)' platform_core/remote_cleaning.py
+          grep -Fq 'DurableHashIndex' platform_core/remote_cleaning.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_cleaning_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_cleaning_runtime.py
           grep -Fq 'build_material_review_archive' platform_core/node_agent_material_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_material_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
@@ -217,8 +237,11 @@ jobs:
           ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
+          grep -Fq '"cleaning",' platform_core/node_agent_executor_loop.py
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_BATCH",' platform_core/node_agent_executor_loop.py
           grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_BATCH": "cleaning"' platform_core/node_agent_executor_loop.py
           grep -Fq '"MATERIAL_IMPORT": "material-import"' platform_core/node_agent_executor_loop.py
           grep -Fq 'NodeAgentExecutorLoop' node_agent.py
           grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py

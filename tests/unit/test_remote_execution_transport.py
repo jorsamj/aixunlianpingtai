@@ -1481,3 +1481,118 @@ def test_remote_clean_selection_rejects_nonportable_local_material(tmp_path):
     with pytest.raises(RemoteExecutionTransportError) as denied:
         transport.clean_selection_page(task, payload)
     assert denied.value.code == "REMOTE_STORAGE_NOT_PORTABLE"
+
+
+def test_remote_cleaning_result_transport_confirms_then_commits_existing_batch_truth(tmp_path):
+    provider = FakeProvider()
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    transport = service(tmp_path, provider, task_artifacts=artifacts)
+    project_id = "p-clean-transport"
+    task_id = "clean-transport"
+    project = tmp_path / "projects" / project_id
+    source_bytes = b"clean-transport-image"
+    source_sha = hashlib.sha256(source_bytes).hexdigest()
+    MaterialRepository(project).upsert({
+        "id": "img-1",
+        "filename": "a.jpg",
+        "storage_source_id": "remote-models",
+        "storage_type": "s3",
+        "object_key": "dataset/a.jpg",
+        "content_sha256": source_sha,
+        "size_bytes": len(source_bytes),
+        "etag": "etag-a",
+    })
+    selection = BatchSelection(artifacts.artifact_path(task_id, "selection.sqlite3"))
+    try:
+        selection.database.execute(
+            "INSERT INTO selection(image_id,state) VALUES ('img-1','pending')"
+        )
+        selection.database.execute(
+            "INSERT INTO meta(key,value) VALUES ('frozen','2026-09-18T00:00:00+00:00')"
+        )
+    finally:
+        selection.close()
+
+    contract = transport.build_cleaning_remote_contract(project_id, task_id)
+    payload = {
+        "operation": "CLEAN",
+        "execution_mode": "agent",
+        "options": {"blur_check": True},
+        "remote_execution": contract,
+    }
+    task = SimpleNamespace(
+        task_id=task_id,
+        project_id=project_id,
+        kind=TaskKind.MATERIAL_BATCH,
+        log_ref="logs/task.log",
+    )
+    review_rows = [
+        {
+            "schema_version": 1,
+            "task_id": task_id,
+            "project_id": project_id,
+            "execution_generation": 1,
+            "operation": "CLEAN",
+            "total": 1,
+        },
+        {
+            "image_id": "img-1",
+            "source_sha256": source_sha,
+            "source_size_bytes": len(source_bytes),
+            "status": "analyzed",
+            "metrics": {
+                "width": 640,
+                "height": 480,
+                "sha256": source_sha,
+                "dhash": 123,
+                "blur_score": 100.0,
+                "brightness": 120.0,
+                "entropy": 6.0,
+                "analysis_downsampled": False,
+            },
+            "error": "",
+        },
+    ]
+    review_bytes = "".join(
+        json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+        for row in review_rows
+    ).encode("utf-8")
+    review_sha = hashlib.sha256(review_bytes).hexdigest()
+    evidence = {
+        "sha256": review_sha,
+        "size_bytes": len(review_bytes),
+        "execution_generation": 1,
+    }
+
+    prepared = transport.prepare_result_upload(task, payload, evidence)
+    output_key = prepared["storage_ref"]["object_key"]
+    assert output_key.endswith("/generation-1/cleaning-review.jsonl")
+    provider.objects[output_key] = {
+        "data": review_bytes,
+        "content_type": "application/x-ndjson",
+        "sha256": review_sha,
+    }
+
+    confirmed = transport.confirm_result_upload(task, payload, evidence)
+    assert confirmed["result"]["operation"] == "CLEAN"
+    committed = transport.commit_result_publication(task, payload, evidence, confirmed)
+
+    assert committed["remote_cleaning_verified"] is True
+    assert committed["processed"] == 1
+    assert committed["succeeded"] == 1
+    assert committed["failed"] == 0
+    assert committed["remote_cleaning_review_ref"] == "remote-cleaning/generation-1/review.jsonl"
+    material = MaterialRepository(project).get("img-1")
+    assert material["clean_status"] == "passed"
+
+    selection = BatchSelection(artifacts.artifact_path(task_id, "selection.sqlite3"))
+    try:
+        result_row = selection.database.execute(
+            "SELECT result_json,state FROM clean_results JOIN selection USING(image_id) "
+            "WHERE image_id='img-1'"
+        ).fetchone()
+    finally:
+        selection.close()
+    assert result_row is not None
+    assert result_row["state"] == "succeeded"
+    assert json.loads(result_row["result_json"])["issues"] == []

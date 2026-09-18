@@ -1156,3 +1156,31 @@ def test_only_material_import_may_finish_remote_execution_as_awaiting_confirmati
             status="AWAITING_CONFIRMATION",
         )
     assert invalid.value.code == "INVALID_FINISH_STATUS"
+
+
+def test_remote_result_protocol_accepts_only_clean_material_batch_subtype():
+    clean = TaskRecord.new(
+        task_id="clean-protocol",
+        project_id="project-clean",
+        kind=TaskKind.MATERIAL_BATCH,
+        payload_ref="request.json",
+        resource_key="materials:project-clean",
+    )
+    portable = {
+        "operation": "CLEAN",
+        "execution_mode": "agent",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MATERIAL_BATCH",
+            "transport": "object-storage-v1",
+        },
+    }
+    assert AgentExecutionService._requires_remote_result_confirmation(clean, portable) is True
+    assert AgentExecutionService._requires_remote_result_confirmation(
+        clean,
+        {**portable, "operation": "ADD_LABELS"},
+    ) is False
+    assert AgentExecutionService._requires_remote_result_confirmation(
+        clean,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    ) is False

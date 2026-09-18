@@ -297,6 +297,42 @@ class NodeExecutorClient:
             },
         )
 
+    def clean_selection_page(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+            "limit": max(1, min(500, int(limit))),
+        }
+        if cursor:
+            payload["cursor"] = str(cursor)
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/clean-selection/page",
+            payload,
+        )
+
+    def clean_selection_read(
+        self,
+        lease: RemoteExecutionLease,
+        image_id: str,
+    ) -> dict[str, Any]:
+        key = str(image_id or "").strip()
+        if not key:
+            raise ValueError("cleaning image_id is required")
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/clean-selection/read",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "image_id": key,
+            },
+        )
+
     def prepare_training_model_uploads(
         self,
         lease: RemoteExecutionLease,
