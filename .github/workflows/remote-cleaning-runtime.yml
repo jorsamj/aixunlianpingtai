@@ -16,6 +16,8 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/node_agent_cleaning_runtime.py'
       - 'platform_core/task_node_assignments.py'
+      - 'app.py'
+      - 'tests/api/test_clean_unified_execution_truth.py'
       - 'node_agent.py'
       - 'tests/unit/test_remote_cleaning.py'
       - 'tests/unit/test_node_agent_cleaning_runtime.py'
@@ -42,6 +44,8 @@ on:
       - 'platform_core/node_agent_executor_loop.py'
       - 'platform_core/node_agent_cleaning_runtime.py'
       - 'platform_core/task_node_assignments.py'
+      - 'app.py'
+      - 'tests/api/test_clean_unified_execution_truth.py'
       - 'node_agent.py'
       - 'tests/unit/test_remote_cleaning.py'
       - 'tests/unit/test_node_agent_cleaning_runtime.py'
@@ -129,12 +133,15 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install API dependencies
-        run: python -m pip install --disable-pip-version-check pytest requests fastapi httpx filelock pillow psutil
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest requests fastapi httpx filelock pillow psutil numpy opencv-python-headless
       - name: Cleaning broker API contracts
         run: >-
           python -m pytest -q --confcutdir=tests/api
           tests/api/test_agent_executor_api.py
           tests/api/test_runtime_router_app_mount.py
+          tests/api/test_clean_unified_execution_truth.py
       - name: Runtime API guards
         shell: bash
         run: |
@@ -142,5 +149,8 @@ jobs:
           grep -Fq 'clean-selection/read' platform_core/agent_execution.py
           grep -Fq 'agent_clean_selection_page_provider=_agent_clean_selection_page' app.py
           grep -Fq 'agent_clean_selection_read_provider=_agent_clean_selection_read' app.py
+          grep -Fq "def _v47_clean_agent_preflight" app.py
+          grep -Fq "required_capabilities=_v47_clean_required_capabilities(request)" app.py
+          grep -Fq '"execution_mode": "agent"' tests/api/test_clean_unified_execution_truth.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check

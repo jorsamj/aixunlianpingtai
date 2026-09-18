@@ -13526,6 +13526,7 @@ from platform_core.cleaning import (
 
 class V47CleanReq(BaseModel):
     image_ids: Optional[List[str]] = None
+    execution_mode: str = 'local'
     exact_duplicate: bool = True
     near_duplicate: bool = True
     near_duplicate_hamming: int = 5
@@ -13544,6 +13545,10 @@ class V47CleanReq(BaseModel):
 
 class V47CleanConfirmReq(BaseModel):
     delete_ids: List[str]
+
+
+class V47CleanRuntimeReq(BaseModel):
+    image_ids: Optional[List[str]] = None
 
 
 def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
@@ -13651,9 +13656,171 @@ def v47_list_clean_tasks(project_id: str):
 
 
 
+def _v47_clean_execution_mode(value: Any) -> str:
+    mode = str(value or 'local').strip().lower()
+    if mode not in {'local', 'agent'}:
+        raise ValueError('清洗执行方式仅支持 local 或 agent')
+    return mode
+
+
+def _v47_clean_required_capabilities(request: Dict[str, Any]) -> Tuple[str, ...]:
+    if (
+        str(request.get('operation') or '').upper() == MaterialBatchOperation.CLEAN.value
+        and str(request.get('execution_mode') or 'local').lower() == 'agent'
+    ):
+        return ('agent.remote',)
+    return ('materials.batch',)
+
+
+def _v47_clean_agent_preflight(project_id: str, image_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    get_project(project_id)
+    selected = list(dict.fromkeys(
+        str(value).strip() for value in (image_ids or []) if str(value).strip()
+    ))
+    if len(selected) > 500:
+        return {
+            'agent_available': False,
+            'reason': '显式选择超过 500 张，请改用筛选范围后再创建清洗任务',
+            'selected_count': len(selected),
+            'eligible_nodes': [],
+        }
+
+    materials = material_store(project_id)
+    clauses: List[str] = []
+    params: List[Any] = []
+    if selected:
+        clauses.append('m.id IN (' + ','.join('?' for _ in selected) + ')')
+        params.extend(selected)
+    where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
+    with closing(materials._connect()) as database:
+        row = database.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN trim(object_key)='' OR length(trim(content_sha256))<>64 "
+            "OR size_bytes<=0 THEN 1 ELSE 0 END),0) AS incomplete "
+            "FROM materials m" + where,
+            params,
+        ).fetchone()
+        total = int(row['total'] or 0)
+        incomplete = int(row['incomplete'] or 0)
+        sources = database.execute(
+            "SELECT storage_source_id,storage_type,COUNT(*) AS total "
+            "FROM materials m" + where + " GROUP BY storage_source_id,storage_type "
+            "ORDER BY storage_source_id",
+            params,
+        ).fetchall()
+
+    if selected and total != len(selected):
+        return {
+            'agent_available': False,
+            'reason': '所选素材已发生变化，请刷新后重新选择',
+            'selected_count': total,
+            'eligible_nodes': [],
+        }
+    if total <= 0:
+        return {
+            'agent_available': False,
+            'reason': '没有可清洗的素材',
+            'selected_count': 0,
+            'eligible_nodes': [],
+        }
+    if incomplete:
+        return {
+            'agent_available': False,
+            'reason': f'有 {incomplete} 张素材缺少对象存储大小或 SHA256 证据',
+            'selected_count': total,
+            'eligible_nodes': [],
+        }
+
+    source_repo = storage_source_repository()
+    source_truth = []
+    for row in sources:
+        source_id = str(row['storage_source_id'] or '')
+        configured = source_repo.get(source_id)
+        try:
+            storage_type = StorageType.parse(configured.type if configured is not None else row['storage_type'])
+        except ValueError:
+            storage_type = None
+        portable = bool(
+            configured is not None
+            and configured.enabled
+            and storage_type in {StorageType.OSS, StorageType.S3}
+        )
+        source_truth.append({
+            'storage_source_id': source_id,
+            'storage_type': storage_type.value if storage_type is not None else str(row['storage_type'] or ''),
+            'count': int(row['total'] or 0),
+            'portable': portable,
+        })
+    blocked = [row for row in source_truth if not row['portable']]
+    if blocked:
+        names = '、'.join(row['storage_source_id'] or 'default_local' for row in blocked[:3])
+        return {
+            'agent_available': False,
+            'reason': f'本次范围包含不可远程读取的素材存储：{names}',
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    nodes = [
+        node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+        if str(node.get('connection_mode') or '') == 'agent'
+        and bool(node.get('online'))
+        and 'cleaning' in set(node.get('effective_capabilities') or [])
+    ]
+    if not nodes:
+        return {
+            'agent_available': False,
+            'reason': '当前没有在线且已授权 cleaning 能力的 Agent 节点',
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    try:
+        _remote_execution_transport_service().build_cleaning_remote_contract(
+            project_id,
+            'cleaning-preflight',
+        )
+    except RemoteExecutionTransportError as error:
+        return {
+            'agent_available': False,
+            'reason': str(error),
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    return {
+        'agent_available': True,
+        'reason': '',
+        'selected_count': total,
+        'sources': source_truth,
+        'eligible_nodes': [
+            {
+                'node_id': str(node.get('node_id') or ''),
+                'display_name': str(node.get('display_name') or node.get('node_id') or ''),
+                'build_id': str(node.get('build_id') or ''),
+            }
+            for node in nodes
+        ],
+    }
+
+
+@app.post('/api/v47/projects/{project_id}/clean-runtime/preflight')
+def v47_clean_runtime_preflight(project_id: str, payload: V47CleanRuntimeReq):
+    truth = _v47_clean_agent_preflight(project_id, payload.image_ids)
+    return {
+        'local_available': True,
+        'default_execution_mode': 'local',
+        **truth,
+    }
+
+
 def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[str, Any]:
     data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
     image_ids = list(dict.fromkeys(str(x) for x in (data.pop('image_ids', None) or []) if str(x)))
+    execution_mode = _v47_clean_execution_mode(data.pop('execution_mode', 'local'))
     selection: Dict[str, Any]
     if image_ids:
         selection = {'scope': 'SELECTED', 'image_ids': image_ids}
@@ -13662,6 +13829,8 @@ def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[s
     draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data}
     estimate = estimate_material_batch(project_id, material_store(project_id), draft)
     draft['selection_spec'] = estimate['selection_spec']
+    if execution_mode == 'agent':
+        draft['execution_mode'] = 'agent'
     return draft
 
 
@@ -13679,9 +13848,13 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
     request_payload = {**options, 'image_ids': list(selection.get('image_ids') or [])}
     confirmed = artifacts.read_json(task.task_id, 'clean_confirmation.json', default=None)
     public_status = str(body.get('status') or task.status.value)
+    execution_mode = str(request.get('execution_mode') or 'local').lower()
     if public_status in {'QUEUED', 'WAITING_RESOURCE'}:
         status = 'queued'
-        status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
+        if public_status == 'WAITING_RESOURCE' and execution_mode == 'agent':
+            status_text = '等待远程清洗节点'
+        else:
+            status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
     elif public_status == 'RUNNING':
         status, status_text = 'running', '清洗中'
     elif public_status == 'CANCEL_REQUESTED':
@@ -13714,6 +13887,7 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
         'worker_id': body.get('worker_id'),
         'lease_expires_at': body.get('lease_expires_at'),
         'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
+        'execution_mode': execution_mode,
     }
 
 
@@ -13742,6 +13916,16 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
         return _v47_clean_compat_task(existing), False
 
     batch_payload = _v47_material_batch_payload(project_id, payload)
+    if str(batch_payload.get('execution_mode') or 'local') == 'agent':
+        preflight = _v47_clean_agent_preflight(project_id, payload.image_ids)
+        if not preflight.get('agent_available'):
+            raise ValueError(str(preflight.get('reason') or '远程清洗当前不可用'))
+        batch_payload['remote_execution'] = (
+            _remote_execution_transport_service().build_cleaning_remote_contract(
+                project_id,
+                requested_id,
+            )
+        )
     prepared_request = _v47_material_batch_request(requested_id)
     if prepared_request:
         def semantic_request(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -13752,13 +13936,15 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
                 'operation': value.get('operation'),
                 'selection_spec': selection,
                 'options': dict(value.get('options') or {}),
+                'execution_mode': str(value.get('execution_mode') or 'local'),
             }
 
         if semantic_request(prepared_request) != semantic_request(batch_payload):
             raise ValueError('清洗任务 ID 已关联不同请求')
         prepared = TaskRecord.new(
             requested_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
-            f'materials:{project_id}', required_capabilities=('materials.batch',),
+            f'materials:{project_id}',
+            required_capabilities=_v47_clean_required_capabilities(prepared_request),
         )
         return _v47_clean_compat_task(prepared), False
 
@@ -13784,7 +13970,8 @@ def _v62_publish_clean_compat(project_id: str, task_id: str) -> Dict[str, Any]:
         raise ValueError('清洗任务尚未准备完成')
     prepared = TaskRecord.new(
         task_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
-        f'materials:{project_id}', required_capabilities=('materials.batch',),
+        f'materials:{project_id}',
+        required_capabilities=_v47_clean_required_capabilities(request),
     )
     published = publish_prepared_material_batch(prepared, repository, shared_task_artifacts())
     return _v47_clean_compat_task(published)
@@ -13957,8 +14144,11 @@ def _v47_create_clean_task_record(
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks')
 def v47_create_clean_task(project_id: str, payload: V47CleanReq):
-    task, _ = _v62_prepare_clean_compat(project_id, payload)
-    return _v62_publish_clean_compat(project_id, str(task['id']))
+    try:
+        task, _ = _v62_prepare_clean_compat(project_id, payload)
+        return _v62_publish_clean_compat(project_id, str(task['id']))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 class V55UploadDecisionsReq(BaseModel):
