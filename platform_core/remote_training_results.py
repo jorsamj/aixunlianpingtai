@@ -214,6 +214,7 @@ def create_training_result_archive(
     execution_generation: int,
     snapshot_id: str,
     destination: str | Path,
+    include_model_bytes: bool = True,
 ) -> TrainingResultArchive:
     project = Path(project_dir).expanduser().resolve()
     models_root = (project / "models").resolve()
@@ -251,7 +252,8 @@ def create_training_result_archive(
             "sha256": digest,
             "size_bytes": int(path.stat().st_size),
         })
-        archive_members.append((ref, path))
+        if include_model_bytes:
+            archive_members.append((ref, path))
 
     training_report = _sanitize_json(job.get("training_report") or {})
     completion = {
@@ -282,6 +284,7 @@ def create_training_result_archive(
         "framework": "ultralytics",
         "artifact_verified": True,
         "training_outcome": str(job.get("training_outcome") or ""),
+        "model_transport": "embedded-v1" if include_model_bytes else "separate-object-v1",
         "completion": completion,
         "training_report": training_report,
         "models": models,
@@ -292,8 +295,12 @@ def create_training_result_archive(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    total_uncompressed = len(manifest_bytes) + sum(int(item["size_bytes"]) for item in models)
-    member_count = 1 + len(models)
+    total_uncompressed = len(manifest_bytes) + (
+        sum(int(item["size_bytes"]) for item in models)
+        if include_model_bytes
+        else 0
+    )
+    member_count = 1 + (len(models) if include_model_bytes else 0)
     if (
         member_count > TRAINING_RESULT_MAX_MEMBERS
         or total_uncompressed > TRAINING_RESULT_MAX_UNCOMPRESSED_BYTES
@@ -355,6 +362,7 @@ def verify_training_result_archive(
     expected_task_id: str,
     expected_execution_generation: int,
     expected_snapshot_id: str,
+    allow_separate_model_objects: bool = False,
 ) -> VerifiedTrainingResult:
     source = Path(archive).expanduser().resolve()
     digest = str(expected_sha256 or "").strip().lower()
@@ -478,6 +486,19 @@ def verify_training_result_archive(
                 "training result manifest does not match durable task identity",
                 409,
             )
+        model_transport = str(manifest.get("model_transport") or "embedded-v1")
+        if model_transport not in {"embedded-v1", "separate-object-v1"}:
+            raise RemoteTrainingResultError(
+                "TRAINING_RESULT_MODEL_TRANSPORT_INVALID",
+                "training result model transport is unsupported",
+                422,
+            )
+        if model_transport == "separate-object-v1" and not allow_separate_model_objects:
+            raise RemoteTrainingResultError(
+                "TRAINING_RESULT_MODEL_TRANSPORT_INVALID",
+                "training result references separate model objects but verifier did not allow them",
+                409,
+            )
         raw_models = manifest.get("models")
         if not isinstance(raw_models, list) or not raw_models:
             raise RemoteTrainingResultError(
@@ -503,29 +524,46 @@ def verify_training_result_archive(
                     422,
                 )
             path = (temporary / Path(*PurePosixPath(ref).parts)).resolve()
-            if temporary not in path.parents or not path.is_file():
-                raise RemoteTrainingResultError(
-                    "TRAINING_RESULT_MODEL_MISSING",
-                    "training result model file is missing",
-                    409,
-                )
             expected_model_sha = str(item.get("sha256") or "").strip().lower()
-            expected_model_size = int(item.get("size_bytes") or 0)
+            try:
+                expected_model_size = int(item.get("size_bytes") or 0)
+            except (TypeError, ValueError) as error:
+                raise RemoteTrainingResultError(
+                    "TRAINING_RESULT_MODEL_EVIDENCE_MISMATCH",
+                    "training result model size evidence is invalid",
+                    409,
+                ) from error
             if (
                 len(expected_model_sha) != 64
+                or any(ch not in "0123456789abcdef" for ch in expected_model_sha)
                 or expected_model_size <= 0
-                or int(path.stat().st_size) != expected_model_size
-                or _sha256(path) != expected_model_sha
             ):
                 raise RemoteTrainingResultError(
                     "TRAINING_RESULT_MODEL_EVIDENCE_MISMATCH",
-                    "training result model content does not match manifest evidence",
+                    "training result model evidence is incomplete",
                     409,
                 )
+            if model_transport == "embedded-v1":
+                if temporary not in path.parents or not path.is_file():
+                    raise RemoteTrainingResultError(
+                        "TRAINING_RESULT_MODEL_MISSING",
+                        "training result model file is missing",
+                        409,
+                    )
+                if (
+                    int(path.stat().st_size) != expected_model_size
+                    or _sha256(path) != expected_model_sha
+                ):
+                    raise RemoteTrainingResultError(
+                        "TRAINING_RESULT_MODEL_EVIDENCE_MISMATCH",
+                        "training result model content does not match manifest evidence",
+                        409,
+                    )
             role = str(item.get("role") or "model")
             if role in {"best", "last"}:
                 primary = True
-            allowed_refs.add(ref)
+            if model_transport == "embedded-v1":
+                allowed_refs.add(ref)
             verified_models.append({
                 "role": role,
                 "ref": ref,
