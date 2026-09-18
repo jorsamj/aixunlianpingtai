@@ -9,6 +9,8 @@ on:
       - 'app.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_deployment_runtime.py'
+      - 'predict_ultralytics_runner.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/storage/s3.py'
       - 'platform_core/storage/oss.py'
@@ -17,6 +19,7 @@ on:
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
       - 'tests/api/test_agent_result_upload_api.py'
@@ -30,6 +33,8 @@ on:
       - 'app.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_deployment_runtime.py'
+      - 'predict_ultralytics_runner.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/storage/s3.py'
       - 'platform_core/storage/oss.py'
@@ -38,6 +43,7 @@ on:
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
       - 'tests/api/test_agent_result_upload_api.py'
@@ -66,7 +72,9 @@ jobs:
           python -m py_compile
           platform_core/agent_execution.py
           platform_core/node_agent_executor_runtime.py
+          platform_core/node_agent_deployment_runtime.py
           platform_core/remote_execution_transport.py
+          predict_ultralytics_runner.py
           platform_core/training_recovery_api.py
           platform_core/storage/s3.py
           platform_core/storage/oss.py
@@ -74,6 +82,8 @@ jobs:
           tests/unit/test_agent_execution.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_deployment_runtime.py
           tests/api/test_runtime_router_app_mount.py
       - name: Portable transport and Agent execution contracts
         run: >-
@@ -138,6 +148,11 @@ jobs:
           grep -Fq 'agent_execution_payload_resolver=_resolve_agent_execution_payload' app.py
           grep -Fq 'agent_result_upload_preparer=_prepare_agent_result_upload' app.py
           grep -Fq 'agent_result_upload_confirmer=_confirm_agent_result_upload' app.py
+          grep -Fq 'class AgentDeploymentRunner' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'prepare-after-local-hash-v1' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'parser.add_argument("--device", default="")' predict_ultralytics_runner.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
           if grep -Fq '"url"' platform_core/task_node_assignments.py; then
             echo 'scheduler assignment truth must not persist signed transport URLs' >&2
             exit 1
