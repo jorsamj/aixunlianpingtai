@@ -13,6 +13,7 @@ import re
 import shutil
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
@@ -3502,11 +3503,39 @@ class RemoteExecutionTransportService:
             evidence.get("execution_generation"),
             "result.execution_generation",
         )
+        worker_id = str(getattr(task, "worker_id", "") or "").strip()
+        if not worker_id.startswith("agent:") or not worker_id.split(":", 1)[1].strip():
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_EVIDENCE_INVALID",
+                "RKNN board verification must be committed by an Agent-owned execution",
+                409,
+            )
+        node_id = worker_id.split(":", 1)[1].strip()
+        input_ref = deployment.get("input")
+        input_ref = dict(input_ref) if isinstance(input_ref, Mapping) else {}
+        input_sha = _normalized_sha256(
+            input_ref.get("sha256"),
+            "board.input.sha256",
+        )
+        input_size = _positive_int(
+            input_ref.get("size_bytes"),
+            "board.input.size_bytes",
+        )
         verification = {
             "task_id": str(task.task_id),
             "execution_generation": generation,
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+            "node_id": node_id,
             "chip": chip,
             "engine": "rknn-lite2",
+            "rknn_lite_version": str(runtime.get("rknn_lite_version") or ""),
+            "model_sha256": expected_sha,
+            "model_size_bytes": expected_size,
+            "input": {
+                "file_name": Path(str(input_ref.get("file_name") or "input")).name,
+                "sha256": input_sha,
+                "size_bytes": input_size,
+            },
             "inference_ms": inference_ms,
             "output_count": output_count,
             "output_shapes": list(runtime.get("output_shapes") or []),

@@ -617,6 +617,10 @@ class AgentDeploymentRunner:
             runtime_result = _last_json_line(runtime_text)
             if runtime_result.get("ok") is False:
                 raise AgentDeploymentRuntimeError("deployment runner reported failure")
+            if str(payload.get("runtime_format") or "").strip().lower() == "rknn":
+                runtime_result["rknn_lite_version"] = str(
+                    self.rknn_board_probe.get("rknn_lite_version") or ""
+                )
             if not output_path.is_file() or output_path.stat().st_size <= 0:
                 raise AgentDeploymentRuntimeError("deployment runner produced no result image")
             runtime_result["total_elapsed_ms"] = round(

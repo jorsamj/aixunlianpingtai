@@ -126,6 +126,9 @@ jobs:
           grep -Fq 'hardware runtime verification only' predict_rknn_lite_runner.py
           grep -Fq 'REMOTE_RKNN_BOARD_SOURCE_CHANGED' platform_core/remote_execution_transport.py
           grep -Fq 'hardware_verified' platform_core/remote_execution_transport.py
+          grep -Fq '"node_id": node_id' platform_core/remote_execution_transport.py
+          grep -Fq '"model_sha256": expected_sha' platform_core/remote_execution_transport.py
+          grep -Fq '"verified_at": datetime.now(timezone.utc).isoformat()' platform_core/remote_execution_transport.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
@@ -161,6 +164,8 @@ jobs:
           grep -Fq 'RKNN_BOARD_NODE_UNAVAILABLE' app.py
           grep -Fq 'required_capabilities=("agent.remote",)' app.py
           grep -Fq 'stage_rknn_board_validation' app.py
+          grep -Fq 'v39_rknn_hardware_acceptance_report' app.py
+          grep -Fq 'rknn_runtime_hardware' app.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
 
@@ -194,6 +199,8 @@ jobs:
           grep -Fq '/hardware-tests/preflight' static/app.js
           grep -Fq 'v39_rknn_hardware_test_preflight' app.py
           grep -Fq '实机已验证' static/app.js
+          grep -Fq 'openRknnAcceptanceReport' static/app.js
+          grep -Fq '验收报告' tests/browser/model-and-conversion.spec.mjs
           grep -Fq '板端验证' tests/browser/model-and-conversion.spec.mjs
           grep -Fq '验收条件已满足' tests/browser/model-and-conversion.spec.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

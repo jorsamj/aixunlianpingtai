@@ -231,3 +231,83 @@ def test_rknn_hardware_preflight_reports_already_verified_without_allowing_new_t
     )
     assert response.status_code == 409
     assert "已完成板端 Runtime 验证" in response.text
+
+
+def test_rknn_hardware_acceptance_report_requires_complete_durable_evidence(
+    client, seeded_project
+):
+    project_id, _image = seeded_project
+    job_id, digest = seed_rknn_job(project_id, "convert-report")
+    job_dir = app_module._deploy_job_dir(project_id, job_id)
+    manifest_path = job_dir / "artifacts" / "manifest.json"
+    job_path = job_dir / "job.json"
+    verification = {
+        "task_id": "board-task-report",
+        "execution_generation": 4,
+        "verified_at": "2026-09-19T01:02:03+00:00",
+        "node_id": "rk3568-board-report",
+        "chip": "rk3568",
+        "engine": "rknn-lite2",
+        "rknn_lite_version": "2.3.2",
+        "model_sha256": digest,
+        "model_size_bytes": (job_dir / "artifacts" / "model_rk3568.rknn").stat().st_size,
+        "input": {
+            "file_name": "verify.jpg",
+            "size_bytes": 1234,
+            "sha256": "b" * 64,
+        },
+        "inference_ms": 11.25,
+        "output_count": 3,
+        "output_shapes": [[1, 84, 8400]],
+    }
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({
+        "status": "hardware_verified",
+        "runtime_verified": True,
+        "hardware_verified": True,
+        "validation_status": "hardware_verified",
+        "hardware_verification": verification,
+    })
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    job.update({
+        "runtime_verified": True,
+        "hardware_verified": True,
+        "validation_status": "hardware_verified",
+        "hardware_verification": verification,
+    })
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+
+    response = client.get(
+        f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/report"
+    )
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["status"] == "passed"
+    assert report["accuracy_verified"] is False
+    assert report["model"]["sha256"] == digest
+    assert report["board"] == {
+        "node_id": "rk3568-board-report",
+        "rknn_lite_version": "2.3.2",
+    }
+    assert report["verification"]["task_id"] == "board-task-report"
+    assert report["verification"]["input"]["sha256"] == "b" * 64
+    assert report["verification"]["inference_ms"] == 11.25
+    assert "不代表算法准确率" in report["statement"]
+
+    download = client.get(
+        f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/report?download=true"
+    )
+    assert download.status_code == 200
+    assert "attachment;" in download.headers["content-disposition"]
+    assert "rknn-hardware-acceptance-convert-report.json" in download.headers["content-disposition"]
+
+
+def test_rknn_hardware_acceptance_report_refuses_unverified_job(client, seeded_project):
+    project_id, _image = seeded_project
+    job_id, _digest = seed_rknn_job(project_id, "convert-report-unverified")
+    response = client.get(
+        f"/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/report"
+    )
+    assert response.status_code == 409
+    assert "尚未完成真实板端 Runtime 验证" in response.text

@@ -12366,6 +12366,113 @@ def v39_rknn_hardware_test_preflight(project_id: str, job_id: str):
     }
 
 
+def _rknn_hardware_acceptance_report(project_id: str, job_id: str) -> dict[str, Any]:
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    if not context["hardware_verified"]:
+        raise HTTPException(status_code=409, detail="该 RKNN 产物尚未完成真实板端 Runtime 验证")
+    manifest = context["manifest"]
+    job = context["job"]
+    verification = manifest.get("hardware_verification") if isinstance(manifest, Mapping) else None
+    job_verification = job.get("hardware_verification") if isinstance(job, Mapping) else None
+    if not isinstance(verification, Mapping):
+        raise HTTPException(status_code=409, detail="当前板端验收记录缺少 durable hardware_verification 证据")
+    chip = str(verification.get("chip") or "").strip().lower()
+    task_id = str(verification.get("task_id") or "").strip()
+    node_id = str(verification.get("node_id") or "").strip()
+    engine = str(verification.get("engine") or "").strip().lower()
+    verified_at = str(verification.get("verified_at") or "").strip()
+    model_sha = str(verification.get("model_sha256") or "").strip().lower()
+    try:
+        generation = int(verification.get("execution_generation") or 0)
+        model_size = int(verification.get("model_size_bytes") or 0)
+        inference_ms = float(verification.get("inference_ms"))
+        output_count = int(verification.get("output_count"))
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="当前板端验收记录的数值证据无效") from error
+    input_evidence = verification.get("input")
+    if not isinstance(input_evidence, Mapping):
+        raise HTTPException(status_code=409, detail="当前板端验收记录缺少测试图 evidence")
+    input_sha = str(input_evidence.get("sha256") or "").strip().lower()
+    try:
+        input_size = int(input_evidence.get("size_bytes") or 0)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="当前板端验收记录的测试图 size 无效") from error
+    if (
+        chip != str(context["chip"])
+        or not task_id
+        or generation <= 0
+        or not node_id
+        or engine != "rknn-lite2"
+        or not verified_at
+        or model_sha != str(context["model_sha256"])
+        or model_size != int(context["model_size_bytes"])
+        or not re.fullmatch(r"[0-9a-f]{64}", input_sha)
+        or input_size <= 0
+        or inference_ms < 0
+        or output_count <= 0
+    ):
+        raise HTTPException(status_code=409, detail="当前板端验收记录不满足完整留证要求")
+    if isinstance(job_verification, Mapping):
+        if (
+            str(job_verification.get("task_id") or "") != task_id
+            or str(job_verification.get("node_id") or "") != node_id
+            or str(job_verification.get("chip") or "").strip().lower() != chip
+        ):
+            raise HTTPException(status_code=409, detail="job.json 与 manifest 的板端验收 evidence 不一致")
+    target = manifest.get("target") if isinstance(manifest, Mapping) else {}
+    return {
+        "ok": True,
+        "report_version": 1,
+        "status": "passed",
+        "acceptance_scope": "rknn_runtime_hardware",
+        "project_id": str(project_id),
+        "conversion_job_id": str(job_id),
+        "model": {
+            "file_name": context["model_name"],
+            "size_bytes": context["model_size_bytes"],
+            "sha256": context["model_sha256"],
+        },
+        "target": {
+            "chip": chip,
+            "precision": str((target or {}).get("precision") or ""),
+        },
+        "board": {
+            "node_id": node_id,
+            "rknn_lite_version": str(verification.get("rknn_lite_version") or ""),
+        },
+        "verification": {
+            "task_id": task_id,
+            "execution_generation": generation,
+            "verified_at": verified_at,
+            "engine": engine,
+            "input": {
+                "file_name": Path(str(input_evidence.get("file_name") or "input")).name,
+                "size_bytes": input_size,
+                "sha256": input_sha,
+            },
+            "inference_ms": inference_ms,
+            "output_count": output_count,
+            "output_shapes": list(verification.get("output_shapes") or []),
+        },
+        "accuracy_verified": False,
+        "statement": "本报告仅证明该 RKNN 产物已在匹配 Rockchip 板卡上完成 RKNNLite Runtime 推理验证，不代表算法准确率或业务效果验收。",
+    }
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/report")
+def v39_rknn_hardware_acceptance_report(
+    project_id: str,
+    job_id: str,
+    download: bool = Query(False),
+):
+    report = _rknn_hardware_acceptance_report(project_id, job_id)
+    headers = {}
+    if download:
+        safe_job = re.sub(r"[^A-Za-z0-9._-]+", "-", str(job_id)).strip("-") or "rknn"
+        headers["Content-Disposition"] = f'attachment; filename="rknn-hardware-acceptance-{safe_job}.json"'
+    return JSONResponse(content=report, headers=headers)
+
+
 @app.post("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests")
 async def v39_create_rknn_hardware_test(
     project_id: str,

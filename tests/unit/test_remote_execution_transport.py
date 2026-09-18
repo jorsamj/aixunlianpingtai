@@ -1820,6 +1820,7 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
         task_id="board-test-1",
         project_id="p-board",
         kind=TaskKind.DEPLOYMENT_TEST,
+        worker_id="agent:rk3568-board-01",
     )
     payload = {
         "remote_execution": {
@@ -1838,7 +1839,13 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
                     "model_sha256": model_sha,
                     "model_size_bytes": model.stat().st_size,
                 },
-                "input": {"storage_source_id": "remote-models", "object_key": "input.jpg"},
+                "input": {
+                    "storage_source_id": "remote-models",
+                    "object_key": "input.jpg",
+                    "file_name": "verify.jpg",
+                    "size_bytes": 123,
+                    "sha256": "c" * 64,
+                },
                 "model": {"type": "object", "storage_source_id": "remote-models", "object_key": "model.rknn"},
                 "output": {"storage_source_id": "remote-models", "object_key": "result.jpg"},
             },
@@ -1860,6 +1867,7 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
                 "engine": "rknn-lite2",
                 "runtime_format": "rknn",
                 "chip": "rk3568",
+                "rknn_lite_version": "2.3.2",
                 "inference_ms": 8.5,
                 "output_count": 3,
                 "output_shapes": [[1, 84, 8400]],
@@ -1870,7 +1878,15 @@ def test_rknn_board_verification_commit_updates_original_conversion_only_after_v
     updated = json.loads((artifacts_dir / "manifest.json").read_text(encoding="utf-8"))
     assert updated["hardware_verified"] is True
     assert updated["runtime_verified"] is True
-    assert updated["hardware_verification"]["chip"] == "rk3568"
+    verification = updated["hardware_verification"]
+    assert verification["chip"] == "rk3568"
+    assert verification["node_id"] == "rk3568-board-01"
+    assert verification["rknn_lite_version"] == "2.3.2"
+    assert verification["model_sha256"] == model_sha
+    assert verification["input"]["file_name"] == "verify.jpg"
+    assert verification["input"]["sha256"] == "c" * 64
+    assert verification["input"]["size_bytes"] == 123
+    assert verification["verified_at"]
 
     # Any later model mutation must fail closed and cannot produce a new valid verification.
     model.write_bytes(b"mutated-rknn-model")

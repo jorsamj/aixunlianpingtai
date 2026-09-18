@@ -562,6 +562,7 @@ def test_rknn_board_runtime_executes_only_on_matching_verified_board(tmp_path):
     assert runtime_result["engine"] == "rknn-lite2"
     assert runtime_result["runtime_format"] == "rknn"
     assert runtime_result["chip"] == "rk3568"
+    assert runtime_result["rknn_lite_version"] == "2.3.2"
     assert runtime_result["output_count"] == 3
     assert runtime_result["inference_ms"] == 8.25
     assert transfer.put_calls[-1]["body"] == b"board-runtime-result"

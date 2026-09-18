@@ -222,7 +222,15 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
       validation_status: jobVerified ? 'hardware_verified' : 'converted_unverified',
       hardware_verified: jobVerified,
       hardware_verification: jobVerified ? {
-        chip: 'rk3568', inference_ms: 12.34, output_count: 3
+        task_id: 'rk-board-task-1',
+        execution_generation: 1,
+        verified_at: '2026-09-19T01:02:03+00:00',
+        node_id: 'rk3568-board-01',
+        chip: 'rk3568',
+        rknn_lite_version: '2.3.2',
+        inference_ms: 12.34,
+        output_count: 3,
+        output_shapes: [[1, 84, 8400]]
       } : null,
       params: {chip: 'rk3568', precision: 'fp16'},
       resource: {name: 'RKNN Agent'}
@@ -265,6 +273,33 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
         status: 'QUEUED',
         phase: 'QUEUED',
         progress_percent: 0
+      })
+    });
+  });
+  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs/rk-job-1/hardware-tests/report*`, async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        report_version: 1,
+        status: 'passed',
+        acceptance_scope: 'rknn_runtime_hardware',
+        model: {file_name: 'model_rk3568.rknn', size_bytes: 1024, sha256: 'a'.repeat(64)},
+        target: {chip: 'rk3568', precision: 'fp16'},
+        board: {node_id: 'rk3568-board-01', rknn_lite_version: '2.3.2'},
+        verification: {
+          task_id: 'rk-board-task-1',
+          execution_generation: 1,
+          verified_at: '2026-09-19T01:02:03+00:00',
+          engine: 'rknn-lite2',
+          input: {file_name: 'board-test.bmp', size_bytes: 1234, sha256: 'b'.repeat(64)},
+          inference_ms: 12.34,
+          output_count: 3,
+          output_shapes: [[1, 84, 8400]]
+        },
+        accuracy_verified: false,
+        statement: '本报告仅证明该 RKNN 产物已在匹配 Rockchip 板卡上完成 RKNNLite Runtime 推理验证，不代表算法准确率或业务效果验收。'
       })
     });
   });
@@ -319,6 +354,13 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   await expect(job.getByText(/实机已验证/)).toBeVisible();
   await expect(job.getByText(/推理 12\.34 ms/)).toBeVisible();
   await expect(job.getByRole('button', {name: '板端验证'})).toHaveCount(0);
+  await job.getByRole('button', {name: '验收报告'}).click();
+  const reportDialog = page.getByRole('dialog', {name: 'RKNN 实机验收报告'});
+  await expect(reportDialog.getByText('板端 Runtime 验收通过')).toBeVisible();
+  await expect(reportDialog.getByText('rk3568-board-01')).toBeVisible();
+  await expect(reportDialog.getByText('2.3.2')).toBeVisible();
+  await expect(reportDialog.getByText(/不代表算法准确率/)).toBeVisible();
+  await expect(reportDialog.getByRole('link', {name: '下载 JSON 报告'})).toHaveAttribute('href', /hardware-tests\/report\?download=true/);
 });
 
 
