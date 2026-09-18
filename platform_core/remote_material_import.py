@@ -131,80 +131,98 @@ def build_material_review_archive(
     )
     os.close(descriptor)
     temporary = Path(temporary_name)
+    rows_descriptor, rows_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.rows.",
+        suffix=".jsonl",
+    )
+    os.close(rows_descriptor)
+    rows_file = Path(rows_name)
     counts: dict[str, int] = {}
     seen_hashes: set[str] = set()
+    payloads: list[tuple[Path, str]] = []
     try:
+        with rows_file.open("wb") as rows_stream:
+            for index, relative in enumerate(members, start=1):
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("material review cancelled")
+                relative = safe_member_path(relative.as_posix())
+                source = _plain_file(root, relative)
+                suffix = source.suffix.lower()
+                row: dict[str, Any] = {
+                    "object_key": _target_key(target_prefix, relative),
+                    "filename": source.name,
+                    "storage_source_id": str(storage_source_id),
+                    "storage_type": str(storage_type),
+                    "content_sha256": "",
+                    "size_bytes": int(source.stat().st_size),
+                    "etag": "",
+                    "width": 0,
+                    "height": 0,
+                    "status": "SKIPPED",
+                    "error": "",
+                    "duplicate": False,
+                    "payload_member": "",
+                }
+                if suffix in IMAGE_EXTENSIONS:
+                    try:
+                        with Image.open(source) as image:
+                            width, height = image.size
+                            image.verify()
+                        digest = _sha256_file(source)
+                        duplicate = digest in seen_hashes
+                        row.update({
+                            "content_sha256": digest,
+                            "width": int(width),
+                            "height": int(height),
+                            "status": "DUPLICATE" if duplicate else "IMPORTABLE",
+                            "duplicate": duplicate,
+                        })
+                        if not duplicate:
+                            payload_member = (
+                                REVIEW_FILES_PREFIX
+                                / PurePosixPath(*relative.parts)
+                            ).as_posix()
+                            row["payload_member"] = payload_member
+                            payloads.append((source, payload_member))
+                        seen_hashes.add(digest)
+                    except (UnidentifiedImageError, OSError, ValueError):
+                        row.update({
+                            "status": "INVALID",
+                            "error": "IMAGE_DECODE_FAILED",
+                        })
+                counts[row["status"]] = counts.get(row["status"], 0) + 1
+                rows_stream.write(
+                    json.dumps(
+                        row,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                if progress is not None and (
+                    index == 1
+                    or index == len(members)
+                    or index % max(1, len(members) // 100) == 0
+                ):
+                    progress(index, len(members), relative.as_posix())
+            rows_stream.flush()
+            os.fsync(rows_stream.fileno())
+
+        if cancelled is not None and cancelled():
+            raise InterruptedError("material review cancelled")
         with zipfile.ZipFile(
             temporary,
             "w",
             compression=zipfile.ZIP_STORED,
             allowZip64=True,
         ) as archive:
-            with archive.open(REVIEW_ROWS_MEMBER, "w") as rows_stream:
-                for index, relative in enumerate(members, start=1):
-                    if cancelled is not None and cancelled():
-                        raise InterruptedError("material review cancelled")
-                    relative = safe_member_path(relative.as_posix())
-                    source = _plain_file(root, relative)
-                    suffix = source.suffix.lower()
-                    row: dict[str, Any] = {
-                        "object_key": _target_key(target_prefix, relative),
-                        "filename": source.name,
-                        "storage_source_id": str(storage_source_id),
-                        "storage_type": str(storage_type),
-                        "content_sha256": "",
-                        "size_bytes": int(source.stat().st_size),
-                        "etag": "",
-                        "width": 0,
-                        "height": 0,
-                        "status": "SKIPPED",
-                        "error": "",
-                        "duplicate": False,
-                        "payload_member": "",
-                    }
-                    if suffix in IMAGE_EXTENSIONS:
-                        try:
-                            with Image.open(source) as image:
-                                width, height = image.size
-                                image.verify()
-                            digest = _sha256_file(source)
-                            row.update({
-                                "content_sha256": digest,
-                                "width": int(width),
-                                "height": int(height),
-                                "status": "DUPLICATE" if digest in seen_hashes else "IMPORTABLE",
-                                "duplicate": digest in seen_hashes,
-                            })
-                            if digest not in seen_hashes:
-                                payload_member = (
-                                    REVIEW_FILES_PREFIX
-                                    / PurePosixPath(*relative.parts)
-                                ).as_posix()
-                                archive.write(source, arcname=payload_member)
-                                row["payload_member"] = payload_member
-                            seen_hashes.add(digest)
-                        except (UnidentifiedImageError, OSError, ValueError):
-                            row.update({
-                                "status": "INVALID",
-                                "error": "IMAGE_DECODE_FAILED",
-                            })
-                    counts[row["status"]] = counts.get(row["status"], 0) + 1
-                    rows_stream.write(
-                        json.dumps(
-                            row,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                        + b"\n"
-                    )
-                    if progress is not None and (
-                        index == 1
-                        or index == len(members)
-                        or index % max(1, len(members) // 100) == 0
-                    ):
-                        progress(index, len(members), relative.as_posix())
-
+            archive.write(rows_file, arcname=REVIEW_ROWS_MEMBER)
+            for source, payload_member in payloads:
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("material review cancelled")
+                archive.write(source, arcname=payload_member)
             meta = {
                 "schema_version": REVIEW_SCHEMA_VERSION,
                 "task_id": str(task_id),
@@ -231,6 +249,7 @@ def build_material_review_archive(
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+        rows_file.unlink(missing_ok=True)
 
     return {
         "path": target,
@@ -239,7 +258,6 @@ def build_material_review_archive(
         "candidate_count": len(members),
         "counts": counts,
     }
-
 
 class RemoteMaterialStagingStore:
     _SCHEMA = """
