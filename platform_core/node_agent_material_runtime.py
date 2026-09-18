@@ -17,7 +17,10 @@ from .node_agent_executor_runtime import (
     RemoteExecutionFenced,
     RemoteExecutionLease,
 )
-from .remote_material_import import build_material_review_archive
+from .remote_material_import import (
+    build_material_review_archive,
+    build_yolo_material_review_archive,
+)
 from .storage.zip_import import (
     ExtractionCancelled,
     ServerZipImportError,
@@ -293,7 +296,7 @@ class AgentMaterialImportRunner:
             or str(payload.get("task_kind") or "") != "MATERIAL_IMPORT"
             or str(payload.get("transport") or "") != "object-storage-v1"
             or str(payload.get("mode") or "") != "zip_scan"
-            or str(payload.get("import_format") or "") != "images"
+            or str(payload.get("import_format") or "") not in {"images", "yolo"}
         ):
             raise AgentMaterialImportRuntimeError(
                 "portable material import start payload is invalid"
@@ -391,21 +394,31 @@ class AgentMaterialImportRunner:
                     current_item=current,
                 )
 
-            review = build_material_review_archive(
-                extract_root / "source",
-                review_path,
-                task_id=lease.task_id,
-                project_id=lease.project_id,
-                execution_generation=lease.generation,
-                storage_source_id=str(target.get("storage_source_id") or ""),
-                storage_type=str(target.get("storage_type") or ""),
-                target_prefix=str(target.get("target_prefix") or ""),
-                cancelled=lambda: (
+            review_builder = (
+                build_yolo_material_review_archive
+                if str(payload.get("import_format") or "") == "yolo"
+                else build_material_review_archive
+            )
+            review_kwargs = {
+                "task_id": lease.task_id,
+                "project_id": lease.project_id,
+                "execution_generation": lease.generation,
+                "storage_source_id": str(target.get("storage_source_id") or ""),
+                "storage_type": str(target.get("storage_type") or ""),
+                "target_prefix": str(target.get("target_prefix") or ""),
+                "cancelled": lambda: (
                     self._shutdown_event.is_set()
                     or monitor.cancel_requested.is_set()
                     or monitor.fenced.is_set()
                 ),
-                progress=review_progress,
+                "progress": review_progress,
+            }
+            if str(payload.get("import_format") or "") == "yolo":
+                review_kwargs["dataset_yaml"] = str(payload.get("dataset_yaml") or "")
+            review = review_builder(
+                extract_root / "source",
+                review_path,
+                **review_kwargs,
             )
             self._assert_active(monitor)
             review_sha = str(review["sha256"])
