@@ -172,7 +172,9 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def _primitive(value: object, default: Any) -> Any:
-    return value if value is None or isinstance(value, (str, int, float, bool)) else default
+    if value is None:
+        return default
+    return value if isinstance(value, (str, int, float, bool)) else default
 
 
 class AgentTrainingRunner:
