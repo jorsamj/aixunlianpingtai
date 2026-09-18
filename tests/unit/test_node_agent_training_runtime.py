@@ -23,6 +23,11 @@ from platform_core.node_agent_training_runtime import (
     AgentTrainingRuntimeError,
 )
 from platform_core.remote_training_transport import create_training_bundle_archive
+from platform_core.task_runtime.process_control import (
+    ProcessController,
+    ProcessIdentity,
+    launch_process,
+)
 
 
 class FakeResponse:
@@ -724,6 +729,121 @@ def test_training_fencing_kills_worker_without_stale_terminal_write(tmp_path):
     assert not client.prepare_calls
     assert (runtime_root / "started.marker").is_file()
     assert not (runtime_root / "completed.marker").exists()
+
+
+class RefusingProcessController:
+    def terminate_tree(self, _identity, timeout=5.0):
+        raise PermissionError("cannot prove process tree stopped")
+
+
+def test_training_cleanup_failure_preserves_identity_and_never_publishes_terminal_state(
+    tmp_path,
+):
+    current, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(
+        transfer,
+        cancel_at_heartbeat=6,
+    )
+    runner, runtime_root, workdirs = build_runner(
+        tmp_path,
+        client,
+        transfer,
+        sleep_seconds=30,
+    )
+    runner.controller = RefusingProcessController()
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(
+            RemoteExecutionFenced,
+            match="cleanup could not be verified",
+        ):
+            runner.run(current)
+
+        assert time.monotonic() - started < 8
+        assert not client.finish_calls
+        assert not client.model_prepare_calls
+        assert not client.prepare_calls
+        records = workdirs.list_process_identities()
+        assert len(records) == 1
+        record = records[0]
+        assert record["task_id"] == current.task_id
+        assert record["generation"] == current.generation
+        generation_dir = (
+            workdirs.root
+            / "executions"
+            / current.task_id
+            / str(current.generation)
+        )
+        assert generation_dir.is_dir()
+        assert (generation_dir / "process-identity.json").is_file()
+        assert (runtime_root / "started.marker").is_file()
+        assert not (runtime_root / "completed.marker").exists()
+    finally:
+        records = workdirs.list_process_identities()
+        if records:
+            record = records[0]
+            identity = ProcessIdentity(
+                pid=int(record["pid"]),
+                create_time=float(record["create_time"]),
+                command_hash=str(record["command_hash"]),
+            )
+            ProcessController().terminate_tree(identity, timeout=5.0)
+            workdirs.clear_process_identity_record(
+                str(record["task_id"]),
+                int(record["generation"]),
+            )
+            workdirs.cleanup(current)
+
+
+def test_training_runner_restart_reaps_persisted_exact_process_before_accepting_work(
+    tmp_path,
+):
+    current, downloads = training_lease(tmp_path)
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    workdirs.prepare(current)
+    launched = launch_process(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+        ],
+        cwd=tmp_path,
+    )
+    workdirs.persist_process_identity(current, launched.identity)
+
+    try:
+        transfer = FakeTransferSession(downloads)
+        client = FakeControlClient(transfer)
+        runtime_root = tmp_path / "runtime-restart"
+        write_fake_train_worker(runtime_root)
+        runner = AgentTrainingRunner(
+            client,
+            workdirs,
+            runtime_root=runtime_root,
+            ultralytics_python=sys.executable,
+            transfer_session=transfer,
+            heartbeat_interval=1.0,
+            process_poll_interval=0.05,
+            transfer_timeout=10,
+        )
+
+        assert runner.ready is True
+        assert runner.recovery_error == ""
+        assert workdirs.list_process_identities() == []
+        launched.process.wait(timeout=5)
+    finally:
+        if launched.process.poll() is None:
+            ProcessController().terminate_tree(
+                launched.identity,
+                timeout=5.0,
+            )
+        workdirs.clear_process_identity_record(
+            current.task_id,
+            current.generation,
+        )
+        workdirs.cleanup(current)
 
 
 def test_training_result_put_can_recover_after_lost_response(tmp_path):
