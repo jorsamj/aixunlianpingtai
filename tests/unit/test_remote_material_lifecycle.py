@@ -111,7 +111,7 @@ def test_server_confirmed_cleanup_deletes_only_exact_task_owned_staging(tmp_path
         artifacts,
         lambda _project_id, _ref: provider,
     )
-    outcome = lifecycle.record_confirmed(
+    recorded = lifecycle.record_confirmed(
         task(),
         payload(),
         {
@@ -133,6 +133,12 @@ def test_server_confirmed_cleanup_deletes_only_exact_task_owned_staging(tmp_path
         },
     )
 
+    # Commit-time recording must not delete before the outer result state is
+    # durable; the existing storage-Worker sweep performs the deletion later.
+    assert recorded["status"] == "RECORDED"
+    assert provider.exists(input_key) is True
+    assert provider.exists(review_key) is True
+    outcome = lifecycle.cleanup_task(task(), force=True)
     assert outcome["status"] == "COMPLETE"
     assert provider.exists(input_key) is False
     assert provider.exists(review_key) is False
@@ -156,7 +162,7 @@ def test_cleanup_refuses_to_delete_changed_staging_object(tmp_path):
         lambda _project_id, _ref: provider,
     )
 
-    outcome = lifecycle.record_confirmed(
+    recorded = lifecycle.record_confirmed(
         task(),
         payload(),
         {
@@ -179,7 +185,8 @@ def test_cleanup_refuses_to_delete_changed_staging_object(tmp_path):
             }
         },
     )
-
+    assert recorded["status"] == "RECORDED"
+    outcome = lifecycle.cleanup_task(task(), force=True)
     assert outcome["status"] == "INCOMPLETE"
     assert provider.exists(input_key) is True
     assert input_key not in provider.deleted
