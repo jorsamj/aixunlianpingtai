@@ -125,6 +125,7 @@ class _BrokeredMaterialProvider:
         *,
         source: Mapping[str, Any],
         timeout: float,
+        allow_root: bool = False,
     ) -> None:
         self.client = client
         self.lease = lease
@@ -140,7 +141,8 @@ class _BrokeredMaterialProvider:
             ) from error
         self.scope_prefix = str(source.get("prefix") or "").replace("\\", "/").strip("/")
         self.scope_recursive = bool(source.get("recursive", True))
-        if not self.source_id or not self.scope_prefix:
+        self.allow_root = bool(allow_root)
+        if not self.source_id or (not self.scope_prefix and not self.allow_root):
             raise AgentMaterialImportRuntimeError(
                 "brokered storage_scan source identity is incomplete"
             )
@@ -152,6 +154,8 @@ class _BrokeredMaterialProvider:
         return str(value or "").strip().strip('"')
 
     def _in_scope(self, key: str) -> bool:
+        if not self.scope_prefix:
+            return bool(key)
         return key == self.scope_prefix or key.startswith(self.scope_prefix + "/")
 
     @staticmethod
@@ -548,6 +552,7 @@ class AgentMaterialImportRunner:
             )
         payload = lease.payload
         mode = str(payload.get("mode") or "")
+        intent = str(payload.get("intent") or "").strip().lower()
         import_format = str(payload.get("import_format") or "")
         allowed_formats = {"images", "yolo", "coco", "voc"}
         if (
@@ -555,7 +560,9 @@ class AgentMaterialImportRunner:
             or str(payload.get("task_kind") or "") != "MATERIAL_IMPORT"
             or str(payload.get("transport") or "") != "object-storage-v1"
             or mode not in {"zip_scan", "storage_scan"}
+            or intent not in {"", "storage_rescan"}
             or import_format not in allowed_formats
+            or (intent == "storage_rescan" and (mode != "storage_scan" or import_format != "images"))
         ):
             raise AgentMaterialImportRuntimeError(
                 "portable material import start payload is invalid"
@@ -611,6 +618,7 @@ class AgentMaterialImportRunner:
                     self.transfer_session,
                     source=source_contract,
                     timeout=self.transfer_timeout,
+                    allow_root=intent == "storage_rescan",
                 )
             else:
                 self._heartbeat(

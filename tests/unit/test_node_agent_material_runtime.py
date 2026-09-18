@@ -383,3 +383,64 @@ def test_agent_material_runner_reviews_coco_zip_and_publishes_detection_evidence
         assert annotations[0]["object_key"] == "incoming/2026/train/a.jpg"
         assert annotations[0]["annotation_status"] == "annotated"
         assert annotations[0]["boxes"][0]["class_id"] == 7
+
+
+def test_agent_material_runner_allows_root_scope_only_for_storage_rescan_intent(tmp_path):
+    client = FakeClient()
+    session = ScanSession(client.scan_image)
+    runner = AgentMaterialImportRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "agent-state"),
+        transfer_session=session,
+        heartbeat_interval=60,
+    )
+    payload = {
+        "schema_version": 1,
+        "task_kind": "MATERIAL_IMPORT",
+        "transport": "object-storage-v1",
+        "mode": "storage_scan",
+        "intent": "storage_rescan",
+        "import_format": "images",
+        "dataset_yaml": "",
+        "source": {
+            "storage_source_id": "s3-target",
+            "storage_type": "s3",
+            "prefix": "",
+            "recursive": True,
+        },
+        "target": {
+            "storage_source_id": "s3-target",
+            "storage_type": "s3",
+            "target_prefix": "",
+        },
+        "output": {
+            "type": "object",
+            "storage_ref": {
+                "storage_source_id": "s3-target",
+                "object_key": "reviews/root-rescan.zip",
+                "file_name": "material-review.zip",
+                "content_type": "application/zip",
+            },
+            "upload_protocol": "prepare-after-local-hash-v1",
+        },
+    }
+    lease = RemoteExecutionLease(
+        task_id="material-root-rescan",
+        kind="MATERIAL_IMPORT",
+        project_id="project-one",
+        generation=1,
+        lease_token="lease-secret",
+        lease_expires_at="2099-01-01T00:00:00+00:00",
+        worker_id="agent:node-one",
+        payload=payload,
+        assignment={},
+        transport={},
+    )
+
+    outcome = runner.run(lease)
+
+    assert outcome.status == "AWAITING_CONFIRMATION"
+    assert client.finished[-1][0] == "AWAITING_CONFIRMATION"
+    with zipfile.ZipFile(io.BytesIO(session.uploaded), "r") as review:
+        row = json.loads(review.read("review.jsonl").decode("utf-8").strip())
+        assert row["object_key"] == "incoming/2026/a.jpg"
