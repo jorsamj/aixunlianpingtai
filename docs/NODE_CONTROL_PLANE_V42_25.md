@@ -263,9 +263,38 @@ Phase 1 历史验收保持：
 3. COCO/VOC Agent server_zip 仍未关闭。
 4. TensorRT / Sophon / Ascend 暂不推进。
 
-**下一主线：Rockchip 实机接入与 acceptance 工具链。**
+## 0. 最新关闭：Rockchip 实机接入软件工具链
 
-目标：把 Rockchip 板端 Agent 的安装、配置、SoC/RKNNLite 探测、服务注册、诊断和真实模型验收流程产品化/脚本化；继续复用现有 `deployment-test.rknn` durable truth，不新增第二套板端验证系统。
+2026-09-18，Rockchip 板端 Agent onboarding 软件链路已 CLOSED：
+
+- `node_agent.py --doctor` 对请求 capability 做 strict fail-closed 预检；失败返回非零并输出具体 issue。
+- 新增 Linux/systemd 安装器 `tools/install_rockchip_agent.sh`，安装与每次服务启动前都执行 doctor。
+- Token 使用 root-owned `0600` EnvironmentFile；不进入 `ExecStart` / process argv。
+- 默认板端 capability 为 `deployment-test.rknn`，不把板端节点误配置为 RKNN 转换节点。
+- 服务节点 UI 增加 Rockchip 板端快捷预设、RKNN capability 中文标签、真实 SoC/RKNNLite/RKNN-Toolkit2 runtime 展示。
+- 一次性 Token 弹窗提供 doctor 与 systemd 安装命令；systemd 命令不回显 Token。
+- 普通 Agent/Linux/Windows 路径保持兼容。
+- Real Chrome 覆盖：创建 Rockchip 板端节点 → 快捷预设 → 保存一次性 Token → doctor/systemd 命令展示。
+
+永久验收（代码 HEAD `b8caf7753994988d5161321c2536ae75e64d3252`）：
+
+- Service Node UI `35342366446`：Ubuntu / Windows / Real Chrome success。
+- Remote RKNN Board Runtime Protocol `35342366573`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Conversion Runtime `35342369723`、Node Agent Executor `35342369838`、Central Node Assignment `35342369780`：success。
+- Remote Training `35342369831`、Remote Material Import `35342369794`：success。
+- Task Runtime Truth `35342369798`、Portable Deployment `35342369765`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
+**仍然 OPEN：**
+
+1. 用户真实 RK3568 / RK3576 板卡的现场 hardware acceptance。
+2. 若设备被销售/标注为“RK3578”，先读取真实 SoC compatible，不能直接映射为 RK3576。
+3. COCO/VOC Agent server_zip 仍未关闭。
+4. TensorRT / Sophon / Ascend 暂不推进。
+
+**下一主线：Rockchip 真实板卡 acceptance。**
+
+必须复用已 CLOSED 的 `deployment-test.rknn` durable truth。只有真实板卡 Agent ONLINE 且 effective capability 为 `deployment-test.rknn`，并成功执行目标 `.rknn` 的 RKNNLite inference 后，具体 conversion job 才允许写 `hardware_verified=true`。软件 CI 不能代替现场 NPU 验收。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

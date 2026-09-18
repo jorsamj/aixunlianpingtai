@@ -210,12 +210,47 @@ Acceptance at code HEAD `314757c1601420640acedc074e9aeb795e8a2097`:
 - Remote Training Runtime `35340943764`: success.
 - Remote Cleaning Runtime `35340943815`: success.
 
-**OPEN / next:** Rockchip real-device onboarding and acceptance tooling.
-Keep TensorRT/Sophon/Ascend out of scope. Productize/script Node Agent install,
-real SoC/RKNNLite probing, registration/diagnostics and repeatable
-`deployment-test.rknn` acceptance on the user's physical RK3568 / actual
-Rockchip boards. CI remains software evidence only; a concrete model becomes
-hardware-verified only after a real board runs it successfully.
+## Current closure — Rockchip real-device onboarding tooling CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Rockchip board onboarding is now productized without weakening the existing
+runtime truth. `node_agent.py --doctor` is a strict capability preflight:
+requested capabilities that cannot actually be reported make the command exit
+non-zero and include actionable issues. Existing `--check` behavior remains
+compatible.
+
+`tools/install_rockchip_agent.sh` installs the board Agent as a Linux systemd
+service. It runs doctor before installation and through `ExecStartPre` on
+service starts. The one-time Agent token is never embedded in the install
+command or systemd `ExecStart`; it is read from a silent prompt/environment
+and stored in a root-owned 0600 EnvironmentFile.
+
+The Service Node UI now understands `conversion.rknn` and
+`deployment-test.rknn`, offers a Rockchip-board preset, surfaces observed
+SoC/RKNNLite/RKNN-Toolkit2 runtime truth, and shows board-specific doctor and
+systemd onboarding commands in the one-time-token dialog. The generated
+systemd command itself contains no token.
+
+Acceptance at code HEAD `b8caf7753994988d5161321c2536ae75e64d3252`:
+- Service Node UI `35342366446`: Ubuntu / Windows contracts + Real Chrome success.
+- Remote RKNN Board Runtime Protocol `35342366573`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Conversion Runtime `35342369723`: success.
+- Node Agent Executor `35342369838`: success.
+- Central Node Assignment `35342369780`: success.
+- Remote Training Runtime `35342369831`: success.
+- Remote Material Import `35342369794`: success.
+- Task Runtime Truth `35342369798`: success.
+- Portable Deployment `35342369765`: success.
+
+This closes the **software onboarding tooling only**. It does not prove that any
+specific user-owned board has passed hardware acceptance.
+
+**OPEN / next:** Rockchip physical-board acceptance. A real RK3568/RK3576 (or a
+device whose actual SoC is first identified) must run the Agent, become online
+with effective `deployment-test.rknn`, and execute a real converted `.rknn`
+through RKNNLite. Only that real task may promote that specific conversion to
+`hardware_verified=true`. CI/mock/x86 execution is not hardware acceptance.
 
 
 

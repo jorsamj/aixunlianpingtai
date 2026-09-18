@@ -326,9 +326,41 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Remote Cleaning Runtime `35340943815`：全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
-**当前主线：Rockchip 实机接入与 acceptance 工具链。**
+# 最新关闭：Rockchip 实机接入软件工具链
 
-继续只聚焦瑞芯微，不扩 TensorRT / Sophon / Ascend。下一阶段围绕你们已有 RK3568 / 实际 Rockchip 设备，把“安装 Node Agent → 自动识别真实 SoC / RKNNLite → 上报 deployment-test.rknn → 运行真实 .rknn 模型 → 输出 acceptance 结果”做成可重复部署/诊断流程。CI 仍不能冒充真实 NPU 硬件验收；只有实际板卡成功执行后，具体模型才允许写 `hardware_verified=true`。
+2026-09-18，Rockchip 板端 Node Agent 的安装、严格预检和服务节点产品入口已完成软件闭环并 CLOSED。
+
+当前真实能力：
+
+- `node_agent.py` 新增严格 `--doctor`：请求的任一 capability 无法真实上报时返回非零，并输出 `doctor.ready / issues`；原有 `--check` 语义不变。
+- 新增 `tools/install_rockchip_agent.sh`：仅 Linux/systemd；安装前执行 strict doctor；默认只启用 `deployment-test.rknn`。
+- Agent Token 不进入安装命令或 systemd `ExecStart`；只保存到 root-owned、`0600` 的 EnvironmentFile。
+- `ExecStartPre` 在每次服务启动前再次 doctor；SoC/RKNNLite 环境失效时不会假装上线。
+- 服务节点页面新增 `conversion.rknn → 瑞芯微 RKNN 转换`、`deployment-test.rknn → 瑞芯微板端验证` 中文标签。
+- 新增 Rockchip 板端快捷预设，一键选择远程 Agent + `deployment-test.rknn`。
+- 节点卡片显示真实 `rknn_board.chip / RKNNLite version` 与 RKNN-Toolkit2 runtime truth。
+- 一次性 Token 弹窗针对板端节点额外展示 strict doctor 与 systemd 安装命令；生成的 systemd 安装命令不包含 Token。
+- 普通 Linux/Windows Agent 启动方式保持兼容。
+- 当前工具链仍只认真实 RK3568/RK3566 family 或 RK3576；现场若写“RK3578”，必须先读取真实 `/proc/device-tree/compatible`。
+
+最终软件验收（代码 HEAD `b8caf7753994988d5161321c2536ae75e64d3252`）：
+
+- Service Node UI `35342366446`：Ubuntu / Windows contract + Real Chrome 全绿。
+- Remote RKNN Board Runtime Protocol `35342366573`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Remote Conversion Runtime `35342369723`：control-plane / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35342369838`：API / Ubuntu / Windows 全绿。
+- Central Node Assignment `35342369780`：API / Ubuntu / Windows 全绿。
+- Remote Training Runtime `35342369831`：API / Ubuntu / Windows 全绿。
+- Remote Material Import `35342369794`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Task Runtime Truth `35342369798`：全绿。
+- Portable Deployment `35342369765`：全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**重要边界：这次 CLOSED 的是“实机接入的软件工具链”，不是你们手上某一台真实 Rockchip 板卡已经通过硬件验收。**
+
+**当前主线：Rockchip 真实板卡 acceptance。**
+
+下一步需要一台真实 RK3568 / RK3576（或先识别实际 SoC 的设备）运行本仓库 Node Agent。软件侧只继续做验收辅助：doctor → 节点 ONLINE/effective `deployment-test.rknn` → 选择一个 `converted_unverified` RKNN 模型 → 真板执行 RKNNLite inference → 只有成功后该具体模型才写 `hardware_verified=true`。CI、mock 或 x86 runner 都不能替代这一步。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
