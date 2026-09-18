@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`023961f0b3eb536263fc50482f4ffa9dec6a4db9`  
+本轮产品实现基线：`951e2d9089ae1fd251d5e7a91a5fc453b9ae676d`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -95,9 +95,29 @@ Phase 2 新增真实能力：
 
 Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效，不重做。
 
-**当前主线：Remote MATERIAL_IMPORT Phase 3 — staging object lifecycle / GC。**
+# 最新关闭：Remote MATERIAL_IMPORT Phase 3 — staging object lifecycle / GC
 
-优先清理远程导入产生的 source ZIP / review ZIP 临时对象，但必须保留运行中、待确认、retry 和审计所需证据。GC 只能基于 task-owned object refs 精确删除，禁止 prefix 盲删，禁止删除正式 MaterialRepository 的目标对象。随后再扩展 Agent `storage_scan`，再考虑 COCO/VOC。
+2026-09-18 已完成 remote input/review staging object 治理：
+
+- server-confirm 后写 durable cleanup ledger，等外层 result state durable 后再删除。
+- AWAITING_CONFIRMATION 的 staging 对象由 storage Worker heartbeat hook 精确回收。
+- FAILED/CANCELLED/BLOCKED 默认保留 7 天后再 GC。
+- orphan generation 从 `remote-results/N/upload.json` 恢复 exact object ref。
+- 删除前重新验证 task-owned prefix + storage source + size + SHA256。
+- mismatch = CONFLICT，不删除；provider 故障 = PENDING，可重试。
+- 不做 prefix list/delete；不触碰正式 MaterialRepository 目标对象。
+- GC 使用现有 WorkerInstance renew hook，5 分钟节流、分页 cursor，无第二套 timer/scheduler。
+
+验收：
+
+- Remote Material Import `35312109805`：API / Ubuntu / Windows 全绿。
+- Task Runtime Truth `35312109707`：Ubuntu / Windows 全绿。
+- Storage Cache Governance `35312109834`：全绿。
+- `VERSION.txt=42.24.0` 未修改。
+
+**当前主线：Remote MATERIAL_IMPORT Phase 4 — Agent storage_scan。**
+
+不要重做 Phase 1/2/3。下一步让 Agent 承担对象存储 prefix 扫描的重 I/O，但 Agent 仍不能获取长期 OSS/S3 凭据、不能直接访问中央 SQLite/NFS。优先复用当前 ImportCandidateStore/YoloImportScanner/result review contract。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
