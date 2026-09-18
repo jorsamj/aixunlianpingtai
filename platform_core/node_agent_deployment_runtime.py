@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 import requests
@@ -111,9 +111,14 @@ def _last_json_line(text: str) -> dict[str, Any]:
 
 
 class _MonitoredUploadBody:
-    def __init__(self, path: Path, monitor: ExecutionLeaseMonitor, size_bytes: int) -> None:
+    def __init__(
+        self,
+        path: Path,
+        assert_active: Callable[[], None],
+        size_bytes: int,
+    ) -> None:
         self.path = Path(path)
-        self.monitor = monitor
+        self.assert_active = assert_active
         self.size_bytes = int(size_bytes)
 
     def __len__(self) -> int:
@@ -123,7 +128,7 @@ class _MonitoredUploadBody:
         sent = 0
         with self.path.open("rb") as stream:
             while True:
-                self.monitor.assert_active()
+                self.assert_active()
                 chunk = stream.read(_TRANSFER_CHUNK_BYTES)
                 if not chunk:
                     break
@@ -167,6 +172,7 @@ class AgentDeploymentRunner:
         self.controller = ProcessController()
         self._identity_lock = threading.Lock()
         self._active_identity: ProcessIdentity | None = None
+        self._shutdown_event = threading.Event()
 
     def _terminate_active(self) -> None:
         with self._identity_lock:
@@ -184,6 +190,16 @@ class AgentDeploymentRunner:
         with self._identity_lock:
             self._active_identity = identity
 
+    def request_shutdown(self) -> None:
+        """Stop local work without publishing a false terminal task state."""
+        self._shutdown_event.set()
+        self._terminate_active()
+
+    def _assert_active(self, monitor: ExecutionLeaseMonitor) -> None:
+        if self._shutdown_event.is_set():
+            raise RemoteExecutionFenced("Agent process shutdown requested")
+        self._assert_active(monitor)
+
     def _heartbeat(
         self,
         monitor: ExecutionLeaseMonitor,
@@ -197,7 +213,7 @@ class AgentDeploymentRunner:
             stage=stage,
             current_item=current_item or None,
         )
-        monitor.assert_active()
+        self._assert_active(monitor)
 
     def _download(
         self,
@@ -248,7 +264,7 @@ class AgentDeploymentRunner:
         try:
             with temporary.open("wb") as stream:
                 for chunk in response.iter_content(chunk_size=_TRANSFER_CHUNK_BYTES):
-                    monitor.assert_active()
+                    self._assert_active(monitor)
                     if not chunk:
                         continue
                     written += len(chunk)
@@ -383,7 +399,11 @@ class AgentDeploymentRunner:
         ):
             raise AgentDeploymentRuntimeError("result upload contract does not prevent overwrite")
 
-        body = _MonitoredUploadBody(output_path, monitor, size_bytes)
+        body = _MonitoredUploadBody(
+            output_path,
+            lambda: self._assert_active(monitor),
+            size_bytes,
+        )
         try:
             response = self.transfer_session.put(
                 url,
@@ -441,6 +461,8 @@ class AgentDeploymentRunner:
             return None
 
     def run(self, lease: RemoteExecutionLease) -> AgentDeploymentOutcome:
+        if self._shutdown_event.is_set():
+            raise RemoteExecutionFenced("Agent process shutdown requested")
         if lease.kind != "DEPLOYMENT_TEST":
             raise AgentDeploymentRuntimeError("AgentDeploymentRunner only accepts DEPLOYMENT_TEST")
         payload = lease.payload
@@ -520,7 +542,7 @@ class AgentDeploymentRunner:
                 self._set_identity(launched.identity)
                 try:
                     while launched.process.poll() is None:
-                        monitor.assert_active()
+                        self._assert_active(monitor)
                         time.sleep(self.process_poll_interval)
                 except (InterruptedError, RemoteExecutionFenced):
                     self.controller.terminate_tree(launched.identity, timeout=5.0)
@@ -528,7 +550,7 @@ class AgentDeploymentRunner:
                 finally:
                     self._set_identity(None)
 
-            monitor.assert_active()
+            self._assert_active(monitor)
             runtime_text = runtime_log.read_text(encoding="utf-8", errors="ignore")
             self._append_log(lease, runtime_text)
             if launched.process.returncode != 0:
@@ -552,7 +574,7 @@ class AgentDeploymentRunner:
                 current_item=output_name,
             )
             size_bytes, output_sha = _sha256_file(output_path)
-            monitor.assert_active()
+            self._assert_active(monitor)
             prepared = self.client.prepare_result_upload(
                 lease,
                 sha256=output_sha,
@@ -583,7 +605,7 @@ class AgentDeploymentRunner:
                         sha256=output_sha,
                     )
                 except AgentDeploymentRuntimeError:
-                    monitor.assert_active()
+                    self._assert_active(monitor)
                     # If the PUT response was lost after the object was accepted,
                     # prepare is idempotent. If the old signature merely expired,
                     # the same evidence may receive one fresh upload contract.
@@ -604,7 +626,7 @@ class AgentDeploymentRunner:
                             sha256=output_sha,
                         )
 
-            monitor.assert_active()
+            self._assert_active(monitor)
             confirmed = self.client.confirm_result_upload(
                 lease,
                 runtime_result=runtime_result,
@@ -651,7 +673,7 @@ class AgentDeploymentRunner:
         except Exception as error:
             self._terminate_active()
             try:
-                monitor.assert_active()
+                self._assert_active(monitor)
             except InterruptedError as cancelled:
                 message = str(cancelled)
                 self._append_log(lease, f"[agent] deployment cancelled: {message}\n")
