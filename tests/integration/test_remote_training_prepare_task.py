@@ -97,7 +97,7 @@ def _build_project(data_dir: Path):
             "filename": path.name,
             "storage_source_id": "default_local",
             "storage_type": "local",
-            "object_key": path.name,
+            "object_key": f"uploads/{path.name}",
             "width": 64,
             "height": 64,
             "size_bytes": path.stat().st_size,
