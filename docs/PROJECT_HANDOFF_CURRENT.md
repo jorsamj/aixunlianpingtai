@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`8c36ba1bcac501b029f7cb0976b5ec8a1b0e3dfe`  
+本轮产品实现基线：`dbbcda34316b9265017524b925e759fe0717a071`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,48 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
+
+2026-09-18，第三个真实跨机器 task kind 已 CLOSED：`MODEL_CONVERSION` 的 **ONNX** 目标。
+
+当前 Agent 真实执行能力：
+
+```text
+deployment-test
+training
+conversion（当前只闭环 ONNX）
+```
+
+完整闭环：
+
+- 部署资源新增显式 `mode=agent`；状态直接来自 Service Node Registry。
+- 只有在线、enabled、allowed+reported 后形成 effective `conversion` 的 Agent 节点才可用。
+- Agent ONNX 任务使用 portable verified model object，不把控制面 `stored_path/job_dir/worker_path/python_path` 发到节点执行。
+- durable task 使用 Agent-only Worker capability fence，legacy local ConversionHandler 不会与中央 assignment 抢同一任务。
+- Agent 下载模型并校验 Content-Length / size / SHA256。
+- 节点本地调用本机 `deployment_worker.py` 与本机 Python；真实 ONNX export 后由 ONNX Runtime 做 runtime verification。
+- subprocess 继续使用 persisted ProcessIdentity；cancel / lease loss / Agent shutdown 精确终止进程树。
+- runner cleanup 不安全时动态撤销 conversion capability；没有 runner/effective capability 时在 `start_execution` **之前** fail closed。
+- 输出本地计算 hash/size → prepare → generation-scoped immutable PUT → confirm。
+- server-side finalization gate 后，控制面重新下载 ONNX 并再次校验 hash/size。
+- 已验证 ONNX 写回原有 `deploy/jobs/<task>/artifacts/model.onnx`、`manifest.json` 和 `job.json`，部署中心现有产物列表/下载继续可用。
+- 显式 Agent staging 失败禁止静默回退本机。
+- TensorRT / RKNN / Sophon / Ascend 等厂商转换**尚未因为 ONNX closure 自动变成远程可用**。
+
+最终验收：
+
+- Remote Conversion Runtime `35306100598`：control-plane / Ubuntu / Windows 全绿。
+- Node Agent Executor `35306100599`：API / Ubuntu / Windows 全绿。
+- Central Node Assignment `35306100621`：API / Ubuntu / Windows 全绿。
+- Portable Deployment `35306100612`：production API / Ubuntu / Windows 全绿。
+- Remote Training Runtime `35306100615`：production API / Ubuntu / Windows 全绿。
+- 临时 draft PR #15 已关闭，未 merge。
+- `VERSION.txt` 仍为 `42.24.0`。
+
+**当前主线：Remote MATERIAL_IMPORT Runtime。**
+
+优先把大 ZIP / 图片素材导入从控制面重 IO 中拆到素材导入 Agent：安全解包、格式识别、标签转换/基础清洗、对象存储上传都在节点完成；中央端只在 server-confirm 后提交 MaterialRepository metadata。绝不能让远程素材节点直接访问中央 SQLite/NFS。
 
 # 最新关闭：Remote TRAINING Runtime
 
