@@ -216,7 +216,90 @@ def test_agent_server_zip_import_creates_portable_task_without_storage_credentia
     assert calls[0]["target_prefix"] == "incoming/remote"
 
 
-def test_agent_material_import_rejects_unimplemented_modes_and_local_target(
+def test_agent_yolo_server_zip_import_creates_portable_review_task(
+    client, tmp_path, monkeypatch,
+):
+    import_dir = tmp_path / "imports"
+    import_dir.mkdir()
+    _write_zip(import_dir / "remote-yolo.zip")
+    monkeypatch.setenv("MC_SERVER_IMPORT_DIR", str(import_dir))
+    project = _project(client)
+    source = _source(client, tmp_path, source_type="s3")
+    calls = []
+
+    class FakeTransport:
+        def stage_material_import(self, **kwargs):
+            calls.append(dict(kwargs))
+            return {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+                "material_import": {
+                    "schema_version": 1,
+                    "mode": "zip_scan",
+                    "import_format": "yolo",
+                    "dataset_yaml": "dataset/data.yaml",
+                    "target": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "target_prefix": "incoming/yolo",
+                    },
+                    "input": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/input-yolo.zip",
+                        "file_name": "remote-yolo.zip",
+                        "size_bytes": 123,
+                        "sha256": "b" * 64,
+                        "content_type": "application/zip",
+                    },
+                    "output": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/review-yolo.zip",
+                        "file_name": "material-review.zip",
+                        "content_type": "application/zip",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        app_module,
+        "_remote_execution_transport_service",
+        lambda: FakeTransport(),
+    )
+    response = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "server_zip",
+            "execution_mode": "agent",
+            "zip_path": "remote-yolo.zip",
+            "storage_source_id": source["id"],
+            "target_prefix": "incoming/yolo",
+            "import_format": "yolo",
+            "dataset_yaml": "dataset/data.yaml",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    task = app_module.shared_task_repository().get(task_id)
+    assert task is not None
+    assert task.required_capabilities == ("agent.remote",)
+    request = app_module.shared_task_artifacts().read_json(task_id, "request.json")
+    assert request["execution_mode"] == "agent"
+    assert request["import_format"] == "yolo"
+    assert request["dataset_yaml"] == "dataset/data.yaml"
+    assert request["remote_execution"]["task_kind"] == "MATERIAL_IMPORT"
+    assert request["remote_execution"]["material_import"]["import_format"] == "yolo"
+    assert "url" not in str(request).lower()
+    assert str(import_dir) not in str(request)
+    assert len(calls) == 1
+    assert calls[0]["archive_path"] == (import_dir / "remote-yolo.zip").resolve()
+    assert calls[0]["target_prefix"] == "incoming/yolo"
+    assert calls[0]["import_format"] == "yolo"
+    assert calls[0]["dataset_yaml"] == "dataset/data.yaml"
+
+
+def test_agent_material_import_rejects_unsupported_mode_and_local_target(
     client, tmp_path, monkeypatch,
 ):
     import_dir = tmp_path / "imports"
@@ -236,19 +319,6 @@ def test_agent_material_import_rejects_unimplemented_modes_and_local_target(
         },
     )
     assert wrong_mode.status_code == 422
-
-    wrong_format = client.post(
-        f"/api/v61/projects/{project['id']}/storage-imports/scan",
-        json={
-            "mode": "server_zip",
-            "execution_mode": "agent",
-            "zip_path": "remote.zip",
-            "storage_source_id": s3_source["id"],
-            "target_prefix": "incoming",
-            "import_format": "yolo",
-        },
-    )
-    assert wrong_format.status_code == 422
 
     local_target = client.post(
         f"/api/v61/projects/{project['id']}/storage-imports/scan",
