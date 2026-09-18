@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 import secrets
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -24,7 +25,7 @@ from .service_nodes import (
     verify_service_node_token,
 )
 from .task_node_assignments import CentralTaskAllocator
-from .task_runtime import TaskStatus
+from .task_runtime import TaskKind, TaskStatus
 from .task_runtime.fenced_repository import FencedTaskRepository
 from .task_runtime.repository import TERMINAL_STATUSES, _from_row
 
@@ -47,6 +48,14 @@ def _iso_now() -> tuple[datetime, str]:
 
 def _agent_worker_id(node_id: str) -> str:
     return f"agent:{node_id}"
+
+
+def _remote_result_state_ref(execution_generation: int) -> str:
+    return f"remote-results/{int(execution_generation)}/upload.json"
+
+
+def _remote_result_ref(execution_generation: int) -> str:
+    return f"remote-results/{int(execution_generation)}/result.json"
 
 
 def _json(value: object, fallback):
@@ -85,12 +94,16 @@ class AgentExecutionService:
         heartbeat_ttl_seconds: int = HEARTBEAT_TTL_SECONDS,
         execution_lease_seconds: int = DEFAULT_EXECUTION_LEASE_SECONDS,
         execution_payload_resolver=None,
+        result_upload_preparer=None,
+        result_upload_confirmer=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
         self.heartbeat_ttl_seconds = max(10, int(heartbeat_ttl_seconds))
         self.execution_lease_seconds = max(5, int(execution_lease_seconds))
         self.execution_payload_resolver = execution_payload_resolver
+        self.result_upload_preparer = result_upload_preparer
+        self.result_upload_confirmer = result_upload_confirmer
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -555,6 +568,319 @@ class AgentExecutionService:
         self.artifacts.append_log(task.task_id, task.log_ref, value)
         return {"ok": True, "bytes": len(value.encode("utf-8"))}
 
+    def _read_task_payload(self, task) -> dict[str, Any]:
+        missing = object()
+        try:
+            payload = self.artifacts.read_json(
+                task.task_id,
+                task.payload_ref,
+                default=missing,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "task payload cannot be read",
+                409,
+            ) from error
+        if payload is missing or not isinstance(payload, dict):
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "task payload is unavailable or invalid",
+                409,
+            )
+        return payload
+
+    @staticmethod
+    def _requires_remote_result_confirmation(task, payload: dict[str, Any]) -> bool:
+        remote = payload.get("remote_execution")
+        return (
+            task.kind is TaskKind.DEPLOYMENT_TEST
+            and isinstance(remote, dict)
+            and int(remote.get("version") or 0) == 1
+            and str(remote.get("task_kind") or "") == TaskKind.DEPLOYMENT_TEST.value
+            and str(remote.get("transport") or "") == "object-storage-v1"
+        )
+
+    @staticmethod
+    def _normalized_result_evidence(sha256: object, size_bytes: object, generation: int) -> dict[str, Any]:
+        digest = str(sha256 or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_EVIDENCE_INVALID",
+                "result sha256 must be a 64-character hexadecimal SHA256",
+                422,
+            )
+        try:
+            size = int(size_bytes)
+        except (TypeError, ValueError) as error:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_EVIDENCE_INVALID",
+                "result size_bytes must be a positive integer",
+                422,
+            ) from error
+        if size <= 0:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_EVIDENCE_INVALID",
+                "result size_bytes must be a positive integer",
+                422,
+            )
+        return {
+            "sha256": digest,
+            "size_bytes": size,
+            "execution_generation": int(generation),
+        }
+
+    def _confirmed_remote_result(self, task, execution_generation: int) -> dict[str, Any] | None:
+        payload = self._read_task_payload(task)
+        if not self._requires_remote_result_confirmation(task, payload):
+            return None
+        state = self.artifacts.read_json(
+            task.task_id,
+            _remote_result_state_ref(execution_generation),
+            default={},
+        )
+        if (
+            not isinstance(state, dict)
+            or state.get("confirmed") is not True
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or str(state.get("result_ref") or "") != _remote_result_ref(execution_generation)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_NOT_CONFIRMED",
+                "remote deployment result must be uploaded and verified before finalization",
+                409,
+            )
+        return state
+
+    def prepare_result_upload(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        sha256: object,
+        size_bytes: object,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot prepare a result upload",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        if not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable deployment result protocol",
+                409,
+            )
+        if not callable(self.result_upload_preparer):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_UPLOAD_UNAVAILABLE",
+                "remote result upload preparer is not configured",
+                409,
+            )
+        evidence = self._normalized_result_evidence(
+            sha256,
+            size_bytes,
+            execution_generation,
+        )
+        state_ref = _remote_result_state_ref(execution_generation)
+        existing = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if isinstance(existing, dict) and existing:
+            if (
+                int(existing.get("execution_generation") or 0) != int(execution_generation)
+                or str(existing.get("node_id") or "") != str(node_id)
+                or str(existing.get("sha256") or "") != evidence["sha256"]
+                or int(existing.get("size_bytes") or 0) != evidence["size_bytes"]
+            ):
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_EVIDENCE_CONFLICT",
+                    "prepared result evidence conflicts with this execution generation",
+                    409,
+                )
+            if existing.get("confirmed") is True:
+                return {
+                    "already_uploaded": True,
+                    "confirmed": True,
+                    "storage_ref": dict(existing.get("storage_ref") or {}),
+                    "sha256": evidence["sha256"],
+                    "size_bytes": evidence["size_bytes"],
+                    "upload": None,
+                }
+        try:
+            prepared = self.result_upload_preparer(current, payload, evidence)
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_RESULT_UPLOAD_PREPARE_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(prepared, dict) or not isinstance(prepared.get("storage_ref"), dict):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_UPLOAD_INVALID",
+                "result upload preparer returned an invalid response",
+                500,
+            )
+        if str(prepared.get("sha256") or "") != evidence["sha256"] or int(
+            prepared.get("size_bytes") or 0
+        ) != evidence["size_bytes"]:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_UPLOAD_INVALID",
+                "result upload preparer changed execution content evidence",
+                500,
+            )
+
+        # Re-check ownership after external storage signing. A stale generation
+        # may receive a short-lived URL, but generation-scoped object keys keep
+        # it isolated and stale evidence is never published as current truth.
+        self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        _, prepared_at = _iso_now()
+        state = {
+            "task_id": current.task_id,
+            "project_id": current.project_id,
+            "node_id": str(node_id),
+            "execution_generation": int(execution_generation),
+            "sha256": evidence["sha256"],
+            "size_bytes": evidence["size_bytes"],
+            "storage_ref": dict(prepared["storage_ref"]),
+            "prepared_at": prepared_at,
+            "confirmed": False,
+        }
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return {
+            "already_uploaded": bool(prepared.get("already_uploaded")),
+            "confirmed": False,
+            "storage_ref": dict(prepared["storage_ref"]),
+            "sha256": evidence["sha256"],
+            "size_bytes": evidence["size_bytes"],
+            "upload": prepared.get("upload"),
+        }
+
+    def confirm_result_upload(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot confirm a result upload",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        if not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable deployment result protocol",
+                409,
+            )
+        if not callable(self.result_upload_confirmer):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_CONFIRM_UNAVAILABLE",
+                "remote result upload confirmer is not configured",
+                409,
+            )
+        state_ref = _remote_result_state_ref(execution_generation)
+        state = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if (
+            not isinstance(state, dict)
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or str(state.get("node_id") or "") != str(node_id)
+            or not str(state.get("sha256") or "")
+            or int(state.get("size_bytes") or 0) <= 0
+        ):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_NOT_PREPARED",
+                "remote result upload must be prepared by this execution generation first",
+                409,
+            )
+        if state.get("confirmed") is True:
+            result = self.artifacts.read_json(
+                current.task_id,
+                str(state.get("result_ref") or ""),
+                default={},
+            )
+            return {
+                "confirmed": True,
+                "result_ref": str(state.get("result_ref") or ""),
+                "result": result if isinstance(result, dict) else {},
+            }
+        evidence = {
+            "sha256": str(state["sha256"]),
+            "size_bytes": int(state["size_bytes"]),
+            "execution_generation": int(execution_generation),
+        }
+        try:
+            confirmed = self.result_upload_confirmer(current, payload, evidence)
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_RESULT_CONFIRM_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(confirmed, dict) or not isinstance(confirmed.get("result"), dict):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "result upload confirmer returned an invalid response",
+                500,
+            )
+
+        self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        result_ref = _remote_result_ref(execution_generation)
+        result = dict(confirmed["result"])
+        result["execution_generation"] = int(execution_generation)
+        result["output_sha256"] = evidence["sha256"]
+        result["output_size_bytes"] = evidence["size_bytes"]
+        self.artifacts.atomic_write_json(current.task_id, result_ref, result)
+        _, confirmed_at = _iso_now()
+        state.update({
+            "confirmed": True,
+            "confirmed_at": confirmed_at,
+            "result_ref": result_ref,
+        })
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return {
+            "confirmed": True,
+            "result_ref": result_ref,
+            "result": result,
+        }
+
     def begin_finalization(
         self,
         node_id: str,
@@ -563,13 +889,14 @@ class AgentExecutionService:
         execution_lease_token: str,
         execution_generation: int,
     ) -> dict[str, Any]:
-        self._owned_execution(
+        current = self._owned_execution(
             node_id,
             node_token,
             task_id,
             execution_lease_token,
             execution_generation,
         )
+        self._confirmed_remote_result(current, execution_generation)
         try:
             task = self.fenced.begin_finalization(
                 task_id,
@@ -622,6 +949,10 @@ class AgentExecutionService:
                 "cancel-requested execution may only finish as CANCELLED",
                 409,
             )
+        if target in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+            confirmed = self._confirmed_remote_result(current, execution_generation)
+            if confirmed is not None:
+                result_ref = str(confirmed["result_ref"])
         try:
             task = self.fenced.finish(
                 task_id,
@@ -674,6 +1005,8 @@ def agent_executor_router(
     task_repository,
     task_artifacts,
     execution_payload_resolver=None,
+    result_upload_preparer=None,
+    result_upload_confirmer=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -684,6 +1017,8 @@ def agent_executor_router(
             task_repository(),
             task_artifacts(),
             execution_payload_resolver=execution_payload_resolver,
+            result_upload_preparer=result_upload_preparer,
+            result_upload_confirmer=result_upload_confirmer,
         )
 
     def token(authorization: str | None) -> str:
@@ -761,6 +1096,40 @@ def agent_executor_router(
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
             str(payload.get("text") or ""),
+        )
+
+    @router.post("/executions/{task_id}/result-upload/prepare")
+    def prepare_result_upload(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().prepare_result_upload,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            sha256=payload.get("sha256"),
+            size_bytes=payload.get("size_bytes"),
+        )
+
+    @router.post("/executions/{task_id}/result-upload/confirm")
+    def confirm_result_upload(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().confirm_result_upload,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
         )
 
     @router.post("/executions/{task_id}/begin-finalization")
