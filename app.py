@@ -14696,6 +14696,32 @@ async def create_deployment_test(
         "runner_path": str(BASE_DIR / ("predict_paddle_runner.py" if framework == "paddle" else "predict_ultralytics_runner.py")),
         "conf": max(0.0, min(1.0, float(conf))), "runtime_format": suffix.lstrip("."),
     }
+    try:
+        remote_execution = _remote_execution_transport_service().stage_deployment_test(
+            project_id=project_id,
+            task_id=task_id,
+            input_path=input_path,
+            model_path=model_path,
+            model_reference=model_reference,
+            model_reference_type=model_reference_type,
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            framework=framework,
+            runtime_format=suffix.lstrip("."),
+            confidence=max(0.0, min(1.0, float(conf))),
+        )
+    except RemoteExecutionTransportError as error:
+        input_path.unlink(missing_ok=True)
+        try:
+            prediction_dir.rmdir()
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": str(error)},
+        ) from error
+    if remote_execution is not None:
+        request["remote_execution"] = remote_execution
     shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
     record = shared_task_repository().create(TaskRecord.new(
         task_id, project_id, TaskKind.DEPLOYMENT_TEST, "request.json", f"deployment-runtime:{suffix}",
@@ -15050,6 +15076,28 @@ from platform_core.external_algorithm_publish import (
 )
 from platform_core.material_batches import material_batch_router
 from platform_core.training_recovery_api import training_recovery_router
+from platform_core.remote_execution_transport import (
+    RemoteExecutionTransportError,
+    RemoteExecutionTransportService,
+)
+
+
+def _remote_execution_transport_service():
+    return RemoteExecutionTransportService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
+
+
+def _resolve_agent_execution_payload(task, payload, assignment):
+    return _remote_execution_transport_service().resolve_execution_payload(
+        task,
+        payload,
+        assignment,
+    )
 
 app.include_router(external_algorithm_platform_router(
     data_dir=DATA_DIR,
@@ -15070,5 +15118,8 @@ app.include_router(material_batch_router(
     get_project, material_store, shared_task_repository, shared_task_artifacts,
 ))
 app.include_router(training_recovery_router(
-    get_project, shared_task_repository, shared_task_artifacts,
+    get_project,
+    shared_task_repository,
+    shared_task_artifacts,
+    agent_execution_payload_resolver=_resolve_agent_execution_payload,
 ))
