@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import app as app_module
 from platform_core.errors import PlatformError
 from platform_core.remote_execution_transport import RemoteExecutionTransportError
@@ -71,6 +73,18 @@ def _agent_resource():
     }
 
 
+def _agent_rknn_resource():
+    return {
+        "id": "agent-rknn",
+        "name": "Agent RKNN",
+        "mode": "agent",
+        "status": "ready",
+        "targets": ["rockchip"],
+        "kind": "rockchip",
+        "supported_chips": ["rk3568", "rk3576"],
+    }
+
+
 def _contract():
     return {
         "version": 1,
@@ -110,6 +124,30 @@ def _contract():
             },
         },
     }
+
+
+def _rknn_contract():
+    value = _contract()
+    value["conversion"] = dict(value["conversion"])
+    value["conversion"]["target"] = "rockchip"
+    value["conversion"]["params"] = {
+        "input_size": 640,
+        "batch": 1,
+        "opset": 12,
+        "dynamic": False,
+        "simplify": False,
+        "chip": "rk3568",
+        "precision": "fp16",
+        "mean": "0,0,0",
+        "rknn_std": "255,255,255",
+    }
+    value["conversion"]["output"] = {
+        "storage_source_id": "remote-models",
+        "object_key": "remote-execution/p1/task/conversion-output/model_rk3568.rknn",
+        "file_name": "model_rk3568.rknn",
+        "content_type": "application/octet-stream",
+    }
+    return value
 
 
 def _patch_creation(monkeypatch, tmp_path, transport):
@@ -290,6 +328,8 @@ def test_agent_resource_detection_requires_fresh_effective_conversion_capability
         "node_id": "conversion-node",
         "display_name": "conversion",
         "build_id": "b3",
+        "capability": "conversion",
+        "supported_chips": [],
     }]
 
 
@@ -376,3 +416,173 @@ def test_agent_onnx_creation_fails_closed_when_portable_staging_is_unavailable(
     else:
         raise AssertionError("Agent conversion unexpectedly fell back to local execution")
     assert repository.created == []
+
+
+def test_agent_rknn_resource_requires_effective_rknn_capability_and_probe(monkeypatch):
+    class FakeNodes:
+        def __init__(self, _repository):
+            pass
+
+        def list_public(self):
+            return [
+                {
+                    "node_id": "generic-conversion",
+                    "display_name": "generic",
+                    "connection_mode": "agent",
+                    "online": True,
+                    "effective_capabilities": ["conversion"],
+                    "runtime": {},
+                    "build_id": "b1",
+                },
+                {
+                    "node_id": "rknn-no-probe",
+                    "display_name": "rknn-no-probe",
+                    "connection_mode": "agent",
+                    "online": True,
+                    "effective_capabilities": ["conversion.rknn"],
+                    "runtime": {"rknn_toolkit2": {"available": False}},
+                    "build_id": "b2",
+                },
+                {
+                    "node_id": "rknn-ready",
+                    "display_name": "RKNN Ready",
+                    "connection_mode": "agent",
+                    "online": True,
+                    "effective_capabilities": ["conversion.rknn"],
+                    "runtime": {
+                        "rknn_toolkit2": {
+                            "available": True,
+                            "version": "2.3.2",
+                            "supported_chips": ["rk3568", "rk3576"],
+                        }
+                    },
+                    "build_id": "b3",
+                },
+            ]
+
+    monkeypatch.setattr(app_module, "ServiceNodeRepository", FakeNodes)
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: object())
+
+    checked = app_module._detect_agent_deploy_resource(_agent_rknn_resource())
+
+    assert checked["status"] == "ready"
+    assert checked["targets"] == ["rockchip"]
+    assert checked["supported_chips"] == ["rk3568", "rk3576"]
+    assert [row["node_id"] for row in checked["agent_nodes"]] == ["rknn-ready"]
+    assert checked["agent_nodes"][0]["capability"] == "conversion.rknn"
+
+
+def test_explicit_agent_rknn_creation_persists_target_and_portable_contract(
+    tmp_path, monkeypatch
+):
+    transport = FakeTransport(result=_rknn_contract())
+    _model, _jobs, artifacts, repository = _patch_creation(
+        monkeypatch, tmp_path, transport
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_deploy_resource_by_id",
+        lambda _resource_id: _agent_rknn_resource(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_detect_agent_deploy_resource",
+        lambda resource: dict(resource),
+    )
+
+    response = app_module.v39_create_deploy_job(
+        "p1",
+        app_module.DeployJobReq(
+            source_id="version::algorithm-a::version-1",
+            target="rockchip",
+            resource_id="agent-rknn",
+            params={
+                "input_size": 640,
+                "batch": 1,
+                "chip": "rk3568",
+                "precision": "fp16",
+            },
+        ),
+    )
+
+    assert response["job"]["remote_portability"]["status"] == "ready"
+    assert transport.calls[0]["target"] == "rockchip"
+    task = repository.created[0]
+    assert task.kind is TaskKind.MODEL_CONVERSION
+    assert task.required_capabilities == ("agent.remote",)
+    request = artifacts.rows[(task.task_id, "request.json")]
+    assert request["execution_mode"] == "agent"
+    assert request["target"] == "rockchip"
+    assert request["remote_execution"]["conversion"]["target"] == "rockchip"
+
+
+def test_agent_rknn_int8_is_rejected_before_job_staging(
+    tmp_path, monkeypatch
+):
+    transport = FakeTransport(result=_rknn_contract())
+    _model, _jobs, _artifacts, repository = _patch_creation(
+        monkeypatch, tmp_path, transport
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_deploy_resource_by_id",
+        lambda _resource_id: _agent_rknn_resource(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_detect_agent_deploy_resource",
+        lambda resource: dict(resource),
+    )
+
+    with pytest.raises(app_module.HTTPException) as failure:
+        app_module.v39_create_deploy_job(
+            "p1",
+            app_module.DeployJobReq(
+                source_id="version::algorithm-a::version-1",
+                target="rockchip",
+                resource_id="agent-rknn",
+                params={
+                    "chip": "rk3568",
+                    "precision": "int8",
+                    "calibration_snapshot": "snapshot",
+                },
+            ),
+        )
+    assert failure.value.status_code == 400
+    assert "INT8" in str(failure.value.detail)
+    assert repository.created == []
+    assert transport.calls == []
+
+
+def test_agent_rknn_unsupported_chip_is_rejected_before_job_staging(
+    tmp_path, monkeypatch
+):
+    transport = FakeTransport(result=_rknn_contract())
+    _model, _jobs, _artifacts, repository = _patch_creation(
+        monkeypatch, tmp_path, transport
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_deploy_resource_by_id",
+        lambda _resource_id: _agent_rknn_resource(),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_detect_agent_deploy_resource",
+        lambda resource: dict(resource),
+    )
+
+    with pytest.raises(app_module.HTTPException) as failure:
+        app_module.v39_create_deploy_job(
+            "p1",
+            app_module.DeployJobReq(
+                source_id="version::algorithm-a::version-1",
+                target="rockchip",
+                resource_id="agent-rknn",
+                params={"chip": "rk3588", "precision": "fp16"},
+            ),
+        )
+    assert failure.value.status_code == 400
+    assert "rk3588" in str(failure.value.detail)
+    assert repository.created == []
+    assert transport.calls == []

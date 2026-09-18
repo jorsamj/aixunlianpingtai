@@ -91,7 +91,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await page.locator('.deploy-target-card', {hasText: '华为 Atlas'}).click();
   await expect(page.locator('#dpSoc')).toBeVisible();
   await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
-  await expect(page.locator('#dpChip option')).toHaveText(['RK3588', 'RK3568']);
+  await expect(page.locator('#dpChip option')).toHaveText(['RK3588', 'RK3576', 'RK3568']);
   await page.locator('.deploy-target-card', {hasText: 'NVIDIA TensorRT'}).click();
   await expect(page.locator('#dpTargetEnvironment')).toBeVisible();
 });
@@ -150,4 +150,36 @@ test('module graph is cache-busted and exposes platform helpers', async ({page, 
 
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => typeof window.PlatformCore?.materials?.labelDisplay)).toBe('function');
+});
+
+
+test('deployment resource editor exposes service-node Agent for RKNN', async ({page, request}) => {
+  const project = await (await request.post('/api/projects', {data: {
+    name: `RKNN-Agent-资源-${Date.now()}`,
+    labels: []
+  }})).json();
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({
+      projectId,
+      page: '部署资源'
+    }));
+  }, project.id);
+  await page.goto('/');
+  await expect.poll(
+    () => page.evaluate(() => typeof window.openDeployResourceModal),
+    {timeout: 20_000},
+  ).toBe('function');
+
+  await page.evaluate(() => window.openDeployResourceModal());
+  const dialog = page.getByRole('dialog', {name: '新增部署资源'});
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('#drMode option')).toHaveText([
+    '本机',
+    '远程转换服务器',
+    '服务节点 Agent',
+  ]);
+  await dialog.locator('#drMode').selectOption('agent');
+  await dialog.locator('#drKind').selectOption('rockchip');
+  await expect(dialog.locator('#drLocal')).toHaveClass(/hidden/);
+  await expect(dialog.locator('#drRemote')).toHaveClass(/hidden/);
 });

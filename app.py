@@ -11685,35 +11685,78 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
 
 def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     item = dict(item)
-    nodes = ServiceNodeRepository(shared_task_repository()).list_public()
-    eligible = [
-        node
-        for node in nodes
-        if str(node.get("connection_mode") or "") == "agent"
-        and bool(node.get("online"))
-        and "conversion" in set(node.get("effective_capabilities") or [])
-    ]
-    if eligible:
-        item.update(
-            status="ready",
-            targets=["onnx"],
-            message=f"检测到 {len(eligible)} 个在线 Agent 可执行 ONNX 转换",
-            agent_nodes=[
-                {
-                    "node_id": str(node.get("node_id") or ""),
-                    "display_name": str(node.get("display_name") or ""),
-                    "build_id": str(node.get("build_id") or ""),
-                }
-                for node in eligible
-            ],
-            last_checked_at=now_iso(),
-        )
-    else:
+    kind = str(item.get("kind") or "").strip().lower()
+    if kind not in {"rockchip", "onnx", "ultralytics", "paddle"}:
         item.update(
             status="missing",
             targets=[],
-            message="没有在线且已授权 conversion 能力的 Agent 节点",
+            message="服务节点 Agent 当前只开放 ONNX 与瑞芯微 RKNN 转换",
             agent_nodes=[],
+            supported_chips=[],
+            last_checked_at=now_iso(),
+        )
+        return item
+
+    required_capability = "conversion.rknn" if kind == "rockchip" else "conversion"
+    target = "rockchip" if kind == "rockchip" else "onnx"
+    nodes = ServiceNodeRepository(shared_task_repository()).list_public()
+    eligible = []
+    supported_chips = set()
+    for node in nodes:
+        if (
+            str(node.get("connection_mode") or "") != "agent"
+            or not bool(node.get("online"))
+            or required_capability not in set(node.get("effective_capabilities") or [])
+        ):
+            continue
+        node_runtime = node.get("runtime")
+        node_runtime = dict(node_runtime) if isinstance(node_runtime, Mapping) else {}
+        node_chips = []
+        if kind == "rockchip":
+            rknn = node_runtime.get("rknn_toolkit2")
+            rknn = dict(rknn) if isinstance(rknn, Mapping) else {}
+            node_chips = [
+                str(chip).strip().lower()
+                for chip in (rknn.get("supported_chips") or [])
+                if str(chip).strip().lower() in {"rk3568", "rk3576"}
+            ]
+            if not bool(rknn.get("available")) or not node_chips:
+                continue
+            supported_chips.update(node_chips)
+        eligible.append({
+            "node_id": str(node.get("node_id") or ""),
+            "display_name": str(node.get("display_name") or ""),
+            "build_id": str(node.get("build_id") or ""),
+            "capability": required_capability,
+            "supported_chips": sorted(set(node_chips)),
+        })
+
+    if eligible:
+        detail = (
+            f"检测到 {len(eligible)} 个在线 Agent 可执行 RKNN 转换"
+            if kind == "rockchip"
+            else f"检测到 {len(eligible)} 个在线 Agent 可执行 ONNX 转换"
+        )
+        item.update(
+            status="ready",
+            targets=[target],
+            message=detail,
+            agent_nodes=eligible,
+            supported_chips=sorted(supported_chips),
+            last_checked_at=now_iso(),
+        )
+    else:
+        detail = (
+            "没有在线且已授权 conversion.rknn、并通过 RKNN-Toolkit2 探测的 Agent 节点"
+            if kind == "rockchip"
+            else "没有在线且已授权 conversion 能力的 Agent 节点"
+        )
+        item.update(
+            status="missing",
+            targets=[],
+            message=detail,
+            agent_nodes=[],
+            supported_chips=[],
             last_checked_at=now_iso(),
         )
     return item
@@ -12033,6 +12076,26 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     if payload.target not in (resource.get("targets") or []):
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
+    if resource_mode == "agent" and str(payload.target or "").strip().lower() == "rockchip":
+        requested = dict(payload.params or {})
+        precision = str(requested.get("precision") or "fp16").strip().lower()
+        chip = str(requested.get("chip") or "").strip().lower()
+        supported_chips = {
+            str(value or "").strip().lower()
+            for value in (resource.get("supported_chips") or [])
+            if str(value or "").strip()
+        }
+        if precision != "fp16":
+            raise HTTPException(
+                status_code=400,
+                detail="服务节点 Agent 的 RKNN 转换当前只开放浮点模型；INT8 校准传输尚未开放",
+            )
+        if not chip or (supported_chips and chip not in supported_chips):
+            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3576"
+            raise HTTPException(
+                status_code=400,
+                detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
+            )
     job_id=uuid.uuid4().hex[:12];jd=_deploy_job_dir(project_id,job_id);srcd=jd/"source";srcd.mkdir(parents=True,exist_ok=True)
     src=Path(str(source.get("path")));local_src=srcd/src.name;shutil.copy2(src,local_src)
     params=dict(payload.params or {})
@@ -12075,7 +12138,12 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     }
     job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
     portable_conversion = None
-    if resource_mode != "remote" and str(payload.target or "").strip().lower() == "onnx":
+    conversion_target = str(payload.target or "").strip().lower()
+    should_stage_portable = (
+        (resource_mode == "agent" and conversion_target in {"onnx", "rockchip"})
+        or (resource_mode == "local" and conversion_target == "onnx")
+    )
+    if should_stage_portable:
         try:
             portable_conversion = _remote_execution_transport_service().stage_model_conversion(
                 project_id=project_id,
@@ -12096,9 +12164,9 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
             if resource_mode == "agent":
                 raise PlatformError(
                     code=error.code,
-                    message="Agent ONNX 转换准备失败",
+                    message="Agent 模型转换准备失败",
                     detail=str(error),
-                    solution="请检查模型资产对象存储、源模型完整性和 Agent conversion 节点状态后重试。",
+                    solution="请检查模型资产对象存储、源模型完整性、目标参数以及 Agent conversion / conversion.rknn 节点状态后重试。",
                     status_code=error.status_code,
                 ) from error
             # Portable staging remains additive for the existing local path.
@@ -12116,6 +12184,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
             "worker_path": str(BASE_DIR / "deployment_worker.py"),
             "python_path": sys.executable,
             "execution_mode": "agent" if resource_mode == "agent" else "local",
+            "target": conversion_target,
         }
         if portable_conversion is not None:
             request_payload["remote_execution"] = portable_conversion

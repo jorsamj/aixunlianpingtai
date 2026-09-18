@@ -174,7 +174,7 @@ class NodeAgentExecutorLoop:
         self._publish_status()
 
     @staticmethod
-    def _claimed_task(claimed: Mapping[str, Any]) -> tuple[str, str, str]:
+    def _claimed_task(claimed: Mapping[str, Any]) -> tuple[str, str, str, str]:
         assignment = claimed.get("assignment")
         task = claimed.get("task")
         if not isinstance(assignment, Mapping) or not isinstance(task, Mapping):
@@ -184,9 +184,14 @@ class NodeAgentExecutorLoop:
         assignment_token = str(
             assignment.get("assignment_lease_token") or ""
         ).strip()
-        if not task_id or not kind or not assignment_token:
+        capability = str(
+            assignment.get("capability")
+            or _CAPABILITY_BY_TASK_KIND.get(kind)
+            or ""
+        ).strip().lower()
+        if not task_id or not kind or not assignment_token or not capability:
             raise ValueError("claimed executor item is incomplete")
-        return task_id, kind, assignment_token
+        return task_id, kind, assignment_token, capability
 
     def run_once(self) -> bool:
         """Claim and execute at most one task. Return True when a task was claimed."""
@@ -204,7 +209,7 @@ class NodeAgentExecutorLoop:
             return False
 
         try:
-            task_id, kind, assignment_token = self._claimed_task(claimed)
+            task_id, kind, assignment_token, required_capability = self._claimed_task(claimed)
         except ValueError as error:
             self._set_error(f"NODE_EXECUTOR_INVALID_RESPONSE: {error}")
             return True
@@ -219,11 +224,16 @@ class NodeAgentExecutorLoop:
             )
             return True
 
-        required_capability = _CAPABILITY_BY_TASK_KIND.get(kind)
+        default_capability = _CAPABILITY_BY_TASK_KIND.get(kind)
+        allowed_capabilities = (
+            {"conversion", "conversion.rknn"}
+            if kind == "MODEL_CONVERSION"
+            else ({default_capability} if default_capability else set())
+        )
         runner = self.runners.get(kind)
         effective = set(self.effective_capabilities())
         if (
-            required_capability is None
+            required_capability not in allowed_capabilities
             or required_capability not in effective
             or runner is None
             or not callable(getattr(runner, "run", None))

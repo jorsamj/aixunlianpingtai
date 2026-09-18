@@ -355,3 +355,166 @@ def test_conversion_runner_source_has_no_control_plane_database_dependency():
     assert "sqlite3" not in source
     assert "TaskRepository" not in source
     assert "tasks.sqlite3" not in source
+
+
+def _rknn_lease(source_bytes: bytes, *, chip="rk3568", digest=None):
+    base = _lease(source_bytes, source_name="source.pt", digest=digest)
+    payload = dict(base.payload)
+    payload["target"] = "rockchip"
+    payload["params"] = {
+        "input_size": 640,
+        "batch": 1,
+        "opset": 12,
+        "dynamic": False,
+        "simplify": False,
+        "chip": chip,
+        "precision": "fp16",
+        "mean": "0,0,0",
+        "rknn_std": "255,255,255",
+    }
+    payload["output"] = {
+        "type": "object",
+        "storage_ref": {
+            "storage_source_id": "remote-models",
+            "object_key": f"remote-execution/result/model_{chip}.rknn",
+            "file_name": f"model_{chip}.rknn",
+            "content_type": "application/octet-stream",
+        },
+        "upload_protocol": "prepare-after-local-hash-v1",
+    }
+    return RemoteExecutionLease(
+        task_id=base.task_id,
+        kind=base.kind,
+        project_id=base.project_id,
+        generation=base.generation,
+        lease_token=base.lease_token,
+        lease_expires_at=base.lease_expires_at,
+        worker_id=base.worker_id,
+        payload=payload,
+        assignment={"capability": "conversion.rknn"},
+        transport=base.transport,
+    )
+
+
+def _rknn_worker_script(root: Path, *, manifest_chip="rk3568", hardware_verified=False):
+    script = root / "deployment_worker.py"
+    script.write_text(
+        f"""
+import argparse, json
+from pathlib import Path
+
+p=argparse.ArgumentParser()
+p.add_argument('--job-dir', required=True)
+args=p.parse_args()
+job_dir=Path(args.job_dir)
+job=json.loads((job_dir/'job.json').read_text(encoding='utf-8'))
+artifacts=job_dir/'artifacts'
+artifacts.mkdir(parents=True, exist_ok=True)
+chip=str((job.get('params') or {{}}).get('chip') or 'rk3568')
+out=artifacts/f'model_{{chip}}.rknn'
+out.write_bytes(b'verified-rknn-result')
+manifest={{
+    'status': 'converted_unverified',
+    'runtime_verified': False,
+    'hardware_verified': {str(bool(hardware_verified))},
+    'target': {{'kind': 'rockchip', 'chip': {manifest_chip!r}, 'precision': 'fp16'}},
+    'outputs': [{{'name': out.name}}],
+}}
+(artifacts/'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+job.update(
+    status='done',
+    progress=100,
+    stage='done',
+    runtime_verified=False,
+    hardware_verified={str(bool(hardware_verified))},
+    validation_status='converted_unverified',
+)
+(job_dir/'job.json').write_text(json.dumps(job), encoding='utf-8')
+(job_dir/'convert.log').write_text('rknn conversion worker complete\n', encoding='utf-8')
+""",
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_agent_conversion_runner_publishes_rknn_as_hardware_unverified(tmp_path):
+    source = b"portable-rknn-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _rknn_worker_script(runtime_root)
+    client = FakeClient()
+    session = FakeSession(source)
+    runner = AgentConversionRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        rknn_python=sys.executable,
+        transfer_session=session,
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(_rknn_lease(source, chip="rk3568"))
+
+    assert outcome.status == "BLOCKED_BY_HARDWARE"
+    assert outcome.result_ref == "remote-results/3/result.json"
+    assert len(session.puts) == 1
+    assert session.puts[0]["body"] == b"verified-rknn-result"
+    confirm = next(event for event in client.events if event[0] == "confirm")
+    assert confirm[1] == {
+        "ok": True,
+        "engine": "rknn-toolkit2",
+        "model": "model_rk3568.rknn",
+        "note": "converted_unverified",
+        "target": "rockchip",
+        "chip": "rk3568",
+    }
+    assert client.finish_calls[-1]["status"] == "BLOCKED_BY_HARDWARE"
+
+
+def test_agent_conversion_runner_rejects_rknn_manifest_chip_mismatch_before_upload(tmp_path):
+    source = b"portable-rknn-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _rknn_worker_script(runtime_root, manifest_chip="rk3576")
+    client = FakeClient()
+    runner = AgentConversionRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        rknn_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(_rknn_lease(source, chip="rk3568"))
+
+    assert outcome.status == "FAILED"
+    assert not any(event[0] == "prepare" for event in client.events)
+    assert client.finish_calls[-1]["status"] == "FAILED"
+
+
+def test_agent_conversion_runner_rejects_rknn_claimed_as_hardware_verified(tmp_path):
+    source = b"portable-rknn-source-model"
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _rknn_worker_script(runtime_root, hardware_verified=True)
+    client = FakeClient()
+    runner = AgentConversionRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        ultralytics_python=sys.executable,
+        rknn_python=sys.executable,
+        transfer_session=FakeSession(source),
+        heartbeat_interval=60,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(_rknn_lease(source))
+
+    assert outcome.status == "FAILED"
+    assert not any(event[0] == "prepare" for event in client.events)

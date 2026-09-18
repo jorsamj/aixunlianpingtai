@@ -716,3 +716,65 @@ def test_allocator_never_runs_schema_script_inside_assignment_transaction(tmp_pa
     assert any(statement.startswith("BEGIN IMMEDIATE") for statement in normalized)
     assert not any(statement.startswith("CREATE TABLE") for statement in normalized)
     assert not any(statement.startswith("CREATE INDEX") for statement in normalized)
+
+
+def test_agent_rockchip_conversion_requires_dedicated_rknn_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "convert-rknn-agent",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "agent",
+            "target": "rockchip",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MODEL_CONVERSION",
+                "transport": "object-storage-v1",
+                "conversion": {"target": "rockchip"},
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "generic-conversion-agent",
+        ["conversion"],
+        connection_mode="agent",
+    )
+    create_online_node(
+        repository,
+        "rknn-conversion-agent",
+        ["conversion.rknn"],
+        connection_mode="agent",
+        runtime_payload={
+            "rknn_toolkit2": {
+                "available": True,
+                "version": "2.3.2",
+                "supported_chips": ["rk3568", "rk3576"],
+            },
+        },
+    )
+
+    assert task_node_capability(task, artifacts) == "conversion.rknn"
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "rknn-conversion-agent"
+    assert assignment["capability"] == "conversion.rknn"
+    assert assignment["resolved_execution_config"]["capability"] == "conversion.rknn"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
+def test_local_rockchip_conversion_keeps_existing_conversion_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "convert-rknn-local",
+        TaskKind.MODEL_CONVERSION,
+        {
+            "execution_mode": "local",
+            "target": "rockchip",
+        },
+    )
+    assert task_node_capability(task, artifacts) == "conversion"

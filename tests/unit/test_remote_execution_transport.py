@@ -763,7 +763,7 @@ def test_model_conversion_commit_rejects_conflicting_existing_local_artifact(
     assert conflict.value.code == "REMOTE_CONVERSION_COMMIT_CONFLICT"
 
 
-def test_model_conversion_portable_contract_rejects_vendor_target_until_real_runner_exists(
+def test_model_conversion_portable_contract_rejects_unimplemented_vendor_target(
     tmp_path, monkeypatch
 ):
     provider = FakeProvider()
@@ -1596,3 +1596,149 @@ def test_remote_cleaning_result_transport_confirms_then_commits_existing_batch_t
     assert result_row is not None
     assert result_row["state"] == "succeeded"
     assert json.loads(result_row["result_json"])["issues"] == []
+
+
+def _portable_rknn_contract(tmp_path, monkeypatch, *, chip="rk3568"):
+    transport, provider, model, digest, _onnx = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    contract = transport.stage_model_conversion(
+        project_id="p1",
+        task_id="convert-rknn",
+        source_id="version::a1::v1",
+        source_path=model,
+        algorithm_id="a1",
+        version_id="v1",
+        target="rockchip",
+        params={
+            "input_size": 640,
+            "batch": 1,
+            "opset": 17,
+            "dynamic": False,
+            "simplify": False,
+            "chip": chip,
+            "precision": "fp16",
+            "mean": "0,0,0",
+            "rknn_std": "255,255,255",
+        },
+    )
+    return transport, provider, model, digest, contract
+
+
+@pytest.mark.parametrize("chip", ["rk3568", "rk3576"])
+def test_stage_model_conversion_builds_portable_rknn_contract(tmp_path, monkeypatch, chip):
+    _transport, _provider, model, digest, contract = _portable_rknn_contract(
+        tmp_path, monkeypatch, chip=chip
+    )
+    conversion = contract["conversion"]
+    assert conversion["target"] == "rockchip"
+    assert conversion["source"]["sha256"] == digest
+    assert conversion["params"]["chip"] == chip
+    assert conversion["params"]["precision"] == "fp16"
+    assert conversion["params"]["batch"] == 1
+    assert conversion["params"]["dynamic"] is False
+    assert conversion["output"]["file_name"] == f"model_{chip}.rknn"
+    assert conversion["output"]["object_key"].endswith(f"/model_{chip}.rknn")
+    assert str(model.resolve()) not in str(contract)
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({"chip": "rk3588", "precision": "fp16"}, "rk3568 or rk3576"),
+        ({"chip": "rk3568", "precision": "int8", "calibration_snapshot": "x"}, "INT8"),
+        ({"chip": "rk3568", "precision": "fp16", "dynamic": True}, "static input shape"),
+        ({"chip": "rk3568", "precision": "fp16", "batch": 2}, "batch=1"),
+    ],
+)
+def test_portable_rknn_params_fail_closed_before_task_staging(tmp_path, params, message):
+    transport = service(tmp_path, FakeProvider())
+    with pytest.raises(RemoteExecutionTransportError, match=message):
+        transport.stage_model_conversion(
+            project_id="p1",
+            task_id="convert-rknn-invalid",
+            source_id="version::a1::v1",
+            source_path=tmp_path / "missing.pt",
+            algorithm_id="a1",
+            version_id="v1",
+            target="rockchip",
+            params=params,
+        )
+
+
+def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artifact(
+    tmp_path, monkeypatch
+):
+    transport, provider, _model, _digest, contract = _portable_rknn_contract(
+        tmp_path, monkeypatch, chip="rk3568"
+    )
+    task = SimpleNamespace(
+        task_id="convert-rknn",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+    payload = {
+        "execution_mode": "agent",
+        "target": "rockchip",
+        "remote_execution": contract,
+    }
+    resolved = transport.resolve_execution_payload(
+        task,
+        payload,
+        {
+            "resolved_execution_config": {
+                "node_id": "rknn-agent",
+                "capability": "conversion.rknn",
+            }
+        },
+    )
+    assert resolved["target"] == "rockchip"
+    assert resolved["params"]["chip"] == "rk3568"
+    assert resolved["output"]["storage_ref"]["file_name"] == "model_rk3568.rknn"
+
+    output = b"remote-rknn-output"
+    output_sha = hashlib.sha256(output).hexdigest()
+    evidence = {
+        "sha256": output_sha,
+        "size_bytes": len(output),
+        "execution_generation": 4,
+    }
+    prepared = transport.prepare_result_upload(task, payload, evidence)
+    assert prepared["storage_ref"]["object_key"].endswith(
+        "/conversion-output/generation-4/model_rk3568.rknn"
+    )
+    provider.objects[prepared["storage_ref"]["object_key"]] = {
+        "data": output,
+        "content_type": "application/octet-stream",
+        "sha256": output_sha,
+    }
+    confirmed = transport.confirm_result_upload(task, payload, evidence)
+    assert confirmed["result"]["target"] == "rockchip"
+    assert confirmed["result"]["runtime_verified"] is False
+    confirmed["result_ref"] = "remote-results/4/result.json"
+
+    job_dir = tmp_path / "projects" / "p1" / "deploy" / "jobs" / "convert-rknn"
+    job_dir.mkdir(parents=True)
+    (job_dir / "job.json").write_text(
+        '{"id":"convert-rknn","status":"queued","outputs":[]}',
+        encoding="utf-8",
+    )
+    committed = transport.commit_result_publication(
+        task, payload, evidence, confirmed
+    )
+
+    artifact = job_dir / "artifacts" / "model_rk3568.rknn"
+    manifest = json.loads(
+        (job_dir / "artifacts" / "manifest.json").read_text(encoding="utf-8")
+    )
+    job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    assert artifact.read_bytes() == output
+    assert committed["target"] == "rockchip"
+    assert committed["runtime_verified"] is False
+    assert committed["hardware_verified"] is False
+    assert manifest["status"] == "converted_unverified"
+    assert manifest["hardware_verified"] is False
+    assert manifest["target"]["chip"] == "rk3568"
+    assert job["validation_status"] == "converted_unverified"
+    assert job["hardware_verified"] is False

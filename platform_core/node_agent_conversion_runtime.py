@@ -134,6 +134,7 @@ class AgentConversionRunner:
         *,
         runtime_root: str | Path,
         ultralytics_python: str | Path | None = None,
+        rknn_python: str | Path | None = None,
         transfer_session: requests.Session | None = None,
         heartbeat_interval: float = 5.0,
         transfer_timeout: float = 600.0,
@@ -144,6 +145,9 @@ class AgentConversionRunner:
         self.runtime_root = Path(runtime_root).expanduser().resolve()
         self.ultralytics_python = Path(
             ultralytics_python or sys.executable
+        ).expanduser().resolve()
+        self.rknn_python = Path(
+            rknn_python or sys.executable
         ).expanduser().resolve()
         self.transfer_session = transfer_session or requests.Session()
         self.heartbeat_interval = max(1.0, float(heartbeat_interval))
@@ -496,7 +500,7 @@ class AgentConversionRunner:
     ) -> tuple[Path, Path, list[str]]:
         if not self.ultralytics_python.is_file():
             raise AgentConversionRuntimeError(
-                "node-local Ultralytics Python runtime is unavailable"
+                "node-local conversion Python runtime is unavailable"
             )
         worker = (self.runtime_root / "deployment_worker.py").resolve()
         if (
@@ -507,15 +511,35 @@ class AgentConversionRunner:
             raise AgentConversionRuntimeError(
                 "node-local deployment_worker.py is unavailable"
             )
+        target = str(payload.get("target") or "").strip().lower()
+        if target not in {"onnx", "rockchip"}:
+            raise AgentConversionRuntimeError(
+                f"portable conversion target {target or '<empty>'} is unsupported"
+            )
         params = payload.get("params")
         if not isinstance(params, Mapping):
             raise AgentConversionRuntimeError(
                 "portable conversion parameters are missing"
             )
+        allowed_param_keys = (
+            "input_size", "batch", "opset", "dynamic", "simplify",
+            "chip", "precision", "mean", "rknn_std",
+        )
         safe_params = {
             key: params.get(key)
-            for key in ("input_size", "batch", "opset", "dynamic", "simplify")
+            for key in allowed_param_keys
+            if key in params
         }
+        if target == "rockchip":
+            if not self.rknn_python.is_file():
+                raise AgentConversionRuntimeError(
+                    "node-local RKNN Python runtime is unavailable"
+                )
+            chip = str(safe_params.get("chip") or "").strip().lower()
+            if chip not in {"rk3568", "rk3576"}:
+                raise AgentConversionRuntimeError(
+                    f"portable RKNN target chip {chip or '<empty>'} is unsupported"
+                )
         job_dir = workdir / "conversion"
         artifacts = job_dir / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
@@ -530,14 +554,18 @@ class AgentConversionRunner:
             "source_trace": dict(payload.get("source_trace") or {})
             if isinstance(payload.get("source_trace"), Mapping)
             else {},
-            "target": "onnx",
+            "target": target,
             "resource": {
-                "id": "agent-onnx",
-                "name": "Agent ONNX Runtime",
-                "kind": "onnx",
+                "id": "agent-rknn" if target == "rockchip" else "agent-onnx",
+                "name": "Agent RKNN-Toolkit2" if target == "rockchip" else "Agent ONNX Runtime",
+                "kind": "rockchip" if target == "rockchip" else "onnx",
                 "mode": "local",
                 "ultralytics_python": str(self.ultralytics_python),
-                "python_path": str(self.ultralytics_python),
+                "python_path": str(
+                    self.rknn_python
+                    if target == "rockchip"
+                    else self.ultralytics_python
+                ),
             },
             "params": safe_params,
             "outputs": [],
@@ -609,6 +637,58 @@ class AgentConversionRunner:
             )
         return candidates[0]
 
+    @staticmethod
+    def _verified_rknn(job_dir: Path, job: Mapping[str, Any], chip: str) -> Path:
+        if str(job.get("status") or "").strip().lower() != "done":
+            raise AgentConversionRuntimeError(
+                "RKNN conversion worker did not reach done state"
+            )
+        if (
+            job.get("runtime_verified") is True
+            or str(job.get("validation_status") or "") != "converted_unverified"
+        ):
+            raise AgentConversionRuntimeError(
+                "RKNN conversion must remain converted_unverified before board validation"
+            )
+        manifest_path = job_dir / "artifacts" / "manifest.json"
+        if not manifest_path.is_file():
+            raise AgentConversionRuntimeError(
+                "RKNN conversion worker produced no manifest.json"
+            )
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise AgentConversionRuntimeError(
+                "RKNN conversion manifest is unreadable"
+            ) from error
+        target = manifest.get("target") if isinstance(manifest, Mapping) else None
+        if (
+            not isinstance(manifest, Mapping)
+            or str(manifest.get("status") or "") != "converted_unverified"
+            or manifest.get("hardware_verified") is True
+            or not isinstance(target, Mapping)
+            or str(target.get("kind") or "") != "rockchip"
+            or str(target.get("chip") or "").strip().lower() != str(chip).strip().lower()
+        ):
+            raise AgentConversionRuntimeError(
+                "RKNN conversion manifest does not match the requested Rockchip target"
+            )
+        candidates = sorted(
+            (
+                path
+                for path in (job_dir / "artifacts").glob("*.rknn")
+                if path.is_file()
+                and not path.is_symlink()
+                and path.stat().st_size > 0
+            ),
+            key=lambda path: path.name,
+        )
+        if len(candidates) != 1:
+            raise AgentConversionRuntimeError(
+                "conversion worker must produce exactly one RKNN artifact"
+            )
+        return candidates[0]
+
     def run(self, lease: RemoteExecutionLease) -> AgentConversionOutcome:
         if not self._recover_persisted_processes():
             raise RemoteExecutionFenced(
@@ -622,11 +702,12 @@ class AgentConversionRunner:
                 "AgentConversionRunner only accepts MODEL_CONVERSION"
             )
         payload = lease.payload
+        target = str(payload.get("target") or "").strip().lower()
         if (
             int(payload.get("schema_version") or 0) != 1
             or str(payload.get("task_kind") or "") != "MODEL_CONVERSION"
             or str(payload.get("transport") or "") != "object-storage-v1"
-            or str(payload.get("target") or "").strip().lower() != "onnx"
+            or target not in {"onnx", "rockchip"}
         ):
             raise AgentConversionRuntimeError(
                 "portable conversion start payload is invalid"
@@ -667,7 +748,7 @@ class AgentConversionRunner:
             suffix = Path(source_name).suffix.lower()
             if suffix not in _SUPPORTED_SOURCE_SUFFIXES:
                 raise AgentConversionRuntimeError(
-                    f"portable ONNX conversion does not support source format {suffix or '<none>'}"
+                    f"portable {target} conversion does not support source format {suffix or '<none>'}"
                 )
             self._heartbeat(
                 monitor,
@@ -689,7 +770,7 @@ class AgentConversionRunner:
             runtime_log = workdir / "runtime.log"
             self._append_log(
                 lease,
-                f"[agent] starting ONNX conversion generation={lease.generation}\n",
+                f"[agent] starting {target} conversion generation={lease.generation}\n",
             )
             self._heartbeat(
                 monitor,
@@ -780,7 +861,16 @@ class AgentConversionRunner:
                     or f"conversion worker exited with code {launched.process.returncode}"
                 )
             job = self._read_job(job_file)
-            output_path = self._verified_onnx(job_dir, job)
+            if target == "onnx":
+                output_path = self._verified_onnx(job_dir, job)
+            else:
+                params = payload.get("params")
+                chip = (
+                    str(params.get("chip") or "").strip().lower()
+                    if isinstance(params, Mapping)
+                    else ""
+                )
+                output_path = self._verified_rknn(job_dir, job, chip)
 
             self._heartbeat(
                 monitor,
@@ -847,14 +937,23 @@ class AgentConversionRunner:
                 stage="REMOTE_CONVERSION_CONFIRMING_RESULT",
                 current_item=output_path.name,
             )
+            runtime_result = {
+                "ok": True,
+                "engine": "onnxruntime" if target == "onnx" else "rknn-toolkit2",
+                "model": output_path.name,
+                "note": "runtime_verified" if target == "onnx" else "converted_unverified",
+                "target": target,
+            }
+            if target == "rockchip":
+                params = payload.get("params")
+                runtime_result["chip"] = (
+                    str(params.get("chip") or "")
+                    if isinstance(params, Mapping)
+                    else ""
+                )
             confirmed = self.client.confirm_result_upload(
                 lease,
-                runtime_result={
-                    "ok": True,
-                    "engine": "onnxruntime",
-                    "model": output_path.name,
-                    "note": "runtime_verified",
-                },
+                runtime_result=runtime_result,
             )
             if not bool(confirmed.get("confirmed")):
                 raise AgentConversionRuntimeError(
@@ -866,21 +965,26 @@ class AgentConversionRunner:
                     "confirmed conversion result has no result_ref"
                 )
 
+            terminal_status = (
+                "SUCCEEDED"
+                if target == "onnx"
+                else "BLOCKED_BY_HARDWARE"
+            )
             self.client.begin_finalization(lease)
             finished = self.client.finish(
                 lease,
-                "SUCCEEDED",
+                terminal_status,
                 result_ref=result_ref,
             )
             status = str((finished.get("task") or {}).get("status") or "")
-            if status != "SUCCEEDED":
+            if status != terminal_status:
                 raise AgentConversionRuntimeError(
                     f"control plane returned unexpected conversion terminal status: {status or '<empty>'}"
                 )
             return AgentConversionOutcome(
                 lease.task_id,
                 lease.generation,
-                "SUCCEEDED",
+                terminal_status,
                 result_ref=result_ref,
             )
         except InterruptedError as error:

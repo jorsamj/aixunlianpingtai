@@ -27,6 +27,7 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
+      - 'tests/browser/model-and-conversion.spec.mjs'
       - '.github/workflows/remote-conversion-runtime.yml'
   pull_request:
     branches:
@@ -54,6 +55,7 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
+      - 'tests/browser/model-and-conversion.spec.mjs'
       - '.github/workflows/remote-conversion-runtime.yml'
 
 jobs:
@@ -146,6 +148,13 @@ jobs:
           grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({' platform_core/node_agent_executor_loop.py
           grep -Fq '"conversion",' platform_core/node_agent_executor_loop.py
           grep -Fq '"conversion.rknn",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"conversion.rknn"' platform_core/task_node_assignments.py
+          grep -Fq 'BLOCKED_BY_HARDWARE' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'rknn-toolkit2' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'converted_unverified' platform_core/remote_execution_transport.py
+          grep -Fq 'portable Agent RKNN conversion currently supports rk3568 or rk3576' platform_core/remote_execution_transport.py
+          grep -Fq '服务节点 Agent' static/app.js
+          grep -Fq 'value="agent"' static/app.js
           grep -Fq '"conversion.rknn",' platform_core/service_nodes.py
           grep -Fq 'probe_rknn_toolkit' node_agent.py
           grep -Fq 'rk3576' platform_core/conversion.py
@@ -168,5 +177,35 @@ jobs:
           ! grep -Fq 'sqlite3' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_conversion_runtime.py
           ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_conversion_runtime.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome model and RKNN Agent resource flow
+        run: npx playwright test tests/browser/model-and-conversion.spec.mjs
+      - name: Browser guard
+        shell: bash
+        run: |
+          grep -Fq '服务节点 Agent' tests/browser/model-and-conversion.spec.mjs
+          grep -Fq 'RK3576' tests/browser/model-and-conversion.spec.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check

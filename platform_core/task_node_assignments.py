@@ -112,11 +112,26 @@ def task_node_capability(task, artifacts) -> str | None:
         TaskKind.AI_ANNOTATION: "annotation",
         TaskKind.VIDEO_FRAMES: "video",
         TaskKind.TRAINING: "training",
-        TaskKind.MODEL_CONVERSION: "conversion",
         TaskKind.DEPLOYMENT_TEST: "deployment-test",
     }
     if task.kind in fixed:
         return fixed[task.kind]
+    if task.kind is TaskKind.MODEL_CONVERSION:
+        try:
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        except (OSError, TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, Mapping):
+            mode = str(payload.get("execution_mode") or "local").strip().lower()
+            target = str(payload.get("target") or "").strip().lower()
+            if not target:
+                remote = payload.get("remote_execution")
+                conversion = remote.get("conversion") if isinstance(remote, Mapping) else None
+                if isinstance(conversion, Mapping):
+                    target = str(conversion.get("target") or "").strip().lower()
+            if mode == "agent" and target in {"rockchip", "rknn"}:
+                return "conversion.rknn"
+        return "conversion"
     if task.kind is TaskKind.MATERIAL_BATCH:
         payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
         operation = str(payload.get("operation") or "").strip().upper() if isinstance(payload, Mapping) else ""

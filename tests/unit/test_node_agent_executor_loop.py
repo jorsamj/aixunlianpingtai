@@ -92,12 +92,15 @@ class FakeRunner:
         self.release.set()
 
 
-def claimed(task_id="task-1", kind="DEPLOYMENT_TEST"):
+def claimed(task_id="task-1", kind="DEPLOYMENT_TEST", capability=None):
+    assignment = {
+        "task_id": task_id,
+        "assignment_lease_token": "assignment-secret",
+    }
+    if capability:
+        assignment["capability"] = capability
     return {
-        "assignment": {
-            "task_id": task_id,
-            "assignment_lease_token": "assignment-secret",
-        },
+        "assignment": assignment,
         "task": {
             "task_id": task_id,
             "kind": kind,
@@ -333,3 +336,41 @@ def test_executor_loop_source_has_no_control_plane_database_dependency():
     assert "sqlite3" not in source
     assert "TaskRepository" not in source
     assert "tasks.sqlite3" not in source
+
+
+def test_rknn_conversion_assignment_dispatches_only_with_rknn_capability():
+    client = FakeClient([
+        claimed(kind="MODEL_CONVERSION", capability="conversion.rknn")
+    ])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion.rknn"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.effective_capabilities() == ("conversion.rknn",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert conversion_runner.calls == ["task-1"]
+
+
+def test_rknn_only_agent_does_not_start_generic_conversion_assignment():
+    client = FakeClient([
+        claimed(kind="MODEL_CONVERSION", capability="conversion")
+    ])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion.rknn"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.run_once() is True
+    assert client.start_calls == []
+    assert conversion_runner.calls == []
+    assert "not executable" in loop.status().last_error

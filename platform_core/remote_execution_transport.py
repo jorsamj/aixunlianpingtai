@@ -637,11 +637,13 @@ class RemoteExecutionTransportService:
     @staticmethod
     def _portable_conversion_params(target: str, params: Mapping[str, Any] | None) -> dict[str, Any]:
         target = str(target or "").strip().lower()
+        if target == "rknn":
+            target = "rockchip"
         values = dict(params or {})
-        if target != "onnx":
+        if target not in {"onnx", "rockchip"}:
             raise RemoteExecutionTransportError(
                 "REMOTE_CONVERSION_TARGET_UNSUPPORTED",
-                "portable Agent conversion currently supports ONNX only",
+                "portable Agent conversion currently supports ONNX and Rockchip RKNN only",
                 409,
             )
 
@@ -683,13 +685,72 @@ class RemoteExecutionTransportService:
                 422,
             )
 
-        return {
+        common = {
             "input_size": integer("input_size", 640, 32, 4096),
             "batch": integer("batch", 1, 1, 128),
             "opset": integer("opset", 12, 7, 24),
             "dynamic": boolean("dynamic", False),
             "simplify": boolean("simplify", False),
         }
+        if target == "onnx":
+            return common
+
+        chip = str(values.get("chip") or "").strip().lower()
+        if chip not in {"rk3568", "rk3576"}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_PARAMS_INVALID",
+                "portable Agent RKNN conversion currently supports rk3568 or rk3576",
+                422,
+            )
+        precision = str(values.get("precision") or "fp16").strip().lower()
+        if precision != "fp16":
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_PARAMS_INVALID",
+                "portable Agent RKNN conversion currently supports floating model conversion only; INT8 calibration transport is not closed",
+                422,
+            )
+        if common["dynamic"]:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_PARAMS_INVALID",
+                "portable Agent RKNN conversion requires a static input shape",
+                422,
+            )
+        if common["batch"] != 1:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_PARAMS_INVALID",
+                "portable Agent RKNN conversion currently requires batch=1",
+                422,
+            )
+
+        def triplet(name: str, default: str) -> str:
+            raw = str(values.get(name) or default).strip()
+            parts = [part.strip() for part in raw.split(",")]
+            if len(parts) != 3:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_PARAMS_INVALID",
+                    f"conversion parameter {name} must contain three comma-separated numbers",
+                    422,
+                )
+            try:
+                numbers = [float(part) for part in parts]
+            except ValueError as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_PARAMS_INVALID",
+                    f"conversion parameter {name} must contain numbers",
+                    422,
+                ) from error
+            return ",".join(
+                str(int(value)) if value.is_integer() else str(value)
+                for value in numbers
+            )
+
+        common.update({
+            "chip": chip,
+            "precision": "fp16",
+            "mean": triplet("mean", "0,0,0"),
+            "rknn_std": triplet("rknn_std", "255,255,255"),
+        })
+        return common
 
     def stage_model_conversion(
         self,
@@ -704,6 +765,8 @@ class RemoteExecutionTransportService:
         params: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         target = str(target or "").strip().lower()
+        if target == "rknn":
+            target = "rockchip"
         portable_params = self._portable_conversion_params(target, params)
         source = self._configured_source()
         if source is None:
@@ -742,12 +805,17 @@ class RemoteExecutionTransportService:
 
         safe_project = _safe_segment(project_id, "project")
         safe_task = _safe_segment(task_id, "task")
+        output_name = (
+            "model.onnx"
+            if target == "onnx"
+            else f"model_{portable_params['chip']}.rknn"
+        )
         output_key = "/".join((
             _REMOTE_PREFIX,
             safe_project,
             safe_task,
             "conversion-output",
-            "model.onnx",
+            output_name,
         ))
         return {
             "version": 1,
@@ -755,7 +823,7 @@ class RemoteExecutionTransportService:
             "transport": "object-storage-v1",
             "conversion": {
                 "schema_version": 1,
-                "target": "onnx",
+                "target": target,
                 "source": dict(model),
                 "source_trace": {
                     "source_id": str(source_id or ""),
@@ -767,7 +835,7 @@ class RemoteExecutionTransportService:
                 "output": {
                     "storage_source_id": str(source.id),
                     "object_key": output_key,
-                    "file_name": "model.onnx",
+                    "file_name": output_name,
                     "content_type": "application/octet-stream",
                 },
             },
@@ -840,17 +908,31 @@ class RemoteExecutionTransportService:
                 "portable conversion source must be an object model",
                 422,
             )
+        target = str(conversion.get("target") or "").strip().lower()
         params = self._portable_conversion_params(
-            str(conversion.get("target") or ""),
+            target,
             conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
         )
+        expected_suffix = ".onnx" if target == "onnx" else ".rknn"
+        output_name = Path(
+            str(
+                output_ref.get("file_name")
+                or ("model.onnx" if target == "onnx" else "model.rknn")
+            )
+        ).name
+        if Path(output_name).suffix.lower() != expected_suffix:
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable conversion output suffix does not match target",
+                422,
+            )
         trace = conversion.get("source_trace")
         trace = dict(trace) if isinstance(trace, Mapping) else {}
         return {
             "schema_version": 1,
             "task_kind": "MODEL_CONVERSION",
             "transport": "object-storage-v1",
-            "target": "onnx",
+            "target": target,
             "params": params,
             "source": {
                 "type": "object",
@@ -872,7 +954,7 @@ class RemoteExecutionTransportService:
                 "storage_ref": {
                     "storage_source_id": str(output_ref.get("storage_source_id") or ""),
                     "object_key": str(output_ref.get("object_key") or ""),
-                    "file_name": Path(str(output_ref.get("file_name") or "model.onnx")).name,
+                    "file_name": output_name,
                     "content_type": str(output_ref.get("content_type") or "application/octet-stream"),
                 },
                 "upload_protocol": "prepare-after-local-hash-v1",
@@ -2676,6 +2758,11 @@ class RemoteExecutionTransportService:
         confirmed: Mapping[str, Any],
     ) -> dict[str, Any]:
         _remote, conversion = self._conversion_remote(task, payload)
+        target = str(conversion.get("target") or "").strip().lower()
+        params = self._portable_conversion_params(
+            target,
+            conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
+        )
         result = confirmed.get("result")
         if not isinstance(result, Mapping):
             raise RemoteExecutionTransportError(
@@ -2702,6 +2789,28 @@ class RemoteExecutionTransportService:
             evidence.get("execution_generation"),
             "result.execution_generation",
         )
+        output_contract = conversion.get("output")
+        output_contract = dict(output_contract) if isinstance(output_contract, Mapping) else {}
+        expected_suffix = ".onnx" if target == "onnx" else ".rknn"
+        default_name = (
+            "model.onnx"
+            if target == "onnx"
+            else f"model_{params.get('chip') or 'rockchip'}.rknn"
+        )
+        file_name = Path(
+            str(
+                output_storage.get("file_name")
+                or output_contract.get("file_name")
+                or default_name
+            )
+        ).name
+        if Path(file_name).suffix.lower() != expected_suffix:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified conversion output suffix does not match conversion target",
+                500,
+            )
+
         project = self.project_dir(str(task.project_id)).resolve()
         job_dir = (project / "deploy" / "jobs" / str(task.task_id)).resolve()
         artifacts = (job_dir / "artifacts").resolve()
@@ -2716,7 +2825,7 @@ class RemoteExecutionTransportService:
                 409,
             ) from error
         try:
-            destination = (artifacts / "model.onnx").resolve()
+            destination = (artifacts / file_name).resolve()
             if artifacts not in destination.parents:
                 raise RemoteExecutionTransportError(
                     "REMOTE_CONVERSION_COMMIT_PATH_INVALID",
@@ -2736,7 +2845,7 @@ class RemoteExecutionTransportService:
                 ):
                     raise RemoteExecutionTransportError(
                         "REMOTE_CONVERSION_COMMIT_CONFLICT",
-                        "existing local ONNX artifact conflicts with verified remote result",
+                        "existing local conversion artifact conflicts with verified remote result",
                         409,
                     )
             else:
@@ -2751,7 +2860,7 @@ class RemoteExecutionTransportService:
                         "remote conversion object key is missing",
                         500,
                     )
-                temporary = artifacts / ".model.onnx.remote.tmp"
+                temporary = artifacts / f".{file_name}.remote.tmp"
                 temporary.unlink(missing_ok=True)
                 try:
                     provider.download(object_key, temporary)
@@ -2762,31 +2871,37 @@ class RemoteExecutionTransportService:
                     ):
                         raise RemoteExecutionTransportError(
                             "REMOTE_CONVERSION_COMMIT_VERIFY_FAILED",
-                            "downloaded ONNX does not match verified remote result evidence",
+                            "downloaded conversion artifact does not match verified remote result evidence",
                             502,
                         )
                     temporary.replace(destination)
                 finally:
                     temporary.unlink(missing_ok=True)
 
+            runtime_verified = target == "onnx"
+            target_manifest = (
+                {"kind": "onnx"}
+                if runtime_verified
+                else {
+                    "kind": "rockchip",
+                    "chip": str(params.get("chip") or ""),
+                    "precision": str(params.get("precision") or "fp16"),
+                }
+            )
             manifest = {
                 "schema_version": 1,
                 "task_id": str(task.task_id),
                 "execution_generation": generation,
-                "target": "onnx",
-                "status": "runtime_verified",
-                "runtime_verified": True,
+                "target": target_manifest,
+                "status": "runtime_verified" if runtime_verified else "converted_unverified",
+                "runtime_verified": runtime_verified,
+                "hardware_verified": False,
                 "source_trace": dict(conversion.get("source_trace") or {})
                 if isinstance(conversion.get("source_trace"), Mapping)
                 else {},
-                "parameters": self._portable_conversion_params(
-                    str(conversion.get("target") or "onnx"),
-                    conversion.get("params")
-                    if isinstance(conversion.get("params"), Mapping)
-                    else {},
-                ),
+                "parameters": params,
                 "output": {
-                    "file_name": "model.onnx",
+                    "file_name": file_name,
                     "size_bytes": expected_size,
                     "sha256": expected_sha,
                     "storage": dict(output_storage),
@@ -2810,27 +2925,45 @@ class RemoteExecutionTransportService:
             job.update({
                 "id": str(task.task_id),
                 "project_id": str(task.project_id),
+                "target": target,
                 "status": "done",
                 "progress": 100,
                 "stage": "转换完成",
-                "message": "Agent ONNX 转换完成并已通过运行时校验",
-                "runtime_verified": True,
-                "validation_status": "runtime_verified",
+                "message": (
+                    "Agent ONNX 转换完成并已通过运行时校验"
+                    if runtime_verified
+                    else "Agent RKNN 转换完成；等待目标板 Runtime 实机验证"
+                ),
+                "runtime_verified": runtime_verified,
+                "hardware_verified": False,
+                "validation_status": (
+                    "runtime_verified"
+                    if runtime_verified
+                    else "converted_unverified"
+                ),
+                "conversion_status": (
+                    "runtime_verified"
+                    if runtime_verified
+                    else "converted"
+                ),
                 "result_ref": str(confirmed.get("result_ref") or ""),
                 "remote_execution": True,
                 "remote_execution_generation": generation,
                 "outputs": [
                     {
-                        "name": "model.onnx",
+                        "name": file_name,
                         "path": str(destination),
-                        "rel": "artifacts/model.onnx",
+                        "rel": f"artifacts/{file_name}",
                         "size_mb": round(expected_size / 1024 / 1024, 3),
                     },
                     {
                         "name": "manifest.json",
                         "path": str(manifest_path),
                         "rel": "artifacts/manifest.json",
-                        "size_mb": round(manifest_path.stat().st_size / 1024 / 1024, 3),
+                        "size_mb": round(
+                            manifest_path.stat().st_size / 1024 / 1024,
+                            3,
+                        ),
                     },
                 ],
             })
@@ -2845,7 +2978,9 @@ class RemoteExecutionTransportService:
                 "conversion_artifact_path": str(destination),
                 "conversion_artifact_sha256": expected_sha,
                 "conversion_artifact_size_bytes": expected_size,
-                "runtime_verified": True,
+                "target": target,
+                "runtime_verified": runtime_verified,
+                "hardware_verified": False,
             }
         finally:
             lock.release()

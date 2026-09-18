@@ -143,6 +143,7 @@ def _build_executor(
         runtime_probe.get("python_executable") or sys.executable
     )
     paddle_python = str(args.paddle_python or "").strip() or sys.executable
+    rknn_python = str(args.rknn_python or "").strip() or sys.executable
     deployment_runner = AgentDeploymentRunner(
         client,
         workdirs,
@@ -162,6 +163,7 @@ def _build_executor(
             workdirs,
             runtime_root=Path(__file__).resolve().parent,
             ultralytics_python=ultralytics_python,
+            rknn_python=rknn_python,
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
         )
     if "training" in reported_capabilities:
