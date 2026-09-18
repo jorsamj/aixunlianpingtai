@@ -861,19 +861,34 @@ class AgentExecutionService:
                 500,
             )
 
-        owned_after_verification = self._owned_execution(
+        # Object verification happens before the commit gate. Then reuse the
+        # durable finalization transaction so cancellation and result publication
+        # cannot both win after verification.
+        self._owned_execution(
             node_id,
             node_token,
             task_id,
             execution_lease_token,
             execution_generation,
         )
-        if owned_after_verification.status is TaskStatus.CANCEL_REQUESTED:
+        try:
+            self.fenced.begin_finalization(
+                task_id,
+                execution_lease_token,
+                execution_generation=int(execution_generation),
+            )
+        except InterruptedError as error:
             raise AgentExecutionError(
                 "CANCELLATION_WON",
                 "task cancellation won while verifying result upload",
                 409,
-            )
+            ) from error
+        except PermissionError as error:
+            raise AgentExecutionError(
+                "EXECUTION_FENCED",
+                "remote execution lost ownership before result publication",
+                409,
+            ) from error
         result_ref = _remote_result_ref(execution_generation)
         result = dict(confirmed["result"])
         result["execution_generation"] = int(execution_generation)
