@@ -24,6 +24,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .storage.import_candidates import ImportCandidateStore
 from .storage.local import LocalStorageProvider
+from .storage.import_confirmation import mapping_suggestions
 from .storage.yolo_import import YoloImportError, YoloImportScanner, YoloScanCancelled
 from .storage.import_tasks import MANIFEST_REF, SCAN_RESULT_REF, IMAGE_EXTENSIONS
 from .storage.zip_import import (
@@ -849,6 +850,274 @@ def _read_review_rows(
     return candidates, staged, counts
 
 
+
+def _commit_yolo_review_annotations(
+    review_root: Path,
+    store: ImportCandidateStore,
+    *,
+    candidate_keys: set[str],
+    meta: Mapping[str, Any],
+    expected_prefix: str,
+) -> dict[str, Any]:
+    annotations_path = review_root / REVIEW_ANNOTATIONS_MEMBER
+    if not annotations_path.is_file() or annotations_path.is_symlink():
+        raise RemoteMaterialImportError(
+            "REMOTE_YOLO_REVIEW_INVALID",
+            "YOLO review annotation stream is missing",
+            422,
+        )
+    classes = meta.get("classes")
+    if not isinstance(classes, list) or not classes or len(classes) > 10000:
+        raise RemoteMaterialImportError(
+            "REMOTE_YOLO_CLASSES_INVALID",
+            "YOLO review class mapping is invalid",
+            422,
+        )
+    names: dict[int, str] = {}
+    for item in classes:
+        if not isinstance(item, Mapping):
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_CLASSES_INVALID",
+                "YOLO review class entry must be an object",
+                422,
+            )
+        try:
+            class_id = int(item.get("class_id"))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_CLASSES_INVALID",
+                "YOLO review class ID is invalid",
+                422,
+            ) from error
+        name = str(item.get("name") or "").strip()
+        if class_id < 0 or class_id > 2**63 - 1 or not name or len(name) > 1000:
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_CLASSES_INVALID",
+                "YOLO review class ID/name is invalid",
+                422,
+            )
+        if class_id in names and names[class_id] != name:
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_CLASSES_INVALID",
+                "YOLO review contains conflicting class names",
+                409,
+            )
+        names[class_id] = name
+    store.set_label_mapping(names)
+
+    expected_prefix_path = safe_member_path(expected_prefix)
+    seen: set[str] = set()
+    states: list[dict[str, Any]] = []
+    boxes: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    total_boxes = 0
+    total_issues = 0
+
+    def flush() -> None:
+        if states or boxes or issues:
+            store.annotation_batch(states, boxes, issues)
+            states.clear()
+            boxes.clear()
+            issues.clear()
+
+    with annotations_path.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if line_number > _MAX_REVIEW_ROWS:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_MEMBER_LIMIT",
+                    "YOLO review annotation stream exceeds its row limit",
+                    413,
+                )
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO review annotation stream contains invalid JSON",
+                    422,
+                ) from error
+            if not isinstance(row, dict):
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO review annotation entry must be an object",
+                    422,
+                )
+            key = str(row.get("object_key") or "")
+            if not key or key in seen or key not in candidate_keys:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO annotation object key is unknown or duplicated",
+                    409,
+                )
+            key_path = safe_member_path(key)
+            if key_path.parts[: len(expected_prefix_path.parts)] != expected_prefix_path.parts:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_TARGET_MISMATCH",
+                    "YOLO annotation escaped the requested target prefix",
+                    409,
+                )
+            seen.add(key)
+
+            split = str(row.get("split") or "")
+            if not split or len(split) > 100:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO annotation split is invalid",
+                    422,
+                )
+            status = str(row.get("annotation_status") or "")
+            if status not in {"annotated", "confirmed_empty", "unannotated", "invalid"}:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO annotation status is invalid",
+                    422,
+                )
+            label_key = row.get("label_key")
+            if label_key is not None:
+                label_key = safe_member_path(str(label_key)).as_posix()
+
+            raw_boxes = row.get("boxes")
+            raw_issues = row.get("issues")
+            if not isinstance(raw_boxes, list) or len(raw_boxes) > 100000:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO annotation boxes are invalid or unbounded",
+                    422,
+                )
+            if not isinstance(raw_issues, list) or len(raw_issues) > 100000:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO annotation issues are invalid or unbounded",
+                    422,
+                )
+            if int(row.get("box_count") or 0) != len(raw_boxes):
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO annotation box count does not reconcile",
+                    409,
+                )
+
+            local_line_numbers: set[int] = set()
+            for box in raw_boxes:
+                if not isinstance(box, Mapping):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_INVALID",
+                        "YOLO box entry must be an object",
+                        422,
+                    )
+                try:
+                    item_line = int(box.get("line_number") or 0)
+                    class_id = int(box.get("class_id"))
+                    cx = float(box.get("cx"))
+                    cy = float(box.get("cy"))
+                    width = float(box.get("w"))
+                    height = float(box.get("h"))
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_INVALID",
+                        "YOLO box contains invalid numeric values",
+                        422,
+                    ) from error
+                if (
+                    item_line <= 0
+                    or item_line in local_line_numbers
+                    or class_id not in names
+                    or not all(math.isfinite(value) for value in (cx, cy, width, height))
+                    or not (0.0 <= cx <= 1.0)
+                    or not (0.0 <= cy <= 1.0)
+                    or not (0.0 < width <= 1.0)
+                    or not (0.0 < height <= 1.0)
+                ):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_INVALID",
+                        "YOLO box violates normalized detection constraints",
+                        422,
+                    )
+                local_line_numbers.add(item_line)
+                boxes.append({
+                    "object_key": key,
+                    "line_number": item_line,
+                    "class_id": class_id,
+                    "cx": cx,
+                    "cy": cy,
+                    "w": width,
+                    "h": height,
+                    "clipped": bool(box.get("clipped")),
+                })
+                total_boxes += 1
+                if total_boxes > 5_000_000:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_TOO_LARGE",
+                        "YOLO review contains too many boxes",
+                        413,
+                    )
+
+            for issue in raw_issues:
+                if not isinstance(issue, Mapping):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_INVALID",
+                        "YOLO issue entry must be an object",
+                        422,
+                    )
+                try:
+                    issue_line = int(issue.get("line_number") or 0)
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_INVALID",
+                        "YOLO issue line number is invalid",
+                        422,
+                    ) from error
+                code = str(issue.get("code") or "").strip()
+                severity = str(issue.get("severity") or "").strip()
+                if (
+                    issue_line < 0
+                    or not code
+                    or len(code) > 200
+                    or severity not in {"warning", "error"}
+                ):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_INVALID",
+                        "YOLO issue entry is invalid",
+                        422,
+                    )
+                issues.append({
+                    "object_key": key,
+                    "line_number": issue_line,
+                    "code": code,
+                    "severity": severity,
+                })
+                total_issues += 1
+                if total_issues > 5_000_000:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_REVIEW_TOO_LARGE",
+                        "YOLO review contains too many issues",
+                        413,
+                    )
+            states.append({
+                "object_key": key,
+                "label_key": label_key,
+                "annotation_status": status,
+                "box_count": len(raw_boxes),
+            })
+            store.manifest_many([{
+                "object_key": key,
+                "split": split,
+                "yaml_key": safe_member_path(
+                    str(meta.get("dataset_yaml") or "data.yaml")
+                ).as_posix(),
+            }])
+            if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
+                flush()
+    flush()
+    if seen != candidate_keys:
+        raise RemoteMaterialImportError(
+            "REMOTE_YOLO_REVIEW_INVALID",
+            "YOLO annotation stream does not cover every candidate image",
+            409,
+        )
+    return store.quality_summary()
+
+
 def commit_material_review_archive(
     *,
     artifacts,
@@ -861,6 +1130,9 @@ def commit_material_review_archive(
     expected_source_id: str,
     expected_storage_type: str,
     expected_prefix: str,
+    expected_import_format: str = "images",
+    expected_dataset_yaml: str = "",
+    platform_labels: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     archive = Path(archive_path).resolve()
     if (
@@ -913,7 +1185,7 @@ def commit_material_review_archive(
             or str(meta.get("project_id") or "") != str(project_id)
             or int(meta.get("execution_generation") or 0) != int(execution_generation)
             or str(meta.get("mode") or "") != "zip_scan"
-            or str(meta.get("import_format") or "") != "images"
+            or str(meta.get("import_format") or "") != str(expected_import_format or "images")
             or str(meta.get("storage_source_id") or "") != expected_source_id
             or str(meta.get("storage_type") or "") != expected_storage_type
             or str(meta.get("target_prefix") or "") != safe_member_path(expected_prefix).as_posix()
@@ -923,6 +1195,23 @@ def commit_material_review_archive(
                 "review metadata does not match the durable import request",
                 409,
             )
+        if str(expected_import_format or "images") == "yolo":
+            dataset_yaml = str(meta.get("dataset_yaml") or "").strip()
+            if not dataset_yaml:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO review dataset YAML identity is missing",
+                    422,
+                )
+            safe_member_path(dataset_yaml)
+            requested_yaml = str(expected_dataset_yaml or "").strip()
+            if requested_yaml and dataset_yaml != safe_member_path(requested_yaml).as_posix():
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_DATASET_MISMATCH",
+                    "YOLO review dataset YAML differs from the durable request",
+                    409,
+                )
+
         candidates, staged, counts = _read_review_rows(
             review_root,
             expected_source_id=expected_source_id,
@@ -940,6 +1229,20 @@ def commit_material_review_archive(
             artifacts.artifact_path(task_id, MANIFEST_REF)
         )
         candidate_store.upsert_many(candidates)
+        quality = None
+        external_classes = []
+        if str(expected_import_format or "images") == "yolo":
+            quality = _commit_yolo_review_annotations(
+                review_root,
+                candidate_store,
+                candidate_keys={str(row["object_key"]) for row in candidates},
+                meta=meta,
+                expected_prefix=expected_prefix,
+            )
+            external_classes = mapping_suggestions(
+                candidate_store.external_classes(),
+                list(platform_labels or ()),
+            )
         staging_store = RemoteMaterialStagingStore(
             artifacts.artifact_path(task_id, REMOTE_MATERIAL_STAGING_REF)
         )
@@ -977,7 +1280,16 @@ def commit_material_review_archive(
             "importable": counts.get("IMPORTABLE", 0),
             "manifest_ref": MANIFEST_REF,
             "failure_examples": candidate_store.failure_page(limit=200),
-            "import_format": "images",
+            "import_format": str(expected_import_format or "images"),
+            **(
+                {
+                    "dataset_yaml": str(meta.get("dataset_yaml") or ""),
+                    "quality": quality,
+                    "external_classes": external_classes,
+                }
+                if str(expected_import_format or "images") == "yolo"
+                else {}
+            ),
             "remote_review_archive_ref": durable_archive_ref,
             "remote_staging_ref": REMOTE_MATERIAL_STAGING_REF,
         }
