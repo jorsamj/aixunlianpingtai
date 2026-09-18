@@ -735,6 +735,7 @@ class AgentExecutionService:
                 TaskKind.DEPLOYMENT_TEST,
                 TaskKind.TRAINING,
                 TaskKind.MODEL_CONVERSION,
+                TaskKind.MATERIAL_IMPORT,
             }
             and isinstance(remote, dict)
             and int(remote.get("version") or 0) == 1
@@ -1512,10 +1513,23 @@ class AgentExecutionService:
                 "cancel-requested execution may only finish as CANCELLED",
                 409,
             )
-        if target in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+        if target in {
+            TaskStatus.SUCCEEDED,
+            TaskStatus.PARTIAL_SUCCESS,
+            TaskStatus.AWAITING_CONFIRMATION,
+        }:
             confirmed = self._confirmed_remote_result(current, execution_generation)
             if confirmed is not None:
                 result_ref = str(confirmed["result_ref"])
+        if (
+            target is TaskStatus.AWAITING_CONFIRMATION
+            and current.kind is not TaskKind.MATERIAL_IMPORT
+        ):
+            raise AgentExecutionError(
+                "INVALID_FINISH_STATUS",
+                "only material import may finish as awaiting confirmation",
+                422,
+            )
         try:
             task = self.fenced.finish(
                 task_id,
