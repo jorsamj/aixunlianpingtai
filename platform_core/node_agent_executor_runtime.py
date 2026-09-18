@@ -25,6 +25,7 @@ import requests
 
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 DEFAULT_EXECUTOR_TIMEOUT_SECONDS = 15.0
+DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS = 300.0
 DEFAULT_EXECUTION_HEARTBEAT_SECONDS = 5.0
 
 
@@ -151,13 +152,20 @@ class NodeExecutorClient:
             f"{quote(self.node_id, safe='')}"
         )
 
-    def _post(self, suffix: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _post(
+        self,
+        suffix: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        request_timeout = self.timeout if timeout is None else max(1.0, float(timeout))
         try:
             response = self.session.post(
                 self._prefix + suffix,
                 headers={"Authorization": f"Bearer {self.token}"},
                 json=dict(payload or {}),
-                timeout=self.timeout,
+                timeout=request_timeout,
             )
         except requests.RequestException as error:
             raise NodeExecutorHTTPError(
@@ -311,6 +319,7 @@ class NodeExecutorClient:
         return self._post(
             f"/executions/{quote(lease.task_id, safe='')}/result-upload/confirm",
             payload,
+            timeout=max(self.timeout, DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS),
         )
 
     def begin_finalization(self, lease: RemoteExecutionLease) -> dict[str, Any]:
@@ -546,6 +555,7 @@ __all__ = [
     "AgentExecutionWorkdir",
     "DEFAULT_EXECUTION_HEARTBEAT_SECONDS",
     "DEFAULT_EXECUTOR_TIMEOUT_SECONDS",
+    "DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS",
     "ExecutionLeaseMonitor",
     "NodeExecutorClient",
     "NodeExecutorHTTPError",
