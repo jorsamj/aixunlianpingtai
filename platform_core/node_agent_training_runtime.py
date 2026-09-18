@@ -503,6 +503,14 @@ class AgentTrainingRunner:
         batch = int(self._parameter(payload, "batch", 4))
         workers = max(0, int(self._parameter(payload, "workers", 0)))
         run_name = f"remote_{lease.task_id}_{lease.generation}"
+        if (
+            bool(self._parameter(payload, "auto_supplement", False))
+            or int(self._parameter(payload, "supplement_count", 0) or 0) > 0
+            or bool(self._parameter(payload, "ai_intervention_enabled", False))
+        ):
+            raise AgentTrainingRuntimeError(
+                "remote training auto-supplement/AI intervention is not portable yet"
+            )
 
         _atomic_write_json(
             job_dir / "job.json",
@@ -961,8 +969,169 @@ class AgentTrainingRunner:
 
             self._heartbeat(
                 monitor,
-                progress=85,
-                stage="REMOTE_TRAINING_PACKAGING_RESULT",
+                progress=84,
+                stage="REMOTE_TRAINING_PREPARING_MODEL_ARTIFACTS",
+            )
+            verified_source_paths = set()
+            for value in job.get("verified_models") or ():
+                if isinstance(value, Mapping):
+                    value = (
+                        value.get("path")
+                        or value.get("stored_path")
+                        or value.get("source")
+                    )
+                raw = str(value or "").strip()
+                if raw:
+                    verified_source_paths.add(str(Path(raw).expanduser().resolve()))
+
+            publish_paths: list[str] = []
+            role_paths: dict[str, Path] = {}
+            for role, key in (("best", "best_path"), ("last", "last_path")):
+                raw = str(job.get(key) or "").strip()
+                if not raw:
+                    continue
+                path = Path(raw).expanduser().resolve()
+                if (
+                    str(path) not in verified_source_paths
+                    or not path.is_file()
+                    or path.stat().st_size <= 0
+                ):
+                    raise AgentTrainingRuntimeError(
+                        f"training worker {role} model is not in verified_models"
+                    )
+                if str(path) not in publish_paths:
+                    publish_paths.append(str(path))
+                role_paths[role] = path
+            if not publish_paths:
+                raise AgentTrainingRuntimeError(
+                    "training worker produced no verified best/last model"
+                )
+
+            publish_job = dict(job)
+            publish_job["verified_models"] = publish_paths
+            result_archive = create_training_result_archive(
+                project_dir=project,
+                job=publish_job,
+                task_id=lease.task_id,
+                execution_generation=lease.generation,
+                snapshot_id=snapshot_id,
+                destination=workdir / "output" / "training-result.zip",
+                include_model_bytes=False,
+            )
+            model_evidence: list[dict[str, Any]] = []
+            local_model_by_role: dict[str, Path] = {}
+            for item in result_archive.models:
+                role = str(item.get("role") or "").strip().lower()
+                source = role_paths.get(role)
+                if source is None:
+                    raise AgentTrainingRuntimeError(
+                        f"training result declared unexpected model role {role or '<empty>'}"
+                    )
+                size_bytes, digest = _sha256_file(source)
+                if (
+                    int(item.get("size_bytes") or 0) != size_bytes
+                    or str(item.get("sha256") or "") != digest
+                ):
+                    raise AgentTrainingRuntimeError(
+                        f"training {role} model changed before publication"
+                    )
+                evidence = {
+                    "role": role,
+                    "file_name": str(item.get("file_name") or f"{role}.pt"),
+                    "sha256": digest,
+                    "size_bytes": size_bytes,
+                }
+                model_evidence.append(evidence)
+                local_model_by_role[role] = source
+
+            self._assert_active(monitor)
+            prepared_models = self.client.prepare_training_model_uploads(
+                lease,
+                model_evidence,
+            )
+            prepared_items = prepared_models.get("items")
+            if not isinstance(prepared_items, list) or len(prepared_items) != len(model_evidence):
+                raise AgentTrainingRuntimeError(
+                    "control plane returned invalid training model upload contracts"
+                )
+            prepared_by_role = {
+                str(item.get("role") or "").strip().lower(): item
+                for item in prepared_items
+                if isinstance(item, Mapping)
+            }
+            if set(prepared_by_role) != set(local_model_by_role):
+                raise AgentTrainingRuntimeError(
+                    "control plane changed training model roles"
+                )
+
+            self._heartbeat(
+                monitor,
+                progress=88,
+                stage="REMOTE_TRAINING_UPLOADING_MODELS",
+            )
+            for evidence in model_evidence:
+                role = str(evidence["role"])
+                prepared_item = prepared_by_role[role]
+                if (
+                    str(prepared_item.get("sha256") or "") != str(evidence["sha256"])
+                    or int(prepared_item.get("size_bytes") or 0) != int(evidence["size_bytes"])
+                    or str(prepared_item.get("file_name") or "") != str(evidence["file_name"])
+                ):
+                    raise AgentTrainingRuntimeError(
+                        f"control plane changed {role} model evidence"
+                    )
+                if bool(prepared_item.get("already_uploaded")):
+                    continue
+                upload = prepared_item.get("upload")
+                if not isinstance(upload, Mapping):
+                    raise AgentTrainingRuntimeError(
+                        f"control plane returned no {role} model upload contract"
+                    )
+                try:
+                    self._upload_result(
+                        upload,
+                        local_model_by_role[role],
+                        monitor,
+                        size_bytes=int(evidence["size_bytes"]),
+                        sha256=str(evidence["sha256"]),
+                    )
+                except AgentTrainingRuntimeError:
+                    self._assert_active(monitor)
+                    recovered = self.client.prepare_training_model_uploads(
+                        lease,
+                        model_evidence,
+                    )
+                    retry_items = recovered.get("items")
+                    retry_by_role = {
+                        str(item.get("role") or "").strip().lower(): item
+                        for item in retry_items or ()
+                        if isinstance(item, Mapping)
+                    }
+                    retry_item = retry_by_role.get(role)
+                    if retry_item is None:
+                        raise
+                    if not bool(retry_item.get("already_uploaded")):
+                        retry_upload = retry_item.get("upload")
+                        if not isinstance(retry_upload, Mapping):
+                            raise
+                        self._upload_result(
+                            retry_upload,
+                            local_model_by_role[role],
+                            monitor,
+                            size_bytes=int(evidence["size_bytes"]),
+                            sha256=str(evidence["sha256"]),
+                        )
+
+            confirmed_models = self.client.confirm_training_model_uploads(lease)
+            if not bool(confirmed_models.get("confirmed")):
+                raise AgentTrainingRuntimeError(
+                    "control plane did not confirm training model artifacts"
+                )
+
+            self._heartbeat(
+                monitor,
+                progress=92,
+                stage="REMOTE_TRAINING_UPLOADING_RESULT_MANIFEST",
             )
             result_contract = payload.get("result")
             if (
@@ -974,20 +1143,6 @@ class AgentTrainingRunner:
                 raise AgentTrainingRuntimeError(
                     "portable training result contract is invalid"
                 )
-            result_archive = create_training_result_archive(
-                project_dir=project,
-                job=job,
-                task_id=lease.task_id,
-                execution_generation=lease.generation,
-                snapshot_id=snapshot_id,
-                destination=workdir / "output" / "training-result.zip",
-                # The currently active control-plane protocol confirms one
-                # generation-scoped result object. Separate model objects are
-                # enabled only when that upload protocol is added end-to-end.
-                include_model_bytes=True,
-            )
-
-            self._assert_active(monitor)
             prepared = self.client.prepare_result_upload(
                 lease,
                 sha256=result_archive.sha256,
@@ -1002,12 +1157,6 @@ class AgentTrainingRunner:
                 raise AgentTrainingRuntimeError(
                     "control plane changed training result content evidence"
                 )
-
-            self._heartbeat(
-                monitor,
-                progress=91,
-                stage="REMOTE_TRAINING_UPLOADING_RESULT",
-            )
             if not bool(prepared.get("already_uploaded")):
                 upload = prepared.get("upload")
                 if not isinstance(upload, Mapping):
@@ -1064,13 +1213,21 @@ class AgentTrainingRunner:
             # and committed the verified model/version. Keep the explicit call
             # for protocol idempotency and observability.
             self.client.begin_finalization(lease)
+            report = job.get("training_report")
+            report = report if isinstance(report, Mapping) else {}
+            test_result = report.get("test_result")
+            partial = (
+                isinstance(test_result, Mapping)
+                and str(test_result.get("status") or "").strip().lower() == "failed"
+            )
+            terminal_status = "PARTIAL_SUCCESS" if partial else "SUCCEEDED"
             finished = self.client.finish(
                 lease,
-                "SUCCEEDED",
+                terminal_status,
                 result_ref=result_ref,
             )
             status = str((finished.get("task") or {}).get("status") or "")
-            if status != "SUCCEEDED":
+            if status != terminal_status:
                 raise AgentTrainingRuntimeError(
                     "control plane returned unexpected training terminal "
                     f"status: {status or '<empty>'}"
@@ -1078,7 +1235,7 @@ class AgentTrainingRunner:
             return AgentTrainingOutcome(
                 lease.task_id,
                 lease.generation,
-                "SUCCEEDED",
+                terminal_status,
                 result_ref=result_ref,
             )
         except InterruptedError as error:
