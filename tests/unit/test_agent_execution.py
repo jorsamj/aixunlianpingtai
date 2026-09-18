@@ -22,7 +22,15 @@ def runtime(tmp_path):
 
 def create_task(repository, artifacts, task_id="train-agent", *, write_payload=True):
     if write_payload:
-        artifacts.atomic_write_json(task_id, "request.json", {"epochs": 30, "imgsz": 640})
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "epochs": 30,
+            "imgsz": 640,
+            "remote_execution": {
+                "version": 1,
+                "task_kind": TaskKind.TRAINING.value,
+                "transport": "object-storage-v1",
+            },
+        })
     return repository.create(
         TaskRecord.new(
             task_id=task_id,
@@ -40,6 +48,7 @@ def create_node(repository, node_id="gpu-agent", *, enabled=True):
     _node, token = nodes.create({
         "node_id": node_id,
         "display_name": node_id,
+        "connection_mode": "agent",
         "enabled": enabled,
         "allowed_capabilities": ["training"],
     })
@@ -103,7 +112,15 @@ def test_agent_start_is_single_atomic_queued_to_running_transition(tmp_path):
     assert task.lease_expires_at
     assert started["execution"]["generation"] == 1
     assert started["execution"]["lease_token"]
-    assert started["payload"] == {"epochs": 30, "imgsz": 640}
+    assert started["payload"] == {
+        "epochs": 30,
+        "imgsz": 640,
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+        },
+    }
     assert started["transport"] == {
         "protocol": "agent-http-control-v1",
         "large_artifacts": "object-storage-required",
