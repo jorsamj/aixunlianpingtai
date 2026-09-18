@@ -330,7 +330,6 @@ def test_resolve_execution_payload_mints_short_lived_urls_without_central_paths(
     assert resolved["model"] == {
         "type": "official",
         "reference": "yolo11n.pt",
-        "base_selection_reason": "mother_model",
     }
     assert resolved["input"]["download"]["method"] == "GET"
     assert "signed.example.test/get/" in resolved["input"]["download"]["url"]
@@ -714,7 +713,11 @@ def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment
     assert resolved["selected_gpu"]["uuid"] == "GPU-ONE"
     assert resolved["bundle"]["download"]["sha256"] == bundle_sha
     assert resolved["bundle"]["download"]["member_count"] == 5
-    assert resolved["model"] == {"type": "official", "reference": "yolo11n.pt"}
+    assert resolved["model"] == {
+        "type": "official",
+        "reference": "yolo11n.pt",
+        "base_selection_reason": "mother_model",
+    }
     assert resolved["result"]["upload_protocol"] == "prepare-after-local-hash-v1"
     assert "signed.example.test" in resolved["bundle"]["download"]["url"]
     assert "url" not in str(payload)
