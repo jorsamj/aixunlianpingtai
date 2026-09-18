@@ -10,6 +10,9 @@ on:
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/model_artifacts.py'
       - 'platform_core/node_agent_executor_loop.py'
       - 'node_agent.py'
       - 'predict_ultralytics_runner.py'
@@ -22,6 +25,9 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_remote_training_results.py'
+      - 'tests/unit/test_model_artifacts.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/api/test_agent_executor_api.py'
@@ -37,6 +43,9 @@ on:
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/model_artifacts.py'
       - 'platform_core/node_agent_executor_loop.py'
       - 'node_agent.py'
       - 'predict_ultralytics_runner.py'
@@ -49,6 +58,9 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_remote_training_results.py'
+      - 'tests/unit/test_model_artifacts.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/api/test_agent_executor_api.py'
@@ -70,7 +82,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic
       - name: Python syntax check
         run: >-
           python -m py_compile
@@ -78,6 +90,9 @@ jobs:
           platform_core/remote_execution_transport.py
           platform_core/node_agent_executor_runtime.py
           platform_core/node_agent_deployment_runtime.py
+          platform_core/node_agent_training_runtime.py
+          platform_core/remote_training_results.py
+          platform_core/model_artifacts.py
           platform_core/node_agent_executor_loop.py
           node_agent.py
           predict_ultralytics_runner.py
@@ -90,6 +105,9 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_remote_training_results.py
+          tests/unit/test_model_artifacts.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
       - name: Agent execution contracts
@@ -100,6 +118,9 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_remote_training_results.py
+          tests/unit/test_model_artifacts.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
           tests/unit/test_service_nodes.py
@@ -114,7 +135,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused API dependencies
-        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock
+        run: python -m pip install --disable-pip-version-check pytest psutil requests fastapi httpx filelock pillow pyyaml keyring cryptography pydantic
       - name: Agent executor API contract
         run: >-
           python -m pytest -q --confcutdir=tests/api
@@ -158,6 +179,11 @@ jobs:
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
           grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
           grep -Fq 'include_model_bytes=False' platform_core/node_agent_training_runtime.py
+          grep -Fq 'training-models/prepare' platform_core/agent_execution.py
+          grep -Fq 'training-models/confirm' platform_core/agent_execution.py
+          grep -Fq 'REMOTE_TRAINING_MODELS_NOT_CONFIRMED' platform_core/agent_execution.py
+          grep -Fq 'register_verified_remote_artifact' platform_core/model_artifacts.py
+          grep -Fq 'confirm_training_model_uploads' platform_core/remote_execution_transport.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
