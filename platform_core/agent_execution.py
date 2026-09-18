@@ -84,11 +84,13 @@ class AgentExecutionService:
         *,
         heartbeat_ttl_seconds: int = HEARTBEAT_TTL_SECONDS,
         execution_lease_seconds: int = DEFAULT_EXECUTION_LEASE_SECONDS,
+        execution_payload_resolver=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
         self.heartbeat_ttl_seconds = max(10, int(heartbeat_ttl_seconds))
         self.execution_lease_seconds = max(5, int(execution_lease_seconds))
+        self.execution_payload_resolver = execution_payload_resolver
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -154,6 +156,7 @@ class AgentExecutionService:
         assignment_lease_token: str,
     ) -> dict[str, Any]:
         self.nodes.authenticate(node_id, node_token)
+        node_public = self.nodes.get_public(node_id)
         preflight_task = self.repository.get(task_id)
         if preflight_task is None:
             raise AgentExecutionError("TASK_NOT_FOUND", "assigned task no longer exists", 404)
@@ -178,6 +181,86 @@ class AgentExecutionService:
             )
 
         current, now = _iso_now()
+        # Check assignment ownership before minting any short-lived transport
+        # credentials. The authoritative transaction below repeats these checks.
+        with closing(self.repository._connect()) as database:
+            preflight_assignment = database.execute(
+                """
+                SELECT * FROM task_node_assignments
+                 WHERE task_id=? AND node_id=? AND state='CLAIMED'
+                 ORDER BY generation DESC LIMIT 1
+                """,
+                (str(task_id), str(node_id)),
+            ).fetchone()
+        if preflight_assignment is None:
+            raise AgentExecutionError(
+                "ASSIGNMENT_NOT_CLAIMED",
+                "task has no claimed assignment for this node",
+                409,
+            )
+        preflight_assignment_token = str(preflight_assignment["lease_token"] or "")
+        supplied_assignment_token = str(assignment_lease_token or "")
+        if (
+            not preflight_assignment_token
+            or not supplied_assignment_token
+            or not hmac.compare_digest(preflight_assignment_token, supplied_assignment_token)
+        ):
+            raise AgentExecutionError(
+                "INVALID_ASSIGNMENT_LEASE",
+                "assignment lease token is invalid",
+                401,
+            )
+        if (
+            not preflight_assignment["lease_expires_at"]
+            or str(preflight_assignment["lease_expires_at"]) <= now
+        ):
+            raise AgentExecutionError(
+                "ASSIGNMENT_LEASE_EXPIRED",
+                "assignment lease expired before execution start",
+                409,
+            )
+        assignment_snapshot = {
+            "generation": int(preflight_assignment["generation"]),
+            "node_id": str(preflight_assignment["node_id"]),
+            "capability": str(preflight_assignment["capability"]),
+            "resolved_execution_config": _json(
+                preflight_assignment["resolved_execution_config"], {}
+            ),
+        }
+
+        execution_payload = payload
+        if str(node_public.get("connection_mode") or "") == "agent":
+            if not isinstance(payload, dict):
+                raise AgentExecutionError(
+                    "REMOTE_EXECUTION_PAYLOAD_INVALID",
+                    "remote task payload must be an object",
+                    422,
+                )
+            if not callable(self.execution_payload_resolver):
+                raise AgentExecutionError(
+                    "REMOTE_EXECUTION_PAYLOAD_UNAVAILABLE",
+                    "remote Agent execution payload resolver is not configured",
+                    409,
+                )
+            try:
+                execution_payload = self.execution_payload_resolver(
+                    preflight_task,
+                    payload,
+                    assignment_snapshot,
+                )
+            except AgentExecutionError:
+                raise
+            except Exception as error:
+                code = str(getattr(error, "code", "") or "REMOTE_EXECUTION_PAYLOAD_FAILED")
+                status_code = int(getattr(error, "status_code", 409) or 409)
+                raise AgentExecutionError(code, str(error), status_code) from error
+            if not isinstance(execution_payload, dict):
+                raise AgentExecutionError(
+                    "REMOTE_EXECUTION_PAYLOAD_INVALID",
+                    "remote execution payload resolver returned a non-object",
+                    500,
+                )
+
         execution_expires = (
             current + timedelta(seconds=self.execution_lease_seconds)
         ).isoformat()
@@ -354,7 +437,7 @@ class AgentExecutionService:
                     assignment["resolved_execution_config"], {}
                 ),
             },
-            "payload": payload,
+            "payload": execution_payload,
             "transport": {
                 "protocol": "agent-http-control-v1",
                 "large_artifacts": "object-storage-required",
@@ -587,13 +670,21 @@ def _bearer_token(value: object) -> str:
     return raw[7:].strip()
 
 
-def agent_executor_router(task_repository, task_artifacts):
+def agent_executor_router(
+    task_repository,
+    task_artifacts,
+    execution_payload_resolver=None,
+):
     from fastapi import APIRouter, Body, Header, HTTPException
 
     router = APIRouter(prefix="/api/v63/node-executor/{node_id}")
 
     def service() -> AgentExecutionService:
-        return AgentExecutionService(task_repository(), task_artifacts())
+        return AgentExecutionService(
+            task_repository(),
+            task_artifacts(),
+            execution_payload_resolver=execution_payload_resolver,
+        )
 
     def token(authorization: str | None) -> str:
         try:
