@@ -253,6 +253,32 @@ class NodeExecutorClient:
             },
         )
 
+    def prepare_result_upload(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        sha256: str,
+        size_bytes: int,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/result-upload/prepare",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "sha256": str(sha256 or ""),
+                "size_bytes": int(size_bytes),
+            },
+        )
+
+    def confirm_result_upload(self, lease: RemoteExecutionLease) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/result-upload/confirm",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+            },
+        )
+
     def begin_finalization(self, lease: RemoteExecutionLease) -> dict[str, Any]:
         return self._post(
             f"/executions/{quote(lease.task_id, safe='')}/begin-finalization",
