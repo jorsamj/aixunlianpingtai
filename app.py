@@ -1106,6 +1106,7 @@ class StorageSourceUpdateReq(BaseModel):
 
 class StorageImportScanReq(BaseModel):
     mode: Literal["storage_scan", "directory_scan", "server_zip"] = "storage_scan"
+    execution_mode: Literal["local", "agent"] = "local"
     storage_source_id: str
     prefix: str = ""
     recursive: bool = True
@@ -1126,6 +1127,13 @@ class StorageImportScanReq(BaseModel):
                 raise ValueError('仅图片模式不能提交 dataset_yaml')
         zip_path = str(self.zip_path or "").strip()
         target_prefix = str(self.target_prefix or "").strip()
+        if self.execution_mode == "agent":
+            if self.mode != "server_zip":
+                raise ValueError("Agent 素材导入当前仅支持服务器 ZIP 模式")
+            if self.import_format != "images":
+                raise ValueError("Agent 素材导入当前仅支持仅图片模式")
+            if self.dataset_yaml:
+                raise ValueError("Agent 素材导入当前不接受 dataset_yaml")
         if self.mode == "server_zip":
             if not zip_path:
                 raise ValueError("服务器 ZIP 模式必须选择 ZIP 文件")
@@ -1482,16 +1490,27 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
         raise HTTPException(status_code=404, detail="存储源不存在")
     if not source.enabled:
         raise HTTPException(status_code=409, detail="存储源已停用")
-    if payload.mode in {"directory_scan", "server_zip"} and StorageType.parse(source.type) is not StorageType.LOCAL:
-        raise HTTPException(status_code=422, detail="目录扫描和服务器 ZIP 导入只能使用已启用的本地存储")
+    source_type = StorageType.parse(source.type)
+    if payload.mode == "directory_scan" and source_type is not StorageType.LOCAL:
+        raise HTTPException(status_code=422, detail="目录扫描只能使用已启用的本地存储")
+    if (
+        payload.mode == "server_zip"
+        and payload.execution_mode == "local"
+        and source_type is not StorageType.LOCAL
+    ):
+        raise HTTPException(status_code=422, detail="本地服务器 ZIP 导入只能使用本地目标存储")
+    if (
+        payload.mode == "server_zip"
+        and payload.execution_mode == "agent"
+        and source_type not in {StorageType.OSS, StorageType.S3}
+    ):
+        raise HTTPException(status_code=422, detail="Agent ZIP 导入必须选择 OSS/S3/MinIO 目标存储")
     request_payload = payload.model_dump(mode="json")
+    resolved_zip = None
     if payload.mode == "server_zip":
         relative_zip = str(payload.zip_path or "").strip()
         try:
-            # Resolve now so an unsafe/out-of-root/missing request cannot create
-            # a durable task which is guaranteed to fail later. Only the caller's
-            # relative value is persisted; the resolved server path is discarded.
-            resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
+            resolved_zip = resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
             target_prefix = safe_member_path(
                 str(payload.target_prefix or "").strip()
             ).as_posix()
@@ -1508,10 +1527,39 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
         request_payload["zip_path"] = relative_zip
         request_payload["target_prefix"] = target_prefix
     task_id = uuid.uuid4().hex[:12]
+    if payload.execution_mode == "agent":
+        try:
+            request_payload["remote_execution"] = (
+                _remote_execution_transport_service().stage_material_import(
+                    project_id=project_id,
+                    task_id=task_id,
+                    archive_path=resolved_zip,
+                    storage_source_id=source.id,
+                    target_prefix=request_payload["target_prefix"],
+                    import_format=payload.import_format,
+                )
+            )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message="远程素材导入准备失败",
+                detail=str(error),
+                solution="请检查目标对象存储、服务器 ZIP 文件和访问凭据后重试。",
+                status_code=error.status_code,
+            ) from error
     shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
     task = shared_task_repository().create(TaskRecord.new(
         task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
-        f"storage:{source.id}", required_capabilities=("storage.import",),
+        (
+            f"material-import:agent:{source.id}"
+            if payload.execution_mode == "agent"
+            else f"storage:{source.id}"
+        ),
+        required_capabilities=(
+            ("agent.remote",)
+            if payload.execution_mode == "agent"
+            else ("storage.import",)
+        ),
     ))
     return _public_storage_import_task(task)
 
@@ -15236,6 +15284,7 @@ def _remote_execution_transport_service():
         algorithms_file=algorithms_file,
         storage_sources_factory=storage_source_repository,
         storage_credentials_factory=storage_credentials,
+        task_artifacts=shared_task_artifacts(),
     )
 
 
