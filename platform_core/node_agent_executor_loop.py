@@ -23,6 +23,11 @@ from .node_agent_executor_runtime import (
 
 SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"conversion", "deployment-test", "training"})
 SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "MODEL_CONVERSION", "TRAINING"})
+_CAPABILITY_BY_TASK_KIND = {
+    "DEPLOYMENT_TEST": "deployment-test",
+    "MODEL_CONVERSION": "conversion",
+    "TRAINING": "training",
+}
 
 
 def executable_agent_capabilities(values: Iterable[str]) -> list[str]:
@@ -83,9 +88,8 @@ class NodeAgentExecutorLoop:
     def effective_capabilities(self) -> tuple[str, ...]:
         """Capabilities safe to advertise in the current local runtime state."""
         kind_by_capability = {
-            "conversion": "MODEL_CONVERSION",
-            "deployment-test": "DEPLOYMENT_TEST",
-            "training": "TRAINING",
+            capability: kind
+            for kind, capability in _CAPABILITY_BY_TASK_KIND.items()
         }
         effective = []
         for capability in self.capabilities:
@@ -199,6 +203,32 @@ class NodeAgentExecutorLoop:
             )
             return True
 
+        required_capability = _CAPABILITY_BY_TASK_KIND.get(kind)
+        runner = self.runners.get(kind)
+        effective = set(self.effective_capabilities())
+        if (
+            required_capability is None
+            or required_capability not in effective
+            or runner is None
+            or not callable(getattr(runner, "run", None))
+            or getattr(runner, "ready", True) is False
+        ):
+            # A stale central assignment can race with a local runtime becoming
+            # unavailable. Never convert that stale assignment into a RUNNING
+            # execution lease. The assignment claim lease can expire/reassign
+            # after the next heartbeat withdraws this capability.
+            reason = str(getattr(runner, "recovery_error", "") or "").strip()
+            detail = (
+                f": {reason}"
+                if reason
+                else ""
+            )
+            self._set_error(
+                f"UNSUPPORTED_AGENT_TASK_KIND: {kind} is not executable "
+                f"by this Agent runtime{detail}"
+            )
+            return True
+
         try:
             lease = self.client.start_execution(task_id, assignment_token)
         except NodeExecutorHTTPError as error:
@@ -210,18 +240,24 @@ class NodeAgentExecutorLoop:
 
         self._set_active(lease.task_id, True)
         try:
-            runner = self.runners.get(str(lease.kind or "").strip().upper())
-            if runner is None or not callable(getattr(runner, "run", None)):
+            # Runner readiness was fenced before start_execution. Re-check the
+            # returned kind only for protocol corruption; do not dispatch a
+            # different runner than the one that was admitted above.
+            if str(lease.kind or "").strip().upper() != kind:
                 try:
                     self.client.finish(
                         lease,
                         "FAILED",
-                        error=f"Agent build does not implement task kind {lease.kind}",
+                        error=(
+                            "control plane returned a different task kind "
+                            f"after start: expected {kind}, got {lease.kind}"
+                        ),
                     )
                 except Exception:
                     pass
                 self._set_error(
-                    f"UNSUPPORTED_AGENT_TASK_KIND: started {lease.kind} for {lease.task_id}"
+                    f"NODE_EXECUTOR_INVALID_RESPONSE: started {lease.kind} for "
+                    f"{lease.task_id}, expected {kind}"
                 )
                 return True
             outcome = runner.run(lease)
