@@ -1896,6 +1896,188 @@ class RemoteExecutionTransportService:
             },
         }
 
+    def _commit_conversion_result(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, conversion = self._conversion_remote(task, payload)
+        result = confirmed.get("result")
+        if not isinstance(result, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified conversion result metadata is missing",
+                500,
+            )
+        output_storage = result.get("output_storage")
+        if not isinstance(output_storage, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified conversion output storage reference is missing",
+                500,
+            )
+        expected_sha = _normalized_sha256(
+            result.get("output_sha256") or evidence.get("sha256"),
+            "conversion.output_sha256",
+        )
+        expected_size = _positive_int(
+            result.get("output_size_bytes") or evidence.get("size_bytes"),
+            "conversion.output_size_bytes",
+        )
+        generation = _positive_int(
+            evidence.get("execution_generation"),
+            "result.execution_generation",
+        )
+        project = self.project_dir(str(task.project_id)).resolve()
+        job_dir = (project / "deploy" / "jobs" / str(task.task_id)).resolve()
+        artifacts = (job_dir / "artifacts").resolve()
+        artifacts.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(job_dir / ".remote-conversion-commit.lock"), timeout=30)
+        try:
+            lock.acquire()
+        except Timeout as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_COMMIT_BUSY",
+                "remote conversion result commit is busy",
+                409,
+            ) from error
+        try:
+            destination = (artifacts / "model.onnx").resolve()
+            if artifacts not in destination.parents:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_COMMIT_PATH_INVALID",
+                    "remote conversion destination escaped artifact root",
+                    500,
+                )
+            if destination.is_symlink():
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_COMMIT_PATH_INVALID",
+                    "remote conversion destination must not be a symlink",
+                    409,
+                )
+            if destination.is_file():
+                if (
+                    int(destination.stat().st_size) != expected_size
+                    or _sha256(destination) != expected_sha
+                ):
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_CONVERSION_COMMIT_CONFLICT",
+                        "existing local ONNX artifact conflicts with verified remote result",
+                        409,
+                    )
+            else:
+                _source, provider = self._source_provider(
+                    str(task.project_id),
+                    output_storage,
+                )
+                object_key = str(output_storage.get("object_key") or "").strip()
+                if not object_key:
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_RESULT_CONFIRM_INVALID",
+                        "remote conversion object key is missing",
+                        500,
+                    )
+                temporary = artifacts / ".model.onnx.remote.tmp"
+                temporary.unlink(missing_ok=True)
+                try:
+                    provider.download(object_key, temporary)
+                    if (
+                        not temporary.is_file()
+                        or int(temporary.stat().st_size) != expected_size
+                        or _sha256(temporary) != expected_sha
+                    ):
+                        raise RemoteExecutionTransportError(
+                            "REMOTE_CONVERSION_COMMIT_VERIFY_FAILED",
+                            "downloaded ONNX does not match verified remote result evidence",
+                            502,
+                        )
+                    temporary.replace(destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+
+            manifest = {
+                "schema_version": 1,
+                "task_id": str(task.task_id),
+                "execution_generation": generation,
+                "target": "onnx",
+                "status": "runtime_verified",
+                "runtime_verified": True,
+                "source_trace": dict(conversion.get("source_trace") or {})
+                if isinstance(conversion.get("source_trace"), Mapping)
+                else {},
+                "parameters": self._portable_conversion_params(
+                    str(conversion.get("target") or "onnx"),
+                    conversion.get("params")
+                    if isinstance(conversion.get("params"), Mapping)
+                    else {},
+                ),
+                "output": {
+                    "file_name": "model.onnx",
+                    "size_bytes": expected_size,
+                    "sha256": expected_sha,
+                    "storage": dict(output_storage),
+                },
+            }
+            manifest_path = artifacts / "manifest.json"
+            manifest_tmp = artifacts / ".manifest.json.remote.tmp"
+            manifest_tmp.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            manifest_tmp.replace(manifest_path)
+
+            job_file = job_dir / "job.json"
+            try:
+                job = json.loads(job_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                job = {}
+            if not isinstance(job, dict):
+                job = {}
+            job.update({
+                "id": str(task.task_id),
+                "project_id": str(task.project_id),
+                "status": "done",
+                "progress": 100,
+                "stage": "转换完成",
+                "message": "Agent ONNX 转换完成并已通过运行时校验",
+                "runtime_verified": True,
+                "validation_status": "runtime_verified",
+                "result_ref": str(confirmed.get("result_ref") or ""),
+                "remote_execution": True,
+                "remote_execution_generation": generation,
+                "outputs": [
+                    {
+                        "name": "model.onnx",
+                        "path": str(destination),
+                        "rel": "artifacts/model.onnx",
+                        "size_mb": round(expected_size / 1024 / 1024, 3),
+                    },
+                    {
+                        "name": "manifest.json",
+                        "path": str(manifest_path),
+                        "rel": "artifacts/manifest.json",
+                        "size_mb": round(manifest_path.stat().st_size / 1024 / 1024, 3),
+                    },
+                ],
+            })
+            job_tmp = job_dir / ".job.json.remote.tmp"
+            job_tmp.write_text(
+                json.dumps(job, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            job_tmp.replace(job_file)
+            return {
+                "conversion_artifact_committed": True,
+                "conversion_artifact_path": str(destination),
+                "conversion_artifact_sha256": expected_sha,
+                "conversion_artifact_size_bytes": expected_size,
+                "runtime_verified": True,
+            }
+        finally:
+            lock.release()
+
     def commit_result_publication(
         self,
         task,
@@ -1906,6 +2088,8 @@ class RemoteExecutionTransportService:
         kind = str(getattr(task.kind, "value", task.kind))
         if kind == "TRAINING":
             return self._commit_training_result(task, payload, evidence, confirmed)
+        if kind == "MODEL_CONVERSION":
+            return self._commit_conversion_result(task, payload, evidence, confirmed)
         return {}
 
     def resolve_execution_payload(
