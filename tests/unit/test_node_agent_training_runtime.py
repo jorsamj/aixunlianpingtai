@@ -472,6 +472,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
         tmp_path,
         client,
         transfer,
+        sleep_seconds=1.2,
     )
 
     outcome = runner.run(current)
@@ -575,7 +576,7 @@ def test_training_cancellation_kills_worker_and_never_publishes_success(tmp_path
     transfer = FakeTransferSession(downloads)
     client = FakeControlClient(
         transfer,
-        cancel_at_heartbeat=5,
+        cancel_at_heartbeat=6,
     )
     runner, runtime_root, _workdirs = build_runner(
         tmp_path,
@@ -600,7 +601,7 @@ def test_training_fencing_kills_worker_without_stale_terminal_write(tmp_path):
     transfer = FakeTransferSession(downloads)
     client = FakeControlClient(
         transfer,
-        fence_at_heartbeat=5,
+        fence_at_heartbeat=6,
     )
     runner, runtime_root, _workdirs = build_runner(
         tmp_path,
