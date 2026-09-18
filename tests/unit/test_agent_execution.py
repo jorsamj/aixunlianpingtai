@@ -14,6 +14,26 @@ from platform_core.task_node_assignments import CentralTaskAllocator
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
+def safe_remote_payload(task, payload, assignment):
+    return {
+        "schema_version": 1,
+        "task_kind": task.kind.value,
+        "transport": "test-safe-v1",
+        "epochs": int(payload.get("epochs") or 0),
+        "selected_device": str(
+            (assignment.get("resolved_execution_config") or {}).get("selected_device") or ""
+        ),
+    }
+
+
+def execution_service(repository, artifacts):
+    return AgentExecutionService(
+        repository,
+        artifacts,
+        execution_payload_resolver=safe_remote_payload,
+    )
+
+
 def runtime(tmp_path):
     repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
@@ -105,7 +125,7 @@ def test_agent_start_is_single_atomic_queued_to_running_transition(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
 
     started = start(service, "train-agent", "gpu-agent", token, claimed)
@@ -119,14 +139,14 @@ def test_agent_start_is_single_atomic_queued_to_running_transition(tmp_path):
     assert started["execution"]["generation"] == 1
     assert started["execution"]["lease_token"]
     assert started["payload"] == {
+        "schema_version": 1,
+        "task_kind": "TRAINING",
+        "transport": "test-safe-v1",
         "epochs": 30,
-        "imgsz": 640,
-        "remote_execution": {
-            "version": 1,
-            "task_kind": "TRAINING",
-            "transport": "object-storage-v1",
-        },
+        "selected_device": "cuda:0",
     }
+    assert "imgsz" not in started["payload"]
+    assert "remote_execution" not in started["payload"]
     assert started["transport"] == {
         "protocol": "agent-http-control-v1",
         "large_artifacts": "object-storage-required",
@@ -143,7 +163,7 @@ def test_invalid_assignment_token_and_duplicate_start_are_fenced(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
 
     with pytest.raises(AgentExecutionError) as bad:
@@ -164,7 +184,7 @@ def test_cross_node_cannot_use_another_nodes_execution_lease(tmp_path):
     create_task(repository, artifacts)
     _nodes_a, token_a = create_node(repository, "gpu-a")
     _nodes_b, token_b = create_node(repository, "gpu-b")
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-a", token_a)
     started = start(service, "train-agent", "gpu-a", token_a, claimed)
 
@@ -185,7 +205,7 @@ def test_disabled_node_cannot_claim_new_work_but_can_finish_existing_execution(t
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, "train-running")
     nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-running", "gpu-agent", token)
     started = start(service, "train-running", "gpu-agent", token, claimed)
 
@@ -224,7 +244,7 @@ def test_cancel_request_wins_and_agent_can_only_finish_cancelled(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
     started = start(service, "train-agent", "gpu-agent", token, claimed)
     lease = started["execution"]
@@ -265,7 +285,7 @@ def test_finalization_fences_late_cancel_and_allows_successful_finish(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
     started = start(service, "train-agent", "gpu-agent", token, claimed)
     lease = started["execution"]
@@ -300,7 +320,7 @@ def test_remote_log_is_server_owned_size_bounded_and_execution_fenced(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
     started = start(service, "train-agent", "gpu-agent", token, claimed)
     lease = started["execution"]
@@ -354,7 +374,7 @@ def test_expired_generation_cannot_mutate_new_execution(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed1 = allocate_claim(service, "train-agent", "gpu-agent", token)
     first = start(service, "train-agent", "gpu-agent", token, claimed1)
     old_lease = first["execution"]
@@ -389,7 +409,7 @@ def test_token_rotation_between_preflight_and_transaction_blocks_start(tmp_path)
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     nodes, token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
     original_authenticate = service.nodes.authenticate
 
@@ -409,7 +429,7 @@ def test_missing_payload_never_transitions_task_to_running(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, write_payload=False)
     _nodes, token = create_node(repository, connection_mode="local")
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
 
     with pytest.raises(AgentExecutionError) as missing:
@@ -422,7 +442,7 @@ def test_wrong_node_token_cannot_claim_assignment(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
     _nodes, _token = create_node(repository)
-    service = AgentExecutionService(repository, artifacts)
+    service = execution_service(repository, artifacts)
     assert service.allocator.assign_next() is not None
 
     with pytest.raises(ServiceNodeError) as denied:
