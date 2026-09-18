@@ -22,6 +22,20 @@ test('server material import requests contain source-relative fields and explici
   }), {
     mode: 'directory_scan', import_format: 'yolo', dataset_yaml: 'data.yaml', storage_source_id: 'local-a', prefix: 'dataset', recursive: true,
   });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets/fire/2026',
+    recursive: true, importFormat: 'yolo', datasetYaml: 'datasets/fire/2026/data.yaml',
+  }), {
+    mode: 'storage_scan', execution_mode: 'agent', import_format: 'yolo',
+    dataset_yaml: 'datasets/fire/2026/data.yaml', storage_source_id: 's3-a',
+    prefix: 'datasets/fire/2026', recursive: true,
+  });
+  assert.throws(() => buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: '', importFormat: 'images',
+  }), /对象存储目录/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets', importFormat: 'auto',
+  }), /远程对象存储扫描/);
 });
 
 test('server material import view uses real counters and distinct confirmation state', () => {
@@ -46,6 +60,22 @@ test('resource-waiting storage import remains active until durable truth changes
   });
   assert.equal(waiting.active, true);
   assert.equal(waiting.terminal, false);
+
+  const remoteWaiting = serverImportView({
+    status: 'WAITING_RESOURCE',
+    execution_mode: 'agent',
+    resource_wait_reason: 'NO_COMPATIBLE_NODE',
+  });
+  assert.match(remoteWaiting.text, /等待远程素材节点/);
+
+  const remoteRunning = serverImportView({
+    status: 'RUNNING',
+    execution_mode: 'agent',
+    stage: 'REMOTE_MATERIAL_SCANNING',
+    current_item: 'datasets/fire/a.jpg',
+  });
+  assert.match(remoteRunning.text, /正在扫描对象存储/);
+  assert.match(remoteRunning.text, /datasets\/fire\/a.jpg/);
 });
 
 

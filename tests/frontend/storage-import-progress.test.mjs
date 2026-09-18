@@ -16,7 +16,7 @@ test('storage scan renders authoritative unified runtime progress', () => {
     current_item: '已扫描 12531 / 可导入 9824 / 重复 2694 / 失败 13 / camera.jpg',
     worker_id: 'storage-worker-01',
   });
-  assert.equal(text, 'SCANNING · 38% · 已扫描 12531 / 可导入 9824 / 重复 2694 / 失败 13 / camera.jpg · 执行节点 storage-worker-01');
+  assert.equal(text, '正在扫描素材 · 38% · 已扫描 12531 / 可导入 9824 / 重复 2694 / 失败 13 / camera.jpg · 执行节点 storage-worker-01');
 });
 
 
@@ -24,6 +24,21 @@ test('queued and resource-waiting scans expose real queue state', () => {
   assert.equal(storageImportProgressText({status: 'QUEUED', resource_queue_position: 3, resource_queue_position_exact: true, priority: 1}), '排队中 · 队列第 3 位 · 优先级 1');
   assert.equal(storageImportProgressText({status: 'WAITING_RESOURCE', resource_queue_position: 2, resource_queue_position_exact: true, resource_wait_reason: 'RESOURCE_BUSY'}), '等待资源 · 队列第 2 位 · RESOURCE_BUSY');
   assert.equal(storageImportProgressText({status: 'RUNNING', phase: 'FINALIZING', progress_percent: 91}), '正在整理扫描结果 · 91%');
+  assert.equal(
+    storageImportProgressText({
+      status: 'RUNNING', phase: 'REMOTE_MATERIAL_SCANNING',
+      execution_mode: 'agent', current_item: 'datasets/fire/a.jpg',
+      worker_id: 'agent:material-01',
+    }),
+    '正在扫描对象存储 · datasets/fire/a.jpg · 执行节点 agent:material-01',
+  );
+  assert.equal(
+    storageImportProgressText({
+      status: 'WAITING_RESOURCE', execution_mode: 'agent',
+      resource_wait_reason: 'NO_COMPATIBLE_NODE',
+    }),
+    '等待远程素材节点 · NO_COMPATIBLE_NODE',
+  );
 });
 
 
@@ -124,6 +139,9 @@ test('storage import final wiring retires direct polling loops and installs mana
   assert.doesNotMatch(serverSource, /waitForNextPoll\(|pollServerImport\(/);
   assert.match(appSource, /StorageImportProgressRuntime\?\.track/);
   assert.match(appSource, /StorageImportProgressRuntime\?\.stop/);
+  assert.match(appSource, /data-import-mode="storage_scan"/);
+  assert.match(appSource, /si61RemoteSource/);
+  assert.match(appSource, /长期存储凭据/);
   assert.match(mainSource, /window\.installServerMaterialImport61\?\.\(\);[\s\S]*installStorageImportProgressRuntime/);
 });
 
