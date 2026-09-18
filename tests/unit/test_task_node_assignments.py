@@ -823,3 +823,29 @@ def test_legacy_deployment_test_keeps_generic_capability_and_no_forced_connectio
     )
     assert task_node_capability(task, artifacts) == "deployment-test"
     assert task_node_connection_mode(task, artifacts) is None
+
+
+def test_confirmed_material_import_is_released_back_to_local_worker_owner(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "material-confirmed-local-owner",
+        TaskKind.MATERIAL_IMPORT,
+        {
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    with repository._connect() as database:
+        database.execute(
+            "UPDATE tasks SET accepted=1, status='QUEUED', stage='indexing_queued' WHERE task_id=?",
+            (task.task_id,),
+        )
+    confirmed = repository.get(task.task_id)
+    assert confirmed.accepted is True
+    assert task_node_capability(confirmed, artifacts) is None

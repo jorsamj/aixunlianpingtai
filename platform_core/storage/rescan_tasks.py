@@ -74,6 +74,20 @@ def _missing(error):
              in {'404', 'NoSuchKey', 'NotFound'}))
 
 
+def _classify_rescan_row(row, old):
+    if row['status'] != 'IMPORTABLE':
+        return 'INVALID' if old or row['status'] == 'INVALID' else 'SKIPPED'
+    if old is None:
+        return 'NEW'
+    same_hash = str(row.get('content_sha256') or '') == str(old.get('content_sha256') or '')
+    try:
+        same_size = int(row.get('size_bytes') or 0) == int(old.get('size_bytes') or 0)
+    except (TypeError, ValueError):
+        same_size = False
+    same_etag = str(row.get('etag') or '') == str(old.get('etag') or '')
+    return 'UNCHANGED' if same_hash and same_size and same_etag else 'CHANGED'
+
+
 class StorageRescanHandler(StorageImportHandler):
     def _inspect_verified(self, context, provider, source, item):
         key = str(item.key)
@@ -120,12 +134,7 @@ class StorageRescanHandler(StorageImportHandler):
                 for row in batch:
                     old = existing.get(row['object_key'])
                     row['old_sha256'] = str((old or {}).get('content_sha256') or '')
-                    if row['status'] != 'IMPORTABLE':
-                        row['category'] = 'INVALID' if old or row['status'] == 'INVALID' else 'SKIPPED'
-                    elif old is None:
-                        row['category'] = 'NEW'
-                    else:
-                        row['category'] = ('UNCHANGED' if row['content_sha256'] == row['old_sha256'] else 'CHANGED')
+                    row['category'] = _classify_rescan_row(row, old)
                 store.object_batch(batch)
                 store.upsert_many(row for row in batch if row['category'] == 'NEW')
                 context.save_checkpoint({'stage': 'SCANNING', **store.summary()})
@@ -185,14 +194,19 @@ class StorageRescanHandler(StorageImportHandler):
         if policy['new'] == 'import':
             # Revalidate newly discovered bytes before handing off to the existing
             # deduplicating, checkpointed material-import indexing pipeline.
-            for row in store.iter_status('IMPORTABLE'):
+            for row in store.iter_category_candidates('NEW'):
                 if row.get('indexed'):
                     continue
                 context.check(row['object_key'])
                 fresh = self._inspect_verified(context, provider, source, provider.stat(row['object_key']))
-                if fresh['status'] != 'IMPORTABLE' or fresh['content_sha256'] != row['content_sha256']:
+                if (
+                    fresh['status'] != 'IMPORTABLE'
+                    or fresh['content_sha256'] != row['content_sha256']
+                    or int(fresh['size_bytes']) != int(row['size_bytes'])
+                    or str(fresh.get('etag') or '') != str(row.get('etag') or '')
+                ):
                     raise ValueError('new source object changed after rescan; create a new rescan')
-            selection = store.confirm(row['object_key'] for row in store.iter_status('IMPORTABLE'))
+            selection = store.confirm(store.iter_category_keys('NEW'))
             context.artifacts.atomic_write_json(context.task.task_id, 'scan/confirmation.json', {
                 'accepted': True, 'selected_count': selection.selected_count,
                 'selection_digest': selection.digest, 'confirmed_at': selection.confirmed_at})
@@ -249,6 +263,58 @@ class StorageRescanHandler(StorageImportHandler):
         if self._request(context).get('mode') == 'storage_rescan':
             return self.run(context)
         return super().recover(context)
+
+
+def prepare_remote_rescan_review(
+    *,
+    data_dir: Path,
+    artifacts,
+    task_id: str,
+    project_id: str,
+    storage_source_id: str,
+) -> dict:
+    """Project a server-confirmed Agent review into the existing rescan owner."""
+    manifest = artifacts.artifact_path(task_id, MANIFEST_REF)
+    if not manifest.is_file():
+        raise ValueError('remote rescan review manifest is missing')
+    store = RescanCandidateStore(manifest)
+    materials = MaterialRepository(Path(data_dir) / 'projects' / str(project_id))
+    if not store.meta('baseline_complete'):
+        materials.snapshot_storage_references(store.path, str(storage_source_id))
+    store.restart_rescan_inventory()
+    batch = []
+
+    def flush():
+        if not batch:
+            return
+        existing = store.baseline_for_keys(row['object_key'] for row in batch)
+        classified = []
+        for raw in batch:
+            row = dict(raw)
+            old = existing.get(row['object_key'])
+            row['old_sha256'] = str((old or {}).get('content_sha256') or '')
+            row['category'] = _classify_rescan_row(row, old)
+            classified.append(row)
+        store.object_batch(classified)
+        batch.clear()
+
+    for candidate in store.iter_candidates(batch_size=BATCH_SIZE):
+        batch.append(candidate)
+        if len(batch) >= BATCH_SIZE:
+            flush()
+    flush()
+    store.finish_inventory()
+    store.set_meta('remote_review_ready', True)
+    result = {
+        'mode': 'storage_rescan',
+        'execution_mode': 'agent',
+        'storage_source_id': str(storage_source_id),
+        'stage': 'awaiting_confirmation',
+        'default_policy': DEFAULT_POLICY,
+        **store.summary(),
+    }
+    artifacts.atomic_write_json(task_id, RESULT_REF, result)
+    return result
 
 
 def worker_registration(data_dir: Path):

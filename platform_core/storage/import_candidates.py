@@ -632,6 +632,12 @@ class RescanCandidateStore(ImportCandidateStore):
             db.execute('DELETE FROM rescan_objects')
             db.execute('DELETE FROM candidates')
 
+    def restart_rescan_inventory(self):
+        """Reset reconciliation classification while preserving verified review candidates."""
+        with self._transaction() as db:
+            db.execute('DELETE FROM rescan_objects')
+            db.execute("DELETE FROM rescan_meta WHERE key='scan_complete'")
+
     def object_batch(self, rows):
         with self._transaction() as db:
             db.executemany('INSERT OR REPLACE INTO rescan_objects(object_key,category,payload) VALUES(?,?,?)',
@@ -668,6 +674,35 @@ class RescanCandidateStore(ImportCandidateStore):
                 'SELECT payload,category FROM rescan_objects WHERE applied=0 AND category IN ('
                 + ','.join('?' for _ in categories) + ') ORDER BY object_key LIMIT ?',
                 (*categories, min(500, max(1, int(limit)))))] if categories else []
+
+    def iter_category_candidates(self, category, batch_size=500):
+        """Stream IMPORTABLE candidates for one rescan category in bounded pages."""
+        limit = min(500, max(1, int(batch_size)))
+        after = None
+        while True:
+            with closing(self._connect()) as db:
+                if after is None:
+                    rows = db.execute(
+                        "SELECT c.* FROM rescan_objects r JOIN candidates c USING(object_key) "
+                        "WHERE r.category=? AND c.status='IMPORTABLE' "
+                        "ORDER BY r.object_key LIMIT ?",
+                        (str(category), limit),
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT c.* FROM rescan_objects r JOIN candidates c USING(object_key) "
+                        "WHERE r.category=? AND c.status='IMPORTABLE' AND r.object_key>? "
+                        "ORDER BY r.object_key LIMIT ?",
+                        (str(category), after, limit),
+                    ).fetchall()
+            if not rows:
+                return
+            after = rows[-1]['object_key']
+            yield from (dict(row) for row in rows)
+
+    def iter_category_keys(self, category, batch_size=500):
+        for row in self.iter_category_candidates(category, batch_size=batch_size):
+            yield str(row['object_key'])
 
     def mark_applied(self, rows):
         with self._transaction() as db:

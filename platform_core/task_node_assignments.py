@@ -106,6 +106,10 @@ def _public(row) -> dict[str, Any]:
 
 
 def task_node_capability(task, artifacts) -> str | None:
+    if task.kind is TaskKind.MATERIAL_IMPORT and task.accepted is True:
+        # Confirmation hands formal repository projection back to the existing
+        # local Storage Worker; never send accepted material tasks to an Agent.
+        return None
     fixed = {
         TaskKind.MATERIAL_IMPORT: "material-import",
         TaskKind.CLEANING: "cleaning",

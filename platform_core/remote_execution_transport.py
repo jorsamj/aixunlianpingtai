@@ -530,6 +530,8 @@ class RemoteExecutionTransportService:
         recursive: bool,
         import_format: str = "images",
         dataset_yaml: str = "",
+        allow_root: bool = False,
+        intent: str = "",
     ) -> dict[str, Any]:
         source = self.storage_sources_factory().get(str(storage_source_id))
         if source is None or not source.enabled:
@@ -559,8 +561,21 @@ class RemoteExecutionTransportService:
                 "Agent storage scan supports images, yolo, coco or voc",
                 422,
             )
+        normalized_intent = str(intent or "").strip().lower()
+        if normalized_intent not in {"", "storage_rescan"}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_INTENT_INVALID",
+                "unsupported portable material scan intent",
+                422,
+            )
+        if normalized_intent == "storage_rescan" and normalized_format != "images":
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_RESCAN_FORMAT_UNSUPPORTED",
+                "Remote storage rescan Phase 1 supports image-object reconciliation only",
+                422,
+            )
         raw_prefix = str(prefix or "").strip().replace("\\", "/").strip("/")
-        if not raw_prefix:
+        if not raw_prefix and not bool(allow_root):
             raise RemoteExecutionTransportError(
                 "REMOTE_MATERIAL_PREFIX_REQUIRED",
                 "Agent storage scan requires an explicit object prefix",
@@ -617,6 +632,7 @@ class RemoteExecutionTransportService:
             "material_import": {
                 "schema_version": 1,
                 "mode": "storage_scan",
+                "intent": normalized_intent,
                 "import_format": normalized_format,
                 "dataset_yaml": yaml_member,
                 "source": {
@@ -1581,11 +1597,13 @@ class RemoteExecutionTransportService:
             )
         target = material.get("target")
         mode = str(material.get("mode") or "")
+        intent = str(material.get("intent") or "").strip().lower()
         import_format = str(material.get("import_format") or "")
         allowed_formats = {"images", "yolo", "coco", "voc"}
         if (
             int(material.get("schema_version") or 0) != 1
             or mode not in {"zip_scan", "storage_scan"}
+            or intent not in {"", "storage_rescan"}
             or import_format not in allowed_formats
             or not isinstance(target, Mapping)
             or not str(target.get("storage_source_id") or "").strip()
@@ -1597,6 +1615,12 @@ class RemoteExecutionTransportService:
                 422,
             )
         target_prefix = str(target.get("target_prefix") or "").strip()
+        if intent == "storage_rescan" and (mode != "storage_scan" or import_format != "images"):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "storage_rescan intent requires an image storage_scan contract",
+                422,
+            )
         if mode == "zip_scan" and not target_prefix:
             raise RemoteExecutionTransportError(
                 "REMOTE_EXECUTION_CONTRACT_INVALID",
@@ -1971,6 +1995,7 @@ class RemoteExecutionTransportService:
             "task_kind": "MATERIAL_IMPORT",
             "transport": "object-storage-v1",
             "mode": mode,
+            "intent": str(material.get("intent") or ""),
             "import_format": str(material.get("import_format") or "images"),
             "dataset_yaml": str(material.get("dataset_yaml") or ""),
             "target": {
@@ -2820,7 +2845,8 @@ class RemoteExecutionTransportService:
             target = material.get("target")
             target = dict(target) if isinstance(target, Mapping) else {}
             result.update({
-                "mode": "zip_scan",
+                "mode": str(material.get("mode") or "zip_scan"),
+                "intent": str(material.get("intent") or ""),
                 "import_format": str(material.get("import_format") or "images"),
                 "dataset_yaml": str(material.get("dataset_yaml") or ""),
                 "target": {
@@ -3701,6 +3727,30 @@ class RemoteExecutionTransportService:
                 error.status_code,
             ) from error
 
+        rescan_commit: dict[str, Any] = {}
+        if str(payload.get("mode") or "") == "storage_rescan":
+            if str(material.get("intent") or "") != "storage_rescan":
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_RESCAN_CONTRACT_INVALID",
+                    "storage_rescan task is missing its portable rescan intent",
+                    409,
+                )
+            from .storage.rescan_tasks import prepare_remote_rescan_review
+            try:
+                rescan_commit = prepare_remote_rescan_review(
+                    data_dir=self.data_dir,
+                    artifacts=self.task_artifacts,
+                    task_id=str(task.task_id),
+                    project_id=str(task.project_id),
+                    storage_source_id=str(target.get("storage_source_id") or ""),
+                )
+            except ValueError as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_RESCAN_REVIEW_INVALID",
+                    str(error),
+                    409,
+                ) from error
+
         # The control plane now owns a durable review ZIP + candidate/annotation
         # truth, so the remote input/review objects are no longer required for
         # confirmation or local indexing. Cleanup is deliberately best-effort:
@@ -3726,6 +3776,7 @@ class RemoteExecutionTransportService:
             }
         return {
             **dict(committed),
+            **rescan_commit,
             "remote_staging_cleanup": cleanup,
         }
 

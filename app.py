@@ -85,7 +85,7 @@ from platform_core.storage import (
     StorageType,
     redact_storage_error,
 )
-from platform_core.storage.import_candidates import ImportCandidateStore
+from platform_core.storage.import_candidates import ImportCandidateStore, RescanCandidateStore
 from platform_core.storage.import_tasks import (
     MANIFEST_REF as STORAGE_IMPORT_MANIFEST_REF,
     load_legacy_candidates,
@@ -1425,6 +1425,10 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
     }
 
 
+class StorageRescanCreateReq(BaseModel):
+    execution_mode: Literal["local", "agent"] = "local"
+
+
 class StorageRescanConfirmReq(BaseModel):
     new: Literal['import', 'ignore'] = 'import'
     missing: Literal['mark_unavailable', 'ignore'] = 'mark_unavailable'
@@ -1444,34 +1448,173 @@ def _storage_rescan_task(project_id: str, task_id: str):
 
 def _public_storage_rescan(task):
     artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task.task_id, task.payload_ref, default={})
     result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
     checkpoint = artifacts.read_json(task.task_id, 'checkpoints/worker.json', default={})
     summary = result if 'counts' in result else checkpoint
-    return {'task_id': task.task_id, 'project_id': task.project_id, 'status': task.status.value,
-            'stage': task.stage, 'accepted': task.accepted,
-            'current_item': _public_storage_import_text(task.current_item or ''),
-            'error': _public_storage_import_mapping(result).get('error') if result else None,
-            'counts': {key: max(0, int(value)) for key, value in summary.get('counts', {}).items()
-                       if key in {'NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED'}},
-            'examples': {key: [_public_storage_import_text(value) for value in values[:20]]
-                         for key, values in summary.get('examples', {}).items()},
-            'applied': max(0, int(summary.get('applied') or 0))}
+    public_error = _public_storage_import_mapping(result).get('error') if result else None
+    return {
+        'task_id': task.task_id,
+        'project_id': task.project_id,
+        'status': task.status.value,
+        'stage': task.stage,
+        'accepted': task.accepted,
+        'execution_mode': str(request.get('execution_mode') or 'local'),
+        'worker_id': str(task.worker_id or ''),
+        'resource_wait_reason': _public_storage_import_text(task.resource_wait_reason or ''),
+        'current_item': _public_storage_import_text(task.current_item or ''),
+        'error': public_error,
+        'counts': {
+            key: max(0, int(value))
+            for key, value in summary.get('counts', {}).items()
+            if key in {'NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED'}
+        },
+        'examples': {
+            key: [_public_storage_import_text(value) for value in values[:20]]
+            for key, values in summary.get('examples', {}).items()
+        },
+        'applied': max(0, int(summary.get('applied') or 0)),
+    }
+
+
+def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str, Any]:
+    get_project(project_id)
+    source = storage_source_repository().get(source_id)
+    if source is None:
+        return {'agent_available': False, 'reason': '存储源不存在', 'eligible_nodes': []}
+    if not source.enabled:
+        return {'agent_available': False, 'reason': '存储源已停用', 'eligible_nodes': []}
+    try:
+        source_type = StorageType.parse(source.type)
+    except ValueError:
+        return {'agent_available': False, 'reason': '存储源类型无效', 'eligible_nodes': []}
+    if source_type not in {StorageType.OSS, StorageType.S3}:
+        return {
+            'agent_available': False,
+            'reason': '远程重扫描仅支持 OSS / S3 / MinIO 对象存储',
+            'eligible_nodes': [],
+        }
+    nodes = [
+        node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+        if str(node.get('connection_mode') or '') == 'agent'
+        and bool(node.get('online'))
+        and 'material-import' in set(node.get('effective_capabilities') or [])
+    ]
+    if not nodes:
+        return {
+            'agent_available': False,
+            'reason': '当前没有在线且已授权素材导入能力的 Agent 节点',
+            'eligible_nodes': [],
+        }
+    try:
+        _remote_execution_transport_service().stage_material_storage_scan(
+            project_id=project_id,
+            task_id='storage-rescan-preflight',
+            storage_source_id=source_id,
+            prefix='',
+            recursive=True,
+            import_format='images',
+            allow_root=True,
+            intent='storage_rescan',
+        )
+    except RemoteExecutionTransportError as error:
+        return {'agent_available': False, 'reason': str(error), 'eligible_nodes': []}
+    return {
+        'agent_available': True,
+        'reason': '',
+        'eligible_nodes': [
+            {
+                'node_id': str(node.get('node_id') or ''),
+                'display_name': str(node.get('display_name') or ''),
+                'build_id': str(node.get('build_id') or ''),
+            }
+            for node in nodes
+        ],
+    }
+
+
+@app.get('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans/preflight')
+def storage_rescan_preflight(project_id: str, source_id: str):
+    return {
+        'local_available': True,
+        'default_execution_mode': 'local',
+        **_storage_rescan_agent_preflight(project_id, source_id),
+    }
 
 
 @app.post('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans', status_code=202)
-def create_storage_rescan(project_id: str, source_id: str):
+def create_storage_rescan(
+    project_id: str,
+    source_id: str,
+    payload: Optional[StorageRescanCreateReq] = None,
+):
     get_project(project_id)
     source = storage_source_repository().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail='存储源不存在')
     if not source.enabled:
         raise HTTPException(status_code=409, detail='存储源已停用')
+    request = payload or StorageRescanCreateReq()
+    execution_mode = str(request.execution_mode or 'local')
     task_id = uuid.uuid4().hex[:12]
-    shared_task_artifacts().atomic_write_json(task_id, 'request.json', {
-        'mode': 'storage_rescan', 'storage_source_id': source_id})
+    request_payload: Dict[str, Any] = {
+        'mode': 'storage_rescan',
+        'execution_mode': execution_mode,
+        'storage_source_id': source_id,
+        'import_format': 'images',
+    }
+    capabilities = ('storage.rescan',)
+    resource_key = f'storage:{source_id}'
+    if execution_mode == 'agent':
+        preflight = _storage_rescan_agent_preflight(project_id, source_id)
+        if not preflight.get('agent_available'):
+            raise HTTPException(
+                status_code=409,
+                detail=str(preflight.get('reason') or '远程重扫描当前不可用'),
+            )
+        try:
+            request_payload['remote_execution'] = (
+                _remote_execution_transport_service().stage_material_storage_scan(
+                    project_id=project_id,
+                    task_id=task_id,
+                    storage_source_id=source_id,
+                    prefix='',
+                    recursive=True,
+                    import_format='images',
+                    allow_root=True,
+                    intent='storage_rescan',
+                )
+            )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message='远程存储重扫描准备失败',
+                detail=str(error),
+                solution='请检查对象存储连接和远程素材节点后重试。',
+                status_code=error.status_code,
+            ) from error
+        capabilities = ('agent.remote',)
+        resource_key = f'material-rescan:agent:{source_id}'
+
+    manifest = shared_task_artifacts().artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+    store = RescanCandidateStore(manifest)
+    store.set_meta(
+        'source_fingerprint',
+        hashlib.sha256(json.dumps(
+            [source.id, source.type, source.config],
+            sort_keys=True,
+        ).encode()).hexdigest(),
+    )
+    material_store(project_id).snapshot_storage_references(manifest, source_id)
+    shared_task_artifacts().atomic_write_json(task_id, 'request.json', request_payload)
     task = shared_task_repository().create(TaskRecord.new(
-        task_id, project_id, TaskKind.MATERIAL_IMPORT, 'request.json',
-        f'storage:{source_id}', required_capabilities=('storage.rescan',)))
+        task_id,
+        project_id,
+        TaskKind.MATERIAL_IMPORT,
+        'request.json',
+        resource_key,
+        required_capabilities=capabilities,
+    ))
     return _public_storage_rescan(task)
 
 
@@ -1488,7 +1631,10 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
         raise HTTPException(status_code=409, detail='重扫描尚未进入待确认状态')
     try:
         confirm_rescan(shared_task_artifacts(), task_id, payload.model_dump())
-        task = shared_task_repository().resume_after_confirmation(task_id)
+        task = shared_task_repository().resume_after_confirmation(
+            task_id,
+            required_capabilities=('storage.rescan',),
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_rescan(task)

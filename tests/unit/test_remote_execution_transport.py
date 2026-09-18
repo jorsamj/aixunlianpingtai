@@ -2113,3 +2113,47 @@ def test_detection_zip_import_rejects_dataset_yaml(tmp_path):
             dataset_yaml="data.yaml",
         )
     assert invalid.value.code == "REMOTE_MATERIAL_DATASET_YAML_INVALID"
+
+
+def test_material_storage_rescan_allows_root_only_for_explicit_rescan_intent(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+
+    with pytest.raises(RemoteExecutionTransportError) as root_blocked:
+        transport.stage_material_storage_scan(
+            project_id="p-rescan",
+            task_id="rescan-root",
+            storage_source_id="remote-models",
+            prefix="",
+            recursive=True,
+        )
+    assert root_blocked.value.code == "REMOTE_MATERIAL_PREFIX_REQUIRED"
+
+    contract = transport.stage_material_storage_scan(
+        project_id="p-rescan",
+        task_id="rescan-root",
+        storage_source_id="remote-models",
+        prefix="",
+        recursive=True,
+        import_format="images",
+        allow_root=True,
+        intent="storage_rescan",
+    )
+    material = contract["material_import"]
+    assert material["mode"] == "storage_scan"
+    assert material["intent"] == "storage_rescan"
+    assert material["source"]["prefix"] == ""
+    assert material["target"]["target_prefix"] == ""
+
+    task = SimpleNamespace(
+        task_id="rescan-root",
+        project_id="p-rescan",
+        kind=TaskKind.MATERIAL_IMPORT,
+    )
+    resolved = transport.resolve_execution_payload(
+        task,
+        {"remote_execution": contract},
+        {"resolved_execution_config": {}},
+    )
+    assert resolved["intent"] == "storage_rescan"
+    assert resolved["source"]["prefix"] == ""
