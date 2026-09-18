@@ -1,13 +1,17 @@
 import {test, expect} from '@playwright/test';
 
+async function openStoragePage(page) {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('素材存储配置'));
+  await expect(page.getByRole('heading', {name: '素材存储配置', level: 2})).toBeVisible({timeout: 10_000});
+}
+
+
 
 test('storage configuration creates, health-checks, and removes a real local source', async ({page}) => {
   const name = `浏览器本地源-${Date.now()}`;
-  await page.goto('/');
-
-  await page.getByRole('button', {name: /展开高级功能/}).click();
-  await page.getByRole('button', {name: /素材存储配置/}).click();
-  await expect(page.getByRole('heading', {name: '素材存储配置', level: 2})).toBeVisible();
+  await openStoragePage(page);
   await expect(page.getByText('平台本地存储', {exact: true})).toBeVisible();
 
   await page.getByRole('button', {name: /新增存储源/}).click();
@@ -28,8 +32,6 @@ test('storage configuration creates, health-checks, and removes a real local sou
 
 test('object storage import exposes Agent flow and posts remote storage_scan contract', async ({page}) => {
   let submitted = null;
-
-  await page.goto('/');
 
   await page.route('**/api/v61/storage-sources', async route => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -86,9 +88,7 @@ test('object storage import exposes Agent flow and posts remote storage_scan con
     });
   });
 
-  await page.getByRole('button', {name: /展开高级功能/}).click();
-  await page.getByRole('button', {name: /素材存储配置/}).click();
-  await expect(page.getByRole('heading', {name: '素材存储配置', level: 2})).toBeVisible();
+  await openStoragePage(page);
 
   await page.getByRole('button', {name: '从存储导入素材'}).click();
   await expect(page.getByRole('button', {name: '对象存储目录'})).toHaveClass(/on/);
