@@ -191,3 +191,51 @@ def test_training_result_archive_rejects_undeclared_file(tmp_path):
         assert error.code == "TRAINING_RESULT_UNDECLARED_MEMBER"
     else:
         raise AssertionError("undeclared result file was accepted")
+
+
+def test_training_result_manifest_only_requires_confirmed_separate_model_protocol(tmp_path):
+    project = tmp_path / "agent-project"
+    created = create_training_result_archive(
+        project_dir=project,
+        job=_job(project),
+        task_id="train-remote-one",
+        execution_generation=5,
+        snapshot_id="snapshot-one",
+        destination=tmp_path / "result-manifest.zip",
+        include_model_bytes=False,
+    )
+
+    with zipfile.ZipFile(created.path, "r") as archive:
+        assert archive.namelist() == ["manifest.json"]
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["model_transport"] == "separate-object-v1"
+        assert len(manifest["models"]) == 2
+
+    try:
+        verify_training_result_archive(
+            created.path,
+            tmp_path / "rejected",
+            expected_sha256=created.sha256,
+            expected_size_bytes=created.size_bytes,
+            expected_task_id="train-remote-one",
+            expected_execution_generation=5,
+            expected_snapshot_id="snapshot-one",
+        )
+    except RemoteTrainingResultError as error:
+        assert error.code == "TRAINING_RESULT_MODEL_TRANSPORT_INVALID"
+    else:
+        raise AssertionError("manifest-only training result was accepted without model-object protocol")
+
+    verified = verify_training_result_archive(
+        created.path,
+        tmp_path / "verified-separate",
+        expected_sha256=created.sha256,
+        expected_size_bytes=created.size_bytes,
+        expected_task_id="train-remote-one",
+        expected_execution_generation=5,
+        expected_snapshot_id="snapshot-one",
+        allow_separate_model_objects=True,
+    )
+    assert verified.manifest["model_transport"] == "separate-object-v1"
+    assert {item["role"] for item in verified.models} == {"best", "last"}
+    assert not (verified.root / "models").exists()
