@@ -731,7 +731,11 @@ class AgentExecutionService:
     def _requires_remote_result_confirmation(task, payload: dict[str, Any]) -> bool:
         remote = payload.get("remote_execution")
         return (
-            task.kind in {TaskKind.DEPLOYMENT_TEST, TaskKind.TRAINING}
+            task.kind in {
+                TaskKind.DEPLOYMENT_TEST,
+                TaskKind.TRAINING,
+                TaskKind.MODEL_CONVERSION,
+            }
             and isinstance(remote, dict)
             and int(remote.get("version") or 0) == 1
             and str(remote.get("task_kind") or "") == task.kind.value
