@@ -45,6 +45,10 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "shared_task_repository",
         "shared_task_artifacts",
     ]
+    keywords = {item.arg: item.value for item in router_call.keywords if item.arg}
+    assert set(keywords) == {"agent_execution_payload_resolver"}
+    assert isinstance(keywords["agent_execution_payload_resolver"], ast.Name)
+    assert keywords["agent_execution_payload_resolver"].id == "_resolve_agent_execution_payload"
 
 
 def test_v63_subrouters_keep_single_composition_owner():
