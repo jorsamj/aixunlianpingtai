@@ -177,9 +177,9 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Storage Cache Governance `35318573935`：全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
-**当前主线：Remote CLEANING Phase 1 — Agent 清洗 / 去重。**
+**当前主线：Remote MATERIAL_BATCH/CLEAN Phase 1 — Agent 清洗 / 去重。**
 
-不要重做 MATERIAL_IMPORT Phase 1/2/3/4/5。下一步以现有 `TaskKind.CLEANING` 为正式 task kind，把大规模图片质量检查、重复图/近重复图检测等重 I/O 从中央 Storage Worker 移到可调度 Agent 节点；仍不得让 Agent 直接写中央 SQLite/NFS，输出必须先形成 task-owned、server-confirmed review truth，再由控制面确认/提交正式素材状态。
+不要重做 MATERIAL_IMPORT Phase 1/2/3/4/5。下一步沿用现有 `TaskKind.MATERIAL_BATCH + operation=CLEAN` 作为唯一 durable truth，把大规模图片质量检查、重复图/近重复图检测等重 I/O 从中央 Materials Worker 移到可调度 Agent 节点；禁止重新启用并行 `TaskKind.CLEANING` owner；仍不得让 Agent 直接写中央 SQLite/NFS，输出必须先形成 task-owned、server-confirmed review truth，再由控制面确认/提交正式素材状态。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

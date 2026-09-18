@@ -160,9 +160,9 @@ Phase 1 历史验收保持：
 1. 大规模远程清洗/去重的独立 Agent 执行。
 2. 如果未来需要 COCO/VOC 的 Agent server_zip，再按真实 portable transport 单独闭环，不能借本批 storage_scan 宣称支持。
 
-**下一主线：Remote CLEANING Phase 1 — Agent 清洗 / 去重。**
+**下一主线：Remote MATERIAL_BATCH/CLEAN Phase 1 — Agent 清洗 / 去重。**
 
-目标：使用现有 `TaskKind.CLEANING` 建立真实 Agent runner，把大规模质量检查、重复图/近重复图检测等重 I/O 节点化；Agent 仍不得直接写中央 SQLite/NFS，结果先形成 task-owned review evidence，再由控制面提交正式素材状态。
+目标：沿用现有 `TaskKind.MATERIAL_BATCH + operation=CLEAN` 建立真实 Agent execution，把大规模质量检查、重复图/近重复图检测等重 I/O 节点化；不得新增并行 `TaskKind.CLEANING` handler；Agent 仍不得直接写中央 SQLite/NFS，结果先形成 task-owned review evidence，再由控制面提交正式素材状态。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

@@ -43,9 +43,9 @@ Acceptance at code HEAD `9fb67096718e5ece1b72a2acf601662fe337e1d7`:
 - Remote Training Runtime `35318573869`: success.
 - Remote Conversion Runtime `35318573929`: success.
 
-**OPEN / next:** Remote CLEANING Phase 1. Use the existing `TaskKind.CLEANING`
-as the durable task kind and move large image-quality / duplicate / near-
-duplicate I/O to scheduled Agent nodes. Preserve the same rule: Agent output
+**OPEN / next:** Remote MATERIAL_BATCH/CLEAN Phase 1. Preserve the existing `TaskKind.MATERIAL_BATCH + operation=CLEAN`
+as the sole durable cleaning truth and move large image-quality / duplicate / near-
+duplicate I/O to scheduled Agent nodes. Do not add a competing `TaskKind.CLEANING` handler. Preserve the same rule: Agent output
 must be task-owned, server-confirmed evidence and must not directly mutate
 central SQLite/NFS truth.
 
@@ -88,7 +88,7 @@ Acceptance at code HEAD `639cded30a6a2fed67275f19450cb70b4e0a9128`:
 
 Phase 5 COCO / Pascal VOC is CLOSED above. Do not reopen the generic detection
 review path unless a regression is proven. The next control-plane task is
-Remote CLEANING Phase 1.
+Remote MATERIAL_BATCH/CLEAN Phase 1.
 
 ## Current closure — Remote MATERIAL_IMPORT Phase 3 Staging GC CLOSED
 
