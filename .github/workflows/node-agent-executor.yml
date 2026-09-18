@@ -7,12 +7,14 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'platform_core/agent_execution.py'
+      - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
       - 'app.py'
       - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -23,12 +25,14 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'platform_core/agent_execution.py'
+      - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
       - 'app.py'
       - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -53,17 +57,20 @@ jobs:
         run: >-
           python -m py_compile
           platform_core/agent_execution.py
+          platform_core/remote_execution_transport.py
           platform_core/node_agent_executor_runtime.py
           platform_core/service_nodes.py
           platform_core/task_node_assignments.py
           platform_core/training_recovery_api.py
           app.py
           tests/unit/test_agent_execution.py
+          tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
       - name: Agent execution contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_agent_execution.py
+          tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
@@ -98,7 +105,11 @@ jobs:
           grep -Fq 'execution_generation=int(execution_generation)' platform_core/agent_execution.py
           grep -Fq '"shared_sqlite_required": False' platform_core/agent_execution.py
           grep -Fq '"shared_nfs_required": False' platform_core/agent_execution.py
-          grep -Fq 'agent_executor_router(task_repository, task_artifacts)' platform_core/training_recovery_api.py
+          grep -Fq 'execution_payload_resolver=agent_execution_payload_resolver' platform_core/training_recovery_api.py
+          grep -Fq 'agent_execution_payload_resolver=_resolve_agent_execution_payload' app.py
+          grep -Fq 'REMOTE_TRANSFER_TTL_SECONDS = 900' platform_core/remote_execution_transport.py
+          grep -Fq 'StorageType.OSS, StorageType.S3' platform_core/remote_execution_transport.py
+          grep -Fq 'REMOTE_UPLOAD_NOT_PROTECTED' platform_core/remote_execution_transport.py
           grep -Fq 'from platform_core.training_recovery_api import training_recovery_router' app.py
           grep -Fq 'app.include_router(training_recovery_router(' app.py
           ! grep -Fq 'import sqlite3' platform_core/node_agent_executor_runtime.py
