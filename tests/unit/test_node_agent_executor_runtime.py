@@ -15,6 +15,7 @@ from platform_core.node_agent_executor_runtime import (
     RemoteExecutionFenced,
     RemoteExecutionLease,
 )
+from platform_core.task_runtime.process_control import ProcessIdentity
 
 
 class FakeResponse:
@@ -324,6 +325,49 @@ def test_workdir_is_task_local_atomic_and_does_not_persist_execution_secret(tmp_
     assert "node-secret" not in serialized
     assert "assignment-secret" not in serialized
 
+    workdirs.cleanup(current)
+    assert not target.exists()
+
+
+def test_workdir_persists_only_exact_nonsecret_process_identity_for_recovery(tmp_path):
+    current = lease()
+    workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
+    target = workdirs.prepare(current)
+    identity = ProcessIdentity(
+        pid=4321,
+        create_time=12345.5,
+        command_hash="a" * 64,
+    )
+
+    path = workdirs.persist_process_identity(current, identity)
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+
+    assert persisted == {
+        "task_id": current.task_id,
+        "generation": current.generation,
+        "pid": 4321,
+        "create_time": 12345.5,
+        "command_hash": "a" * 64,
+    }
+    assert workdirs.read_process_identity(current) == {
+        "pid": 4321,
+        "create_time": 12345.5,
+        "command_hash": "a" * 64,
+    }
+    assert workdirs.list_process_identities() == [{
+        "task_id": current.task_id,
+        "generation": current.generation,
+        "pid": 4321,
+        "create_time": 12345.5,
+        "command_hash": "a" * 64,
+    }]
+    serialized = path.read_text(encoding="utf-8")
+    assert current.lease_token not in serialized
+    assert "node-secret" not in serialized
+    assert "assignment-secret" not in serialized
+
+    workdirs.clear_process_identity(current)
+    assert not path.exists()
     workdirs.cleanup(current)
     assert not target.exists()
 
