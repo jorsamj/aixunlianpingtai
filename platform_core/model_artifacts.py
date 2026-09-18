@@ -465,6 +465,124 @@ class ModelArtifactService:
             storage_status="UPLOADED", storage_error="", uploaded_at=utc_now(),
         )
 
+    def register_verified_remote_artifact(
+        self,
+        *,
+        project_id: str,
+        algorithm_id: str,
+        version_id: str,
+        target: str,
+        file_name: str,
+        sha256: str,
+        size_bytes: int,
+        storage_source_id: str,
+        object_key: str,
+        source_path: str = "",
+        artifact_kind: str = "original",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Register an object already uploaded by a fenced remote execution.
+
+        The object is re-stat'ed here and must expose exact server-visible
+        SHA256 + size evidence. This never trusts an Agent-reported object key
+        alone and never performs a second upload through the control plane.
+        """
+        digest = str(sha256 or "").strip().lower()
+        if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+            raise PlatformError(
+                "MODEL_REMOTE_ARTIFACT_HASH_INVALID",
+                "远程模型资产哈希无效",
+                f"sha256={digest or '<empty>'}",
+                "请重新上传模型资产并完成 SHA256 校验。",
+                422,
+            )
+        try:
+            expected_size = int(size_bytes)
+        except (TypeError, ValueError) as error:
+            raise PlatformError(
+                "MODEL_REMOTE_ARTIFACT_SIZE_INVALID",
+                "远程模型资产大小无效",
+                f"size_bytes={size_bytes!r}",
+                "请重新上传模型资产并完成文件大小校验。",
+                422,
+            ) from error
+        if expected_size <= 0:
+            raise PlatformError(
+                "MODEL_REMOTE_ARTIFACT_SIZE_INVALID",
+                "远程模型资产大小无效",
+                f"size_bytes={expected_size}",
+                "请重新上传模型资产并完成文件大小校验。",
+                422,
+            )
+        source_id = str(storage_source_id or "").strip()
+        key = str(object_key or "").strip()
+        if not source_id or not key:
+            raise PlatformError(
+                "MODEL_REMOTE_ARTIFACT_OBJECT_INVALID",
+                "远程模型资产对象引用不完整",
+                f"storage_source_id={source_id!r}, object_key={key!r}",
+                "请重新执行远程训练模型上传。",
+                422,
+            )
+        config = self.repository.config()
+        configured_source = str(config.get("storage_source_id") or "").strip()
+        if not configured_source or configured_source != source_id:
+            raise PlatformError(
+                "MODEL_REMOTE_ARTIFACT_STORAGE_MISMATCH",
+                "远程模型资产未写入当前统一模型存储",
+                f"expected={configured_source or '<missing>'}, actual={source_id}",
+                "请确认模型资产存储配置后重新执行远程训练。",
+                409,
+            )
+        provider = self._provider(str(project_id), source_id)
+        try:
+            object_meta = provider.stat(key)
+        except Exception as error:
+            raise PlatformError(
+                "MODEL_REMOTE_ARTIFACT_NOT_FOUND",
+                "远程模型资产对象不可用",
+                str(error),
+                "请重新上传模型文件后再完成训练归档。",
+                409,
+            ) from error
+        actual_sha = str(object_meta.sha256 or "").strip().lower()
+        if int(object_meta.size_bytes) != expected_size or not actual_sha or actual_sha != digest:
+            raise PlatformError(
+                "MODEL_REMOTE_ARTIFACT_EVIDENCE_MISMATCH",
+                "远程模型资产完整性校验失败",
+                (
+                    f"expected_size={expected_size}, actual_size={int(object_meta.size_bytes)}; "
+                    f"expected_sha256={digest}, actual_sha256={actual_sha or '<missing>'}"
+                ),
+                "请重新上传模型文件；禁止使用缺少服务端 SHA256 元数据的对象。",
+                409,
+            )
+        artifact_id = hashlib.sha256(
+            f"{project_id}:{algorithm_id}:{version_id}:{target}:{digest}".encode("utf-8")
+        ).hexdigest()[:32]
+        row = self.repository.upsert({
+            "artifact_id": artifact_id,
+            "project_id": str(project_id),
+            "algorithm_id": str(algorithm_id),
+            "version_id": str(version_id),
+            "artifact_kind": str(artifact_kind or "original"),
+            "target": str(target or "original"),
+            "conversion_job_id": "",
+            "file_name": Path(str(file_name or "model.pt")).name,
+            "source_path": str(source_path or ""),
+            "sha256": digest,
+            "size_bytes": expected_size,
+            "metadata": dict(metadata or {}),
+        })
+        return self.repository.patch(
+            str(row["artifact_id"]),
+            storage_source_id=source_id,
+            object_key=key,
+            storage_status="UPLOADED",
+            storage_error="",
+            uploaded_at=utc_now(),
+        )
+
     def ingest_version(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> dict[str, int]:
         summary = {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
         for item in self.discover_version_artifacts(project_id, algorithm, version):
