@@ -83,7 +83,6 @@ jobs:
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
-          tests/unit/test_node_agent_deployment_runtime.py
           tests/api/test_runtime_router_app_mount.py
       - name: Portable transport and Agent execution contracts
         run: >-
@@ -92,6 +91,7 @@ jobs:
           tests/unit/test_agent_execution.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_deployment_runtime.py
       - name: Runtime router mount AST contract
         run: >-
           python -m pytest -q --confcutdir=tests/api
