@@ -581,14 +581,15 @@ class RemoteExecutionTransportService:
                 "Agent storage scan requires an explicit object prefix",
                 422,
             )
-        try:
-            raw_prefix = safe_member_path(raw_prefix).as_posix()
-        except Exception as error:
-            raise RemoteExecutionTransportError(
-                "REMOTE_MATERIAL_PREFIX_INVALID",
-                "storage scan prefix must be a safe relative object prefix",
-                422,
-            ) from error
+        if raw_prefix:
+            try:
+                raw_prefix = safe_member_path(raw_prefix).as_posix()
+            except Exception as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_PREFIX_INVALID",
+                    "storage scan prefix must be a safe relative object prefix",
+                    422,
+                ) from error
         yaml_member = str(dataset_yaml or "").strip().replace("\\", "/")
         if yaml_member:
             try:
