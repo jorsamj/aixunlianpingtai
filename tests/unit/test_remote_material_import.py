@@ -14,6 +14,7 @@ from platform_core.remote_material_import import (
     REVIEW_DETECTION_ANNOTATIONS_MEMBER,
     RemoteMaterialImportError,
     RemoteMaterialStagingStore,
+    build_detection_material_review_archive,
     build_material_review_archive,
     build_storage_scan_material_review_archive,
     commit_material_review_archive,
@@ -361,3 +362,94 @@ def test_storage_scan_coco_review_commits_generic_detection_truth(tmp_path):
     annotation = store.annotations_for_keys([candidate["object_key"]])[candidate["object_key"]]
     assert annotation["annotation_status"] == "annotated"
     assert annotation["boxes"][0]["class_id"] == 7
+
+
+@pytest.mark.parametrize("import_format", ["coco", "voc"])
+def test_detection_zip_review_round_trip_commits_embedded_annotation_truth(tmp_path, import_format):
+    source = tmp_path / import_format
+    if import_format == "coco":
+        image = _image(source / "train" / "a.jpg")
+        annotation = {
+            "images": [{"id": 1, "file_name": "a.jpg", "width": 48, "height": 32}],
+            "annotations": [{"id": 1, "image_id": 1, "category_id": 7, "bbox": [4, 6, 20, 12]}],
+            "categories": [{"id": 7, "name": "smoke"}],
+        }
+        (source / "train" / "_annotations.coco.json").write_text(
+            json.dumps(annotation), encoding="utf-8",
+        )
+        expected_key = "incoming/coco/train/a.jpg"
+        expected_class = {"class_id": 7, "name": "smoke"}
+    else:
+        image = _image(source / "val" / "JPEGImages" / "a.jpg")
+        annotation_path = source / "val" / "Annotations" / "a.xml"
+        annotation_path.parent.mkdir(parents=True, exist_ok=True)
+        annotation_path.write_text(
+            "<annotation><filename>a.jpg</filename><object><name>fire</name>"
+            "<bndbox><xmin>2</xmin><ymin>3</ymin><xmax>22</xmax><ymax>18</ymax>"
+            "</bndbox></object></annotation>",
+            encoding="utf-8",
+        )
+        expected_key = "incoming/voc/val/JPEGImages/a.jpg"
+        expected_class = {"class_id": 0, "name": "fire"}
+
+    archive = tmp_path / f"{import_format}-review.zip"
+    built = build_detection_material_review_archive(
+        source,
+        archive,
+        task_id=f"{import_format}-zip",
+        project_id="project-detection",
+        execution_generation=1,
+        storage_source_id="s3-target",
+        storage_type="s3",
+        target_prefix=f"incoming/{import_format}",
+        import_format=import_format,
+    )
+
+    assert built["candidate_count"] == 1
+    assert built["counts"] == {"IMPORTABLE": 1}
+    assert expected_class in built["classes"]
+    with zipfile.ZipFile(archive, "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        rows = [
+            json.loads(line)
+            for line in review.read("review.jsonl").decode("utf-8").splitlines()
+        ]
+        assert meta["mode"] == "zip_scan"
+        assert meta["payload_mode"] == "embedded"
+        assert meta["import_format"] == import_format
+        assert meta["annotation_member"] == REVIEW_DETECTION_ANNOTATIONS_MEMBER
+        assert rows[0]["object_key"] == expected_key
+        assert rows[0]["payload_member"].startswith("files/")
+        assert review.read(rows[0]["payload_member"]) == image.read_bytes()
+        assert REVIEW_DETECTION_ANNOTATIONS_MEMBER in review.namelist()
+
+    artifacts = ArtifactStore(tmp_path / f"{import_format}-artifacts")
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id=f"{import_format}-zip",
+        project_id="project-detection",
+        execution_generation=1,
+        archive_path=archive,
+        archive_sha256=built["sha256"],
+        archive_size_bytes=built["size_bytes"],
+        expected_source_id="s3-target",
+        expected_storage_type="s3",
+        expected_prefix=f"incoming/{import_format}",
+        expected_mode="zip_scan",
+        expected_import_format=import_format,
+        platform_labels=[],
+    )
+    assert committed["material_review_committed"] is True
+    store = ImportCandidateStore(
+        artifacts.artifact_path(f"{import_format}-zip", MANIFEST_REF)
+    )
+    annotations = store.annotations_for_keys([expected_key])
+    assert annotations[expected_key]["annotation_status"] == "annotated"
+    assert len(annotations[expected_key]["boxes"]) == 1
+    staging = RemoteMaterialStagingStore(
+        artifacts.artifact_path(
+            f"{import_format}-zip", REMOTE_MATERIAL_STAGING_REF,
+        )
+    )
+    staged = staging.get_many([expected_key])
+    assert staged[expected_key]["payload_member"].startswith("files/")

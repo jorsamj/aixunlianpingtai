@@ -650,10 +650,10 @@ class RemoteExecutionTransportService:
         dataset_yaml: str = "",
     ) -> dict[str, Any]:
         normalized_format = str(import_format or "images").strip().lower()
-        if normalized_format not in {"images", "yolo"}:
+        if normalized_format not in {"images", "yolo", "coco", "voc"}:
             raise RemoteExecutionTransportError(
                 "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
-                "portable Agent material import supports images or YOLO ZIP review",
+                "portable Agent material import supports images, yolo, coco or voc ZIP review",
                 422,
             )
         normalized_yaml = ""
@@ -666,10 +666,10 @@ class RemoteExecutionTransportService:
                     "Agent YOLO dataset_yaml must be a safe ZIP-relative path",
                     422,
                 ) from error
-        if normalized_format == "images" and normalized_yaml:
+        if normalized_format != "yolo" and normalized_yaml:
             raise RemoteExecutionTransportError(
                 "REMOTE_MATERIAL_DATASET_YAML_INVALID",
-                "image-only Agent import does not accept dataset_yaml",
+                "dataset_yaml is only valid for YOLO Agent import",
                 422,
             )
         prefix = safe_member_path(str(target_prefix or "").strip()).as_posix()
@@ -1581,11 +1581,7 @@ class RemoteExecutionTransportService:
         target = material.get("target")
         mode = str(material.get("mode") or "")
         import_format = str(material.get("import_format") or "")
-        allowed_formats = (
-            {"images", "yolo", "coco", "voc"}
-            if mode == "storage_scan"
-            else {"images", "yolo"}
-        )
+        allowed_formats = {"images", "yolo", "coco", "voc"}
         if (
             int(material.get("schema_version") or 0) != 1
             or mode not in {"zip_scan", "storage_scan"}

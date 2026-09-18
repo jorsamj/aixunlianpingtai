@@ -2042,3 +2042,58 @@ def test_rknn_int8_calibration_snapshot_rejects_nonportable_material(tmp_path):
         "REMOTE_STORAGE_SOURCE_UNAVAILABLE",
         "REMOTE_STORAGE_NOT_PORTABLE",
     }
+
+
+@pytest.mark.parametrize("import_format", ["coco", "voc"])
+def test_material_import_stage_accepts_detection_zip_formats_without_dataset_yaml(tmp_path, import_format):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    archive = tmp_path / f"{import_format}.zip"
+    with zipfile.ZipFile(archive, "w") as writer:
+        writer.writestr("placeholder.txt", b"archive")
+
+    contract = transport.stage_material_import(
+        project_id="p-detection",
+        task_id=f"material-{import_format}",
+        archive_path=archive,
+        storage_source_id="remote-models",
+        target_prefix=f"incoming/{import_format}",
+        import_format=import_format,
+    )
+
+    material = contract["material_import"]
+    assert material["mode"] == "zip_scan"
+    assert material["import_format"] == import_format
+    assert material["dataset_yaml"] == ""
+    task = SimpleNamespace(
+        task_id=f"material-{import_format}",
+        project_id="p-detection",
+        kind=TaskKind.MATERIAL_IMPORT,
+    )
+    resolved = transport.resolve_execution_payload(
+        task,
+        {"remote_execution": contract},
+        {"resolved_execution_config": {}},
+    )
+    assert resolved["import_format"] == import_format
+    assert resolved["input"]["download"]["method"] == "GET"
+
+
+def test_detection_zip_import_rejects_dataset_yaml(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    archive = tmp_path / "coco.zip"
+    with zipfile.ZipFile(archive, "w") as writer:
+        writer.writestr("placeholder.txt", b"archive")
+
+    with pytest.raises(RemoteExecutionTransportError) as invalid:
+        transport.stage_material_import(
+            project_id="p-detection",
+            task_id="material-coco",
+            archive_path=archive,
+            storage_source_id="remote-models",
+            target_prefix="incoming/coco",
+            import_format="coco",
+            dataset_yaml="data.yaml",
+        )
+    assert invalid.value.code == "REMOTE_MATERIAL_DATASET_YAML_INVALID"

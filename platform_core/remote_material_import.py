@@ -639,6 +639,235 @@ def build_yolo_material_review_archive(
 
 
 
+def build_detection_material_review_archive(
+    source_root: str | Path,
+    destination: str | Path,
+    *,
+    task_id: str,
+    project_id: str,
+    execution_generation: int,
+    storage_source_id: str,
+    storage_type: str,
+    target_prefix: str,
+    import_format: str,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, int, str], object] | None = None,
+) -> dict[str, Any]:
+    root = Path(source_root).expanduser().resolve()
+    if not root.is_dir() or root.is_symlink():
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_SOURCE_INVALID",
+            "extracted detection material root is unavailable",
+            409,
+        )
+    selected_format = str(import_format or "").strip().lower()
+    if selected_format not in {"coco", "voc"}:
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
+            "detection ZIP review supports coco or voc",
+            422,
+        )
+    target_prefix = safe_member_path(str(target_prefix)).as_posix()
+    target = Path(destination).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    provider = LocalStorageProvider("agent-detection-review", root)
+
+    local_fd, local_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=".detection-zip-review.",
+        suffix=".sqlite3",
+    )
+    os.close(local_fd)
+    local_store_path = Path(local_name)
+    local_store_path.unlink(missing_ok=True)
+    store = ImportCandidateStore(local_store_path)
+    scanner = DetectionDatasetScanner(
+        provider,
+        store,
+        lambda current, scan_prefix, scan_recursive: current.iter_objects(
+            scan_prefix, recursive=scan_recursive
+        ),
+        _inspect_local_image,
+        storage_source_id=storage_source_id,
+        storage_type=storage_type,
+        cancelled=(cancelled or (lambda: False)),
+        progress=lambda key: (
+            progress(0, 0, str(key)) if progress is not None else None
+        ),
+    )
+    try:
+        try:
+            detected = scanner.scan(
+                selected_format,
+                prefix="",
+                recursive=True,
+            )
+        except DetectionScanCancelled as error:
+            raise InterruptedError("detection ZIP review cancelled") from error
+        except DetectionImportError as error:
+            raise RemoteMaterialImportError(
+                str(getattr(error, "code", "REMOTE_DETECTION_REVIEW_INVALID")),
+                str(getattr(error, "message", error)),
+                422,
+            ) from error
+
+        counts = store.counts()
+        total = sum(counts.values())
+        if total <= 0:
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_IMAGES_MISSING",
+                "detection dataset contains no reviewable images",
+                422,
+            )
+
+        archive_fd, archive_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+        )
+        os.close(archive_fd)
+        temporary = Path(archive_name)
+        rows_fd, rows_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.rows.",
+            suffix=".jsonl",
+        )
+        os.close(rows_fd)
+        rows_file = Path(rows_name)
+        ann_fd, ann_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.annotations.",
+            suffix=".jsonl",
+        )
+        os.close(ann_fd)
+        annotations_file = Path(ann_name)
+        payloads: list[tuple[Path, str]] = []
+        written_counts: dict[str, int] = {}
+        completed = 0
+        try:
+            with rows_file.open("wb") as rows_stream, annotations_file.open("wb") as ann_stream:
+                page: list[dict[str, Any]] = []
+                for candidate in store.iter_candidates(batch_size=500):
+                    page.append(candidate)
+                    if len(page) < 500:
+                        continue
+                    _write_yolo_review_page(
+                        root,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        payloads,
+                        written_counts,
+                        target_prefix,
+                        include_payloads=True,
+                        preserve_object_keys=False,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                    page.clear()
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("detection ZIP review cancelled")
+                if page:
+                    _write_yolo_review_page(
+                        root,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        payloads,
+                        written_counts,
+                        target_prefix,
+                        include_payloads=True,
+                        preserve_object_keys=False,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                rows_stream.flush()
+                os.fsync(rows_stream.fileno())
+                ann_stream.flush()
+                os.fsync(ann_stream.fileno())
+
+            meta = {
+                "schema_version": REVIEW_SCHEMA_VERSION,
+                "task_id": str(task_id),
+                "project_id": str(project_id),
+                "execution_generation": int(execution_generation),
+                "mode": "zip_scan",
+                "payload_mode": "embedded",
+                "import_format": str(detected.import_format),
+                "storage_source_id": str(storage_source_id),
+                "storage_type": str(storage_type),
+                "target_prefix": target_prefix,
+                "candidate_count": total,
+                "counts": written_counts,
+                "annotation_member": REVIEW_DETECTION_ANNOTATIONS_MEMBER,
+                "classes": [
+                    {"class_id": int(class_id), "name": str(name)}
+                    for class_id, name in detected.classes
+                ],
+                "quality": detected.quality,
+                "annotation_files": int(detected.annotation_files),
+                "missing_images": int(detected.missing_images),
+            }
+            if cancelled is not None and cancelled():
+                raise InterruptedError("detection ZIP review cancelled")
+            with zipfile.ZipFile(
+                temporary,
+                "w",
+                compression=zipfile.ZIP_STORED,
+                allowZip64=True,
+            ) as archive:
+                archive.write(rows_file, arcname=REVIEW_ROWS_MEMBER)
+                archive.write(
+                    annotations_file,
+                    arcname=REVIEW_DETECTION_ANNOTATIONS_MEMBER,
+                )
+                for source, member in payloads:
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("detection ZIP review cancelled")
+                    archive.write(source, arcname=member)
+                archive.writestr(
+                    REVIEW_META_MEMBER,
+                    json.dumps(
+                        meta,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            if temporary.stat().st_size <= 0:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_REVIEW_EMPTY",
+                    "detection review archive is empty",
+                    409,
+                )
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+            rows_file.unlink(missing_ok=True)
+            annotations_file.unlink(missing_ok=True)
+
+        return {
+            "path": target,
+            "sha256": _sha256_file(target),
+            "size_bytes": int(target.stat().st_size),
+            "candidate_count": total,
+            "counts": written_counts,
+            "quality": detected.quality,
+            "classes": [
+                {"class_id": int(class_id), "name": str(name)}
+                for class_id, name in detected.classes
+            ],
+        }
+    finally:
+        local_store_path.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            Path(str(local_store_path) + suffix).unlink(missing_ok=True)
+
+
 def _build_detection_storage_scan_review_archive(
     provider,
     destination: str | Path,
@@ -2309,6 +2538,7 @@ __all__ = [
     "REVIEW_DETECTION_ANNOTATIONS_MEMBER",
     "RemoteMaterialImportError",
     "RemoteMaterialStagingStore",
+    "build_detection_material_review_archive",
     "build_material_review_archive",
     "build_storage_scan_material_review_archive",
     "commit_material_review_archive",

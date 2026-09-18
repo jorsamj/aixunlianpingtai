@@ -173,6 +173,8 @@ jobs:
           grep -Fq 'class AgentMaterialImportRunner' platform_core/node_agent_material_runtime.py
           grep -Fq 'build_material_review_archive' platform_core/node_agent_material_runtime.py
           grep -Fq 'build_yolo_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'build_detection_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'def build_detection_material_review_archive' platform_core/remote_material_import.py
           grep -Fq 'REVIEW_ANNOTATIONS_MEMBER = "yolo/annotations.jsonl"' platform_core/remote_material_import.py
           grep -Fq 'def _commit_yolo_review_annotations' platform_core/remote_material_import.py
           grep -Fq 'store.annotation_batch(states, boxes, issues)' platform_core/remote_material_import.py

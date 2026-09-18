@@ -20,6 +20,7 @@ from .node_agent_executor_runtime import (
     RemoteExecutionLease,
 )
 from .remote_material_import import (
+    build_detection_material_review_archive,
     build_material_review_archive,
     build_storage_scan_material_review_archive,
     build_yolo_material_review_archive,
@@ -548,11 +549,7 @@ class AgentMaterialImportRunner:
         payload = lease.payload
         mode = str(payload.get("mode") or "")
         import_format = str(payload.get("import_format") or "")
-        allowed_formats = (
-            {"images", "yolo", "coco", "voc"}
-            if mode == "storage_scan"
-            else {"images", "yolo"}
-        )
+        allowed_formats = {"images", "yolo", "coco", "voc"}
         if (
             int(payload.get("schema_version") or 0) != 1
             or str(payload.get("task_kind") or "") != "MATERIAL_IMPORT"
@@ -718,18 +715,22 @@ class AgentMaterialImportRunner:
                     **review_kwargs,
                 )
             else:
-                review_builder = (
-                    build_yolo_material_review_archive
-                    if str(payload.get("import_format") or "") == "yolo"
-                    else build_material_review_archive
-                )
+                selected_format = str(payload.get("import_format") or "")
+                if selected_format == "yolo":
+                    review_builder = build_yolo_material_review_archive
+                elif selected_format in {"coco", "voc"}:
+                    review_builder = build_detection_material_review_archive
+                else:
+                    review_builder = build_material_review_archive
                 review_kwargs["target_prefix"] = str(
                     target.get("target_prefix") or ""
                 )
-                if str(payload.get("import_format") or "") == "yolo":
+                if selected_format == "yolo":
                     review_kwargs["dataset_yaml"] = str(
                         payload.get("dataset_yaml") or ""
                     )
+                elif selected_format in {"coco", "voc"}:
+                    review_kwargs["import_format"] = selected_format
                 review = review_builder(
                     source_root,
                     review_path,

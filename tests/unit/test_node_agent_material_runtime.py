@@ -161,7 +161,7 @@ class FakeClient:
         }
 
 
-def _lease(zip_bytes):
+def _lease(zip_bytes, import_format="images"):
     import hashlib
     digest = hashlib.sha256(zip_bytes).hexdigest()
     return RemoteExecutionLease(
@@ -177,7 +177,7 @@ def _lease(zip_bytes):
             "task_kind": "MATERIAL_IMPORT",
             "transport": "object-storage-v1",
             "mode": "zip_scan",
-            "import_format": "images",
+            "import_format": import_format,
             "target": {
                 "storage_source_id": "s3-target",
                 "storage_type": "s3",
@@ -340,3 +340,46 @@ def test_agent_material_runner_brokered_storage_scan_is_metadata_only(tmp_path):
         assert row["etag"] == '"etag-a"'
         assert row["payload_member"] == ""
         assert not any(name.startswith("files/") for name in review.namelist())
+
+
+def test_agent_material_runner_reviews_coco_zip_and_publishes_detection_evidence(tmp_path):
+    coco = {
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 40, "height": 30}],
+        "annotations": [{"id": 1, "image_id": 1, "category_id": 7, "bbox": [4, 5, 20, 10]}],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("train/a.jpg", _image_bytes())
+        archive.writestr("train/_annotations.coco.json", json.dumps(coco).encode("utf-8"))
+    zip_bytes = stream.getvalue()
+
+    client = FakeClient()
+    session = FakeSession(zip_bytes)
+    runner = AgentMaterialImportRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "agent-state"),
+        transfer_session=session,
+        heartbeat_interval=60,
+    )
+
+    outcome = runner.run(_lease(zip_bytes, import_format="coco"))
+
+    assert outcome.status == "AWAITING_CONFIRMATION"
+    assert client.finished[-1][0] == "AWAITING_CONFIRMATION"
+    with zipfile.ZipFile(io.BytesIO(session.uploaded), "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        row = json.loads(review.read("review.jsonl").decode("utf-8").strip())
+        annotations = [
+            json.loads(line)
+            for line in review.read("annotations/detection.jsonl").decode("utf-8").splitlines()
+        ]
+        assert meta["mode"] == "zip_scan"
+        assert meta["import_format"] == "coco"
+        assert meta["payload_mode"] == "embedded"
+        assert row["object_key"] == "incoming/2026/train/a.jpg"
+        assert row["payload_member"].startswith("files/")
+        assert review.read(row["payload_member"])
+        assert annotations[0]["object_key"] == "incoming/2026/train/a.jpg"
+        assert annotations[0]["annotation_status"] == "annotated"
+        assert annotations[0]["boxes"][0]["class_id"] == 7
