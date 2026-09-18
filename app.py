@@ -1118,9 +1118,10 @@ class StorageImportScanReq(BaseModel):
     @model_validator(mode="after")
     def validate_mode_fields(self):
         if self.import_format in {'coco', 'voc'} and not (
-            self.execution_mode == "agent" and self.mode == "storage_scan"
+            self.execution_mode == "agent"
+            and self.mode in {"storage_scan", "server_zip"}
         ):
-            raise ValueError('COCO/VOC 当前仅支持对象存储目录的远程 Agent 扫描')
+            raise ValueError('COCO/VOC 当前仅支持远程 Agent 的对象存储目录或服务器 ZIP 导入')
         if self.dataset_yaml:
             value = self.dataset_yaml.replace('\\', '/')
             if value.startswith('/') or ':' in value or '..' in value.split('/'):
@@ -1132,11 +1133,7 @@ class StorageImportScanReq(BaseModel):
         if self.execution_mode == "agent":
             if self.mode not in {"server_zip", "storage_scan"}:
                 raise ValueError("Agent 素材导入仅支持对象存储扫描或服务器 ZIP 模式")
-            allowed_formats = (
-                {"images", "yolo", "coco", "voc"}
-                if self.mode == "storage_scan"
-                else {"images", "yolo"}
-            )
+            allowed_formats = {"images", "yolo", "coco", "voc"}
             if self.import_format not in allowed_formats:
                 raise ValueError("Agent 当前模式不支持所选素材格式")
             if self.import_format == "images" and self.dataset_yaml:
