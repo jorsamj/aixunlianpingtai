@@ -4,6 +4,45 @@
 
 
 
+## Current closure — Agent-side Real Deployment Runtime CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+`node_agent.py` now runs the first real cross-machine task kind:
+`DEPLOYMENT_TEST`. The Agent only reports capabilities implemented by its
+current executor build; at this closure that is `deployment-test` only.
+The single-concurrency executor starts only after the first successful control
+plane heartbeat, claims central assignments, obtains the one real execution
+lease/generation, and dispatches `AgentDeploymentRunner`.
+
+The deployment runner is database-free and NFS-independent. It verifies object
+downloads against durable size/SHA256 evidence, accepts only allow-listed
+official model references or verified model objects, resolves Python and runner
+paths from the node itself, launches a real subprocess, renews the central
+execution lease, forwards bounded logs, and terminates the exact local process
+tree when cancellation, lease fencing, or Agent shutdown wins.
+
+Successful output follows the closed hash-bound publication protocol:
+local hash/size → prepare → generation-scoped signed PUT → confirm →
+begin-finalization → finish. Stale generations never publish a terminal state.
+The task-local execution workdir is cleaned after success, failure, cancellation
+or fencing.
+
+A permanent-CI gap was also closed: `node_agent.py`,
+`node_agent_executor_loop.py`, the single-concurrency tests and entrypoint
+integration tests are now included in both relevant workflows.
+
+Latest acceptance:
+- Node Agent Executor run `35297453169`: API / Ubuntu / Windows success.
+- Portable Deployment run `35297453136`: production API / Ubuntu / Windows success.
+
+**OPEN / next:** Remote TRAINING Runtime. TRAINING is still not executable by
+the remote Agent and is deliberately filtered out of reported capabilities.
+The next implementation must transport a verified portable dataset/bundle,
+run the node-local training runtime, preserve lease/cancel/process/GPU fencing,
+return logs/metrics to central task truth, publish verified model artifacts,
+and only then pass finalization. Do not use shared SQLite/NFS as a shortcut.
+
 ## Current closure — Portable Deployment + Fenced Result Publication CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
