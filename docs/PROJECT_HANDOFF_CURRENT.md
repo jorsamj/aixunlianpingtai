@@ -115,9 +115,39 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Storage Cache Governance `35312109834`：全绿。
 - `VERSION.txt=42.24.0` 未修改。
 
-**当前主线：Remote MATERIAL_IMPORT Phase 4 — Agent storage_scan。**
+# 最新关闭：Remote MATERIAL_IMPORT Phase 4 — Agent storage_scan
 
-不要重做 Phase 1/2/3。下一步让 Agent 承担对象存储 prefix 扫描的重 I/O，但 Agent 仍不能获取长期 OSS/S3 凭据、不能直接访问中央 SQLite/NFS。优先复用当前 ImportCandidateStore/YoloImportScanner/result review contract。
+2026-09-18，`MATERIAL_IMPORT + mode=storage_scan + execution_mode=agent` 已完成真实跨机器闭环并 CLOSED。
+
+当前真实能力：
+
+- 前端“对象存储目录”只展示已启用 OSS / S3 / MinIO 存储源，真实提交 `storage_scan + execution_mode=agent + prefix + recursive + import_format/dataset_yaml`。
+- 前端、专用任务 API、统一 PollRegistry 共享同一 task status / phase / execution_mode truth；刷新恢复仍保留 Agent 身份。
+- canonical task status 优先于 stale stage；`AWAITING_CONFIRMATION` 不再错误显示“正在检查素材内容”。
+- 控制面继续持有长期对象存储凭据；Agent **不接收 accessKey/accessSecret，也不访问中央 SQLite/NFS**。
+- Agent 通过 execution lease fenced broker 分页获取 prefix 对象列表，并按需获取短期 GET contract。
+- broker 和 Agent 双重约束 durable prefix；prefix 外对象、重复 cursor、超过 250000 个对象均 fail closed。
+- Agent 每次读取对象都会重新校验 Content-Length / ETag，并在可用时校验 SHA256；YOLO 继续复用 `YoloImportScanner`。
+- storage_scan review ZIP 为 metadata / annotation evidence only，不重新打包原始图片，避免大规模素材被“下载后再整包上传”。
+- server-confirm 后控制面重新校验 review truth；用户确认后 local indexer 对原对象再次 `exists/stat`，校验 size / ETag / SHA256 后直接建立 MaterialRepository / AnnotationRepository truth，不复制原对象。
+- Phase 3 GC 仍只删除 task-owned staging input/review exact refs，不会触碰 storage_scan 的正式源素材对象。
+- classic `static/app.js` 新增永久 `node --check`；本轮发现并修复两条 dangling `=async function` 生产语法错误。
+- Remote Material Import 专项已覆盖 API、Ubuntu、Windows、前端 Node contract 与 Real Chrome 真实页面流。
+
+最终验收（代码 HEAD `639cded30a6a2fed67275f19450cb70b4e0a9128`）：
+
+- Remote Material Import `35316129031`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35316128986`：全绿。
+- Central Node Assignment `35316128928`：全绿。
+- Portable Deployment `35316129051`：全绿。
+- Remote Training Runtime `35316128920`：全绿。
+- Remote Conversion Runtime `35316129033`：全绿。
+- Task Runtime Truth `35316128916`：全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**当前主线：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC。**
+
+不要重做 Phase 1/2/3/4。下一步在现有 broker + review + confirmation + local-indexing truth 上新增 COCO / VOC annotation 解析，优先复用现有旧导入逻辑中的成熟解析规则，但不能把旧的直接写项目数据流程搬到 Agent；仍需先生成可 server-confirm 的 task-owned review evidence，再经统一确认后写正式 Material / Annotation truth。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

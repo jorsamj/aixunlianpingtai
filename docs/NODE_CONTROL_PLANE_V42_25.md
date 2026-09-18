@@ -109,15 +109,38 @@ Phase 1 历史验收保持：
 - Storage Cache Governance `35312109834`：success。
 - `VERSION.txt` 仍为 `42.24.0`。
 
+## 0. 最新关闭：Remote MATERIAL_IMPORT Phase 4 — Agent storage_scan
+
+2026-09-18，Agent `storage_scan` 已 CLOSED：
+
+- 产品入口：素材存储配置 → 对象存储目录；只接受 OSS / S3 / MinIO，显式 `execution_mode=agent`。
+- 控制面保存长期凭据，仅通过 execution-fenced broker 提供受 prefix 约束的分页 list 与短期 object GET contract。
+- Agent 不接收长期对象存储密钥，不打开中央 SQLite，不依赖 NFS。
+- Agent 端 provider 对 list/read 再做 durable prefix、cursor、对象数量、size、ETag、SHA256 约束。
+- images / YOLO 均可在对象存储 prefix 上真实 review；YOLO 复用 `YoloImportScanner`。
+- review ZIP 只保存 metadata / annotation evidence，原始图片继续留在正式对象存储，不重复上传。
+- 控制面 server-confirm review 后才允许 `AWAITING_CONFIRMATION`；用户确认后 local indexer 再次验证原对象 size / ETag / SHA256 并写 MaterialRepository / AnnotationRepository。
+- canonical task status 优先于 stale stage，前端、任务 API、PollRegistry 的远程状态语义一致。
+- Phase 3 exact-ref GC 与正式 storage_scan 源对象完全隔离。
+- classic `static/app.js` 进入永久语法 guard，Real Chrome 覆盖真实 storage_scan 提交流程。
+
+永久验收（代码 HEAD `639cded30a6a2fed67275f19450cb70b4e0a9128`）：
+
+- Remote Material Import `35316129031`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor `35316128986`：success。
+- Central Node Assignment `35316128928`：success。
+- Task Runtime Truth `35316128916`：success。
+- Portable Deployment `35316129051`、Remote Training `35316128920`、Remote Conversion `35316129033`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
 **仍然 OPEN：**
 
-1. Agent `storage_scan` / 对象列表扫描模式。
-2. COCO / VOC 远程 annotation 格式。
-3. 大规模远程清洗/去重如需独立节点执行，必须形成真实 task kind/runner。
+1. COCO / Pascal VOC 远程 annotation 格式。
+2. 大规模远程清洗/去重如需独立节点执行，必须形成真实 task kind/runner。
 
-**下一主线：Remote MATERIAL_IMPORT Phase 4 — Agent storage_scan。**
+**下一主线：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC。**
 
-目标：远端 Agent 直接扫描 OSS/S3/MinIO source prefix，而不是控制面 Worker 做重 I/O；但仍不得给 Agent 长期对象存储凭据。控制面需要提供受约束的分页/list/read transport 或 broker contract，Agent 返回 server-confirmed review truth，用户确认后继续复用现有 local indexer 写 Material/Annotation truth。
+目标：复用既有 COCO/VOC 成熟解析语义，但适配现有 brokered provider、task-owned review evidence、server-confirm、用户确认与 local indexing 流程；禁止让 Agent 直接写正式项目库或中央 SQLite/NFS。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

@@ -4,6 +4,48 @@
 
 
 
+## Current closure — Remote MATERIAL_IMPORT Phase 4 storage_scan CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+`MATERIAL_IMPORT + mode=storage_scan + execution_mode=agent` is now a real
+cross-machine flow. The product UI exposes an object-storage-directory mode for
+enabled OSS/S3/MinIO sources and submits the same durable mode/source/prefix/
+recursive/import-format truth consumed by the control plane and Agent.
+
+Long-lived object-store credentials remain control-plane-only. The Agent uses
+execution-lease-fenced broker list/read APIs and short-lived GET contracts.
+Both the broker and Agent enforce the durable prefix; object reads revalidate
+size and ETag and verify SHA256 when available. The Agent continues to use
+`YoloImportScanner` for YOLO datasets without central SQLite/NFS access.
+
+Unlike ZIP import, storage-scan review bundles are metadata/annotation evidence
+only: source images are not repacked into the review ZIP. After server-confirm
+and user confirmation, the local indexer re-stats the original object and
+checks size/ETag/SHA256 before committing MaterialRepository and
+AnnotationRepository truth. Phase 3 staging GC therefore never treats the
+formal source objects as temporary staging.
+
+Frontend/backend task truth is aligned: execution_mode survives refresh, the
+unified poll owner is retained, and canonical task status wins over stale stage
+text (for example AWAITING_CONFIRMATION cannot still render as reviewing).
+The classic app script now has a permanent `node --check` gate after this batch
+found and fixed dangling async-function syntax that unit tests had not parsed.
+
+Acceptance at code HEAD `639cded30a6a2fed67275f19450cb70b4e0a9128`:
+- Remote Material Import `35316129031`: API / Ubuntu / Windows / Real Chrome success.
+- Node Agent Executor `35316128986`: success.
+- Central Node Assignment `35316128928`: success.
+- Task Runtime Truth `35316128916`: success.
+- Portable Deployment `35316129051`: success.
+- Remote Training Runtime `35316128920`: success.
+- Remote Conversion Runtime `35316129033`: success.
+
+**OPEN / next:** Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC. Reuse
+existing parsing semantics, but adapt them to brokered provider + task-owned
+review evidence + server-confirm + confirmation/local-indexing truth. Do not
+let an Agent write central project databases directly.
+
 ## Current closure — Remote MATERIAL_IMPORT Phase 3 Staging GC CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
@@ -33,10 +75,9 @@ Acceptance:
 - Task Runtime Truth `35312109707`: Ubuntu / Windows success.
 - Storage Cache Governance `35312109834`: success.
 
-**OPEN / next:** Agent `storage_scan`. Move source-prefix enumeration/image
-inspection away from the control-plane Worker without giving the Agent long-
-lived object-store credentials or central SQLite/NFS access. Preserve the
-existing server-confirmed review/confirmation/local-indexing truth model.
+Phase 4 `storage_scan` is now CLOSED above; do not reopen or reimplement this
+broker/list/read path unless a regression is proven. Remaining material-format
+work continues with COCO / Pascal VOC.
 
 ## Current closure — Remote MATERIAL_IMPORT Phase 2 CLOSED
 
