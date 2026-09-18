@@ -8,6 +8,7 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/agent_execution.py'
+      - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/storage/s3.py'
       - 'platform_core/storage/oss.py'
@@ -15,6 +16,7 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
       - 'tests/api/test_agent_result_upload_api.py'
@@ -27,6 +29,7 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/agent_execution.py'
+      - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/storage/s3.py'
       - 'platform_core/storage/oss.py'
@@ -34,6 +37,7 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
       - 'tests/api/test_agent_result_upload_api.py'
@@ -61,6 +65,7 @@ jobs:
         run: >-
           python -m py_compile
           platform_core/agent_execution.py
+          platform_core/node_agent_executor_runtime.py
           platform_core/remote_execution_transport.py
           platform_core/training_recovery_api.py
           platform_core/storage/s3.py
@@ -68,13 +73,15 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_agent_execution.py
           tests/unit/test_agent_result_upload.py
-          tests/unit/test_agent_result_upload.py
+          tests/unit/test_node_agent_executor_runtime.py
           tests/api/test_runtime_router_app_mount.py
       - name: Portable transport and Agent execution contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_agent_execution.py
+          tests/unit/test_agent_result_upload.py
+          tests/unit/test_node_agent_executor_runtime.py
       - name: Runtime router mount AST contract
         run: >-
           python -m pytest -q --confcutdir=tests/api
@@ -98,11 +105,15 @@ jobs:
         run: >-
           python -m py_compile
           app.py
+          platform_core/agent_execution.py
           platform_core/remote_execution_transport.py
+          platform_core/storage/s3.py
+          platform_core/storage/oss.py
           tests/api/test_deployment_test_runtime.py
           tests/api/test_agent_result_upload_api.py
+          tests/api/test_runtime_router_app_mount.py
           tests/unit/storage/test_object_store_immutability.py
-      - name: Deployment creation and production mount contracts
+      - name: Deployment creation, result publication, and storage evidence contracts
         run: >-
           python -m pytest -q
           tests/api/test_deployment_test_runtime.py
@@ -120,12 +131,13 @@ jobs:
           grep -Fq 'Content-Length' platform_core/storage/s3.py
           grep -Fq 'x-oss-meta-' platform_core/storage/oss.py
           grep -Fq 'result-upload/prepare' platform_core/agent_execution.py
+          grep -Fq 'result-upload/confirm' platform_core/agent_execution.py
           grep -Fq 'REMOTE_RESULT_NOT_CONFIRMED' platform_core/agent_execution.py
-          grep -Fq 'execution_payload_resolver' platform_core/agent_execution.py
-          grep -Fq 'REMOTE_EXECUTION_PAYLOAD_UNAVAILABLE' platform_core/agent_execution.py
+          grep -Fq 'self.fenced.begin_finalization(' platform_core/agent_execution.py
           grep -Fq 'stage_deployment_test(' app.py
           grep -Fq 'agent_execution_payload_resolver=_resolve_agent_execution_payload' app.py
-          grep -Fq 'object-storage-v1' tests/api/test_deployment_test_runtime.py
+          grep -Fq 'agent_result_upload_preparer=_prepare_agent_result_upload' app.py
+          grep -Fq 'agent_result_upload_confirmer=_confirm_agent_result_upload' app.py
           if grep -Fq '"url"' platform_core/task_node_assignments.py; then
             echo 'scheduler assignment truth must not persist signed transport URLs' >&2
             exit 1
