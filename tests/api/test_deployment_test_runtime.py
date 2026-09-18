@@ -138,7 +138,11 @@ def test_deployment_test_transport_error_does_not_publish_durable_task(
         files={"file": ("test.jpg", b"real-image-bytes", "image/jpeg")},
     )
     assert response.status_code == 502
-    assert response.json()["detail"]["code"] == "REMOTE_INPUT_UPLOAD_INVALID"
+    error = response.json()
+    assert error["ok"] is False
+    assert error["code"] == "REMOTE_INPUT_UPLOAD_INVALID"
+    assert error["message"] == "远程部署准备失败"
+    assert "verification failed" in error["detail"]
 
     after = app_module.shared_task_repository().list(
         project_id=project_id,
