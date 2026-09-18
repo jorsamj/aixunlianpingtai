@@ -460,6 +460,169 @@ class AgentExecutionWorkdir:
         })
         return target
 
+    @staticmethod
+    def _validated_process_identity(value: object) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise ValueError("persisted process identity must be an object")
+        try:
+            pid = int(value.get("pid"))
+            create_time = float(value.get("create_time"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted process identity has invalid pid/create_time") from error
+        command_hash = str(value.get("command_hash") or "").strip().lower()
+        if (
+            pid <= 0
+            or create_time <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", command_hash)
+        ):
+            raise ValueError("persisted process identity is incomplete")
+        return {
+            "pid": pid,
+            "create_time": create_time,
+            "command_hash": command_hash,
+        }
+
+    def persist_process_identity(
+        self,
+        lease: RemoteExecutionLease,
+        identity,
+    ) -> Path:
+        target = self.path_for(lease)
+        value = self._validated_process_identity({
+            "pid": getattr(identity, "pid", None),
+            "create_time": getattr(identity, "create_time", None),
+            "command_hash": getattr(identity, "command_hash", None),
+        })
+        value.update({
+            "task_id": str(lease.task_id),
+            "generation": int(lease.generation),
+        })
+        path = target / "process-identity.json"
+        self._atomic_write_json(path, value)
+        return path
+
+    def read_process_identity(
+        self,
+        lease: RemoteExecutionLease,
+    ) -> dict[str, Any] | None:
+        task_id = _safe_component(lease.task_id, "task_id")
+        generation = str(int(lease.generation))
+        executions = self._contained_directory(
+            self.root / "executions",
+            create=False,
+        )
+        if executions is None:
+            return None
+        task_dir = self._contained_directory(
+            Path(executions) / task_id,
+            create=False,
+        )
+        if task_dir is None:
+            return None
+        target = self._contained_directory(
+            Path(task_dir) / generation,
+            create=False,
+        )
+        if target is None:
+            return None
+        path = Path(target) / "process-identity.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("persisted process identity path is unsafe")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("persisted process identity is unreadable") from error
+        identity = self._validated_process_identity(raw)
+        if (
+            str(raw.get("task_id") or "") != task_id
+            or int(raw.get("generation") or 0) != int(lease.generation)
+        ):
+            raise ValueError("persisted process identity lineage mismatch")
+        return identity
+
+    def clear_process_identity(self, lease: RemoteExecutionLease) -> None:
+        task_id = _safe_component(lease.task_id, "task_id")
+        generation = str(int(lease.generation))
+        executions = self._contained_directory(
+            self.root / "executions",
+            create=False,
+        )
+        if executions is None:
+            return
+        task_dir = self._contained_directory(
+            Path(executions) / task_id,
+            create=False,
+        )
+        if task_dir is None:
+            return
+        target = self._contained_directory(
+            Path(task_dir) / generation,
+            create=False,
+        )
+        if target is None:
+            return
+        path = Path(target) / "process-identity.json"
+        if path.is_symlink():
+            raise ValueError("persisted process identity path is unsafe")
+        path.unlink(missing_ok=True)
+
+    def list_process_identities(self) -> list[dict[str, Any]]:
+        executions = self._contained_directory(
+            self.root / "executions",
+            create=False,
+        )
+        if executions is None:
+            return []
+        result: list[dict[str, Any]] = []
+        for raw_task_dir in sorted(Path(executions).iterdir(), key=lambda item: item.name):
+            if raw_task_dir.is_symlink() or not raw_task_dir.is_dir():
+                raise ValueError("execution workdir contains an unsafe task directory")
+            task_id = _safe_component(raw_task_dir.name, "task_id")
+            task_dir = self._contained_directory(raw_task_dir, create=False)
+            if task_dir is None:
+                continue
+            for raw_generation_dir in sorted(
+                Path(task_dir).iterdir(),
+                key=lambda item: item.name,
+            ):
+                if raw_generation_dir.is_symlink() or not raw_generation_dir.is_dir():
+                    raise ValueError("execution workdir contains an unsafe generation directory")
+                try:
+                    generation = int(raw_generation_dir.name)
+                except ValueError as error:
+                    raise ValueError("execution workdir generation is invalid") from error
+                if generation <= 0:
+                    raise ValueError("execution workdir generation is invalid")
+                generation_dir = self._contained_directory(
+                    raw_generation_dir,
+                    create=False,
+                )
+                if generation_dir is None:
+                    continue
+                path = Path(generation_dir) / "process-identity.json"
+                if not path.exists() and not path.is_symlink():
+                    continue
+                if path.is_symlink() or not path.is_file():
+                    raise ValueError("persisted process identity path is unsafe")
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise ValueError("persisted process identity is unreadable") from error
+                identity = self._validated_process_identity(raw)
+                if (
+                    str(raw.get("task_id") or "") != task_id
+                    or int(raw.get("generation") or 0) != generation
+                ):
+                    raise ValueError("persisted process identity lineage mismatch")
+                result.append({
+                    "task_id": task_id,
+                    "generation": generation,
+                    **identity,
+                })
+        return result
+
     def cleanup(self, lease: RemoteExecutionLease) -> None:
         task_id = _safe_component(lease.task_id, "task_id")
         generation = str(int(lease.generation))
