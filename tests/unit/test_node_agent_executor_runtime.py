@@ -131,7 +131,14 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     heartbeat = client.heartbeat(current, progress=25, stage="running")
     logged = client.append_log(current, "hello\n")
     prepared = client.prepare_result_upload(current, sha256="a" * 64, size_bytes=123)
-    confirmed = client.confirm_result_upload(current)
+    confirmed = client.confirm_result_upload(
+        current,
+        runtime_result={
+            "engine": "ultralytics",
+            "inference_ms": 12.5,
+            "detections": [{"class_id": 0, "label": "person", "confidence": 0.9}],
+        },
+    )
     finalizing = client.begin_finalization(current)
     finished = client.finish(current, "SUCCEEDED", result_ref="result.json")
 
@@ -151,6 +158,7 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert session.calls[4]["json"]["sha256"] == "a" * 64
     assert session.calls[4]["json"]["size_bytes"] == 123
     assert session.calls[5]["url"].endswith("/executions/task-1/result-upload/confirm")
+    assert session.calls[5]["json"]["runtime_result"]["engine"] == "ultralytics"
 
 
 def test_executor_client_fails_closed_on_successful_non_json_response():
@@ -219,7 +227,8 @@ def test_workdir_is_task_local_atomic_and_does_not_persist_execution_secret(tmp_
     target = workdirs.prepare(current)
 
     assert target == (tmp_path / "agent-state" / "executions" / "task-1" / "1").resolve()
-    assert json.loads((target / "request.json").read_text(encoding="utf-8")) == current.payload
+    persisted_request = json.loads((target / "request.json").read_text(encoding="utf-8"))
+    assert persisted_request == current.payload
     metadata = json.loads((target / "execution.json").read_text(encoding="utf-8"))
     assert metadata["task_id"] == "task-1"
     assert metadata["generation"] == 1
@@ -230,6 +239,36 @@ def test_workdir_is_task_local_atomic_and_does_not_persist_execution_secret(tmp_
 
     workdirs.cleanup(current)
     assert not target.exists()
+
+
+def test_workdir_never_persists_signed_transport_urls_or_headers(tmp_path):
+    body = start_body()
+    body["payload"] = {
+        "input": {
+            "download": {
+                "method": "GET",
+                "url": "https://signed.example.test/input?secret=temporary",
+                "headers": {"Authorization": "Bearer storage-secret", "X-Signed": "yes"},
+                "size_bytes": 10,
+                "sha256": "a" * 64,
+            }
+        },
+        "output": {
+            "storage_ref": {"object_key": "results/result.jpg"},
+            "upload_protocol": "prepare-after-local-hash-v1",
+        },
+    }
+    current = RemoteExecutionLease.from_start_response(body)
+    target = AgentExecutionWorkdir(tmp_path / "agent-state").prepare(current)
+    persisted = json.loads((target / "request.json").read_text(encoding="utf-8"))
+
+    serialized = json.dumps(persisted, ensure_ascii=False)
+    assert "signed.example.test" not in serialized
+    assert "storage-secret" not in serialized
+    assert "temporary" not in serialized
+    assert persisted["input"]["download"]["header_names"] == ["Authorization", "X-Signed"]
+    assert persisted["input"]["download"]["size_bytes"] == 10
+    assert persisted["output"]["upload_protocol"] == "prepare-after-local-hash-v1"
 
 
 def test_workdir_rejects_preexisting_symlink_escape_when_supported(tmp_path):
