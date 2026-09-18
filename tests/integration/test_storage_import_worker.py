@@ -741,6 +741,14 @@ def test_agent_yolo_review_label_mapping_writes_annotation_repository(tmp_path):
     )
     assert negative_ann is not None
     assert negative_ann["annotation_state"] == "confirmed_empty"
+    assert negative_ann["boxes"] == []
+    assert positive["imported_split"] == "train"
+    assert negative["imported_split"] == "val"
+
+    final = artifacts.read_json(task_id, completed.result_ref)
+    assert final["annotations_written"] == 2
+    assert final["boxes_imported"] == 2
+    assert final["negative_samples"] == 1
 
 
 def test_agent_coco_voc_storage_scan_confirmation_writes_annotation_repository(tmp_path):
@@ -958,11 +966,3 @@ def test_agent_coco_voc_storage_scan_confirmation_writes_annotation_repository(t
         ]
         box = annotation["boxes"][0]
         assert (box["x1"], box["y1"], box["x2"], box["y2"]) == case["expected_box"]
-    assert negative_ann["boxes"] == []
-    assert positive["imported_split"] == "train"
-    assert negative["imported_split"] == "val"
-
-    final = artifacts.read_json(task_id, completed.result_ref)
-    assert final["annotations_written"] == 2
-    assert final["boxes_imported"] == 2
-    assert final["negative_samples"] == 1
