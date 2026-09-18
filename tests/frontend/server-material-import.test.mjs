@@ -76,6 +76,15 @@ test('resource-waiting storage import remains active until durable truth changes
   });
   assert.match(remoteRunning.text, /正在扫描对象存储/);
   assert.match(remoteRunning.text, /datasets\/fire\/a.jpg/);
+
+  const confirmationWinsOverStaleStage = serverImportView({
+    status: 'AWAITING_CONFIRMATION',
+    execution_mode: 'agent',
+    stage: 'REMOTE_MATERIAL_REVIEWING',
+    current_item: 'datasets/fire/a.jpg',
+  });
+  assert.equal(confirmationWinsOverStaleStage.canConfirm, true);
+  assert.equal(confirmationWinsOverStaleStage.text, '扫描完成，等待确认建立素材索引');
 });
 
 

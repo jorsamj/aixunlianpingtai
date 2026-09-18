@@ -39,6 +39,13 @@ test('queued and resource-waiting scans expose real queue state', () => {
     }),
     '等待远程素材节点 · NO_COMPATIBLE_NODE',
   );
+  assert.equal(
+    storageImportProgressText({
+      status: 'AWAITING_CONFIRMATION', execution_mode: 'agent',
+      phase: 'REMOTE_MATERIAL_REVIEWING', current_item: 'datasets/fire/a.jpg',
+    }),
+    '扫描完成，等待确认建立素材索引',
+  );
 });
 
 

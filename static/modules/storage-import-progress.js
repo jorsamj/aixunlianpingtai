@@ -36,6 +36,11 @@ export function storageImportProgressText(task = {}) {
   if (status === 'QUEUED') {
     return [isAgent ? '远程素材任务排队中' : '排队中', queuePosition ? `队列第 ${queuePosition} 位` : '', priority > 0 ? `优先级 ${priority}` : ''].filter(Boolean).join(' · ');
   }
+  if (status === 'AWAITING_CONFIRMATION') return '扫描完成，等待确认建立素材索引';
+  if (status === 'SUCCEEDED') return '素材导入已完成';
+  if (status === 'FAILED' || status === 'CANCELLED' || status === 'BLOCKED_BY_ENVIRONMENT') {
+    return String(task.error || status);
+  }
   if (stage === 'FINALIZING') return percent > 0 ? `正在整理扫描结果 · ${percent.toFixed(0)}%` : '正在整理扫描结果';
   const parts = [stageLabel];
   if (percent > 0) parts.push(`${percent.toFixed(0)}%`);
