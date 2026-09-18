@@ -11,9 +11,11 @@ on:
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
+      - 'app.py'
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
+      - 'tests/api/test_runtime_router_app_mount.py'
       - '.github/workflows/node-agent-executor.yml'
   pull_request:
     branches:
@@ -25,9 +27,11 @@ on:
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/training_recovery_api.py'
+      - 'app.py'
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/api/test_agent_executor_api.py'
+      - 'tests/api/test_runtime_router_app_mount.py'
       - '.github/workflows/node-agent-executor.yml'
 
 jobs:
@@ -53,6 +57,7 @@ jobs:
           platform_core/service_nodes.py
           platform_core/task_node_assignments.py
           platform_core/training_recovery_api.py
+          app.py
           tests/unit/test_agent_execution.py
           tests/unit/test_node_agent_executor_runtime.py
       - name: Agent execution contracts
@@ -79,6 +84,7 @@ jobs:
           tests/api/test_agent_executor_api.py
           tests/api/test_service_node_api.py
           tests/api/test_central_scheduler_api.py
+          tests/api/test_runtime_router_app_mount.py
       - name: Permanent Agent executor guards
         shell: bash
         run: |
@@ -93,6 +99,8 @@ jobs:
           grep -Fq '"shared_sqlite_required": False' platform_core/agent_execution.py
           grep -Fq '"shared_nfs_required": False' platform_core/agent_execution.py
           grep -Fq 'agent_executor_router(task_repository, task_artifacts)' platform_core/training_recovery_api.py
+          grep -Fq 'from platform_core.training_recovery_api import training_recovery_router' app.py
+          grep -Fq 'app.include_router(training_recovery_router(' app.py
           ! grep -Fq 'import sqlite3' platform_core/node_agent_executor_runtime.py
           ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_executor_runtime.py
           ! grep -Fq 'task_runtime.repository' platform_core/node_agent_executor_runtime.py
