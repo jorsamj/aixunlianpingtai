@@ -141,6 +141,8 @@ def training_recovery_router(
     agent_result_upload_preparer=None,
     agent_result_upload_confirmer=None,
     agent_result_commit_handler=None,
+    agent_training_model_upload_preparer=None,
+    agent_training_model_upload_confirmer=None,
 ):
     from fastapi import APIRouter, Body, HTTPException
 
@@ -230,5 +232,7 @@ def training_recovery_router(
         result_upload_preparer=agent_result_upload_preparer,
         result_upload_confirmer=agent_result_upload_confirmer,
         result_commit_handler=agent_result_commit_handler,
+        training_model_upload_preparer=agent_training_model_upload_preparer,
+        training_model_upload_confirmer=agent_training_model_upload_confirmer,
     ))
     return root
