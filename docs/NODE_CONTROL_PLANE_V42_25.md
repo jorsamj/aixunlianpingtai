@@ -6,6 +6,101 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Remote TRAINING Runtime
+
+2026-09-18，`TRAINING` 已成为继 `DEPLOYMENT_TEST` 之后第二个真实跨机器 portable task kind。  
+这不是旧 `remote_train_server.py` 的 ZIP 上传旁路，也不要求远端节点访问控制面 SQLite / NFS。
+
+核心文件：
+
+- `platform_core/remote_training_tasks.py`
+- `platform_core/remote_training_transport.py`
+- `platform_core/remote_training_results.py`
+- `platform_core/node_agent_training_runtime.py`
+- `platform_core/node_agent_executor_loop.py`
+- `platform_core/agent_execution.py`
+- `node_agent.py`
+
+当前真实链路：
+
+```text
+POST /api/v12/.../train/start(target=remote)
+→ 创建目标 TRAINING(QUEUED, remote_input_state=PREPARING)
+→ 创建独立 TRAINING_PREPARE durable task
+→ training-prep Worker 锁定 split / snapshot
+→ 生成或复用 verified portable training bundle
+→ 安全 ZIP 归档 + SHA256 / size / member_count / snapshot_id
+→ 上传 OSS / S3 / MinIO，并再次验证服务端对象证据
+→ 首次母模型使用 allow-listed official reference；
+  迭代训练强制使用最新可训练上一版本并转为 verified model asset
+→ 目标 TRAINING payload 原子升级为 READY + remote_execution
+→ Central Scheduler 只把 target=remote TRAINING 分给 Agent node
+→ Agent claim / start，获得唯一 execution generation
+→ 下载并验证 bundle / base model
+→ 节点本地 Python + 节点本地 train_worker.py 启动真实 subprocess
+→ heartbeat / bounded log / progress
+→ cancel / lease loss / Agent shutdown：按 ProcessIdentity 精确终止进程树
+→ 训练自然结束后仍先证明 DataLoader/子进程树清理完成
+→ best / last 本地重新计算 SHA256 + size
+→ training-models/prepare → generation-scoped immutable PUT → confirm
+→ 生成 manifest-only training result bundle
+→ result prepare / PUT / confirm
+→ server-side finalization gate
+→ verified model assets 写回 ModelArtifactService / 算法版本 truth
+→ finish(SUCCEEDED / PARTIAL_SUCCESS)
+→ 清理 execution workdir
+```
+
+关键边界：
+
+- `TRAINING_PREPARE` 是独立 background Worker，不占 GPU training Worker。
+- 明确 `target=remote` 的训练在 portable contract 未 READY 前既不能发给 Agent，也不能回退本机节点。
+- portable bundle 解包拒绝绝对路径、`..`、反斜杠逃逸、symlink、重复成员和超出 durable evidence 的展开。
+- Agent training runtime 不 import 中央 `TaskRepository`、不打开 `tasks.sqlite3`、不要求共享 NFS。
+- 远程 Agent 不接受控制面 `python_path / runner_path / stored_path` 作为本机路径。
+- 当前远程训练执行器为 Ultralytics；Paddle remote training 尚未宣称 CLOSED。
+- success / cancel / fence / shutdown 前都要求本机进程树状态可证明；清理无法验证时 fail closed，并保留 process identity 供恢复。
+- process identity 持久化不包含 Node / Assignment / Execution secret。
+- Agent 当前实现能力为 `deployment-test + training`；`training` 只有在 `AgentTrainingRunner.ready` 时才进入 heartbeat 的 effective capabilities。
+- 若启动恢复发现旧训练进程无法安全终止，Agent 会动态撤销 `training` capability，而不是继续领取新训练。
+- 结果与模型对象均按 execution generation / immutable key 隔离；旧 generation 不能覆盖新代。
+- finalization 之前必须完成 server-confirmed 模型与结果校验；Agent 自报路径不是模型 truth。
+- 修复了一个真实 Agent 参数缺省问题：portable params 中缺失/显式 `None` 现在正确回退默认值，不再触发 `int(None)` 导致训练在 subprocess 启动前失败。
+
+最终永久验收（当前实现 HEAD 的 PR-triggered validation）：
+
+- Remote Training Runtime `35303815439`
+  - Ubuntu 24.04：success
+  - Windows latest：success
+  - production API：success
+- Node Agent Executor `35303815460`
+  - Ubuntu 24.04：success
+  - Windows latest：success
+  - API：success
+- Central Node Assignment `35303815499`
+  - Ubuntu 24.04：success
+  - Windows latest：success
+  - API：success
+- Portable Deployment `35303815438`
+  - Ubuntu 24.04：success
+  - Windows latest：success
+  - production API：success
+
+临时 draft PR #14 仅用于验证，已关闭，**未 merge**。
+
+当前 formal `VERSION.txt` 仍为 `42.24.0`。
+
+**下一主线：Remote MODEL_CONVERSION Runtime。**
+
+现有 conversion handler 仍包含中央 `job_dir / worker_path / python_path` 等 path-bound 语义，不能直接发到远端 Agent。下一阶段应沿用已关闭的 portable execution 框架：
+
+1. 输入模型必须来自 verified model asset / object reference。
+2. 转换工具与 Python/SDK 路径由节点本地 capability/runtime 决定，禁止复制中央绝对路径。
+3. Agent-side conversion subprocess 继续受 execution lease / cancel / exact process-tree fencing。
+4. 转换输出先本地 hash/size，再 immutable object upload + server confirm。
+5. server-confirmed conversion asset 完成后才允许 finalization。
+6. Windows 可支持其真实可运行的转换；需要 NVIDIA/Linux/厂商 SDK 的目标按节点 capability 精确调度，不伪装跨平台可用。
+
 ## 1. 已关闭：服务节点控制面
 
 已实现真实服务节点 registry + Agent heartbeat，不是页面模拟数据。
