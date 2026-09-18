@@ -23,6 +23,11 @@ from .task_runtime.repository import _from_row
 ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED", "RELEASED")
 ACTIVE_ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED")
 DEFAULT_ASSIGNMENT_LEASE_SECONDS = 30
+REMOTE_EXECUTION_CONTRACT_VERSION = 1
+SUPPORTED_REMOTE_EXECUTION_TRANSPORTS = (
+    "object-storage-v1",
+    "agent-artifact-v1",
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_node_assignments (
@@ -124,7 +129,52 @@ def task_node_capability(task, artifacts) -> str | None:
     return None
 
 
-def _online_nodes(database, capability: str, *, now: datetime, ttl_seconds: int):
+def task_remote_execution_contract(task, artifacts) -> dict[str, Any] | None:
+    """Return sanitized metadata only for an explicitly portable task contract.
+
+    Legacy task payloads contain control-plane absolute paths and must never be
+    inferred as remote-safe. A remote Agent becomes eligible only after the task
+    producer publishes this versioned contract deliberately.
+    """
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("remote_execution")
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        version = int(raw.get("version") or 0)
+    except (TypeError, ValueError):
+        return None
+    task_kind = str(raw.get("task_kind") or "").strip()
+    transport = str(raw.get("transport") or "").strip().lower()
+    if (
+        version != REMOTE_EXECUTION_CONTRACT_VERSION
+        or task_kind != task.kind.value
+        or transport not in SUPPORTED_REMOTE_EXECUTION_TRANSPORTS
+    ):
+        return None
+    # Never copy task-provided credentials, URLs, paths or arbitrary nested
+    # data into scheduler truth. Transport-specific manifests are validated by
+    # the task-kind runner later; scheduling needs only this allow-list metadata.
+    return {
+        "version": version,
+        "task_kind": task_kind,
+        "transport": transport,
+    }
+
+
+def _online_nodes(
+    database,
+    capability: str,
+    *,
+    now: datetime,
+    ttl_seconds: int,
+    remote_contract: Mapping[str, Any] | None,
+):
     rows = database.execute(
         "SELECT * FROM service_nodes WHERE enabled=1 AND last_heartbeat_at IS NOT NULL"
     ).fetchall()
@@ -135,8 +185,14 @@ def _online_nodes(database, capability: str, *, now: datetime, ttl_seconds: int)
             continue
         allowed = set(_loads(row["allowed_capabilities"], []))
         reported = set(_loads(row["reported_capabilities"], []))
-        if capability in allowed and capability in reported:
-            result.append(row)
+        if capability not in allowed or capability not in reported:
+            continue
+        connection_mode = str(row["connection_mode"] or "").strip().lower()
+        if connection_mode == "agent" and remote_contract is None:
+            # Fail closed: existing task payloads commonly contain absolute
+            # control-plane paths. Never turn those into a fake remote job.
+            continue
+        result.append(row)
     return result
 
 
@@ -240,7 +296,14 @@ class CentralTaskAllocator:
                 capability = task_node_capability(task, self.artifacts)
                 if capability is None:
                     continue
-                nodes = _online_nodes(database, capability, now=current, ttl_seconds=self.heartbeat_ttl_seconds)
+                remote_contract = task_remote_execution_contract(task, self.artifacts)
+                nodes = _online_nodes(
+                    database,
+                    capability,
+                    now=current,
+                    ttl_seconds=self.heartbeat_ttl_seconds,
+                    remote_contract=remote_contract,
+                )
                 if not nodes:
                     continue
                 ranked = []
@@ -252,12 +315,12 @@ class CentralTaskAllocator:
                     score, node_id = _score_node(node, capability, active)
                     ranked.append((score, node_id, node))
                 ranked.sort(key=lambda item: (-item[0], item[1]))
-                selected = (task, capability, ranked[0][2])
+                selected = (task, capability, ranked[0][2], remote_contract)
                 break
             if selected is None:
                 database.commit()
                 return None
-            task, capability, node = selected
+            task, capability, node, remote_contract = selected
             generation = int(database.execute(
                 "SELECT COALESCE(MAX(generation),0)+1 FROM task_node_assignments WHERE task_id=?",
                 (task.task_id,),
@@ -271,6 +334,8 @@ class CentralTaskAllocator:
                 "selected_gpu": gpu,
                 "node_build_id": str(node["build_id"] or ""),
                 "node_runtime": _loads(node["runtime_json"], {}),
+                "connection_mode": str(node["connection_mode"] or ""),
+                "remote_execution": dict(remote_contract) if remote_contract is not None else None,
                 "assigned_at": now,
             }
             database.execute(
@@ -433,7 +498,10 @@ __all__ = [
     "AssignmentAwareFencedTaskRepository",
     "CentralTaskAllocator",
     "NodeAssignmentError",
+    "REMOTE_EXECUTION_CONTRACT_VERSION",
+    "SUPPORTED_REMOTE_EXECUTION_TRANSPORTS",
     "central_scheduler_router",
     "ensure_task_node_assignment_schema",
     "task_node_capability",
+    "task_remote_execution_contract",
 ]
