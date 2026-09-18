@@ -121,11 +121,11 @@ def test_clean_agent_preflight_rejects_local_material_and_create_does_not_fallba
         },
     )
     assert rejected.status_code == 409
-    assert app_module.shared_task_repository().list(
+    assert not app_module.shared_task_repository().list(
         project_id=project_id,
         kinds={TaskKind.MATERIAL_BATCH},
         limit=20,
-    ).items == []
+    ).items
 
 
 def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client):
