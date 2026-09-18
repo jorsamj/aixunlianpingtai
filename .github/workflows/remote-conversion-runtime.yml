@@ -1,0 +1,129 @@
+name: Remote Conversion Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'app.py'
+      - 'node_agent.py'
+      - 'deployment_worker.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'tests/unit/test_node_agent_conversion_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/api/test_conversion_portable_contract.py'
+      - '.github/workflows/remote-conversion-runtime.yml'
+  pull_request:
+    branches:
+      - main
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'app.py'
+      - 'node_agent.py'
+      - 'deployment_worker.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'tests/unit/test_node_agent_conversion_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/api/test_conversion_portable_contract.py'
+      - '.github/workflows/remote-conversion-runtime.yml'
+
+jobs:
+  agent-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused Agent conversion dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest requests psutil filelock fastapi pydantic
+      - name: Compile Agent conversion chain
+        run: >-
+          python -m py_compile
+          node_agent.py
+          platform_core/node_agent_conversion_runtime.py
+          platform_core/node_agent_executor_loop.py
+          platform_core/node_agent_executor_runtime.py
+          platform_core/task_node_assignments.py
+          tests/unit/test_node_agent_conversion_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+          tests/unit/test_task_node_assignments.py
+      - name: Agent conversion runtime contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_node_agent_conversion_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+          tests/unit/test_task_node_assignments.py
+
+  control-plane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused conversion control-plane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Compile conversion control plane
+        run: >-
+          python -m py_compile
+          app.py
+          platform_core/remote_execution_transport.py
+          platform_core/node_agent_conversion_runtime.py
+          tests/api/test_conversion_portable_contract.py
+          tests/unit/test_remote_execution_transport.py
+      - name: Portable creation and result commit contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_conversion_portable_contract.py
+          tests/unit/test_remote_execution_transport.py
+      - name: Permanent Remote Conversion guards
+        shell: bash
+        run: |
+          grep -Fq 'class AgentConversionRunner' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'AgentConversionRunner only accepts MODEL_CONVERSION' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'deployment_worker.py' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'runtime_verified' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'prepare_result_upload' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'confirm_result_upload' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"conversion", "deployment-test", "training"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "MODEL_CONVERSION", "TRAINING"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'runners["MODEL_CONVERSION"] = AgentConversionRunner' node_agent.py
+          grep -Fq 'mode: Literal["local", "remote", "agent"] = "local"' app.py
+          grep -Fq 'def _detect_agent_deploy_resource' app.py
+          grep -Fq '"execution_mode": "agent" if resource_mode == "agent" else "local"' app.py
+          grep -Fq '("agent.remote",)' app.py
+          grep -Fq 'def _commit_conversion_result' platform_core/remote_execution_transport.py
+          grep -Fq 'conversion_artifact_committed' platform_core/remote_execution_transport.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_conversion_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_conversion_runtime.py
+          ! grep -Fq 'tasks.sqlite3' platform_core/node_agent_conversion_runtime.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
