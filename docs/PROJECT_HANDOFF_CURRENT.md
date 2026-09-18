@@ -208,9 +208,49 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Remote Training Runtime `35324895079`：API / Ubuntu / Windows 全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
-**当前主线：Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN。**
+# 最新关闭：Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN
 
-按当前项目实际硬件优先级，下一阶段只推进瑞芯微，不同时扩 TensorRT / Sophon / Ascend。优先支持 RK3568 / RK3578；节点只有在真实安装并通过 RKNN-Toolkit2/对应转换环境探测后才允许上报 `conversion.rknn`，不得用通用 `conversion` 假装 RKNN 可用。前后端资源选择、目标芯片、转换参数和产物状态必须共享同一 capability / task truth。
+2026-09-18，远程 Rockchip RKNN 转换已完成真实 Agent 闭环并 CLOSED。
+
+当前 CLOSED 范围：
+
+- 远程目标为 `target=rockchip`，当前 portable Agent 正式支持 **RK3568 / RK3576**。
+- 早先 handoff 中的“RK3578”已纠正：Rockchip 官方 RKNN-Toolkit2 当前支持平台列出 RK3576 Series，而不是 RK3578。若现场设备铭牌/采购型号确实写 RK3578，必须先读取真实 SoC compatible / 芯片信息再映射，平台不得直接把 RK3578 当 RK3576。
+- 当前远程 RKNN 只关闭 **FP16、batch=1、静态输入**；INT8 calibration transport 尚未关闭，不允许假装支持。
+
+真实闭环：
+
+- 服务节点新增细粒度 `conversion.rknn` capability；通用 `conversion` 继续服务已 CLOSED 的 ONNX，二者不能互相冒充。
+- Node Agent 只有在真实 Python 环境可导入 `rknn.api.RKNN` 且探测到 RKNN-Toolkit2 版本后才上报 `conversion.rknn`。
+- heartbeat runtime 持久化 `rknn_toolkit2.available/version/supported_chips`；控制面只把 online + agent + effective `conversion.rknn` + probe 可用的节点作为 Rockchip 资源。
+- 当前 Toolkit 探测对 RK3568 保持基础支持；RK3576 仅在 Toolkit 2.x 及以上开放。
+- MODEL_CONVERSION 调度按目标细分 capability：Agent ONNX → `conversion`，Agent Rockchip → `conversion.rknn`。
+- portable contract 只接受 RK3568 / RK3576、FP16、batch=1、静态 shape，并保留 mean / rknn_std 等 RKNN 参数；不支持的芯片/INT8/dynamic/batch>1 在任务持久化前 fail closed。
+- Agent 下载 verified model object 后在节点本地执行现有 `deployment_worker.py` + RKNN-Toolkit2，生成唯一非空 `.rknn`。
+- RKNN 成功状态必须是 `converted_unverified`；Agent 不得把“成功转换”伪装成“板端硬件已验证”。
+- 输出重新计算 size/SHA256，经 generation-scoped immutable PUT、server-confirm 后，控制面重新下载并复核，再写回既有：
+  - `deploy/jobs/<task>/artifacts/model_<chip>.rknn`
+  - `manifest.json`
+  - `job.json`
+- RKNN job 明确写 `runtime_verified=false`、`hardware_verified=false`、`validation_status=converted_unverified`，产品提示“等待目标板 Runtime 实机验证”。
+- 前端部署转换已补齐 RK3576 选项，并只根据后端 resource truth 暴露可用 RKNN Agent，不在无真实 RKNN 节点时假装可用。
+- Real Chrome 已覆盖 RKNN Agent 资源配置/展示与 Rockchip 芯片选项。
+
+最终验收（代码 HEAD `5a02aa5ba03e94cc731bfd0e62437c57738efab1`）：
+
+- Remote Conversion Runtime `35330889750`：control-plane / Ubuntu Agent / Windows Agent / Real Chrome 全绿。
+- Node Agent Executor `35330889657`：全绿。
+- Central Node Assignment `35330889375`：全绿。
+- Task Runtime Truth `35330889784`：全绿。
+- Portable Deployment `35330889497`：全绿。
+- Remote Material Import `35330889535`：全绿。
+- Remote Training Runtime `35330889384`：全绿。
+- Remote Cleaning Runtime `35330889291`：全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**当前主线：Rockchip 板端 Runtime 验证。**
+
+下一阶段继续只做瑞芯微，不扩 TensorRT / Sophon / Ascend。目标是把当前 `converted_unverified` 的 RKNN 产物真正送到 RK3568 / RK3576 设备，使用 RKNN Runtime / RKNN-Toolkit-Lite2 做模型加载与至少一次真实推理；只有板端 runtime 成功并返回可校验 evidence 后，控制面才允许把对应转换产物标记为 `hardware_verified=true`。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

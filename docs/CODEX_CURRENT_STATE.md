@@ -82,11 +82,51 @@ Acceptance at code HEAD `b41f784a3765e09a2184453e03e895a1cda0271d`:
 - Remote Training Runtime `35324895079`: success.
 - Remote Conversion Runtime `35324894962`: success.
 
-**OPEN / next:** Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN. Prioritize
-the user's RK3568 / RK3578 hardware only; do not simultaneously claim TensorRT,
-Sophon or Ascend. Add a real `conversion.rknn` effective capability that is
-reported only when the node has a verified RKNN conversion SDK/runtime
-environment. Frontend and backend must use that same capability truth.
+## Current closure — Remote MODEL_CONVERSION Phase 2 Rockchip RKNN CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Rockchip RKNN is now a real remote MODEL_CONVERSION target. ONNX keeps the
+existing `conversion` capability while Rockchip uses the independent
+`conversion.rknn` capability. The Agent reports that capability only after a
+real RKNN-Toolkit2 import/version probe; control-plane resource discovery also
+requires the node to be online, Agent-connected, effective for
+`conversion.rknn`, and to publish an available RKNN probe with supported chips.
+
+The portable RKNN contract is deliberately bounded to RK3568 / RK3576, FP16,
+batch=1 and static input shape. Unsupported chips, INT8 calibration, dynamic
+shape or batch>1 fail before durable execution. The Agent downloads the verified
+model object, executes the node-local conversion worker/RKNN-Toolkit2, requires
+exactly one non-empty .rknn result, hashes it locally, uploads with generation
+fencing, and waits for server confirmation.
+
+The control plane re-downloads and verifies size/SHA256 and commits the artifact
+to the existing deployment job artifact directory. RKNN remains
+`converted_unverified`: `runtime_verified=false` and
+`hardware_verified=false` until a real Rockchip board runs the model. The
+product UI includes RK3576 and uses backend resource truth; it does not infer
+RKNN availability from generic conversion capability.
+
+Earlier references to RK3578 were corrected. The official RKNN-Toolkit2 support
+list names RK3576 Series, not RK3578. Any device sold/labeled as “3578” must have
+its real SoC identified before being mapped to an RKNN target.
+
+Acceptance at code HEAD `5a02aa5ba03e94cc731bfd0e62437c57738efab1`:
+- Remote Conversion Runtime `35330889750`: control-plane / Ubuntu / Windows / Real Chrome success.
+- Node Agent Executor `35330889657`: success.
+- Central Node Assignment `35330889375`: success.
+- Task Runtime Truth `35330889784`: success.
+- Portable Deployment `35330889497`: success.
+- Remote Material Import `35330889535`: success.
+- Remote Training Runtime `35330889384`: success.
+- Remote Cleaning Runtime `35330889291`: success.
+
+**OPEN / next:** Rockchip board runtime verification. Keep TensorRT, Sophon and
+Ascend out of scope. Reuse the existing durable deployment-test architecture
+where possible, add a real board capability/runtime probe, run the .rknn model
+on RK3568/RK3576 through RKNN Runtime/RKNN-Toolkit-Lite2, and only then allow
+hardware_verified=true.
+
 
 
 ## Current closure — Remote MATERIAL_IMPORT Phase 4 storage_scan CLOSED
