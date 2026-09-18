@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import app as app_module
+from platform_core.errors import PlatformError
 from platform_core.remote_execution_transport import RemoteExecutionTransportError
 from platform_core.task_runtime import TaskKind
 
@@ -53,6 +54,17 @@ def _resource():
         "id": "local-onnx",
         "name": "Local ONNX",
         "mode": "local",
+        "status": "ready",
+        "targets": ["onnx"],
+        "kind": "onnx",
+    }
+
+
+def _agent_resource():
+    return {
+        "id": "agent-onnx",
+        "name": "Agent ONNX",
+        "mode": "agent",
         "status": "ready",
         "targets": ["onnx"],
         "kind": "onnx",
@@ -227,3 +239,136 @@ def test_vendor_conversion_does_not_pretend_portable_agent_support(tmp_path, mon
     request = artifacts.rows[(repository.created[0].task_id, "request.json")]
     assert request["execution_mode"] == "local"
     assert "remote_execution" not in request
+
+
+
+def test_agent_resource_detection_requires_fresh_effective_conversion_capability(monkeypatch):
+    class FakeNodes:
+        def __init__(self, _repository):
+            pass
+
+        def list_public(self):
+            return [
+                {
+                    "node_id": "offline",
+                    "display_name": "offline",
+                    "connection_mode": "agent",
+                    "online": False,
+                    "effective_capabilities": ["conversion"],
+                    "build_id": "b1",
+                },
+                {
+                    "node_id": "online-no-conversion",
+                    "display_name": "other",
+                    "connection_mode": "agent",
+                    "online": True,
+                    "effective_capabilities": ["training"],
+                    "build_id": "b2",
+                },
+                {
+                    "node_id": "conversion-node",
+                    "display_name": "conversion",
+                    "connection_mode": "agent",
+                    "online": True,
+                    "effective_capabilities": ["conversion"],
+                    "build_id": "b3",
+                },
+            ]
+
+    monkeypatch.setattr(app_module, "ServiceNodeRepository", FakeNodes)
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: object())
+
+    checked = app_module._detect_agent_deploy_resource(_agent_resource())
+
+    assert checked["status"] == "ready"
+    assert checked["targets"] == ["onnx"]
+    assert checked["agent_nodes"] == [{
+        "node_id": "conversion-node",
+        "display_name": "conversion",
+        "build_id": "b3",
+    }]
+
+
+def test_agent_resource_detection_is_missing_without_eligible_conversion_node(monkeypatch):
+    class FakeNodes:
+        def __init__(self, _repository):
+            pass
+
+        def list_public(self):
+            return [{
+                "node_id": "training-only",
+                "display_name": "training",
+                "connection_mode": "agent",
+                "online": True,
+                "effective_capabilities": ["training"],
+                "build_id": "b1",
+            }]
+
+    monkeypatch.setattr(app_module, "ServiceNodeRepository", FakeNodes)
+    monkeypatch.setattr(app_module, "shared_task_repository", lambda: object())
+
+    checked = app_module._detect_agent_deploy_resource(_agent_resource())
+
+    assert checked["status"] == "missing"
+    assert checked["targets"] == []
+    assert checked["agent_nodes"] == []
+
+
+def test_explicit_agent_onnx_creation_routes_only_to_agent_executor(
+    tmp_path, monkeypatch
+):
+    transport = FakeTransport(result=_contract())
+    _model, jobs, artifacts, repository = _patch_creation(monkeypatch, tmp_path, transport)
+    monkeypatch.setattr(app_module, "_deploy_resource_by_id", lambda _resource_id: _agent_resource())
+    monkeypatch.setattr(app_module, "_detect_agent_deploy_resource", lambda resource: dict(resource))
+
+    response = app_module.v39_create_deploy_job(
+        "p1",
+        app_module.DeployJobReq(
+            source_id="version::algorithm-a::version-1",
+            target="onnx",
+            resource_id="agent-onnx",
+            params={"input_size": 640, "opset": 12},
+        ),
+    )
+
+    job = response["job"]
+    assert job["remote_portability"]["status"] == "ready"
+    task = repository.created[0]
+    assert task.kind is TaskKind.MODEL_CONVERSION
+    assert task.required_capabilities == ("agent.remote",)
+    request = artifacts.rows[(task.task_id, "request.json")]
+    assert request["execution_mode"] == "agent"
+    assert request["remote_execution"]["task_kind"] == "MODEL_CONVERSION"
+
+
+def test_agent_onnx_creation_fails_closed_when_portable_staging_is_unavailable(
+    tmp_path, monkeypatch
+):
+    transport = FakeTransport(
+        error=RemoteExecutionTransportError(
+            "REMOTE_CONVERSION_STORAGE_REQUIRED",
+            "portable model conversion requires object storage",
+            409,
+        )
+    )
+    _model, _jobs, _artifacts, repository = _patch_creation(monkeypatch, tmp_path, transport)
+    monkeypatch.setattr(app_module, "_deploy_resource_by_id", lambda _resource_id: _agent_resource())
+    monkeypatch.setattr(app_module, "_detect_agent_deploy_resource", lambda resource: dict(resource))
+
+    try:
+        app_module.v39_create_deploy_job(
+            "p1",
+            app_module.DeployJobReq(
+                source_id="version::algorithm-a::version-1",
+                target="onnx",
+                resource_id="agent-onnx",
+                params={},
+            ),
+        )
+    except PlatformError as error:
+        assert error.code == "REMOTE_CONVERSION_STORAGE_REQUIRED"
+        assert error.status_code == 409
+    else:
+        raise AssertionError("Agent conversion unexpectedly fell back to local execution")
+    assert repository.created == []
