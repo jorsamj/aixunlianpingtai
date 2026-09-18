@@ -314,6 +314,37 @@ class NodeExecutorClient:
         )
 
 
+def _persistable_payload(value: object) -> object:
+    """Remove ephemeral transport credentials before writing debug metadata."""
+    if isinstance(value, Mapping):
+        sanitized: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key)
+            lowered = key.lower()
+            if lowered in {
+                "url",
+                "authorization",
+                "token",
+                "lease_token",
+                "assignment_lease_token",
+                "execution_lease_token",
+            }:
+                continue
+            if lowered == "headers":
+                # Signed headers can contain temporary authorization or
+                # provider-specific credential material. Keep only their names.
+                if isinstance(raw_value, Mapping):
+                    sanitized["header_names"] = sorted(str(name) for name in raw_value)
+                continue
+            sanitized[key] = _persistable_payload(raw_value)
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        return [_persistable_payload(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
 class AgentExecutionWorkdir:
     """Task-local Agent work directory with no interpretation of central paths."""
 
@@ -368,7 +399,10 @@ class AgentExecutionWorkdir:
 
     def prepare(self, lease: RemoteExecutionLease) -> Path:
         target = self.path_for(lease)
-        self._atomic_write_json(target / "request.json", lease.payload)
+        self._atomic_write_json(
+            target / "request.json",
+            _persistable_payload(lease.payload),
+        )
         # Do not persist Node/Assignment/Execution secrets. If the Agent process
         # dies, the central lease expires and a newer generation takes over.
         self._atomic_write_json(target / "execution.json", {
