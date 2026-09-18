@@ -15180,6 +15180,24 @@ def _commit_agent_result_publication(task, payload, evidence, confirmed):
         confirmed,
     )
 
+
+def _prepare_agent_training_model_uploads(task, payload, *, execution_generation, models):
+    return _remote_execution_transport_service().prepare_training_model_uploads(
+        task,
+        payload,
+        execution_generation=execution_generation,
+        models=models,
+    )
+
+
+def _confirm_agent_training_model_uploads(task, payload, *, execution_generation, models):
+    return _remote_execution_transport_service().confirm_training_model_uploads(
+        task,
+        payload,
+        execution_generation=execution_generation,
+        models=models,
+    )
+
 app.include_router(external_algorithm_platform_router(
     data_dir=DATA_DIR,
     get_project=get_project,
@@ -15206,4 +15224,6 @@ app.include_router(training_recovery_router(
     agent_result_upload_preparer=_prepare_agent_result_upload,
     agent_result_upload_confirmer=_confirm_agent_result_upload,
     agent_result_commit_handler=_commit_agent_result_publication,
+    agent_training_model_upload_preparer=_prepare_agent_training_model_uploads,
+    agent_training_model_upload_confirmer=_confirm_agent_training_model_uploads,
 ))
