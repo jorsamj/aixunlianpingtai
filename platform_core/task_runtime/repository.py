@@ -639,6 +639,50 @@ class TaskRepository:
             raise KeyError(task_id)
         return result
 
+    def fail_queued_precondition(
+        self,
+        task_id: str,
+        error: str,
+        *,
+        status: TaskStatus = TaskStatus.BLOCKED_BY_ENVIRONMENT,
+        stage: str = "precondition_failed",
+    ) -> TaskRecord:
+        """Fail a task that never acquired an execution lease.
+
+        This is intentionally limited to QUEUED tasks so a preparation worker
+        cannot overwrite a RUNNING/CANCELLED execution owned elsewhere.
+        """
+        if status not in {
+            TaskStatus.FAILED,
+            TaskStatus.BLOCKED_BY_ENVIRONMENT,
+            TaskStatus.BLOCKED_BY_HARDWARE,
+        }:
+            raise ValueError("queued precondition failure requires a terminal failure status")
+        now = utc_now()
+        with closing(self._connect()) as database:
+            changed = database.execute(
+                """
+                UPDATE tasks
+                   SET status=?, stage=?, error=?, finished_at=?, updated_at=?,
+                       worker_id=NULL, lease_token=NULL, lease_expires_at=NULL
+                 WHERE task_id=? AND status='QUEUED'
+                """,
+                (
+                    status.value,
+                    str(stage or "precondition_failed"),
+                    str(error or "")[:8000],
+                    now,
+                    now,
+                    str(task_id),
+                ),
+            ).rowcount
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        if changed != 1 and result.status is TaskStatus.QUEUED:
+            raise RuntimeError("queued task precondition state changed concurrently")
+        return result
+
     def finish(
         self,
         task_id: str,
