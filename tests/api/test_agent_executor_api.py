@@ -8,11 +8,27 @@ from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
 
 
+def safe_remote_payload(task, payload, assignment):
+    return {
+        "schema_version": 1,
+        "task_kind": task.kind.value,
+        "transport": "test-safe-v1",
+        "epochs": int(payload.get("epochs") or 0),
+        "selected_device": str(
+            (assignment.get("resolved_execution_config") or {}).get("selected_device") or ""
+        ),
+    }
+
+
 def client_for(tmp_path):
     repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
     app = FastAPI()
-    app.include_router(agent_executor_router(lambda: repository, lambda: artifacts))
+    app.include_router(agent_executor_router(
+        lambda: repository,
+        lambda: artifacts,
+        execution_payload_resolver=safe_remote_payload,
+    ))
     return TestClient(app), repository, artifacts
 
 
@@ -104,13 +120,13 @@ def test_agent_executor_http_happy_flow_and_cancellation_truth(tmp_path):
     assert start_body["task"]["worker_id"] == "agent:gpu-api-agent"
     assert execution["generation"] == 1
     assert start_body["payload"] == {
+        "schema_version": 1,
+        "task_kind": "TRAINING",
+        "transport": "test-safe-v1",
         "epochs": 30,
-        "remote_execution": {
-            "version": 1,
-            "task_kind": "TRAINING",
-            "transport": "object-storage-v1",
-        },
+        "selected_device": "cuda:0",
     }
+    assert "remote_execution" not in start_body["payload"]
     assert start_body["transport"]["shared_sqlite_required"] is False
     assert start_body["transport"]["shared_nfs_required"] is False
 
