@@ -14716,9 +14716,12 @@ async def create_deployment_test(
             prediction_dir.rmdir()
         except OSError:
             pass
-        raise HTTPException(
+        raise PlatformError(
+            code=error.code,
+            message="远程部署准备失败",
+            detail=str(error),
+            solution="请检查模型资产对象存储、访问凭据和对象完整性后重试。",
             status_code=error.status_code,
-            detail={"code": error.code, "message": str(error)},
         ) from error
     if remote_execution is not None:
         request["remote_execution"] = remote_execution
