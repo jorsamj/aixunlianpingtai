@@ -39,9 +39,10 @@ class FakeResponse:
 
 
 class FakeTransferSession:
-    def __init__(self, downloads=None, *, fail_first_put_after_body=False):
+    def __init__(self, downloads=None, *, fail_after_body_urls=None):
         self.downloads = dict(downloads or {})
-        self.fail_first_put_after_body = bool(fail_first_put_after_body)
+        self.fail_after_body_urls = set(fail_after_body_urls or ())
+        self.failed_after_body_urls = set()
         self.get_calls = []
         self.put_calls = []
         self.uploaded = {}
@@ -66,7 +67,11 @@ class FakeTransferSession:
             "allow_redirects": allow_redirects,
         })
         self.uploaded[url] = body
-        if self.fail_first_put_after_body and len(self.put_calls) == 1:
+        if (
+            url in self.fail_after_body_urls
+            and url not in self.failed_after_body_urls
+        ):
+            self.failed_after_body_urls.add(url)
             raise requests.ConnectionError("response lost after object accepted")
         return FakeResponse(200)
 
@@ -85,6 +90,8 @@ class FakeControlClient:
         self.heartbeat_calls = 0
         self.heartbeats = []
         self.logs = []
+        self.model_prepare_calls = []
+        self.model_confirm_calls = 0
         self.prepare_calls = []
         self.confirm_calls = []
         self.begin_calls = 0
@@ -117,6 +124,83 @@ class FakeControlClient:
         self.logs.append(str(text))
         return {"ok": True}
 
+    def prepare_training_model_uploads(self, lease, models):
+        evidence = [
+            {
+                "role": str(item["role"]),
+                "file_name": str(item["file_name"]),
+                "sha256": str(item["sha256"]),
+                "size_bytes": int(item["size_bytes"]),
+            }
+            for item in models
+        ]
+        self.model_prepare_calls.append(evidence)
+        items = []
+        for item in evidence:
+            role = item["role"]
+            url = f"https://storage.example.test/training-model-{role}"
+            already_uploaded = (
+                self.transfer is not None
+                and url in self.transfer.uploaded
+            )
+            items.append({
+                **item,
+                "artifact_id": f"artifact-{role}",
+                "storage_ref": {
+                    "storage_source_id": "s3-main",
+                    "object_key": (
+                        f"model-assets/generation-{lease.generation}/{role}.pt"
+                    ),
+                    "file_name": item["file_name"],
+                    "content_type": "application/octet-stream",
+                },
+                "already_uploaded": already_uploaded,
+                "upload": None if already_uploaded else {
+                    "method": "PUT",
+                    "url": url,
+                    "headers": {
+                        "Content-Type": "application/octet-stream",
+                        "Content-Length": str(item["size_bytes"]),
+                        "x-amz-meta-sha256": item["sha256"],
+                        "If-None-Match": "*",
+                    },
+                },
+            })
+        return {
+            "version_id": f"rt-generation-{lease.generation}",
+            "execution_generation": lease.generation,
+            "items": items,
+        }
+
+    def confirm_training_model_uploads(self, lease):
+        self.model_confirm_calls += 1
+        if not self.model_prepare_calls:
+            raise AssertionError("models were not prepared")
+        evidence = self.model_prepare_calls[-1]
+        items = []
+        for item in evidence:
+            role = item["role"]
+            url = f"https://storage.example.test/training-model-{role}"
+            if self.transfer is not None and url not in self.transfer.uploaded:
+                raise AssertionError(f"{role} model was not uploaded")
+            items.append({
+                **item,
+                "artifact_id": f"artifact-{role}",
+                "storage_ref": {
+                    "storage_source_id": "s3-main",
+                    "object_key": (
+                        f"model-assets/generation-{lease.generation}/{role}.pt"
+                    ),
+                    "file_name": item["file_name"],
+                    "content_type": "application/octet-stream",
+                },
+            })
+        return {
+            "confirmed": True,
+            "version_id": f"rt-generation-{lease.generation}",
+            "items": items,
+        }
+
     def prepare_result_upload(self, lease, *, sha256, size_bytes):
         self.prepare_calls.append({
             "generation": lease.generation,
@@ -125,8 +209,8 @@ class FakeControlClient:
         })
         if (
             self.transfer is not None
-            and self.transfer.fail_first_put_after_body
-            and self.transfer.put_calls
+            and "https://storage.example.test/training-result"
+            in self.transfer.uploaded
         ):
             return {
                 "already_uploaded": True,
@@ -485,7 +569,19 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert client.begin_calls == 1
     assert client.finish_calls[-1]["status"] == "SUCCEEDED"
     assert client.finish_calls[-1]["result_ref"] == outcome.result_ref
-    assert transfer.put_calls[0]["headers"]["If-None-Match"] == "*"
+    assert len(transfer.put_calls) == 3
+    assert client.model_prepare_calls
+    assert client.model_confirm_calls == 1
+    assert transfer.put_calls[0]["url"].startswith(
+        "https://storage.example.test/training-model-"
+    )
+    assert transfer.put_calls[1]["url"].startswith(
+        "https://storage.example.test/training-model-"
+    )
+    assert transfer.put_calls[-1]["url"] == (
+        "https://storage.example.test/training-result"
+    )
+    assert transfer.put_calls[-1]["headers"]["If-None-Match"] == "*"
 
     args = json.loads(
         (runtime_root / "worker-args.json").read_text(encoding="utf-8")
@@ -496,7 +592,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"
 
-    uploaded = transfer.put_calls[0]["body"]
+    uploaded = transfer.put_calls[-1]["body"]
     with zipfile.ZipFile(io.BytesIO(uploaded), "r") as archive:
         manifest = json.loads(
             archive.read("manifest.json").decode("utf-8")
@@ -504,12 +600,9 @@ def test_real_subprocess_remote_training_success(tmp_path):
         assert manifest["task_id"] == current.task_id
         assert manifest["execution_generation"] == current.generation
         assert manifest["snapshot_id"] == "snapshot-agent"
-        assert manifest["model_transport"] == "embedded-v1"
+        assert manifest["model_transport"] == "separate-object-v1"
         assert len(manifest["models"]) == 2
-        assert any(
-            name.startswith("models/best-")
-            for name in archive.namelist()
-        )
+        assert archive.namelist() == ["manifest.json"]
 
     assert (runtime_root / "completed.marker").is_file()
     assert not (
@@ -591,6 +684,7 @@ def test_training_cancellation_kills_worker_and_never_publishes_success(tmp_path
     assert time.monotonic() - started < 8
     assert outcome.status == "CANCELLED"
     assert client.finish_calls[-1]["status"] == "CANCELLED"
+    assert not client.model_prepare_calls
     assert not client.prepare_calls
     assert (runtime_root / "started.marker").is_file()
     assert not (runtime_root / "completed.marker").exists()
@@ -616,6 +710,7 @@ def test_training_fencing_kills_worker_without_stale_terminal_write(tmp_path):
 
     assert time.monotonic() - started < 8
     assert not client.finish_calls
+    assert not client.model_prepare_calls
     assert not client.prepare_calls
     assert (runtime_root / "started.marker").is_file()
     assert not (runtime_root / "completed.marker").exists()
@@ -625,7 +720,9 @@ def test_training_result_put_can_recover_after_lost_response(tmp_path):
     current, downloads = training_lease(tmp_path)
     transfer = FakeTransferSession(
         downloads,
-        fail_first_put_after_body=True,
+        fail_after_body_urls={
+            "https://storage.example.test/training-result"
+        },
     )
     client = FakeControlClient(transfer)
     runner, _runtime_root, _workdirs = build_runner(
@@ -638,7 +735,10 @@ def test_training_result_put_can_recover_after_lost_response(tmp_path):
 
     assert outcome.status == "SUCCEEDED"
     assert len(client.prepare_calls) == 2
-    assert len(transfer.put_calls) == 1
+    assert len(transfer.put_calls) == 3
+    assert transfer.put_calls[-1]["url"] == (
+        "https://storage.example.test/training-result"
+    )
     assert client.confirm_calls
     assert client.finish_calls[-1]["status"] == "SUCCEEDED"
 
