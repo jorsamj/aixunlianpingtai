@@ -362,3 +362,62 @@ def test_promote_can_move_a_task_ahead_even_when_current_priority_is_one(tmp_pat
     lease = repository.claim_next("worker", [TaskKind.TRAINING], {"cuda"})
     assert lease is not None
     assert lease.task.task_id == "promoted"
+
+
+def test_fail_queued_precondition_never_overwrites_running_or_cancelled_task(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    queued = TaskRecord.new(
+        "queued-precondition",
+        "project",
+        TaskKind.TRAINING,
+        "payload.json",
+        "training:remote",
+    )
+    repository.create(queued)
+    failed = repository.fail_queued_precondition(
+        queued.task_id,
+        "REMOTE_INPUT_FAILED",
+        status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+        stage="remote_input_preparation_failed",
+    )
+    assert failed.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
+    assert failed.stage == "remote_input_preparation_failed"
+    assert failed.error == "REMOTE_INPUT_FAILED"
+    assert failed.finished_at is not None
+
+    running = repository.create(
+        TaskRecord.new(
+            "running-precondition",
+            "project",
+            TaskKind.TRAINING,
+            "payload.json",
+            "training:remote",
+            required_capabilities=("cuda",),
+        )
+    )
+    lease = repository.claim_next("worker", [TaskKind.TRAINING], {"cuda"})
+    assert lease is not None and lease.task.task_id == running.task_id
+    unchanged = repository.fail_queued_precondition(
+        running.task_id,
+        "must-not-overwrite",
+        status=TaskStatus.FAILED,
+    )
+    assert unchanged.status is TaskStatus.RUNNING
+    assert unchanged.error != "must-not-overwrite"
+
+    cancelled = repository.create(
+        TaskRecord.new(
+            "cancelled-precondition",
+            "project",
+            TaskKind.TRAINING,
+            "payload.json",
+            "training:remote",
+        )
+    )
+    repository.request_cancel(cancelled.task_id)
+    unchanged = repository.fail_queued_precondition(
+        cancelled.task_id,
+        "must-not-revive",
+        status=TaskStatus.FAILED,
+    )
+    assert unchanged.status is TaskStatus.CANCELLED
