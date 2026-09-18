@@ -71,3 +71,45 @@ test('final clean tab consumes the clean task view and PollRegistry lifecycle', 
   assert.match(source, /id="clean427TaskRows"/);
   assert.doesNotMatch(source, /setTimeout\(\(\)=>\{if\(state\.page==='自动标注及清洗'\)renderOps427\(\)\},2200\)/);
 });
+
+
+test('clean execution choices are backend-preflight driven and fail closed', () => {
+  const localOnly = cleaning.cleanExecutionChoices({
+    agent_available: false,
+    reason: '本次范围包含不可远程读取的素材存储：default_local',
+  });
+  assert.equal(localOnly.defaultMode, 'local');
+  assert.equal(localOnly.local.available, true);
+  assert.equal(localOnly.agent.available, false);
+  assert.match(localOnly.agent.detail, /default_local/);
+  assert.equal(cleaning.cleanExecutionMode('local', localOnly), 'local');
+  assert.throws(
+    () => cleaning.cleanExecutionMode('agent', {
+      agent_available: false,
+      reason: '没有远程清洗节点',
+    }),
+    /没有远程清洗节点/,
+  );
+
+  const remote = {
+    agent_available: true,
+    eligible_nodes: [{node_id: 'clean-1'}, {node_id: 'clean-2'}],
+  };
+  assert.equal(cleaning.cleanExecutionChoices(remote).agent.detail, '已检测到 2 个可用节点');
+  assert.equal(cleaning.cleanExecutionMode('agent', remote), 'agent');
+});
+
+test('remote clean task view maps Agent stages without inventing progress', () => {
+  const view = cleaning.cleanTaskView({
+    status: 'running',
+    status_text: '清洗中',
+    execution_mode: 'agent',
+    progress: 55,
+    processed_images: 5,
+    total_images: 10,
+    phase: 'REMOTE_CLEANING_ANALYZING',
+    current_item: 'img-6',
+  });
+  assert.equal(view.percent, 55);
+  assert.equal(view.runtimeText, '正在远程分析图片 · 当前 img-6');
+});

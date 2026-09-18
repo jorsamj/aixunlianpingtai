@@ -366,3 +366,18 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 
 /* v42.21 exact material selection for durable training */
 .train-v3-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}.train-v3-summary>div{min-width:0;padding:12px;border:1px solid #e5eaf2;border-radius:12px;background:#f8fafc}.train-v3-summary span,.train-v3-summary em{display:block;color:#64748b;font-size:11px;font-style:normal}.train-v3-summary b{display:block;margin:5px 0;font-size:18px}.train-v3-summary em{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.train-v3-mode,.train-v3-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}.train-v3-actions .field.compact{margin:0;min-width:145px}.train-v3-actions .field.compact>span{font-size:11px;color:#64748b}.train-v3-note{display:block;margin-top:12px;color:#64748b;line-height:1.6}.train-v3-picker{display:grid;gap:12px}.train-v3-picker>header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.train-v3-picker>header span{display:block;margin-top:4px;color:#64748b;font-size:12px}.train-v3-picker>header strong{color:#2563eb;font-size:12px}.train-v3-filter{display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:12px;align-items:start}.train-v3-filter .data426-chips{max-height:90px;overflow:auto}.train-v3-batch{flex-wrap:wrap;margin:0}.train-v3-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;min-height:270px;max-height:52vh;overflow:auto;padding:2px}.train-v3-card{position:relative;display:block;min-width:0;border:1px solid #e5eaf2;border-radius:12px;overflow:hidden;background:#fff;cursor:pointer}.train-v3-card.on{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.14)}.train-v3-card input{position:absolute;right:8px;top:8px;z-index:2;width:18px;height:18px}.train-v3-card img{display:block;width:100%;height:105px;object-fit:cover;background:#f1f5f9}.train-v3-card b,.train-v3-card span{display:block;padding:7px 9px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.train-v3-card span{padding-top:3px;padding-bottom:9px;color:#64748b;font-size:10px}@media(max-width:980px){.train-v3-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:700px){.train-v3-summary{grid-template-columns:1fr}.train-v3-filter{grid-template-columns:1fr}.train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+
+.clean427-execution{display:grid;gap:8px;padding:11px 12px;border:1px solid #dce6f4;border-radius:10px;background:#f8fbff}
+.clean427-execution>header{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.clean427-execution>header b{font-size:11px}
+.clean427-execution>header span{font-size:8px;color:#718198}
+.clean427-exec-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.clean427-exec-option{display:flex;align-items:flex-start;gap:8px;padding:10px;border:1px solid #dce4ef;border-radius:10px;background:#fff;cursor:pointer}
+.clean427-exec-option:has(input:checked){border-color:#82a2df;background:#f2f6ff}
+.clean427-exec-option.disabled{cursor:not-allowed;opacity:.58;background:#f7f8fa}
+.clean427-exec-option input{margin-top:2px}
+.clean427-exec-option b,.clean427-exec-option span{display:block}
+.clean427-exec-option b{font-size:10px}
+.clean427-exec-option span{margin-top:3px;font-size:8px;line-height:1.55;color:#77869a}
+@media(max-width:900px){.clean427-exec-grid{grid-template-columns:1fr}.clean427-execution>header{align-items:flex-start;flex-direction:column}}

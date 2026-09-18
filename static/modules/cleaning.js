@@ -8,6 +8,11 @@ const CLEAN_STAGE_TEXT = {
   saving_clean_result: '正在保存清洗结果',
   saving_clean_error: '正在记录异常结果',
   cleaning: '正在清洗',
+  REMOTE_CLEANING_FETCHING_SELECTION: '正在读取清洗范围',
+  REMOTE_CLEANING_DOWNLOADING: '正在读取对象存储素材',
+  REMOTE_CLEANING_ANALYZING: '正在远程分析图片',
+  REMOTE_CLEANING_PREPARING_UPLOAD: '正在整理清洗结果',
+  REMOTE_CLEANING_CONFIRMING_REVIEW: '正在校验清洗结果',
 };
 
 function cleanStatusFallback(status) {
@@ -84,4 +89,38 @@ export function applyCleanConfirmation(materials, result) {
     .map(material => processed.has(String(material.id))
       ? {...material, processing_status: 'processed', clean_skipped: false}
       : material);
+}
+
+
+export function cleanExecutionChoices(preflight = {}) {
+  const nodes = Array.isArray(preflight.eligible_nodes) ? preflight.eligible_nodes : [];
+  const agentAvailable = preflight.agent_available === true;
+  const reason = String(preflight.reason || '').trim();
+  return {
+    defaultMode: 'local',
+    local: {
+      mode: 'local',
+      available: true,
+      label: '中央 Worker',
+      detail: '使用平台当前清洗 Worker，兼容本地和对象存储素材',
+    },
+    agent: {
+      mode: 'agent',
+      available: agentAvailable,
+      label: '远程清洗节点',
+      detail: agentAvailable
+        ? `已检测到 ${nodes.length} 个可用节点`
+        : (reason || '当前没有满足条件的远程清洗节点'),
+      nodes,
+    },
+  };
+}
+
+export function cleanExecutionMode(value, preflight = {}) {
+  const mode = String(value || 'local').trim().toLowerCase();
+  if (mode === 'local') return 'local';
+  if (mode !== 'agent') throw new Error('不支持的清洗执行方式');
+  const choices = cleanExecutionChoices(preflight);
+  if (!choices.agent.available) throw new Error(choices.agent.detail);
+  return 'agent';
 }

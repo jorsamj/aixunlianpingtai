@@ -25,7 +25,7 @@ import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422001';
-import {applyCleanConfirmation, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422517';
+import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422518';
 import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
@@ -97,7 +97,7 @@ window.PlatformCore = {
   annotationWorkbench: {createAnnotationWorkbench, queueWindow},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
-  cleaning: {applyCleanConfirmation, cleanTaskView, isActiveCleanTask},
+  cleaning: {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanTaskView, isActiveCleanTask},
   deployment: {deploymentTaskView},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},
