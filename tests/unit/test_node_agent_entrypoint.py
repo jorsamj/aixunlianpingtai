@@ -25,9 +25,15 @@ class OneLoopEvent:
 
 
 class FakeExecutor:
-    def __init__(self):
+    def __init__(self, effective_capabilities=None):
         self.start_calls = 0
         self.stop_calls = 0
+        self._effective_capabilities = effective_capabilities
+
+    def effective_capabilities(self):
+        if self._effective_capabilities is None:
+            return ("deployment-test",)
+        return tuple(self._effective_capabilities)
 
     def active_tasks(self):
         return ()
@@ -131,6 +137,55 @@ def test_executor_starts_only_after_successful_control_plane_heartbeat(
 
     assert code == 0
     assert heartbeat_calls == ["heartbeat"]
+    assert executor.start_calls == 1
+    assert executor.stop_calls == 1
+
+
+def test_runtime_heartbeat_withdraws_training_when_executor_marks_it_unsafe(
+    tmp_path, monkeypatch
+):
+    _patch_common(monkeypatch, tmp_path)
+    executor = FakeExecutor(effective_capabilities=("deployment-test",))
+    monkeypatch.setattr(node_agent, "_build_executor", lambda **_kwargs: executor)
+    captured = {}
+
+    def build_payload(_snapshot, *, capabilities, build_id, active_tasks, last_error):
+        captured["capabilities"] = list(capabilities)
+        return {
+            "capabilities": list(capabilities),
+            "build_id": build_id,
+            "active_tasks": list(active_tasks),
+            "last_error": last_error,
+        }
+
+    monkeypatch.setattr(node_agent, "build_heartbeat_payload", build_payload)
+    monkeypatch.setattr(
+        node_agent,
+        "send_heartbeat",
+        lambda *_args, **_kwargs: {
+            "node": {"status": "ONLINE"},
+            "desired": {},
+        },
+    )
+
+    code = node_agent.main([
+        "--control-plane",
+        "https://control.example.test",
+        "--token",
+        "node-secret",
+        "--node-id",
+        "node-entrypoint",
+        "--state-dir",
+        str(tmp_path),
+        "--capabilities",
+        "training",
+        "deployment-test",
+        "--interval",
+        "3",
+    ])
+
+    assert code == 0
+    assert captured["capabilities"] == ["deployment-test"]
     assert executor.start_calls == 1
     assert executor.stop_calls == 1
 
