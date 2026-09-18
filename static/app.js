@@ -646,8 +646,6 @@ window.__resourceDiscoveryDependencies={
       if(saved){saveTask(saved);pollTask(saved).then(task=>{if(!task&&document.getElementById('si61Status'))saveTask('')})}
     };
 
-    window.startStorageImport61=async function
-
     window.startStorageImport61=async function(mode=state.serverMaterialImportMode61||'directory_scan'){
       const status=document.getElementById('si61Status');
       try{
@@ -671,8 +669,6 @@ window.__resourceDiscoveryDependencies={
         if(!isAbort(error)&&status)status.innerHTML=`<div class="alert err">${esc(error?.message||error||'创建导入任务失败')}</div>`;
       }
     };
-
-    window.confirmStorageImport61=async function
 
     window.confirmStorageImport61=async function(taskId){
       const button=document.getElementById('si61Confirm');if(button)button.disabled=true;
