@@ -171,7 +171,9 @@ jobs:
           grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "TRAINING"})' platform_core/node_agent_executor_loop.py
           grep -Fq 'def effective_capabilities' platform_core/node_agent_executor_loop.py
           grep -Fq 'runner.ready' platform_core/node_agent_executor_loop.py
-          grep -Fq 'reported_capabilities = list(executor.effective_capabilities())' node_agent.py
+          grep -Fq 'resolver = getattr(executor, "effective_capabilities", None)' node_agent.py
+          grep -Fq 'effective_capabilities = list(resolver())' node_agent.py
+          grep -Fq 'capabilities=effective_capabilities' node_agent.py
           grep -Fq 'NodeAgentExecutorLoop' node_agent.py
           grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py
           grep -Fq 'executor.start()' node_agent.py
