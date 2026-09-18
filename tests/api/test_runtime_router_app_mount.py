@@ -65,8 +65,9 @@ def test_v63_subrouters_keep_single_composition_owner():
     assert runtime_source.count(
         "root.include_router(central_scheduler_router(task_repository, task_artifacts))"
     ) == 1
+    assert runtime_source.count("root.include_router(agent_executor_router(") == 1
     assert runtime_source.count(
-        "root.include_router(agent_executor_router(task_repository, task_artifacts))"
+        "execution_payload_resolver=agent_execution_payload_resolver"
     ) == 1
 
 
