@@ -323,6 +323,54 @@ class ImportCandidateStore:
                     (_limit(example_limit, 100),))],
             }
 
+    def iter_candidates(self, batch_size: int = 500) -> Iterator[dict]:
+        """Stream all candidates in object-key order using bounded pages."""
+        limit = _limit(batch_size)
+        after = None
+        while True:
+            with closing(self._connect()) as connection:
+                if after is None:
+                    rows = connection.execute(
+                        "SELECT * FROM candidates ORDER BY object_key LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                else:
+                    rows = connection.execute(
+                        "SELECT * FROM candidates WHERE object_key>? ORDER BY object_key LIMIT ?",
+                        (after, limit),
+                    ).fetchall()
+            if not rows:
+                return
+            after = rows[-1]["object_key"]
+            yield from (dict(row) for row in rows)
+
+    def label_mapping_rows(self) -> list[dict]:
+        with closing(self._connect()) as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT class_id,name,target_label_id FROM label_mapping "
+                    "ORDER BY class_id LIMIT 10000"
+                )
+            ]
+
+    def annotation_issues_for_keys(self, keys: Iterable[str]) -> dict[str, list[dict]]:
+        keys = list(keys)
+        if len(keys) > 500:
+            raise ValueError("annotation issue lookup is limited to 500 image keys")
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        result: dict[str, list[dict]] = {str(key): [] for key in keys}
+        with closing(self._connect()) as connection:
+            for row in connection.execute(
+                f"SELECT object_key,line_number,code,severity FROM annotation_issues "
+                f"WHERE object_key IN ({placeholders}) ORDER BY object_key,line_number,code",
+                keys,
+            ):
+                result.setdefault(str(row["object_key"]), []).append(dict(row))
+        return result
+
     def iter_status(self, status: str, batch_size: int = 500) -> Iterator[dict]:
         """Yield individual rows in key order, reading at most one bounded page."""
         limit = _limit(batch_size)
