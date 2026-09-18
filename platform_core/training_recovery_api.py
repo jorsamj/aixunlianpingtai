@@ -138,6 +138,8 @@ def training_recovery_router(
     task_repository,
     task_artifacts,
     agent_execution_payload_resolver=None,
+    agent_result_upload_preparer=None,
+    agent_result_upload_confirmer=None,
 ):
     from fastapi import APIRouter, Body, HTTPException
 
@@ -224,5 +226,7 @@ def training_recovery_router(
         task_repository,
         task_artifacts,
         execution_payload_resolver=agent_execution_payload_resolver,
+        result_upload_preparer=agent_result_upload_preparer,
+        result_upload_confirmer=agent_result_upload_confirmer,
     ))
     return root
