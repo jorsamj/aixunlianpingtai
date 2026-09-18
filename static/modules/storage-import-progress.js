@@ -4,7 +4,19 @@ import {canonicalTaskPhase, canonicalTaskStatus, exactTaskQueuePosition} from '.
 const POLL_KEY = 'storage-import-scan-v61';
 const OWNER_PAGE = '素材存储配置';
 const POLL_DELAY = 1200;
-const STAGE_LABELS = {MAPPING_LABELS:'正在转换标签', WRITING_ANNOTATIONS:'正在写入标注', INDEXING:'正在建立素材索引', FINALIZING:'正在整理结果', SCANNING:'正在扫描素材'};
+const STAGE_LABELS = {
+  MAPPING_LABELS:'正在转换标签',
+  WRITING_ANNOTATIONS:'正在写入标注',
+  INDEXING:'正在建立素材索引',
+  FINALIZING:'正在整理结果',
+  SCANNING:'正在扫描素材',
+  REMOTE_MATERIAL_SCANNING:'正在扫描对象存储',
+  REMOTE_MATERIAL_DOWNLOADING:'正在读取素材',
+  REMOTE_MATERIAL_EXTRACTING:'正在安全解包素材',
+  REMOTE_MATERIAL_REVIEWING:'正在检查素材内容',
+  REMOTE_MATERIAL_PREPARING_UPLOAD:'正在整理审查结果',
+  REMOTE_MATERIAL_CONFIRMING_REVIEW:'正在校验审查结果',
+};
 
 export function storageImportProgressText(task = {}) {
   const status = canonicalTaskStatus(task);
@@ -16,14 +28,16 @@ export function storageImportProgressText(task = {}) {
   const priority = Number(task.priority || 0);
   const worker = String(task.worker_id || task.task_worker_id || '').trim();
   const waitReason = String(task.resource_wait_reason || '').trim();
+  const isAgent = String(task.execution_mode || '').toLowerCase() === 'agent'
+    || worker.startsWith('agent:');
   if (status === 'WAITING_RESOURCE') {
-    return ['等待资源', queuePosition ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
+    return [isAgent ? '等待远程素材节点' : '等待资源', queuePosition ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
   }
   if (status === 'QUEUED') {
-    return ['排队中', queuePosition ? `队列第 ${queuePosition} 位` : '', priority > 0 ? `优先级 ${priority}` : ''].filter(Boolean).join(' · ');
+    return [isAgent ? '远程素材任务排队中' : '排队中', queuePosition ? `队列第 ${queuePosition} 位` : '', priority > 0 ? `优先级 ${priority}` : ''].filter(Boolean).join(' · ');
   }
   if (stage === 'FINALIZING') return percent > 0 ? `正在整理扫描结果 · ${percent.toFixed(0)}%` : '正在整理扫描结果';
-  const parts = [stage];
+  const parts = [stageLabel];
   if (percent > 0) parts.push(`${percent.toFixed(0)}%`);
   if (current) parts.push(current);
   if (worker) parts.push(`执行节点 ${worker}`);
@@ -60,7 +74,14 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
   }
 
   function render(task) {
-    currentTask = task || currentTask;
+    if (task) {
+      currentTask = {
+        ...(currentTask || {}),
+        ...task,
+        mode: task.mode || currentTask?.mode,
+        execution_mode: task.execution_mode || currentTask?.execution_mode,
+      };
+    }
     if (!currentTask) return;
     const status = statusElement();
     if (status) status.textContent = storageImportProgressText(currentTask);

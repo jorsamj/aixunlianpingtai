@@ -14,12 +14,25 @@ function count(value) {
 export function buildServerImportRequest(values = {}) {
   const mode = String(values.mode || 'directory_scan');
   const storageSourceId = String(values.storageSourceId || '').trim();
-  if (!storageSourceId) throw new Error('请选择本地存储源');
+  if (!storageSourceId) throw new Error('请选择存储源');
   const importFormat = String(values.importFormat || 'auto');
   if (!['auto', 'images', 'yolo'].includes(importFormat)) throw new Error('暂不支持 COCO/VOC 服务器导入');
   const format = {import_format: importFormat};
   if (values.datasetYaml && importFormat !== 'images') format.dataset_yaml = String(values.datasetYaml).trim();
 
+  if (mode === 'storage_scan') {
+    const prefix = String(values.prefix || '').trim();
+    if (!prefix) throw new Error('请填写对象存储目录');
+    if (importFormat === 'auto') throw new Error('远程对象存储扫描请选择“仅图片”或“YOLO 检测标注”');
+    return {
+      mode,
+      execution_mode: 'agent',
+      ...format,
+      storage_source_id: storageSourceId,
+      prefix,
+      recursive: values.recursive !== false,
+    };
+  }
   if (mode === 'directory_scan') {
     return {
       mode,
@@ -66,8 +79,21 @@ export function serverImportView(task = {}) {
   const waitReason = String(task.resource_wait_reason || '').trim();
   let text;
 
+  const isAgent = String(task.execution_mode || '').toLowerCase() === 'agent'
+    || String(task.worker_id || '').startsWith('agent:');
+  const remoteStages = {
+    remote_material_scanning: '正在扫描对象存储',
+    remote_material_downloading: '正在读取素材',
+    remote_material_extracting: '正在安全解包素材',
+    remote_material_reviewing: '正在检查素材内容',
+    remote_material_preparing_upload: '正在整理审查结果',
+    remote_material_confirming_review: '正在校验审查结果',
+  };
+
   if (status === 'WAITING_RESOURCE') {
-    text = ['等待 Storage Worker 资源', queuePosition ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
+    text = [isAgent ? '等待远程素材节点' : '等待 Storage Worker 资源', queuePosition ? `队列第 ${queuePosition} 位` : '', waitReason].filter(Boolean).join(' · ');
+  } else if (remoteStages[stage]) {
+    text = [remoteStages[stage], current !== '-' ? current : ''].filter(Boolean).join(' · ');
   } else if (stage === 'extracting') {
     text = `已解压 ${count(metrics.extracted_files)} 个文件 · ${count(metrics.extracted_bytes)} 字节 · 当前 ${current}`;
   } else if (stage === 'scanning') {
@@ -77,7 +103,8 @@ export function serverImportView(task = {}) {
   } else if (status === 'AWAITING_CONFIRMATION') {
     text = '扫描完成，等待确认建立素材索引';
   } else if (status === 'QUEUED') {
-    text = queuePosition ? `任务已进入 Storage Worker 队列 · 第 ${queuePosition} 位` : '任务已进入 Storage Worker 队列';
+    const queueLabel = isAgent ? '远程素材任务已排队' : '任务已进入 Storage Worker 队列';
+    text = queuePosition ? `${queueLabel} · 第 ${queuePosition} 位` : queueLabel;
   } else if (status === 'SUCCEEDED') {
     text = `导入完成，共建立 ${count(task.result?.imported)} 条素材索引`;
   } else if (status === 'FAILED' || status === 'CANCELLED') {

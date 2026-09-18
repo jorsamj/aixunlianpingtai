@@ -1343,7 +1343,7 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
             continue
         if isinstance(raw, (int, float)):
             public[key] = max(0, raw)
-    for key in ("stage", "mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref", "import_format", "dataset_yaml"):
+    for key in ("stage", "mode", "execution_mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref", "import_format", "dataset_yaml"):
         raw = value.get(key)
         if isinstance(raw, str):
             public[key] = _public_storage_import_text(raw)
@@ -1370,6 +1370,9 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
 
 def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
     artifacts = shared_task_artifacts()
+    request = _public_storage_import_mapping(
+        artifacts.read_json(task.task_id, task.payload_ref, default=None)
+    ) or {}
     result = None
     if task.result_ref:
         result = _public_storage_import_mapping(
@@ -1407,6 +1410,12 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "finished_at": task.finished_at,
+        "mode": request.get("mode"),
+        "execution_mode": request.get("execution_mode") or "local",
+        "storage_source_id": request.get("storage_source_id"),
+        "import_format": request.get("import_format"),
+        "prefix": request.get("prefix"),
+        "recursive": request.get("recursive"),
         "metrics": metrics,
         "result": result,
     }

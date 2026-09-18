@@ -591,7 +591,9 @@ window.__resourceDiscoveryDependencies={
     async function pollTask(taskId,initialTask){
       if(!taskId)return null;
       try{
-        const tracked=window.StorageImportProgressRuntime?.track?.(taskId,initialTask);
+        let seed=initialTask;
+        if(!seed)seed=await importRequest(taskUrl(taskId));
+        const tracked=window.StorageImportProgressRuntime?.track?.(taskId,seed);
         if(!tracked)throw new Error('素材导入进度模块未加载，请刷新页面后重试');
         return await tracked;
       }
@@ -602,30 +604,75 @@ window.__resourceDiscoveryDependencies={
       state.serverMaterialImportMode61=mode;
       document.querySelectorAll('#si61ImportShell [data-import-mode]').forEach(button=>button.classList.toggle('on',button.dataset.importMode===mode));
       document.querySelectorAll('#si61ImportShell [data-import-panel]').forEach(panel=>panel.hidden=panel.dataset.importPanel!==mode);
+      const format=document.getElementById('si61Format'),auto=format?.querySelector('option[value="auto"]');
+      if(auto)auto.disabled=mode==='storage_scan';
+      if(mode==='storage_scan'&&format?.value==='auto')format.value='images';
     };
     window.openBrowserMaterialUpload61=function(){abortPolling();closeModal();setTimeout(()=>window.openDataUpload426?.(),30)};
     window.closeStorageImport61=function(){abortPolling();return closeModal()};
 
     window.openStorageImport61=async function(){
       try{await loadStorageSources61()}catch(error){return toast(error.message||error)}
-      const localSources=storageApi().enabledStorageSources(state.storageSources61).filter(source=>source.type==='local'),options=localSources.map(source=>`<option value="${esc(source.id)}">${esc(source.name)}</option>`).join(''),disabled=localSources.length?'':'disabled',initialMode=localSources.length?'directory_scan':'browser_upload';
+      const enabled=storageApi().enabledStorageSources(state.storageSources61);
+      const localSources=enabled.filter(source=>source.type==='local');
+      const objectSources=enabled.filter(source=>source.type==='oss'||source.type==='s3');
+      const localOptions=localSources.map(source=>`<option value="${esc(source.id)}">${esc(source.name)}</option>`).join('');
+      const objectOptions=objectSources.map(source=>`<option value="${esc(source.id)}">${esc(source.name)} · ${source.type==='oss'?'OSS':'S3 / MinIO'}</option>`).join('');
+      const localDisabled=localSources.length?'':'disabled',objectDisabled=objectSources.length?'':'disabled';
+      const initialMode=objectSources.length?'storage_scan':(localSources.length?'directory_scan':'browser_upload');
       abortPolling();
-      modal('从存储导入素材',`<div id="si61ImportShell" class="storage61-import"><div class="storage61-import-modes" role="tablist" aria-label="素材导入方式"><button class="btn" data-import-mode="browser_upload" onclick="setStorageImportMode61('browser_upload')">浏览器上传</button><button class="btn" data-import-mode="directory_scan" onclick="setStorageImportMode61('directory_scan')">服务器本地目录</button><button class="btn" data-import-mode="server_zip" onclick="setStorageImportMode61('server_zip')">服务器 ZIP</button></div><section data-import-panel="browser_upload"><div class="storage61-import-help"><b>从当前电脑上传</b><span>继续使用现有图片 / ZIP 上传流程。</span></div><button class="btn primary" onclick="openBrowserMaterialUpload61()">打开浏览器上传</button></section><section data-import-panel="directory_scan"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61Source" class="select" ${disabled}>${options||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>目录（相对于存储源根目录）</label><input id="si61Prefix" class="input" placeholder="例如 incoming/2026"></div></div><label class="field check"><input id="si61Recursive" type="checkbox" checked> 递归扫描子目录</label><button class="btn primary" onclick="startStorageImport61('directory_scan')" ${disabled}>开始扫描</button></section><section data-import-panel="server_zip"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61ZipSource" class="select" ${disabled}>${options||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>服务器 ZIP（导入目录下的相对路径）</label><input id="si61ZipPath" class="input" placeholder="例如 fire.zip"></div><div class="field"><label>解压目标（相对于存储源根目录）</label><input id="si61TargetPrefix" class="input" placeholder="例如 fire/2026"></div></div><div class="storage61-import-help"><span>目标目录已存在且非空时会拒绝导入，不会覆盖原文件。</span></div><button class="btn primary" onclick="startStorageImport61('server_zip')" ${disabled}>校验并解压扫描</button></section><div id="si61Status" class="storage61-import-status">扫描和建立索引由后台 Worker 执行；关闭此窗口不会取消任务。</div><div class="row end"><button class="btn" onclick="closeStorageImport61()">关闭</button></div></div>`,true);
+      modal('从存储导入素材',`<div id="si61ImportShell" class="storage61-import">
+        <div class="storage61-import-modes" role="tablist" aria-label="素材导入方式">
+          <button class="btn" data-import-mode="browser_upload" onclick="setStorageImportMode61('browser_upload')">浏览器上传</button>
+          <button class="btn" data-import-mode="storage_scan" onclick="setStorageImportMode61('storage_scan')">对象存储目录</button>
+          <button class="btn" data-import-mode="directory_scan" onclick="setStorageImportMode61('directory_scan')">服务器本地目录</button>
+          <button class="btn" data-import-mode="server_zip" onclick="setStorageImportMode61('server_zip')">服务器 ZIP</button>
+        </div>
+        <section data-import-panel="browser_upload"><div class="storage61-import-help"><b>从当前电脑上传</b><span>继续使用现有图片 / ZIP 上传流程。</span></div><button class="btn primary" onclick="openBrowserMaterialUpload61()">打开浏览器上传</button></section>
+        <section data-import-panel="storage_scan">
+          <div class="form two"><div class="field"><label>对象存储源</label><select id="si61RemoteSource" class="select" ${objectDisabled}>${objectOptions||'<option>暂无已启用的 OSS / S3 / MinIO 存储</option>'}</select></div><div class="field"><label>目录 Prefix *</label><input id="si61RemotePrefix" class="input" placeholder="例如 datasets/fire/2026"></div></div>
+          <label class="field check"><input id="si61RemoteRecursive" type="checkbox" checked> 递归扫描子目录</label>
+          <div class="storage61-import-help"><b>由远程素材节点执行</b><span>中央端保管长期存储凭据，Agent 只获取当前任务的短期读取地址；原始图片保持在对象存储中，不会重新上传一份。</span></div>
+          <button class="btn primary" onclick="startStorageImport61('storage_scan')" ${objectDisabled}>开始远程扫描</button>
+        </section>
+        <section data-import-panel="directory_scan"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61Source" class="select" ${localDisabled}>${localOptions||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>目录（相对于存储源根目录）</label><input id="si61Prefix" class="input" placeholder="例如 incoming/2026"></div></div><label class="field check"><input id="si61Recursive" type="checkbox" checked> 递归扫描子目录</label><button class="btn primary" onclick="startStorageImport61('directory_scan')" ${localDisabled}>开始扫描</button></section>
+        <section data-import-panel="server_zip"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61ZipSource" class="select" ${localDisabled}>${localOptions||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>服务器 ZIP（导入目录下的相对路径）</label><input id="si61ZipPath" class="input" placeholder="例如 fire.zip"></div><div class="field"><label>解压目标（相对于存储源根目录）</label><input id="si61TargetPrefix" class="input" placeholder="例如 fire/2026"></div></div><div class="storage61-import-help"><span>目标目录已存在且非空时会拒绝导入，不会覆盖原文件。</span></div><button class="btn primary" onclick="startStorageImport61('server_zip')" ${localDisabled}>校验并解压扫描</button></section>
+        <div class="form two storage61-import-format"><div class="field"><label>数据格式</label><select id="si61Format" class="select"><option value="auto">自动识别</option><option value="yolo">YOLO 检测标注</option><option value="images">仅图片</option><option disabled>COCO / VOC（暂不支持）</option></select></div><div class="field"><label>数据集 YAML（可选，相对存储源根目录）</label><input id="si61DatasetYaml" class="input" placeholder="例如 datasets/fire/2026/data.yaml"></div></div>
+        <div id="si61Status" class="storage61-import-status">扫描和建立索引由后台任务执行；关闭此窗口不会取消任务。</div>
+        <div class="row end"><button class="btn" onclick="closeStorageImport61()">关闭</button></div>
+      </div>`,true);
       setStorageImportMode61(initialMode);
-      document.getElementById('si61Status')?.insertAdjacentHTML('beforebegin','<div class="form two storage61-import-format"><div class="field"><label>数据格式</label><select id="si61Format" class="select"><option value="auto">自动识别</option><option value="yolo">YOLO 检测标注</option><option value="images">仅图片</option><option disabled>COCO / VOC（暂不支持）</option></select></div><div class="field"><label>数据集 YAML（可选，相对存储源根目录）</label><input id="si61DatasetYaml" class="input" placeholder="例如 incoming/data.yaml"></div></div>');
       const saved=getSavedTask();
       if(saved){saveTask(saved);pollTask(saved).then(task=>{if(!task&&document.getElementById('si61Status'))saveTask('')})}
     };
 
+    window.startStorageImport61=async function
+
     window.startStorageImport61=async function(mode=state.serverMaterialImportMode61||'directory_scan'){
       const status=document.getElementById('si61Status');
       try{
-        const values=mode==='server_zip'?{mode,storageSourceId:document.getElementById('si61ZipSource')?.value,zipPath:document.getElementById('si61ZipPath')?.value,targetPrefix:document.getElementById('si61TargetPrefix')?.value}:{mode,storageSourceId:document.getElementById('si61Source')?.value,prefix:document.getElementById('si61Prefix')?.value,recursive:document.getElementById('si61Recursive')?.checked!==false};
-        values.importFormat=document.getElementById('si61Format')?.value||'auto';values.datasetYaml=document.getElementById('si61DatasetYaml')?.value;
-        const body=serverApi().buildServerImportRequest(values),task=await importRequest(`/api/v61/projects/${encodeURIComponent(pid())}/storage-imports/scan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),taskId=String(task.task_id||'');
-        if(!taskId)throw new Error('服务器未返回导入任务 ID');saveTask(taskId);await pollTask(taskId,task);
-      }catch(error){if(!isAbort(error)&&status)status.innerHTML=`<div class="alert err">${esc(error?.message||error||'创建导入任务失败')}</div>`}
+        let values;
+        if(mode==='server_zip'){
+          values={mode,storageSourceId:document.getElementById('si61ZipSource')?.value,zipPath:document.getElementById('si61ZipPath')?.value,targetPrefix:document.getElementById('si61TargetPrefix')?.value};
+        }else if(mode==='storage_scan'){
+          values={mode,storageSourceId:document.getElementById('si61RemoteSource')?.value,prefix:document.getElementById('si61RemotePrefix')?.value,recursive:document.getElementById('si61RemoteRecursive')?.checked!==false};
+        }else{
+          values={mode,storageSourceId:document.getElementById('si61Source')?.value,prefix:document.getElementById('si61Prefix')?.value,recursive:document.getElementById('si61Recursive')?.checked!==false};
+        }
+        values.importFormat=document.getElementById('si61Format')?.value||'auto';
+        values.datasetYaml=document.getElementById('si61DatasetYaml')?.value;
+        const body=serverApi().buildServerImportRequest(values);
+        const task=await importRequest(`/api/v61/projects/${encodeURIComponent(pid())}/storage-imports/scan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const taskId=String(task.task_id||'');
+        if(!taskId)throw new Error('服务器未返回导入任务 ID');
+        saveTask(taskId);
+        await pollTask(taskId,task);
+      }catch(error){
+        if(!isAbort(error)&&status)status.innerHTML=`<div class="alert err">${esc(error?.message||error||'创建导入任务失败')}</div>`;
+      }
     };
+
+    window.confirmStorageImport61=async function
 
     window.confirmStorageImport61=async function(taskId){
       const button=document.getElementById('si61Confirm');if(button)button.disabled=true;
