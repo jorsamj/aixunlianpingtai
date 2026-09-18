@@ -9,10 +9,15 @@ on:
       - 'app.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/storage/s3.py'
+      - 'platform_core/storage/oss.py'
       - 'platform_core/training_recovery_api.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
+      - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
       - '.github/workflows/portable-deployment.yml'
   pull_request:
@@ -23,10 +28,15 @@ on:
       - 'app.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/storage/s3.py'
+      - 'platform_core/storage/oss.py'
       - 'platform_core/training_recovery_api.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_agent_execution.py'
+      - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
+      - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
       - '.github/workflows/portable-deployment.yml'
 
@@ -53,8 +63,12 @@ jobs:
           platform_core/agent_execution.py
           platform_core/remote_execution_transport.py
           platform_core/training_recovery_api.py
+          platform_core/storage/s3.py
+          platform_core/storage/oss.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_agent_execution.py
+          tests/unit/test_agent_result_upload.py
+          tests/unit/test_agent_result_upload.py
           tests/api/test_runtime_router_app_mount.py
       - name: Portable transport and Agent execution contracts
         run: >-
@@ -86,6 +100,8 @@ jobs:
           app.py
           platform_core/remote_execution_transport.py
           tests/api/test_deployment_test_runtime.py
+          tests/api/test_agent_result_upload_api.py
+          tests/unit/storage/test_object_store_immutability.py
       - name: Deployment creation and production mount contracts
         run: >-
           python -m pytest -q
@@ -97,6 +113,12 @@ jobs:
           grep -Fq 'REMOTE_TRANSFER_TTL_SECONDS = 900' platform_core/remote_execution_transport.py
           grep -Fq 'StorageType.OSS, StorageType.S3' platform_core/remote_execution_transport.py
           grep -Fq 'REMOTE_UPLOAD_NOT_PROTECTED' platform_core/remote_execution_transport.py
+          grep -Fq 'generation-{generation}' platform_core/remote_execution_transport.py
+          grep -Fq 'metadata={"sha256": expected_sha}' platform_core/remote_execution_transport.py
+          grep -Fq 'Content-Length' platform_core/storage/s3.py
+          grep -Fq 'x-oss-meta-' platform_core/storage/oss.py
+          grep -Fq 'result-upload/prepare' platform_core/agent_execution.py
+          grep -Fq 'REMOTE_RESULT_NOT_CONFIRMED' platform_core/agent_execution.py
           grep -Fq 'execution_payload_resolver' platform_core/agent_execution.py
           grep -Fq 'REMOTE_EXECUTION_PAYLOAD_UNAVAILABLE' platform_core/agent_execution.py
           grep -Fq 'stage_deployment_test(' app.py
