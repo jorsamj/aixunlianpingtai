@@ -43,12 +43,18 @@ def create_task(repository, artifacts, task_id="train-agent", *, write_payload=T
     )
 
 
-def create_node(repository, node_id="gpu-agent", *, enabled=True):
+def create_node(
+    repository,
+    node_id="gpu-agent",
+    *,
+    enabled=True,
+    connection_mode="agent",
+):
     nodes = ServiceNodeRepository(repository)
     _node, token = nodes.create({
         "node_id": node_id,
         "display_name": node_id,
-        "connection_mode": "agent",
+        "connection_mode": connection_mode,
         "enabled": enabled,
         "allowed_capabilities": ["training"],
     })
@@ -402,7 +408,7 @@ def test_token_rotation_between_preflight_and_transaction_blocks_start(tmp_path)
 def test_missing_payload_never_transitions_task_to_running(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts, write_payload=False)
-    _nodes, token = create_node(repository)
+    _nodes, token = create_node(repository, connection_mode="local")
     service = AgentExecutionService(repository, artifacts)
     claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
 
