@@ -21,8 +21,8 @@ from .node_agent_executor_runtime import (
 )
 
 
-SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test", "training"})
-SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "TRAINING"})
+SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"conversion", "deployment-test", "training"})
+SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "MODEL_CONVERSION", "TRAINING"})
 
 
 def executable_agent_capabilities(values: Iterable[str]) -> list[str]:
@@ -83,6 +83,7 @@ class NodeAgentExecutorLoop:
     def effective_capabilities(self) -> tuple[str, ...]:
         """Capabilities safe to advertise in the current local runtime state."""
         kind_by_capability = {
+            "conversion": "MODEL_CONVERSION",
             "deployment-test": "DEPLOYMENT_TEST",
             "training": "TRAINING",
         }
