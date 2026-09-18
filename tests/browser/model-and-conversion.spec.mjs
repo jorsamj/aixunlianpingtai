@@ -291,3 +291,99 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   await expect(job.getByText(/推理 12\.34 ms/)).toBeVisible();
   await expect(job.getByRole('button', {name: '板端验证'})).toHaveCount(0);
 });
+
+
+test('RKNN Agent INT8 conversion submits frozen calibration selection from the UI', async ({page, request}) => {
+  const project = await (await request.post('/api/projects', {data: {
+    name: `RKNN-INT8-${Date.now()}`,
+    labels: [{code: 'fire', display_name: '明火'}]
+  }})).json();
+  const algorithmId = 'algorithm-rknn-int8';
+  const versionId = 'version-rknn-int8';
+  let submitted = null;
+  let created = false;
+
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      algorithm: {id: algorithmId, name: 'RKNN INT8 算法'},
+      version: {id: versionId, version_name: '20260918193000', model_name: 'best.pt', stored_path: 'models/best.pt'},
+      items: created ? [{id: 'rknn-int8-job', target: 'rockchip', status: 'queued', progress: 0, message: '等待远程节点'}] : []
+    })
+  }));
+  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({items: [{
+      id: 'rknn-agent-int8',
+      name: 'RKNN Agent · RK3568',
+      kind: 'rockchip',
+      mode: 'agent',
+      status: 'ready',
+      targets: ['rockchip'],
+      message: '检测到 1 个在线 Agent 可执行 RKNN 转换',
+      supported_chips: ['rk3568', 'rk3576'],
+      supported_precisions: ['fp16', 'int8'],
+      agent_nodes: [{node_id: 'node-rknn', display_name: 'RKNN 转换节点'}]
+    }]})
+  }));
+  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs`, async route => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    submitted = route.request().postDataJSON();
+    created = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ok: true, job: {id: 'rknn-int8-job', status: 'queued'}})
+    });
+  });
+
+  await page.addInitScript(projectId => {
+    localStorage.clear();
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '工作台'}));
+  }, project.id);
+  await page.goto('/');
+  await page.evaluate(async () => { if (window.__clInit) await window.__clInit(); });
+  await page.evaluate(() => {
+    state.datasets = [{id: 'calibration-dataset', name: 'INT8 校准集'}];
+    state.datasetId = 'calibration-dataset';
+  });
+  await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [algorithmId, versionId]);
+
+  const historyDialog = page.getByRole('dialog', {name: '版本转换'});
+  await expect(historyDialog).toBeVisible();
+  await historyDialog.getByRole('button', {name: '选择转换目标'}).click();
+
+  const dialog = page.getByRole('dialog', {name: '新建版本转换'});
+  await dialog.locator('input[name="conv428Target"][value="rockchip"]').check();
+  await expect(dialog.locator('#conv428Resource')).toHaveValue('rknn-agent-int8');
+  await expect(dialog.locator('#conv428Chip')).toHaveValue('rk3568');
+  await expect(dialog.locator('#conv428Precision option[value="fp32"]')).toBeDisabled();
+  await expect(dialog.locator('#conv428Precision option[value="int8"]')).toBeEnabled();
+
+  await dialog.locator('#conv428Precision').selectOption('int8');
+  await expect(dialog.locator('#conv428Calibration')).toBeVisible();
+  await expect(dialog.locator('#conv428CalibrationDataset')).toHaveValue('calibration-dataset');
+  await dialog.locator('#conv428CalibrationSplit').selectOption('val');
+  await dialog.locator('#conv428CalibrationCount').fill('64');
+  await dialog.getByRole('button', {name: '开始转换'}).click();
+
+  await expect.poll(() => submitted).not.toBeNull();
+  expect(submitted).toMatchObject({
+    source_id: `version::${algorithmId}::${versionId}`,
+    target: 'rockchip',
+    resource_id: 'rknn-agent-int8',
+    params: {
+      precision: 'int8',
+      input_size: 640,
+      chip: 'rk3568'
+    },
+    dataset_id: 'calibration-dataset',
+    calibration_split: 'val',
+    calibration_count: 64
+  });
+});

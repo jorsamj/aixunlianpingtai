@@ -14,6 +14,7 @@ on:
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
       - 'static/app.js'
+      - 'static/styles.css'
       - 'static/index.html'
       - 'tests/unit/test_rknn_runtime.py'
       - 'tests/unit/test_service_nodes.py'
@@ -42,6 +43,7 @@ on:
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
       - 'static/app.js'
+      - 'static/styles.css'
       - 'static/index.html'
       - 'tests/unit/test_rknn_runtime.py'
       - 'tests/unit/test_service_nodes.py'
@@ -165,6 +167,11 @@ jobs:
           grep -Fq 'test_rknn_int8_calibration_snapshot_uses_exact_object_refs_and_start_time_downloads' tests/unit/test_remote_execution_transport.py
           grep -Fq 'test_agent_conversion_runner_downloads_frozen_rknn_int8_calibration_before_worker' tests/unit/test_node_agent_conversion_runtime.py
           grep -Fq 'test_agent_rknn_int8_freezes_calibration_snapshot_before_task_staging' tests/api/test_conversion_portable_contract.py
+          grep -Fq 'supported_precisions' static/app.js
+          grep -Fq 'conv428CalibrationDataset' static/app.js
+          grep -Fq 'conv428CalibrationSplit' static/app.js
+          grep -Fq 'conv428CalibrationCount' static/app.js
+          grep -Fq 'RKNN Agent INT8 conversion submits frozen calibration selection from the UI' tests/browser/model-and-conversion.spec.mjs
           grep -Fq '"deployment-test",' platform_core/node_agent_executor_loop.py
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
           grep -Fq '"training",' platform_core/node_agent_executor_loop.py
@@ -207,11 +214,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome model and RKNN Agent resource flow
-        run: npx playwright test tests/browser/model-and-conversion.spec.mjs --grep "deployment resource editor exposes service-node Agent for RKNN"
+        run: >-
+          npx playwright test tests/browser/model-and-conversion.spec.mjs
+          --grep "deployment resource editor exposes service-node Agent for RKNN|RKNN Agent INT8 conversion submits frozen calibration selection from the UI"
       - name: Browser guard
         shell: bash
         run: |
           grep -Fq '服务节点 Agent' tests/browser/model-and-conversion.spec.mjs
           grep -Fq 'RK3576' tests/browser/model-and-conversion.spec.mjs
+          grep -Fq 'RKNN Agent INT8 conversion submits frozen calibration selection from the UI' tests/browser/model-and-conversion.spec.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
