@@ -155,14 +155,39 @@ Phase 1 历史验收保持：
 - Portable Deployment `35318573871`、Remote Training `35318573869`、Remote Conversion `35318573929`：success。
 - `VERSION.txt` 仍为 `42.24.0`。
 
+## 0. 最新关闭：Remote MATERIAL_BATCH/CLEAN Phase 1 — Agent 清洗 / 去重
+
+2026-09-18，Remote CLEAN 已 CLOSED，且继续保持现有唯一 durable owner：`TaskKind.MATERIAL_BATCH + operation=CLEAN`。
+
+- 不存在并行 `TaskKind.CLEANING` handler；本地与远程共享同一 request / selection / result truth。
+- local 为默认执行方式；只有显式 `execution_mode=agent` 才要求 `agent.remote`，避免中央 Materials Worker 静默抢任务。
+- 后端 preflight 按真实选择范围检查 durable object evidence、OSS/S3/MinIO 存储可移植性与 online cleaning Agent；UI 只消费该 truth。
+- Agent 通过 execution-fenced exact-selection broker 分页取选中素材，并按 image_id 获取短期 GET；未选素材读取直接拒绝。
+- Agent 无中央 SQLite/NFS、无长期对象存储密钥，仅执行真实图像 metrics 分析。
+- 控制面重新执行 `metric_issues + DurableHashIndex`，并把 verified review 提交回既有 `clean_results` 与 MaterialRepository projection。
+- 用户确认/删除/保留流程不变；未确认的 durable success 继续投影为“待确认”。
+- 前端新增执行位置选择、远程阶段中文状态和实际执行方式标识。
+- Remote Cleaning workflow 永久覆盖 API、Ubuntu、Windows、前端 contract 与 Real Chrome。
+
+永久验收（代码 HEAD `b41f784a3765e09a2184453e03e895a1cda0271d`）：
+
+- Remote Cleaning `35324894972`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor `35324894991`：success。
+- Central Node Assignment `35324894963`：success。
+- Task Runtime Truth `35324895005`：success。
+- Portable Deployment `35324894993`：success。
+- Remote Material Import `35324894988`：success。
+- Remote Training `35324895079`、Remote Conversion `35324894962`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
 **仍然 OPEN：**
 
-1. 大规模远程清洗/去重的独立 Agent 执行。
-2. 如果未来需要 COCO/VOC 的 Agent server_zip，再按真实 portable transport 单独闭环，不能借本批 storage_scan 宣称支持。
+1. 如果未来需要 COCO/VOC 的 Agent server_zip，再按真实 portable transport 单独闭环，不能借 storage_scan closure 宣称支持。
+2. 厂商模型转换除 ONNX 外仍需按节点真实 SDK capability 单独关闭。
 
-**下一主线：Remote MATERIAL_BATCH/CLEAN Phase 1 — Agent 清洗 / 去重。**
+**下一主线：Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN。**
 
-目标：沿用现有 `TaskKind.MATERIAL_BATCH + operation=CLEAN` 建立真实 Agent execution，把大规模质量检查、重复图/近重复图检测等重 I/O 节点化；不得新增并行 `TaskKind.CLEANING` handler；Agent 仍不得直接写中央 SQLite/NFS，结果先形成 task-owned review evidence，再由控制面提交正式素材状态。
+当前只优先瑞芯微 RK3568 / RK3578，不同步扩 TensorRT / Sophon / Ascend。节点必须真实安装并验证 RKNN-Toolkit2 等转换环境后才可上报 `conversion.rknn`；前后端只依据 effective capability 展示/允许 RKNN 转换，禁止从普通 `conversion` capability 推断厂商 SDK 可用。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

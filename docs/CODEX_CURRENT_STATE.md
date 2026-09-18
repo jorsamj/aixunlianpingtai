@@ -43,11 +43,51 @@ Acceptance at code HEAD `9fb67096718e5ece1b72a2acf601662fe337e1d7`:
 - Remote Training Runtime `35318573869`: success.
 - Remote Conversion Runtime `35318573929`: success.
 
-**OPEN / next:** Remote MATERIAL_BATCH/CLEAN Phase 1. Preserve the existing `TaskKind.MATERIAL_BATCH + operation=CLEAN`
-as the sole durable cleaning truth and move large image-quality / duplicate / near-
-duplicate I/O to scheduled Agent nodes. Do not add a competing `TaskKind.CLEANING` handler. Preserve the same rule: Agent output
-must be task-owned, server-confirmed evidence and must not directly mutate
-central SQLite/NFS truth.
+## Current closure — Remote MATERIAL_BATCH/CLEAN Phase 1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Remote cleaning now executes on scheduled Agent nodes without creating a
+competing cleaning task owner. The sole durable truth remains
+`TaskKind.MATERIAL_BATCH + operation=CLEAN`; local execution stays the default
+and explicit `execution_mode=agent` is fenced with `agent.remote`.
+
+The control plane preflights the exact requested material range and requires
+durable object evidence, enabled OSS/S3-compatible storage (including MinIO),
+and an online Agent with effective `cleaning` capability. The UI consumes this
+truth and disables remote execution when it is not genuinely available.
+Direct API requests fail closed too and do not leave an Agent task behind.
+
+The Agent never opens central SQLite/NFS and never receives long-lived object
+storage credentials. It pages the frozen exact selection through an
+execution-lease-fenced broker, receives per-image short-lived GET contracts,
+verifies source size/SHA256 and runs the real CleaningAnalysisRuntime locally.
+Its output is task-owned metrics evidence only. The control plane re-runs
+`metric_issues` with the existing `DurableHashIndex`, verifies the immutable
+uploaded review, and commits results into the existing
+`selection.sqlite3/clean_results` and MaterialRepository projection.
+
+The legacy user-facing semantics are preserved: a successful scan remains
+"awaiting confirmation" until the user chooses suggested removals/keeps and
+confirms. The product UI now exposes a preflight-driven Central Worker / Remote
+Cleaning Node picker and maps remote execution stages to Chinese runtime text.
+
+Acceptance at code HEAD `b41f784a3765e09a2184453e03e895a1cda0271d`:
+- Remote Cleaning Runtime `35324894972`: API / Ubuntu / Windows / Real Chrome success.
+- Node Agent Executor `35324894991`: success.
+- Central Node Assignment `35324894963`: success.
+- Task Runtime Truth `35324895005`: success.
+- Portable Deployment `35324894993`: success.
+- Remote Material Import `35324894988`: success.
+- Remote Training Runtime `35324895079`: success.
+- Remote Conversion Runtime `35324894962`: success.
+
+**OPEN / next:** Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN. Prioritize
+the user's RK3568 / RK3578 hardware only; do not simultaneously claim TensorRT,
+Sophon or Ascend. Add a real `conversion.rknn` effective capability that is
+reported only when the node has a verified RKNN conversion SDK/runtime
+environment. Frontend and backend must use that same capability truth.
+
 
 ## Current closure — Remote MATERIAL_IMPORT Phase 4 storage_scan CLOSED
 

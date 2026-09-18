@@ -177,9 +177,40 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Storage Cache Governance `35318573935`：全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
-**当前主线：Remote MATERIAL_BATCH/CLEAN Phase 1 — Agent 清洗 / 去重。**
+# 最新关闭：Remote MATERIAL_BATCH/CLEAN Phase 1 — Agent 清洗 / 去重
 
-不要重做 MATERIAL_IMPORT Phase 1/2/3/4/5。下一步沿用现有 `TaskKind.MATERIAL_BATCH + operation=CLEAN` 作为唯一 durable truth，把大规模图片质量检查、重复图/近重复图检测等重 I/O 从中央 Materials Worker 移到可调度 Agent 节点；禁止重新启用并行 `TaskKind.CLEANING` owner；仍不得让 Agent 直接写中央 SQLite/NFS，输出必须先形成 task-owned、server-confirmed review truth，再由控制面确认/提交正式素材状态。
+2026-09-18，远程清洗已按现有唯一 owner `TaskKind.MATERIAL_BATCH + operation=CLEAN` 完成真实 Agent 闭环并 CLOSED；**没有新增或恢复并行 `TaskKind.CLEANING` handler**。
+
+真实闭环：
+
+- 本地清洗默认行为保持不变；只有用户显式选择 `execution_mode=agent` 才进入远程节点链路。
+- 后端 preflight 以真实 selection 校验素材与节点，不让前端自行猜测：所选素材必须有 `object_key + size + SHA256`，存储源必须是已启用 OSS / S3 / MinIO，且至少存在 online + agent + effective `cleaning` capability 节点。
+- preflight 不可用时，Agent 选项在 UI 中禁用；绕过 UI 直接请求 Agent 也会 fail closed，并保证不会残留 durable task。
+- prepare / publish / retry 全部从持久化 request 恢复执行方式；Agent CLEAN 使用 `agent.remote` capability，中央 Materials Worker 无法静默抢走远程任务。
+- 控制面通过 execution-lease-fenced broker 分页暴露**冻结 selection 中的精确 material refs**；不是 prefix 扫描，未选中 image_id 无法读取。
+- Agent 不读取中央 SQLite/NFS、不拿长期对象存储凭据；逐图取得短期 GET contract，并校验 size / SHA256 后进行本地分析。
+- Agent 复用 `CleaningAnalysisRuntime` 做真实图片解码、尺寸、dHash、模糊度、亮度、熵等分析，只产出 task-owned metrics review evidence。
+- 重复图 / 近重复图 / 阈值规则仍由控制面使用现有 `metric_issues + DurableHashIndex` 重新评估，Agent 不能自行决定正式删除结果。
+- Agent review 经 immutable object upload + size/SHA256 server-confirm 后，控制面才把结果提交回现有 `selection.sqlite3 / clean_results` 与 MaterialRepository clean projection；没有第二套清洗结果库。
+- durable `SUCCEEDED` 且尚未用户确认时，v47 兼容投影继续显示“待确认”；用户仍通过原有“建议删除 / 保留 → 确认应用清洗”流程完成最终变更。
+- 产品弹窗新增“执行位置”：默认 **中央 Worker**；满足后端 preflight 时才允许选择 **远程清洗节点**。任务列表标识实际执行方式，远程阶段均映射为中文真实进度。
+- 永久专项覆盖 Agent runtime、portable transport、assignment、API fail-closed、前端 Node contract 与 Real Chrome 执行位置选择。
+
+最终验收（代码 HEAD `b41f784a3765e09a2184453e03e895a1cda0271d`）：
+
+- Remote Cleaning Runtime `35324894972`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35324894991`：API / Ubuntu / Windows 全绿。
+- Central Node Assignment `35324894963`：全绿。
+- Task Runtime Truth `35324895005`：全绿。
+- Portable Deployment `35324894993`：全绿。
+- Remote Material Import `35324894988`：全绿。
+- Remote Conversion Runtime `35324894962`：全绿。
+- Remote Training Runtime `35324895079`：API / Ubuntu / Windows 全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**当前主线：Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN。**
+
+按当前项目实际硬件优先级，下一阶段只推进瑞芯微，不同时扩 TensorRT / Sophon / Ascend。优先支持 RK3568 / RK3578；节点只有在真实安装并通过 RKNN-Toolkit2/对应转换环境探测后才允许上报 `conversion.rknn`，不得用通用 `conversion` 假装 RKNN 可用。前后端资源选择、目标芯片、转换参数和产物状态必须共享同一 capability / task truth。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
