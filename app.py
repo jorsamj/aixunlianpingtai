@@ -1567,7 +1567,10 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
             object_keys=payload.object_keys, label_mapping=payload.label_mapping,
             create_labels=payload.create_labels, accept_quality_report=payload.accept_quality_report,
             labels=project_label_items(project), create_label=create_import_label)
-        updated = shared_task_repository().resume_after_confirmation(task_id)
+        updated = shared_task_repository().resume_after_confirmation(
+            task_id,
+            required_capabilities=("storage.import",),
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_import_task(updated)
