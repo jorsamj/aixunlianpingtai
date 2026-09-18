@@ -10,6 +10,8 @@ on:
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'node_agent.py'
       - 'predict_ultralytics_runner.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
@@ -20,6 +22,8 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/api/test_agent_executor_api.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -33,6 +37,8 @@ on:
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'node_agent.py'
       - 'predict_ultralytics_runner.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/task_node_assignments.py'
@@ -43,6 +49,8 @@ on:
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/api/test_agent_executor_api.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -70,6 +78,8 @@ jobs:
           platform_core/remote_execution_transport.py
           platform_core/node_agent_executor_runtime.py
           platform_core/node_agent_deployment_runtime.py
+          platform_core/node_agent_executor_loop.py
+          node_agent.py
           predict_ultralytics_runner.py
           platform_core/service_nodes.py
           platform_core/task_node_assignments.py
@@ -80,6 +90,8 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
       - name: Agent execution contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -88,6 +100,8 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
           tests/unit/test_service_nodes.py
           tests/unit/test_task_node_assignments.py
 
@@ -143,5 +157,13 @@ jobs:
           grep -Fq 'ProcessController' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'NodeAgentExecutorLoop' node_agent.py
+          grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py
+          grep -Fq 'executor.start()' node_agent.py
+          grep -Fq 'executor.stop(timeout=10.0)' node_agent.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_executor_loop.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_executor_loop.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
