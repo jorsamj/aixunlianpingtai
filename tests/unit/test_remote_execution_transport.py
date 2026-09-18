@@ -327,7 +327,11 @@ def test_resolve_execution_payload_mints_short_lived_urls_without_central_paths(
 
     assert resolved["task_kind"] == "DEPLOYMENT_TEST"
     assert resolved["selected_device"] == "cuda:0"
-    assert resolved["model"] == {"type": "official", "reference": "yolo11n.pt"}
+    assert resolved["model"] == {
+        "type": "official",
+        "reference": "yolo11n.pt",
+        "base_selection_reason": "mother_model",
+    }
     assert resolved["input"]["download"]["method"] == "GET"
     assert "signed.example.test/get/" in resolved["input"]["download"]["url"]
     assert resolved["output"]["upload_protocol"] == "prepare-after-local-hash-v1"
@@ -776,7 +780,44 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         execution_generation=2,
         snapshot_id="snapshot-remote-one",
         destination=tmp_path / "agent-result.zip",
+        include_model_bytes=False,
     )
+    local_by_role = {"best": best, "last": last}
+    model_evidence = [
+        {
+            "role": str(item["role"]),
+            "file_name": str(item["file_name"]),
+            "sha256": str(item["sha256"]),
+            "size_bytes": int(item["size_bytes"]),
+        }
+        for item in archive.models
+    ]
+
+    prepared_models = transport.prepare_training_model_uploads(
+        task,
+        payload,
+        execution_generation=2,
+        models=model_evidence,
+    )
+    assert prepared_models["version_id"].startswith("rt")
+    assert len(prepared_models["items"]) == 2
+    for item in prepared_models["items"]:
+        role = str(item["role"])
+        storage_ref = item["storage_ref"]
+        data = local_by_role[role].read_bytes()
+        provider.objects[storage_ref["object_key"]] = {
+            "data": data,
+            "content_type": "application/octet-stream",
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    confirmed_models = transport.confirm_training_model_uploads(
+        task,
+        payload,
+        execution_generation=2,
+        models=model_evidence,
+    )
+    assert confirmed_models["confirmed"] is True
+    assert confirmed_models["version_id"] == prepared_models["version_id"]
 
     prepared = transport.prepare_result_upload(
         task,
@@ -823,6 +864,13 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         lambda _path, algorithm_id, version: attached.append((algorithm_id, dict(version))) or dict(version),
     )
 
+    confirmed_for_commit = {
+        **confirmed,
+        "training_models": {
+            "version_id": confirmed_models["version_id"],
+            "models": confirmed_models["items"],
+        },
+    }
     committed = transport.commit_result_publication(
         task,
         payload,
@@ -831,18 +879,21 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
             "size_bytes": archive.size_bytes,
             "execution_generation": 2,
         },
-        confirmed,
+        confirmed_for_commit,
     )
 
     assert committed["algorithm_id"] == "algorithm-one"
-    assert committed["version_id"].startswith("rt")
+    assert committed["version_id"] == confirmed_models["version_id"]
     assert committed["model_artifacts_committed"] is True
     assert attached and attached[0][0] == "algorithm-one"
     version = attached[0][1]
     assert version["snapshot_id"] == "snapshot-remote-one"
     assert version["training_status"] == "SUCCEEDED"
     assert Path(version["stored_path"]).is_file()
-    assert model_artifacts.ingested
+    assert len(model_artifacts.registered) == 2
+    assert {entry[0]["target"] for entry in model_artifacts.registered} == {"best", "last"}
+    assert all(entry[1]["storage_status"] == "UPLOADED" for entry in model_artifacts.registered)
+    assert provider.uploads == []
     serialized = str(confirmed)
     assert str(tmp_path / "task_runtime" / "remote-training-results") not in serialized
 
