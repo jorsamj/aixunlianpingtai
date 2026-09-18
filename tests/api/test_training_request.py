@@ -393,6 +393,63 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     assert not payload.get("train_dataset_ids")
 
 
+def test_explicit_remote_training_enqueues_durable_input_preparation_without_legacy_server_id(
+    client, seeded_project
+):
+    import app as app_module
+    from platform_core.task_runtime import TaskKind, TaskStatus
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "远程准备训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "target": "remote",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "split_mode": "independent_test_set",
+            "train_image_ids": ["train-a", "train-b"],
+            "test_image_ids": ["test-a"],
+            "validation_percent": 20,
+            "queue_priority": 9,
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    training = body["task"]
+    assert training["kind"] == "TRAINING"
+    assert training["status"] == "QUEUED"
+    assert body["remote_input_state"] == "PREPARING"
+    prep_id = body["preparation_task_id"]
+
+    target = app_module.shared_task_repository().get(training["id"])
+    prep = app_module.shared_task_repository().get(prep_id)
+    assert target is not None and target.kind is TaskKind.TRAINING
+    assert target.status is TaskStatus.QUEUED
+    assert prep is not None and prep.kind is TaskKind.TRAINING_PREPARE
+    assert prep.status is TaskStatus.QUEUED
+    assert prep.required_capabilities == ("training.prepare",)
+    assert prep.resource_key == f"training-prepare:{project_id}"
+
+    payload = app_module.shared_task_artifacts().read_json(training["id"], "payload.json")
+    assert payload["target"] == "remote"
+    assert payload["remote_input_state"] == "PREPARING"
+    assert payload["remote_prepare_task_id"] == prep_id
+    assert "remote_execution" not in payload
+    prep_payload = app_module.shared_task_artifacts().read_json(prep_id, "payload.json")
+    assert prep_payload == {
+        "schema_version": 1,
+        "training_task_id": training["id"],
+        "project_id": project_id,
+    }
+
+
 def test_training_route_rejects_dataset_group_contract(client, seeded_project):
     project_id, _ = seeded_project
     response = client.post(
