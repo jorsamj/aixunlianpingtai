@@ -223,6 +223,7 @@ class AgentExecutionService:
         execution_payload_resolver=None,
         result_upload_preparer=None,
         result_upload_confirmer=None,
+        result_commit_handler=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -231,6 +232,7 @@ class AgentExecutionService:
         self.execution_payload_resolver = execution_payload_resolver
         self.result_upload_preparer = result_upload_preparer
         self.result_upload_confirmer = result_upload_confirmer
+        self.result_commit_handler = result_commit_handler
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -721,10 +723,10 @@ class AgentExecutionService:
     def _requires_remote_result_confirmation(task, payload: dict[str, Any]) -> bool:
         remote = payload.get("remote_execution")
         return (
-            task.kind is TaskKind.DEPLOYMENT_TEST
+            task.kind in {TaskKind.DEPLOYMENT_TEST, TaskKind.TRAINING}
             and isinstance(remote, dict)
             and int(remote.get("version") or 0) == 1
-            and str(remote.get("task_kind") or "") == TaskKind.DEPLOYMENT_TEST.value
+            and str(remote.get("task_kind") or "") == task.kind.value
             and str(remote.get("transport") or "") == "object-storage-v1"
         )
 
@@ -774,7 +776,7 @@ class AgentExecutionService:
         ):
             raise AgentExecutionError(
                 "REMOTE_RESULT_NOT_CONFIRMED",
-                "remote deployment result must be uploaded and verified before finalization",
+                "remote execution result must be uploaded and verified before finalization",
                 409,
             )
         return state
@@ -807,7 +809,7 @@ class AgentExecutionService:
         if not self._requires_remote_result_confirmation(current, payload):
             raise AgentExecutionError(
                 "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
-                "this execution does not use the portable deployment result protocol",
+                "this execution does not use the portable result publication protocol",
                 409,
             )
         if not callable(self.result_upload_preparer):
@@ -935,7 +937,7 @@ class AgentExecutionService:
         if not self._requires_remote_result_confirmation(current, payload):
             raise AgentExecutionError(
                 "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
-                "this execution does not use the portable deployment result protocol",
+                "this execution does not use the portable result publication protocol",
                 409,
             )
         if not callable(self.result_upload_confirmer):
@@ -1019,10 +1021,37 @@ class AgentExecutionService:
                 "remote execution lost ownership before result publication",
                 409,
             ) from error
+        commit_result: dict[str, Any] = {}
+        if callable(self.result_commit_handler):
+            try:
+                committed = self.result_commit_handler(
+                    current,
+                    payload,
+                    evidence,
+                    confirmed,
+                )
+            except AgentExecutionError:
+                raise
+            except Exception as error:
+                raise AgentExecutionError(
+                    str(getattr(error, "code", "") or "REMOTE_RESULT_COMMIT_FAILED"),
+                    str(error),
+                    int(getattr(error, "status_code", 409) or 409),
+                ) from error
+            if committed is not None:
+                if not isinstance(committed, dict):
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_COMMIT_INVALID",
+                        "result commit handler returned a non-object",
+                        500,
+                    )
+                commit_result = dict(committed)
+
         result_ref = _remote_result_ref(execution_generation)
         result = {
             **runtime_metadata,
             **dict(confirmed["result"]),
+            **commit_result,
         }
         result["execution_generation"] = int(execution_generation)
         result["output_sha256"] = evidence["sha256"]
@@ -1173,6 +1202,7 @@ def agent_executor_router(
     execution_payload_resolver=None,
     result_upload_preparer=None,
     result_upload_confirmer=None,
+    result_commit_handler=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -1185,6 +1215,7 @@ def agent_executor_router(
             execution_payload_resolver=execution_payload_resolver,
             result_upload_preparer=result_upload_preparer,
             result_upload_confirmer=result_upload_confirmer,
+            result_commit_handler=result_commit_handler,
         )
 
     def token(authorization: str | None) -> str:
