@@ -11769,7 +11769,6 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
         )
     return item
 
-class DeployResourceReq(BaseModel):
 
 class DeployResourceReq(BaseModel):
     name: str
