@@ -466,6 +466,134 @@ def test_cancellation_wins_if_requested_during_result_confirmation(tmp_path):
 
 
 
+def create_portable_conversion(repository, artifacts, task_id="convert-agent"):
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "execution_mode": "agent",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MODEL_CONVERSION",
+            "transport": "object-storage-v1",
+            "conversion": {
+                "schema_version": 1,
+                "target": "onnx",
+                "source": {
+                    "type": "object",
+                    "artifact_id": "artifact-source",
+                    "storage_source_id": "s3-main",
+                    "object_key": "models/source.pt",
+                    "file_name": "source.pt",
+                    "size_bytes": 10,
+                    "sha256": "a" * 64,
+                    "content_type": "application/octet-stream",
+                },
+                "params": {
+                    "input_size": 640,
+                    "batch": 1,
+                    "opset": 12,
+                    "dynamic": False,
+                    "simplify": False,
+                },
+                "output": {
+                    "storage_source_id": "s3-main",
+                    "object_key": "conversion/model.onnx",
+                    "file_name": "model.onnx",
+                    "content_type": "application/octet-stream",
+                },
+            },
+        },
+    })
+    return repository.create(
+        TaskRecord.new(
+            task_id=task_id,
+            project_id="project-conversion",
+            kind=TaskKind.MODEL_CONVERSION,
+            payload_ref="request.json",
+            resource_key="conversion:agent",
+        ),
+        artifacts=artifacts,
+    )
+
+
+def create_conversion_agent_node(repository, node_id="conversion-agent-node"):
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": node_id,
+        "display_name": node_id,
+        "connection_mode": "agent",
+        "allowed_capabilities": ["conversion"],
+    })
+    nodes.heartbeat(node_id, token, {
+        "hostname": node_id,
+        "reported_capabilities": ["conversion"],
+        "resources": {
+            "cpu": {"logical_cores": 8},
+            "memory": {"available_bytes": 16 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {"available": False, "gpus": []},
+        },
+        "runtime": {"python_version": "3.12"},
+    })
+    return nodes, token
+
+
+def test_portable_conversion_requires_confirmed_result_before_finalization(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_portable_conversion(repository, artifacts)
+    _nodes, token = create_conversion_agent_node(repository)
+    svc = service(repository, artifacts)
+
+    assignment = svc.allocator.assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "conversion-agent-node"
+    claimed = svc.claim_assignment("conversion-agent-node", token)
+    assert claimed is not None
+    started = svc.start_execution(
+        "conversion-agent-node",
+        token,
+        "convert-agent",
+        claimed["assignment"]["assignment_lease_token"],
+    )
+    execution = started["execution"]
+
+    with pytest.raises(AgentExecutionError) as early:
+        svc.begin_finalization(
+            "conversion-agent-node",
+            token,
+            "convert-agent",
+            execution["lease_token"],
+            execution["generation"],
+        )
+    assert early.value.code == "REMOTE_RESULT_NOT_CONFIRMED"
+
+    svc.prepare_result_upload(
+        "conversion-agent-node",
+        token,
+        "convert-agent",
+        execution["lease_token"],
+        execution["generation"],
+        sha256="7" * 64,
+        size_bytes=777,
+    )
+    confirmed = svc.confirm_result_upload(
+        "conversion-agent-node",
+        token,
+        "convert-agent",
+        execution["lease_token"],
+        execution["generation"],
+    )
+    assert confirmed["confirmed"] is True
+    assert confirmed["result_ref"] == "remote-results/1/result.json"
+
+    finalizing = svc.begin_finalization(
+        "conversion-agent-node",
+        token,
+        "convert-agent",
+        execution["lease_token"],
+        execution["generation"],
+    )
+    assert finalizing["task"]["stage"] == "finalizing_commit"
+
+
 def create_portable_training(repository, artifacts, task_id="train-agent"):
     artifacts.atomic_write_json(task_id, "payload.json", {
         "target": "remote",
