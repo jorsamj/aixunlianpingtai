@@ -4,6 +4,39 @@
 
 
 
+## Current closure — Remote Portability Gate + Production Runtime Mount CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+`CentralTaskAllocator` now fails closed for `connection_mode=agent`: an Agent
+node is ineligible unless the task payload contains an explicit version-1
+`remote_execution` contract whose task kind and supported transport match.
+Legacy path-bound payloads remain eligible for `local` nodes but are never
+implicitly treated as portable. Scheduler truth stores only the allow-listed
+version/task_kind/transport metadata; arbitrary credentials, signed URLs and
+control-plane paths from the task payload are not copied into assignment truth.
+
+This gate passed Central Node Assignment run `35290891091` and Node Agent
+Executor run `35290891208` on API, Ubuntu and Windows.
+
+A separate production integration gap was also closed: `app.py` now mounts
+`training_recovery_router(get_project, shared_task_repository,
+shared_task_artifacts)` exactly once. That composed router is the single owner
+of training recovery, material picker, service nodes, central scheduler and
+node executor. `tests/api/test_runtime_router_app_mount.py` uses AST/source
+contracts to prevent a missing mount, duplicate mount, or scattered direct
+subrouter ownership.
+
+Production mount validation passed Central run `35291195275` and Agent run
+`35291195262` on API, Ubuntu and Windows. Temporary validation PRs were
+closed without merge.
+
+**OPEN / next:** make one task kind actually portable end-to-end. Deployment
+test is the preferred first target because the existing model artifact layer
+already uploads verified model artifacts to configured OSS/S3/MinIO. The next
+work must provide remote-safe input/output transport and a real Agent-side
+runner; no shared SQLite/NFS or control-plane absolute path translation.
+
 ## Current closure — HTTP Agent Executor Control Protocol CLOSED
 
 Development branch remains `feature/external-algorithm-publishing`; formal
