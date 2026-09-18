@@ -56,9 +56,18 @@ class FakeClient:
 
 
 class FakeRunner:
-    def __init__(self, *, block=False, fenced=False):
+    def __init__(
+        self,
+        *,
+        block=False,
+        fenced=False,
+        ready=True,
+        recovery_error="",
+    ):
         self.block = block
         self.fenced = fenced
+        self.ready = bool(ready)
+        self.recovery_error = str(recovery_error)
         self.started = threading.Event()
         self.release = threading.Event()
         self.shutdown_requested = False
@@ -101,6 +110,25 @@ def test_executor_reports_only_capabilities_this_agent_build_can_run():
         ["training", "deployment-test", "conversion", "deployment-test"]
     ) == ["deployment-test", "training"]
     assert executable_agent_capabilities(["training", "conversion"]) == ["training"]
+
+
+def test_executor_withdraws_training_capability_when_runner_recovery_is_unsafe():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    training_runner = FakeRunner(
+        ready=False,
+        recovery_error="stale training process cleanup could not be verified",
+    )
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["deployment-test", "training"],
+        runners={"TRAINING": training_runner},
+    )
+
+    assert loop.capabilities == ("deployment-test", "training")
+    assert loop.effective_capabilities() == ("deployment-test",)
+    assert "cleanup could not be verified" in loop.status().last_error
 
 
 def test_run_once_claims_starts_and_dispatches_one_deployment_task():
