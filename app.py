@@ -5555,9 +5555,11 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         raise HTTPException(status_code=400, detail="训练框架仅支持 ultralytics 或 paddle")
     target = str(payload.target or "local").strip().lower()
     if target == "remote":
-        remote_id = str(payload.server_id or "").strip()
-        if not remote_id:
-            raise HTTPException(status_code=400, detail="远程训练必须选择训练服务器")
+        # v42.25 control-plane scheduling replaces the legacy direct remote
+        # server upload path. server_id is retained only as an optional
+        # compatibility/affinity label; the central service-node allocator owns
+        # the actual Agent selection.
+        remote_id = str(payload.server_id or "").strip() or "scheduler"
         resource_key = f"training:remote:{remote_id}"
     else:
         device = normalize_training_device(payload.device)
@@ -5573,6 +5575,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
                 return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
             raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
     request_payload = payload.model_dump(mode="json", exclude_none=True)
+    prepare_task_id = f"trainprep_{task_id}"
     request_payload.update(
         {
             "split_mode": split.mode.value,
@@ -5583,6 +5586,14 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "schema_version": 3,
             "requested_device": payload.device,
             "external_analysis_id": external_analysis_id,
+            **(
+                {
+                    "remote_input_state": "PREPARING",
+                    "remote_prepare_task_id": prepare_task_id,
+                }
+                if target == "remote"
+                else {}
+            ),
         }
     )
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
@@ -5597,6 +5608,37 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             required_capabilities=(f"training.{framework}",),
         )
     )
+    preparation_record = None
+    if target == "remote":
+        try:
+            shared_task_artifacts().atomic_write_json(
+                prepare_task_id,
+                "payload.json",
+                {
+                    "schema_version": 1,
+                    "training_task_id": task_id,
+                    "project_id": project_id,
+                },
+            )
+            preparation_record = shared_task_repository().create(
+                TaskRecord.new(
+                    prepare_task_id,
+                    project_id,
+                    TaskKind.TRAINING_PREPARE,
+                    "payload.json",
+                    f"training-prepare:{project_id}",
+                    priority=int(payload.queue_priority),
+                    required_capabilities=("training.prepare",),
+                )
+            )
+        except Exception as error:
+            shared_task_repository().fail_queued_precondition(
+                task_id,
+                f"REMOTE_TRAINING_PREP_TASK_CREATE_FAILED: {error}",
+                status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                stage="remote_input_preparation_failed",
+            )
+            raise
     job_dir = project_dir(project_id) / "jobs" / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -5635,7 +5677,18 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     sync_jobs_index(project_id)
     return JSONResponse(
         status_code=202,
-        content={"ok": True, "task": _public_task(record)},
+        content={
+            "ok": True,
+            "task": _public_task(record),
+            **(
+                {
+                    "preparation_task_id": preparation_record.task_id,
+                    "remote_input_state": "PREPARING",
+                }
+                if preparation_record is not None
+                else {}
+            ),
+        },
     )
 
 
