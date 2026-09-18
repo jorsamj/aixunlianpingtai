@@ -167,8 +167,11 @@ jobs:
           grep -Fq 'parser.add_argument("--device", default="")' predict_ultralytics_runner.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
-          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test"})' platform_core/node_agent_executor_loop.py
-          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test", "training"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "TRAINING"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'def effective_capabilities' platform_core/node_agent_executor_loop.py
+          grep -Fq 'runner.ready' platform_core/node_agent_executor_loop.py
+          grep -Fq 'reported_capabilities = list(executor.effective_capabilities())' node_agent.py
           grep -Fq 'NodeAgentExecutorLoop' node_agent.py
           grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py
           grep -Fq 'executor.start()' node_agent.py
