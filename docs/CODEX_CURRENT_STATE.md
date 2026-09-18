@@ -4,6 +4,51 @@
 
 
 
+## Current closure — Remote MATERIAL_IMPORT Phase 5 COCO / Pascal VOC CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+COCO and Pascal VOC are now real remote annotation formats for
+`MATERIAL_IMPORT + storage_scan + execution_mode=agent`. This closure is
+deliberately limited to object-storage directory scanning; Agent server_zip is
+not claimed for these formats.
+
+A project-database-agnostic `DetectionDatasetScanner` reads only the brokered
+StorageProvider and persists task-owned candidate/annotation evidence. COCO
+preserves external category ids/names and split identity; VOC parses
+object/bndbox XML with deterministic external class ids and rejects
+DOCTYPE/ENTITY declarations. Image dimensions come from the real source object,
+boxes are normalized for durable review, clipped/invalid boxes are represented
+as quality evidence, and object/annotation/box counts are bounded.
+
+Review archives remain metadata/annotation-only. Server-confirm revalidates the
+review schema, prefix, candidate coverage, classes, normalized boxes and issue
+evidence. Users then confirm external-class to platform-label mappings. The
+local storage indexer re-stats source objects (size/ETag/SHA256) before writing
+MaterialRepository and AnnotationRepository truth and converts normalized boxes
+back to pixel coordinates. The Agent never creates labels or writes central
+project databases directly.
+
+The product UI exposes COCO and Pascal VOC only for object-storage Agent scans.
+Local directory/server ZIP modes disable those options, and dataset_yaml
+remains YOLO-only. Real Chrome verifies a COCO storage_scan submission.
+
+Acceptance at code HEAD `9fb67096718e5ece1b72a2acf601662fe337e1d7`:
+- Remote Material Import `35318574008`: API / Ubuntu / Windows / Real Chrome success.
+- Node Agent Executor `35318574014`: success.
+- Central Node Assignment `35318574002`: success.
+- Task Runtime Truth `35318573876`: success.
+- Storage Cache Governance `35318573935`: success.
+- Portable Deployment `35318573871`: success.
+- Remote Training Runtime `35318573869`: success.
+- Remote Conversion Runtime `35318573929`: success.
+
+**OPEN / next:** Remote CLEANING Phase 1. Use the existing `TaskKind.CLEANING`
+as the durable task kind and move large image-quality / duplicate / near-
+duplicate I/O to scheduled Agent nodes. Preserve the same rule: Agent output
+must be task-owned, server-confirmed evidence and must not directly mutate
+central SQLite/NFS truth.
+
 ## Current closure — Remote MATERIAL_IMPORT Phase 4 storage_scan CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
@@ -41,10 +86,9 @@ Acceptance at code HEAD `639cded30a6a2fed67275f19450cb70b4e0a9128`:
 - Remote Training Runtime `35316128920`: success.
 - Remote Conversion Runtime `35316129033`: success.
 
-**OPEN / next:** Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC. Reuse
-existing parsing semantics, but adapt them to brokered provider + task-owned
-review evidence + server-confirm + confirmation/local-indexing truth. Do not
-let an Agent write central project databases directly.
+Phase 5 COCO / Pascal VOC is CLOSED above. Do not reopen the generic detection
+review path unless a regression is proven. The next control-plane task is
+Remote CLEANING Phase 1.
 
 ## Current closure — Remote MATERIAL_IMPORT Phase 3 Staging GC CLOSED
 

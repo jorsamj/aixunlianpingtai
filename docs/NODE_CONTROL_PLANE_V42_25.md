@@ -133,14 +133,36 @@ Phase 1 历史验收保持：
 - Portable Deployment `35316129051`、Remote Training `35316128920`、Remote Conversion `35316129033`：success。
 - `VERSION.txt` 仍为 `42.24.0`。
 
+## 0. 最新关闭：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC
+
+2026-09-18，COCO / Pascal VOC 的远程 annotation 格式已 CLOSED，范围为 **Agent storage_scan**：
+
+- `DetectionDatasetScanner` 只消费 brokered provider，不读取中央 SQLite/NFS，也不直接写正式项目数据。
+- COCO 保留外部 category id/name，解析 images/annotations/categories 与 split；VOC 解析 object/bndbox 并为外部标签生成稳定 class id。
+- 原始对象不重新打包；review archive 只携带 candidate + normalized box + split + issue + class mapping evidence。
+- server-confirm 对 review schema、candidate coverage、class、normalized box、issue、prefix 再做 fail-closed 校验。
+- 用户确认外部类别到平台标签映射后，local indexer 再次校验原对象 size / ETag / SHA256，并写 MaterialRepository / AnnotationRepository。
+- XML DOCTYPE / ENTITY 拒绝；对象/标注文件/标注框均有明确上限。
+- 产品 UI 只在“对象存储目录”Agent 模式开放 COCO/VOC；本地目录与 server_zip 不误宣称支持。
+- dataset_yaml 继续只允许 YOLO。
+- Integration 永久覆盖 COCO 与 VOC 从 review → mapping confirmation → local indexing → AnnotationRepository；Real Chrome 覆盖 COCO 实际提交。
+
+永久验收（代码 HEAD `9fb67096718e5ece1b72a2acf601662fe337e1d7`）：
+
+- Remote Material Import `35318574008`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor `35318574014`、Central Node Assignment `35318574002`：success。
+- Task Runtime Truth `35318573876`、Storage Cache Governance `35318573935`：success。
+- Portable Deployment `35318573871`、Remote Training `35318573869`、Remote Conversion `35318573929`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
 **仍然 OPEN：**
 
-1. COCO / Pascal VOC 远程 annotation 格式。
-2. 大规模远程清洗/去重如需独立节点执行，必须形成真实 task kind/runner。
+1. 大规模远程清洗/去重的独立 Agent 执行。
+2. 如果未来需要 COCO/VOC 的 Agent server_zip，再按真实 portable transport 单独闭环，不能借本批 storage_scan 宣称支持。
 
-**下一主线：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC。**
+**下一主线：Remote CLEANING Phase 1 — Agent 清洗 / 去重。**
 
-目标：复用既有 COCO/VOC 成熟解析语义，但适配现有 brokered provider、task-owned review evidence、server-confirm、用户确认与 local indexing 流程；禁止让 Agent 直接写正式项目库或中央 SQLite/NFS。
+目标：使用现有 `TaskKind.CLEANING` 建立真实 Agent runner，把大规模质量检查、重复图/近重复图检测等重 I/O 节点化；Agent 仍不得直接写中央 SQLite/NFS，结果先形成 task-owned review evidence，再由控制面提交正式素材状态。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

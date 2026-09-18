@@ -145,9 +145,41 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Task Runtime Truth `35316128916`：全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
-**当前主线：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC。**
+# 最新关闭：Remote MATERIAL_IMPORT Phase 5 — COCO / Pascal VOC
 
-不要重做 Phase 1/2/3/4。下一步在现有 broker + review + confirmation + local-indexing truth 上新增 COCO / VOC annotation 解析，优先复用现有旧导入逻辑中的成熟解析规则，但不能把旧的直接写项目数据流程搬到 Agent；仍需先生成可 server-confirm 的 task-owned review evidence，再经统一确认后写正式 Material / Annotation truth。
+2026-09-18，COCO / Pascal VOC 已接入真实远程 `MATERIAL_IMPORT + storage_scan + Agent` 闭环并 CLOSED。
+
+当前 CLOSED 范围明确为 **对象存储目录的 Agent storage_scan**；本批不宣称 COCO/VOC 的 Agent server_zip 已支持。
+
+真实闭环：
+
+- 新增项目数据库无关的 bounded `DetectionDatasetScanner`，只读取 brokered StorageProvider，写 task-owned ImportCandidateStore evidence，不在 Agent 侧创建平台标签、Material 或 Annotation。
+- COCO 支持 categories / images / annotations、多 annotation JSON 与 train/val/test split 识别；外部 category id 原样保留到确认阶段。
+- Pascal VOC 支持 XML object/bndbox、split 识别与稳定外部 class id；含 DOCTYPE / ENTITY 的 XML fail closed。
+- 格式层使用真实图片尺寸归一化检测框；越界框可裁剪并记录 warning，无效框进入质量问题，不直接污染正式标注。
+- 永久边界包含：最多 250000 个对象、5000000 个标注框、COCO JSON 单文件 64 MiB、VOC XML 单文件 2 MiB。
+- Agent review ZIP 仍是 metadata / annotation evidence only，不重新打包对象存储中的原始图片。
+- 控制面 server-confirm 后重新验证 candidate / class / box / split / issue evidence，生成 external class mapping suggestions。
+- 用户必须确认外部类别 → 平台标签映射；确认后 local Storage Worker 再次 stat 原对象并验证 size / ETag / SHA256，再写正式 MaterialRepository / AnnotationRepository。
+- 正式索引阶段沿用统一 annotation truth：normalized evidence 转回实际像素坐标；COCO/VOC 不走旧 `ensure_label + add_image_record` 直写逻辑。
+- 前端“对象存储目录”已正式开放 **COCO 检测标注 / Pascal VOC 检测标注**；切到本地目录/服务器 ZIP 时自动禁用；dataset YAML 仍只属于 YOLO。
+- Real Chrome 已验证页面真实选择 COCO 并提交 `storage_scan + execution_mode=agent + import_format=coco`。
+
+最终验收（代码 HEAD `9fb67096718e5ece1b72a2acf601662fe337e1d7`）：
+
+- Remote Material Import `35318574008`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35318574014`：全绿。
+- Central Node Assignment `35318574002`：全绿。
+- Task Runtime Truth `35318573876`：全绿。
+- Portable Deployment `35318573871`：全绿。
+- Remote Training Runtime `35318573869`：全绿。
+- Remote Conversion Runtime `35318573929`：全绿。
+- Storage Cache Governance `35318573935`：全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**当前主线：Remote CLEANING Phase 1 — Agent 清洗 / 去重。**
+
+不要重做 MATERIAL_IMPORT Phase 1/2/3/4/5。下一步以现有 `TaskKind.CLEANING` 为正式 task kind，把大规模图片质量检查、重复图/近重复图检测等重 I/O 从中央 Storage Worker 移到可调度 Agent 节点；仍不得让 Agent 直接写中央 SQLite/NFS，输出必须先形成 task-owned、server-confirmed review truth，再由控制面确认/提交正式素材状态。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
