@@ -463,3 +463,405 @@ def test_cancellation_wins_if_requested_during_result_confirmation(tmp_path):
         status="CANCELLED",
     )
     assert finished["task"]["status"] == "CANCELLED"
+
+
+
+def create_portable_training(repository, artifacts, task_id="train-agent"):
+    artifacts.atomic_write_json(task_id, "payload.json", {
+        "target": "remote",
+        "algorithm_asset_id": "algorithm-one",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+            "training": {
+                "schema_version": 1,
+                "framework": "ultralytics",
+                "snapshot_id": "snapshot-one",
+                "bundle": {"storage_source_id": "s3-main", "object_key": "bundle.zip"},
+                "model": {"type": "official", "reference": "yolo11n.pt"},
+                "result": {
+                    "storage_source_id": "s3-main",
+                    "object_key": "training-result.zip",
+                    "file_name": "training-result.zip",
+                    "content_type": "application/zip",
+                },
+            },
+        },
+    })
+    return repository.create(
+        TaskRecord.new(
+            task_id=task_id,
+            project_id="project-training",
+            kind=TaskKind.TRAINING,
+            payload_ref="payload.json",
+            resource_key="training:remote:scheduler",
+            required_capabilities=("training.ultralytics",),
+        ),
+        artifacts=artifacts,
+    )
+
+
+def create_training_agent_node(repository, node_id="training-agent-node"):
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": node_id,
+        "display_name": node_id,
+        "connection_mode": "agent",
+        "allowed_capabilities": ["training"],
+    })
+    nodes.heartbeat(node_id, token, {
+        "hostname": node_id,
+        "reported_capabilities": ["training"],
+        "resources": {
+            "cpu": {"logical_cores": 16},
+            "memory": {"available_bytes": 32 * 1024**3},
+            "disk": {"free_bytes": 500 * 1024**3},
+            "gpu": {
+                "available": True,
+                "gpus": [{
+                    "id": "cuda:0",
+                    "index": 0,
+                    "uuid": "GPU-TRAIN",
+                    "name": "NVIDIA Test",
+                    "memory_free_bytes": 20 * 1024**3,
+                    "memory_total_bytes": 24 * 1024**3,
+                }],
+            },
+        },
+        "runtime": {"python_version": "3.12"},
+    })
+    return nodes, token
+
+
+def training_safe_payload(task, _payload, assignment):
+    resolved = assignment.get("resolved_execution_config") or {}
+    return {
+        "schema_version": 1,
+        "task_kind": "TRAINING",
+        "transport": "object-storage-v1",
+        "framework": "ultralytics",
+        "algorithm_id": "algorithm-one",
+        "snapshot_id": "snapshot-one",
+        "selected_device": resolved.get("selected_device") or "cuda:0",
+        "selected_gpu": resolved.get("selected_gpu"),
+        "bundle": {"type": "object", "download": {"sha256": "a" * 64, "size_bytes": 100}},
+        "model": {"type": "official", "reference": "yolo11n.pt"},
+        "params": {"epochs": 1},
+        "result": {
+            "type": "object",
+            "storage_ref": {
+                "storage_source_id": "s3-main",
+                "object_key": "training-result.zip",
+                "file_name": "training-result.zip",
+                "content_type": "application/zip",
+            },
+            "upload_protocol": "prepare-after-local-hash-v1",
+        },
+    }
+
+
+def training_model_preparer(_task, _payload, *, execution_generation, models):
+    items = []
+    for item in models:
+        role = str(item["role"])
+        items.append({
+            "role": role,
+            "file_name": str(item["file_name"]),
+            "sha256": str(item["sha256"]),
+            "size_bytes": int(item["size_bytes"]),
+            "artifact_id": f"artifact-{role}",
+            "storage_ref": {
+                "storage_source_id": "s3-main",
+                "object_key": f"model-assets/rt-one/{role}.pt",
+                "file_name": str(item["file_name"]),
+                "content_type": "application/octet-stream",
+            },
+            "already_uploaded": False,
+            "upload": {
+                "method": "PUT",
+                "url": f"https://signed.example.test/{role}",
+                "headers": {
+                    "Content-Length": str(int(item["size_bytes"])),
+                    "x-amz-meta-sha256": str(item["sha256"]),
+                    "If-None-Match": "*",
+                },
+            },
+        })
+    return {
+        "version_id": "rt-one",
+        "execution_generation": int(execution_generation),
+        "items": items,
+    }
+
+
+def training_model_confirmer(_task, _payload, *, execution_generation, models):
+    return {
+        "version_id": "rt-one",
+        "execution_generation": int(execution_generation),
+        "confirmed": True,
+        "items": [dict(item) for item in models],
+    }
+
+
+def training_result_confirmer(task, _payload, evidence):
+    return {
+        "result": {
+            "task_id": task.task_id,
+            "project_id": task.project_id,
+            "snapshot_id": "snapshot-one",
+            "training_outcome": "completed",
+            "verified_models": [
+                {
+                    "role": "best",
+                    "ref": "models/best.pt",
+                    "file_name": "best.pt",
+                    "sha256": "d" * 64,
+                    "size_bytes": 101,
+                },
+                {
+                    "role": "last",
+                    "ref": "models/last.pt",
+                    "file_name": "last.pt",
+                    "sha256": "e" * 64,
+                    "size_bytes": 102,
+                },
+            ],
+            "output_sha256": evidence["sha256"],
+            "output_size_bytes": evidence["size_bytes"],
+        },
+    }
+
+
+def training_service(repository, artifacts, *, result_confirmer=training_result_confirmer, commits=None):
+    commit_log = commits if commits is not None else []
+
+    def commit_handler(task, _payload, _evidence, confirmed):
+        current = repository.get(task.task_id)
+        assert current is not None
+        assert current.stage == "finalizing_commit"
+        commit_log.append({
+            "task_id": task.task_id,
+            "training_models": confirmed.get("training_models"),
+        })
+        return {
+            "algorithm_id": "algorithm-one",
+            "version_id": str((confirmed.get("training_models") or {}).get("version_id") or ""),
+            "model_artifacts_committed": True,
+        }
+
+    return AgentExecutionService(
+        repository,
+        artifacts,
+        execution_payload_resolver=training_safe_payload,
+        result_upload_preparer=result_preparer,
+        result_upload_confirmer=result_confirmer,
+        result_commit_handler=commit_handler,
+        training_model_upload_preparer=training_model_preparer,
+        training_model_upload_confirmer=training_model_confirmer,
+    )
+
+
+def start_training_execution(repository, artifacts, svc, token, task_id="train-agent", node_id="training-agent-node"):
+    assignment = svc.allocator.assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == node_id
+    claimed = svc.claim_assignment(node_id, token)
+    assert claimed is not None
+    return svc.start_execution(
+        node_id,
+        token,
+        task_id,
+        claimed["assignment"]["assignment_lease_token"],
+    )
+
+
+def _training_models():
+    return [
+        {"role": "best", "file_name": "best.pt", "sha256": "d" * 64, "size_bytes": 101},
+        {"role": "last", "file_name": "last.pt", "sha256": "e" * 64, "size_bytes": 102},
+    ]
+
+
+def test_remote_training_models_are_generation_fenced_and_required_before_result_commit(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_portable_training(repository, artifacts)
+    _nodes, token = create_training_agent_node(repository)
+    commits = []
+    svc = training_service(repository, artifacts, commits=commits)
+    started = start_training_execution(repository, artifacts, svc, token)
+    execution = started["execution"]
+
+    svc.prepare_result_upload(
+        "training-agent-node",
+        token,
+        "train-agent",
+        execution["lease_token"],
+        execution["generation"],
+        sha256="f" * 64,
+        size_bytes=77,
+    )
+    with pytest.raises(AgentExecutionError) as missing_models:
+        svc.confirm_result_upload(
+            "training-agent-node",
+            token,
+            "train-agent",
+            execution["lease_token"],
+            execution["generation"],
+        )
+    assert missing_models.value.code == "REMOTE_TRAINING_MODELS_NOT_CONFIRMED"
+    assert repository.get("train-agent").stage != "finalizing_commit"
+    assert commits == []
+
+    prepared = svc.prepare_training_model_uploads(
+        "training-agent-node",
+        token,
+        "train-agent",
+        execution["lease_token"],
+        execution["generation"],
+        models=_training_models(),
+    )
+    assert prepared["version_id"] == "rt-one"
+    durable = artifacts.read_json(
+        "train-agent",
+        f"remote-results/{execution['generation']}/training-models.json",
+        default={},
+    )
+    assert durable["confirmed"] is False
+    assert durable["models"][0]["role"] == "best"
+    assert "signed.example.test" not in str(durable)
+
+    with pytest.raises(AgentExecutionError) as conflict:
+        svc.prepare_training_model_uploads(
+            "training-agent-node",
+            token,
+            "train-agent",
+            execution["lease_token"],
+            execution["generation"],
+            models=[
+                {"role": "best", "file_name": "best.pt", "sha256": "1" * 64, "size_bytes": 101},
+                {"role": "last", "file_name": "last.pt", "sha256": "e" * 64, "size_bytes": 102},
+            ],
+        )
+    assert conflict.value.code == "REMOTE_TRAINING_MODEL_EVIDENCE_CONFLICT"
+
+    confirmed_models = svc.confirm_training_model_uploads(
+        "training-agent-node",
+        token,
+        "train-agent",
+        execution["lease_token"],
+        execution["generation"],
+    )
+    assert confirmed_models["confirmed"] is True
+    assert confirmed_models["version_id"] == "rt-one"
+
+    confirmed = svc.confirm_result_upload(
+        "training-agent-node",
+        token,
+        "train-agent",
+        execution["lease_token"],
+        execution["generation"],
+    )
+    assert confirmed["confirmed"] is True
+    assert confirmed["result"]["version_id"] == "rt-one"
+    assert confirmed["result"]["model_artifacts_committed"] is True
+    assert commits and commits[0]["task_id"] == "train-agent"
+    assert commits[0]["training_models"]["version_id"] == "rt-one"
+    assert repository.get("train-agent").stage == "finalizing_commit"
+
+
+def test_remote_training_result_manifest_must_match_confirmed_model_objects(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_portable_training(repository, artifacts, "train-mismatch")
+    _nodes, token = create_training_agent_node(repository)
+
+    def mismatching_result(task, payload, evidence):
+        result = training_result_confirmer(task, payload, evidence)
+        result["result"]["verified_models"][0]["sha256"] = "9" * 64
+        return result
+
+    svc = training_service(repository, artifacts, result_confirmer=mismatching_result)
+    started = start_training_execution(
+        repository,
+        artifacts,
+        svc,
+        token,
+        task_id="train-mismatch",
+    )
+    execution = started["execution"]
+    svc.prepare_training_model_uploads(
+        "training-agent-node",
+        token,
+        "train-mismatch",
+        execution["lease_token"],
+        execution["generation"],
+        models=_training_models(),
+    )
+    svc.confirm_training_model_uploads(
+        "training-agent-node",
+        token,
+        "train-mismatch",
+        execution["lease_token"],
+        execution["generation"],
+    )
+    svc.prepare_result_upload(
+        "training-agent-node",
+        token,
+        "train-mismatch",
+        execution["lease_token"],
+        execution["generation"],
+        sha256="f" * 64,
+        size_bytes=77,
+    )
+
+    with pytest.raises(AgentExecutionError) as mismatch:
+        svc.confirm_result_upload(
+            "training-agent-node",
+            token,
+            "train-mismatch",
+            execution["lease_token"],
+            execution["generation"],
+        )
+    assert mismatch.value.code == "REMOTE_TRAINING_RESULT_MODELS_MISMATCH"
+    current = repository.get("train-mismatch")
+    assert current is not None
+    assert current.status is TaskStatus.RUNNING
+    assert current.stage != "finalizing_commit"
+
+
+def test_remote_training_model_uploads_reject_stale_generation_and_cancellation(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_portable_training(repository, artifacts, "train-fenced-models")
+    _nodes, token = create_training_agent_node(repository)
+    svc = training_service(repository, artifacts)
+    started = start_training_execution(
+        repository,
+        artifacts,
+        svc,
+        token,
+        task_id="train-fenced-models",
+    )
+    execution = started["execution"]
+
+    with pytest.raises(AgentExecutionError) as stale:
+        svc.prepare_training_model_uploads(
+            "training-agent-node",
+            token,
+            "train-fenced-models",
+            execution["lease_token"],
+            execution["generation"] + 1,
+            models=_training_models(),
+        )
+    assert stale.value.code == "EXECUTION_FENCED"
+
+    repository.request_cancel("train-fenced-models")
+    with pytest.raises(AgentExecutionError) as cancelled:
+        svc.prepare_training_model_uploads(
+            "training-agent-node",
+            token,
+            "train-fenced-models",
+            execution["lease_token"],
+            execution["generation"],
+            models=_training_models(),
+        )
+    assert cancelled.value.code == "CANCELLATION_WON"
