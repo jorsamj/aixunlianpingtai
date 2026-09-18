@@ -170,7 +170,8 @@ jobs:
           grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test", "training"})' platform_core/node_agent_executor_loop.py
           grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "TRAINING"})' platform_core/node_agent_executor_loop.py
           grep -Fq 'def effective_capabilities' platform_core/node_agent_executor_loop.py
-          grep -Fq 'runner.ready' platform_core/node_agent_executor_loop.py
+          grep -Fq 'getattr(runner, "ready", True) is False' platform_core/node_agent_executor_loop.py
+          grep -Fq 'getattr(runner, "recovery_error", "")' platform_core/node_agent_executor_loop.py
           grep -Fq 'resolver = getattr(executor, "effective_capabilities", None)' node_agent.py
           grep -Fq 'effective_capabilities = list(resolver())' node_agent.py
           grep -Fq 'capabilities=effective_capabilities' node_agent.py
