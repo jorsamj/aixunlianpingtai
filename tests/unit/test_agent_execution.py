@@ -48,7 +48,7 @@ def create_task(repository, artifacts, task_id="train-agent", *, write_payload=T
             "remote_execution": {
                 "version": 1,
                 "task_kind": TaskKind.TRAINING.value,
-                "transport": "object-storage-v1",
+                "transport": "agent-artifact-v1",
             },
         })
     return repository.create(
