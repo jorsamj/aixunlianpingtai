@@ -26,6 +26,7 @@ from .remote_material_import import (
     RemoteMaterialImportError,
     commit_material_review_archive,
 )
+from .remote_material_lifecycle import RemoteMaterialStagingLifecycle
 from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
@@ -2434,7 +2435,7 @@ class RemoteExecutionTransportService:
         finally:
             temporary.unlink(missing_ok=True)
         try:
-            return commit_material_review_archive(
+            committed = commit_material_review_archive(
                 artifacts=self.task_artifacts,
                 task_id=str(task.task_id),
                 project_id=str(task.project_id),
@@ -2455,6 +2456,34 @@ class RemoteExecutionTransportService:
                 str(error),
                 error.status_code,
             ) from error
+
+        # The control plane now owns a durable review ZIP + candidate/annotation
+        # truth, so the remote input/review objects are no longer required for
+        # confirmation or local indexing. Cleanup is deliberately best-effort:
+        # a provider outage must not turn a verified import into a failed task.
+        cleanup: dict[str, Any]
+        try:
+            lifecycle = RemoteMaterialStagingLifecycle(
+                None,
+                self.task_artifacts,
+                lambda project_id, ref: self._source_provider(project_id, ref)[1],
+            )
+            cleanup = lifecycle.record_confirmed(
+                task,
+                payload,
+                evidence,
+                confirmed,
+            )
+        except Exception as error:
+            cleanup = {
+                "status": "DEFERRED",
+                "deleted": 0,
+                "error": str(error)[:1000],
+            }
+        return {
+            **dict(committed),
+            "remote_staging_cleanup": cleanup,
+        }
 
     def commit_result_publication(
         self,
