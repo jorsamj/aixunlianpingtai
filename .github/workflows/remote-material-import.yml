@@ -25,6 +25,10 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/storage/import_candidates.py'
+      - 'platform_core/storage/rescan_tasks.py'
+      - 'tests/unit/storage/test_rescan_tasks.py'
+      - 'tests/api/test_storage_sources.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_remote_material_import.py'
@@ -59,6 +63,10 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
+      - 'platform_core/storage/import_candidates.py'
+      - 'platform_core/storage/rescan_tasks.py'
+      - 'tests/unit/storage/test_rescan_tasks.py'
+      - 'tests/api/test_storage_sources.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_remote_material_import.py'
@@ -100,12 +108,15 @@ jobs:
           platform_core/storage/detection_import.py
           platform_core/remote_material_lifecycle.py
           platform_core/storage/import_tasks.py
+          platform_core/storage/import_candidates.py
+          platform_core/storage/rescan_tasks.py
           task_worker.py
           tests/unit/test_node_agent_material_runtime.py
           tests/unit/test_remote_material_import.py
           tests/unit/storage/test_detection_import.py
           tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/storage/test_rescan_tasks.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
           tests/integration/test_storage_import_worker.py
@@ -116,6 +127,7 @@ jobs:
           tests/unit/test_remote_material_import.py
           tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/storage/test_rescan_tasks.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
       - name: Agent review to local indexer integration
@@ -154,16 +166,27 @@ jobs:
           platform_core/remote_execution_transport.py
           platform_core/remote_material_import.py
           platform_core/storage/import_tasks.py
+          platform_core/storage/import_candidates.py
+          platform_core/storage/rescan_tasks.py
       - name: Remote material import API contract
         run: >-
           python -m pytest -q
           tests/api/test_server_material_import.py
+          tests/api/test_storage_sources.py
       - name: Permanent remote material guards
         shell: bash
         run: |
           grep -Fq 'execution_mode: Literal["local", "agent"] = "local"' app.py
           grep -Fq 'stage_material_import(' app.py
           grep -Fq 'stage_material_storage_scan(' app.py
+          grep -Fq 'storage_rescan_preflight' app.py
+          grep -Fq "intent='storage_rescan'" app.py
+          grep -Fq 'prepare_remote_rescan_review' platform_core/storage/rescan_tasks.py
+          grep -Fq 'iter_category_candidates' platform_core/storage/import_candidates.py
+          grep -Fq 'task.accepted is True' platform_core/task_node_assignments.py
+          grep -Fq 'id="sr61Execution"' static/app.js
+          grep -Fq 'test_storage_rescan_agent_creation_freezes_baseline_and_uses_portable_contract' tests/api/test_storage_sources.py
+          grep -Fq "storage rescan uses backend preflight" tests/browser/storage-source.spec.mjs
           grep -Fq 'material_scan_page_provider' platform_core/agent_execution.py
           grep -Fq 'build_storage_scan_material_review_archive' platform_core/node_agent_material_runtime.py
           grep -Fq 'data-import-mode="storage_scan"' static/app.js

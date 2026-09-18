@@ -174,3 +174,96 @@ test('server ZIP switches target storage by execution location and submits COCO 
   });
   await expect(page.locator('#si61Status')).toContainText('扫描完成，等待确认建立素材索引');
 });
+
+
+test('storage rescan uses backend preflight and submits real Agent execution mode', async ({page}) => {
+  let submitted = null;
+  await page.route('**/api/v61/storage-sources', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: [{
+        id: 's3-rescan-ui',
+        name: '长期素材库',
+        type: 's3',
+        enabled: true,
+        is_default: false,
+        health_status: 'AVAILABLE',
+        config: {endpoint: 'https://s3.example.test', bucket: 'materials', prefix: '', use_ssl: true},
+      }]}),
+    });
+  });
+  await page.route('**/api/v61/projects/*/storage-sources/s3-rescan-ui/rescans/preflight', async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        local_available: true,
+        default_execution_mode: 'local',
+        agent_available: true,
+        reason: '',
+        eligible_nodes: [{node_id: 'material-agent-01', display_name: '远程素材节点 01', build_id: 'build-1'}],
+      }),
+    });
+  });
+  await page.route('**/api/v61/projects/*/storage-sources/s3-rescan-ui/rescans', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    submitted = route.request().postDataJSON();
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        task_id: 'remote-rescan-ui',
+        project_id: 'browser-project',
+        status: 'QUEUED',
+        stage: 'queued',
+        execution_mode: 'agent',
+        worker_id: '',
+        resource_wait_reason: '',
+        counts: {},
+        examples: {},
+        applied: 0,
+      }),
+    });
+  });
+  await page.route('**/api/v61/projects/*/storage-rescans/remote-rescan-ui', async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        task_id: 'remote-rescan-ui',
+        project_id: 'browser-project',
+        status: 'AWAITING_CONFIRMATION',
+        stage: 'REMOTE_MATERIAL_CONFIRMING_REVIEW',
+        execution_mode: 'agent',
+        worker_id: 'agent:material-agent-01',
+        resource_wait_reason: '',
+        current_item: '校验审查结果',
+        counts: {NEW: 2, MISSING: 1, CHANGED: 3, UNCHANGED: 40, INVALID: 0, SKIPPED: 0},
+        examples: {NEW: ['images/new-a.jpg'], CHANGED: ['images/changed-a.jpg']},
+        applied: 0,
+      }),
+    });
+  });
+
+  await openStoragePage(page);
+  const row = page.locator('.storage61-row').filter({hasText: '长期素材库'});
+  await row.getByRole('button', {name: '重新扫描 / 恢复'}).click();
+
+  await expect(page.locator('#sr61Execution')).toHaveValue('local');
+  await expect(page.locator('#sr61AgentOption')).toBeEnabled();
+  await expect(page.locator('#sr61AgentTruth')).toContainText('远程素材节点 01');
+
+  await page.locator('#sr61Execution').selectOption('agent');
+  await page.getByRole('button', {name: '开始新的扫描'}).click();
+
+  await expect.poll(() => submitted).not.toBeNull();
+  expect(submitted).toEqual({execution_mode: 'agent'});
+  await expect(page.locator('#sr61Status')).toContainText('待确认');
+  await expect(page.locator('#sr61Status')).toContainText('远程 Agent');
+  await expect(page.locator('#sr61Status')).toContainText('新增 2');
+  await expect(page.locator('#sr61Status')).toContainText('缺失 1');
+  await expect(page.locator('#sr61Status')).toContainText('内容变更 3');
+  await expect(page.locator('#sr61Policy')).toBeVisible();
+});

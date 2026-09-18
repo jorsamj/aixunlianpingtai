@@ -502,34 +502,58 @@ window.__resourceDiscoveryDependencies={
     const project=String(pid()||'');if(!project){toast('请先选择项目');return}
     const base=`/api/v61/projects/${encodeURIComponent(project)}`;
     const savedKey=`mc_storage_rescan_${project}_${sourceId}`;
-    let taskId='',pollGeneration=0;
+    let taskId='',pollGeneration=0,preflight=null;
     try{taskId=localStorage.getItem(savedKey)||''}catch(_){}
-    modal('存储源重新扫描 / 恢复',`<p>扫描当前项目引用的整个存储源，确认后同步新增、缺失和内容变化。</p><div id="sr61Status">正在读取任务…</div><div id="sr61Policy" hidden><label><input id="sr61New" type="checkbox" checked> 建立新增图片索引</label><br><label><input id="sr61Missing" type="checkbox" checked> 缺失文件标记不可用，保留索引</label><br><label><input id="sr61Changed" type="checkbox" checked> 更新变更内容，保留标注并标记需要复核</label><br><button id="sr61Confirm" class="btn primary">确认应用</button></div><div class="row"><button id="sr61Start" class="btn">开始新的扫描</button><button id="sr61Cancel" class="btn">取消任务</button><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
-    const target=document.getElementById('sr61Status'),selection=document.getElementById('sr61Policy');
+    modal('存储源重新扫描 / 恢复',`<div class="form two"><div class="field"><label>执行位置</label><select id="sr61Execution" class="select"><option value="local">中央 Worker</option><option id="sr61AgentOption" value="agent" disabled>远程 Agent</option></select></div><div class="field"><label>执行资源</label><div id="sr61AgentTruth" class="item-sub">正在检查可用节点…</div></div></div><div id="sr61Status">正在读取任务…</div><div id="sr61Policy" hidden><label><input id="sr61New" type="checkbox" checked> 建立新增图片索引</label><br><label><input id="sr61Missing" type="checkbox" checked> 缺失文件标记不可用，保留索引</label><br><label><input id="sr61Changed" type="checkbox" checked> 更新变更内容，保留标注并标记需要复核</label><br><button id="sr61Confirm" class="btn primary">确认应用</button></div><div class="row end"><button id="sr61Start" class="btn primary">开始新的扫描</button><button id="sr61Cancel" class="btn">取消任务</button><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
+    const target=document.getElementById('sr61Status'),selection=document.getElementById('sr61Policy'),execution=document.getElementById('sr61Execution'),agentOption=document.getElementById('sr61AgentOption'),agentTruth=document.getElementById('sr61AgentTruth');
     const endpoint=()=>`${base}/storage-rescans/${encodeURIComponent(taskId)}`;
     const active=()=>document.getElementById('sr61Status')===target;
     const terminal=status=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status);
+    const statusName=status=>({QUEUED:'排队中',RUNNING:'执行中',AWAITING_CONFIRMATION:'待确认',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分完成',FAILED:'失败',CANCELLED:'已取消',CANCEL_REQUESTED:'正在取消',BLOCKED_BY_ENVIRONMENT:'环境阻塞',BLOCKED_BY_HARDWARE:'硬件阻塞'}[status]||status||'-');
+    async function loadPreflight(){
+      try{
+        preflight=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans/preflight`);
+        const nodes=Array.isArray(preflight.eligible_nodes)?preflight.eligible_nodes:[];
+        if(agentOption)agentOption.disabled=!preflight.agent_available;
+        if(agentTruth)agentTruth.textContent=preflight.agent_available?(nodes.length?`可用 Agent：${nodes.map(node=>node.display_name||node.node_id).join('、')}`:'远程 Agent 可用'):(preflight.reason||'当前无可用远程 Agent');
+        if(execution&&execution.value==='agent'&&!preflight.agent_available)execution.value='local';
+      }catch(error){
+        preflight={agent_available:false,reason:error.message||String(error),eligible_nodes:[]};
+        if(agentOption)agentOption.disabled=true;
+        if(agentTruth)agentTruth.textContent=preflight.reason;
+        if(execution)execution.value='local';
+      }
+    }
     async function poll(generation){
       try{
         const task=await api(endpoint());if(!active()||generation!==pollGeneration)return;
         const names={NEW:'新增',MISSING:'缺失',CHANGED:'内容变更',UNCHANGED:'未变',INVALID:'无法校验',SKIPPED:'跳过'};
-        target.innerHTML=`<p>${esc(task.status)} · ${esc(task.current_item||task.stage||'')}</p><p>${Object.entries(names).map(([key,label])=>`${label} ${Number(task.counts?.[key]||0)}`).join(' · ')}</p>${Object.entries(task.examples||{}).filter(([,keys])=>keys.length).map(([key,keys])=>`<details><summary>${esc(names[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${task.error?`<p class="alert err">${esc(task.error.message||'扫描失败')}</p>`:''}`;
+        const mode=task.execution_mode==='agent'?'远程 Agent':'中央 Worker';
+        const runtime=[mode,task.worker_id?`Worker ${task.worker_id}`:'',task.resource_wait_reason||'',task.current_item||task.stage||''].filter(Boolean).join(' · ');
+        target.innerHTML=`<p><b>${esc(statusName(task.status))}</b> · ${esc(runtime)}</p><p>${Object.entries(names).map(([key,label])=>`${label} ${Number(task.counts?.[key]||0)}`).join(' · ')}</p>${Object.entries(task.examples||{}).filter(([,keys])=>keys.length).map(([key,keys])=>`<details><summary>${esc(names[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${task.error?`<p class="alert err">${esc(task.error.message||'扫描失败')}</p>`:''}`;
         selection.hidden=task.status!=='AWAITING_CONFIRMATION';
         document.getElementById('sr61Start').disabled=!terminal(task.status);
         document.getElementById('sr61Cancel').disabled=terminal(task.status);
+        if(execution)execution.disabled=!terminal(task.status);
         if(!terminal(task.status)&&task.status!=='AWAITING_CONFIRMATION')setTimeout(()=>{if(active()&&generation===pollGeneration)poll(generation)},2000);
       }catch(error){if(active()){target.textContent=error.message||String(error);document.getElementById('sr61Start').disabled=false}}
     }
     document.getElementById('sr61Start').onclick=async()=>{
-      const button=document.getElementById('sr61Start');button.disabled=true;
-      try{const task=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans`,{method:'POST'});taskId=task.task_id;try{localStorage.setItem(savedKey,taskId)}catch(_){}poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error);button.disabled=false}
+      const button=document.getElementById('sr61Start'),mode=execution?.value==='agent'?'agent':'local';
+      if(mode==='agent'&&!preflight?.agent_available){target.textContent=preflight?.reason||'当前没有可用远程 Agent';return}
+      button.disabled=true;if(execution)execution.disabled=true;
+      try{
+        const task=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({execution_mode:mode})});
+        taskId=task.task_id;try{localStorage.setItem(savedKey,taskId)}catch(_){}poll(++pollGeneration);
+      }catch(error){target.textContent=error.message||String(error);button.disabled=false;if(execution)execution.disabled=false}
     };
     document.getElementById('sr61Confirm').onclick=async()=>{
       const button=document.getElementById('sr61Confirm');button.disabled=true;
       try{await api(`${endpoint()}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new:document.getElementById('sr61New').checked?'import':'ignore',missing:document.getElementById('sr61Missing').checked?'mark_unavailable':'ignore',changed:document.getElementById('sr61Changed').checked?'update':'ignore'})});selection.hidden=true;poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error);button.disabled=false}
     };
     document.getElementById('sr61Cancel').onclick=async()=>{if(taskId){try{await api(`${endpoint()}/cancel`,{method:'POST'});poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error)}}};
-    if(taskId)poll(++pollGeneration);else{target.textContent='点击开始扫描。扫描进度按实际已核对对象计数。';document.getElementById('sr61Cancel').disabled=true}
+    await loadPreflight();
+    if(taskId)poll(++pollGeneration);else{target.textContent='尚未创建扫描任务。';document.getElementById('sr61Cancel').disabled=true}
   };
 
   function sourceFields61(type,source={}){
