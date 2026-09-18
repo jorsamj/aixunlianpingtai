@@ -11728,14 +11728,16 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             node_precisions = ["fp16", "int8"]
             supported_chips.update(node_chips)
         supported_precisions.update(node_precisions)
-        eligible.append({
+        node_row = {
             "node_id": str(node.get("node_id") or ""),
             "display_name": str(node.get("display_name") or ""),
             "build_id": str(node.get("build_id") or ""),
             "capability": required_capability,
             "supported_chips": sorted(set(node_chips)),
-            "supported_precisions": sorted(set(node_precisions)),
-        })
+        }
+        if kind == "rockchip":
+            node_row["supported_precisions"] = sorted(set(node_precisions))
+        eligible.append(node_row)
 
     if eligible:
         detail = (
@@ -11749,9 +11751,12 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             message=detail,
             agent_nodes=eligible,
             supported_chips=sorted(supported_chips),
-            supported_precisions=sorted(supported_precisions),
             last_checked_at=now_iso(),
         )
+        if kind == "rockchip":
+            item["supported_precisions"] = sorted(supported_precisions)
+        else:
+            item.pop("supported_precisions", None)
     else:
         detail = (
             "没有在线且已授权 conversion.rknn、并通过 RKNN-Toolkit2 探测的 Agent 节点"
@@ -11764,9 +11769,12 @@ def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             message=detail,
             agent_nodes=[],
             supported_chips=[],
-            supported_precisions=[],
             last_checked_at=now_iso(),
         )
+        if kind == "rockchip":
+            item["supported_precisions"] = []
+        else:
+            item.pop("supported_precisions", None)
     return item
 
 

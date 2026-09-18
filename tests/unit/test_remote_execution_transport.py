@@ -1646,7 +1646,7 @@ def test_stage_model_conversion_builds_portable_rknn_contract(tmp_path, monkeypa
     ("params", "message"),
     [
         ({"chip": "rk3588", "precision": "fp16"}, "rk3568 or rk3576"),
-        ({"chip": "rk3568", "precision": "int8", "calibration_snapshot": "x"}, "INT8"),
+        ({"chip": "rk3568", "precision": "fp32"}, "fp16 or int8"),
         ({"chip": "rk3568", "precision": "fp16", "dynamic": True}, "static input shape"),
         ({"chip": "rk3568", "precision": "fp16", "batch": 2}, "batch=1"),
     ],
