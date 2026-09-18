@@ -46,9 +46,17 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "shared_task_artifacts",
     ]
     keywords = {item.arg: item.value for item in router_call.keywords if item.arg}
-    assert set(keywords) == {"agent_execution_payload_resolver"}
+    assert set(keywords) == {
+        "agent_execution_payload_resolver",
+        "agent_result_upload_preparer",
+        "agent_result_upload_confirmer",
+    }
     assert isinstance(keywords["agent_execution_payload_resolver"], ast.Name)
     assert keywords["agent_execution_payload_resolver"].id == "_resolve_agent_execution_payload"
+    assert isinstance(keywords["agent_result_upload_preparer"], ast.Name)
+    assert keywords["agent_result_upload_preparer"].id == "_prepare_agent_result_upload"
+    assert isinstance(keywords["agent_result_upload_confirmer"], ast.Name)
+    assert keywords["agent_result_upload_confirmer"].id == "_confirm_agent_result_upload"
 
 
 def test_v63_subrouters_keep_single_composition_owner():
@@ -68,6 +76,12 @@ def test_v63_subrouters_keep_single_composition_owner():
     assert runtime_source.count("root.include_router(agent_executor_router(") == 1
     assert runtime_source.count(
         "execution_payload_resolver=agent_execution_payload_resolver"
+    ) == 1
+    assert runtime_source.count(
+        "result_upload_preparer=agent_result_upload_preparer"
+    ) == 1
+    assert runtime_source.count(
+        "result_upload_confirmer=agent_result_upload_confirmer"
     ) == 1
 
 
