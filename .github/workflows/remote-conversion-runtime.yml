@@ -113,8 +113,16 @@ jobs:
           grep -Fq 'runtime_verified' platform_core/node_agent_conversion_runtime.py
           grep -Fq 'prepare_result_upload' platform_core/node_agent_conversion_runtime.py
           grep -Fq 'confirm_result_upload' platform_core/node_agent_conversion_runtime.py
-          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"conversion", "deployment-test", "training"})' platform_core/node_agent_executor_loop.py
-          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "MODEL_CONVERSION", "TRAINING"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({' platform_core/node_agent_executor_loop.py
+          grep -Fq '"conversion",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"deployment-test",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"training",' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({' platform_core/node_agent_executor_loop.py
+          grep -Fq '"DEPLOYMENT_TEST",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MODEL_CONVERSION",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"TRAINING",' platform_core/node_agent_executor_loop.py
           grep -Fq 'runners["MODEL_CONVERSION"] = AgentConversionRunner' node_agent.py
           grep -Fq 'mode: Literal["local", "remote", "agent"] = "local"' app.py
           grep -Fq 'def _detect_agent_deploy_resource' app.py
