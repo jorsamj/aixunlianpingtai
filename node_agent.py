@@ -101,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="严格预检请求的节点能力；任一能力无法真实上报时返回非零",
+    )
     return parser
 
 
@@ -243,15 +248,34 @@ def main(argv=None) -> int:
     unsupported_remote_capabilities = sorted(set(requested_capabilities) - set(reported_capabilities))
     build_id = resolve_build_id(Path(__file__).resolve().parent)
 
-    if args.check:
+    if args.check or args.doctor:
         snapshot = collect_local_snapshot(data_dir=data_dir, runtime_probe=runtime_probe)
+        ready = not unsupported_remote_capabilities
+        doctor_issues = [
+            {
+                "capability": capability,
+                "message": (
+                    str((runtime_probe.get("rknn_board") or {}).get("error") or "")
+                    if capability == "deployment-test.rknn"
+                    else str((runtime_probe.get("rknn_toolkit2") or {}).get("error") or "")
+                    if capability == "conversion.rknn"
+                    else "当前 Agent build/runtime 无法真实上报该能力"
+                ),
+            }
+            for capability in unsupported_remote_capabilities
+        ]
         print(json.dumps({
-            "ok": True,
+            "ok": ready if args.doctor else True,
             "node_id": node_id,
             "node_identity_source": identity.source,
             "capabilities": requested_capabilities,
             "reported_capabilities": reported_capabilities,
             "unsupported_remote_capabilities": unsupported_remote_capabilities,
+            "doctor": {
+                "enabled": bool(args.doctor),
+                "ready": ready,
+                "issues": doctor_issues,
+            },
             "executor": {
                 "enabled": bool(reported_capabilities),
                 "supported_task_kinds": sorted(
@@ -275,7 +299,7 @@ def main(argv=None) -> int:
             "build_id": build_id,
             "snapshot": snapshot,
         }, ensure_ascii=False))
-        return 0
+        return 0 if (not args.doctor or ready) else 3
 
     control_plane = str(args.control_plane or "").strip()
     token = str(args.token or "").strip()

@@ -386,3 +386,55 @@ def test_check_mode_withholds_rknn_board_capability_when_probe_fails(tmp_path, m
     body = json.loads(capsys.readouterr().out)
     assert body["reported_capabilities"] == []
     assert body["unsupported_remote_capabilities"] == ["deployment-test.rknn"]
+
+
+def test_doctor_requires_requested_rknn_board_capability_to_be_real(tmp_path, monkeypatch, capsys):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(node_agent, "probe_rknn_board_runtime", lambda _python: {
+        "available": True,
+        "chip": "rk3568",
+        "architecture": "aarch64",
+        "compatible": "rockchip,rk3568",
+        "python_executable": sys.executable,
+        "rknn_lite_version": "2.3.2",
+        "error": "",
+    })
+    code = node_agent.main([
+        "--doctor", "--state-dir", str(tmp_path),
+        "--capabilities", "deployment-test.rknn",
+    ])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["doctor"]["ready"] is True
+    assert body["doctor"]["issues"] == []
+    assert body["reported_capabilities"] == ["deployment-test.rknn"]
+    assert body["snapshot"]["runtime"]["rknn_board"]["chip"] == "rk3568"
+
+
+def test_doctor_returns_nonzero_and_actionable_issue_when_rknn_board_is_not_ready(
+    tmp_path, monkeypatch, capsys
+):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(node_agent, "probe_rknn_board_runtime", lambda _python: {
+        "available": False,
+        "chip": "",
+        "architecture": "aarch64",
+        "compatible": "vendor,unknown",
+        "python_executable": sys.executable,
+        "rknn_lite_version": "",
+        "error": "device-tree compatible is not an RK3568/RK3576 board",
+    })
+    code = node_agent.main([
+        "--doctor", "--state-dir", str(tmp_path),
+        "--capabilities", "deployment-test.rknn",
+    ])
+    assert code == 3
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["doctor"]["ready"] is False
+    assert body["unsupported_remote_capabilities"] == ["deployment-test.rknn"]
+    assert body["doctor"]["issues"] == [{
+        "capability": "deployment-test.rknn",
+        "message": "device-tree compatible is not an RK3568/RK3576 board",
+    }]
