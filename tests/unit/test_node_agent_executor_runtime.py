@@ -97,6 +97,23 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
         FakeResponse(200, start_body()),
         FakeResponse(200, {"task": {"progress": 25}, "cancel_requested": False}),
         FakeResponse(200, {"ok": True, "bytes": 8}),
+        FakeResponse(200, {
+            "already_uploaded": False,
+            "confirmed": False,
+            "sha256": "a" * 64,
+            "size_bytes": 123,
+            "storage_ref": {"object_key": "results/generation-1/result.jpg"},
+            "upload": {
+                "method": "PUT",
+                "url": "https://signed.example.test/result",
+                "headers": {"Content-Length": "123", "x-amz-meta-sha256": "a" * 64},
+            },
+        }),
+        FakeResponse(200, {
+            "confirmed": True,
+            "result_ref": "remote-results/1/result.json",
+            "result": {"output_sha256": "a" * 64},
+        }),
         FakeResponse(200, {"task": {"stage": "finalizing_commit"}}),
         FakeResponse(200, {"task": {"status": "SUCCEEDED"}}),
     )
@@ -113,11 +130,15 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     current = client.start_execution("task-1", "assignment-secret")
     heartbeat = client.heartbeat(current, progress=25, stage="running")
     logged = client.append_log(current, "hello\n")
+    prepared = client.prepare_result_upload(current, sha256="a" * 64, size_bytes=123)
+    confirmed = client.confirm_result_upload(current)
     finalizing = client.begin_finalization(current)
     finished = client.finish(current, "SUCCEEDED", result_ref="result.json")
 
     assert heartbeat["cancel_requested"] is False
     assert logged["ok"] is True
+    assert prepared["upload"]["method"] == "PUT"
+    assert confirmed["result_ref"] == "remote-results/1/result.json"
     assert finalizing["task"]["stage"] == "finalizing_commit"
     assert finished["task"]["status"] == "SUCCEEDED"
     assert all(call["headers"] == {"Authorization": "Bearer node-secret"} for call in session.calls)
@@ -126,6 +147,10 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert session.calls[1]["url"].endswith("/assignments/task-1/start")
     assert session.calls[2]["json"]["execution_generation"] == 1
     assert session.calls[2]["json"]["execution_lease_token"] == "execution-secret"
+    assert session.calls[4]["url"].endswith("/executions/task-1/result-upload/prepare")
+    assert session.calls[4]["json"]["sha256"] == "a" * 64
+    assert session.calls[4]["json"]["size_bytes"] == 123
+    assert session.calls[5]["url"].endswith("/executions/task-1/result-upload/confirm")
 
 
 def test_executor_client_fails_closed_on_successful_non_json_response():
