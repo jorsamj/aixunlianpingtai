@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`1c1ffbf188197e395c061b68f5fbd7799a37e8b8`  
+本轮产品实现基线：`1cc2feb1d844270d008abcf4f78d5c43657c67da`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -63,29 +63,29 @@ revert: keep external algorithm integration off main
 ---
 
 
-# 最新关闭：服务节点控制面 + 中央分配 + Executor 控制协议
+# 最新关闭：服务节点控制面 + 中央分配 + Executor 控制协议 + Remote Portability
 
 2026-09-18 已完成并验收：
 
 - 服务节点 registry / heartbeat / 一次性 Agent Token / Windows+Linux 本机资源探测。
 - 服务节点管理 UI，包含 CPU / RAM / disk / GPU / VRAM / Torch / CUDA / Worker / durable task 状态。
 - 中央 durable task → node assignment truth。
-- TRAINING 节点/GPU 选择及 resolved execution snapshot。
 - active assignment partial unique fence + legacy Worker `CENTRAL_NODE_ASSIGNED` 自抢保护。
-- Scheduler API：allocate / list / release。
 - HTTP Agent Executor 控制协议：claim / start / heartbeat / log / begin-finalization / finish。
 - Node Token、Assignment Lease Token、Execution Lease Token + generation 三层 fencing。
-- start 在一个 `BEGIN IMMEDIATE` 中完成唯一 `QUEUED → RUNNING` 和 assignment release。
-- Node Token rotate race、跨节点冒领、重复 start、旧 generation、取消/最终归档竞争均有永久测试。
-- Central Assignment CI run `35288111906`：API / Ubuntu / Windows 全绿。
-- Node Agent Executor CI run `35288805083`：API / Ubuntu / Windows 全绿。
+- Agent-side database-free HTTP client / isolated workdir / lease monitor。
+- Remote portability gate：`agent` 节点只有遇到显式、版本化 portable contract 才允许调度；legacy path-bound task 不会误发远程。
+- Scheduler 仅持久化 sanitized remote contract 元数据，不保存任务携带的 signed URL / credential / 中央路径。
+- 生产 `app.py` 已正式、且只挂载一次 `training_recovery_router`；service-node / scheduler / executor 不再只存在于 focused test。
+- Portability gate 验收：Central `35290891091`、Agent `35290891208`，均 API / Ubuntu / Windows 全绿。
+- Production mount 验收：Central `35291195275`、Agent `35291195262`，均 API / Ubuntu / Windows 全绿。
 
 权威设计：
 
 `docs/NODE_CONTROL_PLANE_V42_25.md`
 
-**下一步主线：Agent-side Remote Execution Runtime + Object Storage Transport。**
-控制面协议虽然已关闭，但 `node_agent.py` 还没有真正消费 assignment 并在远端执行 task handler，因此严禁宣称“跨机器训练/素材处理已完成”。Agent 客户端不得直接连接中央 SQLite，也不得用共享 NFS 冒充远程执行；大文件必须走对象存储/明确 artifact transport。
+**下一步主线：第一个真正 portable 的远程 task kind。优先部署测试。**
+需要复用已有模型资产统一 OSS/S3/MinIO 存储，建立远程输入/输出 transport，让 `node_agent.py` 真正 claim → start → 本机执行 → heartbeat/log/cancel → 上传结果 → finish。训练/素材的大文件仍不得退回共享 SQLite/NFS。
 
 # 1. 产品定位
 
