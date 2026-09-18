@@ -21,12 +21,14 @@ on:
       - 'platform_core/node_agent_material_runtime.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/remote_material_import.py'
+      - 'platform_core/storage/detection_import.py'
       - 'platform_core/remote_material_lifecycle.py'
       - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/storage/test_detection_import.py'
       - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -60,6 +62,7 @@ on:
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/storage/test_detection_import.py'
       - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -94,11 +97,13 @@ jobs:
           platform_core/node_agent_material_runtime.py
           platform_core/remote_execution_transport.py
           platform_core/remote_material_import.py
+          platform_core/storage/detection_import.py
           platform_core/remote_material_lifecycle.py
           platform_core/storage/import_tasks.py
           task_worker.py
           tests/unit/test_node_agent_material_runtime.py
           tests/unit/test_remote_material_import.py
+          tests/unit/storage/test_detection_import.py
           tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_loop.py
