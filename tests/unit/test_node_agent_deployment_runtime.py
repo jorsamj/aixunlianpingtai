@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -420,6 +421,41 @@ def test_execution_fence_terminates_real_process_without_terminal_mutation(tmp_p
     assert (runtime_root / "started.marker").is_file()
     assert not (runtime_root / "completed.marker").exists()
     assert client.finish_calls == []
+    assert not (workdirs.root / "executions" / current.task_id / "1").exists()
+
+
+def test_local_agent_shutdown_kills_real_process_without_terminal_mutation(tmp_path):
+    current, downloads = lease()
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, runtime_root, workdirs = build_runner(
+        tmp_path,
+        client,
+        transfer,
+        sleep_seconds=5.0,
+    )
+    captured = {}
+
+    def execute():
+        try:
+            captured["outcome"] = runner.run(current)
+        except BaseException as error:
+            captured["error"] = error
+
+    thread = threading.Thread(target=execute, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and not (runtime_root / "started.marker").exists():
+        time.sleep(0.05)
+    assert (runtime_root / "started.marker").is_file()
+
+    runner.request_shutdown()
+    thread.join(timeout=4.0)
+
+    assert not thread.is_alive()
+    assert isinstance(captured.get("error"), RemoteExecutionFenced)
+    assert client.finish_calls == []
+    assert not (runtime_root / "completed.marker").exists()
     assert not (workdirs.root / "executions" / current.task_id / "1").exists()
 
 
