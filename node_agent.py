@@ -149,6 +149,16 @@ def _build_executor(
         heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
     )
     runners = {}
+    if "conversion" in reported_capabilities:
+        from platform_core.node_agent_conversion_runtime import AgentConversionRunner
+
+        runners["MODEL_CONVERSION"] = AgentConversionRunner(
+            client,
+            workdirs,
+            runtime_root=Path(__file__).resolve().parent,
+            ultralytics_python=ultralytics_python,
+            heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+        )
     if "training" in reported_capabilities:
         # Keep the training dependency surface lazy: a deployment-only node
         # must not require Pillow/YAML/training packages merely to heartbeat.
@@ -208,6 +218,7 @@ def main(argv=None) -> int:
                     for kind in SUPPORTED_AGENT_TASK_KINDS
                     if (
                         (kind == "DEPLOYMENT_TEST" and "deployment-test" in reported_capabilities)
+                        or (kind == "MODEL_CONVERSION" and "conversion" in reported_capabilities)
                         or (kind == "TRAINING" and "training" in reported_capabilities)
                     )
                 ),
