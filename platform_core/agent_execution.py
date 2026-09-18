@@ -230,6 +230,8 @@ class AgentExecutionService:
         result_commit_handler=None,
         training_model_upload_preparer=None,
         training_model_upload_confirmer=None,
+        material_scan_page_provider=None,
+        material_scan_read_provider=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -241,6 +243,8 @@ class AgentExecutionService:
         self.result_commit_handler = result_commit_handler
         self.training_model_upload_preparer = training_model_upload_preparer
         self.training_model_upload_confirmer = training_model_upload_confirmer
+        self.material_scan_page_provider = material_scan_page_provider
+        self.material_scan_read_provider = material_scan_read_provider
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -704,6 +708,86 @@ class AgentExecutionService:
         )
         self.artifacts.append_log(task.task_id, task.log_ref, value)
         return {"ok": True, "bytes": len(value.encode("utf-8"))}
+
+    def material_scan_page(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if task.kind is not TaskKind.MATERIAL_IMPORT or not callable(self.material_scan_page_provider):
+            raise AgentExecutionError(
+                "REMOTE_MATERIAL_SCAN_UNAVAILABLE",
+                "brokered material storage scan is unavailable for this execution",
+                409,
+            )
+        payload = self._read_task_payload(task)
+        try:
+            return self.material_scan_page_provider(
+                task,
+                payload,
+                cursor=cursor,
+                limit=max(1, min(100, int(limit))),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_MATERIAL_SCAN_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
+
+    def material_scan_read(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        object_key: str,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if task.kind is not TaskKind.MATERIAL_IMPORT or not callable(self.material_scan_read_provider):
+            raise AgentExecutionError(
+                "REMOTE_MATERIAL_SCAN_UNAVAILABLE",
+                "brokered material object reads are unavailable for this execution",
+                409,
+            )
+        payload = self._read_task_payload(task)
+        try:
+            return self.material_scan_read_provider(
+                task,
+                payload,
+                object_key=str(object_key or ""),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_MATERIAL_SCAN_READ_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
 
     def _read_task_payload(self, task) -> dict[str, Any]:
         missing = object()
@@ -1587,6 +1671,8 @@ def agent_executor_router(
     result_commit_handler=None,
     training_model_upload_preparer=None,
     training_model_upload_confirmer=None,
+    material_scan_page_provider=None,
+    material_scan_read_provider=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -1602,6 +1688,8 @@ def agent_executor_router(
             result_commit_handler=result_commit_handler,
             training_model_upload_preparer=training_model_upload_preparer,
             training_model_upload_confirmer=training_model_upload_confirmer,
+            material_scan_page_provider=material_scan_page_provider,
+            material_scan_read_provider=material_scan_read_provider,
         )
 
     def token(authorization: str | None) -> str:
@@ -1679,6 +1767,41 @@ def agent_executor_router(
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
             str(payload.get("text") or ""),
+        )
+
+    @router.post("/executions/{task_id}/material-scan/page")
+    def material_scan_page(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().material_scan_page,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            cursor=payload.get("cursor"),
+            limit=payload.get("limit", 100),
+        )
+
+    @router.post("/executions/{task_id}/material-scan/read")
+    def material_scan_read(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().material_scan_read,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            object_key=str(payload.get("object_key") or ""),
         )
 
     @router.post("/executions/{task_id}/training-models/prepare")

@@ -261,6 +261,42 @@ class NodeExecutorClient:
             },
         )
 
+    def material_scan_page(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+            "limit": max(1, min(100, int(limit))),
+        }
+        if cursor:
+            payload["cursor"] = str(cursor)
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/material-scan/page",
+            payload,
+        )
+
+    def material_scan_read(
+        self,
+        lease: RemoteExecutionLease,
+        object_key: str,
+    ) -> dict[str, Any]:
+        key = str(object_key or "").strip()
+        if not key:
+            raise ValueError("material scan object_key is required")
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/material-scan/read",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "object_key": key,
+            },
+        )
+
     def prepare_training_model_uploads(
         self,
         lease: RemoteExecutionLease,

@@ -1079,21 +1079,52 @@ class RemoteExecutionTransportService:
                 422,
             )
         target = material.get("target")
+        mode = str(material.get("mode") or "")
         if (
             int(material.get("schema_version") or 0) != 1
-            or str(material.get("mode") or "") != "zip_scan"
+            or mode not in {"zip_scan", "storage_scan"}
             or str(material.get("import_format") or "") not in {"images", "yolo"}
             or not isinstance(target, Mapping)
             or not str(target.get("storage_source_id") or "").strip()
             or not str(target.get("storage_type") or "").strip()
-            or not str(target.get("target_prefix") or "").strip()
         ):
             raise RemoteExecutionTransportError(
                 "REMOTE_EXECUTION_CONTRACT_INVALID",
                 "portable material import identity is invalid",
                 422,
             )
-        safe_member_path(str(target.get("target_prefix") or ""))
+        target_prefix = str(target.get("target_prefix") or "").strip()
+        if mode == "zip_scan" and not target_prefix:
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable ZIP material target prefix is required",
+                422,
+            )
+        if target_prefix:
+            safe_member_path(target_prefix)
+        if mode == "storage_scan":
+            source = material.get("source")
+            if (
+                not isinstance(source, Mapping)
+                or not str(source.get("storage_source_id") or "").strip()
+                or not str(source.get("storage_type") or "").strip()
+                or str(source.get("storage_source_id") or "") != str(target.get("storage_source_id") or "")
+                or str(source.get("storage_type") or "") != str(target.get("storage_type") or "")
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_EXECUTION_CONTRACT_INVALID",
+                    "portable storage_scan source identity is invalid",
+                    422,
+                )
+            source_prefix = str(source.get("prefix") or "").strip()
+            if source_prefix:
+                safe_member_path(source_prefix)
+            if target_prefix != source_prefix:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_EXECUTION_CONTRACT_INVALID",
+                    "storage_scan target prefix must equal its source prefix",
+                    422,
+                )
         dataset_yaml = str(material.get("dataset_yaml") or "").strip()
         if dataset_yaml:
             safe_member_path(dataset_yaml)
@@ -1112,40 +1143,27 @@ class RemoteExecutionTransportService:
         assignment: Mapping[str, Any],
     ) -> dict[str, Any]:
         _remote, material = self._material_remote(task, payload)
-        input_ref = material.get("input")
+        mode = str(material.get("mode") or "")
         output_ref = material.get("output")
         target = material.get("target")
-        if (
-            not isinstance(input_ref, Mapping)
-            or not isinstance(output_ref, Mapping)
-            or not isinstance(target, Mapping)
-        ):
+        if not isinstance(output_ref, Mapping) or not isinstance(target, Mapping):
             raise RemoteExecutionTransportError(
                 "REMOTE_EXECUTION_CONTRACT_INVALID",
-                "portable material input/output references are incomplete",
+                "portable material output reference is incomplete",
                 422,
             )
-        return {
+        target_prefix = str(target.get("target_prefix") or "").strip()
+        common = {
             "schema_version": 1,
             "task_kind": "MATERIAL_IMPORT",
             "transport": "object-storage-v1",
-            "mode": "zip_scan",
+            "mode": mode,
             "import_format": str(material.get("import_format") or "images"),
             "dataset_yaml": str(material.get("dataset_yaml") or ""),
             "target": {
                 "storage_source_id": str(target.get("storage_source_id") or ""),
                 "storage_type": str(target.get("storage_type") or ""),
-                "target_prefix": safe_member_path(
-                    str(target.get("target_prefix") or "")
-                ).as_posix(),
-            },
-            "input": {
-                "type": "object",
-                "download": self._download_contract(
-                    str(task.project_id),
-                    input_ref,
-                    require_server_sha256=True,
-                ),
+                "target_prefix": safe_member_path(target_prefix).as_posix() if target_prefix else "",
             },
             "output": {
                 "type": "object",
@@ -1158,6 +1176,31 @@ class RemoteExecutionTransportService:
                 "upload_protocol": "prepare-after-local-hash-v1",
             },
         }
+        if mode == "storage_scan":
+            source = self._material_scan_source(material)
+            common["source"] = {
+                "storage_source_id": str(source.get("storage_source_id") or ""),
+                "storage_type": str(source.get("storage_type") or ""),
+                "prefix": str(source.get("prefix") or ""),
+                "recursive": bool(source.get("recursive", True)),
+            }
+            return common
+        input_ref = material.get("input")
+        if not isinstance(input_ref, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable material input reference is incomplete",
+                422,
+            )
+        common["input"] = {
+            "type": "object",
+            "download": self._download_contract(
+                str(task.project_id),
+                input_ref,
+                require_server_sha256=True,
+            ),
+        }
+        return common
 
     @staticmethod
     def _training_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:

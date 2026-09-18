@@ -20,7 +20,7 @@ def safe_remote_payload(task, payload, assignment):
     }
 
 
-def client_for(tmp_path):
+def client_for(tmp_path, *, material_scan_page_provider=None, material_scan_read_provider=None):
     repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
     app = FastAPI()
@@ -28,6 +28,8 @@ def client_for(tmp_path):
         lambda: repository,
         lambda: artifacts,
         execution_payload_resolver=safe_remote_payload,
+        material_scan_page_provider=material_scan_page_provider,
+        material_scan_read_provider=material_scan_read_provider,
     ))
     return TestClient(app), repository, artifacts
 
@@ -287,3 +289,103 @@ def test_node_token_rotation_immediately_revokes_remote_execution_api(tmp_path):
     )
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["task"]["progress"] == 50
+
+
+
+def test_material_scan_broker_requires_current_execution_lease(tmp_path):
+    page_calls = []
+    read_calls = []
+
+    def page_provider(task, payload, *, cursor=None, limit=100):
+        page_calls.append((task.task_id, payload.get("remote_execution"), cursor, limit))
+        return {"items": [{"key": "incoming/a.jpg", "size_bytes": 12}], "next_cursor": None}
+
+    def read_provider(task, payload, *, object_key):
+        read_calls.append((task.task_id, object_key))
+        return {"method": "GET", "url": "https://objects.example.test/a.jpg", "key": object_key}
+
+    client, repository, artifacts = client_for(
+        tmp_path,
+        material_scan_page_provider=page_provider,
+        material_scan_read_provider=read_provider,
+    )
+    task_id = "material-api-agent"
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+        },
+    })
+    repository.create(TaskRecord.new(
+        task_id=task_id,
+        project_id="project-api-agent",
+        kind=TaskKind.MATERIAL_IMPORT,
+        payload_ref="request.json",
+        resource_key=f"material-import:{task_id}",
+    ), artifacts=artifacts)
+
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": "material-api-node",
+        "display_name": "material-api-node",
+        "connection_mode": "agent",
+        "allowed_capabilities": ["material-import"],
+    })
+    nodes.heartbeat("material-api-node", token, {
+        "hostname": "material-api-node",
+        "reported_capabilities": ["material-import"],
+        "resources": {"memory": {"available_bytes": 8 * 1024**3}, "gpu": {"available": False, "gpus": []}},
+        "runtime": {},
+    })
+    service = AgentExecutionService(repository, artifacts)
+    assignment = service.allocator.assign_next()
+    assert assignment is not None
+    claimed = client.post(
+        "/api/v63/node-executor/material-api-node/assignments/claim",
+        headers=auth(token),
+    ).json()
+    started = client.post(
+        f"/api/v63/node-executor/material-api-node/assignments/{task_id}/start",
+        headers=auth(token),
+        json={"assignment_lease_token": claimed["item"]["assignment"]["assignment_lease_token"]},
+    )
+    assert started.status_code == 200, started.text
+    execution = started.json()["execution"]
+
+    page = client.post(
+        f"/api/v63/node-executor/material-api-node/executions/{task_id}/material-scan/page",
+        headers=auth(token),
+        json={
+            "execution_lease_token": execution["lease_token"],
+            "execution_generation": execution["generation"],
+            "limit": 25,
+        },
+    )
+    assert page.status_code == 200, page.text
+    assert page.json()["items"][0]["key"] == "incoming/a.jpg"
+    assert page_calls[-1][3] == 25
+
+    read = client.post(
+        f"/api/v63/node-executor/material-api-node/executions/{task_id}/material-scan/read",
+        headers=auth(token),
+        json={
+            "execution_lease_token": execution["lease_token"],
+            "execution_generation": execution["generation"],
+            "object_key": "incoming/a.jpg",
+        },
+    )
+    assert read.status_code == 200, read.text
+    assert read.json()["key"] == "incoming/a.jpg"
+    assert read_calls[-1][1] == "incoming/a.jpg"
+
+    fenced = client.post(
+        f"/api/v63/node-executor/material-api-node/executions/{task_id}/material-scan/page",
+        headers=auth(token),
+        json={
+            "execution_lease_token": "wrong-token",
+            "execution_generation": execution["generation"],
+        },
+    )
+    assert fenced.status_code == 409
+    assert fenced.json()["detail"]["code"] == "EXECUTION_FENCED"

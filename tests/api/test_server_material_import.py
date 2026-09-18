@@ -310,16 +310,6 @@ def test_agent_material_import_rejects_unsupported_mode_and_local_target(
     local_source = _source(client, tmp_path, source_type="local")
     s3_source = _source(client, tmp_path, source_type="s3")
 
-    wrong_mode = client.post(
-        f"/api/v61/projects/{project['id']}/storage-imports/scan",
-        json={
-            "mode": "storage_scan",
-            "execution_mode": "agent",
-            "storage_source_id": s3_source["id"],
-        },
-    )
-    assert wrong_mode.status_code == 422
-
     local_target = client.post(
         f"/api/v61/projects/{project['id']}/storage-imports/scan",
         json={
@@ -333,6 +323,77 @@ def test_agent_material_import_rejects_unsupported_mode_and_local_target(
     )
     assert local_target.status_code == 422
     assert "OSS/S3/MinIO" in local_target.text
+
+
+def test_agent_storage_scan_creates_brokered_portable_task(
+    client, tmp_path, monkeypatch,
+):
+    project = _project(client)
+    source = _source(client, tmp_path, source_type="s3")
+    calls = []
+
+    class FakeTransport:
+        def stage_material_storage_scan(self, **kwargs):
+            calls.append(dict(kwargs))
+            return {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+                "material_import": {
+                    "schema_version": 1,
+                    "mode": "storage_scan",
+                    "import_format": "images",
+                    "dataset_yaml": "",
+                    "source": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "prefix": "incoming/2026",
+                        "recursive": True,
+                    },
+                    "target": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "target_prefix": "incoming/2026",
+                    },
+                    "output": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/review.zip",
+                        "file_name": "material-review.zip",
+                        "content_type": "application/zip",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        app_module,
+        "_remote_execution_transport_service",
+        lambda: FakeTransport(),
+    )
+    response = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "storage_scan",
+            "execution_mode": "agent",
+            "storage_source_id": source["id"],
+            "prefix": "incoming/2026",
+            "recursive": True,
+            "import_format": "images",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    task = app_module.shared_task_repository().get(task_id)
+    assert task is not None
+    assert task.required_capabilities == ("agent.remote",)
+    request = app_module.shared_task_artifacts().read_json(task_id, "request.json")
+    assert request["mode"] == "storage_scan"
+    assert request["execution_mode"] == "agent"
+    assert request["remote_execution"]["material_import"]["mode"] == "storage_scan"
+    assert "url" not in str(request).lower()
+    assert len(calls) == 1
+    assert calls[0]["prefix"] == "incoming/2026"
+    assert calls[0]["recursive"] is True
 
 
 def test_scan_modes_reject_invalid_source_or_field_combinations(client, tmp_path):

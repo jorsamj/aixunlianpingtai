@@ -1128,8 +1128,8 @@ class StorageImportScanReq(BaseModel):
         zip_path = str(self.zip_path or "").strip()
         target_prefix = str(self.target_prefix or "").strip()
         if self.execution_mode == "agent":
-            if self.mode != "server_zip":
-                raise ValueError("Agent 素材导入当前仅支持服务器 ZIP 模式")
+            if self.mode not in {"server_zip", "storage_scan"}:
+                raise ValueError("Agent 素材导入仅支持对象存储扫描或服务器 ZIP 模式")
             if self.import_format not in {"images", "yolo"}:
                 raise ValueError("Agent 素材导入当前仅支持仅图片或 YOLO 模式")
             if self.import_format == "images" and self.dataset_yaml:
@@ -1138,7 +1138,7 @@ class StorageImportScanReq(BaseModel):
                 try:
                     safe_member_path(str(self.dataset_yaml)).as_posix()
                 except ServerZipImportError as error:
-                    raise ValueError("Agent dataset_yaml 必须是 ZIP 根内的安全相对路径") from error
+                    raise ValueError("Agent dataset_yaml 必须是扫描目录或 ZIP 根内的安全相对路径") from error
         if self.mode == "server_zip":
             if not zip_path:
                 raise ValueError("服务器 ZIP 模式必须选择 ZIP 文件")
@@ -1505,11 +1505,11 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
     ):
         raise HTTPException(status_code=422, detail="本地服务器 ZIP 导入只能使用本地目标存储")
     if (
-        payload.mode == "server_zip"
-        and payload.execution_mode == "agent"
+        payload.execution_mode == "agent"
+        and payload.mode in {"server_zip", "storage_scan"}
         and source_type not in {StorageType.OSS, StorageType.S3}
     ):
-        raise HTTPException(status_code=422, detail="Agent ZIP 导入必须选择 OSS/S3/MinIO 目标存储")
+        raise HTTPException(status_code=422, detail="Agent 素材导入必须选择 OSS/S3/MinIO 对象存储")
     request_payload = payload.model_dump(mode="json")
     resolved_zip = None
     if payload.mode == "server_zip":
@@ -1534,8 +1534,19 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
     task_id = uuid.uuid4().hex[:12]
     if payload.execution_mode == "agent":
         try:
-            request_payload["remote_execution"] = (
-                _remote_execution_transport_service().stage_material_import(
+            transport = _remote_execution_transport_service()
+            if payload.mode == "storage_scan":
+                request_payload["remote_execution"] = transport.stage_material_storage_scan(
+                    project_id=project_id,
+                    task_id=task_id,
+                    storage_source_id=source.id,
+                    prefix=str(payload.prefix or ""),
+                    recursive=bool(payload.recursive),
+                    import_format=payload.import_format,
+                    dataset_yaml=str(payload.dataset_yaml or ""),
+                )
+            else:
+                request_payload["remote_execution"] = transport.stage_material_import(
                     project_id=project_id,
                     task_id=task_id,
                     archive_path=resolved_zip,
@@ -1544,7 +1555,6 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
                     import_format=payload.import_format,
                     dataset_yaml=str(payload.dataset_yaml or ""),
                 )
-            )
         except RemoteExecutionTransportError as error:
             raise PlatformError(
                 code=error.code,
@@ -15344,6 +15354,24 @@ def _confirm_agent_training_model_uploads(task, payload, *, execution_generation
         models=models,
     )
 
+
+def _agent_material_scan_page(task, payload, *, cursor=None, limit=100):
+    return _remote_execution_transport_service().material_scan_page(
+        task,
+        payload,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+def _agent_material_scan_read(task, payload, *, object_key):
+    return _remote_execution_transport_service().material_scan_read_contract(
+        task,
+        payload,
+        object_key=object_key,
+    )
+
+
 app.include_router(external_algorithm_platform_router(
     data_dir=DATA_DIR,
     get_project=get_project,
@@ -15372,4 +15400,6 @@ app.include_router(training_recovery_router(
     agent_result_commit_handler=_commit_agent_result_publication,
     agent_training_model_upload_preparer=_prepare_agent_training_model_uploads,
     agent_training_model_upload_confirmer=_confirm_agent_training_model_uploads,
+    agent_material_scan_page_provider=_agent_material_scan_page,
+    agent_material_scan_read_provider=_agent_material_scan_read,
 ))
