@@ -1,6 +1,10 @@
+import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
+from platform_core.errors import PlatformError
 from platform_core.algorithms import save_algorithms
 from platform_core.model_artifacts import ModelArtifactConfigPayload, ModelArtifactService
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
@@ -119,3 +123,64 @@ def test_missing_storage_config_keeps_artifact_pending_instead_of_failing_traini
     rows = service.repository.list(project_id="p1")
     assert all(row["storage_status"] == "PENDING" for row in rows)
     assert all("尚未配置" in row["storage_error"] for row in rows)
+
+
+
+def test_register_verified_remote_artifact_restats_object_before_marking_uploaded(tmp_path: Path):
+    service = _service(tmp_path)
+    project = _project_dir(tmp_path, "p1")
+    object_key = "models-central/p1/local-a1/remote-v1/best/best.pt"
+    stored = project / object_key
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_bytes(b"remote-agent-model")
+    digest = hashlib.sha256(stored.read_bytes()).hexdigest()
+
+    row = service.register_verified_remote_artifact(
+        project_id="p1",
+        algorithm_id="local-a1",
+        version_id="remote-v1",
+        target="best",
+        file_name="best.pt",
+        sha256=digest,
+        size_bytes=stored.stat().st_size,
+        storage_source_id="default_local",
+        object_key=object_key,
+        source_path="",
+        metadata={"remote_training": True, "execution_generation": 3},
+    )
+
+    assert row["storage_status"] == "UPLOADED"
+    assert row["storage_source_id"] == "default_local"
+    assert row["object_key"] == object_key
+    assert row["sha256"] == digest
+    assert row["size_bytes"] == len(b"remote-agent-model")
+    assert row["metadata"]["remote_training"] is True
+
+
+def test_register_verified_remote_artifact_rejects_object_content_mismatch(tmp_path: Path):
+    service = _service(tmp_path)
+    project = _project_dir(tmp_path, "p1")
+    object_key = "models-central/p1/local-a1/remote-v2/best/best.pt"
+    stored = project / object_key
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_bytes(b"actual-object")
+
+    with pytest.raises(PlatformError) as mismatch:
+        service.register_verified_remote_artifact(
+            project_id="p1",
+            algorithm_id="local-a1",
+            version_id="remote-v2",
+            target="best",
+            file_name="best.pt",
+            sha256=hashlib.sha256(b"different-object").hexdigest(),
+            size_bytes=stored.stat().st_size,
+            storage_source_id="default_local",
+            object_key=object_key,
+        )
+
+    assert mismatch.value.code == "MODEL_REMOTE_ARTIFACT_EVIDENCE_MISMATCH"
+    assert service.repository.list(
+        project_id="p1",
+        algorithm_id="local-a1",
+        version_id="remote-v2",
+    ) == []
