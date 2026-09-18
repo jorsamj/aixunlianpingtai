@@ -75,6 +75,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_agent_execution.py
+          tests/unit/test_agent_result_upload.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_service_nodes.py
@@ -94,6 +95,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/api
           tests/api/test_agent_executor_api.py
+          tests/api/test_agent_result_upload_api.py
           tests/api/test_service_node_api.py
           tests/api/test_central_scheduler_api.py
           tests/api/test_runtime_router_app_mount.py
