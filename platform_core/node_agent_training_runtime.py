@@ -201,21 +201,104 @@ class AgentTrainingRunner:
         self.controller = ProcessController()
         self._identity_lock = threading.Lock()
         self._active_identity: ProcessIdentity | None = None
+        self._active_lease: RemoteExecutionLease | None = None
         self._shutdown_event = threading.Event()
+        self._recovery_error = ""
+        self._recover_persisted_processes()
 
-    def _set_identity(self, identity: ProcessIdentity | None) -> None:
+    @property
+    def ready(self) -> bool:
+        return not bool(self._recovery_error)
+
+    @property
+    def recovery_error(self) -> str:
+        return str(self._recovery_error or "")
+
+    def _set_active_process(
+        self,
+        lease: RemoteExecutionLease,
+        identity: ProcessIdentity,
+    ) -> None:
         with self._identity_lock:
+            self._active_lease = lease
             self._active_identity = identity
 
-    def _terminate_active(self) -> None:
+    def _clear_active_process(self) -> None:
         with self._identity_lock:
-            identity = self._active_identity
+            self._active_lease = None
+            self._active_identity = None
+
+    def _active_process(
+        self,
+    ) -> tuple[RemoteExecutionLease | None, ProcessIdentity | None]:
+        with self._identity_lock:
+            return self._active_lease, self._active_identity
+
+    def _recover_persisted_processes(self) -> bool:
+        try:
+            records = self.workdirs.list_process_identities()
+        except (OSError, ValueError) as error:
+            self._recovery_error = (
+                f"persisted training process identity is unsafe or unreadable: {error}"
+            )
+            return False
+        for record in records:
+            identity = ProcessIdentity(
+                pid=int(record["pid"]),
+                create_time=float(record["create_time"]),
+                command_hash=str(record["command_hash"]),
+            )
+            try:
+                self.controller.terminate_tree(identity, timeout=8.0)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                self._recovery_error = (
+                    "stale training process cleanup could not be verified: "
+                    f"{type(error).__name__}: {error}"
+                )
+                return False
+            try:
+                self.workdirs.clear_process_identity_record(
+                    str(record["task_id"]),
+                    int(record["generation"]),
+                )
+            except (OSError, ValueError) as error:
+                self._recovery_error = (
+                    "stale training process identity cleanup could not be persisted: "
+                    f"{type(error).__name__}: {error}"
+                )
+                return False
+        self._recovery_error = ""
+        return True
+
+    def _terminate_active(self, *, strict: bool = False) -> bool:
+        lease, identity = self._active_process()
         if identity is None:
-            return
+            return True
         try:
             self.controller.terminate_tree(identity, timeout=8.0)
-        except (ProcessLookupError, PermissionError):
-            return
+        except ProcessLookupError:
+            pass
+        except PermissionError as error:
+            if strict:
+                raise RemoteExecutionFenced(
+                    "training process cleanup could not be verified: "
+                    f"{type(error).__name__}: {error}"
+                ) from error
+            return False
+        if lease is not None:
+            try:
+                self.workdirs.clear_process_identity(lease)
+            except (OSError, ValueError) as error:
+                if strict:
+                    raise RemoteExecutionFenced(
+                        "training process identity cleanup could not be persisted: "
+                        f"{type(error).__name__}: {error}"
+                    ) from error
+                return False
+        self._clear_active_process()
+        return True
 
     def request_shutdown(self) -> None:
         self._shutdown_event.set()
@@ -766,6 +849,11 @@ class AgentTrainingRunner:
         }
 
     def run(self, lease: RemoteExecutionLease) -> AgentTrainingOutcome:
+        if not self._recover_persisted_processes():
+            raise RemoteExecutionFenced(
+                self._recovery_error
+                or "stale training process cleanup could not be verified"
+            )
         if self._shutdown_event.is_set():
             raise RemoteExecutionFenced("Agent process shutdown requested")
         if lease.kind != "TRAINING":
@@ -882,7 +970,18 @@ class AgentTrainingRunner:
                     stdout=log,
                     stderr=subprocess.STDOUT,
                 )
-                self._set_identity(launched.identity)
+                self._set_active_process(lease, launched.identity)
+                try:
+                    self.workdirs.persist_process_identity(
+                        lease,
+                        launched.identity,
+                    )
+                except Exception:
+                    # A launched process without durable exact identity would
+                    # be unrecoverable after an Agent crash. Kill it before
+                    # allowing execution to continue.
+                    self._terminate_active(strict=True)
+                    raise
                 next_projection = 0.0
                 try:
                     while launched.process.poll() is None:
@@ -924,14 +1023,13 @@ class AgentTrainingRunner:
                             next_projection = now + _MAX_PROGRESS_HEARTBEAT_SECONDS
                         time.sleep(self.process_poll_interval)
                 except (InterruptedError, RemoteExecutionFenced):
-                    self.controller.terminate_tree(
-                        launched.identity,
-                        timeout=8.0,
-                    )
+                    self._terminate_active(strict=True)
                     raise
-                finally:
-                    self._set_identity(None)
 
+            # Even a normally exited training leader may have left DataLoader
+            # descendants behind. Exact process-group cleanup must be proven
+            # before any model/result publication or terminal task mutation.
+            self._terminate_active(strict=True)
             self._assert_active(monitor)
             log_offset = self._forward_log_delta(
                 lease,
@@ -1239,7 +1337,7 @@ class AgentTrainingRunner:
                 result_ref=result_ref,
             )
         except InterruptedError as error:
-            self._terminate_active()
+            self._terminate_active(strict=True)
             self._append_log(
                 lease,
                 f"[agent] training cancelled: {error}\n",
@@ -1256,10 +1354,10 @@ class AgentTrainingRunner:
                 error=str(error),
             )
         except RemoteExecutionFenced:
-            self._terminate_active()
+            self._terminate_active(strict=True)
             raise
         except Exception as error:
-            self._terminate_active()
+            self._terminate_active(strict=True)
             try:
                 self._assert_active(monitor)
             except InterruptedError as cancelled:
@@ -1305,8 +1403,13 @@ class AgentTrainingRunner:
             )
         finally:
             monitor.stop()
-            self._set_identity(None)
-            self.workdirs.cleanup(lease)
+            _active_lease, active_identity = self._active_process()
+            if active_identity is None:
+                self.workdirs.cleanup(lease)
+            # If exact process cleanup could not be proven, preserve both the
+            # in-memory identity and generation workdir for retry/restart
+            # recovery. Never erase the only evidence of a possibly live GPU
+            # process.
 
 
 __all__ = [
