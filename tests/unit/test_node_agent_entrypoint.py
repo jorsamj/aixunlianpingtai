@@ -73,7 +73,7 @@ def _patch_common(monkeypatch, tmp_path):
         lambda **_kwargs: {
             "host": {"hostname": "node-entrypoint"},
             "resources": {},
-            "runtime": {},
+            "runtime": dict(_kwargs.get("runtime_probe") or {}),
             "process": {},
         },
     )
