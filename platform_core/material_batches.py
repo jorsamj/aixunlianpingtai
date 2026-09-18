@@ -126,6 +126,41 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
         "selection_spec": selection.as_dict(),
         "options": options,
     }
+    execution_mode = str(payload.get("execution_mode") or "").strip().lower()
+    remote_execution = payload.get("remote_execution")
+    if execution_mode or remote_execution is not None:
+        if operation is not BatchOperation.CLEAN:
+            raise BatchRequestError(
+                "BATCH_REMOTE_EXECUTION_UNSUPPORTED",
+                "remote execution is currently supported only for CLEAN material batches",
+                422,
+            )
+        if execution_mode not in {"local", "agent"}:
+            raise BatchRequestError(
+                "BATCH_EXECUTION_MODE_INVALID",
+                "cleaning execution_mode must be local or agent",
+                422,
+            )
+        request_payload["execution_mode"] = execution_mode
+        if execution_mode == "agent":
+            if not isinstance(remote_execution, dict):
+                raise BatchRequestError(
+                    "BATCH_REMOTE_EXECUTION_REQUIRED",
+                    "Agent cleaning requires an explicit portable remote_execution contract",
+                    422,
+                )
+            request_payload["remote_execution"] = dict(remote_execution)
+        elif remote_execution is not None:
+            raise BatchRequestError(
+                "BATCH_REMOTE_EXECUTION_INVALID",
+                "local cleaning cannot publish a remote_execution contract",
+                422,
+            )
+    required_capabilities = (
+        ("agent.remote",)
+        if operation is BatchOperation.CLEAN and request_payload.get("execution_mode") == "agent"
+        else ("materials.batch",)
+    )
     selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
     existing_request = artifacts.read_json(task_id, "request.json", default=None)
     if existing_request is not None:
@@ -136,7 +171,7 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
                 raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "prepared batch selection is incomplete", 409)
         return TaskRecord.new(
             task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
-            f"materials:{project_id}", required_capabilities=("materials.batch",),
+            f"materials:{project_id}", required_capabilities=required_capabilities,
         )
     try:
         with closing(BatchSelection(selection_path)):
@@ -165,7 +200,7 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
             artifacts.atomic_write_json(task_id, CHECKPOINT_REF, manifest.summary())
         return TaskRecord.new(
             task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
-            f"materials:{project_id}", required_capabilities=("materials.batch",),
+            f"materials:{project_id}", required_capabilities=required_capabilities,
         )
     except Exception as error:
         try:

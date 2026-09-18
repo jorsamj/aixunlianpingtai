@@ -145,6 +145,8 @@ def training_recovery_router(
     agent_training_model_upload_confirmer=None,
     agent_material_scan_page_provider=None,
     agent_material_scan_read_provider=None,
+    agent_clean_selection_page_provider=None,
+    agent_clean_selection_read_provider=None,
 ):
     from fastapi import APIRouter, Body, HTTPException
 
@@ -238,5 +240,7 @@ def training_recovery_router(
         training_model_upload_confirmer=agent_training_model_upload_confirmer,
         material_scan_page_provider=agent_material_scan_page_provider,
         material_scan_read_provider=agent_material_scan_read_provider,
+        clean_selection_page_provider=agent_clean_selection_page_provider,
+        clean_selection_read_provider=agent_clean_selection_read_provider,
     ))
     return root

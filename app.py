@@ -15388,6 +15388,23 @@ def _agent_material_scan_read(task, payload, *, object_key):
     )
 
 
+def _agent_clean_selection_page(task, payload, *, cursor=None, limit=100):
+    return _remote_execution_transport_service().clean_selection_page(
+        task,
+        payload,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+def _agent_clean_selection_read(task, payload, *, image_id):
+    return _remote_execution_transport_service().clean_selection_read_contract(
+        task,
+        payload,
+        image_id=image_id,
+    )
+
+
 app.include_router(external_algorithm_platform_router(
     data_dir=DATA_DIR,
     get_project=get_project,
@@ -15418,4 +15435,6 @@ app.include_router(training_recovery_router(
     agent_training_model_upload_confirmer=_confirm_agent_training_model_uploads,
     agent_material_scan_page_provider=_agent_material_scan_page,
     agent_material_scan_read_provider=_agent_material_scan_read,
+    agent_clean_selection_page_provider=_agent_clean_selection_page,
+    agent_clean_selection_read_provider=_agent_clean_selection_read,
 ))

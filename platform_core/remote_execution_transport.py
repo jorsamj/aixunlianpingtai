@@ -11,12 +11,15 @@ import json
 import mimetypes
 import re
 import shutil
+import sqlite3
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from .algorithms import attach_version, list_algorithms, resolve_current_version_id
 from filelock import FileLock, Timeout
 
+from .material_repository import MaterialRepository
 from .model_artifacts import ModelArtifactService
 from .remote_training_results import (
     RemoteTrainingResultError,
@@ -1146,6 +1149,310 @@ class RemoteExecutionTransportService:
                 422,
             )
         return remote, material
+
+    def build_cleaning_remote_contract(self, project_id: str, task_id: str) -> dict[str, Any]:
+        source = self._configured_source()
+        if source is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_STORAGE_REQUIRED",
+                "Agent cleaning requires an enabled OSS/S3-compatible unified object storage source",
+                409,
+            )
+        storage_type = StorageType.parse(source.type).value
+        output_key = "/".join([
+            _REMOTE_PREFIX,
+            _safe_segment(project_id, "project"),
+            _safe_segment(task_id, "task"),
+            "cleaning-review",
+            "review.jsonl",
+        ])
+        return {
+            "version": 1,
+            "task_kind": "MATERIAL_BATCH",
+            "transport": "object-storage-v1",
+            "cleaning": {
+                "schema_version": 1,
+                "selection_protocol": "exact-material-selection-v1",
+                "output": {
+                    "storage_source_id": str(source.id),
+                    "storage_type": storage_type,
+                    "object_key": output_key,
+                    "file_name": "cleaning-review.jsonl",
+                    "content_type": "application/x-ndjson",
+                },
+            },
+        }
+
+    @staticmethod
+    def _clean_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        if str(getattr(task.kind, "value", task.kind)) != "MATERIAL_BATCH":
+            raise RemoteExecutionTransportError(
+                "REMOTE_TASK_KIND_UNSUPPORTED",
+                "portable cleaning transport requires a MATERIAL_BATCH task",
+                409,
+            )
+        if str(payload.get("operation") or "").strip().upper() != "CLEAN":
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_OPERATION_INVALID",
+                "portable MATERIAL_BATCH execution is implemented only for CLEAN",
+                422,
+            )
+        if str(payload.get("execution_mode") or "").strip().lower() != "agent":
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_MODE_INVALID",
+                "portable cleaning requires execution_mode=agent",
+                422,
+            )
+        remote = payload.get("remote_execution")
+        if (
+            not isinstance(remote, Mapping)
+            or int(remote.get("version") or 0) != 1
+            or str(remote.get("task_kind") or "") != "MATERIAL_BATCH"
+            or str(remote.get("transport") or "") != "object-storage-v1"
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable cleaning contract is invalid",
+                422,
+            )
+        cleaning = remote.get("cleaning")
+        output = cleaning.get("output") if isinstance(cleaning, Mapping) else None
+        if (
+            not isinstance(cleaning, Mapping)
+            or int(cleaning.get("schema_version") or 0) != 1
+            or str(cleaning.get("selection_protocol") or "") != "exact-material-selection-v1"
+            or not isinstance(output, Mapping)
+            or not str(output.get("storage_source_id") or "").strip()
+            or not str(output.get("object_key") or "").strip()
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable cleaning payload is incomplete",
+                422,
+            )
+        return remote, cleaning
+
+    @staticmethod
+    def _clean_options(payload: Mapping[str, Any]) -> dict[str, Any]:
+        from .cleaning import clean_options
+
+        options = clean_options(payload.get("options") or {})
+        options.pop("task_name", None)
+        return options
+
+    def _clean_selection_database(self, task):
+        if self.task_artifacts is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_SELECTION_UNAVAILABLE",
+                "cleaning task artifacts are unavailable",
+                500,
+            )
+        path = self.task_artifacts.artifact_path(str(task.task_id), "selection.sqlite3")
+        if not path.is_file():
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_SELECTION_UNAVAILABLE",
+                "frozen cleaning selection does not exist",
+                409,
+            )
+        database = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        database.row_factory = sqlite3.Row
+        frozen = database.execute(
+            "SELECT value FROM meta WHERE key='frozen'"
+        ).fetchone()
+        if frozen is None:
+            database.close()
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_SELECTION_UNAVAILABLE",
+                "cleaning selection is not frozen",
+                409,
+            )
+        return database
+
+    def _portable_clean_material(self, task, material: Mapping[str, Any]) -> dict[str, Any]:
+        image_id = str(material.get("id") or "").strip()
+        source_id = str(material.get("storage_source_id") or "").strip()
+        object_key = str(material.get("object_key") or "").strip()
+        digest = str(material.get("content_sha256") or "").strip().lower()
+        try:
+            size = int(material.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if (
+            not image_id
+            or not source_id
+            or not object_key
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or size <= 0
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_MATERIAL_EVIDENCE_INVALID",
+                f"material {image_id or '<unknown>'} lacks portable object evidence",
+                409,
+            )
+        source = self.storage_sources_factory().get(source_id)
+        if source is None or not source.enabled:
+            raise RemoteExecutionTransportError(
+                "REMOTE_STORAGE_SOURCE_UNAVAILABLE",
+                f"storage source {source_id or '<empty>'} is unavailable",
+                409,
+            )
+        try:
+            storage_type = StorageType.parse(source.type)
+        except ValueError as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_STORAGE_NOT_PORTABLE",
+                f"material {image_id} storage type is not portable",
+                409,
+            ) from error
+        if storage_type not in {StorageType.OSS, StorageType.S3}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_STORAGE_NOT_PORTABLE",
+                f"material {image_id} is not stored in OSS/S3-compatible object storage",
+                409,
+            )
+        return {
+            "image_id": image_id,
+            "file_name": Path(str(material.get("filename") or object_key)).name,
+            "storage_source_id": source_id,
+            "storage_type": storage_type.value,
+            "object_key": object_key,
+            "size_bytes": size,
+            "etag": str(material.get("etag") or ""),
+            "sha256": digest,
+        }
+
+    def clean_selection_page(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        self._clean_remote(task, payload)
+        try:
+            page_limit = max(1, min(500, int(limit)))
+        except (TypeError, ValueError) as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_PAGE_INVALID",
+                "cleaning selection page limit is invalid",
+                422,
+            ) from error
+        after = str(cursor or "").strip()
+        with closing(self._clean_selection_database(task)) as database:
+            if after and database.execute(
+                "SELECT 1 FROM selection WHERE image_id=?", (after,)
+            ).fetchone() is None:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CLEANING_CURSOR_INVALID",
+                    "cleaning selection cursor is not a selected image",
+                    409,
+                )
+            total = int(database.execute("SELECT COUNT(*) FROM selection").fetchone()[0])
+            rows = database.execute(
+                "SELECT image_id FROM selection WHERE image_id>? ORDER BY image_id LIMIT ?",
+                (after, page_limit + 1),
+            ).fetchall()
+        ids = [str(row["image_id"]) for row in rows]
+        has_more = len(ids) > page_limit
+        page_ids = ids[:page_limit]
+        materials = MaterialRepository(
+            self.project_dir(str(task.project_id))
+        ).get_many(page_ids)
+        if len(materials) != len(page_ids):
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_SELECTION_CHANGED",
+                "one or more selected materials no longer exist",
+                409,
+            )
+        items = [self._portable_clean_material(task, material) for material in materials]
+        return {
+            "items": items,
+            "next_cursor": page_ids[-1] if has_more and page_ids else None,
+            "total": total,
+            "selection_protocol": "exact-material-selection-v1",
+        }
+
+    def clean_selection_read_contract(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        *,
+        image_id: str,
+    ) -> dict[str, Any]:
+        self._clean_remote(task, payload)
+        key = str(image_id or "").strip()
+        if not key:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_IMAGE_REQUIRED",
+                "cleaning image_id is required",
+                422,
+            )
+        with closing(self._clean_selection_database(task)) as database:
+            selected = database.execute(
+                "SELECT 1 FROM selection WHERE image_id=?", (key,)
+            ).fetchone()
+        if selected is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_IMAGE_NOT_SELECTED",
+                "requested cleaning image is outside the frozen selection",
+                403,
+            )
+        material = MaterialRepository(
+            self.project_dir(str(task.project_id))
+        ).get(key)
+        if material is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CLEANING_SELECTION_CHANGED",
+                "selected material no longer exists",
+                409,
+            )
+        ref = self._portable_clean_material(task, material)
+        return {
+            "image_id": key,
+            "download": self._download_contract(
+                str(task.project_id),
+                {
+                    "storage_source_id": ref["storage_source_id"],
+                    "object_key": ref["object_key"],
+                    "file_name": ref["file_name"],
+                    "size_bytes": ref["size_bytes"],
+                    "sha256": ref["sha256"],
+                },
+            ),
+            "source": ref,
+        }
+
+    def _resolve_clean_execution_payload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        assignment: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, cleaning = self._clean_remote(task, payload)
+        output_ref = cleaning.get("output")
+        assert isinstance(output_ref, Mapping)
+        return {
+            "schema_version": 1,
+            "task_kind": "MATERIAL_BATCH",
+            "transport": "object-storage-v1",
+            "operation": "CLEAN",
+            "selection": {
+                "protocol": "exact-material-selection-v1",
+                "page_size": 100,
+            },
+            "options": self._clean_options(payload),
+            "output": {
+                "type": "object",
+                "storage_ref": {
+                    "storage_source_id": str(output_ref.get("storage_source_id") or ""),
+                    "object_key": str(output_ref.get("object_key") or ""),
+                    "file_name": Path(str(output_ref.get("file_name") or "cleaning-review.jsonl")).name,
+                    "content_type": str(output_ref.get("content_type") or "application/x-ndjson"),
+                },
+                "upload_protocol": "prepare-after-local-hash-v1",
+            },
+        }
 
     def _resolve_material_execution_payload(
         self,
@@ -2809,6 +3116,8 @@ class RemoteExecutionTransportService:
             return self._resolve_conversion_execution_payload(task, payload, assignment)
         if kind == "MATERIAL_IMPORT":
             return self._resolve_material_execution_payload(task, payload, assignment)
+        if kind == "MATERIAL_BATCH":
+            return self._resolve_clean_execution_payload(task, payload, assignment)
         _remote, deployment = self._deployment_remote(task, payload)
         input_ref = deployment.get("input")
         model_ref = deployment.get("model")

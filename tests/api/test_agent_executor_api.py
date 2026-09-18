@@ -20,7 +20,14 @@ def safe_remote_payload(task, payload, assignment):
     }
 
 
-def client_for(tmp_path, *, material_scan_page_provider=None, material_scan_read_provider=None):
+def client_for(
+    tmp_path,
+    *,
+    material_scan_page_provider=None,
+    material_scan_read_provider=None,
+    clean_selection_page_provider=None,
+    clean_selection_read_provider=None,
+):
     repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
     artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
     app = FastAPI()
@@ -30,6 +37,8 @@ def client_for(tmp_path, *, material_scan_page_provider=None, material_scan_read
         execution_payload_resolver=safe_remote_payload,
         material_scan_page_provider=material_scan_page_provider,
         material_scan_read_provider=material_scan_read_provider,
+        clean_selection_page_provider=clean_selection_page_provider,
+        clean_selection_read_provider=clean_selection_read_provider,
     ))
     return TestClient(app), repository, artifacts
 
@@ -382,6 +391,126 @@ def test_material_scan_broker_requires_current_execution_lease(tmp_path):
 
     fenced = client.post(
         f"/api/v63/node-executor/material-api-node/executions/{task_id}/material-scan/page",
+        headers=auth(token),
+        json={
+            "execution_lease_token": "wrong-token",
+            "execution_generation": execution["generation"],
+        },
+    )
+    assert fenced.status_code == 409
+    assert fenced.json()["detail"]["code"] == "EXECUTION_FENCED"
+
+
+def test_clean_selection_broker_requires_material_batch_clean_and_current_execution_lease(tmp_path):
+    page_calls = []
+    read_calls = []
+
+    def page_provider(task, payload, *, cursor=None, limit=100):
+        page_calls.append((task.task_id, payload.get("operation"), cursor, limit))
+        return {
+            "items": [{"image_id": "img-1", "size_bytes": 12, "sha256": "a" * 64}],
+            "next_cursor": None,
+            "total": 1,
+        }
+
+    def read_provider(task, payload, *, image_id):
+        read_calls.append((task.task_id, image_id))
+        return {
+            "image_id": image_id,
+            "download": {"method": "GET", "url": "https://objects.example.test/img-1.jpg"},
+        }
+
+    client, repository, artifacts = client_for(
+        tmp_path,
+        clean_selection_page_provider=page_provider,
+        clean_selection_read_provider=read_provider,
+    )
+    task_id = "clean-api-agent"
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "operation": "CLEAN",
+        "execution_mode": "agent",
+        "options": {},
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MATERIAL_BATCH",
+            "transport": "object-storage-v1",
+            "cleaning": {
+                "schema_version": 1,
+                "selection_protocol": "exact-material-selection-v1",
+                "output": {
+                    "storage_source_id": "objects",
+                    "object_key": "remote-execution/p/t/cleaning-review/review.jsonl",
+                },
+            },
+        },
+    })
+    repository.create(TaskRecord.new(
+        task_id=task_id,
+        project_id="project-api-agent",
+        kind=TaskKind.MATERIAL_BATCH,
+        payload_ref="request.json",
+        resource_key=f"materials:{task_id}",
+        required_capabilities=("agent.remote",),
+    ), artifacts=artifacts)
+
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": "clean-api-node",
+        "display_name": "clean-api-node",
+        "connection_mode": "agent",
+        "allowed_capabilities": ["cleaning"],
+    })
+    nodes.heartbeat("clean-api-node", token, {
+        "hostname": "clean-api-node",
+        "reported_capabilities": ["cleaning"],
+        "resources": {"memory": {"available_bytes": 8 * 1024**3}, "disk": {"free_bytes": 100 * 1024**3}},
+        "runtime": {},
+    })
+    service = AgentExecutionService(repository, artifacts)
+    assignment = service.allocator.assign_next()
+    assert assignment is not None
+    assert assignment["capability"] == "cleaning"
+
+    claimed = client.post(
+        "/api/v63/node-executor/clean-api-node/assignments/claim",
+        headers=auth(token),
+    ).json()
+    started = client.post(
+        f"/api/v63/node-executor/clean-api-node/assignments/{task_id}/start",
+        headers=auth(token),
+        json={"assignment_lease_token": claimed["item"]["assignment"]["assignment_lease_token"]},
+    )
+    assert started.status_code == 200, started.text
+    execution = started.json()["execution"]
+
+    page = client.post(
+        f"/api/v63/node-executor/clean-api-node/executions/{task_id}/clean-selection/page",
+        headers=auth(token),
+        json={
+            "execution_lease_token": execution["lease_token"],
+            "execution_generation": execution["generation"],
+            "limit": 25,
+        },
+    )
+    assert page.status_code == 200, page.text
+    assert page.json()["items"][0]["image_id"] == "img-1"
+    assert page_calls[-1][3] == 25
+
+    read = client.post(
+        f"/api/v63/node-executor/clean-api-node/executions/{task_id}/clean-selection/read",
+        headers=auth(token),
+        json={
+            "execution_lease_token": execution["lease_token"],
+            "execution_generation": execution["generation"],
+            "image_id": "img-1",
+        },
+    )
+    assert read.status_code == 200, read.text
+    assert read.json()["image_id"] == "img-1"
+    assert read_calls[-1][1] == "img-1"
+
+    fenced = client.post(
+        f"/api/v63/node-executor/clean-api-node/executions/{task_id}/clean-selection/page",
         headers=auth(token),
         json={
             "execution_lease_token": "wrong-token",

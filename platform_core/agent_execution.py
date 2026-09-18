@@ -232,6 +232,8 @@ class AgentExecutionService:
         training_model_upload_confirmer=None,
         material_scan_page_provider=None,
         material_scan_read_provider=None,
+        clean_selection_page_provider=None,
+        clean_selection_read_provider=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -245,6 +247,8 @@ class AgentExecutionService:
         self.training_model_upload_confirmer = training_model_upload_confirmer
         self.material_scan_page_provider = material_scan_page_provider
         self.material_scan_read_provider = material_scan_read_provider
+        self.clean_selection_page_provider = clean_selection_page_provider
+        self.clean_selection_read_provider = clean_selection_read_provider
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -785,6 +789,86 @@ class AgentExecutionService:
         except Exception as error:
             raise AgentExecutionError(
                 str(getattr(error, "code", "REMOTE_MATERIAL_SCAN_READ_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
+
+    def clean_selection_page(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id, node_token, task_id, execution_lease_token, execution_generation,
+        )
+        payload = self._read_task_payload(task)
+        if (
+            task.kind is not TaskKind.MATERIAL_BATCH
+            or str(payload.get("operation") or "").strip().upper() != "CLEAN"
+            or not callable(self.clean_selection_page_provider)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_CLEANING_SELECTION_UNAVAILABLE",
+                "brokered cleaning selection is unavailable for this execution",
+                409,
+            )
+        try:
+            return self.clean_selection_page_provider(
+                task,
+                payload,
+                cursor=cursor,
+                limit=max(1, min(500, int(limit))),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_CLEANING_SELECTION_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
+
+    def clean_selection_read(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        image_id: str,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id, node_token, task_id, execution_lease_token, execution_generation,
+        )
+        payload = self._read_task_payload(task)
+        if (
+            task.kind is not TaskKind.MATERIAL_BATCH
+            or str(payload.get("operation") or "").strip().upper() != "CLEAN"
+            or not callable(self.clean_selection_read_provider)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_CLEANING_SELECTION_UNAVAILABLE",
+                "brokered cleaning material reads are unavailable for this execution",
+                409,
+            )
+        try:
+            return self.clean_selection_read_provider(
+                task,
+                payload,
+                image_id=str(image_id or ""),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_CLEANING_SELECTION_READ_FAILED")),
                 str(error),
                 int(getattr(error, "status_code", 500)),
             ) from error
@@ -1673,6 +1757,8 @@ def agent_executor_router(
     training_model_upload_confirmer=None,
     material_scan_page_provider=None,
     material_scan_read_provider=None,
+    clean_selection_page_provider=None,
+    clean_selection_read_provider=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -1690,6 +1776,8 @@ def agent_executor_router(
             training_model_upload_confirmer=training_model_upload_confirmer,
             material_scan_page_provider=material_scan_page_provider,
             material_scan_read_provider=material_scan_read_provider,
+            clean_selection_page_provider=clean_selection_page_provider,
+            clean_selection_read_provider=clean_selection_read_provider,
         )
 
     def token(authorization: str | None) -> str:
@@ -1802,6 +1890,41 @@ def agent_executor_router(
             str(payload.get("execution_lease_token") or ""),
             invoke(_execution_generation, payload.get("execution_generation")),
             object_key=str(payload.get("object_key") or ""),
+        )
+
+    @router.post("/executions/{task_id}/clean-selection/page")
+    def clean_selection_page(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().clean_selection_page,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            cursor=payload.get("cursor"),
+            limit=payload.get("limit", 100),
+        )
+
+    @router.post("/executions/{task_id}/clean-selection/read")
+    def clean_selection_read(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().clean_selection_read,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            image_id=str(payload.get("image_id") or ""),
         )
 
     @router.post("/executions/{task_id}/training-models/prepare")

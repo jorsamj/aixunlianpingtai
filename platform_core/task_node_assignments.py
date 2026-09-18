@@ -173,6 +173,7 @@ def task_node_connection_mode(task, artifacts) -> str | None:
         TaskKind.TRAINING,
         TaskKind.MODEL_CONVERSION,
         TaskKind.MATERIAL_IMPORT,
+        TaskKind.MATERIAL_BATCH,
     }:
         return None
     try:
@@ -185,6 +186,11 @@ def task_node_connection_mode(task, artifacts) -> str | None:
         if str(payload.get("target") or "local").strip().lower() == "remote":
             return "agent"
         return None
+    if task.kind is TaskKind.MATERIAL_BATCH:
+        if str(payload.get("operation") or "").strip().upper() != "CLEAN":
+            return None
+        mode = str(payload.get("execution_mode") or "local").strip().lower()
+        return "agent" if mode == "agent" else "local"
     # Conversion/material import remain local unless the producer explicitly
     # publishes an Agent execution mode. A portable contract alone never changes
     # product intent or silently migrates a local task to a remote node.

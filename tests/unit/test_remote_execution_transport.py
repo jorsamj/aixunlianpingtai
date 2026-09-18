@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from platform_core.material_batches import BatchSelection
+from platform_core.material_repository import MaterialRepository
 from platform_core.remote_training_results import create_training_result_archive
 from platform_core.remote_execution_transport import (
     REMOTE_TRANSFER_TTL_SECONDS,
@@ -16,7 +18,7 @@ from platform_core.remote_execution_transport import (
 )
 from platform_core.storage.models import ObjectMetadata
 from platform_core.storage.source_repository import StorageSource
-from platform_core.task_runtime import TaskKind
+from platform_core.task_runtime import ArtifactStore, TaskKind
 
 
 class FakeConfigRepository:
@@ -1330,3 +1332,152 @@ def test_remote_training_commit_rejects_stale_iteration_base(tmp_path, monkeypat
             confirmed,
         )
     assert stale.value.code == "REMOTE_TRAINING_BASE_VERSION_STALE"
+
+
+def test_remote_clean_selection_broker_uses_frozen_exact_material_refs(tmp_path):
+    provider = FakeProvider()
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    transport = service(tmp_path, provider, task_artifacts=artifacts)
+    project_id = "p-clean"
+    task_id = "clean-1"
+    image_bytes = b"clean-image-bytes"
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    provider.objects["datasets/a.jpg"] = {
+        "data": image_bytes,
+        "content_type": "image/jpeg",
+        "sha256": digest,
+    }
+
+    materials = MaterialRepository(tmp_path / "projects" / project_id)
+    materials.upsert({
+        "id": "img-1",
+        "filename": "a.jpg",
+        "storage_source_id": "remote-models",
+        "storage_type": "s3",
+        "object_key": "datasets/a.jpg",
+        "content_sha256": digest,
+        "size_bytes": len(image_bytes),
+        "etag": "etag-a",
+    })
+
+    selection_path = artifacts.artifact_path(task_id, "selection.sqlite3")
+    manifest = BatchSelection(selection_path)
+    try:
+        manifest.database.execute(
+            "INSERT INTO selection(image_id,state) VALUES (?,?)",
+            ("img-1", "pending"),
+        )
+        manifest.database.execute(
+            "INSERT INTO meta(key,value) VALUES ('frozen','2026-09-18T00:00:00+00:00')"
+        )
+    finally:
+        manifest.close()
+
+    contract = transport.build_cleaning_remote_contract(project_id, task_id)
+    task = SimpleNamespace(
+        task_id=task_id,
+        project_id=project_id,
+        kind=TaskKind.MATERIAL_BATCH,
+    )
+    payload = {
+        "operation": "CLEAN",
+        "execution_mode": "agent",
+        "options": {},
+        "remote_execution": contract,
+    }
+
+    resolved = transport.resolve_execution_payload(task, payload, {})
+    assert resolved["task_kind"] == "MATERIAL_BATCH"
+    assert resolved["operation"] == "CLEAN"
+    assert resolved["selection"]["protocol"] == "exact-material-selection-v1"
+    assert "signed.example.test" not in str(resolved)
+
+    page = transport.clean_selection_page(task, payload, limit=50)
+    assert page["total"] == 1
+    assert page["next_cursor"] is None
+    assert page["items"] == [{
+        "image_id": "img-1",
+        "file_name": "a.jpg",
+        "storage_source_id": "remote-models",
+        "storage_type": "s3",
+        "object_key": "datasets/a.jpg",
+        "size_bytes": len(image_bytes),
+        "etag": "etag-a",
+        "sha256": digest,
+    }]
+
+    read = transport.clean_selection_read_contract(task, payload, image_id="img-1")
+    assert read["image_id"] == "img-1"
+    assert read["source"]["object_key"] == "datasets/a.jpg"
+    assert read["download"]["method"] == "GET"
+    assert "signed.example.test/get/datasets/a.jpg" in read["download"]["url"]
+    assert provider.download_signatures[-1][0] == "datasets/a.jpg"
+
+    with pytest.raises(RemoteExecutionTransportError) as denied:
+        transport.clean_selection_read_contract(task, payload, image_id="img-outside")
+    assert denied.value.code == "REMOTE_CLEANING_IMAGE_NOT_SELECTED"
+
+
+def test_remote_clean_selection_rejects_nonportable_local_material(tmp_path):
+    provider = FakeProvider()
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    transport = service(
+        tmp_path,
+        provider,
+        source_type="local",
+        task_artifacts=artifacts,
+    )
+    project_id = "p-clean-local"
+    task_id = "clean-local"
+    image_bytes = b"local-image-bytes"
+    digest = hashlib.sha256(image_bytes).hexdigest()
+
+    materials = MaterialRepository(tmp_path / "projects" / project_id)
+    materials.upsert({
+        "id": "img-local",
+        "filename": "local.jpg",
+        "storage_source_id": "remote-models",
+        "storage_type": "local",
+        "object_key": "uploads/local.jpg",
+        "content_sha256": digest,
+        "size_bytes": len(image_bytes),
+    })
+    selection_path = artifacts.artifact_path(task_id, "selection.sqlite3")
+    manifest = BatchSelection(selection_path)
+    try:
+        manifest.database.execute(
+            "INSERT INTO selection(image_id,state) VALUES (?,?)",
+            ("img-local", "pending"),
+        )
+        manifest.database.execute(
+            "INSERT INTO meta(key,value) VALUES ('frozen','2026-09-18T00:00:00+00:00')"
+        )
+    finally:
+        manifest.close()
+
+    task = SimpleNamespace(
+        task_id=task_id,
+        project_id=project_id,
+        kind=TaskKind.MATERIAL_BATCH,
+    )
+    payload = {
+        "operation": "CLEAN",
+        "execution_mode": "agent",
+        "options": {},
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MATERIAL_BATCH",
+            "transport": "object-storage-v1",
+            "cleaning": {
+                "schema_version": 1,
+                "selection_protocol": "exact-material-selection-v1",
+                "output": {
+                    "storage_source_id": "remote-models",
+                    "object_key": "remote-execution/p-clean-local/clean-local/cleaning-review/review.jsonl",
+                },
+            },
+        },
+    }
+    with pytest.raises(RemoteExecutionTransportError) as denied:
+        transport.clean_selection_page(task, payload)
+    assert denied.value.code == "REMOTE_STORAGE_NOT_PORTABLE"

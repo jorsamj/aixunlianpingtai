@@ -180,6 +180,50 @@ def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     assert task_node_capability(default, artifacts) == "material-import"
 
 
+def test_portable_clean_material_batch_selects_only_agent_node(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "batch-clean-agent",
+        TaskKind.MATERIAL_BATCH,
+        {
+            "operation": "CLEAN",
+            "execution_mode": "agent",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_BATCH",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(repository, "clean-local", ["cleaning"], connection_mode="local")
+    create_online_node(repository, "clean-agent", ["cleaning"], connection_mode="agent")
+
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "clean-agent"
+    assert assignment["capability"] == "cleaning"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
+
+
+def test_agent_clean_material_batch_without_portable_contract_never_falls_back_local(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "batch-clean-agent-unprepared",
+        TaskKind.MATERIAL_BATCH,
+        {"operation": "CLEAN", "execution_mode": "agent"},
+    )
+    create_online_node(repository, "clean-local", ["cleaning"], connection_mode="local")
+    create_online_node(repository, "clean-agent", ["cleaning"], connection_mode="agent")
+
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+
+
 def test_training_prepare_remains_control_plane_local_work(tmp_path):
     repository, artifacts = runtime(tmp_path)
     task = create_task(
