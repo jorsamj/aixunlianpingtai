@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .algorithms import list_algorithms
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from .model_artifacts import ModelArtifactService
 from .remote_training_results import (
@@ -834,78 +834,50 @@ class RemoteExecutionTransportService:
             with lock:
                 archive = stage.parent / f"generation-{generation}.zip"
                 extracted = stage / "verified"
-                marker = stage / "verified.json"
-                reusable = False
-                if marker.is_file() and extracted.is_dir():
-                    try:
-                        value = json.loads(marker.read_text(encoding="utf-8"))
-                        reusable = (
-                            str(value.get("sha256") or "") == expected_sha
-                            and int(value.get("size_bytes") or 0) == expected_size
-                            and str(value.get("snapshot_id") or "") == str(training.get("snapshot_id") or "")
-                        )
-                    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                        reusable = False
-                if not reusable:
-                    shutil.rmtree(stage, ignore_errors=True)
-                    stage.mkdir(parents=True, exist_ok=True)
-                    archive.unlink(missing_ok=True)
-                    downloaded = provider.download(object_key, archive)
-                    downloaded_sha = str(downloaded.sha256 or "").strip().lower()
-                    if (
-                        int(downloaded.size_bytes) != expected_size
-                        or (downloaded_sha and downloaded_sha != expected_sha)
-                    ):
-                        raise RemoteExecutionTransportError(
-                            "REMOTE_RESULT_DOWNLOAD_CHANGED",
-                            "downloaded training result no longer matches object evidence",
-                            409,
-                        )
-                    try:
-                        verified = verify_training_result_archive(
-                            archive,
-                            extracted,
-                            expected_sha256=expected_sha,
-                            expected_size_bytes=expected_size,
-                            expected_task_id=str(task.task_id),
-                            expected_execution_generation=generation,
-                            expected_snapshot_id=str(training.get("snapshot_id") or ""),
-                        )
-                    except RemoteTrainingResultError as error:
-                        raise RemoteExecutionTransportError(
-                            error.code,
-                            str(error),
-                            error.status_code,
-                        ) from error
-                    marker.write_text(
-                        json.dumps(
-                            {
-                                "sha256": expected_sha,
-                                "size_bytes": expected_size,
-                                "snapshot_id": str(training.get("snapshot_id") or ""),
-                                "model_count": len(verified.models),
-                            },
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
-                        encoding="utf-8",
+                shutil.rmtree(stage, ignore_errors=True)
+                stage.mkdir(parents=True, exist_ok=True)
+                archive.unlink(missing_ok=True)
+                downloaded = provider.download(object_key, archive)
+                downloaded_sha = str(downloaded.sha256 or "").strip().lower()
+                if (
+                    int(downloaded.size_bytes) != expected_size
+                    or (downloaded_sha and downloaded_sha != expected_sha)
+                ):
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_RESULT_DOWNLOAD_CHANGED",
+                        "downloaded training result no longer matches object evidence",
+                        409,
                     )
-                else:
-                    try:
-                        verified = verify_training_result_archive(
-                            archive,
-                            extracted,
-                            expected_sha256=expected_sha,
-                            expected_size_bytes=expected_size,
-                            expected_task_id=str(task.task_id),
-                            expected_execution_generation=generation,
-                            expected_snapshot_id=str(training.get("snapshot_id") or ""),
-                        )
-                    except (RemoteTrainingResultError, FileNotFoundError):
-                        archive.unlink(missing_ok=True)
-                        shutil.rmtree(stage, ignore_errors=True)
-                        return self._confirm_training_result_upload(task, payload, evidence)
-        except TimeoutError as error:
+                try:
+                    verified = verify_training_result_archive(
+                        archive,
+                        extracted,
+                        expected_sha256=expected_sha,
+                        expected_size_bytes=expected_size,
+                        expected_task_id=str(task.task_id),
+                        expected_execution_generation=generation,
+                        expected_snapshot_id=str(training.get("snapshot_id") or ""),
+                    )
+                except RemoteTrainingResultError as error:
+                    raise RemoteExecutionTransportError(
+                        error.code,
+                        str(error),
+                        error.status_code,
+                    ) from error
+                (stage / "verified.json").write_text(
+                    json.dumps(
+                        {
+                            "sha256": expected_sha,
+                            "size_bytes": expected_size,
+                            "snapshot_id": str(training.get("snapshot_id") or ""),
+                            "model_count": len(verified.models),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+        except Timeout as error:
             raise RemoteExecutionTransportError(
                 "REMOTE_RESULT_VERIFY_BUSY",
                 "training result verification is already in progress",
