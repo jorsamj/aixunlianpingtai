@@ -384,11 +384,29 @@ class RemoteExecutionTransportService:
         storage_source_id: str,
         target_prefix: str,
         import_format: str = "images",
+        dataset_yaml: str = "",
     ) -> dict[str, Any]:
-        if str(import_format or "images").strip().lower() != "images":
+        normalized_format = str(import_format or "images").strip().lower()
+        if normalized_format not in {"images", "yolo"}:
             raise RemoteExecutionTransportError(
                 "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
-                "portable Agent material import currently supports image ZIP review only",
+                "portable Agent material import supports images or YOLO ZIP review",
+                422,
+            )
+        normalized_yaml = ""
+        if str(dataset_yaml or "").strip():
+            try:
+                normalized_yaml = safe_member_path(str(dataset_yaml).strip()).as_posix()
+            except Exception as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_DATASET_YAML_INVALID",
+                    "Agent YOLO dataset_yaml must be a safe ZIP-relative path",
+                    422,
+                ) from error
+        if normalized_format == "images" and normalized_yaml:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_DATASET_YAML_INVALID",
+                "image-only Agent import does not accept dataset_yaml",
                 422,
             )
         prefix = safe_member_path(str(target_prefix or "").strip()).as_posix()
@@ -464,7 +482,8 @@ class RemoteExecutionTransportService:
             "material_import": {
                 "schema_version": 1,
                 "mode": "zip_scan",
-                "import_format": "images",
+                "import_format": normalized_format,
+                "dataset_yaml": normalized_yaml,
                 "target": {
                     "storage_source_id": source_id,
                     "storage_type": storage_type.value,
@@ -948,7 +967,7 @@ class RemoteExecutionTransportService:
         if (
             int(material.get("schema_version") or 0) != 1
             or str(material.get("mode") or "") != "zip_scan"
-            or str(material.get("import_format") or "") != "images"
+            or str(material.get("import_format") or "") not in {"images", "yolo"}
             or not isinstance(target, Mapping)
             or not str(target.get("storage_source_id") or "").strip()
             or not str(target.get("storage_type") or "").strip()
@@ -960,6 +979,15 @@ class RemoteExecutionTransportService:
                 422,
             )
         safe_member_path(str(target.get("target_prefix") or ""))
+        dataset_yaml = str(material.get("dataset_yaml") or "").strip()
+        if dataset_yaml:
+            safe_member_path(dataset_yaml)
+        if str(material.get("import_format") or "") == "images" and dataset_yaml:
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "image-only material contract cannot carry dataset_yaml",
+                422,
+            )
         return remote, material
 
     def _resolve_material_execution_payload(
@@ -987,7 +1015,8 @@ class RemoteExecutionTransportService:
             "task_kind": "MATERIAL_IMPORT",
             "transport": "object-storage-v1",
             "mode": "zip_scan",
-            "import_format": "images",
+            "import_format": str(material.get("import_format") or "images"),
+            "dataset_yaml": str(material.get("dataset_yaml") or ""),
             "target": {
                 "storage_source_id": str(target.get("storage_source_id") or ""),
                 "storage_type": str(target.get("storage_type") or ""),
@@ -1814,7 +1843,8 @@ class RemoteExecutionTransportService:
             target = dict(target) if isinstance(target, Mapping) else {}
             result.update({
                 "mode": "zip_scan",
-                "import_format": "images",
+                "import_format": str(material.get("import_format") or "images"),
+                "dataset_yaml": str(material.get("dataset_yaml") or ""),
                 "target": {
                     "storage_source_id": str(target.get("storage_source_id") or ""),
                     "storage_type": str(target.get("storage_type") or ""),
@@ -2320,6 +2350,31 @@ class RemoteExecutionTransportService:
         finally:
             lock.release()
 
+    def _project_label_items(self, project_id: str) -> list[dict[str, Any]]:
+        try:
+            meta = json.loads(
+                (self.project_dir(str(project_id)) / "meta.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(meta, Mapping):
+            return []
+        labels = list(meta.get("labels") or [])
+        details = list(meta.get("label_meta") or [])
+        result = []
+        for index, code in enumerate(labels):
+            text = str(code or "").strip()
+            if not text:
+                continue
+            item = dict(details[index]) if index < len(details) and isinstance(details[index], Mapping) else {}
+            item["code"] = text
+            item.setdefault("display_name", text)
+            item.setdefault("status", "active")
+            result.append(item)
+        return result
+
     def _commit_material_import_result(
         self,
         task,
@@ -2390,6 +2445,9 @@ class RemoteExecutionTransportService:
                 expected_source_id=str(target.get("storage_source_id") or ""),
                 expected_storage_type=str(target.get("storage_type") or ""),
                 expected_prefix=str(target.get("target_prefix") or ""),
+                expected_import_format=str(material.get("import_format") or "images"),
+                expected_dataset_yaml=str(material.get("dataset_yaml") or ""),
+                platform_labels=self._project_label_items(str(task.project_id)),
             )
         except RemoteMaterialImportError as error:
             raise RemoteExecutionTransportError(
