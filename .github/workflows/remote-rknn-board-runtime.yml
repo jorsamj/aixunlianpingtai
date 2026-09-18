@@ -7,6 +7,9 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'static/app.js'
+      - 'static/index.html'
+      - 'tests/browser/model-and-conversion.spec.mjs'
       - 'node_agent.py'
       - 'predict_rknn_lite_runner.py'
       - 'platform_core/rknn_board_runtime.py'
@@ -32,6 +35,9 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - 'static/app.js'
+      - 'static/index.html'
+      - 'tests/browser/model-and-conversion.spec.mjs'
       - 'node_agent.py'
       - 'predict_rknn_lite_runner.py'
       - 'platform_core/rknn_board_runtime.py'
@@ -144,5 +150,37 @@ jobs:
           grep -Fq 'RKNN_BOARD_NODE_UNAVAILABLE' app.py
           grep -Fq 'required_capabilities=("agent.remote",)' app.py
           grep -Fq 'stage_rknn_board_validation' app.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: RKNN board verification product flow
+        run: npx playwright test tests/browser/model-and-conversion.spec.mjs --grep "RKNN converted_unverified job exposes board verification"
+      - name: Product UI guards
+        shell: bash
+        run: |
+          grep -Fq 'openRknnHardwareVerify' static/app.js
+          grep -Fq '/hardware-tests' static/app.js
+          grep -Fq '实机已验证' static/app.js
+          grep -Fq '板端验证' tests/browser/model-and-conversion.spec.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check

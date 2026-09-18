@@ -188,3 +188,104 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
   await expect(page.locator('#dpChip option')).toHaveText(['RK3588', 'RK3576', 'RK3568']);
 });
+
+
+test('RKNN converted_unverified job exposes board verification and upgrades after real task success', async ({page, request}) => {
+  const project = await (await request.post('/api/projects', {data: {
+    name: `RKNN板端验证-${Date.now()}`,
+    labels: []
+  }})).json();
+  let hardwarePost = null;
+  let taskReads = 0;
+  let jobVerified = false;
+
+  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({items: []})
+  }));
+  await page.route(`**/api/v39/projects/${project.id}/deploy/source-models`, route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({items: []})
+  }));
+  await page.route(`**/api/v39/projects/${project.id}/deploy/artifacts`, route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({items: []})
+  }));
+  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({items: [{
+      id: 'rk-job-1',
+      source_name: 'best.pt',
+      target: 'rockchip',
+      status: 'done',
+      stage: jobVerified ? 'hardware_verified' : 'converted_unverified',
+      progress: 100,
+      conversion_status: jobVerified ? 'hardware_verified' : 'converted_unverified',
+      validation_status: jobVerified ? 'hardware_verified' : 'converted_unverified',
+      hardware_verified: jobVerified,
+      hardware_verification: jobVerified ? {
+        chip: 'rk3568', inference_ms: 12.34, output_count: 3
+      } : null,
+      params: {chip: 'rk3568', precision: 'fp16'},
+      resource: {name: 'RKNN Agent'}
+    }]})
+  }));
+  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs/rk-job-1/hardware-tests`, async route => {
+    hardwarePost = route.request().postDataBuffer();
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'rk-board-task-1',
+        task_id: 'rk-board-task-1',
+        status: 'QUEUED',
+        phase: 'QUEUED',
+        progress_percent: 0
+      })
+    });
+  });
+  await page.route(`**/api/v62/projects/${project.id}/tasks/rk-board-task-1`, async route => {
+    taskReads += 1;
+    jobVerified = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'rk-board-task-1',
+        task_id: 'rk-board-task-1',
+        status: 'SUCCEEDED',
+        phase: 'FINALIZING',
+        progress_percent: 100
+      })
+    });
+  });
+
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({
+      projectId,
+      page: '部署转换'
+    }));
+  }, project.id);
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => typeof window.renderDeployCenter)).toBe('function');
+  await page.evaluate(async () => {
+    await window.loadDeployData(true);
+    window.renderDeployCenter();
+  });
+
+  const job = page.locator('.deploy-job', {hasText: 'best.pt'});
+  await expect(job.getByText('RKNN 已转换，尚未完成瑞芯微实机 Runtime 验证')).toBeVisible();
+  await job.getByRole('button', {name: '板端验证'}).click();
+  const dialog = page.getByRole('dialog', {name: 'RKNN 板端验证'});
+  await dialog.locator('#rknnVerifyFile').setInputFiles({
+    name: 'board-test.bmp',
+    mimeType: 'image/bmp',
+    buffer: bmp(64, 64)
+  });
+  await dialog.getByRole('button', {name: '开始板端验证'}).click();
+
+  await expect.poll(() => taskReads).toBeGreaterThan(0);
+  expect(hardwarePost).not.toBeNull();
+  await expect(page.getByRole('dialog', {name: 'RKNN 板端验证'})).toHaveCount(0);
+  await expect(job.getByText(/实机已验证/)).toBeVisible();
+  await expect(job.getByText(/推理 12\.34 ms/)).toBeVisible();
+  await expect(job.getByRole('button', {name: '板端验证'})).toHaveCount(0);
+});
