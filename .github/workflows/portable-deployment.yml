@@ -10,6 +10,8 @@ on:
       - 'platform_core/agent_execution.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'node_agent.py'
       - 'predict_ultralytics_runner.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/storage/s3.py'
@@ -20,6 +22,8 @@ on:
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
       - 'tests/api/test_agent_result_upload_api.py'
@@ -34,6 +38,8 @@ on:
       - 'platform_core/agent_execution.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'node_agent.py'
       - 'predict_ultralytics_runner.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/storage/s3.py'
@@ -44,6 +50,8 @@ on:
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
       - 'tests/api/test_agent_result_upload_api.py'
@@ -73,6 +81,8 @@ jobs:
           platform_core/agent_execution.py
           platform_core/node_agent_executor_runtime.py
           platform_core/node_agent_deployment_runtime.py
+          platform_core/node_agent_executor_loop.py
+          node_agent.py
           platform_core/remote_execution_transport.py
           predict_ultralytics_runner.py
           platform_core/training_recovery_api.py
@@ -83,6 +93,8 @@ jobs:
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
           tests/api/test_runtime_router_app_mount.py
       - name: Portable transport and Agent execution contracts
         run: >-
@@ -92,6 +104,8 @@ jobs:
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
       - name: Runtime router mount AST contract
         run: >-
           python -m pytest -q --confcutdir=tests/api
@@ -153,6 +167,14 @@ jobs:
           grep -Fq 'parser.add_argument("--device", default="")' predict_ultralytics_runner.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'NodeAgentExecutorLoop' node_agent.py
+          grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py
+          grep -Fq 'executor.start()' node_agent.py
+          grep -Fq 'executor.stop(timeout=10.0)' node_agent.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_executor_loop.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_executor_loop.py
           if grep -Fq '"url"' platform_core/task_node_assignments.py; then
             echo 'scheduler assignment truth must not persist signed transport URLs' >&2
             exit 1
