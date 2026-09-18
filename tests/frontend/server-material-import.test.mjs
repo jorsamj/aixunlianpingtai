@@ -18,6 +18,20 @@ test('server material import requests contain source-relative fields and explici
     mode: 'server_zip', import_format: 'auto', storage_source_id: 'local-a', zip_path: 'fire.zip', target_prefix: 'fire', recursive: true,
   });
   assert.deepEqual(buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'agent', storageSourceId: 's3-a',
+    zipPath: 'coco.zip', targetPrefix: 'incoming/coco', importFormat: 'coco',
+  }), {
+    mode: 'server_zip', execution_mode: 'agent', import_format: 'coco',
+    storage_source_id: 's3-a', zip_path: 'coco.zip', target_prefix: 'incoming/coco', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'agent', storageSourceId: 's3-a',
+    zipPath: 'voc.zip', targetPrefix: 'incoming/voc', importFormat: 'voc',
+  }), {
+    mode: 'server_zip', execution_mode: 'agent', import_format: 'voc',
+    storage_source_id: 's3-a', zip_path: 'voc.zip', target_prefix: 'incoming/voc', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
     mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'dataset', importFormat: 'yolo', datasetYaml: 'data.yaml',
   }), {
     mode: 'directory_scan', import_format: 'yolo', dataset_yaml: 'data.yaml', storage_source_id: 'local-a', prefix: 'dataset', recursive: true,
@@ -46,7 +60,15 @@ test('server material import requests contain source-relative fields and explici
   });
   assert.throws(() => buildServerImportRequest({
     mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'dataset', importFormat: 'coco',
-  }), /仅支持对象存储目录/);
+  }), /仅支持远程 Agent/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'local', storageSourceId: 'local-a',
+    zipPath: 'coco.zip', targetPrefix: 'incoming/coco', importFormat: 'coco',
+  }), /服务器 ZIP 仅支持远程 Agent/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'agent', storageSourceId: 's3-a',
+    zipPath: 'coco.zip', targetPrefix: 'incoming/coco', importFormat: 'auto',
+  }), /远程 Agent ZIP 导入/);
   assert.throws(() => buildServerImportRequest({
     mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'dataset',
     importFormat: 'voc', datasetYaml: 'data.yaml',

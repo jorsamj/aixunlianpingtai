@@ -603,7 +603,7 @@ window.__resourceDiscoveryDependencies={
     window.syncStorageImportFormat61=function(){
       const mode=state.serverMaterialImportMode61||'directory_scan',format=document.getElementById('si61Format'),yaml=document.getElementById('si61DatasetYaml');
       if(!format)return;
-      const remote=mode==='storage_scan',auto=format.querySelector('option[value="auto"]'),coco=format.querySelector('option[value="coco"]'),voc=format.querySelector('option[value="voc"]');
+      const remote=mode==='storage_scan'||(mode==='server_zip'&&state.serverZipExecutionMode61==='agent'),auto=format.querySelector('option[value="auto"]'),coco=format.querySelector('option[value="coco"]'),voc=format.querySelector('option[value="voc"]');
       if(auto)auto.disabled=remote;
       if(coco)coco.disabled=!remote;
       if(voc)voc.disabled=!remote;
@@ -611,11 +611,21 @@ window.__resourceDiscoveryDependencies={
       if(!remote&&['coco','voc'].includes(format.value))format.value='auto';
       if(yaml){yaml.disabled=format.value!=='yolo';if(format.value!=='yolo')yaml.value=''}
     };
+    window.setServerZipExecution61=function(mode){
+      const execution=mode==='agent'?'agent':'local';
+      state.serverZipExecutionMode61=execution;
+      const localWrap=document.getElementById('si61ZipLocalSourceWrap'),remoteWrap=document.getElementById('si61ZipRemoteSourceWrap'),help=document.getElementById('si61ZipExecutionHelp');
+      if(localWrap)localWrap.hidden=execution==='agent';
+      if(remoteWrap)remoteWrap.hidden=execution!=='agent';
+      if(help)help.textContent=execution==='agent'?'中央端只负责把 ZIP 暂存到对象存储；远程 Agent 安全解包、检查标注并生成审查结果，确认后再建立正式素材索引。':'由中央 Storage Worker 在服务器本地解包并扫描，目标必须是本地存储源。';
+      syncStorageImportFormat61();
+    };
     window.setStorageImportMode61=function(mode){
       state.serverMaterialImportMode61=mode;
       document.querySelectorAll('#si61ImportShell [data-import-mode]').forEach(button=>button.classList.toggle('on',button.dataset.importMode===mode));
       document.querySelectorAll('#si61ImportShell [data-import-panel]').forEach(panel=>panel.hidden=panel.dataset.importPanel!==mode);
-      syncStorageImportFormat61();
+      if(mode==='server_zip')setServerZipExecution61(state.serverZipExecutionMode61||'local');
+      else syncStorageImportFormat61();
     };
     window.openBrowserMaterialUpload61=function(){abortPolling();closeModal();setTimeout(()=>window.openDataUpload426?.(),30)};
     window.closeStorageImport61=function(){abortPolling();return closeModal()};
@@ -629,6 +639,7 @@ window.__resourceDiscoveryDependencies={
       const objectOptions=objectSources.map(source=>`<option value="${esc(source.id)}">${esc(source.name)} · ${source.type==='oss'?'OSS':'S3 / MinIO'}</option>`).join('');
       const localDisabled=localSources.length?'':'disabled',objectDisabled=objectSources.length?'':'disabled';
       const initialMode=objectSources.length?'storage_scan':(localSources.length?'directory_scan':'browser_upload');
+      state.serverZipExecutionMode61=localSources.length?'local':(objectSources.length?'agent':'local');
       abortPolling();
       modal('从存储导入素材',`<div id="si61ImportShell" class="storage61-import">
         <div class="storage61-import-modes" role="tablist" aria-label="素材导入方式">
@@ -645,7 +656,7 @@ window.__resourceDiscoveryDependencies={
           <button class="btn primary" onclick="startStorageImport61('storage_scan')" ${objectDisabled}>开始远程扫描</button>
         </section>
         <section data-import-panel="directory_scan"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61Source" class="select" ${localDisabled}>${localOptions||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>目录（相对于存储源根目录）</label><input id="si61Prefix" class="input" placeholder="例如 incoming/2026"></div></div><label class="field check"><input id="si61Recursive" type="checkbox" checked> 递归扫描子目录</label><button class="btn primary" onclick="startStorageImport61('directory_scan')" ${localDisabled}>开始扫描</button></section>
-        <section data-import-panel="server_zip"><div class="form two"><div class="field"><label>本地存储源</label><select id="si61ZipSource" class="select" ${localDisabled}>${localOptions||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field"><label>服务器 ZIP（导入目录下的相对路径）</label><input id="si61ZipPath" class="input" placeholder="例如 fire.zip"></div><div class="field"><label>解压目标（相对于存储源根目录）</label><input id="si61TargetPrefix" class="input" placeholder="例如 fire/2026"></div></div><div class="storage61-import-help"><span>目标目录已存在且非空时会拒绝导入，不会覆盖原文件。</span></div><button class="btn primary" onclick="startStorageImport61('server_zip')" ${localDisabled}>校验并解压扫描</button></section>
+        <section data-import-panel="server_zip"><div class="form two"><div class="field"><label>执行位置</label><select id="si61ZipExecution" class="select" onchange="setServerZipExecution61(this.value)"><option value="local" ${state.serverZipExecutionMode61==='local'?'selected':''} ${localSources.length?'':'disabled'}>中央 Worker</option><option value="agent" ${state.serverZipExecutionMode61==='agent'?'selected':''} ${objectSources.length?'':'disabled'}>远程 Agent</option></select></div><div class="field" id="si61ZipLocalSourceWrap"><label>目标本地存储源</label><select id="si61ZipSource" class="select" ${localDisabled}>${localOptions||'<option>暂无已启用的本地存储</option>'}</select></div><div class="field" id="si61ZipRemoteSourceWrap" hidden><label>目标对象存储源</label><select id="si61ZipRemoteSource" class="select" ${objectDisabled}>${objectOptions||'<option>暂无已启用的 OSS / S3 / MinIO 存储</option>'}</select></div><div class="field"><label>服务器 ZIP（导入目录下的相对路径）</label><input id="si61ZipPath" class="input" placeholder="例如 fire.zip"></div><div class="field"><label>目标目录</label><input id="si61TargetPrefix" class="input" placeholder="例如 fire/2026"></div></div><div class="storage61-import-help"><span id="si61ZipExecutionHelp">目标目录已存在且非空时会拒绝导入，不会覆盖原文件。</span></div><button class="btn primary" onclick="startStorageImport61('server_zip')" ${localSources.length||objectSources.length?'':'disabled'}>开始 ZIP 导入</button></section>
         <div class="form two storage61-import-format"><div class="field"><label>数据格式</label><select id="si61Format" class="select" onchange="syncStorageImportFormat61()"><option value="auto">自动识别</option><option value="yolo">YOLO 检测标注</option><option value="coco">COCO 检测标注</option><option value="voc">Pascal VOC 检测标注</option><option value="images">仅图片</option></select></div><div class="field"><label>数据集 YAML（仅 YOLO，可选）</label><input id="si61DatasetYaml" class="input" placeholder="例如 datasets/fire/2026/data.yaml"></div></div>
         <div id="si61Status" class="storage61-import-status">扫描和建立索引由后台任务执行；关闭此窗口不会取消任务。</div>
         <div class="row end"><button class="btn" onclick="closeStorageImport61()">关闭</button></div>
@@ -660,7 +671,8 @@ window.__resourceDiscoveryDependencies={
       try{
         let values;
         if(mode==='server_zip'){
-          values={mode,storageSourceId:document.getElementById('si61ZipSource')?.value,zipPath:document.getElementById('si61ZipPath')?.value,targetPrefix:document.getElementById('si61TargetPrefix')?.value};
+          const executionMode=state.serverZipExecutionMode61||'local';
+          values={mode,executionMode,storageSourceId:executionMode==='agent'?document.getElementById('si61ZipRemoteSource')?.value:document.getElementById('si61ZipSource')?.value,zipPath:document.getElementById('si61ZipPath')?.value,targetPrefix:document.getElementById('si61TargetPrefix')?.value};
         }else if(mode==='storage_scan'){
           values={mode,storageSourceId:document.getElementById('si61RemoteSource')?.value,prefix:document.getElementById('si61RemotePrefix')?.value,recursive:document.getElementById('si61RemoteRecursive')?.checked!==false};
         }else{

@@ -119,3 +119,58 @@ test('object storage import exposes Agent flow and posts remote storage_scan con
   });
   await expect(page.locator('#si61Status')).toContainText('扫描完成，等待确认建立素材索引');
 });
+
+
+test('server ZIP switches target storage by execution location and submits COCO Agent contract', async ({page}) => {
+  let submitted = null;
+  await page.route('**/api/v61/storage-sources', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({items: [
+        {id:'local-ui',name:'平台本地',type:'local',enabled:true,is_default:false,config:{root:'/tmp/materials'}},
+        {id:'s3-ui',name:'对象素材库',type:'s3',enabled:true,is_default:false,config:{endpoint:'https://s3.example.test',bucket:'materials',prefix:'',use_ssl:true}},
+      ]}),
+    });
+  });
+  await page.route('**/api/v61/projects/*/storage-imports/scan', async route => {
+    submitted = route.request().postDataJSON();
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        task_id:'remote-coco-zip-ui',project_id:'browser-project',kind:'MATERIAL_IMPORT',
+        status:'AWAITING_CONFIRMATION',execution_mode:'agent',mode:'server_zip',
+        import_format:'coco',stage:'REMOTE_MATERIAL_REVIEWING',metrics:{},
+        result:{scanned_files:1,importable_images:1,duplicates:0,failed:0},
+      }),
+    });
+  });
+
+  await openStoragePage(page);
+  await page.getByRole('button', {name: '从存储导入素材'}).click();
+  await page.getByRole('button', {name: '服务器 ZIP'}).click();
+
+  await expect(page.locator('#si61ZipExecution')).toHaveValue('local');
+  await expect(page.locator('#si61Format option[value="coco"]')).toBeDisabled();
+  await expect(page.locator('#si61ZipLocalSourceWrap')).toBeVisible();
+
+  await page.locator('#si61ZipExecution').selectOption('agent');
+  await expect(page.locator('#si61ZipRemoteSourceWrap')).toBeVisible();
+  await expect(page.locator('#si61ZipLocalSourceWrap')).toBeHidden();
+  await expect(page.locator('#si61ZipRemoteSource')).toHaveValue('s3-ui');
+  await expect(page.locator('#si61Format option[value="coco"]')).toBeEnabled();
+  await page.locator('#si61Format').selectOption('coco');
+  await page.locator('#si61ZipPath').fill('datasets/coco.zip');
+  await page.locator('#si61TargetPrefix').fill('incoming/coco');
+  await page.getByRole('button', {name: '开始 ZIP 导入'}).click();
+
+  await expect.poll(() => submitted).not.toBeNull();
+  expect(submitted).toEqual({
+    mode:'server_zip',execution_mode:'agent',import_format:'coco',
+    storage_source_id:'s3-ui',zip_path:'datasets/coco.zip',
+    target_prefix:'incoming/coco',recursive:true,
+  });
+  await expect(page.locator('#si61Status')).toContainText('扫描完成，等待确认建立素材索引');
+});

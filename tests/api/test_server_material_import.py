@@ -578,3 +578,79 @@ def test_coco_voc_are_limited_to_agent_storage_scan(client, tmp_path, monkeypatc
         },
     )
     assert rejected.status_code == 422
+
+
+def test_agent_coco_server_zip_import_creates_portable_review_task(
+    client, tmp_path, monkeypatch,
+):
+    import_dir = tmp_path / "imports"
+    import_dir.mkdir()
+    _write_zip(import_dir / "remote-coco.zip")
+    monkeypatch.setenv("MC_SERVER_IMPORT_DIR", str(import_dir))
+    project = _project(client)
+    source = _source(client, tmp_path, source_type="s3")
+    calls = []
+
+    class FakeTransport:
+        def stage_material_import(self, **kwargs):
+            calls.append(dict(kwargs))
+            return {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+                "material_import": {
+                    "schema_version": 1,
+                    "mode": "zip_scan",
+                    "import_format": "coco",
+                    "dataset_yaml": "",
+                    "target": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "target_prefix": "incoming/coco",
+                    },
+                    "input": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/input-coco.zip",
+                        "file_name": "remote-coco.zip",
+                        "size_bytes": 123,
+                        "sha256": "c" * 64,
+                        "content_type": "application/zip",
+                    },
+                    "output": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/review-coco.zip",
+                        "file_name": "material-review.zip",
+                        "content_type": "application/zip",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        app_module,
+        "_remote_execution_transport_service",
+        lambda: FakeTransport(),
+    )
+    response = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "server_zip",
+            "execution_mode": "agent",
+            "zip_path": "remote-coco.zip",
+            "storage_source_id": source["id"],
+            "target_prefix": "incoming/coco",
+            "import_format": "coco",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    request = app_module.shared_task_artifacts().read_json(task_id, "request.json")
+    assert request["execution_mode"] == "agent"
+    assert request["import_format"] == "coco"
+    assert request["remote_execution"]["material_import"]["import_format"] == "coco"
+    assert request["remote_execution"]["material_import"]["mode"] == "zip_scan"
+    assert len(calls) == 1
+    assert calls[0]["archive_path"] == (import_dir / "remote-coco.zip").resolve()
+    assert calls[0]["target_prefix"] == "incoming/coco"
+    assert calls[0]["import_format"] == "coco"
+    assert calls[0]["dataset_yaml"] == ""

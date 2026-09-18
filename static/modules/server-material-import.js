@@ -38,10 +38,10 @@ export function buildServerImportRequest(values = {}) {
       recursive: values.recursive !== false,
     };
   }
-  if (['coco', 'voc'].includes(importFormat)) {
-    throw new Error('COCO / Pascal VOC 当前仅支持对象存储目录的远程 Agent 扫描');
-  }
   if (mode === 'directory_scan') {
+    if (['coco', 'voc'].includes(importFormat)) {
+      throw new Error('COCO / Pascal VOC 当前仅支持远程 Agent 导入');
+    }
     return {
       mode,
       ...format,
@@ -53,10 +53,19 @@ export function buildServerImportRequest(values = {}) {
   if (mode === 'server_zip') {
     const zipPath = String(values.zipPath || '').trim();
     const targetPrefix = String(values.targetPrefix || '').trim();
+    const executionMode = String(values.executionMode || 'local').trim().toLowerCase();
+    if (!['local', 'agent'].includes(executionMode)) throw new Error('服务器 ZIP 执行方式仅支持中央 Worker 或远程 Agent');
     if (!zipPath) throw new Error('请选择服务器 ZIP');
     if (!targetPrefix) throw new Error('请填写 ZIP 解压目标目录');
+    if (executionMode === 'agent' && importFormat === 'auto') {
+      throw new Error('远程 Agent ZIP 导入请选择“仅图片”、YOLO、COCO 或 Pascal VOC');
+    }
+    if (executionMode !== 'agent' && ['coco', 'voc'].includes(importFormat)) {
+      throw new Error('COCO / Pascal VOC 服务器 ZIP 仅支持远程 Agent');
+    }
     return {
       mode,
+      ...(executionMode === 'agent' ? {execution_mode: 'agent'} : {}),
       ...format,
       storage_source_id: storageSourceId,
       zip_path: zipPath,

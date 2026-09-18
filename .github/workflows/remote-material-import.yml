@@ -183,6 +183,10 @@ jobs:
           grep -Fq 'annotations.upsert_many(annotation_rows)' platform_core/storage/import_tasks.py
           grep -Fq 'test_agent_yolo_review_label_mapping_writes_annotation_repository' tests/integration/test_storage_import_worker.py
           grep -Fq 'test_agent_coco_voc_storage_scan_confirmation_writes_annotation_repository' tests/integration/test_storage_import_worker.py
+          grep -Fq 'test_agent_coco_server_zip_import_creates_portable_review_task' tests/api/test_server_material_import.py
+          grep -Fq 'id="si61ZipExecution"' static/app.js
+          grep -Fq 'id="si61ZipRemoteSource"' static/app.js
+          grep -Fq 'COCO / Pascal VOC 服务器 ZIP 仅支持远程 Agent' static/modules/server-material-import.js
           grep -Fq '<option value="coco">COCO 检测标注</option>' static/app.js
           grep -Fq '<option value="voc">Pascal VOC 检测标注</option>' static/app.js
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
