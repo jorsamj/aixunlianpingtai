@@ -270,7 +270,72 @@ Production mount 验收：
 - Node Agent Executor run `35291195262`：API / Ubuntu / Windows 全绿。
 - 临时 CI PR #9 / #10 均已关闭，未 merge。
 
-## 8. OPEN：Agent-side Remote Execution Runtime + Object Storage Transport
+## 8. 已关闭：Portable Deployment Transport
+
+部署测试已经成为第一个具备真实 portable transport contract 的 task kind。
+
+当前 durable task 只保存对象存储引用和完整性证据，不保存临时签名 URL：
+
+- 测试图片：`storage_source_id / object_key / sha256 / size_bytes / content_type`
+- 项目模型：复用统一 `ModelArtifactService` 的 OSS / S3 / MinIO 资产。
+- 官方模型：仅保存 allow-listed model reference。
+- 输出：只保存 durable storage ref；Agent start 不再收到中央 `input_path / model_path / runner_path / python_path`。
+
+`start` 仅为输入/模型生成短期 GET；输出使用 `prepare-after-local-hash-v1`，不在 start 阶段提前签 PUT。
+
+验收：
+
+- Portable Deployment run `35292400487`：production API / Ubuntu / Windows 全绿。
+- 同批 Agent run `35292068629`、Central run `35292068610` 全绿。
+- 临时 CI PR #11 已关闭，未 merge。
+
+## 9. 已关闭：Hash-bound Remote Result Publication
+
+远程部署测试的结果发布已经进入 execution fencing，不再接受“Agent 上传一个文件后直接说成功”。
+
+真实链路：
+
+```text
+Agent 本地推理完成
+→ Agent 本地计算 output SHA256 + size
+→ POST result-upload/prepare
+→ 控制面验证 Node Token + Execution Lease + generation
+→ 控制面生成 generation-scoped object key
+→ 签发绑定 Content-Length + SHA256 metadata + 禁止覆盖的短期 PUT
+→ Agent PUT
+→ POST result-upload/confirm
+→ 控制面 stat 对象并核对 size + SHA256 metadata
+→ durable finalization transaction 原子决定 cancellation 或 commit
+→ 写 remote-results/<generation>/result.json
+→ /finish(SUCCEEDED) 强制使用服务端 confirmed result_ref
+```
+
+关键 fencing：
+
+- 实际结果 key 为 `.../output/generation-N/result.jpg`，旧 generation 的 signed PUT 不会占用新 generation 的对象。
+- S3 / MinIO 签名绑定 `Content-Type`、`Content-Length`、`x-amz-meta-sha256`、`If-None-Match: *`。
+- OSS 签名绑定 `Content-Type`、`Content-Length`、`x-oss-meta-sha256`、`x-oss-forbid-overwrite: true`。
+- signed PUT URL 只返回给当前 Agent，不写 Scheduler truth，也不写 durable upload state。
+- `remote-results/<generation>/upload.json` 只保存 hash / size / storage ref / node / generation。
+- 已上传但 confirm 前断线时，只要对象现有 size/hash 完全一致，prepare 可幂等恢复；冲突对象 fail closed。
+- confirm 时对象缺少 SHA256 metadata、size 不符、hash 不符均禁止成功。
+- confirm 在对象验证后复用 `begin_finalization()` 的数据库事务作为 commit gate，cancel 与 result publication 不能同时获胜。
+- portable deployment 未 confirm 前禁止 `begin-finalization`，也禁止 `finish(SUCCEEDED/PARTIAL_SUCCESS)`。
+- Agent 自报的 `result_ref` 不可信；成功 finish 强制使用当前 generation 的服务端 confirmed result_ref。
+
+新增控制面 API：
+
+- `POST /api/v63/node-executor/{node_id}/executions/{task_id}/result-upload/prepare`
+- `POST /api/v63/node-executor/{node_id}/executions/{task_id}/result-upload/confirm`
+
+验收：
+
+- Node Agent Executor run `35295427105`：API / Ubuntu / Windows 全绿。
+- Portable Deployment run `35295427110`：production API / Ubuntu / Windows 全绿。
+- Central Node Assignment run `35295427100`：API / Ubuntu / Windows 全绿。
+- 临时 CI PR #12 已关闭，未 merge。
+
+## 10. OPEN：Agent-side Real Deployment Runtime
 
 **不能因为控制面协议已完成，就宣称“真实跨机器任务执行 CLOSED”。**
 
