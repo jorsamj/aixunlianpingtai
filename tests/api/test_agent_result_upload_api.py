@@ -306,3 +306,234 @@ def test_result_upload_http_protocol_is_execution_fenced(tmp_path):
     )
     assert wrong_generation.status_code == 409
     assert wrong_generation.json()["detail"]["code"] == "EXECUTION_FENCED"
+
+
+
+def training_payload_resolver(task, _payload, assignment):
+    resolved = assignment.get("resolved_execution_config") or {}
+    return {
+        "schema_version": 1,
+        "task_kind": "TRAINING",
+        "transport": "object-storage-v1",
+        "framework": "ultralytics",
+        "snapshot_id": "snapshot-api",
+        "selected_device": resolved.get("selected_device") or "cuda:0",
+        "result": {
+            "type": "object",
+            "storage_ref": {
+                "storage_source_id": "s3-main",
+                "object_key": "training-result.zip",
+                "file_name": "training-result.zip",
+                "content_type": "application/zip",
+            },
+            "upload_protocol": "prepare-after-local-hash-v1",
+        },
+    }
+
+
+def training_model_preparer(_task, _payload, *, execution_generation, models):
+    items = []
+    for item in models:
+        role = str(item["role"])
+        items.append({
+            **dict(item),
+            "artifact_id": f"artifact-{role}",
+            "storage_ref": {
+                "storage_source_id": "s3-main",
+                "object_key": f"model-assets/rt-api/{role}.pt",
+                "file_name": str(item["file_name"]),
+                "content_type": "application/octet-stream",
+            },
+            "already_uploaded": False,
+            "upload": {
+                "method": "PUT",
+                "url": f"https://signed.example.test/{role}",
+                "headers": {
+                    "Content-Length": str(item["size_bytes"]),
+                    "x-amz-meta-sha256": str(item["sha256"]),
+                    "If-None-Match": "*",
+                },
+            },
+        })
+    return {
+        "version_id": "rt-api",
+        "execution_generation": int(execution_generation),
+        "items": items,
+    }
+
+
+def training_model_confirmer(_task, _payload, *, execution_generation, models):
+    return {
+        "confirmed": True,
+        "version_id": "rt-api",
+        "execution_generation": int(execution_generation),
+        "items": [dict(item) for item in models],
+    }
+
+
+def training_client_for(tmp_path):
+    repository = TaskRepository(tmp_path / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    app = FastAPI()
+    app.include_router(agent_executor_router(
+        lambda: repository,
+        lambda: artifacts,
+        execution_payload_resolver=training_payload_resolver,
+        result_upload_preparer=result_preparer,
+        result_upload_confirmer=result_confirmer,
+        training_model_upload_preparer=training_model_preparer,
+        training_model_upload_confirmer=training_model_confirmer,
+    ))
+    return TestClient(app), repository, artifacts
+
+
+def create_training_task(repository, artifacts):
+    task_id = "train-model-api"
+    artifacts.atomic_write_json(task_id, "payload.json", {
+        "target": "remote",
+        "algorithm_asset_id": "algorithm-one",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "TRAINING",
+            "transport": "object-storage-v1",
+            "training": {
+                "schema_version": 1,
+                "framework": "ultralytics",
+                "snapshot_id": "snapshot-api",
+                "bundle": {"storage_source_id": "s3-main", "object_key": "bundle.zip"},
+                "model": {"type": "official", "reference": "yolo11n.pt"},
+                "result": {
+                    "storage_source_id": "s3-main",
+                    "object_key": "training-result.zip",
+                    "file_name": "training-result.zip",
+                    "content_type": "application/zip",
+                },
+            },
+        },
+    })
+    repository.create(
+        TaskRecord.new(
+            task_id=task_id,
+            project_id="project-training-api",
+            kind=TaskKind.TRAINING,
+            payload_ref="payload.json",
+            resource_key="training:remote:scheduler",
+            required_capabilities=("training.ultralytics",),
+        ),
+        artifacts=artifacts,
+    )
+
+
+def create_training_node(repository):
+    nodes = ServiceNodeRepository(repository)
+    _node, token = nodes.create({
+        "node_id": "training-api-agent",
+        "display_name": "training-api-agent",
+        "connection_mode": "agent",
+        "allowed_capabilities": ["training"],
+    })
+    nodes.heartbeat("training-api-agent", token, {
+        "hostname": "training-api-agent",
+        "reported_capabilities": ["training"],
+        "resources": {
+            "cpu": {"logical_cores": 16},
+            "memory": {"available_bytes": 32 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {
+                "available": True,
+                "gpus": [{
+                    "id": "cuda:0",
+                    "index": 0,
+                    "uuid": "GPU-API",
+                    "name": "NVIDIA Test",
+                    "memory_free_bytes": 16 * 1024**3,
+                    "memory_total_bytes": 24 * 1024**3,
+                }],
+            },
+        },
+        "runtime": {"python_version": "3.12"},
+    })
+    return token
+
+
+def start_training_remote(client, repository, artifacts, token):
+    allocator = AgentExecutionService(repository, artifacts).allocator
+    assigned = allocator.assign_next()
+    assert assigned is not None
+    claimed = client.post(
+        "/api/v63/node-executor/training-api-agent/assignments/claim",
+        headers=auth(token),
+    )
+    assert claimed.status_code == 200, claimed.text
+    assignment_token = claimed.json()["item"]["assignment"]["assignment_lease_token"]
+    started = client.post(
+        "/api/v63/node-executor/training-api-agent/assignments/train-model-api/start",
+        headers=auth(token),
+        json={"assignment_lease_token": assignment_token},
+    )
+    assert started.status_code == 200, started.text
+    return started.json()["execution"]
+
+
+def test_training_model_upload_http_routes_are_execution_fenced(tmp_path):
+    client, repository, artifacts = training_client_for(tmp_path)
+    create_training_task(repository, artifacts)
+    token = create_training_node(repository)
+    execution = start_training_remote(client, repository, artifacts, token)
+    base = "/api/v63/node-executor/training-api-agent/executions/train-model-api"
+    models = [
+        {"role": "best", "file_name": "best.pt", "sha256": "d" * 64, "size_bytes": 101},
+        {"role": "last", "file_name": "last.pt", "sha256": "e" * 64, "size_bytes": 102},
+    ]
+
+    wrong_generation = client.post(
+        f"{base}/training-models/prepare",
+        headers=auth(token),
+        json={
+            "execution_lease_token": execution["lease_token"],
+            "execution_generation": execution["generation"] + 1,
+            "models": models,
+        },
+    )
+    assert wrong_generation.status_code == 409
+    assert wrong_generation.json()["detail"]["code"] == "EXECUTION_FENCED"
+
+    prepared = client.post(
+        f"{base}/training-models/prepare",
+        headers=auth(token),
+        json={
+            **execution_body(execution),
+            "models": models,
+        },
+    )
+    assert prepared.status_code == 200, prepared.text
+    body = prepared.json()
+    assert body["version_id"] == "rt-api"
+    assert {item["role"] for item in body["items"]} == {"best", "last"}
+    assert all(item["upload"]["method"] == "PUT" for item in body["items"])
+
+    durable = artifacts.read_json(
+        "train-model-api",
+        f"remote-results/{execution['generation']}/training-models.json",
+        default={},
+    )
+    assert durable["confirmed"] is False
+    assert "signed.example.test" not in str(durable)
+
+    confirmed = client.post(
+        f"{base}/training-models/confirm",
+        headers=auth(token),
+        json=execution_body(execution),
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["confirmed"] is True
+    assert confirmed.json()["version_id"] == "rt-api"
+
+    repository.request_cancel("train-model-api")
+    after_cancel = client.post(
+        f"{base}/training-models/confirm",
+        headers=auth(token),
+        json=execution_body(execution),
+    )
+    assert after_cancel.status_code == 409
+    assert after_cancel.json()["detail"]["code"] == "CANCELLATION_WON"
