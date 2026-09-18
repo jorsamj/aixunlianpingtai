@@ -153,7 +153,7 @@ def test_run_once_claims_starts_and_dispatches_one_deployment_task():
 
 
 def test_training_capability_dispatches_to_registered_training_runner():
-    client = FakeClient([claimed(kind="MODEL_CONVERSION")])
+    client = FakeClient([claimed(kind="TRAINING")])
     deployment_runner = FakeRunner()
     training_runner = FakeRunner()
     loop = NodeAgentExecutorLoop(
