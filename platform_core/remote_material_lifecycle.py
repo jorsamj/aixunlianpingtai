@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
@@ -189,6 +190,67 @@ def material_staging_refs(
             )
         )
     return result
+
+
+class RemoteMaterialStagingGCReporter:
+    """Throttled observer attached to the existing storage Worker heartbeat."""
+
+    def __init__(
+        self,
+        repository,
+        artifacts,
+        data_dir: str | Path,
+        *,
+        interval_seconds: int = 300,
+        retention_seconds: int = REMOTE_MATERIAL_STAGING_RETENTION_SECONDS,
+    ) -> None:
+        from .secrets import KeyringSecretStore, SecretCredentialStore
+        from .storage import StorageProviderFactory, StorageSourceRepository
+
+        self.data_dir = Path(data_dir).resolve()
+        self.sources = StorageSourceRepository(
+            self.data_dir / "storage" / "storage_sources.sqlite3"
+        )
+        self.credentials = SecretCredentialStore(KeyringSecretStore())
+        self.provider_factory = StorageProviderFactory
+        self.interval_seconds = max(30, int(interval_seconds))
+        self._next_run = 0.0
+
+        def resolver(project_id: str, ref: Mapping[str, Any]):
+            source_id = str(ref.get("storage_source_id") or "").strip()
+            source = self.sources.get(source_id)
+            if source is None or not source.enabled:
+                raise RuntimeError(f"storage source unavailable for staging cleanup: {source_id}")
+            secret = (
+                self.credentials.get(source.secret_ref) or {}
+                if source.secret_ref
+                else {}
+            )
+            return self.provider_factory(
+                data_dir=self.data_dir,
+                project_dir=self.data_dir / "projects" / str(project_id),
+                credentials={source.id: secret},
+            ).create(source)
+
+        self.lifecycle = RemoteMaterialStagingLifecycle(
+            repository,
+            artifacts,
+            resolver,
+            data_dir=self.data_dir,
+            retention_seconds=retention_seconds,
+        )
+
+    def report(self) -> dict[str, Any]:
+        now = time.monotonic()
+        if now < self._next_run:
+            return {"skipped": True}
+        self._next_run = now + self.interval_seconds
+        try:
+            return self.lifecycle.maintain()
+        except Exception as error:
+            # Maintenance is observational/background work. Provider or secret
+            # outages must not kill the Worker heartbeat/task scheduler.
+            return {"error": str(error)[:1000]}
 
 
 class RemoteMaterialStagingLifecycle:
@@ -485,6 +547,7 @@ __all__ = [
     "REMOTE_MATERIAL_CLEANUP_REF",
     "REMOTE_MATERIAL_GC_STATE_REF",
     "REMOTE_MATERIAL_STAGING_RETENTION_SECONDS",
+    "RemoteMaterialStagingGCReporter",
     "RemoteMaterialStagingLifecycle",
     "material_staging_refs",
 ]
