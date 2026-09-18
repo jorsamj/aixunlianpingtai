@@ -133,7 +133,12 @@ def request_training_recovery(repository, artifacts, project_id: str, task_id: s
     return retried, truth
 
 
-def training_recovery_router(get_project, task_repository, task_artifacts):
+def training_recovery_router(
+    get_project,
+    task_repository,
+    task_artifacts,
+    agent_execution_payload_resolver=None,
+):
     from fastapi import APIRouter, Body, HTTPException
 
     recovery_router = APIRouter(prefix="/api/v62/projects/{project_id}/training-tasks")
@@ -215,5 +220,9 @@ def training_recovery_router(get_project, task_repository, task_artifacts):
     ))
     root.include_router(service_node_router(task_repository))
     root.include_router(central_scheduler_router(task_repository, task_artifacts))
-    root.include_router(agent_executor_router(task_repository, task_artifacts))
+    root.include_router(agent_executor_router(
+        task_repository,
+        task_artifacts,
+        execution_payload_resolver=agent_execution_payload_resolver,
+    ))
     return root
