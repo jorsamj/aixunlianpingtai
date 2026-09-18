@@ -15102,6 +15102,22 @@ def _resolve_agent_execution_payload(task, payload, assignment):
         assignment,
     )
 
+
+def _prepare_agent_result_upload(task, payload, evidence):
+    return _remote_execution_transport_service().prepare_result_upload(
+        task,
+        payload,
+        evidence,
+    )
+
+
+def _confirm_agent_result_upload(task, payload, evidence):
+    return _remote_execution_transport_service().confirm_result_upload(
+        task,
+        payload,
+        evidence,
+    )
+
 app.include_router(external_algorithm_platform_router(
     data_dir=DATA_DIR,
     get_project=get_project,
@@ -15125,4 +15141,6 @@ app.include_router(training_recovery_router(
     shared_task_repository,
     shared_task_artifacts,
     agent_execution_payload_resolver=_resolve_agent_execution_payload,
+    agent_result_upload_preparer=_prepare_agent_result_upload,
+    agent_result_upload_confirmer=_confirm_agent_result_upload,
 ))
