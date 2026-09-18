@@ -511,3 +511,70 @@ def test_public_import_task_exposes_only_bounded_zip_checkpoint_metrics():
     assert "completed_members" not in public["metrics"]
     assert "zip_path" not in public["metrics"]
     assert "target_prefix" not in public["metrics"]
+
+
+
+def test_coco_voc_are_limited_to_agent_storage_scan(client, tmp_path, monkeypatch):
+    project = _project(client)
+    source = _source(client, tmp_path, source_type="s3")
+
+    class FakeTransport:
+        def stage_material_storage_scan(self, **kwargs):
+            return {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+                "material_import": {
+                    "schema_version": 1,
+                    "mode": "storage_scan",
+                    "import_format": kwargs["import_format"],
+                    "dataset_yaml": "",
+                    "source": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "prefix": kwargs["prefix"],
+                        "recursive": True,
+                    },
+                    "target": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "target_prefix": kwargs["prefix"],
+                    },
+                    "output": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/review.zip",
+                        "file_name": "material-review.zip",
+                        "content_type": "application/zip",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(app_module, "_remote_execution_transport_service", lambda: FakeTransport())
+    for import_format in ("coco", "voc"):
+        response = client.post(
+            f"/api/v61/projects/{project['id']}/storage-imports/scan",
+            json={
+                "mode": "storage_scan",
+                "execution_mode": "agent",
+                "storage_source_id": source["id"],
+                "prefix": "datasets/annotated",
+                "recursive": True,
+                "import_format": import_format,
+            },
+        )
+        assert response.status_code == 202, response.text
+        task_id = response.json()["task_id"]
+        request = app_module.shared_task_artifacts().read_json(task_id, "request.json")
+        assert request["remote_execution"]["material_import"]["import_format"] == import_format
+
+    rejected = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "storage_scan",
+            "execution_mode": "local",
+            "storage_source_id": source["id"],
+            "prefix": "datasets/annotated",
+            "import_format": "coco",
+        },
+    )
+    assert rejected.status_code == 422

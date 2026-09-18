@@ -22,6 +22,11 @@ from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
+from .storage.detection_import import (
+    DetectionDatasetScanner,
+    DetectionImportError,
+    DetectionScanCancelled,
+)
 from .storage.import_candidates import ImportCandidateStore
 from .storage.local import LocalStorageProvider
 from .storage.import_confirmation import mapping_suggestions
@@ -39,6 +44,7 @@ REVIEW_SCHEMA_VERSION = 1
 REVIEW_META_MEMBER = "meta.json"
 REVIEW_ROWS_MEMBER = "review.jsonl"
 REVIEW_ANNOTATIONS_MEMBER = "yolo/annotations.jsonl"
+REVIEW_DETECTION_ANNOTATIONS_MEMBER = "annotations/detection.jsonl"
 REVIEW_FILES_PREFIX = PurePosixPath("files")
 REMOTE_MATERIAL_STAGING_REF = "remote-material/staged.sqlite3"
 _MAX_REVIEW_ROWS = 250_000
@@ -632,6 +638,213 @@ def build_yolo_material_review_archive(
 
 
 
+
+def _build_detection_storage_scan_review_archive(
+    provider,
+    destination: str | Path,
+    *,
+    task_id: str,
+    project_id: str,
+    execution_generation: int,
+    storage_source_id: str,
+    storage_type: str,
+    prefix: str,
+    recursive: bool,
+    import_format: str,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, int, str], object] | None = None,
+) -> dict[str, Any]:
+    target_prefix = safe_member_path(str(prefix)).as_posix()
+    target = Path(destination).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    local_fd, local_name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=".detection-review.",
+        suffix=".sqlite3",
+    )
+    os.close(local_fd)
+    local_store_path = Path(local_name)
+    local_store_path.unlink(missing_ok=True)
+    store = ImportCandidateStore(local_store_path)
+    scanner = DetectionDatasetScanner(
+        provider,
+        store,
+        lambda current, scan_prefix, scan_recursive: current.iter_objects(
+            scan_prefix, recursive=scan_recursive
+        ),
+        _inspect_storage_scan_image,
+        storage_source_id=storage_source_id,
+        storage_type=storage_type,
+        cancelled=(cancelled or (lambda: False)),
+        progress=lambda key: (
+            progress(0, 0, str(key)) if progress is not None else None
+        ),
+    )
+    try:
+        try:
+            detected = scanner.scan(
+                import_format,
+                prefix=target_prefix,
+                recursive=bool(recursive),
+            )
+        except DetectionScanCancelled as error:
+            raise InterruptedError("detection review cancelled") from error
+        except DetectionImportError as error:
+            raise RemoteMaterialImportError(
+                str(getattr(error, "code", "REMOTE_DETECTION_REVIEW_INVALID")),
+                str(getattr(error, "message", error)),
+                422,
+            ) from error
+
+        counts = store.counts()
+        total = sum(counts.values())
+        if total <= 0:
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_IMAGES_MISSING",
+                "detection dataset contains no reviewable images",
+                422,
+            )
+        archive_fd, archive_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+        )
+        os.close(archive_fd)
+        temporary = Path(archive_name)
+        rows_fd, rows_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.rows.",
+            suffix=".jsonl",
+        )
+        os.close(rows_fd)
+        rows_file = Path(rows_name)
+        ann_fd, ann_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.annotations.",
+            suffix=".jsonl",
+        )
+        os.close(ann_fd)
+        annotations_file = Path(ann_name)
+        written_counts: dict[str, int] = {}
+        completed = 0
+        try:
+            with rows_file.open("wb") as rows_stream, annotations_file.open("wb") as ann_stream:
+                page: list[dict[str, Any]] = []
+                for candidate in store.iter_candidates(batch_size=500):
+                    page.append(candidate)
+                    if len(page) < 500:
+                        continue
+                    _write_yolo_review_page(
+                        None,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        [],
+                        written_counts,
+                        target_prefix,
+                        include_payloads=False,
+                        preserve_object_keys=True,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                    page.clear()
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("detection review cancelled")
+                if page:
+                    _write_yolo_review_page(
+                        None,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        [],
+                        written_counts,
+                        target_prefix,
+                        include_payloads=False,
+                        preserve_object_keys=True,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                rows_stream.flush()
+                os.fsync(rows_stream.fileno())
+                ann_stream.flush()
+                os.fsync(ann_stream.fileno())
+
+            meta = {
+                "schema_version": REVIEW_SCHEMA_VERSION,
+                "task_id": str(task_id),
+                "project_id": str(project_id),
+                "execution_generation": int(execution_generation),
+                "mode": "storage_scan",
+                "payload_mode": "source_reference",
+                "import_format": str(detected.import_format),
+                "storage_source_id": str(storage_source_id),
+                "storage_type": str(storage_type),
+                "target_prefix": target_prefix,
+                "candidate_count": total,
+                "counts": written_counts,
+                "annotation_member": REVIEW_DETECTION_ANNOTATIONS_MEMBER,
+                "classes": [
+                    {"class_id": int(class_id), "name": str(name)}
+                    for class_id, name in detected.classes
+                ],
+                "quality": detected.quality,
+                "annotation_files": int(detected.annotation_files),
+                "missing_images": int(detected.missing_images),
+            }
+            with zipfile.ZipFile(
+                temporary,
+                "w",
+                compression=zipfile.ZIP_STORED,
+                allowZip64=True,
+            ) as archive:
+                archive.write(rows_file, arcname=REVIEW_ROWS_MEMBER)
+                archive.write(
+                    annotations_file,
+                    arcname=REVIEW_DETECTION_ANNOTATIONS_MEMBER,
+                )
+                archive.writestr(
+                    REVIEW_META_MEMBER,
+                    json.dumps(
+                        meta,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            if temporary.stat().st_size <= 0:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_REVIEW_EMPTY",
+                    "detection review archive is empty",
+                    409,
+                )
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+            rows_file.unlink(missing_ok=True)
+            annotations_file.unlink(missing_ok=True)
+
+        return {
+            "path": target,
+            "sha256": _sha256_file(target),
+            "size_bytes": int(target.stat().st_size),
+            "candidate_count": total,
+            "counts": written_counts,
+            "quality": detected.quality,
+            "classes": [
+                {"class_id": int(class_id), "name": str(name)}
+                for class_id, name in detected.classes
+            ],
+        }
+    finally:
+        local_store_path.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            Path(str(local_store_path) + suffix).unlink(missing_ok=True)
+
+
 def build_storage_scan_material_review_archive(
     provider,
     destination: str | Path,
@@ -651,11 +864,32 @@ def build_storage_scan_material_review_archive(
     """Build a metadata-only review from an execution-fenced storage broker."""
     target_prefix = safe_member_path(str(prefix)).as_posix()
     selected_format = str(import_format or "").strip().lower()
-    if selected_format not in {"images", "yolo"}:
+    if selected_format not in {"images", "yolo", "coco", "voc"}:
         raise RemoteMaterialImportError(
             "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
-            "storage_scan review supports images or yolo",
+            "storage_scan review supports images, yolo, coco or voc",
             422,
+        )
+    if selected_format in {"coco", "voc"}:
+        if str(dataset_yaml or "").strip():
+            raise RemoteMaterialImportError(
+                "REMOTE_MATERIAL_DATASET_YAML_INVALID",
+                "COCO/VOC storage_scan does not accept dataset_yaml",
+                422,
+            )
+        return _build_detection_storage_scan_review_archive(
+            provider,
+            destination,
+            task_id=task_id,
+            project_id=project_id,
+            execution_generation=execution_generation,
+            storage_source_id=storage_source_id,
+            storage_type=storage_type,
+            prefix=target_prefix,
+            recursive=recursive,
+            import_format=selected_format,
+            cancelled=cancelled,
+            progress=progress,
         )
     yaml_key = (
         safe_member_path(str(dataset_yaml)).as_posix()
@@ -1293,6 +1527,276 @@ def _read_review_rows(
 
 
 
+def _commit_detection_review_annotations(
+    review_root: Path,
+    store: ImportCandidateStore,
+    *,
+    candidate_keys: set[str],
+    meta: Mapping[str, Any],
+    expected_prefix: str,
+    annotations_member: str,
+    manifest_identity: str,
+) -> dict[str, Any]:
+    annotation_path = safe_member_path(str(annotations_member))
+    annotations_path = review_root.joinpath(*annotation_path.parts)
+    if not annotations_path.is_file() or annotations_path.is_symlink():
+        raise RemoteMaterialImportError(
+            "REMOTE_DETECTION_REVIEW_INVALID",
+            "detection review annotation stream is missing",
+            422,
+        )
+    classes = meta.get("classes")
+    if not isinstance(classes, list) or not classes or len(classes) > 10000:
+        raise RemoteMaterialImportError(
+            "REMOTE_DETECTION_CLASSES_INVALID",
+            "detection review class mapping is invalid",
+            422,
+        )
+    names: dict[int, str] = {}
+    for item in classes:
+        if not isinstance(item, Mapping):
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_CLASSES_INVALID",
+                "detection review class entry must be an object",
+                422,
+            )
+        try:
+            class_id = int(item.get("class_id"))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_CLASSES_INVALID",
+                "detection review class ID is invalid",
+                422,
+            ) from error
+        name = str(item.get("name") or "").strip()
+        if class_id < 0 or class_id > 2**63 - 1 or not name or len(name) > 1000:
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_CLASSES_INVALID",
+                "detection review class ID/name is invalid",
+                422,
+            )
+        if class_id in names and names[class_id] != name:
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_CLASSES_INVALID",
+                "detection review contains conflicting class names",
+                409,
+            )
+        names[class_id] = name
+    store.set_label_mapping(names)
+
+    expected_prefix_path = safe_member_path(expected_prefix)
+    seen: set[str] = set()
+    states: list[dict[str, Any]] = []
+    boxes: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    total_boxes = 0
+    total_issues = 0
+
+    def flush() -> None:
+        if states or boxes or issues:
+            store.annotation_batch(states, boxes, issues)
+            states.clear()
+            boxes.clear()
+            issues.clear()
+
+    with annotations_path.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if line_number > _MAX_REVIEW_ROWS:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_MEMBER_LIMIT",
+                    "detection review annotation stream exceeds its row limit",
+                    413,
+                )
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection review annotation stream contains invalid JSON",
+                    422,
+                ) from error
+            if not isinstance(row, dict):
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection review annotation entry must be an object",
+                    422,
+                )
+            key = str(row.get("object_key") or "")
+            if not key or key in seen or key not in candidate_keys:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection annotation object key is unknown or duplicated",
+                    409,
+                )
+            key_path = safe_member_path(key)
+            if key_path.parts[: len(expected_prefix_path.parts)] != expected_prefix_path.parts:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_TARGET_MISMATCH",
+                    "detection annotation escaped the requested target prefix",
+                    409,
+                )
+            seen.add(key)
+
+            split = str(row.get("split") or "")
+            if not split or len(split) > 100:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection annotation split is invalid",
+                    422,
+                )
+            status = str(row.get("annotation_status") or "")
+            if status not in {"annotated", "confirmed_empty", "unannotated", "invalid"}:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection annotation status is invalid",
+                    422,
+                )
+            label_key = row.get("label_key")
+            if label_key is not None:
+                label_key = safe_member_path(str(label_key)).as_posix()
+
+            raw_boxes = row.get("boxes")
+            raw_issues = row.get("issues")
+            if not isinstance(raw_boxes, list) or len(raw_boxes) > 100000:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection annotation boxes are invalid or unbounded",
+                    422,
+                )
+            if not isinstance(raw_issues, list) or len(raw_issues) > 100000:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection annotation issues are invalid or unbounded",
+                    422,
+                )
+            if int(row.get("box_count") or 0) != len(raw_boxes):
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection annotation box count does not reconcile",
+                    409,
+                )
+
+            local_line_numbers: set[int] = set()
+            for box in raw_boxes:
+                if not isinstance(box, Mapping):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_INVALID",
+                        "detection box entry must be an object",
+                        422,
+                    )
+                try:
+                    item_line = int(box.get("line_number") or 0)
+                    class_id = int(box.get("class_id"))
+                    cx = float(box.get("cx"))
+                    cy = float(box.get("cy"))
+                    width = float(box.get("w"))
+                    height = float(box.get("h"))
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_INVALID",
+                        "detection box contains invalid numeric values",
+                        422,
+                    ) from error
+                if (
+                    item_line <= 0
+                    or item_line in local_line_numbers
+                    or class_id not in names
+                    or not all(math.isfinite(value) for value in (cx, cy, width, height))
+                    or not (0.0 <= cx <= 1.0)
+                    or not (0.0 <= cy <= 1.0)
+                    or not (0.0 < width <= 1.0)
+                    or not (0.0 < height <= 1.0)
+                ):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_INVALID",
+                        "detection box violates normalized detection constraints",
+                        422,
+                    )
+                local_line_numbers.add(item_line)
+                boxes.append({
+                    "object_key": key,
+                    "line_number": item_line,
+                    "class_id": class_id,
+                    "cx": cx,
+                    "cy": cy,
+                    "w": width,
+                    "h": height,
+                    "clipped": bool(box.get("clipped")),
+                })
+                total_boxes += 1
+                if total_boxes > 5_000_000:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_TOO_LARGE",
+                        "detection review contains too many boxes",
+                        413,
+                    )
+
+            for issue in raw_issues:
+                if not isinstance(issue, Mapping):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_INVALID",
+                        "detection issue entry must be an object",
+                        422,
+                    )
+                try:
+                    issue_line = int(issue.get("line_number") or 0)
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_INVALID",
+                        "detection issue line number is invalid",
+                        422,
+                    ) from error
+                code = str(issue.get("code") or "").strip()
+                severity = str(issue.get("severity") or "").strip()
+                if (
+                    issue_line < 0
+                    or not code
+                    or len(code) > 200
+                    or severity not in {"warning", "error"}
+                ):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_INVALID",
+                        "detection issue entry is invalid",
+                        422,
+                    )
+                issues.append({
+                    "object_key": key,
+                    "line_number": issue_line,
+                    "code": code,
+                    "severity": severity,
+                })
+                total_issues += 1
+                if total_issues > 5_000_000:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_REVIEW_TOO_LARGE",
+                        "detection review contains too many issues",
+                        413,
+                    )
+            states.append({
+                "object_key": key,
+                "label_key": label_key,
+                "annotation_status": status,
+                "box_count": len(raw_boxes),
+            })
+            store.manifest_many([{
+                "object_key": key,
+                "split": split,
+                "yaml_key": safe_member_path(
+                    str(manifest_identity or annotations_member)
+                ).as_posix(),
+            }])
+            if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
+                flush()
+    flush()
+    if seen != candidate_keys:
+        raise RemoteMaterialImportError(
+            "REMOTE_DETECTION_REVIEW_INVALID",
+            "detection annotation stream does not cover every candidate image",
+            409,
+        )
+    return store.quality_summary()
+
+
 def _commit_yolo_review_annotations(
     review_root: Path,
     store: ImportCandidateStore,
@@ -1685,13 +2189,35 @@ def commit_material_review_archive(
         candidate_store.upsert_many(candidates)
         quality = None
         external_classes = []
-        if str(expected_import_format or "images") == "yolo":
+        normalized_format = str(expected_import_format or "images")
+        if normalized_format == "yolo":
             quality = _commit_yolo_review_annotations(
                 review_root,
                 candidate_store,
                 candidate_keys={str(row["object_key"]) for row in candidates},
                 meta=meta,
                 expected_prefix=expected_prefix,
+            )
+            external_classes = mapping_suggestions(
+                candidate_store.external_classes(),
+                list(platform_labels or ()),
+            )
+        elif normalized_format in {"coco", "voc"}:
+            annotation_member = str(meta.get("annotation_member") or "")
+            if annotation_member != REVIEW_DETECTION_ANNOTATIONS_MEMBER:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection review annotation member is invalid",
+                    409,
+                )
+            quality = _commit_detection_review_annotations(
+                review_root,
+                candidate_store,
+                candidate_keys={str(row["object_key"]) for row in candidates},
+                meta=meta,
+                expected_prefix=expected_prefix,
+                annotations_member=annotation_member,
+                manifest_identity=annotation_member,
             )
             external_classes = mapping_suggestions(
                 candidate_store.external_classes(),
@@ -1741,11 +2267,15 @@ def commit_material_review_archive(
             "import_format": str(expected_import_format or "images"),
             **(
                 {
-                    "dataset_yaml": str(meta.get("dataset_yaml") or ""),
+                    **(
+                        {"dataset_yaml": str(meta.get("dataset_yaml") or "")}
+                        if normalized_format == "yolo"
+                        else {}
+                    ),
                     "quality": quality,
                     "external_classes": external_classes,
                 }
-                if str(expected_import_format or "images") == "yolo"
+                if normalized_format in {"yolo", "coco", "voc"}
                 else {}
             ),
             "remote_review_archive_ref": durable_archive_ref,
@@ -1776,6 +2306,7 @@ def commit_material_review_archive(
 __all__ = [
     "REMOTE_MATERIAL_STAGING_REF",
     "REVIEW_SCHEMA_VERSION",
+    "REVIEW_DETECTION_ANNOTATIONS_MEMBER",
     "RemoteMaterialImportError",
     "RemoteMaterialStagingStore",
     "build_material_review_archive",

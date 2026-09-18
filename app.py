@@ -1117,21 +1117,28 @@ class StorageImportScanReq(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_fields(self):
-        if self.import_format in {'coco', 'voc'}:
-            raise ValueError('服务器导入暂不支持 COCO/VOC；请使用 YOLO 或明确选择仅图片')
+        if self.import_format in {'coco', 'voc'} and not (
+            self.execution_mode == "agent" and self.mode == "storage_scan"
+        ):
+            raise ValueError('COCO/VOC 当前仅支持对象存储目录的远程 Agent 扫描')
         if self.dataset_yaml:
             value = self.dataset_yaml.replace('\\', '/')
             if value.startswith('/') or ':' in value or '..' in value.split('/'):
                 raise ValueError('dataset_yaml 必须是存储源内的相对路径')
-            if self.import_format == 'images':
-                raise ValueError('仅图片模式不能提交 dataset_yaml')
+            if self.import_format != 'yolo':
+                raise ValueError('只有 YOLO 模式可以提交 dataset_yaml')
         zip_path = str(self.zip_path or "").strip()
         target_prefix = str(self.target_prefix or "").strip()
         if self.execution_mode == "agent":
             if self.mode not in {"server_zip", "storage_scan"}:
                 raise ValueError("Agent 素材导入仅支持对象存储扫描或服务器 ZIP 模式")
-            if self.import_format not in {"images", "yolo"}:
-                raise ValueError("Agent 素材导入当前仅支持仅图片或 YOLO 模式")
+            allowed_formats = (
+                {"images", "yolo", "coco", "voc"}
+                if self.mode == "storage_scan"
+                else {"images", "yolo"}
+            )
+            if self.import_format not in allowed_formats:
+                raise ValueError("Agent 当前模式不支持所选素材格式")
             if self.import_format == "images" and self.dataset_yaml:
                 raise ValueError("Agent 仅图片模式不接受 dataset_yaml")
             if self.dataset_yaml:

@@ -546,17 +546,23 @@ class AgentMaterialImportRunner:
                 "AgentMaterialImportRunner only accepts MATERIAL_IMPORT"
             )
         payload = lease.payload
+        mode = str(payload.get("mode") or "")
+        import_format = str(payload.get("import_format") or "")
+        allowed_formats = (
+            {"images", "yolo", "coco", "voc"}
+            if mode == "storage_scan"
+            else {"images", "yolo"}
+        )
         if (
             int(payload.get("schema_version") or 0) != 1
             or str(payload.get("task_kind") or "") != "MATERIAL_IMPORT"
             or str(payload.get("transport") or "") != "object-storage-v1"
-            or str(payload.get("mode") or "") not in {"zip_scan", "storage_scan"}
-            or str(payload.get("import_format") or "") not in {"images", "yolo"}
+            or mode not in {"zip_scan", "storage_scan"}
+            or import_format not in allowed_formats
         ):
             raise AgentMaterialImportRuntimeError(
                 "portable material import start payload is invalid"
             )
-        mode = str(payload.get("mode") or "")
         target = payload.get("target")
         input_contract = payload.get("input")
         source_contract = payload.get("source")

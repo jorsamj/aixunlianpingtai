@@ -11,6 +11,7 @@ from PIL import Image
 
 from platform_core.remote_material_import import (
     REMOTE_MATERIAL_STAGING_REF,
+    REVIEW_DETECTION_ANNOTATIONS_MEMBER,
     RemoteMaterialImportError,
     RemoteMaterialStagingStore,
     build_material_review_archive,
@@ -276,3 +277,87 @@ def test_storage_scan_review_is_metadata_only_and_server_verified(tmp_path):
     result = artifacts.read_json("storage-scan-review", "scan/result.json")
     assert result["mode"] == "agent_storage_scan"
     assert result["importable_images"] == 1
+
+
+
+def test_storage_scan_coco_review_commits_generic_detection_truth(tmp_path):
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (100, 80), "orange").save(image_buffer, format="JPEG")
+    image = image_buffer.getvalue()
+    coco = json.dumps({
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 100, "height": 80}],
+        "annotations": [{"id": 10, "image_id": 1, "category_id": 7, "bbox": [10, 20, 30, 40]}],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }).encode()
+    provider = _StorageScanReviewProvider(
+        [
+            ObjectMetadata(
+                key="incoming/2026/train/a.jpg",
+                size_bytes=len(image),
+                etag='"etag-a"',
+                content_type="image/jpeg",
+                sha256=hashlib.sha256(image).hexdigest(),
+            ),
+            ObjectMetadata(
+                key="incoming/2026/train/_annotations.coco.json",
+                size_bytes=len(coco),
+                etag='"etag-coco"',
+                content_type="application/json",
+                sha256=hashlib.sha256(coco).hexdigest(),
+            ),
+        ],
+        {
+            "incoming/2026/train/a.jpg": image,
+            "incoming/2026/train/_annotations.coco.json": coco,
+        },
+    )
+    archive = tmp_path / "coco-review.zip"
+    built = build_storage_scan_material_review_archive(
+        provider,
+        archive,
+        task_id="coco-storage-scan",
+        project_id="project-coco",
+        execution_generation=1,
+        storage_source_id="s3-source",
+        storage_type="s3",
+        prefix="incoming/2026",
+        recursive=True,
+        import_format="coco",
+    )
+    with zipfile.ZipFile(archive, "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        assert meta["import_format"] == "coco"
+        assert meta["annotation_member"] == REVIEW_DETECTION_ANNOTATIONS_MEMBER
+        assert meta["classes"] == [{"class_id": 7, "name": "smoke"}]
+        assert REVIEW_DETECTION_ANNOTATIONS_MEMBER in review.namelist()
+        assert not any(name.startswith("files/") for name in review.namelist())
+
+    artifacts = ArtifactStore(tmp_path / "coco-artifacts")
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id="coco-storage-scan",
+        project_id="project-coco",
+        execution_generation=1,
+        archive_path=built["path"],
+        archive_sha256=built["sha256"],
+        archive_size_bytes=built["size_bytes"],
+        expected_source_id="s3-source",
+        expected_storage_type="s3",
+        expected_prefix="incoming/2026",
+        expected_mode="storage_scan",
+        expected_import_format="coco",
+        platform_labels=[],
+    )
+    assert committed["material_review_committed"] is True
+    result = artifacts.read_json("coco-storage-scan", SCAN_RESULT_REF)
+    assert result["import_format"] == "coco"
+    assert result["quality"]["boxes"] == 1
+    assert result["external_classes"][0]["class_id"] == 7
+    assert result["external_classes"][0]["name"] == "smoke"
+    store = ImportCandidateStore(
+        artifacts.artifact_path("coco-storage-scan", MANIFEST_REF)
+    )
+    candidate = list(store.iter_candidates())[0]
+    annotation = store.annotations_for_keys([candidate["object_key"]])[candidate["object_key"]]
+    assert annotation["annotation_status"] == "annotated"
+    assert annotation["boxes"][0]["class_id"] == 7
