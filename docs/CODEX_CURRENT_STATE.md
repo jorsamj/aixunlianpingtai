@@ -168,11 +168,55 @@ RK3568/RK3576 board has already passed acceptance. A specific model becomes
 `hardware_verified` only after a real connected board Agent executes the
 runtime task successfully.
 
-**OPEN / next:** RKNN INT8 calibration portable transport. Keep TensorRT,
-Sophon and Ascend out of scope. Freeze calibration selection/snapshot, transport
-verified calibration image objects to the RKNN conversion Agent, build the
-node-local calibration dataset, execute real RKNN-Toolkit2 INT8 conversion and
-preserve the same generation/immutable-upload/server-confirm truth model.
+## Current closure — Rockchip RKNN INT8 calibration portable transport CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Remote Rockchip conversion now supports real FP16 and INT8 execution on an
+Agent. INT8 is exposed only when backend resource truth reports it in
+`supported_precisions`; the UI does not infer quantization support itself.
+
+Before creating the durable conversion task, the control plane freezes an
+RKNN calibration snapshot bound to the requested dataset/split and current
+MaterialRepository revision. Every calibration item contains an exact portable
+object reference plus size/SHA256 evidence. Non-portable/local materials,
+missing evidence or changed source objects fail before the Agent task is
+persisted.
+
+The start payload contains only the frozen snapshot and short-lived object GET
+contracts. The Agent downloads every calibration image into its generation
+workdir, verifies size/SHA256, checks snapshot/count/file-count consistency and
+only then starts the node-local deployment worker. That worker creates the
+RKNN dataset file from the downloaded images and performs the real
+RKNN-Toolkit2 INT8 build.
+
+INT8 publication uses the same immutable generation-scoped upload,
+server-confirm and deployment artifact commit as FP16. A successful RKNN INT8
+conversion remains `converted_unverified` with `hardware_verified=false`;
+the already-closed Rockchip board runtime flow is still the only path that may
+promote the model to `hardware_verified=true`.
+
+The deployment UI now exposes dataset, split and calibration count for RKNN
+INT8 and Real Chrome verifies a real Agent INT8 task submission.
+
+Acceptance at code HEAD `314757c1601420640acedc074e9aeb795e8a2097`:
+- Remote Conversion Runtime `35340943761`: control-plane / Ubuntu / Windows / Real Chrome success.
+- Remote RKNN Board Runtime Protocol `35340943851`: success.
+- Node Agent Executor `35340943850`: success.
+- Central Node Assignment `35340943861`: success.
+- Task Runtime Truth `35340943758`: success.
+- Portable Deployment `35340943913`: success.
+- Remote Material Import `35340943781`: success.
+- Remote Training Runtime `35340943764`: success.
+- Remote Cleaning Runtime `35340943815`: success.
+
+**OPEN / next:** Rockchip real-device onboarding and acceptance tooling.
+Keep TensorRT/Sophon/Ascend out of scope. Productize/script Node Agent install,
+real SoC/RKNNLite probing, registration/diagnostics and repeatable
+`deployment-test.rknn` acceptance on the user's physical RK3568 / actual
+Rockchip boards. CI remains software evidence only; a concrete model becomes
+hardware-verified only after a real board runs it successfully.
+
 
 
 

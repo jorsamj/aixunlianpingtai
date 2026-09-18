@@ -233,9 +233,39 @@ Phase 1 历史验收保持：
 3. 如果未来需要 COCO/VOC Agent server_zip，再按真实 portable transport 单独闭环。
 4. TensorRT / Sophon / Ascend 暂不推进。
 
-**下一主线：RKNN INT8 calibration portable transport。**
+## 0. 最新关闭：Rockchip RKNN INT8 calibration portable transport
 
-目标：沿用现有 Remote MODEL_CONVERSION / Rockchip durable truth，为 INT8 增加冻结 calibration selection/snapshot、verified calibration image transport、Agent 节点 calibration dataset 生成与真实 RKNN-Toolkit2 INT8 build；仍必须 generation-fenced、server-confirmed，并禁止把控制面本地路径/SQLite/NFS 暴露给 Agent。
+2026-09-18，RKNN INT8 Agent calibration 已 CLOSED：
+
+- Rockchip Agent 资源通过统一后端 truth 暴露 `supported_precisions=["fp16","int8"]`；前端不自行推断。
+- 创建 INT8 任务前冻结 calibration snapshot，绑定 dataset/split/MaterialRepository revision 与精确 object refs。
+- calibration item 必须携带稳定 object_key / size / SHA256；只允许 OSS/S3/MinIO portable 对象，控制面本地路径不进入 Agent contract。
+- Agent start 时为每张冻结校准图签发短期 GET，下载后逐张校验 hash/size；snapshot/count/实际文件数不一致直接 fail closed。
+- 节点本地 `deployment_worker.py` 生成 `rknn_dataset.txt`，真实交给 RKNN-Toolkit2 执行 INT8 build。
+- output publication、generation fencing、server-confirm 与 deployment job artifact truth 完全复用已 CLOSED 的 RKNN FP16 链路。
+- INT8 成功仍是 `converted_unverified`，必须经过真实匹配板卡 RKNNLite task 才能设置 `hardware_verified=true`。
+- 产品 UI 已加入 INT8 校准数据集 / split / count，并按 resource `supported_precisions` 动态启用。
+- Remote Conversion 专项永久覆盖 calibration snapshot、Agent 下载/校验、API 无残留失败以及 Real Chrome INT8 提交。
+
+永久验收（代码 HEAD `314757c1601420640acedc074e9aeb795e8a2097`）：
+
+- Remote Conversion Runtime `35340943761`：control-plane / Ubuntu / Windows / Real Chrome success。
+- Remote RKNN Board Runtime Protocol `35340943851`：success。
+- Node Agent Executor `35340943850`、Central Node Assignment `35340943861`：success。
+- Task Runtime Truth `35340943758`、Portable Deployment `35340943913`：success。
+- Remote Material Import `35340943781`、Remote Training `35340943764`、Remote Cleaning `35340943815`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
+**仍然 OPEN：**
+
+1. 真实用户自有 RK3568 / RK3576 板卡现场 acceptance；CI 只证明软件协议。
+2. 若现场所谓“RK3578”设备存在，必须先读取真实 SoC compatible，再决定映射，不能直接当 RK3576。
+3. COCO/VOC Agent server_zip 仍未关闭。
+4. TensorRT / Sophon / Ascend 暂不推进。
+
+**下一主线：Rockchip 实机接入与 acceptance 工具链。**
+
+目标：把 Rockchip 板端 Agent 的安装、配置、SoC/RKNNLite 探测、服务注册、诊断和真实模型验收流程产品化/脚本化；继续复用现有 `deployment-test.rknn` durable truth，不新增第二套板端验证系统。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

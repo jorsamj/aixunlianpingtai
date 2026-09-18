@@ -289,9 +289,46 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 
 **重要边界：以上是软件协议/产品闭环验收，不等于你们手上的真实 RK3568 / RK3576 设备已经完成硬件验收。** CI 没有真实 Rockchip NPU 板卡；实际设备接入 Agent 后仍需至少执行一次真实板端任务，才能对该具体模型写入 `hardware_verified=true`。
 
-**当前主线：Rockchip RKNN INT8 calibration portable transport。**
+# 最新关闭：Rockchip RKNN INT8 calibration portable transport
 
-继续只做瑞芯微，不扩 TensorRT / Sophon / Ascend。下一阶段让 Agent RKNN conversion 支持真实 INT8 校准数据 transport：冻结 calibration selection/snapshot、只传 verified calibration image refs/对象、节点生成 RKNN calibration dataset、执行真实 RKNN-Toolkit2 INT8 build，并保留与 FP16 相同的 generation fencing、size/SHA256、server-confirm 与产物 truth。真实板卡硬件验收在设备接入后单独执行。
+2026-09-18，Remote RKNN INT8 calibration 已完成真实 portable Agent 闭环并 CLOSED。
+
+当前真实能力：
+
+- Rockchip Agent 资源通过后端 `supported_precisions` 暴露真实可用精度；当前远程 RKNN 正式支持 **FP16 / INT8**，不再由前端自行猜测。
+- 用户选择 INT8 时必须明确校准数据集、split 与图片数量；创建任务前控制面冻结 calibration snapshot。
+- snapshot 持久化：
+  - dataset_id / split
+  - MaterialRepository revision
+  - 精确 image_id / storage_source_id / object_key
+  - size_bytes / SHA256 / ETag
+  - requested_count / item_count
+- calibration image 必须来自可 portable 的 OSS / S3 / MinIO；本地路径、缺 SHA256/size、对象内容变化都会在 durable task 创建前 fail closed。
+- Agent start payload 不包含控制面本地目录、SQLite/NFS 或长期对象存储凭据；每张校准图只获得短期 GET contract。
+- Agent 逐张下载并校验 size / SHA256，写入本次 generation workdir 的 calibration 目录。
+- Agent 再校验 `calibration_snapshot + calibration_count + 实际文件数` 一致后，才允许启动 node-local `deployment_worker.py`。
+- `deployment_worker.py` 从冻结图片生成 `rknn_dataset.txt`，真实执行 RKNN-Toolkit2 INT8 build；没有真实校准图片时拒绝转换。
+- INT8 输出仍走既有 generation-scoped immutable upload → size/SHA256 → server-confirm → deployment job commit，不产生第二套 RKNN 产物 truth。
+- INT8 与 FP16 的转换结果都保持 `converted_unverified / hardware_verified=false`；必须经过已 CLOSED 的匹配 Rockchip 板端 RKNNLite 任务后才能升级为 `hardware_verified=true`。
+- 部署中心已正式开放 RKNN Agent INT8：仅资源 truth 包含 `int8` 时可选；UI 展示校准数据集、分组、数量，并真实提交到后端。
+- Real Chrome 已覆盖：选择 Rockchip Agent → INT8 → 校准数据集/split/count → 创建 durable conversion task。
+
+最终验收（代码 HEAD `314757c1601420640acedc074e9aeb795e8a2097`）：
+
+- Remote Conversion Runtime `35340943761`：control-plane / Ubuntu / Windows / Real Chrome 全绿。
+- Remote RKNN Board Runtime Protocol `35340943851`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35340943850`：全绿。
+- Central Node Assignment `35340943861`：全绿。
+- Task Runtime Truth `35340943758`：全绿。
+- Portable Deployment `35340943913`：全绿。
+- Remote Material Import `35340943781`：全绿。
+- Remote Training Runtime `35340943764`：全绿。
+- Remote Cleaning Runtime `35340943815`：全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**当前主线：Rockchip 实机接入与 acceptance 工具链。**
+
+继续只聚焦瑞芯微，不扩 TensorRT / Sophon / Ascend。下一阶段围绕你们已有 RK3568 / 实际 Rockchip 设备，把“安装 Node Agent → 自动识别真实 SoC / RKNNLite → 上报 deployment-test.rknn → 运行真实 .rknn 模型 → 输出 acceptance 结果”做成可重复部署/诊断流程。CI 仍不能冒充真实 NPU 硬件验收；只有实际板卡成功执行后，具体模型才允许写 `hardware_verified=true`。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
