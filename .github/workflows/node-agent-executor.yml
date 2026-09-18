@@ -11,6 +11,7 @@ on:
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/remote_training_results.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/node_agent_executor_loop.py'
@@ -26,6 +27,7 @@ on:
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_remote_training_results.py'
       - 'tests/unit/test_model_artifacts.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -44,6 +46,7 @@ on:
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_conversion_runtime.py'
       - 'platform_core/remote_training_results.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/node_agent_executor_loop.py'
@@ -59,6 +62,7 @@ on:
       - 'tests/unit/test_node_agent_executor_runtime.py'
       - 'tests/unit/test_node_agent_deployment_runtime.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_remote_training_results.py'
       - 'tests/unit/test_model_artifacts.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
@@ -91,6 +95,7 @@ jobs:
           platform_core/node_agent_executor_runtime.py
           platform_core/node_agent_deployment_runtime.py
           platform_core/node_agent_training_runtime.py
+          platform_core/node_agent_conversion_runtime.py
           platform_core/remote_training_results.py
           platform_core/model_artifacts.py
           platform_core/node_agent_executor_loop.py
@@ -106,6 +111,7 @@ jobs:
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_node_agent_conversion_runtime.py
           tests/unit/test_remote_training_results.py
           tests/unit/test_model_artifacts.py
           tests/unit/test_node_agent_executor_loop.py
@@ -119,6 +125,7 @@ jobs:
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_deployment_runtime.py
           tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_node_agent_conversion_runtime.py
           tests/unit/test_remote_training_results.py
           tests/unit/test_model_artifacts.py
           tests/unit/test_node_agent_executor_loop.py
@@ -177,6 +184,10 @@ jobs:
           grep -Fq 'prepare-after-local-hash-v1' platform_core/node_agent_deployment_runtime.py
           grep -Fq 'ProcessController' platform_core/node_agent_deployment_runtime.py
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
+          grep -Fq 'class AgentConversionRunner' platform_core/node_agent_conversion_runtime.py
+          grep -Fq 'prepare-after-local-hash-v1' platform_core/node_agent_conversion_runtime.py
+          ! grep -Fq 'sqlite3' platform_core/node_agent_conversion_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_conversion_runtime.py
           grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
           grep -Fq 'include_model_bytes=False' platform_core/node_agent_training_runtime.py
           grep -Fq 'training-models/prepare' platform_core/agent_execution.py
@@ -188,8 +199,8 @@ jobs:
           ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_deployment_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_deployment_runtime.py
-          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test", "training"})' platform_core/node_agent_executor_loop.py
-          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "TRAINING"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"conversion", "deployment-test", "training"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "MODEL_CONVERSION", "TRAINING"})' platform_core/node_agent_executor_loop.py
           grep -Fq 'NodeAgentExecutorLoop' node_agent.py
           grep -Fq 'reported_capabilities = executable_agent_capabilities(requested_capabilities)' node_agent.py
           grep -Fq 'executor.start()' node_agent.py
