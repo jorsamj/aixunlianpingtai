@@ -167,6 +167,21 @@ def task_remote_execution_contract(task, artifacts) -> dict[str, Any] | None:
     }
 
 
+def task_node_connection_mode(task, artifacts) -> str | None:
+    """Return an explicit node connection-mode requirement when product intent demands it."""
+    if task.kind is not TaskKind.TRAINING:
+        return None
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if str(payload.get("target") or "local").strip().lower() == "remote":
+        return "agent"
+    return None
+
+
 def _online_nodes(
     database,
     capability: str,
@@ -174,6 +189,7 @@ def _online_nodes(
     now: datetime,
     ttl_seconds: int,
     remote_contract: Mapping[str, Any] | None,
+    required_connection_mode: str | None = None,
 ):
     rows = database.execute(
         "SELECT * FROM service_nodes WHERE enabled=1 AND last_heartbeat_at IS NOT NULL"
@@ -188,6 +204,8 @@ def _online_nodes(
         if capability not in allowed or capability not in reported:
             continue
         connection_mode = str(row["connection_mode"] or "").strip().lower()
+        if required_connection_mode and connection_mode != required_connection_mode:
+            continue
         if connection_mode == "agent" and remote_contract is None:
             # Fail closed: existing task payloads commonly contain absolute
             # control-plane paths. Never turn those into a fake remote job.
@@ -297,12 +315,14 @@ class CentralTaskAllocator:
                 if capability is None:
                     continue
                 remote_contract = task_remote_execution_contract(task, self.artifacts)
+                required_connection_mode = task_node_connection_mode(task, self.artifacts)
                 nodes = _online_nodes(
                     database,
                     capability,
                     now=current,
                     ttl_seconds=self.heartbeat_ttl_seconds,
                     remote_contract=remote_contract,
+                    required_connection_mode=required_connection_mode,
                 )
                 if not nodes:
                     continue
@@ -503,5 +523,6 @@ __all__ = [
     "central_scheduler_router",
     "ensure_task_node_assignment_schema",
     "task_node_capability",
+    "task_node_connection_mode",
     "task_remote_execution_contract",
 ]
