@@ -590,6 +590,15 @@ class RemoteTrainingPrepareHandler:
                     "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                     "bundle": bundle_ref,
                     "model": model_ref,
+                    "result": {
+                        "storage_source_id": str(source.id),
+                        "object_key": (
+                            f"remote-execution/{_safe_segment(target.project_id, 'project')}/"
+                            f"{_safe_segment(training_task_id, 'task')}/training-result.zip"
+                        ),
+                        "file_name": "training-result.zip",
+                        "content_type": "application/zip",
+                    },
                     "params": _portable_params(payload),
                     "counts": dict(getattr(split_manifest, "counts", {}) or {}),
                     "selected_image_count": len(images),
