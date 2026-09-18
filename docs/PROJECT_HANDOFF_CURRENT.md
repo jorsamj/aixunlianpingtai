@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`3927fbc65f094b4ee78e3b33e651967e7ac1a38f`  
+本轮产品实现基线：`023961f0b3eb536263fc50482f4ffa9dec6a4db9`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -63,45 +63,41 @@ revert: keep external algorithm integration off main
 ---
 
 
-# 最新关闭：Remote MATERIAL_IMPORT Phase 1
+# 最新关闭：Remote MATERIAL_IMPORT Phase 2
 
-2026-09-18，第四个真实跨机器 task kind 的第一阶段已 CLOSED：
+2026-09-18，第四个真实跨机器 task kind 的第二阶段已 CLOSED。
+
+已完成范围：
 
 ```text
 MATERIAL_IMPORT
-server_zip + execution_mode=agent + import_format=images
+server_zip + execution_mode=agent
+import_format=images | yolo
 ```
 
-当前真实能力：
+Phase 2 新增真实能力：
 
-- API 可显式创建 Agent ZIP 图片导入；目标必须是 OSS/S3/MinIO。
-- durable task 使用 `agent.remote` fence，本地 storage worker 不会提前领取。
-- Agent 无中央 SQLite/NFS/对象存储长期凭据。
-- 输入 ZIP 经 signed GET 下载并验证 size/SHA256。
-- ZIP 安全解包继续复用现有 Zip Slip / symlink / bomb / CRC / 磁盘空间防护。
-- Agent 生成 server-confirmed review ZIP：候选 metadata + importable 文件内容。
-- result 使用 generation-scoped immutable PUT + server confirm。
-- 控制面二次校验 review ZIP、候选目标前缀、图片 SHA/size/dimensions，写 task-owned candidate/staging truth。
-- 任务进入 `AWAITING_CONFIRMATION` 后才允许用户确认。
-- 确认后原子切回 `storage.import`，本地 indexer 只发布最终选中的对象到目标存储。
-- 目标对象发布后再验证 SHA/size，最后写 MaterialRepository。
-- Agent capability 已真实包含 `material-import`，对应 runner 已进入 Node Agent 永久 CI。
+- Agent 复用 `YoloImportScanner` 解析 `data.yaml / images / labels`。
+- review ZIP 新增 `yolo/annotations.jsonl`，包含 split、label sidecar、annotation status、normalized boxes、issues。
+- 控制面在进入待确认前重新校验 classes / dataset_yaml / boxes / normalized 坐标 / candidate 覆盖完整性。
+- task-owned ImportCandidateStore 保存 external classes 和 annotation evidence。
+- 用户确认时冻结 `label_mapping/create_labels/quality acceptance`。
+- local indexer 发布选中图片后，将 YOLO normalized boxes 转为像素坐标并写 AnnotationRepository。
+- `confirmed_empty` 作为正式负样本写入；invalid/missing sidecar 不会擦除已有标注。
+- Agent YOLO API 已作为支持能力，不再被旧测试当成 unimplemented。
+- 永久 CI 增加源码 guard 和 Agent YOLO→label mapping→AnnotationRepository 端到端 integration。
 
 最终验收：
 
-- Remote Material Import `35308672897`：API / Ubuntu / Windows 全绿。
-- Node Agent Executor `35308672844`：API / Ubuntu / Windows 全绿。
-- Portable Deployment `35308672842`：API / Ubuntu / Windows 全绿。
-- Central Node Assignment `35308672962`：API / Ubuntu / Windows 全绿。
-- 临时 draft PR #16 已关闭，未 merge。
+- Remote Material Import `35311171823`：API / Ubuntu / Windows 全绿。
+- 临时 draft PR #17 已关闭，未 merge。
 - `VERSION.txt = 42.24.0` 未修改。
 
-**当前主线：Remote MATERIAL_IMPORT Phase 2 — YOLO 标签解析与转换。**
+Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效，不重做。
 
-不要重复 Phase 1。下一阶段基于同一个 review bundle 扩展 `import_format=yolo`：
-Agent 解析 dataset YAML / image-label pairing / YOLO boxes，server-confirm annotation evidence；用户确认 label mapping 后由本地 indexer 写 AnnotationRepository。随后再做 storage_scan 和 staging object 生命周期清理。
+**当前主线：Remote MATERIAL_IMPORT Phase 3 — staging object lifecycle / GC。**
 
-**当前未 CLOSED：** storage_scan remote、YOLO/COCO/VOC remote annotation、staging object GC。
+优先清理远程导入产生的 source ZIP / review ZIP 临时对象，但必须保留运行中、待确认、retry 和审计所需证据。GC 只能基于 task-owned object refs 精确删除，禁止 prefix 盲删，禁止删除正式 MaterialRepository 的目标对象。随后再扩展 Agent `storage_scan`，再考虑 COCO/VOC。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
