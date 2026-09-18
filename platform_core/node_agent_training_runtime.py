@@ -281,23 +281,26 @@ class AgentTrainingRunner:
         except ProcessLookupError:
             pass
         except PermissionError as error:
+            self._recovery_error = (
+                "training process cleanup could not be verified: "
+                f"{type(error).__name__}: {error}"
+            )
             if strict:
-                raise RemoteExecutionFenced(
-                    "training process cleanup could not be verified: "
-                    f"{type(error).__name__}: {error}"
-                ) from error
+                raise RemoteExecutionFenced(self._recovery_error) from error
             return False
         if lease is not None:
             try:
                 self.workdirs.clear_process_identity(lease)
             except (OSError, ValueError) as error:
+                self._recovery_error = (
+                    "training process identity cleanup could not be persisted: "
+                    f"{type(error).__name__}: {error}"
+                )
                 if strict:
-                    raise RemoteExecutionFenced(
-                        "training process identity cleanup could not be persisted: "
-                        f"{type(error).__name__}: {error}"
-                    ) from error
+                    raise RemoteExecutionFenced(self._recovery_error) from error
                 return False
         self._clear_active_process()
+        self._recovery_error = ""
         return True
 
     def request_shutdown(self) -> None:
