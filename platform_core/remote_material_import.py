@@ -339,13 +339,13 @@ def build_yolo_material_review_archive(
         else ""
     )
     provider = LocalStorageProvider("agent-yolo-review", root)
-    local_store_path = Path(
-        tempfile.mkstemp(
-            dir=Path(destination).expanduser().resolve().parent,
-            prefix=".yolo-review.",
-            suffix=".sqlite3",
-        )[1]
+    local_fd, local_name = tempfile.mkstemp(
+        dir=Path(destination).expanduser().resolve().parent,
+        prefix=".yolo-review.",
+        suffix=".sqlite3",
     )
+    os.close(local_fd)
+    local_store_path = Path(local_name)
     # sqlite creates the database itself. Remove the mkstemp placeholder so
     # ImportCandidateStore owns schema creation from an empty path.
     local_store_path.unlink(missing_ok=True)
