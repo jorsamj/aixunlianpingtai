@@ -13,10 +13,13 @@ on:
       - 'platform_core/node_agent_material_runtime.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/remote_material_import.py'
+      - 'platform_core/remote_material_lifecycle.py'
+      - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
@@ -35,10 +38,13 @@ on:
       - 'platform_core/node_agent_material_runtime.py'
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/remote_material_import.py'
+      - 'platform_core/remote_material_lifecycle.py'
+      - 'task_worker.py'
       - 'platform_core/storage/import_tasks.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_material_runtime.py'
       - 'tests/unit/test_remote_material_import.py'
+      - 'tests/unit/test_remote_material_lifecycle.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
@@ -72,9 +78,12 @@ jobs:
           platform_core/node_agent_material_runtime.py
           platform_core/remote_execution_transport.py
           platform_core/remote_material_import.py
+          platform_core/remote_material_lifecycle.py
           platform_core/storage/import_tasks.py
+          task_worker.py
           tests/unit/test_node_agent_material_runtime.py
           tests/unit/test_remote_material_import.py
+          tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
@@ -84,6 +93,7 @@ jobs:
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_node_agent_material_runtime.py
           tests/unit/test_remote_material_import.py
+          tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
@@ -139,6 +149,14 @@ jobs:
           grep -Fq 'commit_material_review_archive' platform_core/remote_execution_transport.py
           grep -Fq 'material_staging_ref' platform_core/remote_material_import.py
           grep -Fq '_remote_material_publisher' platform_core/storage/import_tasks.py
+          grep -Fq 'class RemoteMaterialStagingLifecycle' platform_core/remote_material_lifecycle.py
+          grep -Fq 'REMOTE_MATERIAL_STAGING_RETENTION_SECONDS' platform_core/remote_material_lifecycle.py
+          grep -Fq 'provider.delete(key)' platform_core/remote_material_lifecycle.py
+          grep -Fq 'RemoteMaterialStagingGCReporter' task_worker.py
+          grep -Fq 'instance_lease.add_renew_hook(material_gc_reporter.report)' task_worker.py
+          grep -Fq 'remote_staging_cleanup' platform_core/remote_execution_transport.py
+          ! grep -Fq 'list_objects(' platform_core/remote_material_lifecycle.py
+          ! grep -Fq 'delete_prefix' platform_core/remote_material_lifecycle.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_material_runtime.py
           ! grep -Fq 'sqlite3' platform_core/node_agent_material_runtime.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
