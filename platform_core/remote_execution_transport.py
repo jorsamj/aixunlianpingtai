@@ -22,6 +22,11 @@ from .remote_training_results import (
     RemoteTrainingResultError,
     verify_training_result_archive,
 )
+from .remote_material_import import (
+    RemoteMaterialImportError,
+    commit_material_review_archive,
+)
+from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
 
@@ -91,6 +96,7 @@ class RemoteExecutionTransportService:
         storage_credentials_factory,
         provider_factory: Callable[[str, object, Mapping[str, str]], object] | None = None,
         model_artifacts: ModelArtifactService | None = None,
+        task_artifacts=None,
     ):
         self.data_dir = Path(data_dir)
         self.project_dir = project_dir
@@ -98,6 +104,7 @@ class RemoteExecutionTransportService:
         self.storage_sources_factory = storage_sources_factory
         self.storage_credentials_factory = storage_credentials_factory
         self.provider_factory = provider_factory
+        self.task_artifacts = task_artifacts
         self.model_artifacts = model_artifacts or ModelArtifactService(
             data_dir=self.data_dir,
             project_dir=self.project_dir,
@@ -364,6 +371,118 @@ class RemoteExecutionTransportService:
                     "object_key": output_key,
                     "file_name": "result.jpg",
                     "content_type": "image/jpeg",
+                },
+            },
+        }
+
+    def stage_material_import(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        archive_path: str | Path,
+        storage_source_id: str,
+        target_prefix: str,
+        import_format: str = "images",
+    ) -> dict[str, Any]:
+        if str(import_format or "images").strip().lower() != "images":
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
+                "portable Agent material import currently supports image ZIP review only",
+                422,
+            )
+        prefix = safe_member_path(str(target_prefix or "").strip()).as_posix()
+        source_id = str(storage_source_id or "").strip()
+        source = self.storage_sources_factory().get(source_id)
+        if source is None or not source.enabled:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_STORAGE_UNAVAILABLE",
+                "target material object storage source is unavailable",
+                409,
+            )
+        try:
+            storage_type = StorageType.parse(source.type)
+        except ValueError as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_STORAGE_INVALID",
+                "target material storage type is invalid",
+                422,
+            ) from error
+        if storage_type not in {StorageType.OSS, StorageType.S3}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_STORAGE_NOT_PORTABLE",
+                "Agent material import requires OSS/S3/MinIO target storage",
+                422,
+            )
+        archive = Path(archive_path).expanduser().resolve()
+        if not archive.is_file() or archive.suffix.lower() != ".zip" or archive.stat().st_size <= 0:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_ARCHIVE_INVALID",
+                "material import source must be a non-empty ZIP file",
+                422,
+            )
+        digest = _sha256(archive)
+        safe_project = _safe_segment(project_id, "project")
+        safe_task = _safe_segment(task_id, "task")
+        input_key = "/".join((
+            _REMOTE_PREFIX,
+            safe_project,
+            safe_task,
+            "material-input",
+            f"{digest[:16]}-{_safe_segment(archive.name, 'materials.zip')}",
+        ))
+        output_key = "/".join((
+            _REMOTE_PREFIX,
+            safe_project,
+            safe_task,
+            "material-review",
+            "review.zip",
+        ))
+        provider = self._provider(str(project_id), source)
+        if provider.exists(input_key):
+            metadata = provider.stat(input_key)
+        else:
+            metadata = provider.upload(
+                input_key,
+                archive,
+                content_type="application/zip",
+                metadata={"sha256": digest, "purpose": "agent-material-import-input"},
+            )
+        if (
+            int(metadata.size_bytes) != int(archive.stat().st_size)
+            or str(metadata.sha256 or "").strip().lower() != digest
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_ARCHIVE_UPLOAD_INVALID",
+                "staged material ZIP is missing matching size/SHA256 evidence",
+                502,
+            )
+        return {
+            "version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+            "material_import": {
+                "schema_version": 1,
+                "mode": "zip_scan",
+                "import_format": "images",
+                "target": {
+                    "storage_source_id": source_id,
+                    "storage_type": storage_type.value,
+                    "target_prefix": prefix,
+                },
+                "input": self._object_ref(
+                    source_id=source_id,
+                    object_key=input_key,
+                    file_name=archive.name,
+                    size_bytes=int(archive.stat().st_size),
+                    sha256=digest,
+                    content_type="application/zip",
+                ),
+                "output": {
+                    "storage_source_id": source_id,
+                    "object_key": output_key,
+                    "file_name": "material-review.zip",
+                    "content_type": "application/zip",
                 },
             },
         }
@@ -792,6 +911,109 @@ class RemoteExecutionTransportService:
                 422,
             )
         return remote, deployment
+
+    @staticmethod
+    def _material_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        if str(getattr(task.kind, "value", task.kind)) != "MATERIAL_IMPORT":
+            raise RemoteExecutionTransportError(
+                "REMOTE_TASK_KIND_UNSUPPORTED",
+                "portable material import transport requires a MATERIAL_IMPORT task",
+                409,
+            )
+        remote = payload.get("remote_execution")
+        if not isinstance(remote, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_MISSING",
+                "portable material import contract is missing",
+                409,
+            )
+        if (
+            int(remote.get("version") or 0) != 1
+            or str(remote.get("task_kind") or "") != "MATERIAL_IMPORT"
+            or str(remote.get("transport") or "") != "object-storage-v1"
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable material import contract is invalid",
+                422,
+            )
+        material = remote.get("material_import")
+        if not isinstance(material, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable material import payload is missing",
+                422,
+            )
+        target = material.get("target")
+        if (
+            int(material.get("schema_version") or 0) != 1
+            or str(material.get("mode") or "") != "zip_scan"
+            or str(material.get("import_format") or "") != "images"
+            or not isinstance(target, Mapping)
+            or not str(target.get("storage_source_id") or "").strip()
+            or not str(target.get("storage_type") or "").strip()
+            or not str(target.get("target_prefix") or "").strip()
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable material import identity is invalid",
+                422,
+            )
+        safe_member_path(str(target.get("target_prefix") or ""))
+        return remote, material
+
+    def _resolve_material_execution_payload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        assignment: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, material = self._material_remote(task, payload)
+        input_ref = material.get("input")
+        output_ref = material.get("output")
+        target = material.get("target")
+        if (
+            not isinstance(input_ref, Mapping)
+            or not isinstance(output_ref, Mapping)
+            or not isinstance(target, Mapping)
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable material input/output references are incomplete",
+                422,
+            )
+        return {
+            "schema_version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+            "mode": "zip_scan",
+            "import_format": "images",
+            "target": {
+                "storage_source_id": str(target.get("storage_source_id") or ""),
+                "storage_type": str(target.get("storage_type") or ""),
+                "target_prefix": safe_member_path(
+                    str(target.get("target_prefix") or "")
+                ).as_posix(),
+            },
+            "input": {
+                "type": "object",
+                "download": self._download_contract(
+                    str(task.project_id),
+                    input_ref,
+                    require_server_sha256=True,
+                ),
+            },
+            "output": {
+                "type": "object",
+                "storage_ref": {
+                    "storage_source_id": str(output_ref.get("storage_source_id") or ""),
+                    "object_key": str(output_ref.get("object_key") or ""),
+                    "file_name": Path(str(output_ref.get("file_name") or "material-review.zip")).name,
+                    "content_type": "application/zip",
+                },
+                "upload_protocol": "prepare-after-local-hash-v1",
+            },
+        }
 
     @staticmethod
     def _training_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
@@ -1459,6 +1681,9 @@ class RemoteExecutionTransportService:
         if kind == "MODEL_CONVERSION":
             _remote, conversion = self._conversion_remote(task, payload)
             output_ref = conversion.get("output")
+        elif kind == "MATERIAL_IMPORT":
+            _remote, material = self._material_remote(task, payload)
+            output_ref = material.get("output")
         else:
             _remote, deployment = self._deployment_remote(task, payload)
             output_ref = deployment.get("output")
@@ -1513,9 +1738,13 @@ class RemoteExecutionTransportService:
         if kind == "TRAINING":
             return self._confirm_training_result_upload(task, payload, evidence)
         conversion = None
+        material = None
         if kind == "MODEL_CONVERSION":
             _remote, conversion = self._conversion_remote(task, payload)
             output_ref = conversion.get("output")
+        elif kind == "MATERIAL_IMPORT":
+            _remote, material = self._material_remote(task, payload)
+            output_ref = material.get("output")
         else:
             _remote, deployment = self._deployment_remote(task, payload)
             output_ref = deployment.get("output")
@@ -1579,6 +1808,19 @@ class RemoteExecutionTransportService:
                     conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
                 ),
                 "runtime_verified": str(conversion.get("target") or "") == "onnx",
+            })
+        elif kind == "MATERIAL_IMPORT" and isinstance(material, Mapping):
+            target = material.get("target")
+            target = dict(target) if isinstance(target, Mapping) else {}
+            result.update({
+                "mode": "zip_scan",
+                "import_format": "images",
+                "target": {
+                    "storage_source_id": str(target.get("storage_source_id") or ""),
+                    "storage_type": str(target.get("storage_type") or ""),
+                    "target_prefix": str(target.get("target_prefix") or ""),
+                },
+                "review_verified": True,
             })
         else:
             result.update({
@@ -2078,6 +2320,84 @@ class RemoteExecutionTransportService:
         finally:
             lock.release()
 
+    def _commit_material_import_result(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.task_artifacts is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_ARTIFACT_STORE_UNAVAILABLE",
+                "control-plane task artifact store is not configured",
+                500,
+            )
+        _remote, material = self._material_remote(task, payload)
+        target = material.get("target")
+        result = confirmed.get("result")
+        if not isinstance(target, Mapping) or not isinstance(result, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified material review metadata is missing",
+                500,
+            )
+        storage_ref = result.get("output_storage")
+        if not isinstance(storage_ref, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "verified material review object reference is missing",
+                500,
+            )
+        generation = _positive_int(
+            evidence.get("execution_generation"),
+            "result.execution_generation",
+        )
+        _source, provider = self._source_provider(str(task.project_id), storage_ref)
+        archive_ref = (
+            f"remote-material/generation-{generation}/review-source.zip"
+        )
+        archive_path = self.task_artifacts.artifact_path(
+            str(task.task_id),
+            archive_ref,
+        )
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = archive_path.with_name(f".{archive_path.name}.download")
+        temporary.unlink(missing_ok=True)
+        try:
+            provider.download(str(storage_ref.get("object_key") or ""), temporary)
+            if (
+                int(temporary.stat().st_size) != int(evidence.get("size_bytes") or 0)
+                or _sha256(temporary) != str(evidence.get("sha256") or "").lower()
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_MATERIAL_REVIEW_CHANGED",
+                    "downloaded material review object does not match confirmed evidence",
+                    409,
+                )
+            temporary.replace(archive_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        try:
+            return commit_material_review_archive(
+                artifacts=self.task_artifacts,
+                task_id=str(task.task_id),
+                project_id=str(task.project_id),
+                execution_generation=generation,
+                archive_path=archive_path,
+                archive_sha256=str(evidence.get("sha256") or ""),
+                archive_size_bytes=int(evidence.get("size_bytes") or 0),
+                expected_source_id=str(target.get("storage_source_id") or ""),
+                expected_storage_type=str(target.get("storage_type") or ""),
+                expected_prefix=str(target.get("target_prefix") or ""),
+            )
+        except RemoteMaterialImportError as error:
+            raise RemoteExecutionTransportError(
+                error.code,
+                str(error),
+                error.status_code,
+            ) from error
+
     def commit_result_publication(
         self,
         task,
@@ -2090,6 +2410,8 @@ class RemoteExecutionTransportService:
             return self._commit_training_result(task, payload, evidence, confirmed)
         if kind == "MODEL_CONVERSION":
             return self._commit_conversion_result(task, payload, evidence, confirmed)
+        if kind == "MATERIAL_IMPORT":
+            return self._commit_material_import_result(task, payload, evidence, confirmed)
         return {}
 
     def resolve_execution_payload(
@@ -2103,6 +2425,8 @@ class RemoteExecutionTransportService:
             return self._resolve_training_execution_payload(task, payload, assignment)
         if kind == "MODEL_CONVERSION":
             return self._resolve_conversion_execution_payload(task, payload, assignment)
+        if kind == "MATERIAL_IMPORT":
+            return self._resolve_material_execution_payload(task, payload, assignment)
         _remote, deployment = self._deployment_remote(task, payload)
         input_ref = deployment.get("input")
         model_ref = deployment.get("model")
