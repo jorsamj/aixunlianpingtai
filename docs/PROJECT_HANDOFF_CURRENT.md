@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`1cc2feb1d844270d008abcf4f78d5c43657c67da`  
+本轮产品实现基线：`5ca0fc0fca20d1120b96317a3cf0e745dc7b394a`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -86,6 +86,31 @@ revert: keep external algorithm integration off main
 
 **下一步主线：第一个真正 portable 的远程 task kind。优先部署测试。**
 需要复用已有模型资产统一 OSS/S3/MinIO 存储，建立远程输入/输出 transport，让 `node_agent.py` 真正 claim → start → 本机执行 → heartbeat/log/cancel → 上传结果 → finish。训练/素材的大文件仍不得退回共享 SQLite/NFS。
+
+# 最新关闭：Portable Deployment Transport + Hash-bound Result Publication
+
+2026-09-18 已进一步完成：
+
+- 部署测试 durable task 可保存 version-1 `object-storage-v1` portable contract。
+- 输入与项目模型通过统一 OSS / S3 / MinIO 模型资产和对象存储传输；官方模型保持 allow-listed reference。
+- Agent start payload 不包含中央 `input_path / model_path / runner_path / python_path`。
+- 输出 PUT 不在 start 阶段签发；Agent 必须先在本机计算结果 SHA256 + size，再通过 `result-upload/prepare` 申请短期 PUT。
+- S3 / OSS presign 会绑定 Content-Length、SHA256 metadata 和禁止覆盖条件。
+- 结果对象按 execution generation 隔离，旧代 PUT 无法占用新代结果 key。
+- `result-upload/confirm` 由控制面 stat 并验证 size/hash；通过后再走 finalization 原子闸门。
+- cancel 与 result publication 不能同时获胜。
+- `finish(SUCCEEDED)` 不信任 Agent 自报 result_ref，强制使用当前 generation 的 server-confirmed result。
+- signed URL 从不进入 Scheduler truth 或 durable result state。
+
+验收：
+
+- Portable transport：`35292400487` 全绿。
+- Hash-bound result publication：Agent `35295427105`、Portable `35295427110`、Central `35295427100` 全绿。
+- CI 临时 PR #11 / #12 均已关闭，未 merge。
+- `VERSION.txt` 始终保持 `42.24.0`。
+
+**当前唯一主线：Agent-side real deployment runtime。**
+下一步要让 Agent 真正下载并校验输入/模型、启动节点本地推理进程、持续 heartbeat/log/cancel、计算结果 hash、prepare/PUT/confirm、finalize/finish，并在 lease 丢失时精确终止本机进程树。完成真实 Agent runner 并接入 `node_agent.py` 前，不能宣称跨机器部署测试 CLOSED。
 
 # 1. 产品定位
 
