@@ -8,13 +8,17 @@ from pathlib import Path
 
 from PIL import Image
 
+from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.storage import LocalStorageProvider, StorageSourceRepository
 from platform_core.storage.import_candidates import ImportCandidateStore
+from platform_core.storage.import_confirmation import confirm_import
 from platform_core.storage.import_tasks import StorageImportHandler, commit_storage_import
 from platform_core.remote_material_import import (
     REMOTE_MATERIAL_STAGING_REF,
     RemoteMaterialStagingStore,
+    build_yolo_material_review_archive,
+    commit_material_review_archive,
 )
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
@@ -386,3 +390,229 @@ def test_agent_review_handoff_publishes_selected_object_before_material_index(tm
     assert rows[0]["storage_source_id"] == "target-store"
     assert rows[0]["object_key"] == object_key
     assert rows[0]["content_sha256"] == digest
+
+
+def test_agent_yolo_review_label_mapping_writes_annotation_repository(tmp_path):
+    data = tmp_path / "data"
+    project_id = "p-agent-yolo-review"
+    project = data / "projects" / project_id
+    project.mkdir(parents=True)
+    platform_labels = [
+        {"code": "smoke", "display_name": "吸烟", "status": "active"},
+        {"code": "fire", "display_name": "烟火", "status": "active"},
+    ]
+    (project / "meta.json").write_text(
+        json.dumps({
+            "labels": ["smoke", "fire"],
+            "label_meta": platform_labels,
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    source_root = tmp_path / "agent-yolo-source"
+    for relative, color in (
+        ("images/train/positive.jpg", "red"),
+        ("images/val/negative.jpg", "blue"),
+    ):
+        path = source_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(jpg(color))
+    (source_root / "labels/train").mkdir(parents=True)
+    (source_root / "labels/val").mkdir(parents=True)
+    (source_root / "labels/train/positive.txt").write_text(
+        "0 0.5 0.5 0.5 0.5\n1 0.25 0.25 0.25 0.5\n",
+        encoding="utf-8",
+    )
+    (source_root / "labels/val/negative.txt").write_text("", encoding="utf-8")
+    (source_root / "data.yaml").write_text(
+        "path: .\n"
+        "train: images/train\n"
+        "val: images/val\n"
+        "names:\n"
+        "  0: cigarette\n"
+        "  1: flame\n",
+        encoding="utf-8",
+    )
+
+    target_root = tmp_path / "target-store-yolo"
+    provider = LocalStorageProvider("target-yolo", target_root)
+    sources = StorageSourceRepository(data / "storage" / "storage_sources.sqlite3")
+    sources.create({
+        "id": "target-yolo",
+        "name": "target-yolo",
+        "type": "local",
+        "config": {"root": str(target_root)},
+    })
+
+    repository = TaskRepository(data / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(data / "task_runtime" / "artifacts")
+    task_id = "agent-yolo-review"
+    generation = 1
+    target_prefix = "incoming/yolo"
+
+    review = build_yolo_material_review_archive(
+        source_root,
+        tmp_path / "agent-yolo-review.zip",
+        task_id=task_id,
+        project_id=project_id,
+        execution_generation=generation,
+        storage_source_id="target-yolo",
+        storage_type="local",
+        target_prefix=target_prefix,
+        dataset_yaml="data.yaml",
+    )
+    assert review["candidate_count"] == 2
+    assert review["classes"] == [
+        {"class_id": 0, "name": "cigarette"},
+        {"class_id": 1, "name": "flame"},
+    ]
+
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id=task_id,
+        project_id=project_id,
+        execution_generation=generation,
+        archive_path=review["path"],
+        archive_sha256=review["sha256"],
+        archive_size_bytes=review["size_bytes"],
+        expected_source_id="target-yolo",
+        expected_storage_type="local",
+        expected_prefix=target_prefix,
+        expected_import_format="yolo",
+        expected_dataset_yaml="data.yaml",
+        platform_labels=platform_labels,
+    )
+    assert committed["material_review_committed"] is True
+
+    store = ImportCandidateStore(
+        artifacts.artifact_path(task_id, "scan/candidates.sqlite3")
+    )
+    classes = store.external_classes()
+    assert classes == [
+        {"class_id": 0, "name": "cigarette"},
+        {"class_id": 1, "name": "flame"},
+    ]
+    candidate_keys = [
+        row["object_key"]
+        for row in store.iter_status("IMPORTABLE")
+    ]
+    assert len(candidate_keys) == 2
+    candidate_annotations = store.annotations_for_keys(candidate_keys)
+    assert sorted(
+        row["annotation_status"] for row in candidate_annotations.values()
+    ) == ["annotated", "confirmed_empty"]
+
+    confirmation = confirm_import(
+        store,
+        artifacts,
+        task_id,
+        object_keys=candidate_keys,
+        label_mapping={"0": "smoke", "1": "fire"},
+        create_labels=[],
+        accept_quality_report=True,
+        labels=platform_labels,
+        create_label=lambda code: code,
+    )
+    assert confirmation["label_mapping"] == {"0": "smoke", "1": "fire"}
+    assert confirmation["selected_count"] == 2
+
+    result_ref = "remote-results/1/result.json"
+    durable_review = artifacts.artifact_path(
+        task_id,
+        committed["material_review_archive_ref"],
+    )
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "mode": "server_zip",
+        "execution_mode": "agent",
+        "storage_source_id": "target-yolo",
+        "target_prefix": target_prefix,
+        "import_format": "yolo",
+        "dataset_yaml": "data.yaml",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+        },
+    })
+    artifacts.atomic_write_json(task_id, result_ref, {
+        "output_sha256": hashlib.sha256(durable_review.read_bytes()).hexdigest(),
+        "output_size_bytes": durable_review.stat().st_size,
+        "material_review_archive_ref": committed["material_review_archive_ref"],
+        "material_staging_ref": committed["material_staging_ref"],
+    })
+    repository.create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.MATERIAL_IMPORT,
+        "request.json",
+        "material-import:agent:target-yolo",
+        required_capabilities=("agent.remote",),
+    ))
+    lease = repository.claim_next(
+        "agent-yolo-review",
+        (TaskKind.MATERIAL_IMPORT,),
+        {"agent.remote"},
+    )
+    assert lease is not None
+    repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        result_ref,
+    )
+    resumed = repository.resume_after_confirmation(
+        task_id,
+        required_capabilities=("storage.import",),
+    )
+    assert resumed.status is TaskStatus.QUEUED
+
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "local-yolo-indexer",
+        {TaskKind.MATERIAL_IMPORT: StorageImportHandler(data)},
+        {"storage.import"},
+    )
+    assert scheduler.run_once() is True
+    completed = repository.get(task_id)
+    assert completed is not None
+    assert completed.status is TaskStatus.SUCCEEDED
+
+    materials = MaterialRepository(project).read().rows
+    assert len(materials) == 2
+    by_name = {row["filename"]: row for row in materials}
+    positive = by_name["positive.jpg"]
+    negative = by_name["negative.jpg"]
+    assert positive["storage_source_id"] == "target-yolo"
+    assert positive["object_key"] == "incoming/yolo/images/train/positive.jpg"
+    assert negative["object_key"] == "incoming/yolo/images/val/negative.jpg"
+    assert provider.exists(positive["object_key"])
+    assert provider.exists(negative["object_key"])
+
+    annotations = AnnotationRepository(project)
+    positive_ann = annotations.get(positive["id"])
+    negative_ann = annotations.get(negative["id"])
+    assert positive_ann is not None
+    assert positive_ann["annotation_state"] == "annotated"
+    assert [(box["label"], box["class_id"]) for box in positive_ann["boxes"]] == [
+        ("smoke", 0),
+        ("fire", 1),
+    ]
+    # Source image is 32x24. Normalized YOLO boxes must be converted to pixels.
+    smoke_box, fire_box = positive_ann["boxes"]
+    assert (smoke_box["x1"], smoke_box["y1"], smoke_box["x2"], smoke_box["y2"]) == (
+        8.0, 6.0, 24.0, 18.0,
+    )
+    assert (fire_box["x1"], fire_box["y1"], fire_box["x2"], fire_box["y2"]) == (
+        4.0, 0.0, 12.0, 12.0,
+    )
+    assert negative_ann is not None
+    assert negative_ann["annotation_state"] == "confirmed_empty"
+    assert negative_ann["boxes"] == []
+    assert positive["imported_split"] == "train"
+    assert negative["imported_split"] == "val"
+
+    final = artifacts.read_json(task_id, completed.result_ref)
+    assert final["annotations_written"] == 2
+    assert final["boxes_imported"] == 2
+    assert final["negative_samples"] == 1
