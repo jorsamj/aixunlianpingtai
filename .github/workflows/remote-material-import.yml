@@ -7,6 +7,14 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'static/app.js'
+      - 'static/main.mjs'
+      - 'static/index.html'
+      - 'static/modules/server-material-import.js'
+      - 'static/modules/storage-import-progress.js'
+      - 'tests/frontend/server-material-import.test.mjs'
+      - 'tests/frontend/storage-import-progress.test.mjs'
+      - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/node_agent_executor_loop.py'
@@ -32,6 +40,14 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - 'static/app.js'
+      - 'static/main.mjs'
+      - 'static/index.html'
+      - 'static/modules/server-material-import.js'
+      - 'static/modules/storage-import-progress.js'
+      - 'tests/frontend/server-material-import.test.mjs'
+      - 'tests/frontend/storage-import-progress.test.mjs'
+      - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
       - 'platform_core/node_agent_executor_loop.py'
@@ -101,6 +117,14 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_storage_import_worker.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Storage import frontend contracts
+        run: >-
+          node --test
+          tests/frontend/server-material-import.test.mjs
+          tests/frontend/storage-import-progress.test.mjs
 
   api:
     runs-on: ubuntu-24.04
@@ -123,7 +147,7 @@ jobs:
           platform_core/remote_execution_transport.py
           platform_core/remote_material_import.py
           platform_core/storage/import_tasks.py
-      - name: Agent ZIP import API contract
+      - name: Remote material import API contract
         run: >-
           python -m pytest -q
           tests/api/test_server_material_import.py
@@ -132,6 +156,11 @@ jobs:
         run: |
           grep -Fq 'execution_mode: Literal["local", "agent"] = "local"' app.py
           grep -Fq 'stage_material_import(' app.py
+          grep -Fq 'stage_material_storage_scan(' app.py
+          grep -Fq 'material_scan_page_provider' platform_core/agent_execution.py
+          grep -Fq 'build_storage_scan_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'data-import-mode="storage_scan"' static/app.js
+          grep -Fq "execution_mode: 'agent'" static/modules/server-material-import.js
           grep -Fq 'required_capabilities=(' app.py
           grep -Fq '"agent.remote",' app.py
           grep -Fq 'class AgentMaterialImportRunner' platform_core/node_agent_material_runtime.py
@@ -161,3 +190,26 @@ jobs:
           ! grep -Fq 'sqlite3' platform_core/node_agent_material_runtime.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome remote storage import flow
+        run: npx playwright test tests/browser/storage-source.spec.mjs
