@@ -136,6 +136,7 @@ jobs:
         run: >-
           python -m pip install --disable-pip-version-check
           pytest requests fastapi httpx filelock pillow psutil numpy opencv-python-headless
+          pyyaml python-multipart uvicorn
       - name: Cleaning broker API contracts
         run: >-
           python -m pytest -q --confcutdir=tests/api
