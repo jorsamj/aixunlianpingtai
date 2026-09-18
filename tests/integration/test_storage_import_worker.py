@@ -392,6 +392,138 @@ def test_agent_review_handoff_publishes_selected_object_before_material_index(tm
     assert rows[0]["content_sha256"] == digest
 
 
+
+
+def test_agent_storage_scan_indexes_existing_verified_object_without_reupload(tmp_path):
+    data = tmp_path / "data"
+    project_id = "p-agent-storage-scan"
+    project = data / "projects" / project_id
+    project.mkdir(parents=True)
+    (project / "meta.json").write_text('{"labels": []}', encoding="utf-8")
+
+    target_root = tmp_path / "scan-target"
+    provider = LocalStorageProvider("scan-target", target_root)
+    provider.health_check()
+    object_key = "incoming/scan/a.jpg"
+    image = jpg("blue")
+    provider.upload(object_key, BytesIO(image), content_type="image/jpeg")
+    before = provider.stat(object_key)
+
+    sources = StorageSourceRepository(data / "storage" / "storage_sources.sqlite3")
+    sources.create({
+        "id": "scan-target",
+        "name": "scan-target",
+        "type": "local",
+        "config": {"root": str(target_root)},
+    })
+    repository = TaskRepository(data / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(data / "task_runtime" / "artifacts")
+    task_id = "agent-storage-scan"
+    review_ref = "remote-material/generation-1/review.zip"
+    review_path = artifacts.artifact_path(task_id, review_ref)
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(review_path, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("meta.json", "{}")
+    review_sha = hashlib.sha256(review_path.read_bytes()).hexdigest()
+
+    store = ImportCandidateStore(
+        artifacts.artifact_path(task_id, "scan/candidates.sqlite3")
+    )
+    store.upsert_many([{
+        "object_key": object_key,
+        "filename": "a.jpg",
+        "storage_source_id": "scan-target",
+        "storage_type": "local",
+        "content_sha256": before.sha256,
+        "size_bytes": before.size_bytes,
+        "etag": before.etag,
+        "width": 32,
+        "height": 24,
+        "status": "IMPORTABLE",
+        "error": "",
+        "duplicate": False,
+    }])
+    RemoteMaterialStagingStore(
+        artifacts.artifact_path(task_id, REMOTE_MATERIAL_STAGING_REF)
+    ).replace_many([])
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "mode": "storage_scan",
+        "execution_mode": "agent",
+        "storage_source_id": "scan-target",
+        "prefix": "incoming/scan",
+        "recursive": True,
+        "import_format": "images",
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+            "material_import": {
+                "schema_version": 1,
+                "mode": "storage_scan",
+            },
+        },
+    })
+    result_ref = "remote-results/1/result.json"
+    artifacts.atomic_write_json(task_id, result_ref, {
+        "output_sha256": review_sha,
+        "output_size_bytes": review_path.stat().st_size,
+        "material_review_archive_ref": review_ref,
+        "material_staging_ref": REMOTE_MATERIAL_STAGING_REF,
+    })
+    repository.create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.MATERIAL_IMPORT,
+        "request.json",
+        "material-import:agent:scan-target",
+        required_capabilities=("agent.remote",),
+    ))
+    lease = repository.claim_next(
+        "agent-scan",
+        (TaskKind.MATERIAL_IMPORT,),
+        {"agent.remote"},
+    )
+    assert lease is not None
+    repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        result_ref,
+    )
+    selection = store.confirm([object_key])
+    artifacts.atomic_write_json(task_id, "scan/confirmation.json", {
+        "accepted": True,
+        "selection_digest": selection.digest,
+        "selected_count": selection.selected_count,
+        "confirmed_at": selection.confirmed_at,
+    })
+    repository.resume_after_confirmation(
+        task_id,
+        required_capabilities=("storage.import",),
+    )
+
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "local-indexer",
+        {TaskKind.MATERIAL_IMPORT: StorageImportHandler(data)},
+        {"storage.import"},
+    )
+    assert scheduler.run_once() is True
+
+    completed = repository.get(task_id)
+    assert completed is not None
+    assert completed.status is TaskStatus.SUCCEEDED
+    after = provider.stat(object_key)
+    assert after.etag == before.etag
+    assert after.sha256 == before.sha256
+    rows = MaterialRepository(project).read().rows
+    assert len(rows) == 1
+    assert rows[0]["storage_source_id"] == "scan-target"
+    assert rows[0]["object_key"] == object_key
+    assert rows[0]["content_sha256"] == before.sha256
+
+
 def test_agent_yolo_review_label_mapping_writes_annotation_repository(tmp_path):
     data = tmp_path / "data"
     project_id = "p-agent-yolo-review"

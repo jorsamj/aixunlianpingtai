@@ -628,13 +628,56 @@ class StorageImportHandler:
                 raise RuntimeError("verified Agent material review archive hash changed")
 
         from platform_core.remote_material_import import RemoteMaterialStagingStore
+        _source, provider = self._source_and_provider(context, request)
+        remote = request.get("remote_execution")
+        material = remote.get("material_import") if isinstance(remote, dict) else {}
+        remote_mode = (
+            str(material.get("mode") or "zip_scan")
+            if isinstance(material, dict)
+            else "zip_scan"
+        )
+        if remote_mode == "storage_scan":
+            def publish_existing(rows):
+                for row in rows:
+                    if context.cancel_requested():
+                        raise InterruptedError(
+                            "material import cancelled before source verification"
+                        )
+                    key = str(row["object_key"])
+                    if not provider.exists(key):
+                        raise RuntimeError(
+                            "confirmed storage_scan source object is missing"
+                        )
+                    metadata = provider.stat(key)
+                    expected_size = int(row["size_bytes"] or 0)
+                    expected_etag = str(row.get("etag") or "").strip().strip('"')
+                    actual_etag = str(metadata.etag or "").strip().strip('"')
+                    if int(metadata.size_bytes) != expected_size:
+                        raise RuntimeError(
+                            "storage_scan source size changed after review"
+                        )
+                    if (
+                        not expected_etag
+                        or not actual_etag
+                        or expected_etag != actual_etag
+                    ):
+                        raise RuntimeError(
+                            "storage_scan source identity changed after review"
+                        )
+                    actual_sha = str(metadata.sha256 or "").strip().lower()
+                    expected_sha = str(row.get("content_sha256") or "").strip().lower()
+                    if actual_sha and actual_sha != expected_sha:
+                        raise RuntimeError(
+                            "storage_scan source hash changed after review"
+                        )
+            return publish_existing
+
         staging = RemoteMaterialStagingStore(
             context.artifacts.artifact_path(
                 context.task.task_id,
                 staging_ref,
             )
         )
-        _source, provider = self._source_and_provider(context, request)
 
         def publish(rows):
             rows = list(rows)

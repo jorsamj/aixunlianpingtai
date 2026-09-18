@@ -44,6 +44,30 @@ class FakeResponse:
         pass
 
 
+class ScanSession:
+    def __init__(self, image_bytes):
+        self.image_bytes = image_bytes
+        self.uploaded = b""
+        self.put_headers = {}
+
+    def get(self, url, **kwargs):
+        assert url == "https://objects.example.test/a.jpg"
+        return FakeResponse(
+            200,
+            self.image_bytes,
+            {
+                "Content-Length": str(len(self.image_bytes)),
+                "ETag": '"etag-a"',
+            },
+        )
+
+    def put(self, url, *, headers, data, **kwargs):
+        assert url == "https://objects.example.test/review.zip"
+        self.put_headers = dict(headers)
+        self.uploaded = b"".join(data)
+        return FakeResponse(200)
+
+
 class FakeSession:
     def __init__(self, input_bytes):
         self.input_bytes = input_bytes
@@ -68,6 +92,7 @@ class FakeSession:
 class FakeClient:
     def __init__(self):
         self.prepared = None
+        self.scan_image = _image_bytes()
         self.confirmed_runtime = None
         self.finished = []
 
@@ -97,6 +122,34 @@ class FakeClient:
             "confirmed": True,
             "result_ref": "remote-results/1/result.json",
             "result": {},
+        }
+
+    def material_scan_page(self, _lease, *, cursor=None, limit=100):
+        assert cursor is None
+        return {
+            "items": [{
+                "key": "incoming/2026/a.jpg",
+                "size_bytes": len(self.scan_image),
+                "etag": '"etag-a"',
+                "content_type": "image/jpeg",
+                "sha256": "",
+                "last_modified": "1",
+            }],
+            "next_cursor": None,
+        }
+
+    def material_scan_read(self, _lease, object_key):
+        assert object_key == "incoming/2026/a.jpg"
+        return {
+            "method": "GET",
+            "url": "https://objects.example.test/a.jpg",
+            "headers": {},
+            "key": object_key,
+            "size_bytes": len(self.scan_image),
+            "etag": '"etag-a"',
+            "content_type": "image/jpeg",
+            "sha256": "",
+            "last_modified": "1",
         }
 
     def finish(self, _lease, status, **kwargs):
@@ -221,3 +274,69 @@ def test_agent_material_runner_rejects_zip_slip_before_result_publication(tmp_pa
     assert session.uploaded == b""
     assert client.finished[-1][0] == "FAILED"
     assert not (tmp_path / "escape.jpg").exists()
+
+
+
+def test_agent_material_runner_brokered_storage_scan_is_metadata_only(tmp_path):
+    client = FakeClient()
+    session = ScanSession(client.scan_image)
+    runner = AgentMaterialImportRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "agent-state"),
+        transfer_session=session,
+        heartbeat_interval=60,
+    )
+    lease = RemoteExecutionLease(
+        task_id="material-storage-scan",
+        kind="MATERIAL_IMPORT",
+        project_id="project-one",
+        generation=1,
+        lease_token="lease-secret",
+        lease_expires_at="2099-01-01T00:00:00+00:00",
+        worker_id="agent:node-one",
+        payload={
+            "schema_version": 1,
+            "task_kind": "MATERIAL_IMPORT",
+            "transport": "object-storage-v1",
+            "mode": "storage_scan",
+            "import_format": "images",
+            "dataset_yaml": "",
+            "source": {
+                "storage_source_id": "s3-target",
+                "storage_type": "s3",
+                "prefix": "incoming/2026",
+                "recursive": True,
+            },
+            "target": {
+                "storage_source_id": "s3-target",
+                "storage_type": "s3",
+                "target_prefix": "incoming/2026",
+            },
+            "output": {
+                "type": "object",
+                "storage_ref": {
+                    "storage_source_id": "s3-target",
+                    "object_key": "reviews/review.zip",
+                    "file_name": "material-review.zip",
+                    "content_type": "application/zip",
+                },
+                "upload_protocol": "prepare-after-local-hash-v1",
+            },
+        },
+        assignment={},
+        transport={},
+    )
+
+    outcome = runner.run(lease)
+
+    assert outcome.status == "AWAITING_CONFIRMATION"
+    assert client.finished[-1][0] == "AWAITING_CONFIRMATION"
+    with zipfile.ZipFile(io.BytesIO(session.uploaded), "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        row = json.loads(review.read("review.jsonl").decode("utf-8").strip())
+        assert meta["mode"] == "storage_scan"
+        assert meta["payload_mode"] == "source_reference"
+        assert row["object_key"] == "incoming/2026/a.jpg"
+        assert row["etag"] == '"etag-a"'
+        assert row["payload_member"] == ""
+        assert not any(name.startswith("files/") for name in review.namelist())
