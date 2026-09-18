@@ -416,15 +416,20 @@ class RemoteExecutionTransportService:
                 422,
             )
         raw_prefix = str(prefix or "").strip().replace("\\", "/").strip("/")
-        if raw_prefix:
-            try:
-                raw_prefix = safe_member_path(raw_prefix).as_posix()
-            except Exception as error:
-                raise RemoteExecutionTransportError(
-                    "REMOTE_MATERIAL_PREFIX_INVALID",
-                    "storage scan prefix must be a safe relative object prefix",
-                    422,
-                ) from error
+        if not raw_prefix:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_PREFIX_REQUIRED",
+                "Agent storage scan requires an explicit object prefix",
+                422,
+            )
+        try:
+            raw_prefix = safe_member_path(raw_prefix).as_posix()
+        except Exception as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_MATERIAL_PREFIX_INVALID",
+                "storage scan prefix must be a safe relative object prefix",
+                422,
+            ) from error
         yaml_member = str(dataset_yaml or "").strip().replace("\\", "/")
         if yaml_member:
             try:
@@ -2603,6 +2608,7 @@ class RemoteExecutionTransportService:
                 expected_source_id=str(target.get("storage_source_id") or ""),
                 expected_storage_type=str(target.get("storage_type") or ""),
                 expected_prefix=str(target.get("target_prefix") or ""),
+                expected_mode=str(material.get("mode") or "zip_scan"),
                 expected_import_format=str(material.get("import_format") or "images"),
                 expected_dataset_yaml=str(material.get("dataset_yaml") or ""),
                 platform_labels=self._project_label_items(str(task.project_id)),

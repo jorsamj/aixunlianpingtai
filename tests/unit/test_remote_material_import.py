@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -13,10 +14,12 @@ from platform_core.remote_material_import import (
     RemoteMaterialImportError,
     RemoteMaterialStagingStore,
     build_material_review_archive,
+    build_storage_scan_material_review_archive,
     commit_material_review_archive,
 )
 from platform_core.storage.import_candidates import ImportCandidateStore
 from platform_core.storage.import_tasks import MANIFEST_REF, SCAN_RESULT_REF
+from platform_core.storage.models import ObjectMetadata
 from platform_core.task_runtime import ArtifactStore
 
 
@@ -191,3 +194,85 @@ def test_review_commit_rejects_payload_content_tampering_even_when_outer_hash_ma
         "REMOTE_MATERIAL_PAYLOAD_CHANGED",
         "REMOTE_MATERIAL_PAYLOAD_INVALID",
     }
+
+
+
+class _StorageScanReviewProvider:
+    storage_type = "s3"
+
+    def __init__(self, rows, payloads):
+        self.rows = list(rows)
+        self.payloads = dict(payloads)
+
+    def iter_objects(self, prefix="", *, recursive=True):
+        for row in self.rows:
+            if not prefix or row.key == prefix or row.key.startswith(prefix.rstrip("/") + "/"):
+                yield row
+
+    def open_reader(self, key):
+        return io.BytesIO(self.payloads[key])
+
+    def exists(self, key):
+        return key in self.payloads
+
+
+def test_storage_scan_review_is_metadata_only_and_server_verified(tmp_path):
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (24, 18), "purple").save(image_buffer, format="JPEG")
+    image = image_buffer.getvalue()
+    digest = hashlib.sha256(image).hexdigest()
+    provider = _StorageScanReviewProvider(
+        [ObjectMetadata(
+            key="incoming/2026/a.jpg",
+            size_bytes=len(image),
+            etag='"etag-a"',
+            content_type="image/jpeg",
+            sha256=digest,
+        )],
+        {"incoming/2026/a.jpg": image},
+    )
+    archive = tmp_path / "storage-scan-review.zip"
+    built = build_storage_scan_material_review_archive(
+        provider,
+        archive,
+        task_id="storage-scan-review",
+        project_id="project-storage-scan",
+        execution_generation=1,
+        storage_source_id="s3-source",
+        storage_type="s3",
+        prefix="incoming/2026",
+        recursive=True,
+        import_format="images",
+    )
+
+    with zipfile.ZipFile(archive, "r") as review:
+        names = set(review.namelist())
+        meta = json.loads(review.read("meta.json"))
+        row = json.loads(review.read("review.jsonl").decode("utf-8").strip())
+        assert meta["mode"] == "storage_scan"
+        assert meta["payload_mode"] == "source_reference"
+        assert row["object_key"] == "incoming/2026/a.jpg"
+        assert row["content_sha256"] == digest
+        assert row["etag"] == '"etag-a"'
+        assert row["payload_member"] == ""
+        assert not any(name.startswith("files/") for name in names)
+
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id="storage-scan-review",
+        project_id="project-storage-scan",
+        execution_generation=1,
+        archive_path=built["path"],
+        archive_sha256=built["sha256"],
+        archive_size_bytes=built["size_bytes"],
+        expected_source_id="s3-source",
+        expected_storage_type="s3",
+        expected_prefix="incoming/2026",
+        expected_mode="storage_scan",
+        expected_import_format="images",
+    )
+    assert committed["material_review_committed"] is True
+    result = artifacts.read_json("storage-scan-review", "scan/result.json")
+    assert result["mode"] == "agent_storage_scan"
+    assert result["importable_images"] == 1

@@ -312,6 +312,78 @@ def _inspect_local_image(
     return row
 
 
+
+def _inspect_storage_scan_image(
+    provider,
+    item,
+    *,
+    storage_source_id: str,
+    storage_type: str,
+    seen_hashes: set[str],
+) -> dict[str, Any]:
+    key = safe_member_path(str(item.key)).as_posix()
+    row = {
+        "object_key": key,
+        "filename": Path(key).name,
+        "storage_source_id": str(storage_source_id),
+        "storage_type": str(storage_type),
+        "content_sha256": "",
+        "size_bytes": max(0, int(item.size_bytes or 0)),
+        "etag": str(item.etag or ""),
+        "width": 0,
+        "height": 0,
+        "status": "INVALID",
+        "error": "",
+        "duplicate": False,
+        "payload_member": "",
+    }
+    if row["size_bytes"] <= 0 or not row["etag"]:
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_SOURCE_EVIDENCE_MISSING",
+            "storage_scan image is missing size/ETag evidence",
+            409,
+        )
+    try:
+        with closing(provider.open_reader(key)) as stream:
+            with Image.open(stream) as image:
+                width, height = image.size
+                image.verify()
+            stream.seek(0)
+            digest = hashlib.sha256()
+            size = 0
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                size += len(chunk)
+                digest.update(chunk)
+        actual_sha = digest.hexdigest()
+        if size != row["size_bytes"]:
+            raise RemoteMaterialImportError(
+                "REMOTE_MATERIAL_SOURCE_CHANGED",
+                "storage_scan image size changed while it was reviewed",
+                409,
+            )
+        listed_sha = str(item.sha256 or "").strip().lower()
+        if listed_sha and listed_sha != actual_sha:
+            raise RemoteMaterialImportError(
+                "REMOTE_MATERIAL_SOURCE_CHANGED",
+                "storage_scan image hash changed while it was reviewed",
+                409,
+            )
+        duplicate = actual_sha in seen_hashes
+        seen_hashes.add(actual_sha)
+        row.update({
+            "content_sha256": actual_sha,
+            "width": int(width),
+            "height": int(height),
+            "status": "DUPLICATE" if duplicate else "IMPORTABLE",
+            "duplicate": duplicate,
+        })
+    except RemoteMaterialImportError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError):
+        row.update({"status": "INVALID", "error": "IMAGE_DECODE_FAILED"})
+    return row
+
+
 def build_yolo_material_review_archive(
     source_root: str | Path,
     destination: str | Path,
@@ -559,8 +631,347 @@ def build_yolo_material_review_archive(
             Path(str(local_store_path) + suffix).unlink(missing_ok=True)
 
 
+
+def build_storage_scan_material_review_archive(
+    provider,
+    destination: str | Path,
+    *,
+    task_id: str,
+    project_id: str,
+    execution_generation: int,
+    storage_source_id: str,
+    storage_type: str,
+    prefix: str,
+    recursive: bool,
+    import_format: str,
+    dataset_yaml: str = "",
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, int, str], object] | None = None,
+) -> dict[str, Any]:
+    """Build a metadata-only review from an execution-fenced storage broker."""
+    target_prefix = safe_member_path(str(prefix)).as_posix()
+    selected_format = str(import_format or "").strip().lower()
+    if selected_format not in {"images", "yolo"}:
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
+            "storage_scan review supports images or yolo",
+            422,
+        )
+    yaml_key = (
+        safe_member_path(str(dataset_yaml)).as_posix()
+        if str(dataset_yaml or "").strip()
+        else ""
+    )
+    target = Path(destination).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if selected_format == "images":
+        archive_fd, archive_name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp",
+        )
+        os.close(archive_fd)
+        temporary = Path(archive_name)
+        rows_fd, rows_name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.rows.", suffix=".jsonl",
+        )
+        os.close(rows_fd)
+        rows_file = Path(rows_name)
+        counts: dict[str, int] = {}
+        seen_hashes: set[str] = set()
+        candidate_count = 0
+        prefix_path = safe_member_path(target_prefix)
+        try:
+            with rows_file.open("wb") as rows_stream:
+                for item in provider.iter_objects(target_prefix, recursive=bool(recursive)):
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("storage_scan review cancelled")
+                    candidate_count += 1
+                    if candidate_count > _MAX_REVIEW_ROWS:
+                        raise RemoteMaterialImportError(
+                            "REMOTE_MATERIAL_MEMBER_LIMIT",
+                            "storage_scan contains too many objects",
+                            413,
+                        )
+                    key = safe_member_path(str(item.key)).as_posix()
+                    key_path = safe_member_path(key)
+                    if key_path.parts[: len(prefix_path.parts)] != prefix_path.parts:
+                        raise RemoteMaterialImportError(
+                            "REMOTE_MATERIAL_TARGET_MISMATCH",
+                            "storage_scan broker returned an object outside its prefix",
+                            409,
+                        )
+                    if Path(key).suffix.lower() in IMAGE_EXTENSIONS:
+                        row = _inspect_storage_scan_image(
+                            provider,
+                            item,
+                            storage_source_id=storage_source_id,
+                            storage_type=storage_type,
+                            seen_hashes=seen_hashes,
+                        )
+                    else:
+                        row = {
+                            "object_key": key,
+                            "filename": Path(key).name,
+                            "storage_source_id": str(storage_source_id),
+                            "storage_type": str(storage_type),
+                            "content_sha256": str(item.sha256 or "").strip().lower(),
+                            "size_bytes": max(0, int(item.size_bytes or 0)),
+                            "etag": str(item.etag or ""),
+                            "width": 0,
+                            "height": 0,
+                            "status": "SKIPPED",
+                            "error": "",
+                            "duplicate": False,
+                            "payload_member": "",
+                        }
+                    counts[row["status"]] = counts.get(row["status"], 0) + 1
+                    rows_stream.write(
+                        json.dumps(
+                            row,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8") + b"\n"
+                    )
+                    if progress is not None and (
+                        candidate_count == 1 or candidate_count % 100 == 0
+                    ):
+                        progress(candidate_count, 0, key)
+                rows_stream.flush()
+                os.fsync(rows_stream.fileno())
+
+            meta = {
+                "schema_version": REVIEW_SCHEMA_VERSION,
+                "task_id": str(task_id),
+                "project_id": str(project_id),
+                "execution_generation": int(execution_generation),
+                "mode": "storage_scan",
+                "payload_mode": "source_reference",
+                "import_format": "images",
+                "storage_source_id": str(storage_source_id),
+                "storage_type": str(storage_type),
+                "target_prefix": target_prefix,
+                "candidate_count": candidate_count,
+                "counts": counts,
+            }
+            with zipfile.ZipFile(
+                temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True,
+            ) as archive:
+                archive.write(rows_file, arcname=REVIEW_ROWS_MEMBER)
+                archive.writestr(
+                    REVIEW_META_MEMBER,
+                    json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                )
+            if temporary.stat().st_size <= 0:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_REVIEW_EMPTY",
+                    "storage_scan review archive is empty",
+                    409,
+                )
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+            rows_file.unlink(missing_ok=True)
+        return {
+            "path": target,
+            "sha256": _sha256_file(target),
+            "size_bytes": int(target.stat().st_size),
+            "candidate_count": candidate_count,
+            "counts": counts,
+        }
+
+    local_fd, local_name = tempfile.mkstemp(
+        dir=target.parent, prefix=".storage-scan-yolo.", suffix=".sqlite3",
+    )
+    os.close(local_fd)
+    local_store_path = Path(local_name)
+    local_store_path.unlink(missing_ok=True)
+    store = ImportCandidateStore(local_store_path)
+    scanner = YoloImportScanner(
+        provider,
+        store,
+        lambda current, scan_prefix, scan_recursive: current.iter_objects(
+            scan_prefix, recursive=scan_recursive
+        ),
+        cancelled=(cancelled or (lambda: False)),
+        progress=lambda key: (
+            progress(0, 0, str(key)) if progress is not None else None
+        ),
+    )
+    try:
+        try:
+            resolved_format = scanner.prepare(
+                "yolo",
+                prefix=target_prefix,
+                recursive=bool(recursive),
+                dataset_yaml=yaml_key or None,
+            )
+        except YoloScanCancelled as error:
+            raise InterruptedError("storage_scan YOLO review cancelled") from error
+        except YoloImportError as error:
+            raise RemoteMaterialImportError(error.code, error.message, 422) from error
+        if resolved_format != "yolo":
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_DISCOVERY_FAILED",
+                "storage_scan did not resolve a YOLO dataset",
+                422,
+            )
+
+        seen_hashes: set[str] = set()
+        batch: list[dict[str, Any]] = []
+        inspected = 0
+        for item in scanner.iter_images():
+            if cancelled is not None and cancelled():
+                raise InterruptedError("storage_scan YOLO review cancelled")
+            batch.append(_inspect_storage_scan_image(
+                provider,
+                item,
+                storage_source_id=storage_source_id,
+                storage_type=storage_type,
+                seen_hashes=seen_hashes,
+            ))
+            inspected += 1
+            if len(batch) >= 500:
+                store.upsert_many(batch)
+                batch.clear()
+            if progress is not None and (inspected == 1 or inspected % 100 == 0):
+                progress(inspected, 0, str(item.key))
+        if batch:
+            store.upsert_many(batch)
+        try:
+            quality = scanner.scan_annotations()
+        except YoloScanCancelled as error:
+            raise InterruptedError("storage_scan YOLO annotation review cancelled") from error
+        except YoloImportError as error:
+            raise RemoteMaterialImportError(error.code, error.message, 422) from error
+
+        archive_fd, archive_name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp",
+        )
+        os.close(archive_fd)
+        temporary = Path(archive_name)
+        rows_fd, rows_name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.rows.", suffix=".jsonl",
+        )
+        os.close(rows_fd)
+        rows_file = Path(rows_name)
+        ann_fd, ann_name = tempfile.mkstemp(
+            dir=target.parent, prefix=f".{target.name}.annotations.", suffix=".jsonl",
+        )
+        os.close(ann_fd)
+        annotations_file = Path(ann_name)
+        counts: dict[str, int] = {}
+        total = sum(store.counts().values())
+        completed = 0
+        try:
+            with rows_file.open("wb") as rows_stream, annotations_file.open("wb") as ann_stream:
+                page: list[dict[str, Any]] = []
+                for candidate in store.iter_candidates(batch_size=500):
+                    page.append(candidate)
+                    if len(page) < 500:
+                        continue
+                    _write_yolo_review_page(
+                        None,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        [],
+                        counts,
+                        target_prefix,
+                        include_payloads=False,
+                        preserve_object_keys=True,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                    page.clear()
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("storage_scan YOLO review cancelled")
+                if page:
+                    _write_yolo_review_page(
+                        None,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        [],
+                        counts,
+                        target_prefix,
+                        include_payloads=False,
+                        preserve_object_keys=True,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                rows_stream.flush()
+                os.fsync(rows_stream.fileno())
+                ann_stream.flush()
+                os.fsync(ann_stream.fileno())
+
+            classes = store.label_mapping_rows()
+            meta = {
+                "schema_version": REVIEW_SCHEMA_VERSION,
+                "task_id": str(task_id),
+                "project_id": str(project_id),
+                "execution_generation": int(execution_generation),
+                "mode": "storage_scan",
+                "payload_mode": "source_reference",
+                "import_format": "yolo",
+                "storage_source_id": str(storage_source_id),
+                "storage_type": str(storage_type),
+                "target_prefix": target_prefix,
+                "candidate_count": total,
+                "counts": counts,
+                "dataset_yaml": str(scanner.yaml_key or ""),
+                "classes": [
+                    {"class_id": int(row["class_id"]), "name": str(row["name"])}
+                    for row in classes
+                ],
+                "quality": quality,
+            }
+            with zipfile.ZipFile(
+                temporary, "w", compression=zipfile.ZIP_STORED, allowZip64=True,
+            ) as archive:
+                archive.write(rows_file, arcname=REVIEW_ROWS_MEMBER)
+                archive.write(annotations_file, arcname=REVIEW_ANNOTATIONS_MEMBER)
+                archive.writestr(
+                    REVIEW_META_MEMBER,
+                    json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                )
+            if temporary.stat().st_size <= 0:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_REVIEW_EMPTY",
+                    "storage_scan YOLO review archive is empty",
+                    409,
+                )
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+            rows_file.unlink(missing_ok=True)
+            annotations_file.unlink(missing_ok=True)
+
+        return {
+            "path": target,
+            "sha256": _sha256_file(target),
+            "size_bytes": int(target.stat().st_size),
+            "candidate_count": total,
+            "counts": counts,
+            "dataset_yaml": str(scanner.yaml_key or ""),
+            "quality": quality,
+            "classes": [
+                {"class_id": int(row["class_id"]), "name": str(row["name"])}
+                for row in store.label_mapping_rows()
+            ],
+        }
+    finally:
+        local_store_path.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            Path(str(local_store_path) + suffix).unlink(missing_ok=True)
+
+
 def _write_yolo_review_page(
-    root: Path,
+    root: Path | None,
     store: ImportCandidateStore,
     page: list[dict[str, Any]],
     rows_stream,
@@ -568,16 +979,29 @@ def _write_yolo_review_page(
     payloads: list[tuple[Path, str]],
     counts: dict[str, int],
     target_prefix: str,
+    *,
+    include_payloads: bool = True,
+    preserve_object_keys: bool = False,
 ) -> None:
     source_keys = [str(row["object_key"]) for row in page]
     annotations = store.annotations_for_keys(source_keys)
     issues = store.annotation_issues_for_keys(source_keys)
     for candidate in page:
         source_key = safe_member_path(str(candidate["object_key"])).as_posix()
-        target_key = _target_key(target_prefix, PurePosixPath(source_key))
+        target_key = (
+            source_key
+            if preserve_object_keys
+            else _target_key(target_prefix, PurePosixPath(source_key))
+        )
         status = str(candidate.get("status") or "").upper()
         payload_member = ""
-        if status == "IMPORTABLE":
+        if status == "IMPORTABLE" and include_payloads:
+            if root is None:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_SOURCE_INVALID",
+                    "embedded YOLO review requires a local source root",
+                    500,
+                )
             source = _plain_file(root, PurePosixPath(source_key))
             payload_member = (
                 REVIEW_FILES_PREFIX / PurePosixPath(source_key)
@@ -727,6 +1151,7 @@ def _read_review_rows(
     expected_source_id: str,
     expected_storage_type: str,
     expected_prefix: str,
+    require_payload: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     rows_path = review_root / REVIEW_ROWS_MEMBER
     if not rows_path.is_file() or rows_path.is_symlink():
@@ -807,7 +1232,22 @@ def _read_review_rows(
                 "error": str(row.get("error") or "")[:1000],
                 "duplicate": bool(row.get("duplicate")),
             }
-            if status == "IMPORTABLE":
+            if status == "IMPORTABLE" and not require_payload:
+                digest = candidate["content_sha256"]
+                if (
+                    len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)
+                    or candidate["size_bytes"] <= 0
+                    or candidate["width"] <= 0
+                    or candidate["height"] <= 0
+                    or not candidate["etag"]
+                ):
+                    raise RemoteMaterialImportError(
+                        "REMOTE_MATERIAL_SOURCE_EVIDENCE_MISSING",
+                        "storage_scan review is missing immutable source evidence",
+                        409,
+                    )
+            if status == "IMPORTABLE" and require_payload:
                 member = safe_member_path(str(row.get("payload_member") or ""))
                 payload = review_root.joinpath(*member.parts)
                 if not payload.is_file() or payload.is_symlink():
@@ -1132,6 +1572,7 @@ def commit_material_review_archive(
     expected_source_id: str,
     expected_storage_type: str,
     expected_prefix: str,
+    expected_mode: str = "zip_scan",
     expected_import_format: str = "images",
     expected_dataset_yaml: str = "",
     platform_labels: Iterable[Mapping[str, Any]] | None = None,
@@ -1186,7 +1627,7 @@ def commit_material_review_archive(
             or str(meta.get("task_id") or "") != str(task_id)
             or str(meta.get("project_id") or "") != str(project_id)
             or int(meta.get("execution_generation") or 0) != int(execution_generation)
-            or str(meta.get("mode") or "") != "zip_scan"
+            or str(meta.get("mode") or "") != str(expected_mode or "zip_scan")
             or str(meta.get("import_format") or "") != str(expected_import_format or "images")
             or str(meta.get("storage_source_id") or "") != expected_source_id
             or str(meta.get("storage_type") or "") != expected_storage_type
@@ -1195,6 +1636,16 @@ def commit_material_review_archive(
             raise RemoteMaterialImportError(
                 "REMOTE_MATERIAL_REVIEW_INVALID",
                 "review metadata does not match the durable import request",
+                409,
+            )
+        payload_mode = str(meta.get("payload_mode") or "embedded")
+        if (
+            str(expected_mode or "zip_scan") == "storage_scan"
+            and payload_mode != "source_reference"
+        ):
+            raise RemoteMaterialImportError(
+                "REMOTE_MATERIAL_REVIEW_INVALID",
+                "storage_scan review must reference existing source objects",
                 409,
             )
         if str(expected_import_format or "images") == "yolo":
@@ -1219,6 +1670,7 @@ def commit_material_review_archive(
             expected_source_id=expected_source_id,
             expected_storage_type=expected_storage_type,
             expected_prefix=expected_prefix,
+            require_payload=str(expected_mode or "zip_scan") != "storage_scan",
         )
         if int(meta.get("candidate_count") or -1) != len(candidates):
             raise RemoteMaterialImportError(
@@ -1268,7 +1720,11 @@ def commit_material_review_archive(
         scanned = len(candidates)
         result = {
             "stage": "awaiting_confirmation",
-            "mode": "agent_zip_scan",
+            "mode": (
+                "agent_storage_scan"
+                if str(expected_mode or "zip_scan") == "storage_scan"
+                else "agent_zip_scan"
+            ),
             "storage_source_id": expected_source_id,
             "prefix": safe_member_path(expected_prefix).as_posix(),
             "recursive": True,
@@ -1323,5 +1779,6 @@ __all__ = [
     "RemoteMaterialImportError",
     "RemoteMaterialStagingStore",
     "build_material_review_archive",
+    "build_storage_scan_material_review_archive",
     "commit_material_review_archive",
 ]
