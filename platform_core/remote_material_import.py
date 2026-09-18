@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import tempfile
@@ -22,6 +23,8 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 
 from .storage.import_candidates import ImportCandidateStore
+from .storage.local import LocalStorageProvider
+from .storage.yolo_import import YoloImportError, YoloImportScanner, YoloScanCancelled
 from .storage.import_tasks import MANIFEST_REF, SCAN_RESULT_REF, IMAGE_EXTENSIONS
 from .storage.zip_import import (
     ServerZipImportError,
@@ -34,6 +37,7 @@ from .storage.zip_import import (
 REVIEW_SCHEMA_VERSION = 1
 REVIEW_META_MEMBER = "meta.json"
 REVIEW_ROWS_MEMBER = "review.jsonl"
+REVIEW_ANNOTATIONS_MEMBER = "yolo/annotations.jsonl"
 REVIEW_FILES_PREFIX = PurePosixPath("files")
 REMOTE_MATERIAL_STAGING_REF = "remote-material/staged.sqlite3"
 _MAX_REVIEW_ROWS = 250_000
@@ -258,6 +262,401 @@ def build_material_review_archive(
         "candidate_count": len(members),
         "counts": counts,
     }
+
+
+def _inspect_local_image(
+    provider: LocalStorageProvider,
+    item,
+    *,
+    storage_source_id: str,
+    storage_type: str,
+    seen_hashes: set[str],
+) -> dict[str, Any]:
+    key = str(item.key)
+    row = {
+        "object_key": key,
+        "filename": Path(key).name,
+        "storage_source_id": str(storage_source_id),
+        "storage_type": str(storage_type),
+        "content_sha256": "",
+        "size_bytes": max(0, int(item.size_bytes or 0)),
+        "etag": str(item.etag or ""),
+        "width": 0,
+        "height": 0,
+        "status": "INVALID",
+        "error": "",
+        "duplicate": False,
+    }
+    try:
+        with provider.open_reader(key) as stream:
+            with Image.open(stream) as image:
+                width, height = image.size
+                image.verify()
+        digest = str(item.sha256 or "").strip().lower()
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            digest = _sha256_file(provider._path(key))
+        if row["size_bytes"] <= 0:
+            raise ValueError("image is empty")
+        duplicate = digest in seen_hashes
+        seen_hashes.add(digest)
+        row.update({
+            "content_sha256": digest,
+            "width": int(width),
+            "height": int(height),
+            "status": "DUPLICATE" if duplicate else "IMPORTABLE",
+            "duplicate": duplicate,
+        })
+    except (UnidentifiedImageError, OSError, ValueError):
+        row.update({"status": "INVALID", "error": "IMAGE_DECODE_FAILED"})
+    return row
+
+
+def build_yolo_material_review_archive(
+    source_root: str | Path,
+    destination: str | Path,
+    *,
+    task_id: str,
+    project_id: str,
+    execution_generation: int,
+    storage_source_id: str,
+    storage_type: str,
+    target_prefix: str,
+    dataset_yaml: str = "",
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, int, str], object] | None = None,
+) -> dict[str, Any]:
+    root = Path(source_root).expanduser().resolve()
+    if not root.is_dir() or root.is_symlink():
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_SOURCE_INVALID",
+            "extracted YOLO material root is unavailable",
+            409,
+        )
+    target_prefix = safe_member_path(target_prefix).as_posix()
+    yaml_member = (
+        safe_member_path(dataset_yaml).as_posix()
+        if str(dataset_yaml or "").strip()
+        else ""
+    )
+    provider = LocalStorageProvider("agent-yolo-review", root)
+    local_store_path = Path(
+        tempfile.mkstemp(
+            dir=Path(destination).expanduser().resolve().parent,
+            prefix=".yolo-review.",
+            suffix=".sqlite3",
+        )[1]
+    )
+    # sqlite creates the database itself. Remove the mkstemp placeholder so
+    # ImportCandidateStore owns schema creation from an empty path.
+    local_store_path.unlink(missing_ok=True)
+    store = ImportCandidateStore(local_store_path)
+    scanner = YoloImportScanner(
+        provider,
+        store,
+        lambda current, prefix, recursive: current.iter_objects(
+            prefix, recursive=recursive
+        ),
+        cancelled=(cancelled or (lambda: False)),
+        progress=lambda key: (
+            progress(0, 0, str(key))
+            if progress is not None
+            else None
+        ),
+    )
+    try:
+        try:
+            selected_format = scanner.prepare(
+                "yolo",
+                prefix="",
+                recursive=True,
+                dataset_yaml=yaml_member or None,
+            )
+        except YoloScanCancelled as error:
+            raise InterruptedError("YOLO review cancelled") from error
+        except YoloImportError as error:
+            raise RemoteMaterialImportError(error.code, error.message, 422) from error
+        if selected_format != "yolo":
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_DISCOVERY_FAILED",
+                "YOLO review did not resolve a YOLO dataset",
+                422,
+            )
+
+        seen_hashes: set[str] = set()
+        batch: list[dict[str, Any]] = []
+        inspected = 0
+        for item in scanner.iter_images():
+            if cancelled is not None and cancelled():
+                raise InterruptedError("YOLO review cancelled")
+            batch.append(_inspect_local_image(
+                provider,
+                item,
+                storage_source_id=storage_source_id,
+                storage_type=storage_type,
+                seen_hashes=seen_hashes,
+            ))
+            inspected += 1
+            if len(batch) >= 500:
+                store.upsert_many(batch)
+                batch.clear()
+            if progress is not None and (inspected == 1 or inspected % 100 == 0):
+                progress(inspected, 0, str(item.key))
+        if batch:
+            store.upsert_many(batch)
+        try:
+            quality = scanner.scan_annotations()
+        except YoloScanCancelled as error:
+            raise InterruptedError("YOLO annotation review cancelled") from error
+        except YoloImportError as error:
+            raise RemoteMaterialImportError(error.code, error.message, 422) from error
+
+        target = Path(destination).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        archive_fd, archive_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+        )
+        os.close(archive_fd)
+        temporary = Path(archive_name)
+        rows_fd, rows_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.rows.",
+            suffix=".jsonl",
+        )
+        os.close(rows_fd)
+        rows_file = Path(rows_name)
+        ann_fd, ann_name = tempfile.mkstemp(
+            dir=target.parent,
+            prefix=f".{target.name}.annotations.",
+            suffix=".jsonl",
+        )
+        os.close(ann_fd)
+        annotations_file = Path(ann_name)
+        payloads: list[tuple[Path, str]] = []
+        counts: dict[str, int] = {}
+        total = sum(store.counts().values())
+        completed = 0
+        try:
+            with rows_file.open("wb") as rows_stream, annotations_file.open("wb") as ann_stream:
+                page: list[dict[str, Any]] = []
+                for candidate in store.iter_candidates(batch_size=500):
+                    page.append(candidate)
+                    if len(page) < 500:
+                        continue
+                    _write_yolo_review_page(
+                        root,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        payloads,
+                        counts,
+                        target_prefix,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                    page.clear()
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("YOLO review cancelled")
+                if page:
+                    _write_yolo_review_page(
+                        root,
+                        store,
+                        page,
+                        rows_stream,
+                        ann_stream,
+                        payloads,
+                        counts,
+                        target_prefix,
+                    )
+                    completed += len(page)
+                    if progress is not None:
+                        progress(completed, total, str(page[-1]["object_key"]))
+                rows_stream.flush()
+                os.fsync(rows_stream.fileno())
+                ann_stream.flush()
+                os.fsync(ann_stream.fileno())
+
+            classes = store.label_mapping_rows()
+            meta = {
+                "schema_version": REVIEW_SCHEMA_VERSION,
+                "task_id": str(task_id),
+                "project_id": str(project_id),
+                "execution_generation": int(execution_generation),
+                "mode": "zip_scan",
+                "import_format": "yolo",
+                "storage_source_id": str(storage_source_id),
+                "storage_type": str(storage_type),
+                "target_prefix": target_prefix,
+                "candidate_count": total,
+                "counts": counts,
+                "dataset_yaml": str(scanner.yaml_key or ""),
+                "classes": [
+                    {
+                        "class_id": int(row["class_id"]),
+                        "name": str(row["name"]),
+                    }
+                    for row in classes
+                ],
+                "quality": quality,
+            }
+            if cancelled is not None and cancelled():
+                raise InterruptedError("YOLO review cancelled")
+            with zipfile.ZipFile(
+                temporary,
+                "w",
+                compression=zipfile.ZIP_STORED,
+                allowZip64=True,
+            ) as archive:
+                archive.write(rows_file, arcname=REVIEW_ROWS_MEMBER)
+                archive.write(annotations_file, arcname=REVIEW_ANNOTATIONS_MEMBER)
+                for source, member in payloads:
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("YOLO review cancelled")
+                    archive.write(source, arcname=member)
+                archive.writestr(
+                    REVIEW_META_MEMBER,
+                    json.dumps(
+                        meta,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            if temporary.stat().st_size <= 0:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_REVIEW_EMPTY",
+                    "YOLO review archive is empty",
+                    409,
+                )
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+            rows_file.unlink(missing_ok=True)
+            annotations_file.unlink(missing_ok=True)
+
+        return {
+            "path": target,
+            "sha256": _sha256_file(target),
+            "size_bytes": int(target.stat().st_size),
+            "candidate_count": total,
+            "counts": counts,
+            "dataset_yaml": str(scanner.yaml_key or ""),
+            "quality": quality,
+            "classes": [
+                {"class_id": int(row["class_id"]), "name": str(row["name"])}
+                for row in store.label_mapping_rows()
+            ],
+        }
+    finally:
+        local_store_path.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            Path(str(local_store_path) + suffix).unlink(missing_ok=True)
+
+
+def _write_yolo_review_page(
+    root: Path,
+    store: ImportCandidateStore,
+    page: list[dict[str, Any]],
+    rows_stream,
+    annotations_stream,
+    payloads: list[tuple[Path, str]],
+    counts: dict[str, int],
+    target_prefix: str,
+) -> None:
+    source_keys = [str(row["object_key"]) for row in page]
+    annotations = store.annotations_for_keys(source_keys)
+    issues = store.annotation_issues_for_keys(source_keys)
+    for candidate in page:
+        source_key = safe_member_path(str(candidate["object_key"])).as_posix()
+        target_key = _target_key(target_prefix, PurePosixPath(source_key))
+        status = str(candidate.get("status") or "").upper()
+        payload_member = ""
+        if status == "IMPORTABLE":
+            source = _plain_file(root, PurePosixPath(source_key))
+            payload_member = (
+                REVIEW_FILES_PREFIX / PurePosixPath(source_key)
+            ).as_posix()
+            payloads.append((source, payload_member))
+        row = {
+            "object_key": target_key,
+            "filename": Path(str(candidate.get("filename") or source_key)).name,
+            "storage_source_id": str(candidate.get("storage_source_id") or ""),
+            "storage_type": str(candidate.get("storage_type") or ""),
+            "content_sha256": str(candidate.get("content_sha256") or "").lower(),
+            "size_bytes": int(candidate.get("size_bytes") or 0),
+            "etag": str(candidate.get("etag") or ""),
+            "width": int(candidate.get("width") or 0),
+            "height": int(candidate.get("height") or 0),
+            "status": status,
+            "error": str(candidate.get("error") or ""),
+            "duplicate": bool(candidate.get("duplicate")),
+            "payload_member": payload_member,
+        }
+        rows_stream.write(
+            json.dumps(
+                row,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        counts[status] = counts.get(status, 0) + 1
+
+        annotation = annotations.get(source_key) or {
+            "object_key": source_key,
+            "split": "",
+            "label_key": None,
+            "annotation_status": "unannotated",
+            "box_count": 0,
+            "boxes": [],
+        }
+        issue_rows = issues.get(source_key) or []
+        annotations_stream.write(
+            json.dumps(
+                {
+                    "object_key": target_key,
+                    "split": str(annotation.get("split") or ""),
+                    "label_key": (
+                        safe_member_path(str(annotation.get("label_key"))).as_posix()
+                        if annotation.get("label_key")
+                        else None
+                    ),
+                    "annotation_status": str(
+                        annotation.get("annotation_status") or "unannotated"
+                    ),
+                    "box_count": int(annotation.get("box_count") or 0),
+                    "boxes": [
+                        {
+                            "line_number": int(box.get("line_number") or 0),
+                            "class_id": int(box.get("class_id") or 0),
+                            "cx": float(box.get("cx") or 0),
+                            "cy": float(box.get("cy") or 0),
+                            "w": float(box.get("w") or 0),
+                            "h": float(box.get("h") or 0),
+                            "clipped": bool(box.get("clipped")),
+                        }
+                        for box in annotation.get("boxes") or []
+                    ],
+                    "issues": [
+                        {
+                            "line_number": int(issue.get("line_number") or 0),
+                            "code": str(issue.get("code") or ""),
+                            "severity": str(issue.get("severity") or ""),
+                        }
+                        for issue in issue_rows
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+
 
 class RemoteMaterialStagingStore:
     _SCHEMA = """
