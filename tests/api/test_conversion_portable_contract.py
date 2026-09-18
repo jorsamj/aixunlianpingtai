@@ -119,7 +119,11 @@ def _patch_creation(monkeypatch, tmp_path, transport):
     artifacts = FakeArtifacts()
     repository = FakeRepository()
 
-    monkeypatch.setattr(app_module, "_resolve_deploy_source", lambda _project, _source: _source(model))
+    monkeypatch.setattr(
+        app_module,
+        "_resolve_deploy_source",
+        lambda _project_id, _source_id: _source(model),
+    )
     monkeypatch.setattr(app_module, "_deploy_resource_by_id", lambda _resource_id: _resource())
     monkeypatch.setattr(
         app_module,
