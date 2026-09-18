@@ -80,12 +80,35 @@ class NodeAgentExecutorLoop:
     def enabled(self) -> bool:
         return bool(self.capabilities)
 
+    def effective_capabilities(self) -> tuple[str, ...]:
+        """Capabilities safe to advertise in the current local runtime state."""
+        kind_by_capability = {
+            "deployment-test": "DEPLOYMENT_TEST",
+            "training": "TRAINING",
+        }
+        effective = []
+        for capability in self.capabilities:
+            kind = kind_by_capability.get(str(capability))
+            runner = self.runners.get(kind) if kind else None
+            if runner is not None and getattr(runner, "ready", True) is False:
+                continue
+            effective.append(str(capability))
+        return tuple(effective)
+
+    def _runner_recovery_error(self) -> str:
+        for runner in self.runners.values():
+            if getattr(runner, "ready", True) is False:
+                value = str(getattr(runner, "recovery_error", "") or "").strip()
+                if value:
+                    return value
+        return ""
+
     def _snapshot_locked(self) -> AgentExecutorStatus:
         return AgentExecutorStatus(
             enabled=self.enabled,
             running=bool(self._thread and self._thread.is_alive()),
             active_tasks=tuple(sorted(self._active_tasks)),
-            last_error=self._last_error,
+            last_error=self._last_error or self._runner_recovery_error(),
             completed_tasks=self._completed_tasks,
             last_outcome=self._last_outcome,
         )
