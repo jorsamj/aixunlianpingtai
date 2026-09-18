@@ -10,6 +10,7 @@ from platform_core.task_node_assignments import (
     AssignmentAwareFencedTaskRepository,
     CentralTaskAllocator,
     task_node_capability,
+    task_node_connection_mode,
     task_remote_execution_contract,
 )
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
@@ -177,6 +178,84 @@ def test_material_batch_operation_maps_to_real_node_capability(tmp_path):
     assert task_node_capability(clean, artifacts) == "cleaning"
     assert task_node_capability(annotate, artifacts) == "annotation"
     assert task_node_capability(default, artifacts) == "material-import"
+
+
+def test_training_prepare_remains_control_plane_local_work(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "train-prep",
+        TaskKind.TRAINING_PREPARE,
+        {"training_task_id": "train-target"},
+    )
+    assert task_node_capability(task, artifacts) is None
+
+
+def test_explicit_remote_training_never_falls_back_to_local_node_while_unprepared(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "train-remote-preparing",
+        TaskKind.TRAINING,
+        {"target": "remote", "epochs": 30},
+    )
+    create_online_node(
+        repository,
+        "gpu-local-fast",
+        ["training"],
+        connection_mode="local",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-agent",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=20 * 1024**3),
+    )
+
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assert CentralTaskAllocator(repository, artifacts).assign_next() is None
+    assert repository.get("train-remote-preparing").status is TaskStatus.QUEUED
+
+
+def test_explicit_remote_training_with_portable_contract_uses_agent_even_if_local_scores_higher(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(
+        repository,
+        artifacts,
+        "train-remote-ready",
+        TaskKind.TRAINING,
+        {
+            "target": "remote",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "TRAINING",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository,
+        "gpu-local-fast",
+        ["training"],
+        connection_mode="local",
+        resources=training_resources(free0=39 * 1024**3),
+    )
+    create_online_node(
+        repository,
+        "gpu-agent-ready",
+        ["training"],
+        connection_mode="agent",
+        resources=training_resources(free0=12 * 1024**3),
+    )
+
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "gpu-agent-ready"
+    assert assignment["resolved_execution_config"]["connection_mode"] == "agent"
 
 
 def test_legacy_task_is_never_assigned_to_remote_agent_without_portable_contract(tmp_path):
