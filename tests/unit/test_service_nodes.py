@@ -141,3 +141,21 @@ def test_rknn_conversion_capability_requires_both_allow_and_report(tmp_path):
     })
     assert node["effective_capabilities"] == ["conversion.rknn"]
     assert node["runtime"]["rknn_toolkit2"]["supported_chips"] == ["rk3568", "rk3576"]
+
+
+def test_rknn_board_deployment_capability_is_first_class(tmp_path):
+    _repository, nodes = registry(tmp_path)
+    _node, token = nodes.create({
+        "node_id": "rk3568-board",
+        "display_name": "RK3568 Board",
+        "allowed_capabilities": ["deployment-test.rknn"],
+    })
+    node = nodes.heartbeat("rk3568-board", token, {
+        "reported_capabilities": ["deployment-test.rknn"],
+        "runtime": {"rknn_board": {
+            "available": True,
+            "chip": "rk3568",
+            "rknn_lite_version": "2.3.2",
+        }},
+    })
+    assert node["effective_capabilities"] == ["deployment-test.rknn"]

@@ -112,10 +112,20 @@ def task_node_capability(task, artifacts) -> str | None:
         TaskKind.AI_ANNOTATION: "annotation",
         TaskKind.VIDEO_FRAMES: "video",
         TaskKind.TRAINING: "training",
-        TaskKind.DEPLOYMENT_TEST: "deployment-test",
     }
     if task.kind in fixed:
         return fixed[task.kind]
+    if task.kind is TaskKind.DEPLOYMENT_TEST:
+        try:
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        except (OSError, TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, Mapping):
+            mode = str(payload.get("execution_mode") or "").strip().lower()
+            runtime_format = str(payload.get("runtime_format") or "").strip().lower()
+            if mode == "agent" and runtime_format == "rknn":
+                return "deployment-test.rknn"
+        return "deployment-test"
     if task.kind is TaskKind.MODEL_CONVERSION:
         try:
             payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
@@ -189,6 +199,7 @@ def task_node_connection_mode(task, artifacts) -> str | None:
         TaskKind.MODEL_CONVERSION,
         TaskKind.MATERIAL_IMPORT,
         TaskKind.MATERIAL_BATCH,
+        TaskKind.DEPLOYMENT_TEST,
     }:
         return None
     try:
@@ -206,6 +217,9 @@ def task_node_connection_mode(task, artifacts) -> str | None:
             return None
         mode = str(payload.get("execution_mode") or "local").strip().lower()
         return "agent" if mode == "agent" else "local"
+    if task.kind is TaskKind.DEPLOYMENT_TEST:
+        mode = str(payload.get("execution_mode") or "").strip().lower()
+        return "agent" if mode == "agent" else None
     # Conversion/material import remain local unless the producer explicitly
     # publishes an Agent execution mode. A portable contract alone never changes
     # product intent or silently migrates a local task to a remote node.

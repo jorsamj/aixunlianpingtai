@@ -342,3 +342,47 @@ def test_check_mode_withholds_rknn_capability_when_toolkit_probe_fails(tmp_path,
     body = json.loads(capsys.readouterr().out)
     assert body["reported_capabilities"] == []
     assert body["unsupported_remote_capabilities"] == ["conversion.rknn"]
+
+
+def test_check_mode_reports_rknn_board_capability_only_after_real_board_probe(tmp_path, monkeypatch, capsys):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(node_agent, "probe_rknn_board_runtime", lambda _python: {
+        "available": True,
+        "chip": "rk3568",
+        "architecture": "aarch64",
+        "compatible": "rockchip,rk3568",
+        "python_executable": sys.executable,
+        "rknn_lite_version": "2.3.2",
+        "error": "",
+    })
+
+    code = node_agent.main([
+        "--check", "--state-dir", str(tmp_path),
+        "--capabilities", "deployment-test.rknn",
+    ])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["reported_capabilities"] == ["deployment-test.rknn"]
+    assert body["snapshot"]["runtime"]["rknn_board"]["chip"] == "rk3568"
+    assert body["executor"]["supported_task_kinds"] == ["DEPLOYMENT_TEST"]
+
+
+def test_check_mode_withholds_rknn_board_capability_when_probe_fails(tmp_path, monkeypatch, capsys):
+    _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(node_agent, "probe_rknn_board_runtime", lambda _python: {
+        "available": False,
+        "chip": "",
+        "architecture": "x86_64",
+        "compatible": "",
+        "python_executable": sys.executable,
+        "rknn_lite_version": "",
+        "error": "not a Rockchip board",
+    })
+    code = node_agent.main([
+        "--check", "--state-dir", str(tmp_path),
+        "--capabilities", "deployment-test.rknn",
+    ])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["reported_capabilities"] == []
+    assert body["unsupported_remote_capabilities"] == ["deployment-test.rknn"]

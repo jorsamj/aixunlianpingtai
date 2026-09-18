@@ -482,3 +482,111 @@ def test_runner_source_has_no_control_plane_database_or_shared_nfs_dependency():
     assert "TaskRepository" not in source
     assert "tasks.sqlite3" not in source
     assert "shared_nfs" not in source.lower()
+
+
+def _rknn_lease(model_data=b"rknn-model", input_data=b"board-input", *, chip="rk3568"):
+    model_url = "https://storage.example.test/model.rknn"
+    current, downloads = lease(
+        input_data,
+        model={
+            "type": "object",
+            "artifact_id": "rknn-artifact",
+            "download": _download(model_url, "model_rk3568.rknn", model_data),
+        },
+    )
+    current.payload["framework"] = "rknn"
+    current.payload["runtime_format"] = "rknn"
+    current.payload["board"] = {
+        "schema_version": 1,
+        "chip": chip,
+        "input_size": 640,
+        "conversion_job_id": "convert-rknn",
+        "model_sha256": _sha(model_data),
+        "model_size_bytes": len(model_data),
+    }
+    downloads[model_url] = model_data
+    return current, downloads
+
+
+def _write_fake_rknn_runner(runtime_root: Path):
+    script = runtime_root / "predict_rknn_lite_runner.py"
+    script.write_text(
+        """
+import argparse, json
+from pathlib import Path
+p=argparse.ArgumentParser()
+p.add_argument('--model',required=True); p.add_argument('--input',required=True)
+p.add_argument('--output',required=True); p.add_argument('--input-size',required=True)
+p.add_argument('--chip',required=True)
+a=p.parse_args()
+Path(a.output).parent.mkdir(parents=True,exist_ok=True)
+Path(a.output).write_bytes(b'board-runtime-result')
+print(json.dumps({
+  'ok':True,'engine':'rknn-lite2','runtime_format':'rknn','chip':a.chip,
+  'model':Path(a.model).name,'preprocess_ms':3.5,'inference_ms':8.25,
+  'output_count':3,'output_shapes':[[1,84,8400],[1,32,160,160],[1,32,80,80]],
+  'note':'hardware runtime verification only'
+}))
+""".strip(),
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_rknn_board_runtime_executes_only_on_matching_verified_board(tmp_path):
+    current, downloads = _rknn_lease()
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _write_fake_rknn_runner(runtime_root)
+    runner = AgentDeploymentRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        transfer_session=transfer,
+        python_by_framework={"rknn": sys.executable},
+        rknn_board_probe={
+            "available": True,
+            "chip": "rk3568",
+            "rknn_lite_version": "2.3.2",
+        },
+        heartbeat_interval=1.0,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "SUCCEEDED"
+    runtime_result = client.confirm_calls[-1]
+    assert runtime_result["engine"] == "rknn-lite2"
+    assert runtime_result["runtime_format"] == "rknn"
+    assert runtime_result["chip"] == "rk3568"
+    assert runtime_result["output_count"] == 3
+    assert runtime_result["inference_ms"] == 8.25
+    assert transfer.put_calls[-1]["body"] == b"board-runtime-result"
+
+
+def test_rknn_board_runtime_rejects_chip_mismatch_before_process(tmp_path):
+    current, downloads = _rknn_lease(chip="rk3576")
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    _write_fake_rknn_runner(runtime_root)
+    runner = AgentDeploymentRunner(
+        client,
+        AgentExecutionWorkdir(tmp_path / "state"),
+        runtime_root=runtime_root,
+        transfer_session=transfer,
+        python_by_framework={"rknn": sys.executable},
+        rknn_board_probe={"available": True, "chip": "rk3568"},
+        heartbeat_interval=1.0,
+        process_poll_interval=0.05,
+    )
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "FAILED"
+    assert "matching this task" in outcome.error
+    assert client.prepare_calls == []

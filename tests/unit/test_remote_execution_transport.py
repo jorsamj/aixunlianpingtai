@@ -1742,3 +1742,153 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     assert manifest["target"]["chip"] == "rk3568"
     assert job["validation_status"] == "converted_unverified"
     assert job["hardware_verified"] is False
+
+
+def test_rknn_board_validation_contract_resolves_exact_model_and_board_truth(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    model = tmp_path / "model_rk3568.rknn"
+    image = tmp_path / "verify.jpg"
+    model.write_bytes(b"verified-rknn-model")
+    image.write_bytes(b"verify-image")
+
+    contract = transport.stage_rknn_board_validation(
+        project_id="p-board",
+        task_id="board-test-1",
+        conversion_job_id="convert-1",
+        model_path=model,
+        input_path=image,
+        chip="rk3568",
+        input_size=640,
+    )
+    deployment = contract["deployment"]
+    assert deployment["runtime_format"] == "rknn"
+    assert deployment["framework"] == "rknn"
+    assert deployment["board"]["chip"] == "rk3568"
+    assert deployment["board"]["model_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
+    assert "signed.example.test" not in str(contract)
+
+    task = SimpleNamespace(
+        task_id="board-test-1",
+        project_id="p-board",
+        kind=TaskKind.DEPLOYMENT_TEST,
+    )
+    resolved = transport.resolve_execution_payload(
+        task,
+        {"remote_execution": contract},
+        {"resolved_execution_config": {}},
+    )
+    assert resolved["runtime_format"] == "rknn"
+    assert resolved["model"]["type"] == "object"
+    assert resolved["model"]["download"]["file_name"] == model.name
+    assert resolved["board"]["conversion_job_id"] == "convert-1"
+    assert "signed.example.test/get/" in resolved["model"]["download"]["url"]
+
+
+def test_rknn_board_verification_commit_updates_original_conversion_only_after_valid_evidence(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    project = tmp_path / "projects" / "p-board"
+    job_dir = project / "deploy" / "jobs" / "convert-1"
+    artifacts_dir = job_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    model = artifacts_dir / "model_rk3568.rknn"
+    model.write_bytes(b"verified-rknn-model")
+    model_sha = hashlib.sha256(model.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "target": {"kind": "rockchip", "chip": "rk3568", "precision": "fp16"},
+        "status": "converted_unverified",
+        "runtime_verified": False,
+        "hardware_verified": False,
+        "output": {
+            "file_name": model.name,
+            "size_bytes": model.stat().st_size,
+            "sha256": model_sha,
+        },
+    }
+    (artifacts_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (job_dir / "job.json").write_text(json.dumps({
+        "id": "convert-1",
+        "project_id": "p-board",
+        "target": "rockchip",
+        "status": "done",
+        "validation_status": "converted_unverified",
+    }), encoding="utf-8")
+
+    task = SimpleNamespace(
+        task_id="board-test-1",
+        project_id="p-board",
+        kind=TaskKind.DEPLOYMENT_TEST,
+    )
+    payload = {
+        "remote_execution": {
+            "version": 1,
+            "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+            "deployment": {
+                "framework": "rknn",
+                "runtime_format": "rknn",
+                "confidence": 0,
+                "board": {
+                    "schema_version": 1,
+                    "chip": "rk3568",
+                    "input_size": 640,
+                    "conversion_job_id": "convert-1",
+                    "model_sha256": model_sha,
+                    "model_size_bytes": model.stat().st_size,
+                },
+                "input": {"storage_source_id": "remote-models", "object_key": "input.jpg"},
+                "model": {"type": "object", "storage_source_id": "remote-models", "object_key": "model.rknn"},
+                "output": {"storage_source_id": "remote-models", "object_key": "result.jpg"},
+            },
+        },
+    }
+    committed = transport.commit_result_publication(
+        task,
+        payload,
+        {"execution_generation": 2, "sha256": "a" * 64, "size_bytes": 10},
+        {
+            "result": {
+                "output_storage": {
+                    "storage_source_id": "remote-models",
+                    "object_key": "result.jpg",
+                },
+            },
+            "runtime_result": {
+                "ok": True,
+                "engine": "rknn-lite2",
+                "runtime_format": "rknn",
+                "chip": "rk3568",
+                "inference_ms": 8.5,
+                "output_count": 3,
+                "output_shapes": [[1, 84, 8400]],
+            },
+        },
+    )
+    assert committed["rknn_hardware_verified"] is True
+    updated = json.loads((artifacts_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert updated["hardware_verified"] is True
+    assert updated["runtime_verified"] is True
+    assert updated["hardware_verification"]["chip"] == "rk3568"
+
+    # Any later model mutation must fail closed and cannot produce a new valid verification.
+    model.write_bytes(b"mutated-rknn-model")
+    with pytest.raises(RemoteExecutionTransportError) as changed:
+        transport.commit_result_publication(
+            task,
+            payload,
+            {"execution_generation": 3, "sha256": "b" * 64, "size_bytes": 11},
+            {
+                "result": {"output_storage": {"storage_source_id": "remote-models", "object_key": "result2.jpg"}},
+                "runtime_result": {
+                    "ok": True,
+                    "engine": "rknn-lite2",
+                    "runtime_format": "rknn",
+                    "chip": "rk3568",
+                    "inference_ms": 9.0,
+                    "output_count": 1,
+                },
+            },
+        )
+    assert changed.value.code == "REMOTE_RKNN_BOARD_SOURCE_CHANGED"

@@ -30,6 +30,7 @@ from platform_core.node_agent_runtime import (
 )
 from platform_core.node_identity import default_node_state_dir, resolve_node_identity
 from platform_core.rknn_runtime import probe_rknn_toolkit
+from platform_core.rknn_board_runtime import probe_rknn_board_runtime
 
 
 def _env_capabilities() -> list[str]:
@@ -94,6 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--rknn-python",
         default=os.environ.get("MC_AGENT_RKNN_PYTHON", ""),
     )
+    parser.add_argument(
+        "--rknn-lite-python",
+        default=os.environ.get("MC_AGENT_RKNN_LITE_PYTHON", ""),
+    )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--check", action="store_true")
     return parser
@@ -144,6 +149,7 @@ def _build_executor(
     )
     paddle_python = str(args.paddle_python or "").strip() or sys.executable
     rknn_python = str(args.rknn_python or "").strip() or sys.executable
+    rknn_lite_python = str(args.rknn_lite_python or "").strip() or sys.executable
     deployment_runner = AgentDeploymentRunner(
         client,
         workdirs,
@@ -151,7 +157,9 @@ def _build_executor(
         python_by_framework={
             "ultralytics": ultralytics_python,
             "paddle": paddle_python,
+            "rknn": rknn_lite_python,
         },
+        rknn_board_probe=runtime_probe.get("rknn_board") or {},
         heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
     )
     runners = {}
@@ -226,6 +234,12 @@ def main(argv=None) -> int:
         runtime_probe["rknn_toolkit2"] = rknn_probe
         if not bool(rknn_probe.get("available")):
             reported_capabilities = [c for c in reported_capabilities if c != "conversion.rknn"]
+    if "deployment-test.rknn" in reported_capabilities:
+        rknn_lite_python = str(args.rknn_lite_python or "").strip() or sys.executable
+        board_probe = probe_rknn_board_runtime(rknn_lite_python)
+        runtime_probe["rknn_board"] = board_probe
+        if not bool(board_probe.get("available")):
+            reported_capabilities = [c for c in reported_capabilities if c != "deployment-test.rknn"]
     unsupported_remote_capabilities = sorted(set(requested_capabilities) - set(reported_capabilities))
     build_id = resolve_build_id(Path(__file__).resolve().parent)
 
@@ -244,7 +258,7 @@ def main(argv=None) -> int:
                     kind
                     for kind in SUPPORTED_AGENT_TASK_KINDS
                     if (
-                        (kind == "DEPLOYMENT_TEST" and "deployment-test" in reported_capabilities)
+                        (kind == "DEPLOYMENT_TEST" and bool({"deployment-test", "deployment-test.rknn"} & set(reported_capabilities)))
                         or (kind == "MODEL_CONVERSION" and bool({"conversion", "conversion.rknn"} & set(reported_capabilities)))
                         or (kind == "TRAINING" and "training" in reported_capabilities)
                         or (kind == "MATERIAL_IMPORT" and "material-import" in reported_capabilities)
@@ -256,6 +270,7 @@ def main(argv=None) -> int:
                 or str(runtime_probe.get("python_executable") or sys.executable),
                 "paddle_python": str(args.paddle_python or "").strip() or sys.executable,
                 "rknn_python": str(args.rknn_python or "").strip() or sys.executable,
+                "rknn_lite_python": str(args.rknn_lite_python or "").strip() or sys.executable,
             },
             "build_id": build_id,
             "snapshot": snapshot,

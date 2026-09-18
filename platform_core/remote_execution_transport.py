@@ -384,6 +384,141 @@ class RemoteExecutionTransportService:
             },
         }
 
+    def stage_rknn_board_validation(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        conversion_job_id: str,
+        model_path: str | Path,
+        input_path: str | Path,
+        chip: str,
+        input_size: int,
+    ) -> dict[str, Any]:
+        source = self._configured_source()
+        if source is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_STORAGE_REQUIRED",
+                "RKNN board verification requires configured OSS/S3/MinIO object storage",
+                409,
+            )
+        chip = str(chip or "").strip().lower()
+        if chip not in {"rk3568", "rk3576"}:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_CHIP_INVALID",
+                "RKNN board verification supports rk3568 or rk3576",
+                422,
+            )
+        try:
+            input_size = int(input_size)
+        except (TypeError, ValueError) as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_INPUT_SIZE_INVALID",
+                "RKNN board input_size must be an integer",
+                422,
+            ) from error
+        if input_size < 32 or input_size > 4096:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_INPUT_SIZE_INVALID",
+                "RKNN board input_size is out of range",
+                422,
+            )
+        model = Path(model_path).expanduser().resolve()
+        image = Path(input_path).expanduser().resolve()
+        if model.suffix.lower() != ".rknn" or not model.is_file() or model.stat().st_size <= 0:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_MODEL_INVALID",
+                "board verification source must be a non-empty .rknn artifact",
+                422,
+            )
+        if not image.is_file() or image.stat().st_size <= 0:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_INPUT_INVALID",
+                "board verification input image is missing or empty",
+                422,
+            )
+        provider = self._provider(str(project_id), source)
+        safe_project = _safe_segment(project_id, "project")
+        safe_task = _safe_segment(task_id, "task")
+
+        def stage(path: Path, purpose: str, content_type: str) -> dict[str, Any]:
+            digest = _sha256(path)
+            key = "/".join((
+                _REMOTE_PREFIX,
+                safe_project,
+                safe_task,
+                purpose,
+                f"{digest[:16]}-{_safe_segment(path.name, purpose)}",
+            ))
+            if provider.exists(key):
+                metadata = provider.stat(key)
+            else:
+                metadata = provider.upload(
+                    key,
+                    path,
+                    content_type=content_type,
+                    metadata={"sha256": digest, "purpose": purpose},
+                )
+            actual_sha = str(metadata.sha256 or "").strip().lower()
+            if (
+                int(metadata.size_bytes) != int(path.stat().st_size)
+                or not actual_sha
+                or actual_sha != digest
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_RKNN_BOARD_STAGE_INVALID",
+                    f"staged {purpose} object does not match durable size/SHA256 evidence",
+                    502,
+                )
+            return self._object_ref(
+                source_id=str(source.id),
+                object_key=key,
+                file_name=path.name,
+                size_bytes=int(path.stat().st_size),
+                sha256=digest,
+                content_type=content_type,
+            )
+
+        model_ref = stage(model, "rknn-board-model", "application/octet-stream")
+        input_type = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
+        input_ref = stage(image, "rknn-board-input", input_type)
+        output_key = "/".join((
+            _REMOTE_PREFIX,
+            safe_project,
+            safe_task,
+            "rknn-board-output",
+            "result.jpg",
+        ))
+        return {
+            "version": 1,
+            "task_kind": "DEPLOYMENT_TEST",
+            "transport": "object-storage-v1",
+            "deployment": {
+                "framework": "rknn",
+                "runtime_format": "rknn",
+                "confidence": 0.0,
+                "input": input_ref,
+                "model": {
+                    "type": "object",
+                    **model_ref,
+                },
+                "board": {
+                    "schema_version": 1,
+                    "chip": chip,
+                    "input_size": input_size,
+                    "conversion_job_id": str(conversion_job_id or "").strip(),
+                    "model_sha256": str(model_ref["sha256"]),
+                    "model_size_bytes": int(model_ref["size_bytes"]),
+                },
+                "output": {
+                    "storage_source_id": str(source.id),
+                    "object_key": output_key,
+                    "file_name": "result.jpg",
+                    "content_type": "image/jpeg",
+                },
+            },
+        }
+
     def stage_material_storage_scan(
         self,
         *,
@@ -2985,6 +3120,185 @@ class RemoteExecutionTransportService:
         finally:
             lock.release()
 
+    def _commit_rknn_board_verification_result(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        confirmed: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, deployment = self._deployment_remote(task, payload)
+        if str(deployment.get("runtime_format") or "").strip().lower() != "rknn":
+            return {}
+        board = deployment.get("board")
+        runtime = confirmed.get("runtime_result")
+        if not isinstance(board, Mapping) or not isinstance(runtime, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_EVIDENCE_INVALID",
+                "RKNN board verification is missing contract/runtime evidence",
+                409,
+            )
+        chip = str(board.get("chip") or "").strip().lower()
+        conversion_job_id = str(board.get("conversion_job_id") or "").strip()
+        if (
+            chip not in {"rk3568", "rk3576"}
+            or not conversion_job_id
+            or runtime.get("ok") is not True
+            or str(runtime.get("engine") or "").strip().lower() != "rknn-lite2"
+            or str(runtime.get("runtime_format") or "").strip().lower() != "rknn"
+            or str(runtime.get("chip") or "").strip().lower() != chip
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_EVIDENCE_INVALID",
+                "RKNN board runtime evidence does not match the requested target",
+                409,
+            )
+        try:
+            inference_ms = float(runtime.get("inference_ms"))
+            output_count = int(runtime.get("output_count"))
+        except (TypeError, ValueError) as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_EVIDENCE_INVALID",
+                "RKNN board runtime evidence is incomplete",
+                409,
+            ) from error
+        if inference_ms < 0 or output_count <= 0:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_EVIDENCE_INVALID",
+                "RKNN board inference did not produce valid output evidence",
+                409,
+            )
+
+        project = self.project_dir(str(task.project_id)).resolve()
+        job_dir = (project / "deploy" / "jobs" / conversion_job_id).resolve()
+        manifest_path = (job_dir / "artifacts" / "manifest.json").resolve()
+        job_path = (job_dir / "job.json").resolve()
+        if not manifest_path.is_file() or not job_path.is_file():
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_SOURCE_MISSING",
+                "source RKNN conversion job no longer exists",
+                409,
+            )
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_SOURCE_INVALID",
+                "source RKNN conversion metadata is unreadable",
+                409,
+            ) from error
+        target = manifest.get("target") if isinstance(manifest, Mapping) else None
+        output = manifest.get("output") if isinstance(manifest, Mapping) else None
+        if (
+            not isinstance(target, Mapping)
+            or str(target.get("kind") or "") != "rockchip"
+            or str(target.get("chip") or "").strip().lower() != chip
+            or not isinstance(output, Mapping)
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_SOURCE_INVALID",
+                "source conversion manifest does not match the board target",
+                409,
+            )
+        file_name = Path(str(output.get("file_name") or "")).name
+        artifact = (job_dir / "artifacts" / file_name).resolve()
+        if (
+            not file_name
+            or artifact.parent != (job_dir / "artifacts").resolve()
+            or not artifact.is_file()
+            or artifact.suffix.lower() != ".rknn"
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_SOURCE_MISSING",
+                "source RKNN artifact is missing",
+                409,
+            )
+        expected_sha = _normalized_sha256(board.get("model_sha256"), "board.model_sha256")
+        try:
+            expected_size = int(board.get("model_size_bytes") or 0)
+        except (TypeError, ValueError):
+            expected_size = 0
+        if (
+            expected_size <= 0
+            or int(artifact.stat().st_size) != expected_size
+            or _sha256(artifact) != expected_sha
+            or int(output.get("size_bytes") or 0) != expected_size
+            or str(output.get("sha256") or "").strip().lower() != expected_sha
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_SOURCE_CHANGED",
+                "source RKNN artifact changed after board validation was staged",
+                409,
+            )
+
+        generation = _positive_int(
+            evidence.get("execution_generation"),
+            "result.execution_generation",
+        )
+        verification = {
+            "task_id": str(task.task_id),
+            "execution_generation": generation,
+            "chip": chip,
+            "engine": "rknn-lite2",
+            "inference_ms": inference_ms,
+            "output_count": output_count,
+            "output_shapes": list(runtime.get("output_shapes") or []),
+            "result_output_storage": dict(
+                (confirmed.get("result") or {}).get("output_storage") or {}
+            ),
+        }
+        lock = FileLock(str(job_dir / ".rknn-hardware-verify.lock"), timeout=30)
+        try:
+            lock.acquire()
+        except Timeout as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_RKNN_BOARD_COMMIT_BUSY",
+                "RKNN board verification commit is busy",
+                409,
+            ) from error
+        try:
+            # Re-read under the lock before publishing the hardware truth.
+            latest_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            latest_job = json.loads(job_path.read_text(encoding="utf-8"))
+            latest_manifest.update({
+                "status": "hardware_verified",
+                "runtime_verified": True,
+                "hardware_verified": True,
+                "validation_status": "hardware_verified",
+                "hardware_verification": verification,
+            })
+            manifest_tmp = manifest_path.with_name(".manifest.json.hardware.tmp")
+            manifest_tmp.write_text(
+                json.dumps(latest_manifest, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            manifest_tmp.replace(manifest_path)
+
+            latest_job.update({
+                "runtime_verified": True,
+                "hardware_verified": True,
+                "validation_status": "hardware_verified",
+                "conversion_status": "hardware_verified",
+                "message": f"RKNN 已在 {chip.upper()} 实机完成 Runtime 推理验证",
+                "hardware_verification": verification,
+            })
+            job_tmp = job_path.with_name(".job.json.hardware.tmp")
+            job_tmp.write_text(
+                json.dumps(latest_job, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            job_tmp.replace(job_path)
+        finally:
+            lock.release()
+        return {
+            "rknn_hardware_verified": True,
+            "conversion_job_id": conversion_job_id,
+            "chip": chip,
+            "inference_ms": inference_ms,
+            "output_count": output_count,
+        }
+
     def _project_label_items(self, project_id: str) -> list[dict[str, Any]]:
         try:
             meta = json.loads(
@@ -3210,6 +3524,13 @@ class RemoteExecutionTransportService:
             return self._commit_material_import_result(task, payload, evidence, confirmed)
         if kind == "MATERIAL_BATCH":
             return self._commit_cleaning_result(task, payload, evidence, confirmed)
+        if kind == "DEPLOYMENT_TEST":
+            return self._commit_rknn_board_verification_result(
+                task,
+                payload,
+                evidence,
+                confirmed,
+            )
         return {}
 
     @staticmethod
@@ -3392,12 +3713,57 @@ class RemoteExecutionTransportService:
         if isinstance(resolved, Mapping):
             selected_device = str(resolved.get("selected_device") or "")
 
-        return {
+        runtime_format = str(deployment.get("runtime_format") or "").strip().lower()
+        framework = str(deployment.get("framework") or "ultralytics").strip().lower()
+        board_payload = None
+        if runtime_format == "rknn":
+            board = deployment.get("board")
+            if not isinstance(board, Mapping) or int(board.get("schema_version") or 0) != 1:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_RKNN_BOARD_CONTRACT_INVALID",
+                    "RKNN board verification contract is missing",
+                    422,
+                )
+            chip = str(board.get("chip") or "").strip().lower()
+            conversion_job_id = str(board.get("conversion_job_id") or "").strip()
+            try:
+                input_size = int(board.get("input_size") or 0)
+                model_size = int(board.get("model_size_bytes") or 0)
+            except (TypeError, ValueError) as error:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_RKNN_BOARD_CONTRACT_INVALID",
+                    "RKNN board numeric evidence is invalid",
+                    422,
+                ) from error
+            model_sha = _normalized_sha256(board.get("model_sha256"), "board.model_sha256")
+            if (
+                framework != "rknn"
+                or chip not in {"rk3568", "rk3576"}
+                or not conversion_job_id
+                or input_size < 32
+                or input_size > 4096
+                or model_size <= 0
+            ):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_RKNN_BOARD_CONTRACT_INVALID",
+                    "RKNN board verification contract is incomplete",
+                    422,
+                )
+            board_payload = {
+                "schema_version": 1,
+                "chip": chip,
+                "input_size": input_size,
+                "conversion_job_id": conversion_job_id,
+                "model_sha256": model_sha,
+                "model_size_bytes": model_size,
+            }
+
+        result = {
             "schema_version": 1,
             "task_kind": "DEPLOYMENT_TEST",
             "transport": "object-storage-v1",
-            "framework": str(deployment.get("framework") or "ultralytics"),
-            "runtime_format": str(deployment.get("runtime_format") or ""),
+            "framework": framework,
+            "runtime_format": runtime_format,
             "confidence": max(0.0, min(1.0, float(deployment.get("confidence") or 0.25))),
             "selected_device": selected_device,
             "input": {
@@ -3416,6 +3782,9 @@ class RemoteExecutionTransportService:
                 "upload_protocol": "prepare-after-local-hash-v1",
             },
         }
+        if board_payload is not None:
+            result["board"] = board_payload
+        return result
 
 
 __all__ = [

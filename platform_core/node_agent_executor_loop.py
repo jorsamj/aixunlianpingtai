@@ -26,6 +26,7 @@ SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({
     "conversion",
     "conversion.rknn",
     "deployment-test",
+    "deployment-test.rknn",
     "material-import",
     "training",
 })
@@ -107,6 +108,7 @@ class NodeAgentExecutorLoop:
             for kind, capability in _CAPABILITY_BY_TASK_KIND.items()
         }
         kind_by_capability["conversion.rknn"] = "MODEL_CONVERSION"
+        kind_by_capability["deployment-test.rknn"] = "DEPLOYMENT_TEST"
         effective = []
         for capability in self.capabilities:
             kind = kind_by_capability.get(str(capability))

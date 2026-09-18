@@ -494,3 +494,25 @@ def test_wrong_node_token_cannot_claim_assignment(tmp_path):
         service.claim_assignment("gpu-agent", "wrong-token")
     assert denied.value.code == "INVALID_NODE_TOKEN"
     assert denied.value.status_code == 401
+
+
+def test_runtime_result_sanitizer_accepts_bounded_rknn_board_evidence():
+    from platform_core.agent_execution import _sanitize_runtime_result_metadata
+
+    result = _sanitize_runtime_result_metadata({
+        "ok": True,
+        "engine": "rknn-lite2",
+        "runtime_format": "rknn",
+        "chip": "rk3568",
+        "inference_ms": 7.5,
+        "output_count": 3,
+        "output_shapes": [[1, 84, 8400], [1, 32, 160, 160]],
+    })
+    assert result["chip"] == "rk3568"
+    assert result["output_count"] == 3
+    assert result["output_shapes"][0] == [1, 84, 8400]
+
+    with pytest.raises(Exception):
+        _sanitize_runtime_result_metadata({
+            "output_shapes": [[1] * 9],
+        })

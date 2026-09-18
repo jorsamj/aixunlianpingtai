@@ -778,3 +778,48 @@ def test_local_rockchip_conversion_keeps_existing_conversion_capability(tmp_path
         },
     )
     assert task_node_capability(task, artifacts) == "conversion"
+
+
+def test_rknn_board_deployment_test_routes_only_to_matching_agent_capability(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "rknn-board-test",
+        TaskKind.DEPLOYMENT_TEST,
+        {
+            "execution_mode": "agent",
+            "runtime_format": "rknn",
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "DEPLOYMENT_TEST",
+                "transport": "object-storage-v1",
+            },
+        },
+    )
+    create_online_node(
+        repository, "generic-deploy", ["deployment-test"], connection_mode="agent"
+    )
+    create_online_node(
+        repository, "rknn-board", ["deployment-test.rknn"], connection_mode="agent"
+    )
+
+    assert task_node_capability(task, artifacts) == "deployment-test.rknn"
+    assert task_node_connection_mode(task, artifacts) == "agent"
+    assignment = CentralTaskAllocator(repository, artifacts).assign_next()
+    assert assignment is not None
+    assert assignment["node_id"] == "rknn-board"
+    assert assignment["capability"] == "deployment-test.rknn"
+
+
+def test_legacy_deployment_test_keeps_generic_capability_and_no_forced_connection_mode(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(
+        repository,
+        artifacts,
+        "legacy-deploy-test",
+        TaskKind.DEPLOYMENT_TEST,
+        {"runtime_format": "onnx"},
+    )
+    assert task_node_capability(task, artifacts) == "deployment-test"
+    assert task_node_connection_mode(task, artifacts) is None

@@ -105,6 +105,10 @@ def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
     for key, maximum in (
         ("engine", 120),
         ("model", 240),
+        ("runtime_format", 40),
+        ("chip", 40),
+        ("runtime_version", 120),
+        ("rknn_lite_version", 120),
         ("note", 2000),
     ):
         raw = value.get(key)
@@ -144,6 +148,56 @@ def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
                 )
             clean_labels.append(text)
         result["labels"] = clean_labels
+
+    output_count = value.get("output_count")
+    if output_count is not None:
+        if isinstance(output_count, bool) or not isinstance(output_count, int):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "output_count must be an integer",
+                422,
+            )
+        if output_count < 0 or output_count > 1000:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "output_count is out of range",
+                422,
+            )
+        result["output_count"] = int(output_count)
+
+    output_shapes = value.get("output_shapes")
+    if output_shapes is not None:
+        if not isinstance(output_shapes, list) or len(output_shapes) > 32:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "output_shapes must contain at most 32 output shapes",
+                422,
+            )
+        clean_shapes = []
+        for shape in output_shapes:
+            if not isinstance(shape, list) or len(shape) > 8:
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_METADATA_INVALID",
+                    "each output shape must contain at most 8 dimensions",
+                    422,
+                )
+            clean_shape = []
+            for dimension in shape:
+                if isinstance(dimension, bool) or not isinstance(dimension, int):
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        "output shape dimensions must be integers",
+                        422,
+                    )
+                if dimension < 0 or dimension > 10**9:
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        "output shape dimension is out of range",
+                        422,
+                    )
+                clean_shape.append(int(dimension))
+            clean_shapes.append(clean_shape)
+        result["output_shapes"] = clean_shapes
 
     detections = value.get("detections")
     if detections is not None:
@@ -1569,7 +1623,10 @@ class AgentExecutionService:
                     current,
                     payload,
                     evidence,
-                    confirmed,
+                    {
+                        **dict(confirmed),
+                        "runtime_result": dict(runtime_metadata),
+                    },
                 )
             except AgentExecutionError:
                 raise

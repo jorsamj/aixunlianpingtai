@@ -110,8 +110,8 @@ def claimed(task_id="task-1", kind="DEPLOYMENT_TEST", capability=None):
 
 def test_executor_reports_only_capabilities_this_agent_build_can_run():
     assert executable_agent_capabilities(
-        ["training", "deployment-test", "conversion", "conversion.rknn", "material-import", "cleaning", "deployment-test"]
-    ) == ["cleaning", "conversion", "conversion.rknn", "deployment-test", "material-import", "training"]
+        ["training", "deployment-test", "deployment-test.rknn", "conversion", "conversion.rknn", "material-import", "cleaning", "deployment-test"]
+    ) == ["cleaning", "conversion", "conversion.rknn", "deployment-test", "deployment-test.rknn", "material-import", "training"]
     assert executable_agent_capabilities(["training", "conversion", "conversion.rknn"]) == ["conversion", "conversion.rknn", "training"]
 
 
@@ -374,3 +374,14 @@ def test_rknn_only_agent_does_not_start_generic_conversion_assignment():
     assert client.start_calls == []
     assert conversion_runner.calls == []
     assert "not executable" in loop.status().last_error
+
+
+def test_executor_maps_rknn_board_capability_to_deployment_runner():
+    client = FakeClient([])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        runner,
+        capabilities=["deployment-test.rknn"],
+    )
+    assert loop.effective_capabilities() == ("deployment-test.rknn",)

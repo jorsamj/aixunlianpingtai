@@ -12203,6 +12203,171 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     return {"ok":True,"job":job}
 
 
+def _eligible_rknn_board_nodes(chip: str) -> list[dict[str, Any]]:
+    chip = str(chip or "").strip().lower()
+    if chip not in {"rk3568", "rk3576"}:
+        return []
+    rows = ServiceNodeRepository(shared_task_repository()).list_public()
+    eligible = []
+    for node in rows:
+        if (
+            str(node.get("connection_mode") or "") != "agent"
+            or not bool(node.get("online"))
+            or "deployment-test.rknn" not in set(node.get("effective_capabilities") or [])
+        ):
+            continue
+        runtime = node.get("runtime")
+        runtime = dict(runtime) if isinstance(runtime, Mapping) else {}
+        board = runtime.get("rknn_board")
+        board = dict(board) if isinstance(board, Mapping) else {}
+        if not bool(board.get("available")) or str(board.get("chip") or "").strip().lower() != chip:
+            continue
+        eligible.append({
+            "node_id": str(node.get("node_id") or ""),
+            "display_name": str(node.get("display_name") or ""),
+            "build_id": str(node.get("build_id") or ""),
+            "chip": chip,
+            "rknn_lite_version": str(board.get("rknn_lite_version") or ""),
+        })
+    return eligible
+
+
+@app.post("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests")
+async def v39_create_rknn_hardware_test(
+    project_id: str,
+    job_id: str,
+    file: UploadFile = File(...),
+):
+    get_project(project_id)
+    job = _read_deploy_job(project_id, job_id)
+    if str(job.get("target") or "").strip().lower() not in {"rockchip", "rknn"}:
+        raise HTTPException(status_code=400, detail="只有 RKNN 转换任务支持瑞芯微板端验证")
+    job_dir = _deploy_job_dir(project_id, job_id).resolve()
+    manifest_path = (job_dir / "artifacts" / "manifest.json").resolve()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=409, detail="RKNN 转换产物尚未形成可验证 manifest")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(status_code=409, detail="RKNN 转换 manifest 无法读取")
+    target = manifest.get("target") if isinstance(manifest, Mapping) else None
+    output = manifest.get("output") if isinstance(manifest, Mapping) else None
+    if (
+        not isinstance(target, Mapping)
+        or str(target.get("kind") or "") != "rockchip"
+        or not isinstance(output, Mapping)
+    ):
+        raise HTTPException(status_code=409, detail="当前转换结果不是可验证的 RKNN 产物")
+    chip = str(target.get("chip") or "").strip().lower()
+    if chip not in {"rk3568", "rk3576"}:
+        raise HTTPException(status_code=400, detail=f"当前板端验证不支持芯片 {chip or '未指定'}")
+    if manifest.get("hardware_verified") is True:
+        raise HTTPException(status_code=409, detail="该 RKNN 产物已完成板端 Runtime 验证")
+
+    model_name = Path(str(output.get("file_name") or "")).name
+    model_path = (job_dir / "artifacts" / model_name).resolve()
+    if (
+        not model_name
+        or model_path.parent != (job_dir / "artifacts").resolve()
+        or model_path.suffix.lower() != ".rknn"
+        or not model_path.is_file()
+        or model_path.stat().st_size <= 0
+    ):
+        raise HTTPException(status_code=409, detail="RKNN 模型文件不存在或不可验证")
+    expected_sha = str(output.get("sha256") or "").strip().lower()
+    try:
+        expected_size = int(output.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        expected_size = 0
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+        or expected_size <= 0
+        or model_path.stat().st_size != expected_size
+        or sha256_file(model_path) != expected_sha
+    ):
+        raise HTTPException(status_code=409, detail="RKNN 模型与转换 manifest 的 size/SHA256 不一致")
+
+    nodes = _eligible_rknn_board_nodes(chip)
+    if not nodes:
+        raise PlatformError(
+            code="RKNN_BOARD_NODE_UNAVAILABLE",
+            message="没有可用的瑞芯微板端验证节点",
+            detail=f"需要在线、已授权 deployment-test.rknn 且真实识别为 {chip.upper()} 的 RKNNLite Agent",
+            solution="请在对应 RK3568/RK3576 设备部署 Node Agent，并安装可用的 RKNN-Toolkit-Lite2 后重试。",
+            status_code=409,
+        )
+
+    extension = Path(file.filename or "test.jpg").suffix.lower()
+    if extension not in IMAGE_EXTS:
+        extension = ".jpg"
+    task_id = uuid.uuid4().hex[:12]
+    prediction_dir = project_dir(project_id) / "predictions" / task_id
+    prediction_dir.mkdir(parents=True, exist_ok=True)
+    input_path = prediction_dir / f"input{extension}"
+    input_path.write_bytes(await file.read())
+    if input_path.stat().st_size <= 0:
+        input_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="板端验证图片为空")
+
+    params = job.get("params")
+    params = dict(params) if isinstance(params, Mapping) else {}
+    try:
+        input_size = int(params.get("input_size") or 640)
+    except (TypeError, ValueError):
+        input_size = 640
+    try:
+        remote_execution = _remote_execution_transport_service().stage_rknn_board_validation(
+            project_id=project_id,
+            task_id=task_id,
+            conversion_job_id=job_id,
+            model_path=model_path,
+            input_path=input_path,
+            chip=chip,
+            input_size=input_size,
+        )
+    except RemoteExecutionTransportError as error:
+        input_path.unlink(missing_ok=True)
+        try:
+            prediction_dir.rmdir()
+        except OSError:
+            pass
+        raise PlatformError(
+            code=error.code,
+            message="RKNN 板端验证准备失败",
+            detail=str(error),
+            solution="请检查对象存储、RKNN 产物完整性和板端节点状态后重试。",
+            status_code=error.status_code,
+        ) from error
+
+    request = {
+        "execution_mode": "agent",
+        "framework": "rknn",
+        "runtime_format": "rknn",
+        "source_conversion_job_id": job_id,
+        "chip": chip,
+        "input_size": input_size,
+        "model_path": str(model_path),
+        "input_path": str(input_path),
+        "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
+        "remote_execution": remote_execution,
+    }
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+    record = shared_task_repository().create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.DEPLOYMENT_TEST,
+        "request.json",
+        f"deployment-rknn-board:{chip}",
+        required_capabilities=("agent.remote",),
+    ))
+    return JSONResponse(status_code=202, content={
+        **public_deployment_test(record),
+        "board_nodes": nodes,
+        "source_conversion_job_id": job_id,
+        "chip": chip,
+    })
+
+
 @app.get("/api/v39/projects/{project_id}/deploy/jobs")
 def v39_list_deploy_jobs(project_id: str):
     root=deploy_root(project_id)/"jobs";rows=[]

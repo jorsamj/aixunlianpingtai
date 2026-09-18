@@ -29,6 +29,7 @@ SUPPORTED_NODE_CAPABILITIES = (
     "conversion",
     "conversion.rknn",
     "deployment-test",
+    "deployment-test.rknn",
     "model-upload",
 )
 HEARTBEAT_TTL_SECONDS = 45

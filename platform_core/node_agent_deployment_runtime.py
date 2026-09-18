@@ -149,6 +149,7 @@ class AgentDeploymentRunner:
         runtime_root: str | Path,
         transfer_session: requests.Session | None = None,
         python_by_framework: Mapping[str, str | Path] | None = None,
+        rknn_board_probe: Mapping[str, Any] | None = None,
         heartbeat_interval: float = 5.0,
         transfer_timeout: float = 120.0,
         process_poll_interval: float = 0.2,
@@ -160,12 +161,14 @@ class AgentDeploymentRunner:
         defaults = {
             "ultralytics": str(Path(sys.executable).resolve()),
             "paddle": str(Path(sys.executable).resolve()),
+            "rknn": str(Path(sys.executable).resolve()),
         }
         defaults.update({
             str(key).strip().lower(): str(Path(value).expanduser().resolve())
             for key, value in dict(python_by_framework or {}).items()
         })
         self.python_by_framework = defaults
+        self.rknn_board_probe = dict(rknn_board_probe or {})
         self.heartbeat_interval = max(1.0, float(heartbeat_interval))
         self.transfer_timeout = max(5.0, float(transfer_timeout))
         self.process_poll_interval = max(0.05, float(process_poll_interval))
@@ -324,6 +327,61 @@ class AgentDeploymentRunner:
         output_path: Path,
     ) -> list[str]:
         framework = str(payload.get("framework") or "ultralytics").strip().lower()
+        runtime_format = str(payload.get("runtime_format") or "").strip().lower()
+        suffix = Path(model_argument).suffix.lower()
+
+        if framework == "rknn" or runtime_format == "rknn":
+            if framework != "rknn" or runtime_format != "rknn" or suffix != ".rknn":
+                raise AgentDeploymentRuntimeError(
+                    "RKNN board verification requires framework/runtime_format/model suffix to all be rknn"
+                )
+            board = payload.get("board")
+            if not isinstance(board, Mapping):
+                raise AgentDeploymentRuntimeError("RKNN board verification contract is missing")
+            chip = str(board.get("chip") or "").strip().lower()
+            try:
+                input_size = int(board.get("input_size") or 0)
+            except (TypeError, ValueError) as error:
+                raise AgentDeploymentRuntimeError("RKNN board input_size is invalid") from error
+            probe_chip = str(self.rknn_board_probe.get("chip") or "").strip().lower()
+            if (
+                not bool(self.rknn_board_probe.get("available"))
+                or chip not in {"rk3568", "rk3576"}
+                or probe_chip != chip
+            ):
+                raise AgentDeploymentRuntimeError(
+                    "current Agent is not a verified RK3568/RK3576 board matching this task"
+                )
+            if input_size < 32 or input_size > 4096:
+                raise AgentDeploymentRuntimeError("RKNN board input_size is out of range")
+            python_path = Path(self.python_by_framework.get("rknn") or "").expanduser().resolve()
+            if not python_path.is_file():
+                raise AgentDeploymentRuntimeError("node-local RKNNLite Python runtime is unavailable")
+            runner_name = "predict_rknn_lite_runner.py"
+            runner = (self.runtime_root / runner_name).resolve()
+            if (
+                not runner.is_file()
+                or runner.is_symlink()
+                or runner.parent != self.runtime_root
+            ):
+                raise AgentDeploymentRuntimeError(
+                    "node-local RKNNLite verification runner is unavailable"
+                )
+            return [
+                str(python_path),
+                str(runner),
+                "--model",
+                model_argument,
+                "--input",
+                str(input_path),
+                "--output",
+                str(output_path),
+                "--input-size",
+                str(input_size),
+                "--chip",
+                chip,
+            ]
+
         if framework not in {"ultralytics", "paddle"}:
             raise AgentDeploymentRuntimeError(f"unsupported deployment framework: {framework}")
         python_path = Path(self.python_by_framework.get(framework) or "").expanduser().resolve()
@@ -339,7 +397,6 @@ class AgentDeploymentRunner:
         ):
             raise AgentDeploymentRuntimeError(f"node-local deployment runner is unavailable: {runner_name}")
 
-        suffix = Path(model_argument).suffix.lower()
         if suffix in _BOARD_ONLY_SUFFIXES:
             raise AgentDeploymentRuntimeError(f"portable deployment runner does not support board-only format {suffix}")
         supported = _SUPPORTED_PADDLE_SUFFIXES if framework == "paddle" else _SUPPORTED_ULTRALYTICS_SUFFIXES
