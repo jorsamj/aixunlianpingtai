@@ -13,7 +13,7 @@ import uuid
 import zipfile
 import random
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -13883,9 +13883,11 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
         'finished_at': body.get('finished_at'),
         'request_payload': request_payload,
         'resource_queue_position': body.get('resource_queue_position'),
+        'resource_queue_position_exact': bool(body.get('resource_queue_position_exact')),
         'resource_wait_reason': body.get('resource_wait_reason'),
         'worker_id': body.get('worker_id'),
         'lease_expires_at': body.get('lease_expires_at'),
+        'current_item': body.get('current_item'),
         'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
         'execution_mode': execution_mode,
     }
