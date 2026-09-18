@@ -128,6 +128,20 @@ def test_executor_client_uses_only_http_control_contract_and_bearer_node_token()
     assert session.calls[2]["json"]["execution_lease_token"] == "execution-secret"
 
 
+def test_executor_client_fails_closed_on_successful_non_json_response():
+    session = ScriptedSession(FakeResponse(200, invalid_json=True))
+    client = NodeExecutorClient(
+        "https://control.example.test",
+        "node-1",
+        "node-secret",
+        session=session,
+    )
+    with pytest.raises(NodeExecutorHTTPError) as invalid:
+        client.claim_assignment()
+    assert invalid.value.code == "NODE_EXECUTOR_INVALID_RESPONSE"
+    assert invalid.value.status_code == 200
+
+
 def test_executor_client_maps_structured_server_error_and_transport_failure():
     denied = ScriptedSession(FakeResponse(409, {
         "detail": {"code": "EXECUTION_FENCED", "message": "stale generation"}
