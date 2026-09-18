@@ -35,7 +35,7 @@ class FakeModelArtifacts:
         self.repository = FakeConfigRepository(source_id)
         self.model_row = model_row
         self.discovered = []
-        self.ingested = []
+        self.registered = []
 
     def discover_version_artifacts(self, project_id, algorithm, version):
         return list(self.discovered)
@@ -43,9 +43,28 @@ class FakeModelArtifacts:
     def ensure_uploaded(self, _candidate):
         return dict(self.model_row or {})
 
-    def ingest_version(self, project_id, algorithm, version):
-        self.ingested.append((project_id, dict(algorithm), dict(version)))
-        return {"discovered": 2, "uploaded": 2, "failed": 0, "pending": 0}
+    def register_verified_remote_artifact(self, **kwargs):
+        row = {
+            "artifact_id": hashlib.sha256(
+                (
+                    f"{kwargs['project_id']}:{kwargs['algorithm_id']}:"
+                    f"{kwargs['version_id']}:{kwargs['target']}:{kwargs['sha256']}"
+                ).encode("utf-8")
+            ).hexdigest()[:32],
+            "project_id": str(kwargs["project_id"]),
+            "algorithm_id": str(kwargs["algorithm_id"]),
+            "version_id": str(kwargs["version_id"]),
+            "target": str(kwargs["target"]),
+            "file_name": str(kwargs["file_name"]),
+            "source_path": str(kwargs.get("source_path") or ""),
+            "sha256": str(kwargs["sha256"]),
+            "size_bytes": int(kwargs["size_bytes"]),
+            "storage_source_id": str(kwargs["storage_source_id"]),
+            "object_key": str(kwargs["object_key"]),
+            "storage_status": "UPLOADED",
+        }
+        self.registered.append((dict(kwargs), row))
+        return row
 
 
 class FakeSources:
