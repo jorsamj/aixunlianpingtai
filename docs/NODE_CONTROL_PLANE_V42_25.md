@@ -6,6 +6,81 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Remote MATERIAL_IMPORT Phase 1 — Agent ZIP 图片审查 + 本地确认索引
+
+2026-09-18，`MATERIAL_IMPORT` 已完成第一条真实跨机器闭环。当前 CLOSED 范围**明确限定**为：
+
+```text
+server_zip + execution_mode=agent + import_format=images
+```
+
+完整链路：
+
+```text
+控制面选择服务器 ZIP + Agent 执行 + OSS/S3/MinIO 目标存储
+→ 创建 MATERIAL_IMPORT(agent.remote) durable task
+→ source ZIP 上传对象存储并固化 size/SHA256
+→ Central Scheduler 只分配到 material-import Agent
+→ Agent 下载并逐字节验证 ZIP
+→ 复用 server_zip 安全解包：Zip Slip / symlink / device / 重复路径 /
+  压缩炸弹 / CRC / size 等继续 fail closed
+→ Agent 对图片解码、尺寸、SHA256、同包重复做 review
+→ 生成 review ZIP(meta.json + review.jsonl + importable 文件内容)
+→ 本地计算 review SHA256/size
+→ generation-scoped immutable prepare / PUT / confirm
+→ 控制面重新下载并复核 review ZIP
+→ 校验 task/project/generation/target source/prefix + 每个 payload 的
+  SHA256/size/dimensions
+→ 写 task-owned ImportCandidateStore + staged member mapping
+→ finish(AWAITING_CONFIRMATION)
+→ 用户确认选择
+→ repository 原子切回 QUEUED/indexing_queued + storage.import
+→ 本地 indexer 仅对“最终选中且通过中央重复检测”的成员流式上传目标 OSS/S3
+→ 对目标对象再次验证 server-visible SHA256/size
+→ 最后才写 MaterialRepository
+```
+
+关键边界：
+
+- Agent **不**打开中央 MaterialRepository / TaskRepository / SQLite，不依赖共享 NFS。
+- Agent **不**持有 OSS/S3 长期凭据；输入/输出只用短期签名 GET/PUT。
+- durable request 不保存 signed URL、控制面绝对路径或 storage secret。
+- 用户明确 `execution_mode=agent` 时 required capability 为 `agent.remote`，本地 `storage.import` Worker 不能提前抢任务。
+- Agent 结果必须 server-confirm 后才能进入 `AWAITING_CONFIRMATION`。
+- 用户确认后才把 capability 改回 `storage.import`，由中央 local indexer 完成正式对象发布与 MaterialRepository 写入。
+- review ZIP 是 task audit/retry truth；未确认图片不会写入正式素材存储。
+- 目标对象已经存在时必须重新 stat 并验证 size/SHA256；不允许覆盖内容不同的对象。
+- Agent workdir 在终态/取消/fence 后清理。
+- 当前 Agent executable capabilities 已包含 `material-import`，且对应真实 `AgentMaterialImportRunner`。
+- Windows / Linux 路径均使用安全相对 member + pathlib 处理。
+
+永久验收：
+
+- Remote Material Import `35308672897`
+  - production API：success
+  - Ubuntu 24.04 contract + handoff integration：success
+  - Windows latest contract + handoff integration：success
+- Node Agent Executor `35308672844`
+  - API / Ubuntu / Windows：success
+- Portable Deployment `35308672842`
+  - production API / Ubuntu / Windows：success
+- Central Node Assignment `35308672962`
+  - API / Ubuntu / Windows：success
+- 临时 draft PR #16 已关闭，**未 merge**。
+- 正式 `VERSION.txt` 仍为 `42.24.0`。
+
+**仍然 OPEN，不得混淆为 Phase 1 已完成：**
+
+1. Agent 端 YOLO dataset / labels 解析与 annotation review。
+2. 用户 label mapping 后 AnnotationRepository 写入闭环。
+3. Agent 端 `storage_scan`（对象列表扫描）模式。
+4. COCO / VOC 等标签格式扩展。
+5. staging input/review object 的生命周期清理与保留策略。
+
+**下一主线：Remote MATERIAL_IMPORT Phase 2 — YOLO 标签解析/转换。**
+
+目标是在当前已验证的 Agent ZIP review 基础上，让 `import_format=yolo` 由 Agent 解析 `data.yaml / images / labels`，把 annotation evidence 与 label preview 放入 server-confirmed review bundle；用户确认 label mapping 后，由本地 indexer 上传选中图片并写 AnnotationRepository。仍然禁止 Agent 直接访问中央 SQLite/NFS。
+
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
 2026-09-18，`MODEL_CONVERSION` 已成为继 `DEPLOYMENT_TEST`、`TRAINING` 之后第三个真实跨机器 portable task kind。当前 CLOSED 范围明确为 **ONNX**；TensorRT / RKNN / Sophon / Ascend 等厂商 SDK 目标仍按节点真实环境单独实现，不能借 ONNX closure 宣称远程可用。
