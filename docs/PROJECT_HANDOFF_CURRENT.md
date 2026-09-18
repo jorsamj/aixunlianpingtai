@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`3d9c2f8ed3e113d1d500dc0fc71ac432a17c7362`  
+本轮产品实现基线：`8c36ba1bcac501b029f7cb0976b5ec8a1b0e3dfe`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,48 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Remote TRAINING Runtime
+
+2026-09-18，第二个真实跨机器 task kind 已 CLOSED：`TRAINING`。
+
+当前 Agent **真实可执行**：
+
+```text
+deployment-test
+training
+```
+
+其中 `training` 不是静态虚报：若 Agent 启动恢复时无法安全处理遗留训练进程，`AgentTrainingRunner.ready=false`，heartbeat 会动态移除 training capability。
+
+完整闭环：
+
+- remote train 创建同一个 durable TRAINING task，并创建独立 `TRAINING_PREPARE` 后台任务。
+- prep Worker 锁定 split/snapshot，生成/复用 verified portable bundle。
+- bundle 安全 ZIP 归档，持久化 SHA256 / size / member_count / snapshot_id，上传 OSS/S3/MinIO 后服务端再次校验。
+- `target=remote` 在 READY 前不会回退本机 Worker。
+- 首次官方模型只保存 allow-listed reference；算法迭代继续强制使用最新可训练上一版本，并转为 verified model object。
+- Agent 下载并校验 bundle / object model，使用节点本地 `train_worker.py` 和节点本地 Python 启动真实 subprocess。
+- heartbeat / progress / bounded logs 回到中央 execution truth。
+- cancel / fence / Agent shutdown 终止精确进程树；进程树清理不可证明时 fail closed。
+- best / last 作为独立 immutable model objects 上传并确认。
+- training result 为 manifest-only bundle，不重复塞模型二进制。
+- result/model 全部 server-confirm 后才允许 finalization，并写回统一 ModelArtifact / 算法版本 truth。
+- Agent runtime 仍不打开中央 SQLite、不依赖 NFS。
+- 已修复 portable 参数缺失时 `None` 未回退默认值导致 `int(None)` 的真实执行问题。
+
+最终验收：
+
+- Remote Training Runtime `35303815439`：Ubuntu / Windows / API 全绿。
+- Node Agent Executor `35303815460`：Ubuntu / Windows / API 全绿。
+- Central Node Assignment `35303815499`：Ubuntu / Windows / API 全绿。
+- Portable Deployment `35303815438`：Ubuntu / Windows / production API 全绿。
+- 临时 draft PR #14 已关闭，未 merge。
+- `VERSION.txt` 仍为 `42.24.0`。
+
+**当前主线：Remote MODEL_CONVERSION Runtime。**
+
+现有 conversion handler 仍带中央 `job_dir / worker_path / python_path`，不能直接远程执行。下一步要把输入改为 verified model object，转换工具/SDK 由节点本地 capability 决定，输出走 generation-scoped immutable upload + server confirm；不能退回共享 SQLite/NFS。
 
 # 最新关闭：服务节点控制面 + 中央分配 + Executor 控制协议 + Remote Portability
 
@@ -131,8 +173,7 @@ revert: keep external algorithm integration off main
 - Portable Deployment `35297453136`：production API / Ubuntu / Windows 全绿。
 - `VERSION.txt` 仍为 `42.24.0`。
 
-**当前主线：Remote TRAINING Runtime。**
-下一步优先让 TRAINING 成为第二个真实 portable task kind：dataset/bundle 对象化、Agent 本地真实训练、GPU/进程 fencing、metrics/log 回传、模型资产上传与 server-confirmed finalization。素材导入/转换继续复用同一执行框架，不能退回共享 SQLite/NFS。
+> 上述 Agent Deployment Runtime 段落是 2026-09-18 当时的关闭快照；Remote TRAINING 此后已按本文件更上方“最新关闭”完成。当前主线以最上方为准。
 
 
 # 1. 产品定位
