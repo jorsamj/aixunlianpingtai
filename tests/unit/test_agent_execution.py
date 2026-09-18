@@ -159,6 +159,51 @@ def test_agent_start_is_single_atomic_queued_to_running_transition(tmp_path):
     assert service.allocator.list(active_only=True) == []
 
 
+def test_remote_agent_without_payload_resolver_never_transitions_to_running(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts)
+    _nodes, token = create_node(repository)
+    service = AgentExecutionService(repository, artifacts)
+    claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
+
+    with pytest.raises(AgentExecutionError) as unavailable:
+        start(service, "train-agent", "gpu-agent", token, claimed)
+    assert unavailable.value.code == "REMOTE_EXECUTION_PAYLOAD_UNAVAILABLE"
+    assert repository.get("train-agent").status is TaskStatus.QUEUED
+    active = service.allocator.get_active("train-agent")
+    assert active is not None
+    assert active["state"] == "CLAIMED"
+
+
+def test_invalid_assignment_token_does_not_invoke_remote_payload_resolver(tmp_path):
+    repository, artifacts = runtime(tmp_path)
+    create_task(repository, artifacts)
+    _nodes, token = create_node(repository)
+    calls = []
+
+    def resolver(*_args):
+        calls.append("called")
+        return {"safe": True}
+
+    service = AgentExecutionService(
+        repository,
+        artifacts,
+        execution_payload_resolver=resolver,
+    )
+    claimed = allocate_claim(service, "train-agent", "gpu-agent", token)
+
+    with pytest.raises(AgentExecutionError) as denied:
+        service.start_execution(
+            "gpu-agent",
+            token,
+            "train-agent",
+            "invalid-assignment-token",
+        )
+    assert denied.value.code == "INVALID_ASSIGNMENT_LEASE"
+    assert calls == []
+    assert repository.get("train-agent").status is TaskStatus.QUEUED
+
+
 def test_invalid_assignment_token_and_duplicate_start_are_fenced(tmp_path):
     repository, artifacts = runtime(tmp_path)
     create_task(repository, artifacts)
