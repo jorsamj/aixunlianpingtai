@@ -138,6 +138,133 @@ def test_server_zip_accepts_only_relative_path_for_enabled_local_source(
     assert outside.status_code == 422
 
 
+def test_agent_server_zip_import_creates_portable_task_without_storage_credentials(
+    client, tmp_path, monkeypatch,
+):
+    import_dir = tmp_path / "imports"
+    import_dir.mkdir()
+    _write_zip(import_dir / "remote.zip")
+    monkeypatch.setenv("MC_SERVER_IMPORT_DIR", str(import_dir))
+    project = _project(client)
+    source = _source(client, tmp_path, source_type="s3")
+    calls = []
+
+    class FakeTransport:
+        def stage_material_import(self, **kwargs):
+            calls.append(dict(kwargs))
+            return {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+                "material_import": {
+                    "schema_version": 1,
+                    "mode": "zip_scan",
+                    "import_format": "images",
+                    "target": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "target_prefix": "incoming/remote",
+                    },
+                    "input": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/input.zip",
+                        "file_name": "remote.zip",
+                        "size_bytes": 123,
+                        "sha256": "a" * 64,
+                        "content_type": "application/zip",
+                    },
+                    "output": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/review.zip",
+                        "file_name": "material-review.zip",
+                        "content_type": "application/zip",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        app_module,
+        "_remote_execution_transport_service",
+        lambda: FakeTransport(),
+    )
+    response = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "server_zip",
+            "execution_mode": "agent",
+            "zip_path": "remote.zip",
+            "storage_source_id": source["id"],
+            "target_prefix": "incoming/remote",
+            "import_format": "images",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    task = app_module.shared_task_repository().get(task_id)
+    assert task is not None
+    assert task.required_capabilities == ("agent.remote",)
+    assert task.resource_key == f"material-import:agent:{source['id']}"
+    request = app_module.shared_task_artifacts().read_json(task_id, "request.json")
+    assert request["execution_mode"] == "agent"
+    assert request["remote_execution"]["task_kind"] == "MATERIAL_IMPORT"
+    assert request["remote_execution"]["transport"] == "object-storage-v1"
+    assert "url" not in str(request).lower()
+    assert str(import_dir) not in str(request)
+    assert len(calls) == 1
+    assert calls[0]["archive_path"] == (import_dir / "remote.zip").resolve()
+    assert calls[0]["target_prefix"] == "incoming/remote"
+
+
+def test_agent_material_import_rejects_unimplemented_modes_and_local_target(
+    client, tmp_path, monkeypatch,
+):
+    import_dir = tmp_path / "imports"
+    import_dir.mkdir()
+    _write_zip(import_dir / "remote.zip")
+    monkeypatch.setenv("MC_SERVER_IMPORT_DIR", str(import_dir))
+    project = _project(client)
+    local_source = _source(client, tmp_path, source_type="local")
+    s3_source = _source(client, tmp_path, source_type="s3")
+
+    wrong_mode = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "storage_scan",
+            "execution_mode": "agent",
+            "storage_source_id": s3_source["id"],
+        },
+    )
+    assert wrong_mode.status_code == 422
+
+    wrong_format = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "server_zip",
+            "execution_mode": "agent",
+            "zip_path": "remote.zip",
+            "storage_source_id": s3_source["id"],
+            "target_prefix": "incoming",
+            "import_format": "yolo",
+        },
+    )
+    assert wrong_format.status_code == 422
+
+    local_target = client.post(
+        f"/api/v61/projects/{project['id']}/storage-imports/scan",
+        json={
+            "mode": "server_zip",
+            "execution_mode": "agent",
+            "zip_path": "remote.zip",
+            "storage_source_id": local_source["id"],
+            "target_prefix": "incoming",
+            "import_format": "images",
+        },
+    )
+    assert local_target.status_code == 422
+    assert "OSS/S3/MinIO" in local_target.text
+
+
 def test_scan_modes_reject_invalid_source_or_field_combinations(client, tmp_path):
     project = _project(client)
     s3_source = _source(client, tmp_path, source_type="s3")
