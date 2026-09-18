@@ -11945,14 +11945,45 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
         "sha256": sha256_file(local_src),
     }
     job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
+    portable_conversion = None
+    if str(resource.get("mode")) != "remote" and str(payload.target or "").strip().lower() == "onnx":
+        try:
+            portable_conversion = _remote_execution_transport_service().stage_model_conversion(
+                project_id=project_id,
+                task_id=job_id,
+                source_id=payload.source_id,
+                source_path=src,
+                algorithm_id=str(source.get("algorithm_id") or ""),
+                version_id=str(source.get("version_id") or ""),
+                target=payload.target,
+                params=params,
+            )
+            job["remote_portability"] = {
+                "status": "ready",
+                "transport": "object-storage-v1",
+                "task_kind": "MODEL_CONVERSION",
+            }
+        except RemoteExecutionTransportError as error:
+            # Portable staging is additive for the existing local conversion
+            # path. It must never turn a valid local conversion into a failure.
+            job["remote_portability"] = {
+                "status": "unavailable",
+                "code": error.code,
+                "message": str(error),
+            }
     _write_deploy_job(project_id,job)
     if str(resource.get("mode"))=="remote":
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
-        shared_task_artifacts().atomic_write_json(job_id, "request.json", {
-            "job_dir": str(jd), "worker_path": str(BASE_DIR / "deployment_worker.py"),
+        request_payload = {
+            "job_dir": str(jd),
+            "worker_path": str(BASE_DIR / "deployment_worker.py"),
             "python_path": sys.executable,
-        })
+            "execution_mode": "local",
+        }
+        if portable_conversion is not None:
+            request_payload["remote_execution"] = portable_conversion
+        shared_task_artifacts().atomic_write_json(job_id, "request.json", request_payload)
         shared_task_repository().create(TaskRecord.new(
             job_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
             f"conversion:{resource.get('id') or payload.target}",
