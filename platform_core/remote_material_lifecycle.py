@@ -209,11 +209,13 @@ class RemoteMaterialStagingLifecycle:
         self.provider_resolver = provider_resolver
         self.retention_seconds = max(3600, int(retention_seconds))
         self.scan_limit = max(1, min(100, int(scan_limit)))
-        base = Path(data_dir) if data_dir is not None else Path(repository.path).parent
-        self.state_path = base / "task_runtime" / REMOTE_MATERIAL_GC_STATE_REF
-        if self.state_path.parent == Path(repository.path).parent / "task_runtime":
-            # repository.path normally already lives under task_runtime.
+        if data_dir is not None:
+            base = Path(data_dir)
+            self.state_path = base / "task_runtime" / REMOTE_MATERIAL_GC_STATE_REF
+        elif repository is not None:
             self.state_path = Path(repository.path).parent / REMOTE_MATERIAL_GC_STATE_REF
+        else:
+            self.state_path = Path(artifacts.root).parent / REMOTE_MATERIAL_GC_STATE_REF
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _ledger_path(self, task_id: str) -> Path:
@@ -292,6 +294,8 @@ class RemoteMaterialStagingLifecycle:
         return _iso(_utc(finished) + timedelta(seconds=self.retention_seconds))
 
     def _build_terminal_ledger(self, task, *, now=None) -> dict[str, Any] | None:
+        if self.repository is None:
+            return None
         if task.kind is not TaskKind.MATERIAL_IMPORT or task.status not in _TERMINAL:
             return None
         payload = self.artifacts.read_json(
@@ -428,6 +432,8 @@ class RemoteMaterialStagingLifecycle:
         os.replace(temporary, self.state_path)
 
     def maintain(self, *, now: datetime | str | None = None) -> dict[str, Any]:
+        if self.repository is None:
+            raise RuntimeError("remote material staging maintenance requires TaskRepository")
         now_dt = _utc(now)
         state = self._read_state()
         cursor = state.get("cursor")
