@@ -270,13 +270,21 @@ class NodeExecutorClient:
             },
         )
 
-    def confirm_result_upload(self, lease: RemoteExecutionLease) -> dict[str, Any]:
+    def confirm_result_upload(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        runtime_result: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+        }
+        if runtime_result is not None:
+            payload["runtime_result"] = dict(runtime_result)
         return self._post(
             f"/executions/{quote(lease.task_id, safe='')}/result-upload/confirm",
-            {
-                "execution_lease_token": lease.lease_token,
-                "execution_generation": lease.generation,
-            },
+            payload,
         )
 
     def begin_finalization(self, lease: RemoteExecutionLease) -> dict[str, Any]:
