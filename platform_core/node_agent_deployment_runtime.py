@@ -198,7 +198,7 @@ class AgentDeploymentRunner:
     def _assert_active(self, monitor: ExecutionLeaseMonitor) -> None:
         if self._shutdown_event.is_set():
             raise RemoteExecutionFenced("Agent process shutdown requested")
-        self._assert_active(monitor)
+        monitor.assert_active()
 
     def _heartbeat(
         self,
