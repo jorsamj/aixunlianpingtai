@@ -21,8 +21,8 @@ from .node_agent_executor_runtime import (
 )
 
 
-SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test"})
-SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST"})
+SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test", "training"})
+SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "TRAINING"})
 
 
 def executable_agent_capabilities(values: Iterable[str]) -> list[str]:
@@ -54,11 +54,17 @@ class NodeAgentExecutorLoop:
         deployment_runner: AgentDeploymentRunner,
         *,
         capabilities: Iterable[str],
+        runners: Mapping[str, object] | None = None,
         poll_interval: float = 2.0,
         on_status_change: Callable[[AgentExecutorStatus], None] | None = None,
     ) -> None:
         self.client = client
         self.deployment_runner = deployment_runner
+        self.runners: dict[str, object] = {"DEPLOYMENT_TEST": deployment_runner}
+        for raw_kind, runner in dict(runners or {}).items():
+            kind = str(raw_kind or "").strip().upper()
+            if kind:
+                self.runners[kind] = runner
         self.capabilities = tuple(executable_agent_capabilities(capabilities))
         self.poll_interval = max(0.5, float(poll_interval))
         self.on_status_change = on_status_change
@@ -116,7 +122,7 @@ class NodeAgentExecutorLoop:
             self._last_error = str(value or "")
         self._publish_status()
 
-    def _record_outcome(self, outcome: AgentDeploymentOutcome) -> None:
+    def _record_outcome(self, outcome) -> None:
         with self._lock:
             self._completed_tasks += 1
             self._last_outcome = str(outcome.status or "")
@@ -180,7 +186,8 @@ class NodeAgentExecutorLoop:
 
         self._set_active(lease.task_id, True)
         try:
-            if lease.kind != "DEPLOYMENT_TEST":
+            runner = self.runners.get(str(lease.kind or "").strip().upper())
+            if runner is None or not callable(getattr(runner, "run", None)):
                 try:
                     self.client.finish(
                         lease,
@@ -193,7 +200,7 @@ class NodeAgentExecutorLoop:
                     f"UNSUPPORTED_AGENT_TASK_KIND: started {lease.kind} for {lease.task_id}"
                 )
                 return True
-            outcome = self.deployment_runner.run(lease)
+            outcome = runner.run(lease)
             self._record_outcome(outcome)
             return True
         except RemoteExecutionFenced as error:
@@ -245,9 +252,15 @@ class NodeAgentExecutorLoop:
         # Local shutdown must never leave a child inference process behind. The
         # runner treats this as execution fencing so central lease expiry/retry
         # remains authoritative rather than publishing a false terminal status.
-        request_shutdown = getattr(self.deployment_runner, "request_shutdown", None)
-        if callable(request_shutdown):
-            request_shutdown()
+        seen_runners: set[int] = set()
+        for runner in self.runners.values():
+            identity = id(runner)
+            if identity in seen_runners:
+                continue
+            seen_runners.add(identity)
+            request_shutdown = getattr(runner, "request_shutdown", None)
+            if callable(request_shutdown):
+                request_shutdown()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(0.1, float(timeout)))
