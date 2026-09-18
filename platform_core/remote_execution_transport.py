@@ -368,6 +368,251 @@ class RemoteExecutionTransportService:
             },
         }
 
+    @staticmethod
+    def _portable_conversion_params(target: str, params: Mapping[str, Any] | None) -> dict[str, Any]:
+        target = str(target or "").strip().lower()
+        values = dict(params or {})
+        if target != "onnx":
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_TARGET_UNSUPPORTED",
+                "portable Agent conversion currently supports ONNX only",
+                409,
+            )
+
+        def integer(name: str, default: int, minimum: int, maximum: int) -> int:
+            raw = values.get(name)
+            if raw in (None, ""):
+                result = default
+            else:
+                try:
+                    result = int(raw)
+                except (TypeError, ValueError) as error:
+                    raise RemoteExecutionTransportError(
+                        "REMOTE_CONVERSION_PARAMS_INVALID",
+                        f"conversion parameter {name} must be an integer",
+                        422,
+                    ) from error
+            if result < minimum or result > maximum:
+                raise RemoteExecutionTransportError(
+                    "REMOTE_CONVERSION_PARAMS_INVALID",
+                    f"conversion parameter {name} is out of range",
+                    422,
+                )
+            return result
+
+        def boolean(name: str, default: bool = False) -> bool:
+            raw = values.get(name)
+            if raw is None:
+                return default
+            if isinstance(raw, bool):
+                return raw
+            normalized = str(raw).strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_PARAMS_INVALID",
+                f"conversion parameter {name} must be boolean",
+                422,
+            )
+
+        return {
+            "input_size": integer("input_size", 640, 32, 4096),
+            "batch": integer("batch", 1, 1, 128),
+            "opset": integer("opset", 12, 7, 24),
+            "dynamic": boolean("dynamic", False),
+            "simplify": boolean("simplify", False),
+        }
+
+    def stage_model_conversion(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        source_id: str,
+        source_path: str | Path,
+        algorithm_id: str,
+        version_id: str,
+        target: str,
+        params: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        target = str(target or "").strip().lower()
+        portable_params = self._portable_conversion_params(target, params)
+        source = self._configured_source()
+        if source is None:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_STORAGE_REQUIRED",
+                "portable model conversion requires configured OSS/S3/MinIO model asset storage",
+                409,
+            )
+        model = self._portable_model(
+            project_id=str(project_id),
+            source=source,
+            model_path=str(source_path),
+            model_reference="",
+            model_reference_type="",
+            algorithm_id=str(algorithm_id),
+            version_id=str(version_id),
+        )
+        if not isinstance(model, Mapping) or str(model.get("type") or "") != "object":
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_SOURCE_NOT_PORTABLE",
+                "portable conversion source must be a verified algorithm-version model artifact",
+                409,
+            )
+        # Revalidate server-visible evidence before publishing a durable contract.
+        _source, provider = self._source_provider(str(project_id), model)
+        metadata = provider.stat(str(model.get("object_key") or ""))
+        expected_size = _positive_int(model.get("size_bytes"), "conversion.source.size_bytes")
+        expected_sha = _normalized_sha256(model.get("sha256"), "conversion.source.sha256")
+        actual_sha = str(metadata.sha256 or "").strip().lower()
+        if int(metadata.size_bytes) != expected_size or actual_sha != expected_sha:
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_SOURCE_UNVERIFIED",
+                "conversion source model object does not match durable size/SHA256 evidence",
+                409,
+            )
+
+        safe_project = _safe_segment(project_id, "project")
+        safe_task = _safe_segment(task_id, "task")
+        output_key = "/".join((
+            _REMOTE_PREFIX,
+            safe_project,
+            safe_task,
+            "conversion-output",
+            "model.onnx",
+        ))
+        return {
+            "version": 1,
+            "task_kind": "MODEL_CONVERSION",
+            "transport": "object-storage-v1",
+            "conversion": {
+                "schema_version": 1,
+                "target": "onnx",
+                "source": dict(model),
+                "source_trace": {
+                    "source_id": str(source_id or ""),
+                    "algorithm_id": str(algorithm_id or ""),
+                    "version_id": str(version_id or ""),
+                    "sha256": expected_sha,
+                },
+                "params": portable_params,
+                "output": {
+                    "storage_source_id": str(source.id),
+                    "object_key": output_key,
+                    "file_name": "model.onnx",
+                    "content_type": "application/octet-stream",
+                },
+            },
+        }
+
+    @staticmethod
+    def _conversion_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        if str(getattr(task.kind, "value", task.kind)) != "MODEL_CONVERSION":
+            raise RemoteExecutionTransportError(
+                "REMOTE_TASK_KIND_UNSUPPORTED",
+                "portable conversion transport requires a MODEL_CONVERSION task",
+                409,
+            )
+        remote = payload.get("remote_execution")
+        if not isinstance(remote, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_MISSING",
+                "portable conversion contract is missing",
+                409,
+            )
+        if (
+            int(remote.get("version") or 0) != 1
+            or str(remote.get("task_kind") or "") != "MODEL_CONVERSION"
+            or str(remote.get("transport") or "") != "object-storage-v1"
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable conversion contract is invalid",
+                422,
+            )
+        conversion = remote.get("conversion")
+        if not isinstance(conversion, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable conversion payload is missing",
+                422,
+            )
+        if int(conversion.get("schema_version") or 0) != 1:
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable conversion schema version is invalid",
+                422,
+            )
+        target = str(conversion.get("target") or "").strip().lower()
+        # Re-normalize instead of trusting task-supplied nested parameters.
+        RemoteExecutionTransportService._portable_conversion_params(
+            target,
+            conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
+        )
+        return remote, conversion
+
+    def _resolve_conversion_execution_payload(
+        self,
+        task,
+        payload: Mapping[str, Any],
+        assignment: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        _remote, conversion = self._conversion_remote(task, payload)
+        source_ref = conversion.get("source")
+        output_ref = conversion.get("output")
+        if not isinstance(source_ref, Mapping) or not isinstance(output_ref, Mapping):
+            raise RemoteExecutionTransportError(
+                "REMOTE_EXECUTION_CONTRACT_INVALID",
+                "portable conversion source/output references are incomplete",
+                422,
+            )
+        if str(source_ref.get("type") or "") != "object":
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_SOURCE_NOT_PORTABLE",
+                "portable conversion source must be an object model",
+                422,
+            )
+        params = self._portable_conversion_params(
+            str(conversion.get("target") or ""),
+            conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
+        )
+        trace = conversion.get("source_trace")
+        trace = dict(trace) if isinstance(trace, Mapping) else {}
+        return {
+            "schema_version": 1,
+            "task_kind": "MODEL_CONVERSION",
+            "transport": "object-storage-v1",
+            "target": "onnx",
+            "params": params,
+            "source": {
+                "type": "object",
+                "artifact_id": str(source_ref.get("artifact_id") or ""),
+                "download": self._download_contract(
+                    str(task.project_id),
+                    source_ref,
+                    require_server_sha256=True,
+                ),
+            },
+            "source_trace": {
+                "source_id": str(trace.get("source_id") or ""),
+                "algorithm_id": str(trace.get("algorithm_id") or ""),
+                "version_id": str(trace.get("version_id") or ""),
+                "sha256": str(trace.get("sha256") or "").strip().lower(),
+            },
+            "output": {
+                "type": "object",
+                "storage_ref": {
+                    "storage_source_id": str(output_ref.get("storage_source_id") or ""),
+                    "object_key": str(output_ref.get("object_key") or ""),
+                    "file_name": Path(str(output_ref.get("file_name") or "model.onnx")).name,
+                    "content_type": str(output_ref.get("content_type") or "application/octet-stream"),
+                },
+                "upload_protocol": "prepare-after-local-hash-v1",
+            },
+        }
+
     def _source_provider(self, project_id: str, ref: Mapping[str, Any]):
         source_id = str(ref.get("storage_source_id") or "").strip()
         source = self.storage_sources_factory().get(source_id)
@@ -1208,10 +1453,15 @@ class RemoteExecutionTransportService:
         payload: Mapping[str, Any],
         evidence: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if str(getattr(task.kind, "value", task.kind)) == "TRAINING":
+        kind = str(getattr(task.kind, "value", task.kind))
+        if kind == "TRAINING":
             return self._prepare_training_result_upload(task, payload, evidence)
-        _remote, deployment = self._deployment_remote(task, payload)
-        output_ref = deployment.get("output")
+        if kind == "MODEL_CONVERSION":
+            _remote, conversion = self._conversion_remote(task, payload)
+            output_ref = conversion.get("output")
+        else:
+            _remote, deployment = self._deployment_remote(task, payload)
+            output_ref = deployment.get("output")
         if not isinstance(output_ref, Mapping):
             raise RemoteExecutionTransportError(
                 "REMOTE_EXECUTION_CONTRACT_INVALID",
@@ -1259,10 +1509,16 @@ class RemoteExecutionTransportService:
         payload: Mapping[str, Any],
         evidence: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if str(getattr(task.kind, "value", task.kind)) == "TRAINING":
+        kind = str(getattr(task.kind, "value", task.kind))
+        if kind == "TRAINING":
             return self._confirm_training_result_upload(task, payload, evidence)
-        _remote, deployment = self._deployment_remote(task, payload)
-        output_ref = deployment.get("output")
+        conversion = None
+        if kind == "MODEL_CONVERSION":
+            _remote, conversion = self._conversion_remote(task, payload)
+            output_ref = conversion.get("output")
+        else:
+            _remote, deployment = self._deployment_remote(task, payload)
+            output_ref = deployment.get("output")
         if not isinstance(output_ref, Mapping):
             raise RemoteExecutionTransportError(
                 "REMOTE_EXECUTION_CONTRACT_INVALID",
@@ -1301,23 +1557,36 @@ class RemoteExecutionTransportService:
                 409,
             )
 
-        return {
-            "result_ref": "result.json",
-            "result": {
-                "task_id": str(task.task_id),
-                "project_id": str(task.project_id),
-                "remote_execution": True,
-                "transport": "object-storage-v1",
+        result = {
+            "task_id": str(task.task_id),
+            "project_id": str(task.project_id),
+            "remote_execution": True,
+            "transport": "object-storage-v1",
+            "output_storage": storage_ref,
+            "output_size_bytes": expected_size,
+            "output_sha256": expected_sha,
+            "runtime_log_ref": str(getattr(task, "log_ref", "") or ""),
+            "recovered_from_completed_work": False,
+        }
+        if kind == "MODEL_CONVERSION" and isinstance(conversion, Mapping):
+            result.update({
+                "target": str(conversion.get("target") or "onnx"),
+                "source_trace": dict(conversion.get("source_trace") or {})
+                if isinstance(conversion.get("source_trace"), Mapping)
+                else {},
+                "params": self._portable_conversion_params(
+                    str(conversion.get("target") or ""),
+                    conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
+                ),
+                "runtime_verified": str(conversion.get("target") or "") == "onnx",
+            })
+        else:
+            result.update({
                 "framework": str(deployment.get("framework") or "ultralytics"),
                 "runtime_format": str(deployment.get("runtime_format") or ""),
                 "confidence": max(0.0, min(1.0, float(deployment.get("confidence") or 0.25))),
-                "output_storage": storage_ref,
-                "output_size_bytes": expected_size,
-                "output_sha256": expected_sha,
-                "runtime_log_ref": str(getattr(task, "log_ref", "") or ""),
-                "recovered_from_completed_work": False,
-            },
-        }
+            })
+        return {"result_ref": "result.json", "result": result}
 
     def _commit_training_result(
         self,
@@ -1645,8 +1914,11 @@ class RemoteExecutionTransportService:
         payload: Mapping[str, Any],
         assignment: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if str(getattr(task.kind, "value", task.kind)) == "TRAINING":
+        kind = str(getattr(task.kind, "value", task.kind))
+        if kind == "TRAINING":
             return self._resolve_training_execution_payload(task, payload, assignment)
+        if kind == "MODEL_CONVERSION":
+            return self._resolve_conversion_execution_payload(task, payload, assignment)
         _remote, deployment = self._deployment_remote(task, payload)
         input_ref = deployment.get("input")
         model_ref = deployment.get("model")
