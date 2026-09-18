@@ -4,44 +4,47 @@
 
 
 
-## Current closure — Remote MATERIAL_IMPORT Phase 1 CLOSED
+## Current closure — Remote MATERIAL_IMPORT Phase 2 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
 
-The first portable `MATERIAL_IMPORT` path is now real end to end and is
-deliberately scoped to `server_zip + execution_mode=agent +
-import_format=images`.
+The real Agent MATERIAL_IMPORT path now covers both plain-image server ZIP
+review and YOLO dataset review. In YOLO mode the Agent reuses the hardened
+`YoloImportScanner` against its task-local extracted tree. It parses the
+dataset YAML, image/label pairing, external classes, normalized boxes,
+confirmed-empty samples and bounded issue evidence without accessing central
+SQLite/NFS.
 
-The control plane safely resolves the server-side ZIP, uploads it to configured
-OSS/S3/MinIO with durable size/SHA256 evidence, and creates an Agent-only task.
-The Agent receives only signed transport contracts, verifies the input object,
-reuses the hardened server-ZIP extractor, reviews image decode/dimensions/hash
-and within-archive duplicates, then publishes an immutable generation-scoped
-review ZIP. It never opens central SQLite/NFS or receives object-store secrets.
+The immutable review ZIP carries candidate metadata/content plus
+`yolo/annotations.jsonl`. The control plane re-downloads and verifies that
+bundle before accepting it as durable task truth: task/project/generation,
+target source/prefix, dataset YAML identity, external classes, candidate
+coverage, annotation status, box counts, class IDs and normalized coordinates
+are all checked fail-closed.
 
-The control plane downloads that confirmed review object again and verifies the
-whole archive plus task/project/generation/target identity and each candidate
-payload's SHA256/size/dimensions. It commits task-owned candidate/staging truth
-and only then permits `AWAITING_CONFIRMATION`.
+User confirmation freezes object selection, label mapping, optional label
+creation and quality acceptance. The local `storage.import` indexer then
+publishes only selected verified image bytes, rechecks object-store size/hash,
+maps external class IDs to still-active platform label codes, converts YOLO
+coordinates to pixels and writes MaterialRepository plus AnnotationRepository.
+Confirmed-empty samples are persisted as formal negative annotation truth;
+missing/invalid sidecars cannot erase an existing annotation.
 
-User confirmation atomically changes the same MATERIAL_IMPORT task back to
-`QUEUED/indexing_queued` with local `storage.import` capability. The local
-indexer streams only finally selected, centrally deduplicated members from the
-verified review ZIP to target object storage, verifies server-visible size/hash,
-and only then writes MaterialRepository. This keeps unconfirmed files out of
-formal material storage and preserves retry safety.
+A permanent end-to-end integration now exercises:
+Agent-style YOLO review → server commit → explicit label mapping → local object
+publication → MaterialRepository → AnnotationRepository, including a positive
+sample with two mapped boxes and a confirmed-empty sample. The API contract was
+updated to treat Agent YOLO import as supported rather than the old
+unimplemented-mode expectation.
 
-Permanent validation:
-- Remote Material Import `35308672897`: API / Ubuntu / Windows success.
-- Node Agent Executor `35308672844`: API / Ubuntu / Windows success.
-- Portable Deployment `35308672842`: API / Ubuntu / Windows success.
-- Central Node Assignment `35308672962`: API / Ubuntu / Windows success.
-- Temporary PR #16 was closed without merge.
+Final acceptance:
+- Remote Material Import run `35311171823`: API / Ubuntu / Windows success.
+- Temporary draft PR #17 was closed without merge.
 
-**OPEN / next:** MATERIAL_IMPORT Phase 2. Add real Agent-side YOLO dataset and
-label parsing, annotation evidence in the review bundle, user label mapping and
-local AnnotationRepository commit. Remote storage_scan, COCO/VOC formats and
-staging-object lifecycle/GC remain open and must not be claimed by Phase 1.
+**OPEN / next:** remote staging-object lifecycle/GC, then Agent storage_scan,
+then COCO/VOC format expansion. GC must delete only task/generation-owned
+temporary input/review objects that are outside their retention/retry window;
+it must never prefix-delete or remove formal target material objects.
 
 ## Current closure — Remote MODEL_CONVERSION / ONNX Runtime CLOSED
 
