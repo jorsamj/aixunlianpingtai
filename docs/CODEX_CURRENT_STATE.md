@@ -121,11 +121,58 @@ Acceptance at code HEAD `5a02aa5ba03e94cc731bfd0e62437c57738efab1`:
 - Remote Training Runtime `35330889384`: success.
 - Remote Cleaning Runtime `35330889291`: success.
 
-**OPEN / next:** Rockchip board runtime verification. Keep TensorRT, Sophon and
-Ascend out of scope. Reuse the existing durable deployment-test architecture
-where possible, add a real board capability/runtime probe, run the .rknn model
-on RK3568/RK3576 through RKNN Runtime/RKNN-Toolkit-Lite2, and only then allow
-hardware_verified=true.
+## Current closure — Rockchip RKNN board runtime verification protocol CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The Rockchip board verification software/product path is now complete. A
+separate `deployment-test.rknn` capability is reported only by an Agent that
+is Linux arm64/aarch64, identifies an RK3568/RK3566-family or RK3576 SoC from
+`/proc/device-tree/compatible`, and can import the node-local RKNNLite runtime.
+The heartbeat publishes the board chip/runtime truth and assignment requires an
+exact chip match.
+
+Board verification reuses the existing DEPLOYMENT_TEST durable task. The
+control plane verifies the source .rknn artifact against its conversion
+manifest, stages verified model/input objects, and the Agent executes the
+node-local `predict_rknn_lite_runner.py`. That runner performs real
+`RKNNLite.load_rknn`, `init_runtime`, and `inference`; it returns inference
+latency, output count and output shapes, but deliberately does not claim model
+accuracy or decode model-specific YOLO outputs.
+
+Result publication remains generation-fenced and server-confirmed. Before
+publishing hardware truth, the control plane revalidates the original
+conversion job/chip/model SHA256. Only matching successful RKNNLite evidence
+may set `runtime_verified=true`, `hardware_verified=true` and
+`validation_status=hardware_verified` on the existing deployment job and
+manifest.
+
+The deployment UI now exposes “板端验证” for Rockchip
+`converted_unverified` jobs, accepts a real test image, polls the durable task,
+and refreshes the original job to “实机已验证” with chip/inference/output
+evidence. Real Chrome covers this product flow.
+
+Acceptance at code HEAD `05c7b93339414ac028214fd3d046dfdf7977c0a1`:
+- Remote RKNN Board Runtime Protocol `35335720990`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Conversion Runtime `35335720906`: success.
+- Node Agent Executor `35335720915`: success.
+- Central Node Assignment `35335720909`: success.
+- Task Runtime Truth `35335720969`: success.
+- Portable Deployment `35335720910`: success.
+- Remote Material Import `35335720921`: success.
+- Remote Training Runtime `35335720913`: success.
+- Remote Cleaning Runtime `35335721027`: success.
+
+This is a software/protocol closure, not evidence that a physical user-owned
+RK3568/RK3576 board has already passed acceptance. A specific model becomes
+`hardware_verified` only after a real connected board Agent executes the
+runtime task successfully.
+
+**OPEN / next:** RKNN INT8 calibration portable transport. Keep TensorRT,
+Sophon and Ascend out of scope. Freeze calibration selection/snapshot, transport
+verified calibration image objects to the RKNN conversion Agent, build the
+node-local calibration dataset, execute real RKNN-Toolkit2 INT8 conversion and
+preserve the same generation/immutable-upload/server-confirm truth model.
 
 
 

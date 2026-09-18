@@ -203,16 +203,39 @@ Phase 1 历史验收保持：
 - Remote Material Import `35330889535`、Remote Training `35330889384`、Remote Cleaning `35330889291`：success。
 - `VERSION.txt` 仍为 `42.24.0`。
 
+## 0. 最新关闭：Rockchip RKNN 板端 Runtime 验证协议 / 产品闭环
+
+2026-09-18，RKNN 板端验证的软件链路已 CLOSED：
+
+- 新增细粒度 `deployment-test.rknn` capability。
+- Agent 只有真实识别 Linux arm64/aarch64 的 RK3568/RK3566 family 或 RK3576，并可导入 RKNNLite 后才会上报能力。
+- heartbeat 发布 `rknn_board` runtime truth，调度要求 target chip 与节点真实 SoC 完全匹配。
+- 复用现有 `DEPLOYMENT_TEST` durable task，不新增板端验证数据库/第二套任务真相。
+- RKNN 模型与测试图通过 portable verified object contract 下发；Agent 不打开中央 SQLite/NFS。
+- 节点真实调用 `RKNNLite.load_rknn → init_runtime → inference`，回传推理耗时、输出数量和输出 shape。
+- server-confirm 前后均校验原 conversion artifact 的 size/SHA256，模型在任务期间发生变化则 fail closed。
+- 只有可信板端 runtime evidence 才能把原 conversion job/manifest 改成 `hardware_verified=true`。
+- 产品部署中心已增加“板端验证”入口和验证成功状态展示；Real Chrome 覆盖完整页面流。
+
+永久软件验收（代码 HEAD `05c7b93339414ac028214fd3d046dfdf7977c0a1`）：
+
+- Remote RKNN Board Runtime Protocol `35335720990`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Conversion Runtime `35335720906`：success。
+- Node Agent Executor `35335720915`、Central Node Assignment `35335720909`：success。
+- Task Runtime Truth `35335720969`、Portable Deployment `35335720910`：success。
+- Remote Material Import `35335720921`、Remote Training `35335720913`、Remote Cleaning `35335721027`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
 **仍然 OPEN：**
 
-1. Rockchip RKNN 板端 Runtime / 实机推理验证。
+1. 真实 RK3568 / RK3576 实物设备接入后的硬件 acceptance；CI 不含真实 NPU 板卡，不能把协议测试冒充成现场实机验收。
 2. RKNN INT8 calibration portable transport。
 3. 如果未来需要 COCO/VOC Agent server_zip，再按真实 portable transport 单独闭环。
 4. TensorRT / Sophon / Ascend 暂不推进。
 
-**下一主线：Rockchip 板端 Runtime 验证。**
+**下一主线：RKNN INT8 calibration portable transport。**
 
-目标：复用现有 `DEPLOYMENT_TEST` durable truth 或其严格子协议，把 RKNN 产物送到真实 RK3568 / RK3576 节点，在板端 RKNN Runtime / RKNN-Toolkit-Lite2 中加载并执行至少一次真实推理；只有 server-confirmed hardware evidence 成功后才修改 conversion manifest/job 的 `hardware_verified` 真值。
+目标：沿用现有 Remote MODEL_CONVERSION / Rockchip durable truth，为 INT8 增加冻结 calibration selection/snapshot、verified calibration image transport、Agent 节点 calibration dataset 生成与真实 RKNN-Toolkit2 INT8 build；仍必须 generation-fenced、server-confirmed，并禁止把控制面本地路径/SQLite/NFS 暴露给 Agent。
 
 ## 0. 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 

@@ -248,9 +248,50 @@ Phase 1 的 `import_format=images` 闭环和其验收 `35308672897` 继续有效
 - Remote Cleaning Runtime `35330889291`：全绿。
 - `VERSION.txt = 42.24.0` 未修改。
 
-**当前主线：Rockchip 板端 Runtime 验证。**
+# 最新关闭：Rockchip 板端 Runtime 验证协议 / 产品闭环
 
-下一阶段继续只做瑞芯微，不扩 TensorRT / Sophon / Ascend。目标是把当前 `converted_unverified` 的 RKNN 产物真正送到 RK3568 / RK3576 设备，使用 RKNN Runtime / RKNN-Toolkit-Lite2 做模型加载与至少一次真实推理；只有板端 runtime 成功并返回可校验 evidence 后，控制面才允许把对应转换产物标记为 `hardware_verified=true`。
+2026-09-18，Rockchip RKNN 板端 Runtime 验证的软件协议、Agent runner、控制面提交和产品入口已完成闭环并 CLOSED。
+
+当前真实能力：
+
+- 服务节点新增独立 `deployment-test.rknn` capability，不从普通 `deployment-test` 或 `conversion.rknn` 推断板卡 Runtime 可用。
+- Node Agent 仅在 Linux arm64/aarch64 上读取 `/proc/device-tree/compatible`，真实识别 RK3568/RK3566 family 或 RK3576，并且当前 Python 可导入 `rknnlite.api.RKNNLite` 后才上报该 capability。
+- heartbeat runtime 持久化 `rknn_board.available/chip/architecture/compatible/rknn_lite_version`；控制面只允许芯片完全匹配的 online Agent 接受板端任务。
+- 板端验证复用既有 `DEPLOYMENT_TEST` durable truth；任务仍受 assignment lease / execution lease / generation fencing 约束，Agent 不访问中央 SQLite/NFS。
+- 控制面在创建任务前重新校验原 RKNN conversion manifest 与 `.rknn` 文件 size/SHA256，随后把模型和测试图以 portable object contract 送到匹配板端节点。
+- 节点真实执行 `predict_rknn_lite_runner.py`：
+  - `RKNNLite.load_rknn`
+  - `RKNNLite.init_runtime`
+  - 图片预处理
+  - 至少一次 `RKNNLite.inference`
+  - 回传 `inference_ms / output_count / output_shapes`
+- Agent runner 明确只做 **hardware runtime verification**，不把“能跑一次”冒充为检测准确率验收，也不解析模型特定 YOLO 输出。
+- result 继续走本地 hash → immutable upload → server-confirm；控制面在最终提交前再次确认 conversion job/chip/model SHA256 未变化。
+- 只有 runtime evidence 满足 `engine=rknn-lite2 + runtime_format=rknn + chip match + output_count>0` 后，原 conversion `manifest.json/job.json` 才允许写：
+  - `runtime_verified=true`
+  - `hardware_verified=true`
+  - `validation_status=hardware_verified`
+- 部署中心对 `rockchip + converted_unverified` 任务展示“板端验证”；用户上传测试图后轮询真实 durable task，成功后刷新为“实机已验证”，并展示芯片、推理耗时和输出数量；已验证任务不重复显示验证按钮。
+- Real Chrome 已覆盖：未验证 RKNN 任务 → 板端验证入口 → 上传图片 → durable task success → UI 刷新 `hardware_verified` 状态。
+
+软件闭环最终验收（代码 HEAD `05c7b93339414ac028214fd3d046dfdf7977c0a1`）：
+
+- Remote RKNN Board Runtime Protocol `35335720990`：API / Ubuntu / Windows / Real Chrome 全绿。
+- Remote Conversion Runtime `35335720906`：control-plane / Ubuntu / Windows / Real Chrome 全绿。
+- Node Agent Executor `35335720915`：全绿。
+- Central Node Assignment `35335720909`：全绿。
+- Task Runtime Truth `35335720969`：全绿。
+- Portable Deployment `35335720910`：全绿。
+- Remote Material Import `35335720921`：全绿。
+- Remote Training Runtime `35335720913`：全绿。
+- Remote Cleaning Runtime `35335721027`：全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**重要边界：以上是软件协议/产品闭环验收，不等于你们手上的真实 RK3568 / RK3576 设备已经完成硬件验收。** CI 没有真实 Rockchip NPU 板卡；实际设备接入 Agent 后仍需至少执行一次真实板端任务，才能对该具体模型写入 `hardware_verified=true`。
+
+**当前主线：Rockchip RKNN INT8 calibration portable transport。**
+
+继续只做瑞芯微，不扩 TensorRT / Sophon / Ascend。下一阶段让 Agent RKNN conversion 支持真实 INT8 校准数据 transport：冻结 calibration selection/snapshot、只传 verified calibration image refs/对象、节点生成 RKNN calibration dataset、执行真实 RKNN-Toolkit2 INT8 build，并保留与 FP16 相同的 generation fencing、size/SHA256、server-confirm 与产物 truth。真实板卡硬件验收在设备接入后单独执行。
 
 # 最新关闭：Remote MODEL_CONVERSION / ONNX Runtime
 
