@@ -594,6 +594,104 @@ def test_model_conversion_result_uses_generation_scoped_immutable_output(tmp_pat
     assert "url" not in str(result).lower()
 
 
+def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_ui(
+    tmp_path, monkeypatch
+):
+    transport, provider, _model, _digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    task = SimpleNamespace(
+        task_id="convert-1",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+    payload = {"remote_execution": contract}
+    output = b"verified-remote-onnx"
+    output_sha = hashlib.sha256(output).hexdigest()
+    evidence = {
+        "sha256": output_sha,
+        "size_bytes": len(output),
+        "execution_generation": 3,
+    }
+    prepared = transport.prepare_result_upload(task, payload, evidence)
+    provider.objects[prepared["storage_ref"]["object_key"]] = {
+        "data": output,
+        "content_type": "application/octet-stream",
+        "sha256": output_sha,
+    }
+    confirmed = transport.confirm_result_upload(task, payload, evidence)
+    confirmed["result_ref"] = "remote-results/3/result.json"
+
+    job_dir = tmp_path / "projects" / "p1" / "deploy" / "jobs" / "convert-1"
+    job_dir.mkdir(parents=True)
+    (job_dir / "job.json").write_text(
+        '{"id":"convert-1","status":"queued","outputs":[]}',
+        encoding="utf-8",
+    )
+
+    committed = transport.commit_result_publication(
+        task,
+        payload,
+        evidence,
+        confirmed,
+    )
+
+    artifact = job_dir / "artifacts" / "model.onnx"
+    manifest = job_dir / "artifacts" / "manifest.json"
+    job = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+    assert committed["conversion_artifact_committed"] is True
+    assert committed["conversion_artifact_sha256"] == output_sha
+    assert artifact.read_bytes() == output
+    assert manifest.is_file()
+    assert job["status"] == "done"
+    assert job["runtime_verified"] is True
+    assert job["validation_status"] == "runtime_verified"
+    assert job["result_ref"] == "remote-results/3/result.json"
+    assert {row["rel"] for row in job["outputs"]} == {
+        "artifacts/model.onnx",
+        "artifacts/manifest.json",
+    }
+
+
+def test_model_conversion_commit_rejects_conflicting_existing_local_artifact(
+    tmp_path, monkeypatch
+):
+    transport, provider, _model, _digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    task = SimpleNamespace(
+        task_id="convert-1",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+    payload = {"remote_execution": contract}
+    output = b"verified-remote-onnx"
+    output_sha = hashlib.sha256(output).hexdigest()
+    evidence = {
+        "sha256": output_sha,
+        "size_bytes": len(output),
+        "execution_generation": 3,
+    }
+    prepared = transport.prepare_result_upload(task, payload, evidence)
+    provider.objects[prepared["storage_ref"]["object_key"]] = {
+        "data": output,
+        "content_type": "application/octet-stream",
+        "sha256": output_sha,
+    }
+    confirmed = transport.confirm_result_upload(task, payload, evidence)
+    confirmed["result_ref"] = "remote-results/3/result.json"
+
+    artifacts = tmp_path / "projects" / "p1" / "deploy" / "jobs" / "convert-1" / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "model.onnx").write_bytes(b"conflicting-local-output")
+
+    with pytest.raises(RemoteExecutionTransportError) as conflict:
+        transport.commit_result_publication(task, payload, evidence, confirmed)
+    assert conflict.value.code == "REMOTE_CONVERSION_COMMIT_CONFLICT"
+
+
 def test_model_conversion_portable_contract_rejects_vendor_target_until_real_runner_exists(
     tmp_path, monkeypatch
 ):
