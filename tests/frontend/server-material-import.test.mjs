@@ -30,6 +30,27 @@ test('server material import requests contain source-relative fields and explici
     dataset_yaml: 'datasets/fire/2026/data.yaml', storage_source_id: 's3-a',
     prefix: 'datasets/fire/2026', recursive: true,
   });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets/coco',
+    recursive: true, importFormat: 'coco',
+  }), {
+    mode: 'storage_scan', execution_mode: 'agent', import_format: 'coco',
+    storage_source_id: 's3-a', prefix: 'datasets/coco', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets/voc',
+    recursive: false, importFormat: 'voc',
+  }), {
+    mode: 'storage_scan', execution_mode: 'agent', import_format: 'voc',
+    storage_source_id: 's3-a', prefix: 'datasets/voc', recursive: false,
+  });
+  assert.throws(() => buildServerImportRequest({
+    mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'dataset', importFormat: 'coco',
+  }), /仅支持对象存储目录/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'dataset',
+    importFormat: 'voc', datasetYaml: 'data.yaml',
+  }), /只有 YOLO/);
   assert.throws(() => buildServerImportRequest({
     mode: 'storage_scan', storageSourceId: 's3-a', prefix: '', importFormat: 'images',
   }), /对象存储目录/);

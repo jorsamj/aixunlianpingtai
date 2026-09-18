@@ -77,7 +77,7 @@ test('object storage import exposes Agent flow and posts remote storage_scan con
         mode: 'storage_scan',
         execution_mode: 'agent',
         storage_source_id: 's3-ui',
-        import_format: 'images',
+        import_format: 'coco',
         prefix: 'datasets/fire/2026',
         recursive: true,
         metrics: {},
@@ -102,13 +102,17 @@ test('object storage import exposes Agent flow and posts remote storage_scan con
   await page.locator('#si61RemotePrefix').fill('datasets/fire/2026');
   await expect(page.locator('#si61Format')).toHaveValue('images');
   await expect(page.locator('#si61Format option[value="auto"]')).toBeDisabled();
+  await expect(page.locator('#si61Format option[value="coco"]')).toBeEnabled();
+  await expect(page.locator('#si61Format option[value="voc"]')).toBeEnabled();
+  await page.locator('#si61Format').selectOption('coco');
+  await expect(page.locator('#si61DatasetYaml')).toBeDisabled();
   await page.getByRole('button', {name: '开始远程扫描'}).click();
 
   await expect.poll(() => submitted).not.toBeNull();
   expect(submitted).toEqual({
     mode: 'storage_scan',
     execution_mode: 'agent',
-    import_format: 'images',
+    import_format: 'coco',
     storage_source_id: 's3-ui',
     prefix: 'datasets/fire/2026',
     recursive: true,

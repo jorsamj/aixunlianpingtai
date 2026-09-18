@@ -180,6 +180,9 @@ jobs:
           grep -Fq "confirmation.get('label_mapping')" platform_core/storage/import_tasks.py
           grep -Fq 'annotations.upsert_many(annotation_rows)' platform_core/storage/import_tasks.py
           grep -Fq 'test_agent_yolo_review_label_mapping_writes_annotation_repository' tests/integration/test_storage_import_worker.py
+          grep -Fq 'test_agent_coco_voc_storage_scan_confirmation_writes_annotation_repository' tests/integration/test_storage_import_worker.py
+          grep -Fq '<option value="coco">COCO 检测标注</option>' static/app.js
+          grep -Fq '<option value="voc">Pascal VOC 检测标注</option>' static/app.js
           grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
           grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
           grep -Fq 'commit_material_review_archive' platform_core/remote_execution_transport.py

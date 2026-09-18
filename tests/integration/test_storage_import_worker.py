@@ -17,6 +17,7 @@ from platform_core.storage.import_tasks import StorageImportHandler, commit_stor
 from platform_core.remote_material_import import (
     REMOTE_MATERIAL_STAGING_REF,
     RemoteMaterialStagingStore,
+    build_storage_scan_material_review_archive,
     build_yolo_material_review_archive,
     commit_material_review_archive,
 )
@@ -740,6 +741,223 @@ def test_agent_yolo_review_label_mapping_writes_annotation_repository(tmp_path):
     )
     assert negative_ann is not None
     assert negative_ann["annotation_state"] == "confirmed_empty"
+
+
+def test_agent_coco_voc_storage_scan_confirmation_writes_annotation_repository(tmp_path):
+    cases = [
+        {
+            "format": "coco",
+            "project_id": "p-agent-coco-review",
+            "source_id": "source-coco",
+            "prefix": "incoming/coco",
+            "image_key": "incoming/coco/train/a.jpg",
+            "annotation_key": "incoming/coco/train/_annotations.coco.json",
+            "annotation_bytes": json.dumps({
+                "images": [{"id": 1, "file_name": "a.jpg", "width": 32, "height": 24}],
+                "annotations": [{"id": 11, "image_id": 1, "category_id": 7, "bbox": [4, 6, 16, 12]}],
+                "categories": [{"id": 7, "name": "cigarette"}],
+            }).encode("utf-8"),
+            "external_class_id": 7,
+            "external_name": "cigarette",
+            "platform_code": "smoke",
+            "platform_name": "吸烟",
+            "expected_split": "train",
+            "expected_box": (4.0, 6.0, 20.0, 18.0),
+        },
+        {
+            "format": "voc",
+            "project_id": "p-agent-voc-review",
+            "source_id": "source-voc",
+            "prefix": "incoming/voc",
+            "image_key": "incoming/voc/val/JPEGImages/a.jpg",
+            "annotation_key": "incoming/voc/val/Annotations/a.xml",
+            "annotation_bytes": (
+                b"<annotation><filename>a.jpg</filename><object><name>flame</name>"
+                b"<bndbox><xmin>2</xmin><ymin>3</ymin><xmax>18</xmax><ymax>15</ymax>"
+                b"</bndbox></object></annotation>"
+            ),
+            "external_class_id": 0,
+            "external_name": "flame",
+            "platform_code": "fire",
+            "platform_name": "烟火",
+            "expected_split": "val",
+            "expected_box": (2.0, 3.0, 18.0, 15.0),
+        },
+    ]
+
+    for case in cases:
+        case_root = tmp_path / case["format"]
+        data = case_root / "data"
+        project = data / "projects" / case["project_id"]
+        project.mkdir(parents=True)
+        platform_labels = [{
+            "code": case["platform_code"],
+            "display_name": case["platform_name"],
+            "status": "active",
+        }]
+        (project / "meta.json").write_text(
+            json.dumps({
+                "labels": [case["platform_code"]],
+                "label_meta": platform_labels,
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        source_root = case_root / "objects"
+        provider = LocalStorageProvider(case["source_id"], source_root)
+        provider.upload(case["image_key"], BytesIO(jpg("orange")))
+        provider.upload(case["annotation_key"], BytesIO(case["annotation_bytes"]))
+
+        sources = StorageSourceRepository(data / "storage" / "storage_sources.sqlite3")
+        sources.create({
+            "id": case["source_id"],
+            "name": case["source_id"],
+            "type": "local",
+            "config": {"root": str(source_root)},
+        })
+        repository = TaskRepository(data / "task_runtime" / "tasks.sqlite3")
+        artifacts = ArtifactStore(data / "task_runtime" / "artifacts")
+        task_id = f"agent-{case['format']}-review"
+
+        review = build_storage_scan_material_review_archive(
+            provider,
+            case_root / f"{case['format']}-review.zip",
+            task_id=task_id,
+            project_id=case["project_id"],
+            execution_generation=1,
+            storage_source_id=case["source_id"],
+            storage_type="local",
+            prefix=case["prefix"],
+            recursive=True,
+            import_format=case["format"],
+        )
+        committed = commit_material_review_archive(
+            artifacts=artifacts,
+            task_id=task_id,
+            project_id=case["project_id"],
+            execution_generation=1,
+            archive_path=review["path"],
+            archive_sha256=review["sha256"],
+            archive_size_bytes=review["size_bytes"],
+            expected_source_id=case["source_id"],
+            expected_storage_type="local",
+            expected_prefix=case["prefix"],
+            expected_mode="storage_scan",
+            expected_import_format=case["format"],
+            platform_labels=platform_labels,
+        )
+        assert committed["material_review_committed"] is True
+
+        store = ImportCandidateStore(
+            artifacts.artifact_path(task_id, "scan/candidates.sqlite3")
+        )
+        assert store.external_classes() == [{
+            "class_id": case["external_class_id"],
+            "name": case["external_name"],
+        }]
+        candidate_keys = [
+            row["object_key"] for row in store.iter_status("IMPORTABLE")
+        ]
+        assert candidate_keys == [case["image_key"]]
+        evidence = store.annotations_for_keys(candidate_keys)[case["image_key"]]
+        assert evidence["split"] == case["expected_split"]
+        assert evidence["annotation_status"] == "annotated"
+        assert evidence["boxes"][0]["class_id"] == case["external_class_id"]
+
+        confirmation = confirm_import(
+            store,
+            artifacts,
+            task_id,
+            object_keys=candidate_keys,
+            label_mapping={str(case["external_class_id"]): case["platform_code"]},
+            create_labels=[],
+            accept_quality_report=True,
+            labels=platform_labels,
+            create_label=lambda code: code,
+        )
+        assert confirmation["selected_count"] == 1
+
+        durable_review = artifacts.artifact_path(
+            task_id, committed["material_review_archive_ref"],
+        )
+        result_ref = "remote-results/1/result.json"
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "mode": "storage_scan",
+            "execution_mode": "agent",
+            "storage_source_id": case["source_id"],
+            "prefix": case["prefix"],
+            "recursive": True,
+            "import_format": case["format"],
+            "remote_execution": {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+                "material_import": {
+                    "schema_version": 1,
+                    "mode": "storage_scan",
+                    "import_format": case["format"],
+                },
+            },
+        })
+        artifacts.atomic_write_json(task_id, result_ref, {
+            "output_sha256": hashlib.sha256(durable_review.read_bytes()).hexdigest(),
+            "output_size_bytes": durable_review.stat().st_size,
+            "material_review_archive_ref": committed["material_review_archive_ref"],
+            "material_staging_ref": committed["material_staging_ref"],
+        })
+        repository.create(TaskRecord.new(
+            task_id,
+            case["project_id"],
+            TaskKind.MATERIAL_IMPORT,
+            "request.json",
+            f"material-import:agent:{case['source_id']}",
+            required_capabilities=("agent.remote",),
+        ))
+        lease = repository.claim_next(
+            f"agent-{case['format']}-review",
+            (TaskKind.MATERIAL_IMPORT,),
+            {"agent.remote"},
+        )
+        assert lease is not None
+        repository.finish(
+            task_id,
+            lease.lease_token,
+            TaskStatus.AWAITING_CONFIRMATION,
+            result_ref,
+        )
+        resumed = repository.resume_after_confirmation(
+            task_id,
+            required_capabilities=("storage.import",),
+        )
+        assert resumed.status is TaskStatus.QUEUED
+
+        scheduler = Scheduler(
+            repository,
+            artifacts,
+            f"local-{case['format']}-indexer",
+            {TaskKind.MATERIAL_IMPORT: StorageImportHandler(data)},
+            {"storage.import"},
+        )
+        assert scheduler.run_once() is True
+        completed = repository.get(task_id)
+        assert completed is not None
+        assert completed.status is TaskStatus.SUCCEEDED
+
+        materials = MaterialRepository(project).read().rows
+        assert len(materials) == 1
+        material = materials[0]
+        assert material["storage_source_id"] == case["source_id"]
+        assert material["object_key"] == case["image_key"]
+        assert material["imported_split"] == case["expected_split"]
+
+        annotation = AnnotationRepository(project).get(material["id"])
+        assert annotation is not None
+        assert annotation["annotation_state"] == "annotated"
+        assert [(box["label"], box["class_id"]) for box in annotation["boxes"]] == [
+            (case["platform_code"], 0),
+        ]
+        box = annotation["boxes"][0]
+        assert (box["x1"], box["y1"], box["x2"], box["y2"]) == case["expected_box"]
     assert negative_ann["boxes"] == []
     assert positive["imported_split"] == "train"
     assert negative["imported_split"] == "val"

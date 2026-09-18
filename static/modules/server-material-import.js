@@ -15,15 +15,20 @@ export function buildServerImportRequest(values = {}) {
   const mode = String(values.mode || 'directory_scan');
   const storageSourceId = String(values.storageSourceId || '').trim();
   if (!storageSourceId) throw new Error('请选择存储源');
-  const importFormat = String(values.importFormat || 'auto');
-  if (!['auto', 'images', 'yolo'].includes(importFormat)) throw new Error('暂不支持 COCO/VOC 服务器导入');
+  const importFormat = String(values.importFormat || 'auto').toLowerCase();
+  if (!['auto', 'images', 'yolo', 'coco', 'voc'].includes(importFormat)) {
+    throw new Error(`不支持的数据格式：${importFormat}`);
+  }
   const format = {import_format: importFormat};
-  if (values.datasetYaml && importFormat !== 'images') format.dataset_yaml = String(values.datasetYaml).trim();
+  if (values.datasetYaml) {
+    if (importFormat !== 'yolo') throw new Error('只有 YOLO 模式可以提交数据集 YAML');
+    format.dataset_yaml = String(values.datasetYaml).trim();
+  }
 
   if (mode === 'storage_scan') {
     const prefix = String(values.prefix || '').trim();
     if (!prefix) throw new Error('请填写对象存储目录');
-    if (importFormat === 'auto') throw new Error('远程对象存储扫描请选择“仅图片”或“YOLO 检测标注”');
+    if (importFormat === 'auto') throw new Error('远程对象存储扫描请选择“仅图片”、YOLO、COCO 或 Pascal VOC');
     return {
       mode,
       execution_mode: 'agent',
@@ -32,6 +37,9 @@ export function buildServerImportRequest(values = {}) {
       prefix,
       recursive: values.recursive !== false,
     };
+  }
+  if (['coco', 'voc'].includes(importFormat)) {
+    throw new Error('COCO / Pascal VOC 当前仅支持对象存储目录的远程 Agent 扫描');
   }
   if (mode === 'directory_scan') {
     return {
