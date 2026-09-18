@@ -439,7 +439,12 @@ def training_lease(tmp_path, *, generation=3, model=None):
     return lease, {bundle_url: bundle_bytes}
 
 
-def write_fake_train_worker(runtime_root: Path, *, sleep_seconds=0.0):
+def write_fake_train_worker(
+    runtime_root: Path,
+    *,
+    sleep_seconds=0.0,
+    test_result_status="passed",
+):
     runtime_root.mkdir(parents=True, exist_ok=True)
     script = runtime_root / "train_worker.py"
     script.write_text(
@@ -503,7 +508,10 @@ job.update({{
     "verified_models": [str(best), str(last)],
     "best_path": str(best),
     "last_path": str(last),
-    "training_report": {{"metrics": {{"map50": 0.91}}}},
+    "training_report": {{
+        "metrics": {{"map50": 0.91}},
+        "test_result": {{"status": {str(test_result_status)!r}}},
+    }},
     "training_outcome": "completed",
     "completion_reason": "requested_epochs_completed",
     "completed_epochs": 3,
@@ -528,11 +536,13 @@ def build_runner(
     transfer,
     *,
     sleep_seconds=0.0,
+    test_result_status="passed",
 ):
     runtime_root = tmp_path / "runtime"
     write_fake_train_worker(
         runtime_root,
         sleep_seconds=sleep_seconds,
+        test_result_status=test_result_status,
     )
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
     runner = AgentTrainingRunner(
@@ -770,3 +780,55 @@ def test_training_runtime_source_stays_database_free():
     assert "TaskRepository" not in source
     assert "tasks.sqlite3" not in source
     assert "shared_nfs" not in source.lower()
+
+
+def test_remote_training_rejects_nonportable_ai_or_supplement_configuration(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    payload = dict(current.payload)
+    payload["params"] = {
+        **dict(payload["params"]),
+        "ai_intervention_enabled": True,
+    }
+    current = RemoteExecutionLease(
+        task_id=current.task_id,
+        kind=current.kind,
+        project_id=current.project_id,
+        generation=current.generation,
+        lease_token=current.lease_token,
+        lease_expires_at=current.lease_expires_at,
+        worker_id=current.worker_id,
+        payload=payload,
+        assignment=current.assignment,
+        transport=current.transport,
+    )
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, runtime_root, _workdirs = build_runner(tmp_path, client, transfer)
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "FAILED"
+    assert "not portable yet" in outcome.error
+    assert client.finish_calls[-1]["status"] == "FAILED"
+    assert not client.model_prepare_calls
+    assert not client.prepare_calls
+    assert not (runtime_root / "started.marker").exists()
+
+
+def test_remote_training_preserves_partial_success_when_independent_test_fails(tmp_path):
+    current, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, _runtime_root, _workdirs = build_runner(
+        tmp_path,
+        client,
+        transfer,
+        test_result_status="failed",
+    )
+
+    outcome = runner.run(current)
+
+    assert outcome.status == "PARTIAL_SUCCESS"
+    assert client.finish_calls[-1]["status"] == "PARTIAL_SUCCESS"
+    assert client.model_confirm_calls == 1
+    assert client.confirm_calls
