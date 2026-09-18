@@ -433,13 +433,13 @@ def test_result_upload_contract_is_minted_only_after_agent_reports_hash_and_size
     prepared = transport.prepare_result_upload(
         task,
         payload,
-        {"sha256": result_sha, "size_bytes": len(result_bytes)},
+        {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 1},
     )
 
     assert prepared["already_uploaded"] is False
     assert prepared["sha256"] == result_sha
     assert prepared["size_bytes"] == len(result_bytes)
-    assert prepared["storage_ref"]["object_key"] == "outputs/result.jpg"
+    assert prepared["storage_ref"]["object_key"] == "outputs/generation-1/result.jpg"
     assert prepared["upload"]["method"] == "PUT"
     assert prepared["upload"]["headers"]["Content-Length"] == str(len(result_bytes))
     assert prepared["upload"]["headers"]["x-amz-meta-sha256"] == result_sha
@@ -457,7 +457,7 @@ def test_result_confirm_requires_object_size_and_sha256_metadata_to_match(tmp_pa
     result_bytes = b"rendered-result"
     result_sha = hashlib.sha256(result_bytes).hexdigest()
 
-    provider.objects["outputs/result.jpg"] = {
+    provider.objects["outputs/generation-1/result.jpg"] = {
         "data": result_bytes,
         "content_type": "image/jpeg",
         "sha256": result_sha,
@@ -465,31 +465,31 @@ def test_result_confirm_requires_object_size_and_sha256_metadata_to_match(tmp_pa
     confirmed = transport.confirm_result_upload(
         task,
         payload,
-        {"sha256": result_sha, "size_bytes": len(result_bytes)},
+        {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 1},
     )
     assert confirmed["result_ref"] == "result.json"
     result = confirmed["result"]
     assert result["task_id"] == "deploy-result"
     assert result["output_sha256"] == result_sha
     assert result["output_size_bytes"] == len(result_bytes)
-    assert result["output_storage"]["object_key"] == "outputs/result.jpg"
+    assert result["output_storage"]["object_key"] == "outputs/generation-1/result.jpg"
     assert "signed.example.test" not in str(result)
 
-    provider.objects["outputs/result.jpg"]["sha256"] = ""
+    provider.objects["outputs/generation-1/result.jpg"]["sha256"] = ""
     with pytest.raises(RemoteExecutionTransportError) as missing_hash:
         transport.confirm_result_upload(
             task,
             payload,
-            {"sha256": result_sha, "size_bytes": len(result_bytes)},
+            {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 1},
         )
     assert missing_hash.value.code == "REMOTE_RESULT_HASH_UNVERIFIED"
 
-    provider.objects["outputs/result.jpg"]["sha256"] = "f" * 64
+    provider.objects["outputs/generation-1/result.jpg"]["sha256"] = "f" * 64
     with pytest.raises(RemoteExecutionTransportError) as wrong_hash:
         transport.confirm_result_upload(
             task,
             payload,
-            {"sha256": result_sha, "size_bytes": len(result_bytes)},
+            {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 1},
         )
     assert wrong_hash.value.code == "REMOTE_RESULT_HASH_MISMATCH"
 
@@ -500,7 +500,7 @@ def test_prepare_result_upload_recovers_idempotently_after_upload_before_confirm
     task, payload, _input_data, _input_sha = _portable_result_fixture()
     result_bytes = b"already-uploaded"
     result_sha = hashlib.sha256(result_bytes).hexdigest()
-    provider.objects["outputs/result.jpg"] = {
+    provider.objects["outputs/generation-1/result.jpg"] = {
         "data": result_bytes,
         "content_type": "image/jpeg",
         "sha256": result_sha,
@@ -509,7 +509,7 @@ def test_prepare_result_upload_recovers_idempotently_after_upload_before_confirm
     prepared = transport.prepare_result_upload(
         task,
         payload,
-        {"sha256": result_sha, "size_bytes": len(result_bytes)},
+        {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 1},
     )
 
     assert prepared["already_uploaded"] is True
@@ -521,7 +521,7 @@ def test_prepare_result_upload_rejects_existing_conflicting_object(tmp_path):
     provider = FakeProvider()
     transport = service(tmp_path, provider)
     task, payload, _input_data, _input_sha = _portable_result_fixture()
-    provider.objects["outputs/result.jpg"] = {
+    provider.objects["outputs/generation-1/result.jpg"] = {
         "data": b"other",
         "content_type": "image/jpeg",
         "sha256": hashlib.sha256(b"other").hexdigest(),
@@ -531,9 +531,32 @@ def test_prepare_result_upload_rejects_existing_conflicting_object(tmp_path):
         transport.prepare_result_upload(
             task,
             payload,
-            {"sha256": hashlib.sha256(b"expected").hexdigest(), "size_bytes": len(b"expected")},
+            {"sha256": hashlib.sha256(b"expected").hexdigest(), "size_bytes": len(b"expected"), "execution_generation": 1},
         )
     assert conflict.value.code == "REMOTE_RESULT_OBJECT_CONFLICT"
+
+
+def test_result_object_key_is_execution_generation_scoped(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    task, payload, _input_data, _input_sha = _portable_result_fixture()
+    result_bytes = b"rendered-result"
+    result_sha = hashlib.sha256(result_bytes).hexdigest()
+
+    first = transport.prepare_result_upload(
+        task,
+        payload,
+        {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 1},
+    )
+    second = transport.prepare_result_upload(
+        task,
+        payload,
+        {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 2},
+    )
+
+    assert first["storage_ref"]["object_key"] == "outputs/generation-1/result.jpg"
+    assert second["storage_ref"]["object_key"] == "outputs/generation-2/result.jpg"
+    assert first["storage_ref"]["object_key"] != second["storage_ref"]["object_key"]
 
 
 def test_result_upload_contract_must_be_overwrite_protected(tmp_path):
@@ -548,7 +571,7 @@ def test_result_upload_contract_must_be_overwrite_protected(tmp_path):
         transport.prepare_result_upload(
             task,
             payload,
-            {"sha256": result_sha, "size_bytes": len(result_bytes)},
+            {"sha256": result_sha, "size_bytes": len(result_bytes), "execution_generation": 1},
         )
     assert unsafe.value.code == "REMOTE_UPLOAD_NOT_PROTECTED"
 
@@ -562,7 +585,7 @@ def test_result_upload_evidence_must_be_valid_before_signing(tmp_path):
         transport.prepare_result_upload(
             task,
             payload,
-            {"sha256": "not-a-sha", "size_bytes": 10},
+            {"sha256": "not-a-sha", "size_bytes": 10, "execution_generation": 1},
         )
     assert invalid_hash.value.code == "REMOTE_RESULT_EVIDENCE_INVALID"
     assert provider.upload_signatures == []
@@ -571,7 +594,7 @@ def test_result_upload_evidence_must_be_valid_before_signing(tmp_path):
         transport.prepare_result_upload(
             task,
             payload,
-            {"sha256": "a" * 64, "size_bytes": 0},
+            {"sha256": "a" * 64, "size_bytes": 0, "execution_generation": 1},
         )
     assert invalid_size.value.code == "REMOTE_OBJECT_CONTRACT_INVALID"
     assert provider.upload_signatures == []
