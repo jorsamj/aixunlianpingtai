@@ -208,8 +208,8 @@ jobs:
           ! grep -Fq 'import sqlite3' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           grep -Fq 'return "agent"' platform_core/task_node_assignments.py
-          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"deployment-test", "training"})' platform_core/node_agent_executor_loop.py
-          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "TRAINING"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({"conversion", "deployment-test", "training"})' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({"DEPLOYMENT_TEST", "MODEL_CONVERSION", "TRAINING"})' platform_core/node_agent_executor_loop.py
           ! grep -Fq 'sqlite3' platform_core/remote_training_transport.py
           ! grep -Fq 'TaskRepository' platform_core/remote_training_transport.py
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
