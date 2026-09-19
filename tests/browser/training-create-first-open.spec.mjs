@@ -164,8 +164,10 @@ test('training target is the only automatic early-stop control', async ({page, r
   await expect(settings).toBeVisible();
   await expect(settings.getByText('阶段试验与目标')).toBeVisible();
   await expect(settings.getByText('未达继续 / 达标提前完成')).toBeVisible();
-  await expect(settings.getByLabel('目标指标')).toBeVisible();
-  await expect(settings.getByLabel('目标正确率')).toHaveValue('90');
+  await expect(settings.getByText('目标指标', {exact: true})).toBeVisible();
+  await expect(settings.locator('#ts428Metric')).toHaveValue('map50');
+  await expect(settings.getByText('目标正确率', {exact: true})).toBeVisible();
+  await expect(settings.locator('#ts428Goal')).toHaveValue('90');
   await expect(settings.locator('#ts428Low')).toHaveCount(0);
   await expect(settings.locator('#ts428Patience')).toHaveCount(0);
   await expect(settings.getByText('低于此正确率停止')).toHaveCount(0);
