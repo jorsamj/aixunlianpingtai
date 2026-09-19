@@ -4525,6 +4525,16 @@ window.installUsability417?.();
 (()=>{
   state.onlineFeedback63=state.onlineFeedback63||[];
   state.lastOnlinePrediction63=state.lastOnlinePrediction63||null;
+  const predictBeforeFeedback63=window.predict;
+  window.predict=async function(){
+    const result=await predictBeforeFeedback63?.apply(this,arguments);
+    const prediction=state.lastOnlinePrediction63;
+    const out=document.getElementById('predResult');
+    if(prediction?.feedback_eligible&&out&&!out.querySelector('.online-feedback-prompt63')){
+      out.insertAdjacentHTML('beforeend',`<div class="alert soft online-feedback-prompt63"><b>正式算法版本可提交抽检反馈</b><span>反馈会先进入待复核，不会自动修改数据集或启动训练。</span><div class="row end"><button class="btn primary" onclick="openPredictionFeedback63()">提交抽检反馈</button></div></div>`);
+    }
+    return result;
+  };
   const typeName=value=>({
     correct:'检测正确',
     false_positive:'误检 / 画面无目标',
