@@ -99,3 +99,17 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /data-external-automation-settings="1"/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
 });
+
+
+test('external algorithm decorator is DOM-idempotent under mutation observers', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function decorateAlgorithmCards()');
+  const end = source.indexOf('function installAlgorithmDecorator()', start);
+  assert.ok(start >= 0 && end > start);
+  const block = source.slice(start, end);
+
+  assert.match(block, /externalCategorySignature/);
+  assert.match(block, /if \(select\.dataset\.externalCategorySignature !== optionSignature\)/);
+  assert.match(block, /if \(create\.textContent !== '↻ 同步新畅联'\) create\.textContent = '↻ 同步新畅联'/);
+  assert.doesNotMatch(block, /select\.innerHTML = options\.join\(''\)/);
+});
