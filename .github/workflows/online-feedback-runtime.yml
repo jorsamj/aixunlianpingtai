@@ -69,6 +69,9 @@ jobs:
           grep -Fq '正式算法版本可提交抽检反馈' static/app.js
           grep -Fq '不会自动修改素材、数据集或训练任务' static/app.js
           grep -Fq 'test_feedback_confirm_rejects_changed_prediction_input' tests/api/test_online_feedback.py
+          grep -Fq '/online-feedback/{feedback_id}/dismiss' app.py
+          grep -Fq '_legacy_iteration_write_disabled' app.py
+          grep -Fq 'test_legacy_v42_feedback_and_auto_iteration_writes_are_gone' tests/api/test_online_feedback.py
 
   real-chrome:
     runs-on: ubuntu-24.04

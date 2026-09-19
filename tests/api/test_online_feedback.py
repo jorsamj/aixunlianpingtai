@@ -288,3 +288,55 @@ def test_correct_feedback_rejects_different_existing_truth(client):
     )
     assert response.status_code == 409
     assert "不能覆盖" in response.text
+
+
+def test_pending_feedback_can_be_dismissed_without_material_side_effect(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version, detections=[], suffix="dismiss",
+    )
+    staged = _stage(client, project["id"], prediction_id, "needs_correction")
+    before = len(app_module.material_store(project["id"]).list())
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/dismiss",
+        json={
+            "expected_feedback_type": "needs_correction",
+            "reason": "不是有效现场样本",
+        },
+    )
+    assert response.status_code == 200, response.text
+    feedback = response.json()["feedback"]
+    assert feedback["status"] == "dismissed"
+    assert feedback["material_id"] == ""
+    assert feedback["result"]["dismissed"] is True
+    assert len(app_module.material_store(project["id"]).list()) == before
+    repeated = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/dismiss",
+        json={
+            "expected_feedback_type": "needs_correction",
+            "reason": "重复忽略",
+        },
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+
+
+def test_legacy_v42_feedback_and_auto_iteration_writes_are_gone(client):
+    project = _project(client)
+    algorithm_id, _ = _algorithm_version(client, project["id"])
+    feedback = client.post(
+        f"/api/v42/projects/{project['id']}/online-feedback",
+        json={
+            "algorithm_id": algorithm_id,
+            "correct": False,
+            "score": 0.1,
+            "category": "漏检",
+            "reason": "legacy should not write",
+            "image_url": "https://127.0.0.1/should-not-fetch.jpg",
+            "dataset_id": "default",
+            "source": "legacy",
+        },
+    )
+    assert feedback.status_code == 410
+    assert app_module._v42_list(project["id"], "online_feedback") == []

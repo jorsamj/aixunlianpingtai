@@ -9024,6 +9024,11 @@ class OnlineFeedbackConfirmReq(BaseModel):
     confirm_all_labels_absent: bool = False
 
 
+class OnlineFeedbackDismissReq(BaseModel):
+    expected_feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    reason: str = ""
+
+
 def _online_feedback_repository(project_id: str):
     from platform_core.online_feedback import OnlineFeedbackRepository
     return OnlineFeedbackRepository(project_dir(project_id))
@@ -9278,6 +9283,39 @@ def confirm_online_feedback(
                 "dataset_id": dataset_id,
             },
             confirmed_at=confirmed_at,
+        )
+    except (ValueError, KeyError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/dismiss")
+def dismiss_online_feedback(
+    project_id: str, feedback_id: str, payload: OnlineFeedbackDismissReq,
+):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    repository = _online_feedback_repository(project_id)
+    staged = repository.get(feedback_id)
+    if staged is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    if staged["feedback_type"] != payload.expected_feedback_type:
+        raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再处理")
+    if staged["status"] == "dismissed":
+        return {"ok": True, "idempotent": True, "feedback": public_feedback(staged)}
+    if staged["status"] != "pending_review":
+        raise HTTPException(status_code=409, detail="已确认反馈不能再忽略")
+    try:
+        row, idempotent = repository.finalize(
+            feedback_id,
+            expected_feedback_type=payload.expected_feedback_type,
+            material_id="",
+            result={
+                "dismissed": True,
+                "dismiss_reason": str(payload.reason or "").strip()[:1000],
+            },
+            confirmed_at=now_iso(),
+            status="dismissed",
         )
     except (ValueError, KeyError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -14108,19 +14146,26 @@ class V42PolicyReq(BaseModel):
 def v42_policies(project_id: str):get_project(project_id);return {"ok":True,"items":_v42_list(project_id,'iteration_policies')}
 
 
+def _legacy_iteration_write_disabled() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "旧 v42 自动迭代写入口已停用。请使用 v63 线上抽检/反馈完成 review/confirm，"
+            "再通过 Dataset Revision → Durable TRAINING → Evaluation → Confirmed Action 链继续迭代。"
+        ),
+    )
+
+
 @app.post('/api/v42/projects/{project_id}/iteration-policies')
 def v42_create_policy(project_id: str,payload:V42PolicyReq):
     get_project(project_id)
-    if not payload.name.strip():raise HTTPException(status_code=400,detail='策略名称不能为空')
-    rows=_v42_list(project_id,'iteration_policies');item={"id":uuid.uuid4().hex[:12],**payload.dict(),"created_at":now_iso(),"updated_at":now_iso()};rows.insert(0,item);_v42_save(project_id,'iteration_policies',rows[:100]);return item
+    _legacy_iteration_write_disabled()
 
 
 @app.put('/api/v42/projects/{project_id}/iteration-policies/{policy_id}')
 def v42_update_policy(project_id:str,policy_id:str,payload:V42PolicyReq):
-    rows=_v42_list(project_id,'iteration_policies')
-    for i,x in enumerate(rows):
-        if x.get('id')==policy_id:rows[i]={**x,**payload.dict(),"updated_at":now_iso()};_v42_save(project_id,'iteration_policies',rows);return rows[i]
-    raise HTTPException(status_code=404,detail='迭代策略不存在')
+    get_project(project_id)
+    _legacy_iteration_write_disabled()
 
 
 @app.delete('/api/v42/projects/{project_id}/iteration-policies/{policy_id}')
@@ -14160,21 +14205,7 @@ def v42_online_feedback(project_id: str, algorithm_id: Optional[str] = None):
 @app.post('/api/v42/projects/{project_id}/online-feedback')
 def v42_submit_online_feedback(project_id: str, payload: V42OnlineFeedbackReq):
     get_project(project_id)
-    if not next((x for x in list_algorithms_internal(project_id) if x.get('id')==payload.algorithm_id),None):
-        raise HTTPException(status_code=404,detail='算法不存在')
-    item={"id":uuid.uuid4().hex[:12],**payload.dict(),"created_at":now_iso()}
-    # 外部系统/大模型抽查判为错误时，可把原图自动回流到指定数据集；失败只记录原因，不伪造素材。
-    if (not payload.correct) and (payload.image_url or '').strip() and (payload.dataset_id or '').strip():
-        try:
-            rr=requests.get((payload.image_url or '').strip(),timeout=20);rr.raise_for_status()
-            ext=Path((payload.image_url or '').split('?',1)[0]).suffix.lower();ext=ext if ext in IMAGE_EXTS else '.jpg'
-            tmp=project_dir(project_id)/'v42'/'feedback_tmp';tmp.mkdir(parents=True,exist_ok=True)
-            fp=tmp/f"feedback_{item['id']}{ext}";fp.write_bytes(rr.content)
-            rec=add_image_record(project_id,fp,fp.name,'online_feedback',payload.dataset_id or 'default')
-            item['returned_image_id']=rec.get('id') if rec else ''
-        except Exception as e:item['return_error']=str(e)
-    rows=_v42_list(project_id,'online_feedback');rows.insert(0,item);_v42_save(project_id,'online_feedback',rows[:5000])
-    return {"ok":True,"item":item,"summary":_v42_audit_summary(project_id,payload.algorithm_id)}
+    _legacy_iteration_write_disabled()
 
 
 def _v42_hygiene_report(project_id: str, dataset_id: str, max_scan: int = 1000) -> Dict[str, Any]:
@@ -14361,11 +14392,8 @@ def v42_iteration_runs(project_id:str):return {"ok":True,"items":_v42_list(proje
 
 @app.post('/api/v42/projects/{project_id}/iteration-policies/{policy_id}/run')
 def v42_run_policy(project_id:str,policy_id:str):
-    policy=_v42_get(project_id,'iteration_policies',policy_id)
-    if not policy:raise HTTPException(status_code=404,detail='迭代策略不存在')
-    run={"id":uuid.uuid4().hex[:12],"policy_id":policy_id,"policy_name":policy.get('name'),"algorithm_id":policy.get('algorithm_id'),"status":"queued","stage":"等待启动","result":"","loop":0,"history":[],"created_at":now_iso(),"updated_at":now_iso()}
-    rows=_v42_list(project_id,'iteration_runs');rows.insert(0,run);_v42_save(project_id,'iteration_runs',rows[:100])
-    th=threading.Thread(target=_v42_run_iteration,args=(project_id,run['id'],dict(policy)),daemon=True);th.start();return run
+    get_project(project_id)
+    _legacy_iteration_write_disabled()
 
 
 @app.get('/api/v42/projects/{project_id}/quality-overview')
