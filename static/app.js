@@ -4535,6 +4535,9 @@ window.installUsability417?.();
     confirmed:'已确认',
     dismissed:'已忽略',
   }[value]||value||'-');
+  const sourceName63=source=>source?.source_channel==='external_upload'
+    ?('外部接入'+(source?.external_source?' · '+source.external_source:''))
+    :'平台测试';
 
   function feedbackRows63(){
     const rows=state.onlineFeedback63||[];
@@ -4543,7 +4546,7 @@ window.installUsability417?.();
       const resultText=item.status==='confirmed'
         ?(result.needs_manual_annotation?'已入素材库 · 待人工标注':result.annotation_action==='confirmed_empty'?'已确认负样本':'已写入正式真值')
         :'';
-      return `<tr data-feedback-id="${esc(item.id)}"><td><b>${esc(typeName(item.feedback_type))}</b><div class="muted-line">${esc(item.note||'')}</div></td><td><span class="pill ${item.status==='confirmed'?'ok':'warn'}">${esc(statusName63(item.status))}</span>${resultText?`<div class="muted-line">${esc(resultText)}</div>`:''}</td><td><div>${esc(item.algorithm_id||'-')}</div><div class="muted-line">${esc(item.version_id||'-')}</div></td><td>${Number(source.detection_count||0)} 个</td><td>${esc(item.created_at||'-')}</td><td><div class="row">${item.status==='pending_review'?`<button class="btn mini primary" onclick="openOnlineFeedbackReview63('${esc(item.id)}')">复核</button>`:item.material_id?`<button class="btn mini" onclick="openFeedbackMaterial63('${esc(item.material_id)}')">查看素材</button>`:''}</div></td></tr>`;
+      return `<tr data-feedback-id="${esc(item.id)}"><td><b>${esc(typeName(item.feedback_type))}</b><div class="muted-line">${esc(item.note||'')}</div></td><td><span class="pill ${item.status==='confirmed'?'ok':'warn'}">${esc(statusName63(item.status))}</span>${resultText?`<div class="muted-line">${esc(resultText)}</div>`:''}</td><td><div>${esc(item.algorithm_id||'-')}</div><div class="muted-line">${esc(item.version_id||'-')}</div><div class="muted-line">${esc(sourceName63(source))}</div></td><td>${Number(source.detection_count||0)} 个</td><td>${esc(item.created_at||'-')}</td><td><div class="row">${item.status==='pending_review'?`<button class="btn mini primary" onclick="openOnlineFeedbackReview63('${esc(item.id)}')">复核</button>`:item.material_id?`<button class="btn mini" onclick="openFeedbackMaterial63('${esc(item.material_id)}')">查看素材</button>`:''}</div></td></tr>`;
     }).join('')||'<tr><td colspan="6">暂无线上抽检反馈</td></tr>';
   }
 
@@ -4576,9 +4579,14 @@ window.installUsability417?.();
     previousRenderTest63();
     const root=document.getElementById('view');
     if(root&&!document.getElementById('onlineFeedback63')){
-      root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本的测试结果可进入人工复核；确认后才允许提升为素材/标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">正在读取…</span><button class="btn small" onclick="loadOnlineFeedback63()">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63"><tr><td colspan="6">正在读取…</td></tr></tbody></table></div></section>`);
+      root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本的测试结果可进入人工复核；确认后才允许提升为素材/标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">正在读取…</span><button class="btn small" onclick="openExternalFeedbackIntake63()">外部接入</button><button class="btn small" onclick="loadOnlineFeedback63()">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63"><tr><td colspan="6">正在读取…</td></tr></tbody></table></div></section>`);
     }
     loadOnlineFeedback63();
+  };
+
+  window.openExternalFeedbackIntake63=function(){
+    const endpoint='/api/v63/projects/'+pid()+'/online-feedback/external-intake';
+    modal('外部抽检接入',`<div class="form online-feedback-intake63"><div class="alert soft"><b>统一进入待复核</b><span>外部 SaaS / 边缘端只能提交审核证据，不会自动修改素材、数据集、Dataset Revision 或训练任务。</span></div><div class="field"><label>接口</label><input class="input mono" readonly value="${esc(endpoint)}"></div><div class="field"><label>请求格式</label><input class="input mono" readonly value="multipart/form-data"></div><div class="table-wrap"><table class="table mini-table"><thead><tr><th>字段</th><th>要求</th></tr></thead><tbody><tr><td>algorithm_id / version_id</td><td>必须指向正式算法版本</td></tr><tr><td>model_sha256</td><td>必须与正式版本模型 SHA 一致</td></tr><tr><td>external_source / external_sample_id</td><td>外部来源与稳定样本编号</td></tr><tr><td>feedback_type</td><td>correct / false_positive / needs_correction</td></tr><tr><td>detections_json</td><td>预测框 JSON 数组</td></tr><tr><td>file</td><td>真实图片，最大 20MB</td></tr></tbody></table></div><div class="row end"><button class="btn primary" onclick="closeModal()">关闭</button></div></div>`,true);
   };
 
   window.openPredictionFeedback63=function(){
@@ -4618,7 +4626,7 @@ window.installUsability417?.();
           ?'确认前必须明确画面中不存在当前项目所有启用标签目标，系统才会写入 confirmed_empty 负样本。'
           :'确认后只把原图提升到素材库并标记待人工标注；错误预测框不会写成真值。';
       const rows=detections.map(row=>`<tr><td>${esc(row.label)}</td><td>${Number(row.confidence||0).toFixed(4)}</td><td>${Number(row.x1).toFixed(1)}, ${Number(row.y1).toFixed(1)}, ${Number(row.x2).toFixed(1)}, ${Number(row.y2).toFixed(1)}</td></tr>`).join('')||'<tr><td colspan="3">无预测框</td></tr>';
-      modal('复核线上抽检反馈',`<div class="online-feedback-review63"><div class="alert soft"><b>${esc(typeName(item.feedback_type))}</b><span>${esc(actionNote)}</span></div><div class="grid2"><div><img class="result-img" src="${esc(item.result_image_url||item.input_image_url||'')}"></div><div><dl class="report429-dl"><dt>算法</dt><dd>${esc(item.algorithm_id||'-')}</dd><dt>版本</dt><dd>${esc(item.version_id||'-')}</dd><dt>Model SHA</dt><dd title="${esc(item.model_sha256||'')}">${esc((item.model_sha256||'').slice(0,16))}…</dd><dt>Input SHA</dt><dd title="${esc(item.input_sha256||'')}">${esc((item.input_sha256||'').slice(0,16))}…</dd></dl></div></div><div class="field"><label>目标数据集</label><select id="feedbackDataset63" class="select">${datasetOptions}</select></div>${item.feedback_type==='false_positive'?'<label class="field check"><input id="feedbackAllAbsent63" type="checkbox"> 已人工确认：画面中不存在当前项目所有启用标签目标</label>':''}<table class="table mini-table"><thead><tr><th>预测标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table><div class="row end"><button class="btn danger" onclick="dismissOnlineFeedback63()">忽略反馈</button><button class="btn" onclick="closeModal()">稍后处理</button><button class="btn primary" onclick="confirmOnlineFeedback63('${esc(item.id)}','${esc(item.feedback_type)}')">确认反馈</button></div></div>`,true);
+      modal('复核线上抽检反馈',`<div class="online-feedback-review63"><div class="alert soft"><b>${esc(typeName(item.feedback_type))}</b><span>${esc(actionNote)}</span></div><div class="grid2"><div><img class="result-img" src="${esc(item.result_image_url||item.input_image_url||'')}"></div><div><dl class="report429-dl"><dt>来源</dt><dd>${esc(sourceName63(source))}</dd><dt>算法</dt><dd>${esc(item.algorithm_id||'-')}</dd><dt>版本</dt><dd>${esc(item.version_id||'-')}</dd><dt>Model SHA</dt><dd title="${esc(item.model_sha256||'')}">${esc((item.model_sha256||'').slice(0,16))}…</dd><dt>Input SHA</dt><dd title="${esc(item.input_sha256||'')}">${esc((item.input_sha256||'').slice(0,16))}…</dd></dl></div></div><div class="field"><label>目标数据集</label><select id="feedbackDataset63" class="select">${datasetOptions}</select></div>${item.feedback_type==='false_positive'?'<label class="field check"><input id="feedbackAllAbsent63" type="checkbox"> 已人工确认：画面中不存在当前项目所有启用标签目标</label>':''}<table class="table mini-table"><thead><tr><th>预测标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table><div class="row end"><button class="btn danger" onclick="dismissOnlineFeedback63()">忽略反馈</button><button class="btn" onclick="closeModal()">稍后处理</button><button class="btn primary" onclick="confirmOnlineFeedback63('${esc(item.id)}','${esc(item.feedback_type)}')">确认反馈</button></div></div>`,true);
     }catch(error){toast(error.message||error)}
   };
 

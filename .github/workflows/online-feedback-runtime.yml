@@ -105,5 +105,8 @@ jobs:
           grep -Fq 'formal version prediction enters reviewed online feedback without automatic retraining' tests/browser/online-feedback.spec.mjs
           grep -Fq 'false-positive feedback requires explicit all-label negative confirmation' tests/browser/online-feedback.spec.mjs
           grep -Fq 'pending reviewed feedback can be dismissed without promotion or training' tests/browser/online-feedback.spec.mjs
+          grep -Fq 'external feedback intake contract is exposed from reviewed feedback panel' tests/browser/online-feedback.spec.mjs
+          grep -Fq 'openExternalFeedbackIntake63' static/app.js
+          grep -Fq 'external-intake' static/app.js
           grep -Fq 'dismissOnlineFeedback63' static/app.js
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

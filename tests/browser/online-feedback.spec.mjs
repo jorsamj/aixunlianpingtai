@@ -289,3 +289,21 @@ test('pending reviewed feedback can be dismissed without promotion or training',
   expect(requested.filter(url=>/dataset.*revision/i.test(url))).toEqual([]);
   expect(requested.filter(url=>url.includes('/jobs/'))).toEqual([]);
 });
+
+
+test('external feedback intake contract is exposed from reviewed feedback panel', async ({page,request})=>{
+  const project=await (await request.post('/api/projects',{data:{name:'外部接入-'+Date.now(),labels:['smoke']}})).json();
+  const encoded=encodeURIComponent(project.id);
+  await page.route('**/api/v16/inference_envs',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[]})}));
+  await page.route('**/api/v12/projects/'+encoded+'/test_models*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:[]})}));
+  await page.route('**/api/v63/projects/'+encoded+'/online-feedback?*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:[]})}));
+  await page.addInitScript(projectId=>{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'测试发布'}));},project.id);
+  await page.goto('/');
+  await page.evaluate(()=>window.setPage('测试发布'));
+  await page.getByRole('button',{name:'外部接入'}).click();
+  const dialog=page.getByRole('dialog',{name:'外部抽检接入'});
+  await expect(dialog).toContainText('/api/v63/projects/'+project.id+'/online-feedback/external-intake');
+  await expect(dialog).toContainText('multipart/form-data');
+  await expect(dialog).toContainText('不会自动修改素材、数据集、Dataset Revision 或训练任务');
+  await expect(dialog).not.toContainText('/api/v42/');
+});

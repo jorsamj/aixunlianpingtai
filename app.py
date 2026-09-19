@@ -8997,6 +8997,7 @@ async def v12_predict_image(
                 "engine": data.get("engine") or framework,
                 "detections": list(data.get("detections") or []),
                 "created_at": now_iso(),
+                "source_channel": "platform_test",
             })
             write_json(p / "predictions" / f"{pred_id}.evidence.json", evidence)
             response.update({
