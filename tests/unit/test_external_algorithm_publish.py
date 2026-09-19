@@ -261,6 +261,63 @@ def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path
     assert len({row["source_sha256"] for row in artifacts}) == 1
 
 
+def test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path, job_id="convert-rk3568", target="rockchip", chip="rk3568", content=b"rk")
+    _seed_conversion(tmp_path, job_id="convert-onnx", target="onnx", chip="", content=b"onnx")
+    service = _service(tmp_path, memory)
+
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["mapped_artifact_count"] == 1
+    assert status["blocked_artifact_count"] == 1
+    assert status["ignored_artifact_count"] == 0
+    assert status["publish_ready"] is False
+    blocked = next(row for row in status["discovered"] if row["publish_mapping_status"] == "blocked")
+    assert blocked["target"] == "onnx"
+    assert "尚未配置畅联云算力环境" in blocked["publish_mapping_detail"]
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "partial mapping must not be silently published as complete"
+    except Exception as error:
+        assert getattr(error, "code", "") == "MODEL_ARTIFACT_MAPPING_INCOMPLETE"
+
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+
+
+def test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path, job_id="convert-rk3568", target="rockchip", chip="rk3568", content=b"rk")
+    _seed_conversion(tmp_path, job_id="convert-onnx", target="onnx", chip="", content=b"onnx")
+    service = _service(tmp_path, memory)
+    service.save_config(ExternalPublishConfigPayload(
+        storage_source_id="default_local",
+        public_base_url="https://platform.example",
+        target_mappings={
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568", enabled=True),
+            "onnx": TargetMapping(enabled=False),
+        },
+    ))
+
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["mapped_artifact_count"] == 1
+    assert status["blocked_artifact_count"] == 0
+    assert status["ignored_artifact_count"] == 1
+    assert status["publish_ready"] is True
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weights[0]["chipCode"] == "RK3568"
+
+
 def test_republish_is_idempotent(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
