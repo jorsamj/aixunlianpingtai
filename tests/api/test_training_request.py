@@ -774,3 +774,110 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
     assert job["confirmed_iteration_action"]["action_id"] == action["action_id"]
     request = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
     assert request["iteration_action"] == context
+
+
+def test_durable_training_requires_matching_supplement_candidate_set_identity(
+    client, seeded_project,
+):
+    import app as app_module
+    from platform_core.algorithms import save_algorithms
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.online_feedback import build_supplement_candidate_set
+
+    project_id, candidate_image = seeded_project
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("normal.jpg", _image_bytes("blue"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    for image in (candidate_image, second):
+        assert client.post(
+            f"/api/projects/{project_id}/annotations/{image['id']}",
+            json={"boxes": [{
+                "class_id": 0, "label": "fire",
+                "x1": 10, "y1": 10, "x2": 80, "y2": 80,
+            }]},
+        ).status_code == 200
+
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "反馈补数据训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    version_id = "feedback-base"
+    material = app_module.material_store(project_id).get(candidate_image["id"])
+    annotation = AnnotationRepository(
+        app_module.project_dir(project_id)
+    ).get(candidate_image["id"])
+    action = {
+        "status": "confirmed",
+        "action": "supplement_data",
+        "action_id": "a" * 64,
+        "source": {"algorithm_id": algorithm["id"], "version_id": version_id},
+    }
+    candidate_set = build_supplement_candidate_set(
+        action,
+        [{
+            "eligible": True,
+            "feedback_id": "feedback-1",
+            "feedback_type": "correct",
+            "material_id": candidate_image["id"],
+            "candidate_digest": "b" * 64,
+            "annotation_hash": annotation["content_digest"],
+            "annotation_state": annotation["annotation_state"],
+            "labels": ["fire"],
+            "model_sha256": "c" * 64,
+            "input_sha256": material["content_sha256"],
+            "confirmed_at": "2026-09-19T00:00:00Z",
+            "algorithm_id": algorithm["id"],
+            "version_id": version_id,
+        }],
+        frozen_at="2026-09-19T00:01:00Z",
+    )
+    algorithms = app_module.list_algorithms_internal(project_id)
+    target = next(row for row in algorithms if row["id"] == algorithm["id"])
+    target["current_version_id"] = version_id
+    target["versions"] = [{
+        "id": version_id,
+        "version_name": "20260919000100",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "supplement_data_candidate_set": candidate_set,
+    }]
+    save_algorithms(app_module.algorithms_file(project_id), algorithms)
+
+    base_request = {
+        "framework": "ultralytics",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [candidate_image["id"], second["id"]],
+        "test_image_ids": [],
+        "experiment_percent": 20,
+        "validation_percent": 20,
+        "device": "cpu",
+    }
+    missing = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json=base_request,
+    )
+    assert missing.status_code == 409
+    assert "Candidate Set" in missing.text
+
+    accepted = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            **base_request,
+            "supplement_candidate_set_id": candidate_set["candidate_set_id"],
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    task_id = accepted.json()["task"]["task_id"]
+    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert payload["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
+    assert payload["supplement_candidate_set"]["candidate_set_id"] == candidate_set["candidate_set_id"]
+    job = app_module.read_json(
+        app_module.project_dir(project_id) / "jobs" / task_id / "job.json", {}
+    )
+    assert job["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]

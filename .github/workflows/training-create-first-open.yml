@@ -12,6 +12,7 @@ on:
       - 'static/modules/training-submit.js'
       - 'tests/frontend/training-create-hydration.test.mjs'
       - 'tests/frontend/training-modal-device-probe.test.mjs'
+      - 'tests/frontend/training-submit.test.mjs'
       - 'tests/browser/training-create-first-open.spec.mjs'
       - '.github/workflows/training-create-first-open.yml'
 
@@ -31,6 +32,7 @@ jobs:
       - name: Syntax check
         run: >-
           node --check static/modules/training-create-hydration.js &&
+          node --check static/modules/training-submit.js &&
           node --check static/main.mjs &&
           node --check tests/frontend/training-create-hydration.test.mjs &&
           node --check tests/browser/training-create-first-open.spec.mjs
@@ -39,11 +41,14 @@ jobs:
           node --test
           tests/frontend/training-create-hydration.test.mjs
           tests/frontend/training-modal-device-probe.test.mjs
+          tests/frontend/training-submit.test.mjs
       - name: Permanent first-open guards
         shell: bash
         run: |
           grep -Fq 'installTrainingCreateHydrationRuntime' static/main.mjs
           grep -Fq "training-create-hydration-422532" static/modules/training-create-hydration.js
+          grep -Fq 'supplementCandidateContext' static/modules/training-submit.js
+          grep -Fq 'supplement_candidate_set_id' static/modules/training-submit.js
           grep -Fq '/api/training_options?project_id=' static/modules/training-create-hydration.js
           grep -Fq '/api/system/recommendation' static/modules/training-create-hydration.js
           grep -Fq "api('/api/v62/training-devices')" static/app.js
