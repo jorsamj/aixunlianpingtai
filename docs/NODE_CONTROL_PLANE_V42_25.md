@@ -6,6 +6,34 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Reusable Fixed Benchmark Training v1
+
+2026-09-19，current version 的 `bundle_verified` Benchmark 已能安全复用到下一轮 Durable TRAINING，CLOSED。
+
+控制面边界：
+
+- 不新增 TaskKind / Benchmark scheduler / second training owner；训练仍由现有 Durable TRAINING、Central Scheduler、assignment/execution lease、generation fencing 与 server-confirm 管理。
+- 浏览器只拿 source version / scope / snapshot / count / binding metadata，不拿 exact Test image IDs。
+- submit 只绑定 source version + scope；控制面重新验证 current-version、Evaluation、scope、Snapshot 与 Test truth 后，服务端解析 exact test cohort 并冻结 independent split。
+- 固定 Test cohort 与用户训练候选冲突时，服务端复用 training split 的 component relation truth 自动保留 exact / duplicate-content / group-video-session 等关联样本，避免隐藏 Benchmark 泄漏进 train/validation。
+- 最终 Dataset Revision / Snapshot 只反映有效训练候选与固定 Test cohort；audit 只公开 selected/reserved/effective counts，不把隐藏 Test identities下发浏览器。
+- Frontend 使用“训练候选素材”语义，明确固定评测素材由系统自动保留；Real Chrome 覆盖 browser-blind submit。
+- Agent 权限不变：无中央 SQLite/NFS、无长期对象存储凭据、无 benchmark 决策权限。
+
+实现 HEAD：
+- `39f05792f5f6a25c74539d7c7dba1cfabff4e34d`
+- `b22fcf66b8e598fa83cfa2fef47c2ce7c555318b`
+
+验收：
+- `39f05792...`：30/30 workflows success。
+- `b22fcf66...`：25/25 workflows success。
+- Training Input Integrity `35439895596`：Ubuntu / Windows success。
+- Remote Training Runtime `35439898019`：API / Ubuntu / Windows success。
+- Training Create First Open `35439895675`：Ubuntu / Windows / Real Chrome success。
+- `VERSION.txt = 42.24.0` unchanged。
+
+**OPEN：**真实 RK3568 / RK3576 板卡 acceptance；独立 Benchmark Registry/主动重评 owner 尚未引入；受控自动迭代策略仍保持独立后续阶段。
+
 ## 0. 最新关闭：Evaluation Benchmark Scope v1
 
 2026-09-19，Evaluation 的严格可比性已绑定 Snapshot + 实际 verified Test Bundle，CLOSED。

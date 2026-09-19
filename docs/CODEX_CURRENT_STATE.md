@@ -3,6 +3,63 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Reusable Fixed Benchmark Training v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The current algorithm version's `bundle_verified` Benchmark Scope can now be
+reused by the next Durable TRAINING request without exposing the hidden test
+cohort to browser state or creating another training/evaluation owner.
+
+The browser receives only source-version/scope/snapshot/count/binding metadata.
+Training submit carries `benchmark_source_version_id` and
+`benchmark_scope_id`; the control plane revalidates current-version identity,
+successful Evaluation, bundle-verified scope, Snapshot identity, test source
+content SHA256, annotation hash/state, and label-schema truth before resolving
+the exact test IDs server-side.
+
+The resolved cohort becomes the independent test split. If user-selected
+training candidates intersect that hidden cohort, the server now applies the
+same component relation truth as the split leakage guard and reserves exact
+test materials plus connected duplicate-content/file/group/video/session
+samples before freezing the Durable TRAINING payload. The Dataset Revision and
+Snapshot therefore describe the effective train/validation candidates and the
+fixed test cohort, not the browser's pre-reservation selection.
+
+Only selected/reserved/effective candidate counts are added to benchmark reuse
+audit metadata. Hidden test identities remain server-side. A selection that is
+entirely reserved fails closed with an actionable request for additional
+training material.
+
+Frontend Impact Review is complete. The stable training modal calls these
+materials “训练候选素材”, explains that fixed evaluation material is
+automatically reserved, keeps the test picker out of the fixed-benchmark mode,
+and submits only benchmark identities. Real Chrome verifies the browser-blind
+contract.
+
+No Agent permission changed. Central Scheduler, assignment/execution leases,
+generation fencing, portable object transport and server-confirm remain the
+existing owners.
+
+Implementation:
+- `39f05792f5f6a25c74539d7c7dba1cfabff4e34d`
+- `b22fcf66b8e598fa83cfa2fef47c2ce7c555318b`
+
+Acceptance:
+- `39f05792...`: 30 workflows / 30 success / 0 failure / 0 pending.
+- `b22fcf66...`: 25 workflows / 25 success / 0 failure / 0 pending.
+- Training Input Integrity push `35439895596`: Ubuntu + Windows success.
+- Remote Training Runtime `35439898019`: API + Ubuntu + Windows success.
+- Training Create First Open `35439895675`: Ubuntu + Windows contracts +
+  Real Chrome success.
+- `VERSION.txt = 42.24.0` unchanged.
+
+**OPEN:** physical RK3568/RK3576 acceptance remains independent. This closure
+does not introduce a standalone Benchmark Registry/proactive re-evaluation
+scheduler, and it does not change the existing `automatic_execution=false`
+iteration semantics. Controlled automation remains a separate future phase and
+must reuse the current Durable TRAINING/Evaluation owners.
+
 ## Current closure — Evaluation Benchmark Scope v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.

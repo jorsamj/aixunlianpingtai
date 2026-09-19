@@ -7,9 +7,61 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`ac8ac782632c3d63cb7ed6a8c807a826451abb5e`  
+本轮产品实现基线：`b22fcf66b8e598fa83cfa2fef47c2ce7c555318b`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
+
+---
+
+# 最新关闭：Reusable Fixed Benchmark Training v1
+
+2026-09-19，Evaluation Benchmark Scope 已正式接回下一轮 Durable TRAINING，**Reusable Fixed Benchmark Training v1 CLOSED**。
+
+当前 CLOSED 边界：
+
+- 不新增 Benchmark TaskKind、第二套训练 owner、前端评测 owner 或 Agent 权限；仍复用现有 TRAINING → Snapshot / Dataset Revision → Evaluation 链。
+- `GET /api/v12/projects/{project_id}/algorithms/{algorithm_id}/benchmark-reuse` 只返回 current version、scope、snapshot、test count 与 binding truth，**不向浏览器下发具体 Test image IDs**。
+- 训练提交只绑定 `benchmark_source_version_id + benchmark_scope_id`。服务端会重新验证：
+  - source version 仍是当前版本；
+  - source Evaluation 已成功；
+  - Benchmark Scope 仍为 `bundle_verified`；
+  - scope id / snapshot identity / test image content SHA / annotation hash-state / label schema 均未漂移。
+- 只有上述校验全部通过后，服务端才从 source Snapshot 解析 exact test IDs，并把本次训练强制落为 independent test split；浏览器不能自己提交另一份 test list。
+- 固定 Benchmark 与训练候选发生重叠时，不再把一个用户无法定位的隐藏 Test ID 报错抛回前端。控制面使用与 split leakage guard **同一 component relation truth** 自动保留：
+  - exact test material；
+  - 同 content SHA 的重复内容；
+  - 同 file identity；
+  - group / video / source-group / near-duplicate / sequence / camera-session 等不可拆分关联。
+- 自动保留发生在 Durable TRAINING payload 冻结前；最终 Snapshot / Dataset Revision 只记录**实际有效训练/验证候选 + 固定 Test cohort**。
+- `benchmark_reuse` audit 记录 selected / reserved / effective candidate counts，但不会把被保留的隐藏 Test identities暴露给浏览器。
+- 若所选训练候选全部属于固定评测保留范围，后端 fail closed，要求补充其他训练素材；不会静默创建一个无法训练的任务。
+- Frontend Impact Review 同批完成：
+  - 固定 Benchmark 可用时继续显示 source version / count / “已校验 Test Bundle”；
+  - 数据卡改为“训练候选素材”；
+  - UI 明确“固定评测素材由系统自动保留，不会混入训练”；
+  - experiment/test picker 不再与固定 Benchmark 并存；
+  - Real Chrome 验证 browser 不持有 test_image_ids，提交只携带 benchmark identities。
+- Agent / Central Scheduler / execution lease / generation fencing / object-storage transport / server-confirm 边界完全不变。
+
+本轮代码：
+
+- `39f05792f5f6a25c74539d7c7dba1cfabff4e34d` — `fix(evaluation): reserve benchmark inputs from training`
+- `b22fcf66b8e598fa83cfa2fef47c2ce7c555318b` — `fix(evaluation): align benchmark reservation UX`
+
+验收：
+
+- backend parent HEAD `39f05792...`：30 workflows / 30 success / 0 failure / 0 pending。
+- current implementation HEAD `b22fcf66...`：25 workflows / 25 success / 0 failure / 0 pending。
+- Training Input Integrity push `35439895596`：Ubuntu + Windows success，包含 fixed benchmark component reservation guard。
+- Remote Training Runtime current-head PR `35439898019`：API + Ubuntu + Windows success。
+- Training Create First Open push `35439895675`：Ubuntu + Windows contract + Real Chrome success。
+- `VERSION.txt = 42.24.0` unchanged。
+
+**仍然 OPEN：**
+
+1. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance；CI 不能替代真实 NPU。
+2. 当前没有独立 Benchmark Registry / 主动重评 scheduler owner；本轮关闭的是“下一轮训练复用 current verified benchmark”，不是后台自动重评。
+3. `automatic_execution=false` 仍保持：线上 feedback → supplement → training → evaluation 已可追溯，但受控自动迭代策略仍是后续独立阶段，不能靠前端定时器或第二套训练 owner 实现。
 
 ---
 
