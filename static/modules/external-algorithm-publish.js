@@ -63,6 +63,36 @@ export function publicationActionLabel(version = {}) {
   return '同步到新畅联';
 }
 
+export function publicationPreflight(status = {}) {
+  if (status.conversion_active) {
+    return {ready: false, message: '模型转换仍在进行，请等待转换完成后再同步到新畅联。'};
+  }
+  const discovered = Array.isArray(status.discovered) ? status.discovered : [];
+  if (!discovered.length) {
+    return {ready: false, message: '当前版本还没有可发布的转换产物，请先完成模型转换。'};
+  }
+  const blocked = Number(status.blocked_artifact_count || 0);
+  if (blocked > 0) {
+    const targets = [...new Set(discovered
+      .filter(row => row.publish_mapping_status === 'blocked')
+      .map(row => String(row.target || '').toUpperCase())
+      .filter(Boolean))];
+    return {
+      ready: false,
+      message: `还有 ${blocked} 个已启用转换产物缺少畅联云算力环境映射${targets.length ? `（${targets.join('、')}）` : ''}，请先到“平台对接 → 畅联云版本发布”补齐；不需要发布的目标请明确关闭。`,
+    };
+  }
+  const mapped = Number(status.mapped_artifact_count || 0);
+  if (mapped <= 0 || status.publish_ready === false) {
+    return {ready: false, message: '当前没有已完成映射的可发布转换产物。'};
+  }
+  const ignored = Number(status.ignored_artifact_count || 0);
+  return {
+    ready: true,
+    message: `发布预检通过：将同步 ${mapped} 个权重${ignored ? `，另有 ${ignored} 个转换目标已明确关闭发布` : ''}。`,
+  };
+}
+
 export function installExternalAlgorithmPublishRuntime({getState, projectId, notify, algorithmListRuntime} = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__externalAlgorithmPublishRuntimeInstalled) return window.ExternalAlgorithmPublishRuntime;
@@ -213,8 +243,18 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   async function publishVersion(algorithmId, versionId, button) {
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
-    if (button) { button.disabled = true; button.textContent = '正在同步…'; }
+    if (button) { button.disabled = true; button.textContent = '正在检查…'; }
     try {
+      const status = await requestJson(
+        `${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`
+      );
+      const preflight = publicationPreflight(status);
+      if (!preflight.ready) {
+        notify?.(preflight.message);
+        return;
+      }
+      notify?.(preflight.message);
+      if (button) button.textContent = '正在同步…';
       await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}/publish`, {method: 'POST'});
       notify?.('模型版本和转换产物已同步到新畅联');
       await algorithmListRuntime?.refresh?.({render: true});
