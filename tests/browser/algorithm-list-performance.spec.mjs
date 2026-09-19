@@ -440,6 +440,16 @@ test('algorithm version exposes persisted training lineage without job refetch',
         error_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3,fp_labels:['smoke'],fn_labels:['smoke']}],
         protocol:{mode:'blind_image_only_inference_then_hidden_ground_truth_scoring',operating_conf:0.25,matching_iou:0.5},
       },
+      iteration_decision:{
+        schema_version:1,decision_id:'e'.repeat(64),evaluation_id:'d'.repeat(64),
+        decision:'needs_data',
+        quality_gate:{metric:'map50',metric_key:'metrics/mAP50(B)',metric_value:0.76,continue_threshold:0.65,stop_threshold:0.90},
+        weak_labels:['smoke'],
+        signals:{false_positive:2,false_negative:3,error_sample_count:1},
+        reason_codes:['weak_labels_present'],
+        recommended_actions:['supplement_weak_label_data','review_fp_fn_samples'],
+        automatic_execution:false,requires_confirmation:true,
+      },
     }],
   };
 
@@ -485,6 +495,10 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#modalBody')).toContainText('smoke');
   await expect(page.locator('#modalBody')).toContainText('test-smoke.jpg');
   await expect(page.locator('#modalBody')).toContainText('FP / FN');
+  await expect(page.locator('#modalBody')).toContainText('迭代决策');
+  await expect(page.locator('#modalBody')).toContainText('需补充数据');
+  await expect(page.locator('#modalBody')).toContainText('补充弱标签数据');
+  await expect(page.locator('#modalBody')).toContainText('系统仅给出建议，不会自动发起下一次训练');
   expect(requests.filter(path=>path.includes('/jobs/'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });

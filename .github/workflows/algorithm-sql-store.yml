@@ -124,6 +124,8 @@ jobs:
           grep -Fq '训练溯源' static/app.js
           grep -Fq 'openVersionEvaluation429' static/app.js
           grep -Fq '独立评测' static/app.js
+          grep -Fq '迭代决策' static/app.js
+          grep -Fq '系统仅给出建议，不会自动发起下一次训练' static/app.js
           grep -Fq 'stable algorithm version renderer exposes persisted training lineage action' tests/frontend/algorithm-lineage-stable-renderer.test.mjs
           grep -Fq 'algorithm version exposes persisted training lineage without job refetch' tests/browser/algorithm-list-performance.spec.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
