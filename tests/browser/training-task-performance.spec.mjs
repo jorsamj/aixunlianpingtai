@@ -61,6 +61,14 @@ test('training task refresh and actions patch the final table without rebuilding
     jobStatus = 'paused';
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
   });
+  await page.route(`**/api/projects/${encoded}/jobs/job-focused-1`, async route => {
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
+      id:'job-focused-1',status:jobStatus,requested_device:'auto',assigned_device:'cuda:0',actual_device:'cuda:0',
+      dataset_revision_id:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      snapshot_id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      current_epoch:11,total_epochs:30,message:'训练中',
+    })});
+  });
   await page.route(`**/api/projects/${encoded}/jobs/job-focused-1/log`, async route => {
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify('mock log')});
   });
@@ -81,10 +89,10 @@ test('training task refresh and actions patch the final table without rebuilding
   expect(apiRequests.some(row => row.includes('/materials'))).toBe(false);
 
   await page.evaluate(() => window.showTrainLog423('job-focused-1'));
-  await expect(page.locator('.trainlog428-resource')).toContainText('数据版本');
-  await expect(page.locator('.trainlog428-resource')).toContainText('bbbbbbbbbbbb');
-  await expect(page.locator('.trainlog428-resource')).toContainText('训练快照');
-  await expect(page.locator('.trainlog428-resource')).toContainText('aaaaaaaaaaaa');
+  await expect(page.locator('.trainlog428')).toContainText('数据版本');
+  await expect(page.locator('.trainlog428')).toContainText('bbbbbbbbbbbb');
+  await expect(page.locator('.trainlog428')).toContainText('训练快照');
+  await expect(page.locator('.trainlog428')).toContainText('aaaaaaaaaaaa');
   await page.getByRole('button', {name: '关闭'}).click();
 
   apiRequests.length = 0;

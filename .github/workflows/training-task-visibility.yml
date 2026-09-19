@@ -46,8 +46,12 @@ jobs:
           node --check static/modules/training-task-visibility-runtime.js &&
           node --check static/modules/poll-registry.js &&
           node --check static/modules/page-request-scope.js
-      - name: Install focused backend test dependency
-        run: python -m pip install --disable-pip-version-check pytest psutil
+      - name: Install focused backend test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
       - name: Unified training job overlay truth
         run: >-
           python -m pytest -q
