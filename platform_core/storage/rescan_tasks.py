@@ -165,7 +165,7 @@ def _annotation_delta_category(evidence, old_material, current_annotation):
 def _build_annotation_deltas(store, project_path: Path, *, source_format: str):
     normalized = str(source_format or '').strip().lower()
     store.restart_annotation_deltas()
-    if normalized not in {'yolo', 'coco'}:
+    if normalized not in {'yolo', 'coco', 'voc'}:
         return store.annotation_summary()
     annotations = AnnotationRepository(project_path)
     page = []
@@ -251,8 +251,8 @@ class StorageRescanHandler(StorageImportHandler):
             materials.snapshot_storage_references(store.path, source.id)
         request = self._request(context)
         import_format = str(request.get('import_format') or 'images').strip().lower()
-        if import_format not in {'images', 'yolo', 'coco'}:
-            raise ValueError('storage_rescan supports images, YOLO or COCO in Phase 2B')
+        if import_format not in {'images', 'yolo', 'coco', 'voc'}:
+            raise ValueError('storage_rescan supports images, YOLO, COCO or Pascal VOC in Phase 2C')
         scanner = None
         detection_scanner = None
         quality = None
@@ -280,7 +280,7 @@ class StorageRescanHandler(StorageImportHandler):
                     for item in scanner.iter_inventory(dataset_only=False)
                     if Path(str(item.key)).suffix.lower() in IMAGE_EXTENSIONS
                 )
-            elif import_format == 'coco':
+            elif import_format in {'coco', 'voc'}:
                 store.restart_annotation_review()
                 detection_scanner = DetectionDatasetScanner(
                     provider,
@@ -292,16 +292,16 @@ class StorageRescanHandler(StorageImportHandler):
                     storage_source_id=source.id,
                     storage_type=source.type,
                     cancelled=context.cancel_requested,
-                    progress=lambda key: context.check(f'COCO：{key}'),
+                    progress=lambda key: context.check(f'{import_format.upper()}：{key}'),
                     deduplicate_images=False,
                 )
-                detected = detection_scanner.scan('coco', prefix='', recursive=True)
+                detected = detection_scanner.scan(import_format, prefix='', recursive=True)
                 detection_scanner.ensure_all_image_candidates()
                 quality = detected.quality
                 objects = store.iter_candidates(batch_size=BATCH_SIZE)
             else:
                 objects = iter_provider_objects(provider, '', True)
-            preinspected = import_format == 'coco'
+            preinspected = import_format in {'coco', 'voc'}
             batch = []
 
             def flush():
@@ -335,7 +335,7 @@ class StorageRescanHandler(StorageImportHandler):
                 quality = scanner.scan_annotations()
             context.check(force=True)
             store.finish_inventory()
-        elif import_format in {'yolo', 'coco'}:
+        elif import_format in {'yolo', 'coco', 'voc'}:
             quality = store.quality_summary()
         annotation = _build_annotation_deltas(
             store,
@@ -350,7 +350,7 @@ class StorageRescanHandler(StorageImportHandler):
             'import_format': import_format,
             **store.summary(),
         }
-        if import_format in {'yolo', 'coco'}:
+        if import_format in {'yolo', 'coco', 'voc'}:
             result.update({
                 **(
                     {'dataset_yaml': str(request.get('dataset_yaml') or '')}
@@ -386,7 +386,7 @@ class StorageRescanHandler(StorageImportHandler):
 
     def _apply_annotation_rescan(self, context, source, store, materials, policy, request):
         source_format = str(request.get('import_format') or 'images').strip().lower()
-        if source_format not in {'yolo', 'coco'}:
+        if source_format not in {'yolo', 'coco', 'voc'}:
             return store.annotation_summary()
         confirmation = store.meta('annotation_confirmation') or {}
         mapping = {
@@ -773,7 +773,7 @@ def prepare_remote_rescan_review(
         'import_format': import_format,
         **store.summary(),
     }
-    if import_format in {'yolo', 'coco'}:
+    if import_format in {'yolo', 'coco', 'voc'}:
         result.update({
             **(
                 {'dataset_yaml': str(scan_result.get('dataset_yaml') or '')}

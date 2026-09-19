@@ -676,3 +676,103 @@ def test_coco_rescan_rejects_platform_annotation_edit_after_review(tmp_path):
             },
             {"import_format": "coco"},
         )
+
+
+def test_voc_annotation_delta_and_apply_share_generic_external_provenance(tmp_path):
+    from platform_core.storage.rescan_tasks import _build_annotation_deltas
+
+    data_dir = tmp_path / "data"
+    project_id = "project-voc-delta"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["fire"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    row = material("old-voc", "dataset/train/JPEGImages/a.jpg", "a" * 64)
+    row["external_annotation"] = {
+        "schema_version": 1,
+        "source_format": "voc",
+        "source_digest": "old-voc-source",
+        "annotation_status": "annotated",
+        "synced_annotation_hash": "",
+    }
+    materials.upsert(row)
+
+    store = RescanCandidateStore(tmp_path / "voc-rescan.sqlite3")
+    materials.snapshot_storage_references(store.path, "s3-a")
+    store.upsert_many([candidate(
+        row["object_key"], row["content_sha256"], etag=row["etag"],
+    )])
+    xml_key = "dataset/train/Annotations/a.xml"
+    store.inventory_many([{
+        "object_key": xml_key,
+        "size_bytes": 128,
+        "etag": "voc-xml-etag",
+        "sha256": "8" * 64,
+    }])
+    store.set_label_mapping({0: "fire"})
+    store.manifest_many([{
+        "object_key": row["object_key"],
+        "split": "train",
+        "yaml_key": xml_key,
+    }])
+    store.annotation_batch(
+        [{
+            "object_key": row["object_key"],
+            "label_key": xml_key,
+            "annotation_status": "annotated",
+            "box_count": 1,
+        }],
+        [{
+            "object_key": row["object_key"],
+            "line_number": 1,
+            "class_id": 0,
+            "cx": 0.5,
+            "cy": 0.5,
+            "w": 0.25,
+            "h": 0.25,
+            "clipped": False,
+        }],
+        [],
+    )
+
+    delta = _build_annotation_deltas(store, project_path, source_format="voc")
+    assert delta["counts"] == {"ANNOTATION_CHANGED": 1}
+    pending = store.pending_annotation_deltas(["ANNOTATION_CHANGED"])
+    evidence = pending[0]["source_evidence"]
+    assert evidence["source_format"] == "voc"
+    assert evidence["dataset_object"]["sha256"] == "8" * 64
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "voc-apply"
+    apply_store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    apply_store.set_meta("annotation_confirmation", {
+        "label_mapping": {"0": "fire"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    apply_store.annotation_delta_batch(pending)
+
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    applied = handler._apply_annotation_rescan(
+        context,
+        SimpleNamespace(id="s3-a"),
+        apply_store,
+        materials,
+        {
+            "new": "ignore",
+            "missing": "ignore",
+            "changed": "ignore",
+            "annotation_changed": "update",
+            "annotation_removed": "keep",
+            "annotation_conflicts": "keep",
+        },
+        {"import_format": "voc"},
+    )
+    assert applied["applied"] == 1
+    saved = materials.get("old-voc")
+    assert saved["external_annotation"]["source_format"] == "voc"
+    assert saved["external_annotation"]["source_digest"] == evidence["source_digest"]
