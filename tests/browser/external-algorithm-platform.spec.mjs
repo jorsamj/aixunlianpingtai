@@ -1,6 +1,6 @@
 import {test, expect} from '@playwright/test';
 
-test('changlian platform page tests draft credentials before manual sync', async ({page, request}) => {
+test('changlian platform page tests draft credentials before manual sync', async ({page}) => {
   let testedPayload = null;
 
   await page.route('**/api/v63/external-algorithm-platform/config', async route => {
@@ -92,15 +92,6 @@ test('changlian platform page tests draft credentials before manual sync', async
   });
 
   await page.goto('/');
-  const bootstrapBefore = await (await request.get('/api/v53/bootstrap/status')).json();
-  console.log('bootstrap-before-ui-ready', JSON.stringify(bootstrapBefore));
-  await page.waitForTimeout(500);
-  console.log('browser-before-ui-ready', JSON.stringify(await page.evaluate(() => ({
-    project: typeof state !== 'undefined' ? state.project : null,
-    page: typeof state !== 'undefined' ? state.page : null,
-    initPromise: Boolean(window.__v53InitPromise),
-    viewText: document.getElementById('view')?.innerText || '',
-  }))));
   await expect.poll(async () => page.evaluate(() => ({
     setPageReady: typeof window.setPage === 'function',
     uiReady: typeof state !== 'undefined' ? !!state.uiReady : false,
@@ -124,10 +115,11 @@ test('changlian platform page tests draft credentials before manual sync', async
   expect(testedPayload.access_secret).toBe('draft-secret');
   expect(testedPayload.mode).toBe('external');
 
-  await expect(page.getByText('连接成功')).toBeVisible();
-  await expect(page.getByRole('cell', {name: '应用鉴权'})).toBeVisible();
-  await expect(page.getByRole('cell', {name: '算法品目'})).toBeVisible();
-  await expect(page.getByRole('cell', {name: '算法产品'})).toBeVisible();
-  await expect(page.getByRole('cell', {name: '算力环境'})).toBeVisible();
-  await expect(page.getByRole('cell', {name: '产品分析方式'})).toBeVisible();
+  const connectionResult = page.locator('#externalConnectionResult');
+  await expect(connectionResult.getByText('连接成功')).toBeVisible();
+  await expect(connectionResult.getByRole('cell', {name: '应用鉴权'})).toBeVisible();
+  await expect(connectionResult.getByRole('cell', {name: '算法品目'})).toBeVisible();
+  await expect(connectionResult.getByRole('cell', {name: '算法产品'})).toBeVisible();
+  await expect(connectionResult.getByRole('cell', {name: '算力环境'})).toBeVisible();
+  await expect(connectionResult.getByRole('cell', {name: '产品分析方式'})).toBeVisible();
 });
