@@ -281,6 +281,71 @@ def test_service_sync_saves_redacted_config_cache_history_and_mirror(tmp_path: P
     assert row["source_type"] == SOURCE_EXTERNAL
 
 
+def test_sync_cache_write_failure_does_not_mutate_algorithm_mirror(tmp_path: Path, monkeypatch):
+    import platform_core.external_algorithm_platform as platform_module
+
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    algorithms_path = tmp_path / "project-cache-failure" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    mirror_calls = []
+
+    monkeypatch.setattr(
+        platform_module,
+        "mirror_products_to_algorithms",
+        lambda **kwargs: mirror_calls.append(kwargs) or {"added": 1},
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "save_cache",
+        lambda _value: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(Exception) as error:
+        service.sync(project_id="p-cache-failure", algorithms_path=algorithms_path)
+
+    assert getattr(error.value, "code", "") == "EXTERNAL_PLATFORM_SYNC_FAILED"
+    assert mirror_calls == []
+    assert list_algorithms(algorithms_path) == []
+    assert service.repository.history()[0]["status"] == "failed"
+
+
+def test_sync_mirror_failure_restores_previous_master_data_cache(tmp_path: Path, monkeypatch):
+    import platform_core.external_algorithm_platform as platform_module
+
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    algorithms_path = tmp_path / "project-mirror-failure" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    previous_cache = {
+        "provider": "changlian",
+        "synced_at": "2026-09-18T12:00:00Z",
+        "categories": [{"categoryId": "old-category"}],
+        "products": [{"productId": "old-product"}],
+        "analyses_by_product": {"old-product": [{"analysisId": "old-analysis"}]},
+        "compute_platforms": [{"computePlatformId": "old-compute"}],
+    }
+    service.repository.save_cache(previous_cache)
+
+    monkeypatch.setattr(
+        platform_module,
+        "mirror_products_to_algorithms",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("sqlite mirror failed")),
+    )
+
+    with pytest.raises(Exception) as error:
+        service.sync(project_id="p-mirror-failure", algorithms_path=algorithms_path)
+
+    assert getattr(error.value, "code", "") == "EXTERNAL_PLATFORM_SYNC_FAILED"
+    restored = service.repository.cache()
+    assert restored["synced_at"] == previous_cache["synced_at"]
+    assert restored["products"] == previous_cache["products"]
+    assert restored["analyses_by_product"] == previous_cache["analyses_by_product"]
+    assert restored["compute_platforms"] == previous_cache["compute_platforms"]
+    assert list_algorithms(algorithms_path) == []
+    assert service.repository.history()[0]["status"] == "failed"
+
+
 def test_auto_sync_due_respects_switch_and_interval(tmp_path: Path):
     memory = MemorySecretStore()
     service = ExternalAlgorithmPlatformService(
