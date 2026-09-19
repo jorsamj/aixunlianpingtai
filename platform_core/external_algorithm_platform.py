@@ -711,6 +711,10 @@ class ExternalAlgorithmPlatformService:
     def _credential_store(self) -> SecretCredentialStore:
         return SecretCredentialStore(self.secret_store_factory())
 
+    def _sync_lock(self, project_id: str) -> FileLock:
+        digest = hashlib.sha256(str(project_id).encode("utf-8")).hexdigest()[:20]
+        return FileLock(str(self.repository.root / f".sync-{digest}.lock"), timeout=0)
+
     def public_config(self) -> Dict[str, Any]:
         config = self.repository.config()
         ref = str(config.get("credential_ref") or DEFAULT_CONFIG["credential_ref"])
@@ -1079,6 +1083,17 @@ class ExternalAlgorithmPlatformService:
                 "请先切换为“外部平台 / 新畅联”并保存。",
                 409,
             )
+        sync_lock = self._sync_lock(project_id)
+        try:
+            sync_lock.acquire(timeout=0)
+        except Timeout as error:
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_SYNC_BUSY",
+                "新畅联主数据同步正在进行",
+                f"项目 {project_id} 已有同步任务占用。",
+                "请等待当前同步完成后再点击“立即同步”。",
+                409,
+            ) from error
         started_at = utc_now()
         history: Dict[str, Any] = {
             "id": hashlib.sha256(f"{project_id}:{started_at}".encode()).hexdigest()[:16],
@@ -1088,8 +1103,8 @@ class ExternalAlgorithmPlatformService:
             "status": "running",
             "started_at": started_at,
         }
-        client = self._client()
         try:
+            client = self._client()
             categories = flatten_category_tree(client.category_tree())
             products = _validated_external_items(
                 client.products(),
@@ -1179,6 +1194,11 @@ class ExternalAlgorithmPlatformService:
                 "请先使用“测试连接”检查凭据和接口路径，再重新执行同步。",
                 502,
             ) from error
+        finally:
+            try:
+                sync_lock.release()
+            except Exception:
+                pass
 
 
     def auto_sync_due(self, *, now: Optional[datetime] = None) -> bool:
