@@ -298,13 +298,19 @@ export function installExternalAlgorithmPlatformRuntime({
         });
         toolbar.prepend(select);
       }
-      const options = ['<option value="">全部品目</option>', ...(cacheData.categories || []).map(row => {
-        const id = String(row.categoryId || row.id || '');
-        const name = String(row.categoryName || row.name || id);
-        return `<option value="${escapeHtml(id)}" ${id === selectedCategoryId ? 'selected' : ''}>${escapeHtml(name)}</option>`;
-      })];
-      select.innerHTML = options.join('');
-      select.value = selectedCategoryId;
+      const optionRows = (cacheData.categories || []).map(row => ({
+        id: String(row.categoryId || row.id || ''),
+        name: String(row.categoryName || row.name || row.categoryId || row.id || ''),
+      }));
+      const optionSignature = JSON.stringify(optionRows);
+      if (select.dataset.externalCategorySignature !== optionSignature) {
+        select.innerHTML = [
+          '<option value="">全部品目</option>',
+          ...optionRows.map(row => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.name || row.id)}</option>`),
+        ].join('');
+        select.dataset.externalCategorySignature = optionSignature;
+      }
+      if (select.value !== selectedCategoryId) select.value = selectedCategoryId;
     }
     if (toolbar && !externalMode()) {
       toolbar.querySelector('[data-external-category-filter]')?.remove();
@@ -314,7 +320,7 @@ export function installExternalAlgorithmPlatformRuntime({
     const create = document.querySelector('.alg428-toolbar [data-action="algorithm.create"]');
     if (create && externalMode()) {
       create.removeAttribute('data-action');
-      create.textContent = '↻ 同步新畅联';
+      if (create.textContent !== '↻ 同步新畅联') create.textContent = '↻ 同步新畅联';
       create.onclick = event => {
         event.preventDefault();
         void syncNow();
