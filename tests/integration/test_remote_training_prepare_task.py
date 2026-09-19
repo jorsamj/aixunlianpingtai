@@ -6,6 +6,9 @@ from pathlib import Path
 
 from PIL import Image
 
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.material_repository import MaterialRepository
+from platform_core.online_feedback import build_supplement_candidate_set
 from platform_core.remote_training_tasks import RemoteTrainingPrepareHandler
 from platform_core.storage.models import ObjectMetadata
 from platform_core.storage.source_repository import StorageSource, StorageSourceRepository
@@ -134,7 +137,7 @@ def _build_project(data_dir: Path):
     return project_id
 
 
-def _runtime(data_dir: Path, project_id: str):
+def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
     runtime = data_dir / "task_runtime"
     repository = TaskRepository(runtime / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime / "artifacts")
@@ -159,6 +162,8 @@ def _runtime(data_dir: Path, project_id: str):
         "requested_device": "auto",
         "device": "auto",
     }
+    if supplement_candidate_set is not None:
+        target_payload["supplement_candidate_set"] = dict(supplement_candidate_set)
     artifacts.atomic_write_json(target_id, "payload.json", target_payload)
     repository.create(TaskRecord.new(
         target_id,
@@ -301,3 +306,87 @@ def test_remote_training_prepare_failure_blocks_target_instead_of_leaving_it_que
     payload = artifacts.read_json(target_id, "payload.json")
     assert payload["remote_input_state"] == "PREPARING"
     assert "remote_execution" not in payload
+
+
+def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    project = data_dir / "projects" / project_id
+    materials = MaterialRepository(project)
+    material = materials.get("image-0")
+    assert material is not None
+    annotation = AnnotationRepository(project).upsert(
+        "image-0",
+        [{
+            "id": "image-0-feedback",
+            "label": "fire",
+            "class_id": 0,
+            "x1": 5, "y1": 5, "x2": 40, "y2": 40,
+        }],
+        "annotated",
+    )
+    candidate_set = build_supplement_candidate_set(
+        {
+            "status": "confirmed",
+            "action": "supplement_data",
+            "action_id": "a" * 64,
+            "source": {
+                "algorithm_id": "algorithm-fire",
+                "version_id": "version-feedback",
+            },
+        },
+        [{
+            "eligible": True,
+            "feedback_id": "feedback-image-0",
+            "feedback_type": "correct",
+            "material_id": "image-0",
+            "candidate_digest": "b" * 64,
+            "annotation_hash": annotation["content_digest"],
+            "annotation_state": "annotated",
+            "labels": ["fire"],
+            "model_sha256": "c" * 64,
+            "input_sha256": material["content_sha256"],
+            "confirmed_at": "2026-09-19T00:00:00Z",
+            "algorithm_id": "algorithm-fire",
+            "version_id": "version-feedback",
+        }],
+        frozen_at="2026-09-19T00:01:00Z",
+    )
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        supplement_candidate_set=candidate_set,
+    )
+    source = _remote_source()
+    provider = FakeObjectProvider()
+    handler = RemoteTrainingPrepareHandler(
+        data_dir,
+        sources=FakeSources(source),
+        credentials=FakeCredentials(),
+        provider_factory=lambda _project_id, _source, _secret: provider,
+        model_artifacts=FakeModelArtifacts(source.id),
+    )
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "training-prep-feedback-worker",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    )
+
+    assert scheduler.run_once() is True
+    assert repository.get(prep_id).status is TaskStatus.SUCCEEDED
+    payload = artifacts.read_json(target_id, "payload.json")
+    remote_training = payload["remote_execution"]["training"]
+    provenance = remote_training["supplement_provenance"]
+    assert provenance["candidate_set_id"] == candidate_set["candidate_set_id"]
+    assert provenance["adopted_feedback_ids"] == ["feedback-image-0"]
+    assert provenance["adopted_material_ids"] == ["image-0"]
+    assert provenance["adopted_candidate_count"] == 1
+    assert provenance["automatic_execution"] is False
+    assert "supplement_candidate_set" not in remote_training
+
+    snapshot = artifacts.read_json(target_id, "snapshot.json")
+    revision = artifacts.read_json(target_id, "dataset-revision.json")
+    assert snapshot["supplement_provenance"]["adoption_id"] == provenance["adoption_id"]
+    assert revision["supplement_provenance"]["adoption_id"] == provenance["adoption_id"]
