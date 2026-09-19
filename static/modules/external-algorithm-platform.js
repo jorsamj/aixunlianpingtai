@@ -31,6 +31,32 @@ export function isExternalAlgorithm(algorithm) {
   return String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL';
 }
 
+export function externalAlgorithmTrainingReadiness(algorithm = {}, currentMasterDigest = '') {
+  if (!isExternalAlgorithm(algorithm)) return {ready: true, status: 'local', reason: '', message: ''};
+  if (String(algorithm?.provider_type || '').toUpperCase() !== 'CHANG_LIAN') {
+    return {ready: true, status: 'external', reason: '', message: ''};
+  }
+  if (algorithm.external_active === false) {
+    return {
+      ready: false,
+      status: 'inactive',
+      reason: 'external-inactive',
+      message: '该算法已在新畅联下架，不能新建训练任务',
+    };
+  }
+  const expected = String(currentMasterDigest || '').trim();
+  const actual = String(algorithm.external_master_data_digest || '').trim();
+  if (!expected || !actual || expected !== actual) {
+    return {
+      ready: false,
+      status: 'stale',
+      reason: 'external-master-data-stale',
+      message: '当前算法的畅联云主数据需要重新同步，请到“配置中心 → 平台对接”执行“立即同步”',
+    };
+  }
+  return {ready: true, status: 'current', reason: '', message: ''};
+}
+
 export function algorithmSourceLabel(algorithm) {
   if (!isExternalAlgorithm(algorithm)) return '本平台';
   return String(algorithm?.source_name || (
@@ -59,6 +85,7 @@ export function externalAlgorithmMapping(algorithm = {}) {
     analysisNames: analyses.map(row => row.name || row.id),
     active: algorithm.external_active !== false,
     syncedAt: String(algorithm.external_last_synced_at || ''),
+    masterDataDigest: String(algorithm.external_master_data_digest || ''),
   };
 }
 
@@ -193,6 +220,23 @@ export function installExternalAlgorithmPlatformRuntime({
     return (config || state().externalAlgorithmPlatformConfig)?.mode === 'external';
   }
 
+  function currentMasterDataDigest() {
+    return String(
+      cacheData?.master_data_digest
+      || config?.cache?.master_data_digest
+      || state().externalAlgorithmPlatformConfig?.cache?.master_data_digest
+      || ''
+    ).trim();
+  }
+
+  function trainingReadiness(algorithmId) {
+    const algorithm = (state().algorithms || []).find(row => String(row.id) === String(algorithmId));
+    if (!algorithm) {
+      return {ready: false, status: 'missing', reason: 'algorithm', message: '当前训练算法不存在，请刷新算法列表后重试'};
+    }
+    return externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
+  }
+
   function categoryMatches(categoryId) {
     if (!selectedCategoryId) return true;
     let current = String(categoryId || '');
@@ -212,6 +256,7 @@ export function installExternalAlgorithmPlatformRuntime({
     const detail = document.querySelector('#modalBody .alg428-detail');
     if (!detail || detail.querySelector('[data-external-algorithm-detail]')) return;
     const mapping = externalAlgorithmMapping(algorithm);
+    const trainingState = externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
     const panel = document.createElement('section');
     panel.dataset.externalAlgorithmDetail = '1';
     panel.innerHTML = `<div class="alg428-version-head"><b>外部平台映射</b><span>${escapeHtml(mapping.source)}</span></div>
@@ -221,15 +266,15 @@ export function installExternalAlgorithmPlatformRuntime({
         <dt>Category ID</dt><dd>${escapeHtml(mapping.categoryId || '-')}</dd>
         <dt>Analysis ID</dt><dd>${escapeHtml(mapping.analysisIds.join('、') || '-')}</dd>
         <dt>分析方式</dt><dd>${escapeHtml(mapping.analysisNames.join('、') || '-')}</dd>
-        <dt>同步状态</dt><dd>${mapping.active ? '正常' : '已下架'}</dd>
+        <dt>同步状态</dt><dd>${trainingState.status === 'inactive' ? '已下架' : trainingState.status === 'stale' ? '待同步' : '正常'}</dd>
         <dt>最近同步</dt><dd>${escapeHtml(timeText(mapping.syncedAt))}</dd>
       </dl>`;
     detail.insertBefore(panel, detail.children[1] || null);
-    if (!mapping.active) {
+    if (!trainingState.ready) {
       for (const button of detail.querySelectorAll('button')) {
         if (/开始训练/.test(String(button.textContent || ''))) {
           button.disabled = true;
-          button.title = '该算法已在新畅联下架，不能新建训练任务';
+          button.title = trainingState.message;
         }
       }
     }
@@ -274,6 +319,7 @@ export function installExternalAlgorithmPlatformRuntime({
         title.appendChild(source);
       }
       if (!isExternalAlgorithm(algorithm)) continue;
+      const trainingState = externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
       const detailButton = [...card.querySelectorAll('button')].find(button =>
         String(button.getAttribute('onclick') || '').includes("viewAlgorithm429(")
       );
@@ -281,12 +327,19 @@ export function installExternalAlgorithmPlatformRuntime({
         detailButton.dataset.externalDetailBound = '1';
         detailButton.addEventListener('click', () => setTimeout(() => decorateAlgorithmDetail(algorithm), 0));
       }
+      title?.querySelector('[data-external-stale]')?.remove();
       if (algorithm.external_active === false && title && !title.querySelector('[data-external-inactive]')) {
         const inactive = document.createElement('em');
         inactive.dataset.externalInactive = '1';
         inactive.textContent = '已下架';
         inactive.title = '新畅联已不再返回该算法；历史版本保留，但不能新建训练';
         title.appendChild(inactive);
+      } else if (trainingState.status === 'stale' && title && !title.querySelector('[data-external-stale]')) {
+        const stale = document.createElement('em');
+        stale.dataset.externalStale = '1';
+        stale.textContent = '待同步';
+        stale.title = trainingState.message;
+        title.appendChild(stale);
       }
       for (const button of card.querySelectorAll('button')) {
         const onclick = String(button.getAttribute('onclick') || '');
@@ -294,9 +347,9 @@ export function installExternalAlgorithmPlatformRuntime({
           button.disabled = true;
           button.title = '外部平台算法主数据为只读，请在新畅联修改后重新同步';
         }
-        if (algorithm.external_active === false && /训练/.test(String(button.textContent || ''))) {
+        if (!trainingState.ready && /训练/.test(String(button.textContent || ''))) {
           button.disabled = true;
-          button.title = '该算法已在新畅联下架，不能新建训练任务';
+          button.title = trainingState.message;
         }
       }
     }
@@ -364,7 +417,17 @@ export function installExternalAlgorithmPlatformRuntime({
     if (!form || form.querySelector('[data-external-analysis-selector]')) return;
     const algorithmId = String(state().trainingDraft?.algorithmId || '');
     const algorithm = (state().algorithms || []).find(row => String(row.id) === algorithmId);
-    if (!isExternalAlgorithm(algorithm) || algorithm.external_active === false) return;
+    if (!isExternalAlgorithm(algorithm)) return;
+    const trainingState = externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
+    if (!trainingState.ready) {
+      const panel = document.createElement('div');
+      panel.className = 'alert warn';
+      panel.dataset.externalTrainingBlocked = trainingState.reason || 'external-blocked';
+      panel.textContent = trainingState.message;
+      form.prepend(panel);
+      window.TrainingSubmitRuntime?.updateReadiness?.();
+      return;
+    }
     const options = externalAnalysisOptions(algorithm);
     state().externalAnalysisSelection = state().externalAnalysisSelection || {};
     if (options.length <= 1) {
@@ -802,6 +865,7 @@ export function installExternalAlgorithmPlatformRuntime({
     runDiagnostics,
     syncNow,
     selectedAnalysisId,
+    trainingReadiness,
     decorateTrainingAnalysisSelector,
     decorateNavigation,
     decorateAlgorithmCards,
