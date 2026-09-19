@@ -254,6 +254,16 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
         "metrics": {"metrics/mAP50(B)": 0.88},
         "per_class": [{"class_id": 0, "label": "smoke", "map50": 0.88}],
     }
+    iteration_decision = {
+        "schema_version": 1, "decision_id": "f" * 64,
+        "evaluation_id": "e" * 64, "decision": "continue_training",
+        "quality_gate": {
+            "metric": "map50", "metric_key": "metrics/mAP50(B)",
+            "metric_value": 0.88, "continue_threshold": 0.7, "stop_threshold": 0.9,
+        },
+        "recommended_actions": ["continue_from_current_version"],
+        "automatic_execution": False, "requires_confirmation": True,
+    }
     attach_version(
         json_path, "a-lineage",
         {
@@ -262,6 +272,7 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
             "framework": "ultralytics", "stored_path": "/models/v-lineage/best.pt",
             "dataset_revision_id": "a" * 64, "snapshot_id": "b" * 64,
             "training_lineage": lineage, "evaluation": evaluation,
+            "iteration_decision": iteration_decision,
             "created_at": "2026-09-19T00:10:00Z",
         },
     )
@@ -269,3 +280,4 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
     assert persisted["dataset_revision_id"] == "a" * 64
     assert persisted["training_lineage"] == lineage
     assert persisted["evaluation"] == evaluation
+    assert persisted["iteration_decision"] == iteration_decision
