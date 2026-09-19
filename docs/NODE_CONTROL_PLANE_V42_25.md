@@ -6,6 +6,34 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Supplement Candidate Set → Dataset Revision / Snapshot / Training Lineage v1
+
+2026-09-19，Feedback Candidate 已进入现有 Durable TRAINING lineage，CLOSED。
+
+- Candidate Set 仍由 Algorithm Version 持有，不新增 task/database owner。
+- 训练提交只有在本次真实选择素材与 Candidate Set 相交时才携带 candidate_set_id；Candidate Set 不会自动 TRAINING。
+- Control Plane 在 enqueue 前重新读取 Material/Annotation truth；content SHA、annotation hash/state 变化 fail closed。
+- Snapshot 以最终实际 records 计算 adopted subset，而不是记录未使用 feedback。
+- Dataset Revision / Snapshot 共同冻结 candidate_set_id、adoption_id、adopted feedback/material IDs 和 bounded candidate identity。
+- Dataset Revision immutable ID 纳入 supplement provenance。
+- Local Worker 与 Remote Agent 复用同一 provenance；Remote prepare → portable contract → Agent → server-confirm → Algorithm Version lineage 不产生第二套 identity。
+- Agent 无权访问 Candidate Set DB/中央 SQLite，也不自行决定采用哪些 feedback。
+- Algorithm Version 的 training_lineage 长期保存 supplement provenance。
+- 前端 confirmed action / Candidate Set 恢复全部来自 version persisted truth；已冻结 Candidate Set 直接恢复 Dataset，不重新 review。
+- 训练 base 仍是唯一 current verified version，因此 Candidate Set source version 与实际迭代 base owner 一致。
+
+Acceptance code HEAD：`49becaf398403b76e4209ed35ca18aaa8ef860a1`。
+
+- 18 workflows：18 success / 0 failure / 0 pending。
+- Algorithm SQL Store `35431356487`：contracts + Real Chrome lineage success。
+- Online Feedback push `35431356518`、PR `35431359456`：Ubuntu / Windows / Real Chrome success。
+- Remote Training `35431359366`：API / Ubuntu / Windows success。
+- Node Agent `35431359353`、Training Input Integrity `35431359267`、Material/Cleaning/Conversion/RKNN/Portable Deployment/Central Assignment/Task Runtime 均 success。
+- `VERSION.txt = 42.24.0`。
+
+**NEXT：Feedback Adoption → Iteration Outcome / Effectiveness v1。**
+只从 persisted evaluations + supplement provenance 计算前后效果，不自动触发下一轮训练。真实 Rockchip 板卡 acceptance 继续独立 OPEN。
+
 ## 0. 最新关闭：Feedback → Supplement Data Candidate v1
 
 2026-09-19，confirmed online feedback 已接入现有 supplement_data 数据草稿，CLOSED。

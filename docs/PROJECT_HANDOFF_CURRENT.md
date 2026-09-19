@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`a54e0e735b27bde400b205fe1d07ede03903a973`  
+本轮产品实现基线：`49becaf398403b76e4209ed35ca18aaa8ef860a1`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,70 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Supplement Candidate Set → Dataset Revision / Snapshot / Training Lineage v1
+
+2026-09-19，已冻结的 Feedback Supplement Candidate Set 已正式接入现有 Durable TRAINING 输入与版本溯源链，**Supplement Candidate Adoption / Training Lineage v1 CLOSED**。没有新建训练 owner，也没有允许 Candidate Set 自动发起训练。
+
+当前正式语义：
+
+- 用户仍在现有训练弹窗中最终确认素材范围；Candidate Set 只是可追溯候选来源。
+- 前端只有当本次实际选择的训练/测试素材与版本的 frozen Candidate Set 有交集时，才提交 `supplement_candidate_set_id`。
+- 后端不信任前端交集结果：
+  - 只读取算法当前 verified version 的 persisted Candidate Set；
+  - candidate_set_id 必须与版本 truth 完全一致；
+  - 对本次实际采用的 material 再读取 MaterialRepository + AnnotationRepository；
+  - material content SHA256、annotation_hash、annotation_state 任一变化均 409 fail closed。
+- Snapshot / Dataset Revision 基于**最终实际进入快照的素材集合**计算 supplement provenance，而不是把整个 Candidate Set 原样写进去。
+- 实际采用子集会冻结：
+  - candidate_set_id；
+  - deterministic adoption_id；
+  - action_id / source algorithm_id / source version_id；
+  - adopted_feedback_ids；
+  - adopted_material_ids；
+  - 每条 candidate_digest / material input SHA / annotation hash/state；
+  - source_candidate_count / adopted_candidate_count；
+  - `automatic_execution=false`。
+- Dataset Revision ID 把 supplement provenance 纳入 immutable identity；同一素材集但采用的 feedback lineage 不同，会形成不同 Revision identity。
+- Snapshot 携带同一 adoption provenance。
+- Local TRAINING 与 Remote Agent TRAINING 使用同一 provenance：
+  - Remote prepare contract 携带 Snapshot 的 supplement provenance；
+  - Agent 不自行推算 Candidate Set；
+  - server-confirm 将同一 provenance 写入最终 Training Lineage / Algorithm Version。
+- Algorithm Version 的 `training_lineage.supplement_provenance` 成为长期 truth；历史 job 清理后仍能追溯“这个版本实际采用了哪些线上反馈素材”。
+- 训练继承仍由唯一 current verified version 决定；Candidate Set 所属版本与真实训练 base version 同一版本 owner，不存在前端选历史版本、后端却校验当前版本的双 truth。
+- Frontend Impact Review 已完成：
+  - 训练摘要显示 Candidate Set 来源数量与实际采用数量；
+  - confirmed supplement action 会先恢复 persisted `data_draft` / weak labels；
+  - 未冻结 Candidate Set 时进入真实反馈候选复核；
+  - 已冻结 Candidate Set 刷新/恢复后直接回到数据集页，不重复打开候选复核或重复请求候选列表；
+  - 页面仍明确：冻结候选本身不会创建 Revision / Snapshot / TRAINING。
+- Real Chrome 覆盖 persisted confirmed action → feedback candidate review/freeze → transient UI state reset → version truth refresh → Dataset 恢复，以及 Algorithm Version lineage 无历史 job refetch。
+
+Acceptance code HEAD：`49becaf398403b76e4209ed35ca18aaa8ef860a1`。
+
+最终验收：
+
+- 当前 HEAD：18 个相关 workflow，18 success / 0 failure / 0 pending。
+- Algorithm SQL Store push `35431356487`：contracts + `real-chrome-lineage` success。
+- Online Feedback Runtime push `35431356518`：Ubuntu / Windows contract / Real Chrome success。
+- Online Feedback Runtime PR `35431359456`：Ubuntu / Windows contract / Real Chrome success。
+- Remote Training Runtime PR `35431359366`：API / Ubuntu / Windows preparation contract success。
+- Training Input Integrity `35431359267`：success。
+- Node Agent Executor `35431359353`：API / Ubuntu / Windows success。
+- Remote Material Import `35431359273`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Cleaning `35431359380`、Remote Conversion `35431359264`、Portable Deployment `35431359350`、Central Node Assignment `35431359283`、Task Runtime Truth `35431359289`、RKNN Board Runtime Protocol `35431359317` 均 success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一软件主线：Feedback Adoption → Iteration Outcome / Effectiveness v1。**
+
+下一阶段不再改 Candidate Set/Revision/Snapshot owner，而是在新版本完成独立 Evaluation 后，把“采用了哪些 feedback”与“训练前后指标变化”连接起来：
+
+1. 只基于 persisted source version evaluation + new version evaluation + training_lineage.supplement_provenance 生成 outcome。
+2. 记录 source/new version、candidate_set_id、adoption_id、before/after evaluation IDs、总体与 adopted weak-label 指标变化。
+3. 结果只描述效果，不自动再次训练；下一轮仍必须经过 Iteration Decision → Confirmed Action。
+4. 前端版本页展示“这次补数据是否改善了哪些标签”，数据完全来自后端 persisted truth。
+5. Rockchip 真实 RK3568 / RK3576 板卡 acceptance 继续独立 OPEN。
 
 # 最新关闭：Feedback → Supplement Data Candidate v1
 

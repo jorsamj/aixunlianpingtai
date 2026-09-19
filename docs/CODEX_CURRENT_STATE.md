@@ -3,6 +3,58 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Supplement Candidate Set -> Revision / Snapshot / Training Lineage v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+A frozen version-owned feedback Candidate Set can now enter the existing
+Dataset Revision -> Snapshot -> Durable TRAINING chain without introducing an
+automatic retraining owner.
+
+The frontend submits `supplement_candidate_set_id` only when the user's actual
+training/test selection intersects the frozen candidate material IDs. The
+control plane then rereads current MaterialRepository and AnnotationRepository
+truth and fails closed if material SHA256, annotation hash, or annotation state
+no longer matches the candidate evidence.
+
+The final Snapshot, not the UI, defines adoption. It freezes only the candidate
+materials that actually entered the snapshot and builds a deterministic
+`adoption_id` plus candidate_set/action/source-version identity,
+`adopted_feedback_ids`, `adopted_material_ids`, bounded candidate evidence,
+and `automatic_execution=false`. Dataset Revision identity includes this
+supplement provenance, and Snapshot carries the same provenance.
+
+Local and Remote Agent training share the same contract. Remote preparation
+copies the Snapshot supplement provenance into the portable training contract;
+the Agent does not recalculate candidate adoption. Server-confirm writes that
+same provenance into the persisted Algorithm Version training lineage.
+
+Frontend Impact Review is complete. Persisted supplement actions restore the
+data draft/weak-label context before candidate review. A frozen Candidate Set
+resumes directly into Dataset truth after refresh rather than reopening the
+candidate review. Training summary displays candidate source/adopted counts,
+and no candidate action itself starts training.
+
+Acceptance code HEAD:
+`49becaf398403b76e4209ed35ca18aaa8ef860a1`.
+
+- 18 relevant workflows: 18 success / 0 failure / 0 pending.
+- Algorithm SQL Store `35431356487`: contracts + real-chrome-lineage success.
+- Online Feedback Runtime push `35431356518` and PR `35431359456`: Windows /
+  Ubuntu contracts + Real Chrome success.
+- Remote Training Runtime `35431359366`: API + Windows/Ubuntu preparation
+  contracts success.
+- Training Input Integrity `35431359267`, Node Agent Executor
+  `35431359353`, Remote Material Import `35431359273`, Remote Cleaning,
+  Conversion, RKNN, Portable Deployment, Central Assignment and Task Runtime all
+  succeeded.
+
+**NEXT:** Feedback Adoption -> Iteration Outcome / Effectiveness v1. Build a
+version-owned, descriptive before/after outcome from persisted source/new
+evaluations plus supplement provenance. It must not automatically schedule
+another training run. Physical RK3568/RK3576 acceptance remains independently
+OPEN.
+
 ## Current closure — Feedback → Supplement Data Candidate v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
