@@ -563,9 +563,9 @@ export function installExternalAlgorithmPlatformRuntime({
       return `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${pill}">${label}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`;
     }).join('');
     return `<section class="panel" data-changlian-readiness="${readiness.ready ? 'ready' : 'blocked'}">
-      <div class="panel-head"><div><div class="panel-title">联调准备状态</div><div class="subline">检查当前项目是否已经具备“测试连接 → 手动同步 → 训练 → 转换 → 同步版本/权重”的基础条件。</div></div></div>
+      <div class="panel-head"><div><div class="panel-title">主数据 / 训练准备状态</div><div class="subline">这里只检查应用鉴权、主数据同步和当前项目畅联云算法是否可进入训练；转换与版本/权重发布由版本页同步前的发布预检单独判断。</div></div></div>
       <div class="panel-body">
-        <div class="alert ${readiness.ready ? 'ok' : 'warn'}"><b>${readiness.ready ? '基础条件已就绪' : '还有前置条件未完成'}</b> · 系统对接使用 AccessKey / AccessSecret 应用鉴权，人员网页登录账号不参与机器接口调用。</div>
+        <div class="alert ${readiness.ready ? 'ok' : 'warn'}"><b>${readiness.ready ? '主数据与训练条件已就绪' : '还有主数据/训练前置条件未完成'}</b> · 系统对接使用 AccessKey / AccessSecret 应用鉴权，人员网页登录账号不参与机器接口调用。</div>
         <table class="table"><thead><tr><th>检查项</th><th>状态</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无准备状态</td></tr>'}</tbody></table>
       </div>
     </section>`;
