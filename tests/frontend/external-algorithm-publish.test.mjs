@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   normalizePublishConfig,
@@ -36,4 +37,16 @@ test('version publish action reflects durable publication state', () => {
   assert.equal(publicationActionLabel({external_publish_status: 'failed'}), '重新同步');
   assert.equal(publicationActionLabel({external_publish_status: 'unknown'}), '重新同步');
   assert.equal(publicationActionLabel({external_publish_status: 'published'}), '已同步');
+});
+
+
+test('publish UI keeps manual sync primary and stale compute mappings visible', () => {
+  const source = readFileSync(
+    new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /data-external-publish-automation="1"/);
+  assert.match(source, /高级设置 · 自动发布/);
+  assert.match(source, /算力环境来自最近一次新畅联主数据同步/);
+  assert.match(source, /同步到新畅联/);
 });
