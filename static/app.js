@@ -4610,6 +4610,7 @@ window.installUsability417?.();
   window.openOnlineFeedbackReview63=async function(id){
     try{
       const result=await api(`/api/v63/projects/${pid()}/online-feedback/${encodeURIComponent(id)}`),item=result.feedback||{},source=item.source||{},detections=source.detections||[];
+      state.onlineFeedbackReview63={id:String(item.id||''),feedback_type:String(item.feedback_type||'')};
       const datasetOptions=(state.datasets||[]).map(row=>`<option value="${esc(row.id)}" ${row.id===state.datasetId?'selected':''}>${esc(row.name||row.id)}</option>`).join('');
       const actionNote=item.feedback_type==='correct'
         ?'确认后，只有在素材尚无正式标注时，当前预测框才会写入 AnnotationRepository。'
@@ -4617,7 +4618,7 @@ window.installUsability417?.();
           ?'确认前必须明确画面中不存在当前项目所有启用标签目标，系统才会写入 confirmed_empty 负样本。'
           :'确认后只把原图提升到素材库并标记待人工标注；错误预测框不会写成真值。';
       const rows=detections.map(row=>`<tr><td>${esc(row.label)}</td><td>${Number(row.confidence||0).toFixed(4)}</td><td>${Number(row.x1).toFixed(1)}, ${Number(row.y1).toFixed(1)}, ${Number(row.x2).toFixed(1)}, ${Number(row.y2).toFixed(1)}</td></tr>`).join('')||'<tr><td colspan="3">无预测框</td></tr>';
-      modal('复核线上抽检反馈',`<div class="online-feedback-review63"><div class="alert soft"><b>${esc(typeName(item.feedback_type))}</b><span>${esc(actionNote)}</span></div><div class="grid2"><div><img class="result-img" src="${esc(item.result_image_url||item.input_image_url||'')}"></div><div><dl class="report429-dl"><dt>算法</dt><dd>${esc(item.algorithm_id||'-')}</dd><dt>版本</dt><dd>${esc(item.version_id||'-')}</dd><dt>Model SHA</dt><dd title="${esc(item.model_sha256||'')}">${esc((item.model_sha256||'').slice(0,16))}…</dd><dt>Input SHA</dt><dd title="${esc(item.input_sha256||'')}">${esc((item.input_sha256||'').slice(0,16))}…</dd></dl></div></div><div class="field"><label>目标数据集</label><select id="feedbackDataset63" class="select">${datasetOptions}</select></div>${item.feedback_type==='false_positive'?'<label class="field check"><input id="feedbackAllAbsent63" type="checkbox"> 已人工确认：画面中不存在当前项目所有启用标签目标</label>':''}<table class="table mini-table"><thead><tr><th>预测标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table><div class="row end"><button class="btn" onclick="closeModal()">暂不处理</button><button class="btn primary" onclick="confirmOnlineFeedback63('${esc(item.id)}','${esc(item.feedback_type)}')">确认反馈</button></div></div>`,true);
+      modal('复核线上抽检反馈',`<div class="online-feedback-review63"><div class="alert soft"><b>${esc(typeName(item.feedback_type))}</b><span>${esc(actionNote)}</span></div><div class="grid2"><div><img class="result-img" src="${esc(item.result_image_url||item.input_image_url||'')}"></div><div><dl class="report429-dl"><dt>算法</dt><dd>${esc(item.algorithm_id||'-')}</dd><dt>版本</dt><dd>${esc(item.version_id||'-')}</dd><dt>Model SHA</dt><dd title="${esc(item.model_sha256||'')}">${esc((item.model_sha256||'').slice(0,16))}…</dd><dt>Input SHA</dt><dd title="${esc(item.input_sha256||'')}">${esc((item.input_sha256||'').slice(0,16))}…</dd></dl></div></div><div class="field"><label>目标数据集</label><select id="feedbackDataset63" class="select">${datasetOptions}</select></div>${item.feedback_type==='false_positive'?'<label class="field check"><input id="feedbackAllAbsent63" type="checkbox"> 已人工确认：画面中不存在当前项目所有启用标签目标</label>':''}<table class="table mini-table"><thead><tr><th>预测标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table><div class="row end"><button class="btn danger" onclick="dismissOnlineFeedback63()">忽略反馈</button><button class="btn" onclick="closeModal()">稍后处理</button><button class="btn primary" onclick="confirmOnlineFeedback63('${esc(item.id)}','${esc(item.feedback_type)}')">确认反馈</button></div></div>`,true);
     }catch(error){toast(error.message||error)}
   };
 
@@ -4642,6 +4643,23 @@ window.installUsability417?.();
       }else{
         toast(feedback.result?.annotation_action==='confirmed_empty'?'已确认负样本并写入正式标注':'抽检反馈已确认');
       }
+    }catch(error){toast(error.message||error);if(button)button.disabled=false}
+  };
+
+  window.dismissOnlineFeedback63=async function(){
+    const review=state.onlineFeedbackReview63||{};
+    if(!review.id||!review.feedback_type)return toast('反馈信息已失效，请刷新后重试');
+    const button=document.querySelector('.online-feedback-review63 .btn.danger');
+    if(button)button.disabled=true;
+    try{
+      await api('/api/v63/projects/'+pid()+'/online-feedback/'+encodeURIComponent(review.id)+'/dismiss',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({expected_feedback_type:review.feedback_type,reason:'人工复核忽略'}),
+      });
+      closeModal();
+      state.onlineFeedbackReview63=null;
+      await loadOnlineFeedback63();
+      toast('该反馈已忽略，不会写入素材、标注或训练链');
     }catch(error){toast(error.message||error);if(button)button.disabled=false}
   };
 
