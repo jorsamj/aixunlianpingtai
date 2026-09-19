@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {
   normalizePublishConfig,
   publicationActionLabel,
+  publicationPreflight,
 } from '../../static/modules/external-algorithm-publish.js';
 
 test('publish config normalizes storage, compute mappings and recovery paths', () => {
@@ -49,4 +50,66 @@ test('publish UI keeps manual sync primary and stale compute mappings visible', 
   assert.match(source, /高级设置 · 自动发布/);
   assert.match(source, /算力环境来自最近一次新畅联主数据同步/);
   assert.match(source, /同步到新畅联/);
+});
+
+
+test('manual publish preflight blocks incomplete artifact preparation', () => {
+  assert.deepEqual(
+    publicationPreflight({conversion_active: true}),
+    {ready: false, message: '模型转换仍在进行，请等待转换完成后再同步到新畅联。'},
+  );
+  assert.deepEqual(
+    publicationPreflight({conversion_active: false, discovered: []}),
+    {ready: false, message: '当前版本还没有可发布的转换产物，请先完成模型转换。'},
+  );
+
+  const blocked = publicationPreflight({
+    conversion_active: false,
+    discovered: [
+      {target: 'onnx', publish_mapping_status: 'blocked'},
+      {target: 'rockchip', publish_mapping_status: 'mapped'},
+    ],
+    mapped_artifact_count: 1,
+    blocked_artifact_count: 1,
+    ignored_artifact_count: 0,
+    publish_ready: false,
+  });
+  assert.equal(blocked.ready, false);
+  assert.match(blocked.message, /ONNX/);
+  assert.match(blocked.message, /补齐/);
+});
+
+test('manual publish preflight accepts mapped artifacts and reports intentional ignores', () => {
+  const result = publicationPreflight({
+    conversion_active: false,
+    discovered: [
+      {target: 'rockchip', publish_mapping_status: 'mapped'},
+      {target: 'onnx', publish_mapping_status: 'ignored'},
+    ],
+    mapped_artifact_count: 1,
+    blocked_artifact_count: 0,
+    ignored_artifact_count: 1,
+    publish_ready: true,
+  });
+
+  assert.equal(result.ready, true);
+  assert.match(result.message, /同步 1 个权重/);
+  assert.match(result.message, /1 个转换目标已明确关闭发布/);
+});
+
+test('manual publish fetches read-only status before write request', () => {
+  const source = readFileSync(
+    new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
+    'utf8',
+  );
+  const start = source.indexOf('async function publishVersion(');
+  const end = source.indexOf('function decorateVersionRows()', start);
+  assert.ok(start >= 0 && end > start);
+  const block = source.slice(start, end);
+  const statusRead = block.indexOf('const status = await requestJson(');
+  const preflight = block.indexOf('publicationPreflight(status)');
+  const publishWrite = block.indexOf("/publish\`, {method: 'POST'}");
+  assert.ok(statusRead >= 0);
+  assert.ok(preflight > statusRead);
+  assert.ok(publishWrite > preflight);
 });
