@@ -636,8 +636,11 @@ class ExternalAlgorithmPublishService:
                 "status": "blocked",
                 "enabled": True,
                 "mapping": None,
-                "detail": str(getattr(error, "message", "") or error),
+                "detail": str(getattr(error, "detail", "") or getattr(error, "message", "") or error),
                 "code": str(getattr(error, "code", "") or ""),
+                "message": str(getattr(error, "message", "") or error),
+                "solution": str(getattr(error, "solution", "") or ""),
+                "status_code": int(getattr(error, "status_code", 409) or 409),
             }
         return {
             "status": "mapped",
@@ -950,6 +953,15 @@ class ExternalAlgorithmPublishService:
             elif state.get("status") == "blocked":
                 blocked.append({**dict(item), "detail": state.get("detail") or ""})
         if blocked:
+            specific = next((row for row in blocked if str(row.get("code") or "").startswith("EXTERNAL_COMPUTE_PLATFORM_")), None)
+            if specific is not None:
+                raise PlatformError(
+                    str(specific.get("code") or "EXTERNAL_COMPUTE_PLATFORM_MAPPING_INVALID"),
+                    str(specific.get("message") or "畅联云算力环境映射不可用"),
+                    str(specific.get("detail") or ""),
+                    str(specific.get("solution") or "请重新同步畅联云主数据并重新选择算力环境。"),
+                    int(specific.get("status_code") or 409),
+                )
             detail = "；".join(
                 f"{row.get('target') or '-'} / {row.get('file_name') or '-'}：{row.get('detail') or '缺少发布映射'}"
                 for row in blocked
