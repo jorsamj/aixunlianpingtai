@@ -6,6 +6,28 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Dataset Snapshot / Revision v1
+
+2026-09-19，Snapshot V3 已扩展 Dataset Revision v1，训练输入身份正式进入中央控制面与 Remote TRAINING contract。
+
+- Dataset Revision 与 split assignment 分离；同一数据 truth 可对应多个不同 Snapshot。
+- revision 冻结 content SHA、storage object、平台 annotation hash/state、Canonical Annotation external provenance 和 label schema。
+- Snapshot V3 同时携带 revision id 与 snapshot id。
+- remote training contract v2 强制 revision SHA256；Agent 在训练前校验 bundle snapshot/revision，generation fencing 保持不变。
+- server-confirm、model artifact、算法版本、durable job 均传递 revision id。
+- Agent 不读取中央 SQLite/NFS；revision 仍通过 portable bundle/contract 传递。
+- legacy portable snapshot 兼容保留，但新 contract 不允许缺失 revision。
+- Frontend Impact Review 已完成，训练运行中心显示真实“数据版本 / 训练快照”，Real Chrome 通过。
+
+最终验收 HEAD：`5e330fd3de9a958c2eac1ad1f18c11cf81b381b6`。
+
+- Training Task Visibility push `35415738121`：visibility-contracts + Real Chrome success。
+- 父代码 HEAD `5e2a0959a3a822f5725f684bd9351350b150a6b1`：Remote Training、Training Input Integrity、Node Agent Executor、Central Node Assignment、Task Runtime Truth、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、RKNN Board Runtime 等共享回归 success。
+- Dataset Revision / Snapshot focused unit、API、frontend identity/cache tests success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一主线：** Training Lineage / Algorithm Version Provenance；随后自动评测和训练迭代闭环。真实 Rockchip 板卡验收继续独立 OPEN。
+
 ## 0. 最新关闭：Canonical Annotation Schema v1
 
 2026-09-19，YOLO / COCO / Pascal VOC 的 task-owned review evidence 已正式进入统一 Canonical Annotation Schema v1。

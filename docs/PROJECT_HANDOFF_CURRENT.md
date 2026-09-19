@@ -63,6 +63,55 @@ revert: keep external algorithm integration off main
 ---
 
 
+# 最新关闭：Dataset Snapshot / Revision v1 — 训练数据可复现性
+
+2026-09-19，现有 **Snapshot V3** 已扩展出正式 **Dataset Revision v1**，CLOSED。没有新建第二套 snapshot owner。
+
+当前正式语义：
+
+- `dataset_revision_id` 描述“本次训练选择的数据 truth”，与 train / validation / test 的具体随机分配解耦。
+- 同一批素材、同一平台标注、同一 Canonical Annotation source truth、同一 label schema，即使 split seed 不同，`dataset_revision_id` 保持不变；对应 `snapshot_id` 会因 split / seed / role truth 不同而变化。
+- Dataset Revision v1 冻结：
+  - image/material identity；
+  - dataset/source reference；
+  - content SHA256；
+  - storage source/type/object key；
+  - AnnotationRepository state/scope/hash；
+  - source annotation state / labels / box count；
+  - Canonical Annotation Schema v1 external provenance（source format / source digest / source object identity / split / review state）；
+  - locked label schema。
+- `persist_dataset_revision()` 使用 revision id 作为不可变文件名；同 ID 内容不一致时 fail closed。
+- Snapshot V3 同时记录：
+  - `dataset_revision_schema_version=1`
+  - `canonical_annotation_schema_version=1`
+  - `dataset_revision_id`
+  - 原有 `snapshot_id` / split / duplicate exclusion / negative-scope truth。
+- Legacy V1/V2 portable snapshot 仍可确定性补算 revision，不修改历史 `snapshot_id`，保持兼容。
+- Remote TRAINING portable contract 已升级：
+  - 新 contract 必须携带合法 SHA256 `dataset_revision_id`；
+  - Agent 下载 bundle 后同时校验 `snapshot_id` 与 `dataset_revision_id`；
+  - revision 不一致直接 fail closed，不能训练错误数据版本。
+- server-confirm / remote result / model artifact metadata / algorithm version metadata 全部保留同一个 `dataset_revision_id`。
+- durable job overlay、缓存和 jobs API 不再丢 revision truth。
+- Frontend Impact Review 已同批完成：
+  - 训练运行中心明确显示“数据版本”和“训练快照”；
+  - 展示值来自真实 durable job/snapshot truth，不做前端推算；
+  - 页面局部刷新、暂停/恢复等不会把 revision 字段覆盖掉；
+  - Real Chrome 已验证 revision / snapshot 在正式训练任务链可见。
+
+最终验收 HEAD：`5e330fd3de9a958c2eac1ad1f18c11cf81b381b6`。
+
+- Training Task Visibility push `35415738121`：visibility-contracts + Real Chrome success。
+- 父代码 HEAD `5e2a0959a3a822f5725f684bd9351350b150a6b1`：Remote Training、Training Input Integrity、Node Agent Executor、Central Node Assignment、Task Runtime Truth、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、RKNN Board Runtime 等共享回归 success。
+- Dataset Revision / Snapshot focused unit、API、frontend identity/cache tests success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一软件主线：**
+
+1. 基于 Dataset Revision + Snapshot V3 完成 **Training Lineage / Algorithm Version Provenance**：算法版本必须可反查 dataset revision、snapshot、base model、训练参数、节点、模型 artifact。
+2. 在 lineage 稳定后进入 **自动评测 / 训练迭代闭环**：训练 → 测试集评测 → 标签级指标 → 不达标回炉/补数据，而不是先新造第二套训练系统。
+3. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 继续独立 OPEN。
+
 # 最新关闭：Canonical Annotation Schema v1
 
 2026-09-19，YOLO / COCO / Pascal VOC 已共享的外部标注 evidence 已正式收敛为 **Canonical Annotation Schema v1**，CLOSED。

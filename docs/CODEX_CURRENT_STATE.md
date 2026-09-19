@@ -3,6 +3,50 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Dataset Snapshot / Revision v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The existing Snapshot V3 path now owns a deterministic Dataset Revision v1.
+No parallel snapshot system was introduced.
+
+`dataset_revision_id` identifies the selected dataset truth independently of
+the train/validation/test assignment. The same selected material, platform
+annotation truth, Canonical Annotation Schema v1 provenance and label schema
+produce the same revision across different split seeds, while `snapshot_id`
+still changes with split/role truth.
+
+Dataset Revision v1 freezes material/source identity, content SHA256,
+storage-source/object identity, platform annotation state/scope/hash,
+source labels/box count, canonical external annotation provenance and the
+locked label schema. Revision persistence is immutable and fails closed if a
+previous revision ID maps to different content.
+
+Snapshot V3 now carries dataset revision schema v1 and canonical annotation
+schema v1 alongside its existing split, duplicate-exclusion and negative-scope
+truth. Legacy V1/V2 portable snapshots are deterministically upgraded with a
+revision identity without changing their historical snapshot IDs.
+
+Remote TRAINING contract v2 requires a valid revision SHA256. The Agent verifies
+the downloaded bundle's snapshot ID and dataset revision before execution.
+Server-confirmed results, model artifacts, algorithm-version metadata, durable
+jobs and frontend runtime preserve the same revision identity.
+
+Frontend Impact Review is complete. The training runtime center displays
+backend-backed “数据版本” and “训练快照” truth; focused refresh/cache paths retain
+both fields. Real Chrome verifies the visible lineage fields.
+
+Acceptance at HEAD `5e330fd3de9a958c2eac1ad1f18c11cf81b381b6`:
+- Training Task Visibility push `35415738121`：visibility-contracts + Real Chrome success。
+- 父代码 HEAD `5e2a0959a3a822f5725f684bd9351350b150a6b1`：Remote Training、Training Input Integrity、Node Agent Executor、Central Node Assignment、Task Runtime Truth、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、RKNN Board Runtime 等共享回归 success。
+- Dataset Revision / Snapshot focused unit、API、frontend identity/cache tests success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**OPEN / next:** use the revision/snapshot identities as the base for formal
+Training Lineage / Algorithm Version Provenance, then build the automatic
+evaluation/retraining loop on that immutable lineage. Rockchip physical-board
+acceptance remains independently OPEN.
+
 ## Current closure — Canonical Annotation Schema v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
