@@ -91,6 +91,11 @@ jobs:
           grep -q "external-algorithm-platform-auto-sync" platform_core/external_algorithm_platform.py
           grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
           grep -q "test_sign_bridge" platform_core/external_algorithm_platform.py
+          grep -q '"access_key": self.access_key' platform_core/external_algorithm_platform.py
+          grep -q '"access_secret": self.access_secret' platform_core/external_algorithm_platform.py
+          grep -q '_request("POST", self.endpoints.test_sign, params=params)' platform_core/external_algorithm_platform.py
+          grep -q 'audit_callback(redact(' platform_core/external_algorithm_platform.py
+          if grep -q 'self.endpoints.test_sign, json=' platform_core/external_algorithm_platform.py; then echo "test-sign must use documented query parameters, not JSON body" >&2; exit 1; fi
           grep -q "resolve_external_training_analysis" app.py
           grep -q "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js
           grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
