@@ -6,10 +6,14 @@ on:
       - refactor/frontend-runtime-stabilization
       - feature/external-algorithm-publishing
     paths:
+      - app.py
       - platform_core/training_tasks.py
+      - platform_core/training_splits.py
       - platform_core/training_bundle_cache.py
       - platform_core/training_label_tasks.py
       - platform_core/snapshots.py
+      - tests/api/test_training_request.py
+      - tests/unit/test_training_splits.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/test_training_bundle_cache.py
       - tests/unit/test_training_label_contract.py
@@ -21,10 +25,14 @@ on:
       - .github/workflows/training-input-integrity.yml
   pull_request:
     paths:
+      - app.py
       - platform_core/training_tasks.py
+      - platform_core/training_splits.py
       - platform_core/training_bundle_cache.py
       - platform_core/training_label_tasks.py
       - platform_core/snapshots.py
+      - tests/api/test_training_request.py
+      - tests/unit/test_training_splits.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/test_training_bundle_cache.py
       - tests/unit/test_training_label_contract.py
@@ -59,6 +67,7 @@ jobs:
         run: >-
           python -m py_compile
           platform_core/training_tasks.py
+          platform_core/training_splits.py
           platform_core/training_bundle_cache.py
           platform_core/training_label_tasks.py
           platform_core/snapshots.py
@@ -67,6 +76,10 @@ jobs:
           tests/unit/test_training_label_contract.py
           tests/unit/test_negative_sample_contract.py
           tests/integration/test_training_input_integrity_chain.py
+      - name: Fixed benchmark reservation component guard
+        run: >-
+          python -m pytest --confcutdir=tests/unit -q
+          tests/unit/test_training_splits.py
       - name: Existing JPEG and cache isolation guards
         run: >-
           python -m pytest --confcutdir=tests/unit -q
@@ -100,5 +113,7 @@ jobs:
           test ! -e .github/workflows/_one_shot_task_filtered_negative.yml
           grep -Fq 'benchmark_source_version_id' app.py
           grep -Fq 'def _training_reusable_benchmark' app.py
+          grep -Fq 'exclude_reserved_test_components' platform_core/training_splits.py
+          grep -Fq 'reserved_training_candidate_count' app.py
           grep -Fq 'test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids' tests/api/test_training_request.py
           test "$(cat VERSION.txt)" = "42.24.0"

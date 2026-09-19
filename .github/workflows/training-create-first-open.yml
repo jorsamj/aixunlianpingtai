@@ -56,6 +56,7 @@ jobs:
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq '/benchmark-reuse' static/app.js
           grep -Fq 'benchmarkReuseEnabled:Boolean(draft.benchmarkReuseEnabled)' static/app.js
+          grep -Fq '固定评测素材由系统自动保留，不会混入训练' static/app.js
           grep -Fq 'verified fixed benchmark stays aligned from backend availability to training submit' tests/browser/training-create-first-open.spec.mjs
           test "$(grep -Fc 'async function loadTrainingBenchmarkReuseV1' static/app.js)" = "1"
           stable_line="$(grep -nF 'Durable v3 exact-material training split UI' static/app.js | head -1 | cut -d: -f1)"

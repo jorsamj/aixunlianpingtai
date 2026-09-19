@@ -4174,7 +4174,7 @@ window.installUsability417?.();
   }
   function trainingSummaryHtml(){
     const draft=state.trainingDraft||{},config=draft.config||{},resource=draft.resource||{},s=splitState(),split=splitPresentation(s),labels=uniqueUi([...(state.trainingDraftInheritance?.codes||[]),...(draft.newLabelCodes||[])]).map(labelText),benchmark=benchmarkReuseState(draft.algorithmId),reuse=Boolean(draft.benchmarkReuseEnabled&&benchmark?.available);
-    const splitText=reuse?`训练/验证池 ${s.train.size} 张 · 验证 ${split.validation}% · 固定试验 ${Number(benchmark.test_image_count||0)} 张`:(s.mode==='random_test_from_training_pool'?`训练 ${split.training}% · 验证 ${split.validation}% · 试验 ${split.experiment}%`:`训练候选 ${s.train.size} 张 · 验证 ${split.validation}% · 独立试验 ${s.test.size} 张`);
+    const splitText=reuse?`训练/验证候选 ${s.train.size} 张 · 验证 ${split.validation}% · 固定试验 ${Number(benchmark.test_image_count||0)} 张`:(s.mode==='random_test_from_training_pool'?`训练 ${split.training}% · 验证 ${split.validation}% · 试验 ${split.experiment}%`:`训练候选 ${s.train.size} 张 · 验证 ${split.validation}% · 独立试验 ${s.test.size} 张`);
     const rows=[['◉','训练素材',`${s.train.size} 张`],['◇','标签',labels.join('、')||'尚未选择'],['◔','数据划分',splitText],['▣','训练设备',currentDeviceLabel()],['⬡','模型',currentModelLabel()],['↻','训练轮次',config.epochs??'-'],['▱','Batch 大小',resource.batch??config.batch??'-'],['▧','图片尺寸',config.imgsz??'-'],['☷','优化器',config.optimizer||'auto']];
     return rows.map(([icon,label,value])=>`<div class="train-ui-summary-row"><i>${icon}</i><span>${label}</span><b title="${esc(value)}">${esc(value)}</b></div>`).join('');
   }
@@ -4212,6 +4212,7 @@ window.installUsability417?.();
     note?.insertAdjacentHTML('beforebegin',`<div class="alert soft train-v3-benchmark" data-benchmark-reuse="available"><label class="check"><input id="trV3BenchmarkReuse" type="checkbox" ${enabled?'checked':''} onchange="toggleTrainBenchmarkReuseV1(this.checked)"> 复用当前固定评测基准</label><span>${esc(benchmark.source_version_name||benchmark.source_version_id||'-')} · ${Number(benchmark.test_image_count||0)} 张 · 已校验 Test Bundle</span></div>`);
     if(!enabled)return;
     const summary=panel.querySelectorAll('.train-v3-summary>div');
+    if(summary[0])summary[0].querySelector('span').textContent='训练候选素材';
     if(summary[1]){summary[1].querySelector('span').textContent='固定评测基准';summary[1].querySelector('b').textContent=`${Number(benchmark.test_image_count||0)} 张`;summary[1].querySelector('em').textContent=benchmark.source_version_name||benchmark.source_version_id||'当前版本';}
     const mode=panel.querySelector('.train-v3-mode');if(mode)mode.innerHTML='<div class="item-sub" data-benchmark-mode>试验集由服务端固定 Benchmark 锁定；浏览器不持有具体试验图片清单。</div>';
     const fields=panel.querySelectorAll('.train-ui-split-fields>label'),validation=Math.max(0,Math.min(100,Number(s.validation)||0)),training=Math.max(0,100-validation);
@@ -4220,7 +4221,7 @@ window.installUsability417?.();
     const bar=panel.querySelector('.train-ui-split-bar'),segments=bar?[...bar.querySelectorAll('i')]:[];
     if(bar){bar.setAttribute('aria-label',`训练 ${training}%、验证 ${validation}%；固定试验基准 ${Number(benchmark.test_image_count||0)} 张`);if(segments[0]){segments[0].style.width=`${training}%`;segments[0].querySelector('span').textContent=`${training}%`;}if(segments[1]){segments[1].style.width=`${validation}%`;segments[1].querySelector('span').textContent=`${validation}%`;}if(segments[2]){segments[2].style.width='0%';segments[2].querySelector('span').textContent='';}}
     panel.querySelector('.train-ui-test-picker')?.remove();
-    if(note)note.textContent='训练与验证从本次训练素材划分；试验使用固定评测基准。';
+    if(note)note.textContent='固定评测素材由系统自动保留，不会混入训练；最终训练数量以任务结果为准。';
   }
   function renderSplit(){
     const root=document.querySelector('.train429-create'),panel=root?.querySelectorAll('.train428-panel')?.[1];if(!panel)return;

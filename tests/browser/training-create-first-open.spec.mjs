@@ -247,6 +247,8 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
   await expect(dialog.locator('#trV3BenchmarkReuse')).toBeChecked();
   await expect(dialog.locator('[data-benchmark-mode]')).toContainText('服务端固定 Benchmark');
+  await expect(dialog.locator('.train-v3-summary>div').first().locator('span')).toHaveText('训练候选素材');
+  await expect(dialog.locator('.train-v3-note')).toContainText('系统自动保留');
   await page.evaluate(({algorithmId}) => {window.TrainingDraftRuntime.update({algorithmId});window.TrainingDraftRuntime.setMaterialIds(['train-material-a','train-material-b']);window.TrainingSubmitRuntime.updateReadiness();}, {algorithmId});
   const submitButton=dialog.getByRole('button',{name:'开始训练'});
   await expect(submitButton).toBeEnabled();
