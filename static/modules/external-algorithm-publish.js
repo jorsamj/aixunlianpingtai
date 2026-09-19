@@ -69,10 +69,19 @@ export function publicationPreflight(status = {}) {
   }
   if (status.transport_ready === false) {
     const issues = Array.isArray(status.transport_issues) ? status.transport_issues : [];
-    const detail = issues.map(row => row?.message).filter(Boolean).join('；');
+    const actions = issues.map(row => {
+      const code = String(row?.code || '');
+      if (code === 'MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED' || code === 'ARTIFACT_STORAGE_SOURCE_NOT_FOUND') {
+        return '请到“平台对接 → 模型资产存储”选择可用存储源并执行“测试存储”';
+      }
+      if (code === 'EXTERNAL_PUBLISH_CONFIG_INCOMPLETE') {
+        return '请到“平台对接 → 畅联云版本发布”填写本平台外部访问地址';
+      }
+      return String(row?.message || '').trim();
+    }).filter(Boolean);
     return {
       ready: false,
-      message: detail || '模型发布传输配置尚未就绪，请先配置外部访问地址和模型资产存储。',
+      message: actions.join('；') || '模型发布传输配置尚未就绪，请先配置外部访问地址和模型资产存储。',
     };
   }
   const discovered = Array.isArray(status.discovered) ? status.discovered : [];
