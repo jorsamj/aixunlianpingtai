@@ -225,6 +225,55 @@ test('iteration block is enforced by TrainingSubmitRuntime before any POST', asy
   cleanup(runtime);
 });
 
+test('stale changlian master data disables submit and blocks network POST', async () => {
+  const state = baseState();
+  state.algorithms = [{
+    id: 'alg-1',
+    source_type: 'EXTERNAL',
+    provider_type: 'CHANG_LIAN',
+    external_active: true,
+    external_master_data_digest: 'old-digest',
+  }];
+  const {submitButton} = installDom();
+  const notices = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      calls += 1;
+      return {ok: true, async json() { return {}; }};
+    },
+    ExternalAlgorithmPlatformRuntime: {
+      trainingReadiness: () => ({
+        ready: false,
+        status: 'stale',
+        reason: 'external-master-data-stale',
+        message: '当前算法的畅联云主数据需要重新同步，请执行“立即同步”',
+      }),
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => draft(),
+      current: () => draft(),
+      inheritance: () => ({blocked: false}),
+    },
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.dataset.trainingSubmitReason, 'external-master-data-stale');
+  const result = await window.submitTrain429();
+
+  assert.equal(result, null);
+  assert.equal(calls, 0);
+  assert.match(notices.at(-1), /立即同步/);
+  cleanup(runtime);
+});
+
 test('double click cannot create two independent training tasks', async () => {
   const state = baseState();
   const {submitButton} = installDom();
