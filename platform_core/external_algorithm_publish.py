@@ -1054,6 +1054,36 @@ class ExternalAlgorithmPublishService:
             )
         for item, mapping in selected:
             self.repository.upsert_artifact(str(publication["publication_key"]), item, mapping)
+
+        # Upload and verify every local model artifact before creating a remote
+        # ChangLian Algorithm Version. A storage failure must never leave an
+        # empty remote version behind.
+        uploaded_artifacts: list[Dict[str, Any]] = []
+        for item, _mapping in selected:
+            row = self.repository.artifact(str(item["artifact_id"])) or item
+            try:
+                uploaded_artifacts.append(self._upload_artifact(row, algorithm, version))
+            except PlatformError as error:
+                self.repository.patch_publication(
+                    str(publication["publication_key"]),
+                    status="FAILED",
+                    last_error=str(getattr(error, "message", "") or error)[:2000],
+                )
+                raise
+            except Exception as error:
+                self.repository.patch_publication(
+                    str(publication["publication_key"]),
+                    status="FAILED",
+                    last_error=str(error)[:2000],
+                )
+                raise PlatformError(
+                    "MODEL_ARTIFACT_UPLOAD_FAILED",
+                    "模型资产上传失败",
+                    str(error),
+                    "请检查模型资产存储连接和凭据；修复后重新同步。畅联云版本尚未创建。",
+                    502,
+                ) from error
+
         client = self._external_client()
         if hasattr(client, "set_audit_context"):
             client.set_audit_context(
@@ -1064,16 +1094,17 @@ class ExternalAlgorithmPublishService:
         external_version_id = self._ensure_external_version(publication, algorithm, version, client)
         failures: list[str] = []
         synced = 0
-        for item, _mapping in selected:
-            row = self.repository.artifact(str(item["artifact_id"])) or item
+        for uploaded in uploaded_artifacts:
             try:
-                uploaded = self._upload_artifact(row, algorithm, version)
                 if hasattr(client, "set_audit_context"):
-                    client.set_audit_context(artifact_id=str(row.get("artifact_id") or ""), external_algo_version_id=external_version_id)
+                    client.set_audit_context(
+                        artifact_id=str(uploaded.get("artifact_id") or ""),
+                        external_algo_version_id=external_version_id,
+                    )
                 self._sync_weight(uploaded, external_version_id, client)
                 synced += 1
             except Exception as error:
-                failures.append(f"{item['file_name']}: {getattr(error, 'message', str(error))}")
+                failures.append(f"{uploaded.get('file_name') or '-'}: {getattr(error, 'message', str(error))}")
         if failures:
             status = "PARTIAL" if synced else "FAILED"
             publication = self.repository.patch_publication(str(publication["publication_key"]), status=status, last_error="；".join(failures)[:2000])
