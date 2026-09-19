@@ -8917,6 +8917,7 @@ async def v12_predict_image(
     framework = (inference_framework or "ultralytics").lower()
     source = (model_source or "project").lower()
     model_value = ""
+    feedback_version = None
 
     # 解析模型来源。v27 修复：原始模型 builtin、算法版本、项目模型、本机模型、飞桨模型统一收口，避免 model_path 未定义。
     try:
@@ -8939,6 +8940,7 @@ async def v12_predict_image(
                         break
                 if not version:
                     raise HTTPException(status_code=404, detail="算法版本不存在")
+                feedback_version = dict(version)
                 model_path = Path(version.get("stored_path", ""))
                 if not model_path.exists():
                     raise HTTPException(status_code=404, detail="算法版本模型文件不存在")
@@ -8963,8 +8965,10 @@ async def v12_predict_image(
 
     python_path = resolve_inference_python(framework, inference_env_id)
     data = run_predict_by_env(framework, python_path, str(model_value), in_path, out_path, float(conf))
-    return {
+    response = {
         "ok": True,
+        "prediction_id": pred_id,
+        "feedback_eligible": False,
         "detections": data.get("detections", []),
         "image_url": f"/data/projects/{project_id}/predictions/{out_path.name}",
         "labels": project.get("labels", []),
@@ -8974,8 +8978,270 @@ async def v12_predict_image(
         "python_path": python_path,
         "note": data.get("note", ""),
     }
+    if feedback_version is not None and algorithm_id and version_id:
+        try:
+            from platform_core.online_feedback import validate_prediction_evidence
+            info = image_info(in_path)
+            evidence = validate_prediction_evidence({
+                "schema_version": 1,
+                "prediction_id": pred_id,
+                "algorithm_id": str(algorithm_id),
+                "version_id": str(version_id),
+                "model_sha256": sha256_file(Path(str(model_value))),
+                "input_sha256": sha256_file(in_path),
+                "original_filename": safe_filename(file.filename or f"{pred_id}{ext}"),
+                "input_file": in_path.name,
+                "width": int(info["width"]),
+                "height": int(info["height"]),
+                "confidence": float(conf),
+                "engine": data.get("engine") or framework,
+                "detections": list(data.get("detections") or []),
+                "created_at": now_iso(),
+            })
+            write_json(p / "predictions" / f"{pred_id}.evidence.json", evidence)
+            response.update({
+                "feedback_eligible": True,
+                "algorithm_id": evidence["algorithm_id"],
+                "version_id": evidence["version_id"],
+                "model_sha256": evidence["model_sha256"],
+                "input_sha256": evidence["input_sha256"],
+            })
+        except (OSError, ValueError):
+            # Prediction remains usable even when evidence cannot be promoted.
+            response["feedback_eligible"] = False
+    return response
 
 
+class OnlineFeedbackCreateReq(BaseModel):
+    prediction_id: str
+    feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    note: str = ""
+
+
+class OnlineFeedbackConfirmReq(BaseModel):
+    expected_feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    dataset_id: str = "default"
+    confirm_all_labels_absent: bool = False
+
+
+def _online_feedback_repository(project_id: str):
+    from platform_core.online_feedback import OnlineFeedbackRepository
+    return OnlineFeedbackRepository(project_dir(project_id))
+
+
+def _online_prediction_evidence(project_id: str, prediction_id: str):
+    from platform_core.online_feedback import validate_prediction_evidence
+    prediction_id = str(prediction_id or "").strip()
+    if (
+        not prediction_id
+        or len(prediction_id) > 64
+        or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in prediction_id)
+    ):
+        raise HTTPException(status_code=400, detail="prediction_id 无效")
+    root = project_dir(project_id) / "predictions"
+    evidence = validate_prediction_evidence(
+        read_json(root / f"{prediction_id}.evidence.json", {})
+    )
+    if evidence["prediction_id"] != prediction_id:
+        raise HTTPException(status_code=409, detail="预测证据身份不一致，请重新测试")
+    input_file = str(evidence.get("input_file") or "")
+    if not input_file or Path(input_file).name != input_file:
+        raise HTTPException(status_code=409, detail="预测输入证据无效，请重新测试")
+    input_path = root / input_file
+    if not input_path.is_file() or sha256_file(input_path) != evidence["input_sha256"]:
+        raise HTTPException(status_code=409, detail="测试图片在抽检前已变化，请重新测试")
+    algorithm, version = _algorithm_version_for_action(
+        project_id, evidence["algorithm_id"], evidence["version_id"]
+    )
+    stored_path = Path(str(version.get("stored_path") or ""))
+    if stored_path.is_file() and sha256_file(stored_path) != evidence["model_sha256"]:
+        raise HTTPException(status_code=409, detail="算法版本模型已变化，请重新测试")
+    return evidence, input_path, algorithm, version
+
+
+def _online_feedback_prediction_boxes(project: Dict[str, Any], evidence: Dict[str, Any]):
+    active = [
+        item for item in project_label_items(project)
+        if str(item.get("status") or "active") == "active"
+    ]
+    by_code = {str(item["code"]): item for item in active}
+    by_display: Dict[str, List[Dict[str, Any]]] = {}
+    for item in active:
+        by_display.setdefault(str(item.get("display_name") or ""), []).append(item)
+    boxes = []
+    for detection in evidence.get("detections") or []:
+        label = str(detection.get("label") or "").strip()
+        item = by_code.get(label)
+        if item is None:
+            matches = by_display.get(label) or []
+            item = matches[0] if len(matches) == 1 else None
+        if item is None:
+            raise ValueError(f"预测标签 {label or '-'} 无法唯一映射到当前项目标签")
+        boxes.append({
+            "id": f"feedback-{evidence['prediction_id']}-{int(detection.get('index') or 0)}",
+            "class_id": int(item["class_id"]),
+            "label": str(item["code"]),
+            "x1": float(detection["x1"]), "y1": float(detection["y1"]),
+            "x2": float(detection["x2"]), "y2": float(detection["y2"]),
+        })
+    return boxes, [str(item["code"]) for item in active]
+
+
+@app.get("/api/v63/projects/{project_id}/online-feedback")
+def list_online_feedback(project_id: str, status: str = "", limit: int = 100):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    allowed = {"", "pending_review", "confirmed", "dismissed"}
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail="反馈状态无效")
+    rows = _online_feedback_repository(project_id).list(status=status, limit=limit)
+    return {"ok": True, "items": [public_feedback(row, compact=True) for row in rows]}
+
+
+@app.get("/api/v63/projects/{project_id}/online-feedback/{feedback_id}")
+def get_online_feedback(project_id: str, feedback_id: str):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    row = _online_feedback_repository(project_id).get(feedback_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    return {"ok": True, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback", status_code=201)
+def create_online_feedback(project_id: str, payload: OnlineFeedbackCreateReq):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    try:
+        evidence, _, _, _ = _online_prediction_evidence(project_id, payload.prediction_id)
+        row, idempotent = _online_feedback_repository(project_id).stage(
+            evidence,
+            feedback_type=payload.feedback_type,
+            note=payload.note,
+            created_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/confirm")
+def confirm_online_feedback(
+    project_id: str, feedback_id: str, payload: OnlineFeedbackConfirmReq,
+):
+    from platform_core.online_feedback import public_feedback
+    project = get_project(project_id)
+    repository = _online_feedback_repository(project_id)
+    staged = repository.get(feedback_id)
+    if staged is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    if staged["status"] == "confirmed":
+        return {"ok": True, "idempotent": True, "feedback": public_feedback(staged)}
+    if staged["status"] != "pending_review":
+        raise HTTPException(status_code=409, detail="抽检反馈已结束")
+    if staged["feedback_type"] != payload.expected_feedback_type:
+        raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再确认")
+    try:
+        evidence, input_path, _, _ = _online_prediction_evidence(
+            project_id, staged["prediction_id"]
+        )
+        source = dict((staged.get("payload") or {}).get("source") or {})
+        for key in ("algorithm_id", "version_id", "model_sha256", "input_sha256"):
+            if str(source.get(key) or "") != str(evidence.get(key) or ""):
+                raise ValueError("抽检来源在确认前发生变化，请重新提交反馈")
+        dataset_id = str(payload.dataset_id or "default")
+        if dataset_id not in {str(row.get("id") or "") for row in ensure_default_datasets(project_id)}:
+            raise ValueError("目标数据集不存在")
+
+        materials = material_store(project_id)
+        material = materials.get_by_content_sha256(evidence["input_sha256"])
+        reused = material is not None
+        if material is None:
+            material = add_image_record(
+                project_id,
+                input_path,
+                evidence.get("original_filename") or input_path.name,
+                "online_feedback",
+                dataset_id,
+                "default_local",
+                content_sha256=evidence["input_sha256"],
+            )
+            if material is None:
+                raise ValueError("反馈图片无法写入素材库")
+        material_id = str(material["id"])
+        annotations = AnnotationRepository(project_dir(project_id))
+        current = annotations.get(material_id)
+        annotation_action = "manual_review"
+        if staged["feedback_type"] == "correct":
+            boxes, _ = _online_feedback_prediction_boxes(project, evidence)
+            if not boxes:
+                raise ValueError("当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本")
+            if str(current.get("annotation_state") or "unannotated") != "unannotated":
+                raise ValueError("该素材已有正式标注，线上抽检不能覆盖现有 Annotation truth")
+            annotations.upsert(material_id, boxes, "annotated")
+            annotation_action = "prediction_confirmed_as_truth"
+        elif staged["feedback_type"] == "false_positive":
+            if not payload.confirm_all_labels_absent:
+                raise ValueError("请明确确认画面中不存在当前启用标签目标")
+            _, active_codes = _online_feedback_prediction_boxes(project, {
+                **evidence, "detections": [],
+            })
+            if not active_codes:
+                raise ValueError("项目没有可用于负样本确认的启用标签")
+            state = str(current.get("annotation_state") or "unannotated")
+            if state == "annotated":
+                raise ValueError("该素材已有正式目标标注，不能直接改成负样本")
+            if state != "confirmed_empty":
+                annotations.upsert(
+                    material_id, [], "confirmed_empty", annotation_scope=active_codes
+                )
+            annotation_action = "confirmed_empty"
+        else:
+            annotation_action = "manual_annotation_required"
+
+        confirmed_at = now_iso()
+        latest_material = materials.get(material_id) or material
+        refs = [
+            dict(value) for value in list(latest_material.get("online_feedback_refs") or [])
+            if isinstance(value, dict) and str(value.get("feedback_id") or "") != str(feedback_id)
+        ][-49:]
+        refs.append({
+            "schema_version": 1,
+            "feedback_id": str(feedback_id),
+            "prediction_id": evidence["prediction_id"],
+            "algorithm_id": evidence["algorithm_id"],
+            "version_id": evidence["version_id"],
+            "model_sha256": evidence["model_sha256"],
+            "input_sha256": evidence["input_sha256"],
+            "feedback_type": staged["feedback_type"],
+            "confirmed_at": confirmed_at,
+        })
+        patch = {
+            "online_feedback_refs": refs,
+            "online_feedback_needs_review": staged["feedback_type"] == "needs_correction",
+            "updated_at": confirmed_at,
+        }
+        if staged["feedback_type"] in {"correct", "false_positive"}:
+            patch["processing_status"] = "processed"
+        elif staged["feedback_type"] == "needs_correction":
+            patch["processing_status"] = "pending_decision"
+        materials.patch({material_id: patch})
+
+        row, idempotent = repository.finalize(
+            feedback_id,
+            expected_feedback_type=payload.expected_feedback_type,
+            material_id=material_id,
+            result={
+                "annotation_action": annotation_action,
+                "material_reused": reused,
+                "needs_manual_annotation": staged["feedback_type"] == "needs_correction",
+                "dataset_id": dataset_id,
+            },
+            confirmed_at=confirmed_at,
+        )
+    except (ValueError, KeyError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
 
 
 def _project_label_names(project: Dict[str, Any]) -> List[str]:
