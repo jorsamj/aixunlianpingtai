@@ -88,6 +88,9 @@ jobs:
           grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
+          grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
+          grep -q 'len({row["source_sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
           grep -q "芯片编码（转换产物优先）" static/modules/external-algorithm-publish.js
           grep -q "model_artifacts" platform_core/model_artifacts.py
           grep -q "storage-test" platform_core/external_algorithm_publish.py
