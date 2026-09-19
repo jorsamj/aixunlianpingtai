@@ -1112,8 +1112,42 @@ def test_remote_training_bundle_requires_server_visible_sha_before_signing(tmp_p
 def test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate(tmp_path, monkeypatch):
     provider = FakeProvider()
     model_artifacts = FakeModelArtifacts()
-    transport = service(tmp_path, provider, model_artifacts=model_artifacts)
+    artifacts = ArtifactStore(tmp_path / "task_runtime" / "artifacts")
+    transport = service(
+        tmp_path,
+        provider,
+        model_artifacts=model_artifacts,
+        task_artifacts=artifacts,
+    )
     task, payload, bundle_bytes, bundle_sha = _remote_training_fixture()
+    artifacts.atomic_write_json(task.task_id, "snapshot.json", {
+        "schema_version": 3,
+        "snapshot_id": "snapshot-remote-one",
+        "dataset_revision_id": "f" * 64,
+        "test_image_ids": ["test-1"],
+        "label_schema": [{"class_id": 0, "code": "smoke"}],
+        "images": [{
+            "image_id": "test-1",
+            "role": "test",
+            "content_sha256": "a" * 64,
+            "annotation_hash": "b" * 64,
+            "annotation_state": "annotated",
+        }],
+    })
+    artifacts.atomic_write_json(task.task_id, "work/bundle/manifest.json", {
+        "schema_version": 3,
+        "snapshot_id": "snapshot-remote-one",
+        "training_input_policy": "ultralytics_jpeg_repair_v1",
+        "splits": {
+            "test": [{
+                "image_id": "test-1",
+                "source_content_sha256": "a" * 64,
+                "content_sha256": "c" * 64,
+                "label_sha256": "d" * 64,
+                "training_input_policy": "ultralytics_jpeg_repair_v1",
+            }],
+        },
+    })
     provider.objects["training-bundles/p1/snapshot/bundle.zip"] = {
         "data": bundle_bytes,
         "content_type": "application/zip",
@@ -1141,7 +1175,15 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
             "verified_models": [str(best), str(last)],
             "training_report": {
                 "metrics": {"metrics/mAP50(B)": 0.8},
-                "test_result": {"status": "passed"},
+                "test_result": {
+                    "status": "passed",
+                    "image_count": 1,
+                    "protocol": {
+                        "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+                        "operating_conf": 0.25,
+                        "matching_iou": 0.5,
+                    },
+                },
             },
             "finished_at": "2026-09-18T02:05:00+00:00",
         },
@@ -1258,6 +1300,10 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     version = attached[0][1]
     assert version["snapshot_id"] == "snapshot-remote-one"
     assert version["training_status"] == "SUCCEEDED"
+    assert version["evaluation"]["benchmark_scope"]["binding_level"] == "bundle_verified"
+    assert len(version["evaluation"]["benchmark_scope"]["evaluation_input_digest"]) == 64
+    assert version["evaluation"]["benchmark_scope"]["training_input_policy"] == "ultralytics_jpeg_repair_v1"
+    assert version["evaluation"]["evaluation_protocol_version"] == 1
     assert Path(version["stored_path"]).is_file()
     assert len(model_artifacts.registered) == 2
     assert {entry[0]["target"] for entry in model_artifacts.registered} == {"best", "last"}

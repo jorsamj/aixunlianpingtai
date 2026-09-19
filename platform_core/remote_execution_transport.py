@@ -40,7 +40,7 @@ from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
 from .training_lineage import build_training_lineage
-from .training_evaluation import build_evaluation_truth
+from .training_evaluation import build_evaluation_benchmark_scope, build_evaluation_truth
 
 
 REMOTE_TRANSFER_TTL_SECONDS = 900
@@ -3161,6 +3161,21 @@ class RemoteExecutionTransportService:
             (item for item in committed_models if str(item.get("role") or "") == primary_role),
             committed_models[0] if committed_models else {},
         )
+        snapshot_truth = {}
+        dataset_manifest = {}
+        if self.task_artifacts is not None:
+            snapshot_value = self.task_artifacts.read_json(
+                str(task.task_id), "snapshot.json", default={},
+            )
+            manifest_value = self.task_artifacts.read_json(
+                str(task.task_id), "work/bundle/manifest.json", default={},
+            )
+            snapshot_truth = snapshot_value if isinstance(snapshot_value, dict) else {}
+            dataset_manifest = manifest_value if isinstance(manifest_value, dict) else {}
+        benchmark_scope = build_evaluation_benchmark_scope(
+            snapshot_truth or None,
+            dataset_manifest=dataset_manifest or None,
+        )
         evaluation = build_evaluation_truth(
             report.get("test_result") if isinstance(report.get("test_result"), Mapping) else {},
             task_id=str(task.task_id),
@@ -3168,6 +3183,7 @@ class RemoteExecutionTransportService:
             dataset_revision_id=str(training.get("dataset_revision_id") or ""),
             model_sha256=str(primary_model.get("sha256") or ""),
             finished_at=finished_at,
+            benchmark_scope=benchmark_scope,
         )
         training_lineage = build_training_lineage(
             task_id=str(task.task_id),

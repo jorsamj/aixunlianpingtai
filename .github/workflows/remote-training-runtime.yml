@@ -231,6 +231,9 @@ jobs:
           grep -Fq 'supplement_provenance=(' platform_core/remote_execution_transport.py
           grep -Fq '"supplement_provenance": snapshot.get("supplement_provenance")' platform_core/remote_training_tasks.py
           grep -Fq '"evaluation": evaluation' platform_core/remote_execution_transport.py
+          grep -Fq 'build_evaluation_benchmark_scope' platform_core/remote_execution_transport.py
+          grep -Fq 'benchmark_scope=benchmark_scope' platform_core/remote_execution_transport.py
+          grep -Fq 'binding_level"] == "bundle_verified"' tests/unit/test_remote_execution_transport.py
           grep -Fq '"training_lineage": training_lineage' platform_core/training_tasks.py
           grep -Fq '"evaluation": evaluation' platform_core/training_tasks.py
           grep -Fq '"iteration_decision": iteration_decision' platform_core/training_tasks.py
