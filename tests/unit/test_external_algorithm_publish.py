@@ -217,7 +217,14 @@ def _seed_conversion(
     algorithm_id="a1",
 ):
     job_root = _project_dir(root, project_id) / "deployment" / "jobs" / job_id
-    output = job_root / "outputs" / "model.rknn"
+    suffix = {
+        "onnx": ".onnx",
+        "rockchip": ".rknn",
+        "tensorrt": ".engine",
+        "ascend": ".om",
+        "sophon": ".bmodel",
+    }.get(str(target).lower(), ".bin")
+    output = job_root / "outputs" / f"model{suffix}"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(content)
     (job_root / "job.json").write_text(json.dumps({
@@ -406,6 +413,51 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_status"] == "published"
     assert version["external_algo_version_id"] == "av-1"
+
+
+def test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+
+    job_root = _project_dir(tmp_path, "p1") / "deployment" / "jobs" / "convert-rockchip-realistic"
+    output_root = job_root / "outputs"
+    output_root.mkdir(parents=True, exist_ok=True)
+    intermediate = output_root / "model.onnx"
+    final = output_root / "model_rk3568_fp.rknn"
+    manifest = output_root / "manifest.json"
+    intermediate.write_bytes(b"intermediate-onnx")
+    final.write_bytes(b"final-rknn")
+    manifest.write_text('{"status":"converted_unverified"}', encoding="utf-8")
+    (job_root / "job.json").write_text(json.dumps({
+        "id": "convert-rockchip-realistic",
+        "status": "done",
+        "target": "rockchip",
+        "source_id": "version::a1::v1",
+        "source_meta": {"algorithm_id": "a1", "version_id": "v1"},
+        "params": {"chip": "rk3568"},
+        "outputs": [
+            {"path": str(intermediate), "available": True},
+            {"path": str(final), "available": True},
+            {"path": str(manifest), "available": True},
+        ],
+    }), encoding="utf-8")
+    service = _service(tmp_path, memory)
+
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    discovered = service.discover_artifacts("p1", algorithm, version)
+    assert len(discovered) == 1
+    assert discovered[0]["file_name"] == "model_rk3568_fp.rknn"
+    assert discovered[0]["target"] == "rockchip"
+    assert discovered[0]["chip_code"] == "RK3568"
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.last_weight_payload["fileName"] == "model_rk3568_fp.rknn"
+    assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3568"
 
 
 def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path: Path):
