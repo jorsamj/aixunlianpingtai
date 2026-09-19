@@ -29,6 +29,7 @@ from .secrets import KeyringSecretStore, SecretCredentialStore
 from .snapshots import (
     build_snapshot,
     dataset_revision_document,
+    ensure_dataset_revision,
     persist_dataset_revision,
 )
 from .storage import StorageManager
@@ -573,20 +574,21 @@ def materialize_portable_dataset(
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
         durable=False,
     )
+    portable_snapshot = ensure_dataset_revision(snapshot)
     snapshot_path = root / "snapshot.json"
-    atomic_write_json(snapshot_path, dict(snapshot))
+    atomic_write_json(snapshot_path, portable_snapshot)
     revision_path = root / "dataset-revision.json"
-    atomic_write_json(revision_path, dataset_revision_document(snapshot))
+    atomic_write_json(revision_path, dataset_revision_document(portable_snapshot))
     manifest = {
         "schema_version": 3,
-        "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "snapshot_id": str(portable_snapshot.get("snapshot_id") or ""),
         "dataset_revision_schema_version": int(
-            snapshot.get("dataset_revision_schema_version") or 0
+            portable_snapshot.get("dataset_revision_schema_version") or 0
         ),
         "canonical_annotation_schema_version": int(
-            snapshot.get("canonical_annotation_schema_version") or 0
+            portable_snapshot.get("canonical_annotation_schema_version") or 0
         ),
-        "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
+        "dataset_revision_id": str(portable_snapshot.get("dataset_revision_id") or ""),
         "training_input_policy": TRAINING_INPUT_POLICY,
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": _sha256(snapshot_path),
@@ -685,22 +687,24 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     resolve_dataset_yaml(path)
     snapshot_path = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
-    revision_path = _resolve_relative(
-        path.parent,
-        str(manifest.get("dataset_revision_ref") or ""),
-    )
-    if not snapshot_path.is_file() or not revision_path.is_file():
-        raise FileNotFoundError("portable snapshot/revision evidence is missing")
+    if not snapshot_path.is_file():
+        raise FileNotFoundError("portable training snapshot does not exist")
     snapshot_value = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    revision_value = json.loads(revision_path.read_text(encoding="utf-8"))
-    revision_id = str(manifest.get("dataset_revision_id") or "")
-    if (
-        not revision_id
-        or str(snapshot_value.get("dataset_revision_id") or "") != revision_id
-        or str(revision_value.get("dataset_revision_id") or "") != revision_id
-        or str(manifest.get("dataset_revision_sha256") or "") != _sha256(revision_path)
-    ):
-        raise ValueError("portable dataset revision identity mismatch")
+    revision_id = str(manifest.get("dataset_revision_id") or "").strip()
+    if revision_id:
+        revision_path = _resolve_relative(
+            path.parent,
+            str(manifest.get("dataset_revision_ref") or ""),
+        )
+        if not revision_path.is_file():
+            raise FileNotFoundError("portable dataset revision evidence is missing")
+        revision_value = json.loads(revision_path.read_text(encoding="utf-8"))
+        if (
+            str(snapshot_value.get("dataset_revision_id") or "") != revision_id
+            or str(revision_value.get("dataset_revision_id") or "") != revision_id
+            or str(manifest.get("dataset_revision_sha256") or "") != _sha256(revision_path)
+        ):
+            raise ValueError("portable dataset revision identity mismatch")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -733,7 +737,7 @@ class RemoteTrainingBundle:
     manifest: Path
     data_yaml: Path
     snapshot: Path
-    dataset_revision: Path
+    dataset_revision: Path | None
     snapshot_id: str
     dataset_revision_id: str
     verified_files: int
@@ -760,11 +764,12 @@ def resolve_remote_training_bundle(manifest_path: str | Path) -> RemoteTrainingB
     snapshot_id = str(manifest.get("snapshot_id") or "")
     if not snapshot_id or str(snapshot_value.get("snapshot_id") or "") != snapshot_id:
         raise ValueError("portable training snapshot identity mismatch")
-    dataset_revision = _resolve_relative(
-        path.parent,
-        str(manifest.get("dataset_revision_ref") or ""),
-    )
     dataset_revision_id = str(verification.get("dataset_revision_id") or "")
+    dataset_revision = (
+        _resolve_relative(path.parent, str(manifest.get("dataset_revision_ref") or ""))
+        if dataset_revision_id
+        else None
+    )
     return RemoteTrainingBundle(
         root=path.parent,
         manifest=path,

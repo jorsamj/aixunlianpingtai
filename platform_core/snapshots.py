@@ -121,17 +121,34 @@ def _dataset_revision_id(
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
-def dataset_revision_document(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    records = list(snapshot.get("images") or [])
-    label_schema = list(snapshot.get("label_schema") or [])
-    payload = _dataset_revision_payload(records, label_schema)
+def ensure_dataset_revision(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Return snapshot truth with a deterministic Dataset Revision identity.
+
+    Snapshot V3 producers already carry dataset_revision_id. Legacy V1/V2
+    portable fixtures may not; they are upgraded deterministically without
+    changing their historical snapshot_id.
+    """
+    value = dict(snapshot)
+    records = list(value.get("images") or [])
+    label_schema = list(value.get("label_schema") or [])
     expected = _dataset_revision_id(records, label_schema)
-    actual = str(snapshot.get("dataset_revision_id") or "").strip().lower()
-    if actual != expected:
+    actual = str(value.get("dataset_revision_id") or "").strip().lower()
+    if actual and actual != expected:
         raise ValueError("Snapshot dataset_revision_id 与冻结数据 truth 不一致")
+    value["dataset_revision_schema_version"] = DATASET_REVISION_SCHEMA_VERSION
+    value["canonical_annotation_schema_version"] = CANONICAL_ANNOTATION_SCHEMA_VERSION
+    value["dataset_revision_id"] = expected
+    return value
+
+
+def dataset_revision_document(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = ensure_dataset_revision(snapshot)
+    records = list(normalized.get("images") or [])
+    label_schema = list(normalized.get("label_schema") or [])
+    payload = _dataset_revision_payload(records, label_schema)
     return {
-        "dataset_revision_id": actual,
-        "created_at": str(snapshot.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        "dataset_revision_id": str(normalized["dataset_revision_id"]),
+        "created_at": str(normalized.get("created_at") or datetime.now(timezone.utc).isoformat()),
         **payload,
     }
 

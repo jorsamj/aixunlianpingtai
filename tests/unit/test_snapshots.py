@@ -3,6 +3,7 @@ import pytest
 from platform_core.snapshots import (
     build_snapshot,
     dataset_revision_document,
+    ensure_dataset_revision,
     persist_dataset_revision,
 )
 from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
@@ -285,3 +286,18 @@ def test_dataset_revision_document_and_persistence_are_immutable(tmp_path):
     tampered["dataset_revision_id"] = "0" * 64
     with pytest.raises(ValueError, match="dataset_revision_id"):
         dataset_revision_document(tampered)
+
+
+def test_legacy_snapshot_gets_deterministic_revision_without_changing_snapshot_id():
+    legacy = {
+        "schema_version": 2,
+        "snapshot_id": "legacy-snapshot",
+        "label_schema": [],
+        "images": [{"image_id": "a", "annotation_hash": "x"}],
+    }
+    first = ensure_dataset_revision(legacy)
+    second = ensure_dataset_revision(legacy)
+
+    assert first["snapshot_id"] == "legacy-snapshot"
+    assert first["dataset_revision_id"] == second["dataset_revision_id"]
+    assert len(first["dataset_revision_id"]) == 64
