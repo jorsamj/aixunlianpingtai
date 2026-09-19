@@ -430,6 +430,16 @@ test('algorithm version exposes persisted training lineage without job refetch',
         parameters:{actual:{epochs:30,batch:4,imgsz:640}},
         artifacts:[{role:'best',file_name:'best.pt',sha256:'c'.repeat(64),size_bytes:1234}],
       },
+      evaluation:{
+        schema_version:1,evaluation_id:'d'.repeat(64),status:'succeeded',
+        task_id:'train-lineage-1',dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64),
+        model_sha256:'c'.repeat(64),image_count:12,
+        metrics:{'metrics/precision(B)':0.82,'metrics/recall(B)':0.70,'metrics/mAP50(B)':0.76,'metrics/mAP50-95(B)':0.55},
+        per_class:[{class_id:0,label:'smoke',precision:0.82,recall:0.70,map50:0.76,map50_95:0.55,true_positive:7,false_positive:2,false_negative:3}],
+        weak_labels:['smoke'],
+        error_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3,fp_labels:['smoke'],fn_labels:['smoke']}],
+        protocol:{mode:'blind_image_only_inference_then_hidden_ground_truth_scoring',operating_conf:0.25,matching_iou:0.5},
+      },
     }],
   };
 
@@ -468,6 +478,13 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#modalBody')).toContainText('node-7');
   await expect(page.locator('#modalBody')).toContainText('yolo11n.pt');
   await expect(page.locator('#modalBody')).toContainText('实际训练参数');
+  await page.evaluate(() => closeModal());
+  await card.getByRole('button',{name:'独立评测'}).click();
+  await expect(page.locator('#modalBody')).toContainText('冻结 Test Split');
+  await expect(page.locator('#modalBody')).toContainText('mAP50');
+  await expect(page.locator('#modalBody')).toContainText('smoke');
+  await expect(page.locator('#modalBody')).toContainText('test-smoke.jpg');
+  await expect(page.locator('#modalBody')).toContainText('FP / FN');
   expect(requests.filter(path=>path.includes('/jobs/'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
