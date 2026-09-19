@@ -257,6 +257,23 @@ class ImportCandidateStore:
                   _text(row.get("etag")), _text(row.get("sha256"))) for row in rows),
             )
 
+    def inventory_for_keys(self, keys: Iterable[str]) -> dict[str, dict]:
+        keys = list(dict.fromkeys(_key(key) for key in keys))
+        if len(keys) > 500:
+            raise ValueError("dataset object lookup is limited to 500 keys")
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with closing(self._connect()) as connection:
+            return {
+                str(row["object_key"]): dict(row)
+                for row in connection.execute(
+                    f"SELECT object_key,size_bytes,etag,sha256 FROM dataset_objects "
+                    f"WHERE object_key IN ({placeholders})",
+                    keys,
+                )
+            }
+
     def manifest_many(self, rows: Iterable[Mapping[str, object]]) -> None:
         with self._transaction() as connection:
             connection.executemany(

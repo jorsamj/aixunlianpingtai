@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.storage.import_candidates import RescanCandidateStore
 from platform_core.storage.import_tasks import MANIFEST_REF

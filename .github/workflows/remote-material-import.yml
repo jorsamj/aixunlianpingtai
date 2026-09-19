@@ -193,6 +193,7 @@ jobs:
           grep -Fq 'test_storage_rescan_root_review_is_explicit_and_preserves_same_hash_object_identity' tests/unit/test_remote_material_import.py
           grep -Fq 'test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_identity' tests/unit/test_remote_material_import.py
           grep -Fq 'annotation_source_evidence' platform_core/storage/import_candidates.py
+          grep -Fq '_record_text_identity' platform_core/storage/yolo_import.py
           grep -Fq 'test_rescan_annotation_source_evidence_tracks_sidecar_yaml_split_and_boxes' tests/unit/storage/test_rescan_tasks.py
           grep -Fq '_build_annotation_deltas' platform_core/storage/rescan_tasks.py
           grep -Fq 'test_yolo_annotation_delta_distinguishes_new_change_conflict_and_removed' tests/unit/storage/test_rescan_tasks.py
