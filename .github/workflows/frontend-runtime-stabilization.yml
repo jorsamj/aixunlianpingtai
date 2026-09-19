@@ -240,6 +240,8 @@ jobs:
           retired_alias = "window.setPage=function(p){state.page=p==='自动标注'?'自动标注及清洗':p;render()};try{setPage=window.setPage}catch(e){}"
           if retired_alias in app:
               raise SystemExit('v42.7 direct alias owner was reintroduced')
+          if 'openVersionLineage429' not in app or '训练溯源' not in app:
+              raise SystemExit('algorithm version training lineage UI is missing')
           if 'setPageReady414' in app:
               raise SystemExit('classic startup readiness setPage owner was reintroduced')
           if 'baseSetPage417' in app:
