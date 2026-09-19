@@ -539,7 +539,12 @@ export function installExternalAlgorithmPlatformRuntime({
       return `<div class="alert err"><b>连接失败</b><div>${escapeHtml(connectionTest.message || '新畅联连接测试失败')}</div>${connectionTest.detail ? `<div>${escapeHtml(connectionTest.detail)}</div>` : ''}${connectionTest.solution ? `<div>建议：${escapeHtml(connectionTest.solution)}</div>` : ''}</div>`;
     }
     const rows = Array.isArray(connectionTest.steps) ? connectionTest.steps : [];
-    const body = rows.map(row => `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${row.status === 'success' ? 'ok' : 'err'}">${row.status === 'success' ? '成功' : '失败'}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`).join('');
+    const body = rows.map(row => {
+      const status = String(row.status || '');
+      const pill = status === 'success' ? 'ok' : status === 'skipped' ? 'warn' : 'err';
+      const label = status === 'success' ? '成功' : status === 'skipped' ? '跳过' : '失败';
+      return `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${pill}">${label}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`;
+    }).join('');
     return `<div class="alert ok"><b>连接成功</b> · ${escapeHtml(connectionTest.base_url || '')}</div><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">鉴权连接正常</td></tr>'}</tbody></table>`;
   }
 
