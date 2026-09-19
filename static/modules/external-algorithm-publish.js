@@ -126,13 +126,15 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
           <div class="field"><label>本平台外部访问地址</label><input id="externalPublishBaseUrl" class="input" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://algorithm.example.com"></div>
           <label class="field check"><input id="externalPublishOriginal" type="checkbox" ${c.publishOriginalModel ? 'checked' : ''}> 将原始训练权重也登记为畅联云权重（文件本身始终自动归档）</label>
         </div>
-        <div class="panel-title" style="margin:18px 0 10px">转换目标 → 新畅联算力环境映射</div>
+        <div class="panel-title" style="margin:18px 0 6px">转换目标 → 新畅联算力环境映射</div>
+        <div class="subline" style="margin-bottom:10px">算力环境来自最近一次新畅联主数据同步；失效的 computePlatformId 会在保存和发布时被后端拒绝。</div>
         <table class="table"><thead><tr><th>转换目标</th><th>算力环境</th><th>芯片编码（转换产物优先）</th></tr></thead><tbody>${mappingRows()}</tbody></table>
         <details style="margin-top:16px"><summary>幂等恢复接口</summary><div class="form two" style="margin-top:12px">
           <div class="field"><label>按产品查询版本</label><input id="externalPublishVersionList" class="input" value="${escapeHtml(c.versionListByProduct)}"></div>
           <div class="field"><label>按版本查询权重</label><input id="externalPublishWeightList" class="input" value="${escapeHtml(c.weightListByVersion)}"></div>
         </div></details>
-        <div class="row end"><button class="btn" id="externalPublishAutoRun">执行一次待发布任务</button><button class="btn primary" id="externalPublishSave">保存发布配置</button></div>
+        <details data-external-publish-automation="1" style="margin-top:16px"><summary>高级设置 · 自动发布</summary><div class="row" style="margin-top:12px"><button class="btn" id="externalPublishAutoRun">执行一次待发布任务</button></div></details>
+        <div class="row end"><button class="btn primary" id="externalPublishSave">保存发布配置</button></div>
       </div>
     </section>`;
   }
