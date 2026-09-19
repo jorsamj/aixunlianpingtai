@@ -1,6 +1,6 @@
 import {test, expect} from '@playwright/test';
 
-test('changlian platform page tests draft credentials before manual sync', async ({page}) => {
+test('changlian platform page tests draft credentials before manual sync', async ({page, request}) => {
   let testedPayload = null;
 
   await page.route('**/api/v63/external-algorithm-platform/config', async route => {
@@ -92,6 +92,8 @@ test('changlian platform page tests draft credentials before manual sync', async
   });
 
   await page.goto('/');
+  const bootstrapBefore = await (await request.get('/api/v53/bootstrap/status')).json();
+  console.log('bootstrap-before-ui-ready', JSON.stringify(bootstrapBefore));
   await expect.poll(async () => page.evaluate(() => ({
     setPageReady: typeof window.setPage === 'function',
     uiReady: typeof state !== 'undefined' ? !!state.uiReady : false,
