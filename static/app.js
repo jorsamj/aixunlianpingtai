@@ -4702,4 +4702,108 @@ window.installUsability417?.();
     setPage('数据集');
     toast('已进入素材库；反馈样本 ID：'+String(materialId||''));
   };
+
+  const supplementReasonName63=code=>({
+    MATERIAL_MISSING:'素材已不存在',
+    MATERIAL_CONTENT_CHANGED:'素材内容已变化',
+    ANNOTATION_HASH_MISSING:'正式标注缺少版本身份',
+    ANNOTATION_TRUTH_REQUIRED:'需先确认正式标注',
+    NEGATIVE_TRUTH_CHANGED:'负样本标注已变化',
+    ANNOTATION_REQUIRED:'待人工标注',
+  }[code]||code||'-');
+
+  function enterSupplementDataset63(aid,vid,confirmed,candidateSet=null){
+    const labels=confirmed?.data_draft?.weak_labels||[];
+    state.iterationDataDraft={...(confirmed?.data_draft||{}),feedback_candidate_set:candidateSet||null};
+    state.iterationFeedbackCandidateIds63=new Set((candidateSet?.material_ids||[]).map(String));
+    state.iterationFeedbackOnly63=!!state.iterationFeedbackCandidateIds63.size;
+    state.data412Labels=new Set(labels);state.data429Labels=new Set(labels);
+    closeModal();setPage('数据集');
+  }
+
+  function renderSupplementDataBanner63(){
+    const root=document.querySelector('.data426-shell');
+    if(!root)return;
+    root.querySelector('.iteration-feedback-candidates63')?.remove();
+    const draft=state.iterationDataDraft;
+    if(!draft)return;
+    const candidateSet=draft.feedback_candidate_set||null;
+    const labels=draft.weak_labels||[];
+    const count=Number(candidateSet?.material_ids?.length||0);
+    const filterButton=count
+      ?`<button class="btn mini" onclick="toggleSupplementFeedbackOnly63()">${state.iterationFeedbackOnly63?'显示全部素材':'仅看反馈候选'}</button>`
+      :'';
+    root.insertAdjacentHTML('afterbegin',`<div class="alert soft iteration-action429 iteration-feedback-candidates63"><b>补数据草稿</b><span>${candidateSet?`已冻结反馈候选 ${count} 张 · Candidate Set ${esc(String(candidateSet.candidate_set_id||'').slice(0,12))}`:'当前没有已冻结反馈候选'}${labels.length?` · 优先标签：${labels.map(esc).join('、')}`:''}</span><span>当前仅冻结候选范围，尚未生成 Dataset Revision、Snapshot 或训练任务。</span><div class="row end">${filterButton}</div></div>`);
+  }
+
+  const datasetRenderFeedback63=window.renderDatasets424;
+  window.renderDatasets424=function(){
+    const all=state.images||[],ids=state.iterationFeedbackCandidateIds63 instanceof Set?state.iterationFeedbackCandidateIds63:new Set();
+    if(state.iterationFeedbackOnly63&&ids.size)state.images=all.filter(row=>ids.has(String(row.id)));
+    try{datasetRenderFeedback63?.()}finally{state.images=all}
+    renderSupplementDataBanner63();
+  };
+  window.toggleSupplementFeedbackOnly63=function(){
+    state.iterationFeedbackOnly63=!state.iterationFeedbackOnly63;
+    state.data429Page=1;
+    window.renderDatasets424?.();
+  };
+
+  window.openSupplementFeedbackCandidates63=async function(aid,vid,confirmed){
+    try{
+      const result=await api(`/api/v63/projects/${pid()}/algorithms/${encodeURIComponent(aid)}/versions/${encodeURIComponent(vid)}/supplement-data-candidates`);
+      state.supplementFeedbackCandidates63=result.items||[];
+      state.supplementFeedbackAction63={aid:String(aid),vid:String(vid),confirmed};
+      if(result.candidate_set){
+        enterSupplementDataset63(aid,vid,confirmed,result.candidate_set);
+        return;
+      }
+      const items=result.items||[];
+      if(!items.length){
+        enterSupplementDataset63(aid,vid,confirmed,null);
+        toast('当前版本暂无已确认的线上反馈候选，可继续按评测弱标签补充数据');
+        return;
+      }
+      const rows=items.map(item=>{
+        const reasons=(item.reason_codes||[]).map(supplementReasonName63);
+        const labels=item.labels||[];
+        const source=item.external_source?('外部 · '+item.external_source):'平台测试';
+        return `<tr data-feedback-candidate-row="${esc(item.feedback_id)}"><td><input type="checkbox" data-feedback-candidate="${esc(item.feedback_id)}" data-digest="${esc(item.candidate_digest)}" ${item.eligible?'checked':'disabled'}></td><td><b>${esc(typeName(item.feedback_type))}</b><small>${esc(source)}</small></td><td>${esc(labels.join('、')||'-')}</td><td>${esc(item.annotation_state||'-')}</td><td>${item.eligible?'<span class="pill ok">可直接加入</span>':`<span class="pill warn">${esc(reasons.join('、')||'暂不可用')}</span>`}</td><td>${!item.eligible&&item.material_id?`<button class="btn mini" onclick="closeModal();setPage('数据集');setTimeout(()=>openAnnotation('${esc(item.material_id)}'),40)">去标注</button>`:''}</td></tr>`;
+      }).join('');
+      modal('补数据反馈候选',`<div class="supplement-feedback63"><div class="alert soft"><b>已确认线上反馈候选</b><span>共 ${Number(result.total||0)} 条，当前可直接加入 ${Number(result.eligible||0)} 条${result.annotation_required?`，待人工标注 ${Number(result.annotation_required)} 条`:''}。</span><span>冻结候选不会自动创建 Dataset Revision、Snapshot 或训练任务。</span></div>${result.truncated?'<div class="alert warn">候选超过 500 条，请先处理当前批次。</div>':''}<div class="table-wrap"><table class="table"><thead><tr><th>选择</th><th>反馈</th><th>正式标签</th><th>标注状态</th><th>可用性</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="freezeSupplementFeedbackCandidates63()">冻结并进入数据集</button></div></div>`,true);
+    }catch(error){toast(error.message||error)}
+  };
+
+  window.freezeSupplementFeedbackCandidates63=async function(){
+    const ctx=state.supplementFeedbackAction63||{};
+    const selected=[...document.querySelectorAll('[data-feedback-candidate]:checked')].map(input=>({
+      feedback_id:String(input.dataset.feedbackCandidate||''),
+      candidate_digest:String(input.dataset.digest||''),
+    }));
+    if(!selected.length)return toast('请选择至少一条可用反馈候选');
+    const button=document.querySelector('.supplement-feedback63 .btn.primary');
+    if(button){button.disabled=true;button.textContent='正在冻结…'}
+    try{
+      const result=await api(`/api/v63/projects/${pid()}/algorithms/${encodeURIComponent(ctx.aid)}/versions/${encodeURIComponent(ctx.vid)}/supplement-data-candidates/freeze`,{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({candidates:selected}),
+      });
+      const a=(state.algorithms||[]).find(row=>String(row.id)===String(ctx.aid));
+      const v=(a?.versions||[]).find(row=>String(row.id)===String(ctx.vid));
+      if(v)v.supplement_data_candidate_set=result.candidate_set||null;
+      enterSupplementDataset63(ctx.aid,ctx.vid,ctx.confirmed,result.candidate_set||null);
+      toast(`已冻结 ${Number(result.candidate_set?.material_ids?.length||0)} 条反馈候选`);
+    }catch(error){toast(error.message||error);if(button){button.disabled=false;button.textContent='冻结并进入数据集'}}
+  };
+
+  const resumeConfirmedIterationActionFeedback63=window.resumeConfirmedIterationAction429;
+  window.resumeConfirmedIterationAction429=async function(aid,vid){
+    const a=(state.algorithms||[]).find(row=>String(row.id)===String(aid));
+    const v=(a?.versions||[]).find(row=>String(row.id)===String(vid));
+    const confirmed=v?.confirmed_iteration_action;
+    if(confirmed?.status==='confirmed'&&confirmed.action==='supplement_data'){
+      return window.openSupplementFeedbackCandidates63(aid,vid,confirmed);
+    }
+    return resumeConfirmedIterationActionFeedback63?.(aid,vid);
+  };
+
 })();

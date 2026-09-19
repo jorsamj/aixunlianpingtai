@@ -313,3 +313,89 @@ test('external feedback intake contract is exposed from reviewed feedback panel'
   await expect(legacy.locator('#feedbackExternalEndpoint63')).toHaveValue('/api/v63/projects/'+project.id+'/online-feedback/external-intake');
   await expect(legacy).not.toContainText('/api/v42/');
 });
+
+
+test('confirmed feedback candidates are frozen before dataset revision or training', async ({page,request})=>{
+  const project=await (await request.post('/api/projects',{data:{
+    name:`反馈补数据候选-${Date.now()}`,labels:['smoke'],
+  }})).json();
+  const encoded=encodeURIComponent(project.id);
+  let freezePayload=null;
+  const requested=[];
+  page.on('request',req=>requested.push(req.url()));
+
+  await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-supp/versions/ver-supp/supplement-data-candidates`,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+      ok:true,action_id:'d'.repeat(64),total:2,returned:2,truncated:false,eligible:1,annotation_required:1,candidate_set:null,
+      items:[
+        {
+          schema_version:1,feedback_id:'feedback-ready',feedback_type:'correct',material_id:'material-ready',
+          algorithm_id:'algo-supp',version_id:'ver-supp',model_sha256:'a'.repeat(64),input_sha256:'b'.repeat(64),
+          confirmed_at:'2026-09-19T06:00:00Z',annotation_state:'annotated',annotation_hash:'c'.repeat(64),
+          annotation_scope:['smoke'],labels:['smoke'],source_channel:'platform_prediction',
+          external_source:'',external_sample_id:'',needs_manual_annotation:false,eligible:true,reason_codes:[],
+          candidate_digest:'1'.repeat(64),
+        },
+        {
+          schema_version:1,feedback_id:'feedback-review',feedback_type:'needs_correction',material_id:'material-review',
+          algorithm_id:'algo-supp',version_id:'ver-supp',model_sha256:'a'.repeat(64),input_sha256:'e'.repeat(64),
+          confirmed_at:'2026-09-19T06:01:00Z',annotation_state:'unannotated',annotation_hash:'',
+          annotation_scope:[],labels:[],source_channel:'external_upload',external_source:'edge-01',
+          external_sample_id:'sample-2',needs_manual_annotation:true,eligible:false,
+          reason_codes:['ANNOTATION_REQUIRED'],candidate_digest:'2'.repeat(64),
+        },
+      ],
+    })});
+  });
+  await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-supp/versions/ver-supp/supplement-data-candidates/freeze`,async route=>{
+    freezePayload=route.request().postDataJSON();
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+      ok:true,idempotent:false,candidate_set:{
+        schema_version:1,status:'confirmed',candidate_set_id:'f'.repeat(64),action_id:'d'.repeat(64),
+        algorithm_id:'algo-supp',version_id:'ver-supp',feedback_ids:['feedback-ready'],
+        material_ids:['material-ready'],candidates:[{feedback_id:'feedback-ready',material_id:'material-ready'}],
+        frozen_at:'2026-09-19T06:02:00Z',automatic_execution:false,
+      },
+    })});
+  });
+
+  await page.addInitScript(projectId=>{
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'算法列表'}));
+  },project.id);
+  await page.goto('/');
+  await page.evaluate(()=>{
+    state.algorithms=[{
+      id:'algo-supp',name:'补数据算法',current_version_id:'ver-supp',
+      versions:[{
+        id:'ver-supp',version_name:'v-feedback',
+        confirmed_iteration_action:{
+          schema_version:1,status:'confirmed',action:'supplement_data',action_id:'d'.repeat(64),
+          source:{algorithm_id:'algo-supp',version_id:'ver-supp',decision_id:'e'.repeat(64),evaluation_id:'a'.repeat(64)},
+          data_draft:{weak_labels:['smoke'],problem_samples:[],dataset_revision_id:'',snapshot_id:'snapshot-old'},
+        },
+      }],
+    }];
+    state.images=[{
+      id:'material-ready',filename:'feedback-ready.jpg',annotated:true,processing_status:'processed',
+      labels:['smoke'],size_bytes:100,created_at:'2026-09-19T06:00:00Z',url:'/static/placeholder.png',
+    }];
+  });
+  await page.evaluate(()=>window.resumeConfirmedIterationAction429('algo-supp','ver-supp'));
+
+  const dialog=page.getByRole('dialog',{name:'补数据反馈候选'});
+  await expect(dialog).toContainText('可直接加入 1 条');
+  await expect(dialog).toContainText('待人工标注 1 条');
+  await expect(dialog).toContainText('不会自动创建 Dataset Revision');
+  await expect(dialog.locator('[data-feedback-candidate="feedback-ready"]')).toBeChecked();
+  await expect(dialog.locator('[data-feedback-candidate="feedback-review"]')).toBeDisabled();
+  await dialog.getByRole('button',{name:'冻结并进入数据集'}).click();
+
+  await expect.poll(()=>freezePayload).toEqual({candidates:[{
+    feedback_id:'feedback-ready',candidate_digest:'1'.repeat(64),
+  }]});
+  await expect(page.getByText('已冻结反馈候选 1 张')).toBeVisible();
+  await expect(page.getByText('尚未生成 Dataset Revision、Snapshot 或训练任务。')).toBeVisible();
+  expect(requested.some(url=>url.includes('/train/start'))).toBeFalsy();
+  expect(requested.some(url=>url.includes('dataset_revisions'))).toBeFalsy();
+});

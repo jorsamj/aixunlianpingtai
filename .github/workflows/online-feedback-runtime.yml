@@ -115,6 +115,9 @@ jobs:
           grep -Fq 'false-positive feedback requires explicit all-label negative confirmation' tests/browser/online-feedback.spec.mjs
           grep -Fq 'pending reviewed feedback can be dismissed without promotion or training' tests/browser/online-feedback.spec.mjs
           grep -Fq 'external feedback intake contract is exposed from reviewed feedback panel' tests/browser/online-feedback.spec.mjs
+          grep -Fq 'openSupplementFeedbackCandidates63' static/app.js
+          grep -Fq 'freezeSupplementFeedbackCandidates63' static/app.js
+          grep -Fq 'confirmed feedback candidates are frozen before dataset revision or training' tests/browser/online-feedback.spec.mjs
           grep -Fq 'openExternalFeedbackIntake63' static/app.js
           grep -Fq 'external-intake' static/app.js
           grep -Fq 'window.openAuditConnect42=window.openExternalFeedbackIntake63' static/app.js
