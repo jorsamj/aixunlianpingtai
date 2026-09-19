@@ -938,7 +938,7 @@ class ExternalAlgorithmPlatformService:
 
         auth = record("auth", "应用鉴权", client.probe)
         if auth is not None:
-            record("categories", "算法品目", client.category_tree, count_items=True)
+            record("categories", "算法品目", lambda: flatten_category_tree(client.category_tree()), count_items=True)
             products = record(
                 "products",
                 "算法产品",
@@ -1016,7 +1016,7 @@ class ExternalAlgorithmPlatformService:
         auth = record("auth", "应用鉴权", client.probe)
         if auth is None:
             return {"ok": False, "provider": "changlian", "auth_mode": "test_sign_bridge", "steps": steps}
-        categories = record("categories", "算法品目", client.category_tree, count_items=True)
+        categories = record("categories", "算法品目", lambda: flatten_category_tree(client.category_tree()), count_items=True)
         products = record(
             "products",
             "算法产品",
@@ -1060,7 +1060,7 @@ class ExternalAlgorithmPlatformService:
             "provider": "changlian",
             "auth_mode": "test_sign_bridge",
             "steps": steps,
-            "category_sample_available": bool(extract_items(categories)) if categories is not None else False,
+            "category_sample_available": bool(categories) if isinstance(categories, list) else False,
         }
 
     def sync(
