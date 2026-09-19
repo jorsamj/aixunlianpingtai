@@ -106,8 +106,9 @@ test('manual publish preflight blocks missing model delivery configuration', () 
   });
 
   assert.equal(result.ready, false);
-  assert.match(result.message, /外部访问地址/);
-  assert.match(result.message, /模型资产存储源/);
+  assert.match(result.message, /平台对接 → 畅联云版本发布/);
+  assert.match(result.message, /平台对接 → 模型资产存储/);
+  assert.match(result.message, /测试存储/);
 });
 
 
