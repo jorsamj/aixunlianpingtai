@@ -109,5 +109,6 @@ jobs:
           grep -Fq 'external feedback intake contract is exposed from reviewed feedback panel' tests/browser/online-feedback.spec.mjs
           grep -Fq 'openExternalFeedbackIntake63' static/app.js
           grep -Fq 'external-intake' static/app.js
+          grep -Fq 'window.openAuditConnect42=window.openExternalFeedbackIntake63' static/app.js
           grep -Fq 'dismissOnlineFeedback63' static/app.js
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

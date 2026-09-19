@@ -4599,6 +4599,15 @@ window.installUsability417?.();
     modal('外部抽检接入',`<div class="form online-feedback-intake63"><div class="alert soft"><b>统一进入待复核</b><span>外部 SaaS / 边缘端只能提交审核证据，不会自动修改素材、数据集、Dataset Revision 或训练任务。</span></div><div class="field"><label>接口</label><input class="input mono" readonly value="${esc(endpoint)}"></div><div class="field"><label>请求格式</label><input class="input mono" readonly value="multipart/form-data"></div><div class="table-wrap"><table class="table mini-table"><thead><tr><th>字段</th><th>要求</th></tr></thead><tbody><tr><td>algorithm_id / version_id</td><td>必须指向正式算法版本</td></tr><tr><td>model_sha256</td><td>必须与正式版本模型 SHA 一致</td></tr><tr><td>external_source / external_sample_id</td><td>外部来源与稳定样本编号</td></tr><tr><td>feedback_type</td><td>correct / false_positive / needs_correction</td></tr><tr><td>detections_json</td><td>预测框 JSON 数组</td></tr><tr><td>file</td><td>真实图片，最大 20MB</td></tr></tbody></table></div><div class="row end"><button class="btn primary" onclick="closeModal()">关闭</button></div></div>`,true);
   };
 
+  // Legacy v42 entry points are compatibility aliases only. They must not
+  // expose the retired URL-pull / automatic-retraining owner.
+  window.openAuditConnect42=window.openExternalFeedbackIntake63;
+  window.openPolicy42=function(){
+    window.setPage?.('测试发布');
+    toast('旧自动迭代策略已停用，请从线上抽检 / 反馈进入人工复核闭环');
+  };
+  window.runPolicy42=window.openPolicy42;
+  window.renderIterationV42=function(){window.setPage?.('测试发布')};
   window.openPredictionFeedback63=function(){
     const prediction=state.lastOnlinePrediction63;
     if(!prediction?.feedback_eligible)return toast('当前结果不是可追溯的正式算法版本测试');

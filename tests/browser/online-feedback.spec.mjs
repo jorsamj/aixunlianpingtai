@@ -306,4 +306,9 @@ test('external feedback intake contract is exposed from reviewed feedback panel'
   await expect(dialog).toContainText('multipart/form-data');
   await expect(dialog).toContainText('不会自动修改素材、数据集、Dataset Revision 或训练任务');
   await expect(dialog).not.toContainText('/api/v42/');
+  await dialog.getByRole('button',{name:'关闭'}).click();
+  await page.evaluate(()=>window.openAuditConnect42());
+  const legacy=page.getByRole('dialog',{name:'外部抽检接入'});
+  await expect(legacy).toContainText('/api/v63/projects/'+project.id+'/online-feedback/external-intake');
+  await expect(legacy).not.toContainText('/api/v42/');
 });
