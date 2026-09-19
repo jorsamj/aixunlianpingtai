@@ -108,6 +108,67 @@ export function trainingSubmitReadiness({draft, inheritance, submitting = false}
   return {ready: true, reason: ''};
 }
 
+export function supplementCandidateContext({asset, draft, inheritance} = {}) {
+  if (!asset || !draft) return null;
+  const versionId = String(
+    draft.baseVersionId
+    || inheritance?.versionId
+    || asset.current_version_id
+    || ''
+  ).trim();
+  const version = (asset.versions || []).find(row =>
+    String(row?.id || row?.version_id || '').trim() === versionId
+  );
+  const candidateSet = version?.supplement_data_candidate_set;
+  const candidateSetId = String(candidateSet?.candidate_set_id || '').trim().toLowerCase();
+  if (!candidateSetId) return null;
+  if (!/^[0-9a-f]{64}$/.test(candidateSetId)) {
+    throw new Error('补数据 Candidate Set 状态异常，请刷新算法版本后重试');
+  }
+  const candidateIds = [...new Set(
+    (candidateSet?.material_ids || []).map(value => String(value || '').trim()).filter(Boolean)
+  )];
+  const selectedIds = new Set([
+    ...(draft.materialIds || []),
+    ...(draft.testMaterialIds || []),
+  ].map(value => String(value || '').trim()).filter(Boolean));
+  const adoptedMaterialIds = candidateIds.filter(id => selectedIds.has(id));
+  return {
+    candidateSetId,
+    versionId,
+    sourceCandidateCount: candidateIds.length,
+    adoptedMaterialIds,
+    adoptedCount: adoptedMaterialIds.length,
+    active: adoptedMaterialIds.length > 0,
+  };
+}
+
+function renderSupplementCandidateSummary(context) {
+  if (typeof document === 'undefined') return;
+  const root = document.querySelector?.('.train-v3-summary');
+  if (!root) return;
+  let card = root.querySelector?.('[data-supplement-candidate-summary]') || null;
+  if (!context?.candidateSetId) {
+    card?.remove?.();
+    return;
+  }
+  if (!card) {
+    card = document.createElement?.('div');
+    if (!card) return;
+    card.dataset.supplementCandidateSummary = 'true';
+    const label = document.createElement('span');
+    label.textContent = '反馈补数据';
+    const value = document.createElement('b');
+    value.dataset.supplementCandidateValue = 'true';
+    card.append(label, value);
+    root.append(card);
+  }
+  const value = card.querySelector?.('[data-supplement-candidate-value]');
+  if (value) value.textContent = String(context.adoptedCount) + ' / ' + String(context.sourceCandidateCount) + ' 张';
+  card.title = context.active
+    ? '提交训练时由后端再次核验候选素材与标注，最终采用范围以 Snapshot 为准'
+    : '当前训练素材未包含已冻结反馈候选';
+}
 export function installTrainingSubmitRuntime({
   getState,
   projectId,
@@ -143,6 +204,16 @@ export function installTrainingSubmitRuntime({
     const draft = state.trainingDraft || trainingDraftRuntime.current?.() || trainingDraftRuntime.sync();
     const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
     const readiness = trainingSubmitReadiness({draft, inheritance, submitting});
+    const asset = (state.algorithms || []).find(
+      row => String(row?.id || '') === String(draft?.algorithmId || '')
+    );
+    let supplementContext = null;
+    try {
+      supplementContext = supplementCandidateContext({asset, draft, inheritance});
+    } catch (_) {
+      supplementContext = null;
+    }
+    renderSupplementCandidateSummary(supplementContext);
     const button = submitButton();
     if (button) {
       button.disabled = !readiness.ready;
@@ -192,6 +263,10 @@ export function installTrainingSubmitRuntime({
       validateTrainingDevice(draft, state.trainingDevicesV3?.options || []);
       lastStage = 'build-payload';
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
+      const supplementContext = supplementCandidateContext({asset, draft, inheritance});
+      if (supplementContext?.active) {
+        payload.supplement_candidate_set_id = supplementContext.candidateSetId;
+      }
       const iterationAction = state.trainingIterationAction;
       let iterationTaskId = '';
       if (

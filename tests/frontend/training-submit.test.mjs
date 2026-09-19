@@ -6,6 +6,7 @@ import {
   buildTrainingEngineParameters,
   buildTrainingStartPayload,
   installTrainingSubmitRuntime,
+  supplementCandidateContext,
   trainingSubmitReadiness,
   validateTrainingDevice,
 } from '../../static/modules/training-submit.js';
@@ -343,5 +344,59 @@ test('confirmed iteration action is not injected into unrelated version draft', 
   await window.submitTrain429();
   assert.equal(sent.iteration_action,undefined);
   assert.ok(state.trainingIterationAction);
+  cleanup(runtime);
+});
+
+test('supplement candidate context follows the inherited version and actual selected materials', () => {
+  const asset = {
+    id: 'alg-1', current_version_id: 'ver-1',
+    versions: [{id: 'ver-1', supplement_data_candidate_set: {
+      candidate_set_id: 'a'.repeat(64),
+      material_ids: ['img-2', 'img-3', 'img-not-selected'],
+    }}],
+  };
+  const value = draft({
+    baseVersionId: 'ver-1',
+    materialIds: ['img-1', 'img-2'],
+    testMaterialIds: ['img-3'],
+    splitMode: 'independent_test_set',
+  });
+  const context = supplementCandidateContext({asset, draft: value, inheritance: {versionId: 'ver-1'}});
+  assert.equal(context.candidateSetId, 'a'.repeat(64));
+  assert.equal(context.sourceCandidateCount, 3);
+  assert.deepEqual(context.adoptedMaterialIds, ['img-2', 'img-3']);
+  assert.equal(context.adoptedCount, 2);
+  assert.equal(context.active, true);
+});
+
+test('submit runtime carries candidate_set_id when selected materials adopt feedback candidates', async () => {
+  const value = draft({baseVersionId: 'ver-1'});
+  const state = baseState();
+  state.algorithms = [{
+    id: 'alg-1', current_version_id: 'ver-1',
+    versions: [{id: 'ver-1', supplement_data_candidate_set: {
+      candidate_set_id: 'b'.repeat(64), material_ids: ['img-2'],
+    }}],
+  }];
+  installDom();
+  let sent;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async (_url, init) => {
+      sent = JSON.parse(init.body);
+      return {ok: true, async json() { return {task: {id: 'task-feedback'}}; }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => value, current: () => value,
+      inheritance: () => ({blocked: false, versionId: 'ver-1'}),
+    },
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.supplement_candidate_set_id, 'b'.repeat(64));
   cleanup(runtime);
 });
