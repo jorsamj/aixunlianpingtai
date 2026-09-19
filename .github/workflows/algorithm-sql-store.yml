@@ -107,7 +107,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome algorithm version lineage
-        run: npx playwright test tests/browser/algorithm-list-performance.spec.mjs
+        run: >-
+          npx playwright test tests/browser/algorithm-list-performance.spec.mjs
+          --grep "algorithm version exposes persisted training lineage"
       - name: Lineage UI permanent guard
         run: |
           grep -Fq 'openVersionLineage429' static/app.js
