@@ -3,6 +3,65 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Remote storage_rescan Phase 2B COCO Annotation Delta CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The existing `MATERIAL_IMPORT + mode=storage_rescan` owner now reconciles COCO
+annotation JSON changes in the same product/control-plane flow as Phase 1 image
+objects and Phase 2A YOLO annotations. No second COCO parser, TaskKind or
+AnnotationRepository owner was introduced.
+
+Local and Agent rescan now share `import_format=images|yolo|coco`. COCO reuses
+the existing `DetectionDatasetScanner` and task-owned `ImportCandidateStore`.
+The Agent reads object storage only through the execution-fenced broker and
+short-lived GET contracts; it never opens central SQLite/NFS and receives no
+long-lived storage credentials.
+
+COCO review freezes the real annotation JSON object identity (key, size, ETag,
+SHA256), split, external category catalog, normalized boxes, annotation status,
+quality issues and per-image source digest. Full source image inventory is kept,
+including images not referenced by JSON, so annotation coverage is never
+mistaken for image existence.
+
+External source provenance remains separate from platform AnnotationRepository
+truth. JSON changes/removals produce annotation deltas and require user
+confirmation. A manual platform annotation edit after review is protected by
+stale-write fencing. New images continue through the existing MATERIAL_IMPORT
+indexer, then rescan records matching external provenance instead of creating a
+parallel annotation write path.
+
+COCO ambiguity now fails closed: conflicting category ID/name mappings, one
+image across multiple splits, one image referenced by multiple COCO annotation
+documents, or duplicate references to the same object key inside COCO metadata
+are rejected instead of allowing first/last-write ambiguity.
+
+Frontend Impact Review is complete. The storage rescan modal exposes COCO only
+when backend preflight says it is supported, keeps data.yaml YOLO-only, and uses
+the same backend task truth for image/annotation counts, mapping, quality,
+removal/conflict policy and confirmation. Real Chrome validates the Agent COCO
+request/review/confirmation path.
+
+Acceptance at code HEAD `ac1470c9049f7151fb6ae78daf6d21802ea6a263`:
+- Remote Material Import push `35411646993`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35411650317`：success。
+- Node Agent Executor `35411650294`：success。
+- Central Node Assignment `35411650355`：success。
+- Task Runtime Truth `35411650324`：success。
+- Remote Training Runtime `35411650292`：success。
+- Remote Conversion Runtime `35411650281`：success。
+- Remote Cleaning Runtime `35411650314`：API / Ubuntu / Windows / Real Chrome success。
+- Portable Deployment `35411650458`：success。
+- Remote RKNN Board Runtime Protocol `35411650309`：API / Ubuntu / Windows / Real Chrome success。
+- Storage Cache Governance `35411650330`：success。
+- Training Input Integrity `35411650297`：success。
+- 16/16 related workflows on the code HEAD succeeded; no failures or pending jobs.
+- `VERSION.txt = 42.24.0`.
+
+**OPEN / next:** Phase 2C Pascal VOC XML annotation delta, then formal Canonical
+Annotation Schema versioning over the already-shared YOLO/COCO/VOC evidence.
+Rockchip physical-board acceptance remains independently OPEN.
+
 ## Current closure — Remote storage_rescan Phase 2A YOLO Annotation Delta CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.

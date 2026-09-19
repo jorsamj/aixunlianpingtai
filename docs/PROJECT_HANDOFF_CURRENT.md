@@ -3,11 +3,11 @@
 > **新 AI / 新开发人员先读本文件。**  
 > 目标：10 分钟内知道“当前在哪个分支、什么已经做完、什么绝对不能重做、下一步该做什么”。
 
-更新时间：2026-09-18  
+更新时间：2026-09-19  
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`951e2d9089ae1fd251d5e7a91a5fc453b9ae676d`  
+本轮产品实现基线：`ac1470c9049f7151fb6ae78daf6d21802ea6a263`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,73 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Remote storage_rescan Phase 2B — COCO Annotation Delta
+
+2026-09-19，现有 `MATERIAL_IMPORT + mode=storage_rescan` 在 Phase 2A YOLO 基础上完成 **COCO annotation JSON 增量同步**，Phase 2B CLOSED。没有新增 TaskKind、COCO Parser owner、AnnotationRepository 或第二套 rescan。
+
+已关闭范围：
+
+- 同一个“重新扫描 / 恢复”入口现在使用一套真实格式 truth：
+  - 仅图片；
+  - 图片 + YOLO 标注；
+  - 图片 + COCO 标注；
+  - 执行位置仍为中央 Worker / 远程 Agent。
+- API `StorageRescanCreateReq`、Agent preflight、durable request、前端格式选项和 worker 能力声明统一支持 `images|yolo|coco`；`dataset_yaml` 仍严格只属于 YOLO。
+- COCO 复用既有 `DetectionDatasetScanner`，不新写 parser。Local 与 Agent 都把证据落进同一个 task-owned `ImportCandidateStore`。
+- Agent 继续只通过 execution-fenced broker / short-lived GET 读取 OSS/S3/MinIO；不访问中央 SQLite/NFS，也不接收长期对象存储凭据。
+- COCO annotation source 会读取真实 JSON bytes，并冻结：
+  - annotation JSON object key；
+  - size / ETag / SHA256；
+  - split；
+  - external category id/name catalog；
+  - normalized bbox / annotation status / issues；
+  - per-image external `source_digest`。
+- rescan 会保留**完整源图片 inventory**，包括没有被 COCO JSON 引用的图片，因此不会因为 annotation JSON 未引用某张图片就误判该图片 MISSING。
+- 图片对象继续统一分类 `NEW/MISSING/CHANGED/UNCHANGED/INVALID/SKIPPED`；COCO 标注继续复用 Phase 2A 的 `ANNOTATION_NEW/CHANGED/REMOVED/UNCHANGED/CONFLICT/INVALID`。
+- 平台人工 AnnotationRepository truth 与外部 COCO source evidence 分离：
+  - JSON 变化不会直接覆盖人工标注；
+  - JSON 删除某图标注进入 REMOVED/CONFLICT，由用户策略决定 clear/keep；
+  - review 后平台标注又发生人工修改时，stale-write fencing fail closed，要求重新扫描。
+- 新增图片仍只由既有 MATERIAL_IMPORT indexer 建正式 Material/Annotation truth；rescan 后续只补 `external_annotation` provenance / synced hash，不重复写第二套正式标注。
+- COCO source ambiguity 永久 fail closed：
+  - 同一 category id 映射不同名称 → 拒绝；
+  - 同一图片跨多个 split → 拒绝；
+  - 同一图片被多个 COCO annotation document 引用 → 拒绝；
+  - 同一 COCO metadata 内重复引用同一 object key → 拒绝。
+- COCO rescan 使用 `deduplicate_images=False`，保持 object-key identity；不同 key 即使内容 hash 相同，也不会因为普通素材去重语义被吞掉。
+- 用户确认继续复用同一套 label mapping / create_labels / quality acceptance / removal policy / conflict policy，并保持“先冻结 durable intent → 再创建标签 → 再 resume task”的顺序。
+- Frontend Impact Review 同批完成：
+  - 前端新增“图片 + COCO 标注”；
+  - YOLO data.yaml 输入只在 YOLO 模式启用；
+  - 图片增量、标注增量、quality、external class mapping、删除/冲突策略都来自真实后端 task；
+  - Real Chrome 覆盖 Agent COCO request → review truth → mapping → confirmation body。
+
+最终代码 HEAD：`ac1470c9049f7151fb6ae78daf6d21802ea6a263`。
+
+最终验收：
+
+- Remote Material Import push `35411646993`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35411650317`：success。
+- Node Agent Executor `35411650294`：success。
+- Central Node Assignment `35411650355`：success。
+- Task Runtime Truth `35411650324`：success。
+- Remote Training Runtime `35411650292`：success。
+- Remote Conversion Runtime `35411650281`：success。
+- Remote Cleaning Runtime `35411650314`：API / Ubuntu / Windows / Real Chrome success。
+- Portable Deployment `35411650458`：success。
+- Remote RKNN Board Runtime Protocol `35411650309`：API / Ubuntu / Windows / Real Chrome success。
+- Storage Cache Governance `35411650330`：success。
+- Training Input Integrity `35411650297`：success。
+- 当前代码 HEAD 共 16 个相关 workflow：16 success / 0 failure / 0 pending。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**仍然 OPEN：**
+
+1. `storage_rescan Phase 2C`：Pascal VOC XML annotation delta。
+2. Canonical Annotation Schema versioning：正式版本化当前 YOLO/COCO/VOC 已共享的 evidence schema，不重写既有 Parser。
+3. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance。
+4. TensorRT / Sophon / Ascend 继续暂缓。
 
 # 最新关闭：Remote storage_rescan Phase 2A — YOLO Annotation Delta
 

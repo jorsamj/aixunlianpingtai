@@ -1,10 +1,50 @@
 # 畅联云算法训练平台 — Node Control Plane / Central Assignment
 
-更新时间：2026-09-18  
+更新时间：2026-09-19  
 分支：`feature/external-algorithm-publishing`  
 正式版本：`VERSION.txt = 42.24.0`
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
+
+## 0. 最新关闭：Remote storage_rescan Phase 2B — COCO annotation delta
+
+2026-09-19，`MATERIAL_IMPORT + mode=storage_rescan` 已在同一 durable owner 上完成 COCO annotation JSON 增量同步。Phase 2A YOLO 继续成立，没有新增 TaskKind 或并行 annotation owner。
+
+控制面 / Agent 边界：
+
+- request / preflight / frontend / Worker 共用 `import_format=images|yolo|coco` truth；`dataset_yaml` 仍只允许 YOLO。
+- COCO 复用现有 `DetectionDatasetScanner`，Local 和 Agent 均写 task-owned ImportCandidateStore。
+- Agent 只通过 broker + short-lived GET 读取对象存储，冻结真实 COCO JSON size/ETag/SHA256、split、class catalog、normalized boxes 和 issue evidence。
+- 完整图片 inventory 会保留 JSON 未引用的源图片，避免错误 MISSING。
+- server-confirm 后中央端基于 frozen Material baseline + current AnnotationRepository truth 生成 annotation delta；Agent 不直接写正式 Repository。
+- annotation JSON 删除/变化不会自动覆盖人工标注；用户必须确认 removed / conflict 策略。
+- review 后平台人工标注变化由 stale-write fencing 拒绝覆盖。
+- 新增图片仍走原 MATERIAL_IMPORT indexing owner；rescan 只补 external provenance。
+- 同图跨 split、同图多 COCO document、同一 metadata 重复 object key、category id/name 冲突均 fail closed。
+- rescan 关闭普通 import 的 content-dedup 语义，确保不同 object key 都保留独立 identity。
+- durable confirmation 在标签创建之前冻结。
+- UI 的执行位置、格式、图片/标注计数、mapping、quality、删除/冲突策略全部来自真实后端；Real Chrome 已覆盖 COCO Agent flow。
+
+最终代码 HEAD：`ac1470c9049f7151fb6ae78daf6d21802ea6a263`。
+
+验收：
+
+- Remote Material Import push `35411646993`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35411650317`：success。
+- Node Agent Executor `35411650294`：success。
+- Central Node Assignment `35411650355`：success。
+- Task Runtime Truth `35411650324`：success。
+- Remote Training Runtime `35411650292`：success。
+- Remote Conversion Runtime `35411650281`：success。
+- Remote Cleaning Runtime `35411650314`：API / Ubuntu / Windows / Real Chrome success。
+- Portable Deployment `35411650458`：success。
+- Remote RKNN Board Runtime Protocol `35411650309`：API / Ubuntu / Windows / Real Chrome success。
+- Storage Cache Governance `35411650330`：success。
+- Training Input Integrity `35411650297`：success。
+- 当前代码 HEAD 16/16 相关 workflow success。
+- `VERSION.txt = 42.24.0`。
+
+**下一阶段：** Phase 2C Pascal VOC XML delta → Canonical Annotation Schema versioning。继续复用 DetectionDatasetScanner / ImportCandidateStore / AnnotationRepository，不得新造平行 owner。
 
 ## 0. 最新关闭：Remote storage_rescan Phase 2A — YOLO annotation delta
 
