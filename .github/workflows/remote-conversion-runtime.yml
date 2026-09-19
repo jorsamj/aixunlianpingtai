@@ -81,6 +81,7 @@ jobs:
         run: >-
           python -m py_compile
           node_agent.py
+          deployment_worker.py
           platform_core/node_agent_conversion_runtime.py
           platform_core/rknn_runtime.py
           platform_core/service_nodes.py
@@ -160,6 +161,9 @@ jobs:
           grep -Fq '"conversion.rknn",' platform_core/service_nodes.py
           grep -Fq 'probe_rknn_toolkit' node_agent.py
           grep -Fq 'rk3576' platform_core/conversion.py
+          grep -Fq "target_contract = validate_target(target, params)" deployment_worker.py
+          grep -Fq "supported = {'rk3568', 'rk3576'}" deployment_worker.py
+          if grep -Eiq 'rk3588|rk3566|rk3562|rv1103|rv1106|rv1126|rk2118' deployment_worker.py; then echo 'product RKNN worker must only support RK3568/RK3576' >&2; exit 1; fi
           grep -Fq 'value="rk3568"' static/app.js
           grep -Fq 'value="rk3576"' static/app.js
           if grep -Fq 'option value="rk3588"' static/app.js; then echo 'product RKNN UI must only expose RK3568/RK3576' >&2; exit 1; fi
