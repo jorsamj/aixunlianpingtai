@@ -35,9 +35,17 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   const originalToggle412 = window.toggleAlgorithm412;
   const originalToggle428 = window.toggleAlgorithm428;
 
-  function runDecorators() {
+  function ensureAlgorithmShell() {
     if (destroyed || String(state().page || '') !== ALGORITHM_PAGE) return false;
-    if (doc && !doc.getElementById('alg412List')) return false;
+    if (!doc || doc.getElementById('alg412List')) return true;
+    if (typeof window.renderAlgorithms423 === 'function') {
+      window.renderAlgorithms423();
+    }
+    return !doc || Boolean(doc.getElementById('alg412List'));
+  }
+
+  function runDecorators() {
+    if (!ensureAlgorithmShell()) return false;
     for (const [name, callback] of decorators.entries()) {
       try {
         callback?.({state: state(), root: doc?.getElementById('alg412List') || null});
@@ -69,8 +77,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function renderCards() {
-    if (String(state().page || '') !== ALGORITHM_PAGE) return false;
-    if (doc && !doc.getElementById('alg412List')) return false;
+    if (!ensureAlgorithmShell()) return false;
     if (typeof window.renderAlg412 !== 'function') return false;
     window.renderAlg412();
     scheduleDecorators();

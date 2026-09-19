@@ -153,6 +153,29 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
         raise ValueError("invalid task cursor") from error
 
 
+def _add_column_if_missing(
+    database: sqlite3.Connection,
+    table: str,
+    columns: set[str],
+    name: str,
+    definition: str,
+) -> None:
+    if name in columns:
+        return
+    try:
+        database.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    except sqlite3.OperationalError:
+        refreshed = {
+            str(row[1])
+            for row in database.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if name not in refreshed:
+            raise
+        columns.update(refreshed)
+        return
+    columns.add(name)
+
+
 class TaskRepository:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -160,10 +183,12 @@ class TaskRepository:
         with closing(self._connect()) as database:
             database.executescript(SCHEMA)
             columns = {str(row[1]) for row in database.execute("PRAGMA table_info(tasks)").fetchall()}
-            if "queue_rank" not in columns:
-                database.execute("ALTER TABLE tasks ADD COLUMN queue_rank INTEGER NOT NULL DEFAULT 0")
-            if "resource_wait_reason" not in columns:
-                database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
+            _add_column_if_missing(
+                database, "tasks", columns, "queue_rank", "INTEGER NOT NULL DEFAULT 0"
+            )
+            _add_column_if_missing(
+                database, "tasks", columns, "resource_wait_reason", "TEXT"
+            )
             worker_columns = {
                 str(row[1]) for row in database.execute("PRAGMA table_info(worker_instances)").fetchall()
             }
@@ -176,8 +201,9 @@ class TaskRepository:
                 ("capabilities", "TEXT NOT NULL DEFAULT '[]'"),
             )
             for name, definition in additive_worker_columns:
-                if name not in worker_columns:
-                    database.execute(f"ALTER TABLE worker_instances ADD COLUMN {name} {definition}")
+                _add_column_if_missing(
+                    database, "worker_instances", worker_columns, name, definition
+                )
             ensure_gpu_runtime_schema(database)
 
     def _connect(self) -> sqlite3.Connection:

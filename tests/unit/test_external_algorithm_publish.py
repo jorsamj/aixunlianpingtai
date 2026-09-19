@@ -764,6 +764,11 @@ def test_publication_persists_training_analysis_binding(tmp_path: Path):
     _configure_external(tmp_path, memory)
     _seed_external_algorithm(tmp_path)
     algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["external_analysis_ids"] = ["analysis-1", "analysis-2"]
+    algorithms[0]["external_analyses"] = [
+        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A"},
+        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B"},
+    ]
     algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-2"
     save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
     _seed_conversion(tmp_path)
