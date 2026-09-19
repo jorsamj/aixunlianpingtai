@@ -609,6 +609,43 @@ class ExternalAlgorithmPublishService:
         )
         return mapping
 
+    def _mapping_state(self, target: str) -> Dict[str, Any]:
+        mappings = self.repository.config().get("target_mappings") or {}
+        row = mappings.get(str(target)) or {}
+        if not isinstance(row, dict):
+            row = {}
+        if row.get("enabled") is False:
+            return {
+                "status": "ignored",
+                "enabled": False,
+                "mapping": None,
+                "detail": "该转换目标已明确关闭畅联云权重发布",
+            }
+        compute_platform_id = str(row.get("compute_platform_id") or "").strip()
+        if not compute_platform_id:
+            return {
+                "status": "blocked",
+                "enabled": True,
+                "mapping": None,
+                "detail": "尚未配置畅联云算力环境",
+            }
+        try:
+            mapping = self._mapping(target)
+        except PlatformError as error:
+            return {
+                "status": "blocked",
+                "enabled": True,
+                "mapping": None,
+                "detail": str(getattr(error, "message", "") or error),
+                "code": str(getattr(error, "code", "") or ""),
+            }
+        return {
+            "status": "mapped",
+            "enabled": True,
+            "mapping": mapping,
+            "detail": str((mapping or {}).get("compute_platform_id") or ""),
+        }
+
     @staticmethod
     def _remote_version_id(row: Mapping[str, Any]) -> str:
         for key in ("algoVersionId", "algorithmVersionId", "versionId", "id"):
@@ -849,16 +886,41 @@ class ExternalAlgorithmPublishService:
         algorithm, version = self._algorithm_version(project_id, algorithm_id, version_id)
         publication = self.repository.publication(project_id, algorithm_id, version_id)
         discovered = self.discover_artifacts(project_id, algorithm, version)
-        mapped = [row for row in discovered if self._mapping(str(row.get("target") or ""))]
+        mapped: list[Dict[str, Any]] = []
+        blocked: list[Dict[str, Any]] = []
+        ignored: list[Dict[str, Any]] = []
+        classified: list[Dict[str, Any]] = []
+        for item in discovered:
+            state = self._mapping_state(str(item.get("target") or ""))
+            row = {
+                **dict(item),
+                "publish_mapping_status": state["status"],
+                "publish_mapping_detail": state.get("detail") or "",
+            }
+            if state.get("mapping"):
+                row["compute_platform_id"] = str(state["mapping"].get("compute_platform_id") or "")
+                row["mapped_chip_code"] = _canonical_chip_code(
+                    item.get("chip_code") or state["mapping"].get("chip_code") or ""
+                )
+                mapped.append(row)
+            elif state["status"] == "blocked":
+                blocked.append(row)
+            else:
+                ignored.append(row)
+            classified.append(row)
+        conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
         return {
             "ok": True,
             "algorithm": {"id": algorithm_id, "name": algorithm.get("name"), "external_product_id": algorithm.get("external_product_id")},
             "version": {"id": version_id, "version_name": version.get("version_name"), "external_publish_status": version.get("external_publish_status")},
             "publication": publication,
             "artifacts": self.repository.artifacts(str(publication["publication_key"])) if publication else [],
-            "discovered": discovered,
+            "discovered": classified,
             "mapped_artifact_count": len(mapped),
-            "conversion_active": self.conversion_active(project_id, algorithm_id, version_id),
+            "blocked_artifact_count": len(blocked),
+            "ignored_artifact_count": len(ignored),
+            "publish_ready": bool(mapped) and not blocked and not conversion_active,
+            "conversion_active": conversion_active,
         }
 
     def publish(self, *, project_id: str, algorithm_id: str, version_id: str, automatic: bool = False) -> Dict[str, Any]:
@@ -880,10 +942,25 @@ class ExternalAlgorithmPublishService:
         publication = self.repository.patch_publication(str(publication["publication_key"]), status="PREPARING", attempts=attempts, last_error="")
         discovered = self.discover_artifacts(project_id, algorithm, version)
         selected: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
+        blocked: list[Dict[str, Any]] = []
         for item in discovered:
-            mapping = self._mapping(str(item.get("target") or ""))
-            if mapping:
-                selected.append((item, mapping))
+            state = self._mapping_state(str(item.get("target") or ""))
+            if state.get("mapping"):
+                selected.append((item, state["mapping"]))
+            elif state.get("status") == "blocked":
+                blocked.append({**dict(item), "detail": state.get("detail") or ""})
+        if blocked:
+            detail = "；".join(
+                f"{row.get('target') or '-'} / {row.get('file_name') or '-'}：{row.get('detail') or '缺少发布映射'}"
+                for row in blocked
+            )
+            raise PlatformError(
+                "MODEL_ARTIFACT_MAPPING_INCOMPLETE",
+                "部分转换产物尚未配置畅联云算力环境",
+                detail[:2000],
+                "请在“平台对接 → 畅联云版本发布”补齐所有已启用转换目标的算力环境；不需要发布的目标请明确关闭。",
+                409,
+            )
         if not selected:
             self.repository.patch_publication(str(publication["publication_key"]), status="FAILED", last_error="没有可发布且已映射算力环境的转换产物")
             raise PlatformError(
