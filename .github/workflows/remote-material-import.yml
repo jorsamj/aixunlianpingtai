@@ -114,9 +114,11 @@ jobs:
           tests/unit/test_node_agent_material_runtime.py
           tests/unit/test_remote_material_import.py
           tests/unit/storage/test_detection_import.py
+          tests/unit/storage/test_yolo_import.py
           tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/storage/test_rescan_tasks.py
+          tests/unit/storage/test_yolo_import.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
           tests/integration/test_storage_import_worker.py

@@ -241,6 +241,23 @@ class YoloImportScanner:
 
     def _inventory(self, prefix: str, recursive: bool):
         batch = []
+
+        def flush():
+            if not batch:
+                return
+            existing = self.store.inventory_for_keys(
+                row["object_key"] for row in batch
+            )
+            for row in batch:
+                if not str(row.get("sha256") or "").strip():
+                    verified = str(
+                        (existing.get(row["object_key"]) or {}).get("sha256") or ""
+                    ).strip().lower()
+                    if len(verified) == 64:
+                        row["sha256"] = verified
+            self.store.inventory_many(batch)
+            batch.clear()
+
         for item in self.iter_objects(self.provider, prefix, recursive):
             if self.cancelled():
                 raise YoloScanCancelled()
@@ -248,11 +265,9 @@ class YoloImportScanner:
             batch.append({"object_key": key, "size_bytes": item.size_bytes,
                           "etag": item.etag or "", "sha256": item.sha256 or ""})
             if len(batch) == BATCH_SIZE:
-                self.store.inventory_many(batch)
-                batch.clear()
+                flush()
                 self._tick(key)
-        if batch:
-            self.store.inventory_many(batch)
+        flush()
 
     def _record_text_identity(self, key: str, sha256: str, size_bytes: int) -> None:
         current = self.store.inventory_for_keys([key]).get(key)
