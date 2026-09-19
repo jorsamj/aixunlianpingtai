@@ -28,6 +28,7 @@ from .external_algorithm_platform import (
     ChangLianClient,
     ChangLianEndpoints,
     ExternalPlatformRepository,
+    assert_external_algorithm_master_data_current,
     extract_items,
 )
 from .secrets import SecretCredentialStore
@@ -548,6 +549,54 @@ class ExternalAlgorithmPublishService:
             raise PlatformError("ALGORITHM_VERSION_NOT_FOUND", "算法版本不存在", version_id, "请刷新算法列表。", 404)
         return dict(algorithm), dict(version)
 
+    def _assert_current_external_identity(
+        self,
+        algorithm: Mapping[str, Any],
+        version: Mapping[str, Any],
+    ) -> None:
+        if algorithm.get("external_active") is False:
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_INACTIVE",
+                "该畅联云算法已下架，不能发布新版本",
+                str(algorithm.get("name") or algorithm.get("id") or ""),
+                "请先在新畅联恢复该算法产品并执行“立即同步”；历史训练成果仍会保留。",
+                409,
+            )
+        assert_external_algorithm_master_data_current(self.data_dir, algorithm)
+        version_analysis_id = str(
+            version.get("external_analysis_id")
+            or algorithm.get("external_analysis_id")
+            or ""
+        ).strip()
+        current_analysis_ids = self._algorithm_analysis_ids(algorithm)
+        if version_analysis_id and current_analysis_ids and version_analysis_id not in current_analysis_ids:
+            raise PlatformError(
+                "EXTERNAL_VERSION_ANALYSIS_STALE",
+                "该训练版本绑定的畅联云分析方式已失效",
+                version_analysis_id,
+                "请先在“配置中心 → 平台对接”执行“立即同步”并核对分析方式；平台不会把该版本发布到其他分析方式。",
+                409,
+            )
+
+    def _external_identity_state(
+        self,
+        algorithm: Mapping[str, Any],
+        version: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        try:
+            self._assert_current_external_identity(algorithm, version)
+            return {"ready": True, "issues": []}
+        except PlatformError as error:
+            return {
+                "ready": False,
+                "issues": [{
+                    "code": str(getattr(error, "code", "") or "EXTERNAL_IDENTITY_NOT_READY"),
+                    "message": str(getattr(error, "message", "") or error),
+                    "detail": str(getattr(error, "detail", "") or ""),
+                    "solution": str(getattr(error, "solution", "") or ""),
+                }],
+            }
+
     def _conversion_jobs(self, project_id: str, algorithm_id: str, version_id: str) -> list[Dict[str, Any]]:
         root = self.project_dir(project_id) / "deployment" / "jobs"
         rows: list[Dict[str, Any]] = []
@@ -999,6 +1048,7 @@ class ExternalAlgorithmPublishService:
             classified.append(row)
         conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
         transport = self._publish_transport_state()
+        identity = self._external_identity_state(algorithm, version)
         return {
             "ok": True,
             "algorithm": {"id": algorithm_id, "name": algorithm.get("name"), "external_product_id": algorithm.get("external_product_id")},
@@ -1013,12 +1063,15 @@ class ExternalAlgorithmPublishService:
             "transport_issues": list(transport["issues"]),
             "public_base_url_configured": bool(transport["public_base_url"]),
             "model_asset_storage_source_id": str(transport["storage_source_id"] or ""),
-            "publish_ready": bool(mapped) and not blocked and not conversion_active and bool(transport["ready"]),
+            "identity_ready": bool(identity["ready"]),
+            "identity_issues": list(identity["issues"]),
+            "publish_ready": bool(mapped) and not blocked and not conversion_active and bool(transport["ready"]) and bool(identity["ready"]),
             "conversion_active": conversion_active,
         }
 
     def publish(self, *, project_id: str, algorithm_id: str, version_id: str, automatic: bool = False) -> Dict[str, Any]:
         algorithm, version = self._algorithm_version(project_id, algorithm_id, version_id)
+        self._assert_current_external_identity(algorithm, version)
         if str(version.get("training_status") or "").upper() not in SUCCESSFUL_VERSION_STATUSES or version.get("artifact_verified") is not True:
             raise PlatformError(
                 "ALGORITHM_VERSION_NOT_PUBLISHABLE", "算法版本尚不可发布", str(version.get("version_name") or version_id),
