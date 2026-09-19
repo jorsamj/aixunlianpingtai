@@ -297,7 +297,7 @@ def test_pending_feedback_can_be_dismissed_without_material_side_effect(client):
         project["id"], algorithm_id, version, detections=[], suffix="dismiss",
     )
     staged = _stage(client, project["id"], prediction_id, "needs_correction")
-    before = len(app_module.material_store(project["id"]).list())
+    before = app_module.material_store(project["id"]).count()
     response = client.post(
         f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/dismiss",
         json={
@@ -310,7 +310,7 @@ def test_pending_feedback_can_be_dismissed_without_material_side_effect(client):
     assert feedback["status"] == "dismissed"
     assert feedback["material_id"] == ""
     assert feedback["result"]["dismissed"] is True
-    assert len(app_module.material_store(project["id"]).list()) == before
+    assert app_module.material_store(project["id"]).count() == before
     repeated = client.post(
         f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/dismiss",
         json={
@@ -364,7 +364,7 @@ def test_external_feedback_intake_stages_review_without_material_or_training_sid
         "confidence": "0.25",
         "note": "边缘端抽检漏检",
     }
-    before = len(app_module.material_store(project["id"]).list())
+    before = app_module.material_store(project["id"]).count()
     response = client.post(
         f"/api/v63/projects/{project['id']}/online-feedback/external-intake",
         data=payload,
@@ -378,7 +378,7 @@ def test_external_feedback_intake_stages_review_without_material_or_training_sid
     assert feedback["source"]["source_channel"] == "external_upload"
     assert feedback["source"]["external_source"] == "edge-gateway-01"
     assert feedback["source"]["external_sample_id"] == "camera-12-0001"
-    assert len(app_module.material_store(project["id"]).list()) == before
+    assert app_module.material_store(project["id"]).count() == before
 
     repeated = client.post(
         f"/api/v63/projects/{project['id']}/online-feedback/external-intake",
