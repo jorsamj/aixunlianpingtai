@@ -64,6 +64,33 @@ test('publish UI keeps manual sync primary and stale compute mappings visible', 
 });
 
 
+test('manual publish preflight blocks stale product and analysis identity before artifacts', () => {
+  const stale = publicationPreflight({
+    identity_ready: false,
+    identity_issues: [{code: 'EXTERNAL_MASTER_DATA_STALE'}],
+    conversion_active: false,
+  });
+  assert.equal(stale.ready, false);
+  assert.match(stale.message, /立即同步/);
+
+  const analysis = publicationPreflight({
+    identity_ready: false,
+    identity_issues: [{code: 'EXTERNAL_VERSION_ANALYSIS_STALE'}],
+    conversion_active: false,
+  });
+  assert.equal(analysis.ready, false);
+  assert.match(analysis.message, /分析方式已失效/);
+  assert.match(analysis.message, /不会自动改挂/);
+
+  const inactive = publicationPreflight({
+    identity_ready: false,
+    identity_issues: [{code: 'EXTERNAL_ALGORITHM_INACTIVE'}],
+    conversion_active: false,
+  });
+  assert.equal(inactive.ready, false);
+  assert.match(inactive.message, /已在新畅联下架/);
+});
+
 test('manual publish preflight blocks incomplete artifact preparation', () => {
   assert.deepEqual(
     publicationPreflight({conversion_active: true}),
