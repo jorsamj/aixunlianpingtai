@@ -168,9 +168,10 @@ def _configure_external(root: Path, memory: MemorySecretStore, *, auto_publish=T
     repository.save_cache({
         "provider": "changlian",
         "synced_at": "2026-09-19T12:00:00Z",
+        "master_data_digest": "digest-current",
         "categories": [],
-        "products": [],
-        "analyses_by_product": {},
+        "products": [{"productId": "product-1", "productName": "抽烟检测"}],
+        "analyses_by_product": {"product-1": [{"analysisId": "analysis-1", "analysisName": "视觉智能分析"}]},
         "compute_platforms": [
             {"computePlatformId": "cp-rk", "computePlatformName": "瑞芯微 RKNN"},
             {"computePlatformId": "cp-onnx", "computePlatformName": "ONNX"},
@@ -191,6 +192,10 @@ def _seed_external_algorithm(root: Path, *, project_id="p1", version_id="v1"):
         "provider_type": "CHANG_LIAN",
         "external_product_id": "product-1",
         "external_analysis_id": "analysis-1",
+        "external_analysis_ids": ["analysis-1"],
+        "external_analyses": [{"analysis_id": "analysis-1", "analysis_name": "视觉智能分析"}],
+        "external_active": True,
+        "external_master_data_digest": "digest-current",
         "versions": [{
             "id": version_id,
             "version_name": "20260917120000",
@@ -480,6 +485,65 @@ def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path
     assert {row["chip_code"] for row in artifacts} == {"RK3568", "RK3576"}
     assert len({row["artifact_id"] for row in artifacts}) == 2
     assert len({row["source_sha256"] for row in artifacts}) == 1
+
+
+def test_publication_status_blocks_stale_changlian_master_data(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+
+    service.external_repository.save_cache({
+        **service.external_repository.cache(),
+        "master_data_digest": "digest-new",
+    })
+
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["identity_ready"] is False
+    assert status["publish_ready"] is False
+    assert status["identity_issues"][0]["code"] == "EXTERNAL_MASTER_DATA_STALE"
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "stale ChangLian master data must block before remote writes"
+    except Exception as error:
+        assert getattr(error, "code", "") == "EXTERNAL_MASTER_DATA_STALE"
+
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+
+
+def test_publish_blocks_when_historical_version_analysis_is_no_longer_current(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["external_analysis_id"] = "analysis-2"
+    algorithms[0]["external_analysis_ids"] = ["analysis-2"]
+    algorithms[0]["external_analyses"] = [
+        {"analysis_id": "analysis-2", "analysis_name": "新版视觉智能分析"},
+    ]
+    algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-1"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    service = _service(tmp_path, memory)
+
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["identity_ready"] is False
+    assert status["publish_ready"] is False
+    assert status["identity_issues"][0]["code"] == "EXTERNAL_VERSION_ANALYSIS_STALE"
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "removed analysis binding must not be silently remapped"
+    except Exception as error:
+        assert getattr(error, "code", "") == "EXTERNAL_VERSION_ANALYSIS_STALE"
+
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
 
 
 def test_publish_blocks_before_remote_version_when_public_base_url_missing(tmp_path: Path):
@@ -809,9 +873,10 @@ def test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_sa
     service.external_repository.save_cache({
         "provider": "changlian",
         "synced_at": "2026-09-19T13:00:00Z",
+        "master_data_digest": "digest-current",
         "categories": [],
-        "products": [],
-        "analyses_by_product": {},
+        "products": [{"productId": "product-1", "productName": "抽烟检测"}],
+        "analyses_by_product": {"product-1": [{"analysisId": "analysis-1", "analysisName": "视觉智能分析"}]},
         "compute_platforms": [
             {"computePlatformId": "cp-new", "computePlatformName": "新的瑞芯微环境"},
         ],
