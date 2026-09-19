@@ -6214,6 +6214,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         if asset_algorithm is not None and payload.iteration_action
         else None
     )
+    assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
     if framework not in {"ultralytics", "paddle"}:
@@ -6426,6 +6427,7 @@ def start_train(project_id: str, payload: TrainReq):
     validate_train_request(payload)
     p = project_dir(project_id)
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = (payload.framework or "ultralytics").strip().lower()
     # 所有训练入口都遵守同一迭代合同：已有版本时只能使用最新上一版本，
@@ -17417,6 +17419,7 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
 
 from platform_core.external_algorithm_platform import (
     assert_algorithm_mutable,
+    assert_external_algorithm_master_data_current,
     assert_local_algorithm_create_allowed,
     resolve_external_training_analysis,
     external_algorithm_platform_router,
