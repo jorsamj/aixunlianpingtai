@@ -1108,10 +1108,10 @@ def build_storage_scan_material_review_archive(
             "storage_scan review requires an explicit object prefix",
             422,
         )
-    if normalized_intent == "storage_rescan" and selected_format != "images":
+    if normalized_intent == "storage_rescan" and selected_format not in {"images", "yolo"}:
         raise RemoteMaterialImportError(
             "REMOTE_MATERIAL_RESCAN_FORMAT_UNSUPPORTED",
-            "storage_rescan Phase 1 supports image-object reconciliation only",
+            "storage_rescan Phase 2A supports image or YOLO reconciliation",
             422,
         )
     target_prefix = safe_member_path(raw_prefix).as_posix() if raw_prefix else ""
@@ -1316,6 +1316,7 @@ def build_storage_scan_material_review_archive(
                 storage_source_id=storage_source_id,
                 storage_type=storage_type,
                 seen_hashes=seen_hashes,
+                deduplicate=normalized_intent != "storage_rescan",
             ))
             inspected += 1
             if len(batch) >= 500:
@@ -1403,6 +1404,7 @@ def build_storage_scan_material_review_archive(
                 "project_id": str(project_id),
                 "execution_generation": int(execution_generation),
                 "mode": "storage_scan",
+                "intent": normalized_intent,
                 "payload_mode": "source_reference",
                 "import_format": "yolo",
                 "storage_source_id": str(storage_source_id),
@@ -1850,7 +1852,11 @@ def _commit_detection_review_annotations(
         names[class_id] = name
     store.set_label_mapping(names)
 
-    expected_prefix_path = safe_member_path(expected_prefix)
+    expected_prefix_path = (
+        safe_member_path(expected_prefix)
+        if str(expected_prefix or "").strip()
+        else PurePosixPath()
+    )
     seen: set[str] = set()
     states: list[dict[str, Any]] = []
     boxes: list[dict[str, Any]] = []
@@ -2402,7 +2408,7 @@ def commit_material_review_archive(
         allow_root = (
             normalized_intent == "storage_rescan"
             and str(expected_mode or "") == "storage_scan"
-            and str(expected_import_format or "") == "images"
+            and str(expected_import_format or "") in {"images", "yolo"}
             and not str(expected_prefix or "").strip()
         )
         if normalized_intent == "storage_rescan" and not allow_root:

@@ -597,6 +597,12 @@ class RescanCandidateStore(ImportCandidateStore):
                 );
                 CREATE INDEX IF NOT EXISTS ix_rescan_category ON rescan_objects(category,applied,object_key);
                 CREATE TABLE IF NOT EXISTS rescan_meta (key TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS rescan_annotation_deltas (
+                    object_key TEXT PRIMARY KEY, category TEXT NOT NULL,
+                    payload TEXT NOT NULL, applied INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS ix_rescan_annotation_delta
+                    ON rescan_annotation_deltas(category,applied,object_key);
             """)
 
     def meta(self, key):
@@ -708,3 +714,159 @@ class RescanCandidateStore(ImportCandidateStore):
         with self._transaction() as db:
             db.executemany('UPDATE rescan_objects SET applied=1 WHERE object_key=?',
                            ((r['object_key'],) for r in rows))
+
+    def annotation_source_evidence(self, keys, *, source_format: str):
+        """Return deterministic external annotation evidence per image object."""
+        keys = list(dict.fromkeys(str(key) for key in keys))
+        if len(keys) > 500:
+            raise ValueError('annotation evidence lookup is limited to 500 image keys')
+        if not keys:
+            return {}
+        normalized_format = str(source_format or '').strip().lower()
+        if normalized_format not in {'yolo', 'coco', 'voc'}:
+            raise ValueError('unsupported annotation evidence source format')
+        placeholders = ','.join('?' for _ in keys)
+        with closing(self._connect()) as db:
+            manifests = {
+                row['object_key']: dict(row)
+                for row in db.execute(
+                    f"SELECT * FROM dataset_manifest WHERE object_key IN ({placeholders})",
+                    keys,
+                )
+            }
+            classes = [
+                {'class_id': int(row['class_id']), 'name': str(row['name'])}
+                for row in db.execute('SELECT class_id,name FROM label_mapping ORDER BY class_id')
+            ]
+            class_catalog_digest = hashlib.sha256(json.dumps(
+                classes, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+            ).encode('utf-8')).hexdigest()
+            ref_keys = sorted({
+                str(value)
+                for row in manifests.values()
+                for value in (row.get('label_key'), row.get('yaml_key'))
+                if str(value or '').strip()
+            })
+            refs = {}
+            for offset in range(0, len(ref_keys), 500):
+                chunk = ref_keys[offset:offset + 500]
+                marks = ','.join('?' for _ in chunk)
+                for row in db.execute(
+                    f"SELECT object_key,size_bytes,etag,sha256 FROM dataset_objects "
+                    f"WHERE object_key IN ({marks})",
+                    chunk,
+                ):
+                    refs[row['object_key']] = {
+                        'size_bytes': int(row['size_bytes'] or 0),
+                        'etag': str(row['etag'] or ''),
+                        'sha256': str(row['sha256'] or '').lower(),
+                    }
+            boxes_by_key = {key: [] for key in keys}
+            for row in db.execute(
+                f"SELECT object_key,line_number,class_id,cx,cy,w,h,clipped "
+                f"FROM candidate_annotations WHERE object_key IN ({placeholders}) "
+                "ORDER BY object_key,line_number",
+                keys,
+            ):
+                boxes_by_key.setdefault(row['object_key'], []).append({
+                    'line_number': int(row['line_number']),
+                    'class_id': int(row['class_id']),
+                    'cx': float(row['cx']),
+                    'cy': float(row['cy']),
+                    'w': float(row['w']),
+                    'h': float(row['h']),
+                    'clipped': bool(row['clipped']),
+                })
+        result = {}
+        for key in keys:
+            manifest = manifests.get(key) or {
+                'object_key': key,
+                'split': '',
+                'label_key': None,
+                'annotation_status': 'unannotated',
+                'box_count': 0,
+                'yaml_key': '',
+            }
+            label_key = str(manifest.get('label_key') or '')
+            dataset_key = str(manifest.get('yaml_key') or '')
+            payload = {
+                'schema_version': 1,
+                'source_format': normalized_format,
+                'object_key': key,
+                'split': str(manifest.get('split') or ''),
+                'annotation_status': str(manifest.get('annotation_status') or 'unannotated'),
+                'label_key': label_key or None,
+                'label_object': refs.get(label_key) if label_key else None,
+                'dataset_key': dataset_key or None,
+                'dataset_object': refs.get(dataset_key) if dataset_key else None,
+                'class_catalog_digest': class_catalog_digest,
+                'boxes': boxes_by_key.get(key, []),
+            }
+            source_digest = hashlib.sha256(json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+                allow_nan=False,
+            ).encode('utf-8')).hexdigest()
+            result[key] = {
+                **payload,
+                'source_digest': source_digest,
+                'box_count': len(payload['boxes']),
+            }
+        return result
+
+    def restart_annotation_deltas(self):
+        with self._transaction() as db:
+            db.execute('DELETE FROM rescan_annotation_deltas')
+
+    def annotation_delta_batch(self, rows):
+        with self._transaction() as db:
+            db.executemany(
+                'INSERT OR REPLACE INTO rescan_annotation_deltas(object_key,category,payload,applied) '
+                'VALUES(?,?,?,COALESCE((SELECT applied FROM rescan_annotation_deltas WHERE object_key=?),0))',
+                ((r['object_key'], r['category'], json.dumps(r), r['object_key']) for r in rows),
+            )
+
+    def annotation_summary(self):
+        categories = (
+            'ANNOTATION_NEW', 'ANNOTATION_CHANGED', 'ANNOTATION_REMOVED',
+            'ANNOTATION_UNCHANGED', 'ANNOTATION_CONFLICT', 'ANNOTATION_INVALID',
+        )
+        with closing(self._connect()) as db:
+            counts = dict(db.execute(
+                'SELECT category,COUNT(*) FROM rescan_annotation_deltas GROUP BY category'
+            ))
+            examples = {
+                category: [row[0] for row in db.execute(
+                    'SELECT object_key FROM rescan_annotation_deltas WHERE category=? '
+                    'ORDER BY object_key LIMIT 20', (category,),
+                )]
+                for category in categories
+            }
+            return {
+                'counts': counts,
+                'examples': examples,
+                'applied': int(db.execute(
+                    'SELECT COUNT(*) FROM rescan_annotation_deltas WHERE applied=1'
+                ).fetchone()[0]),
+            }
+
+    def pending_annotation_deltas(self, categories, limit=500):
+        if not categories:
+            return []
+        with closing(self._connect()) as db:
+            return [
+                dict(json.loads(row['payload']), category=row['category'])
+                for row in db.execute(
+                    'SELECT payload,category FROM rescan_annotation_deltas '
+                    'WHERE applied=0 AND category IN (' + ','.join('?' for _ in categories)
+                    + ') ORDER BY object_key LIMIT ?',
+                    (*categories, min(500, max(1, int(limit)))),
+                )
+            ]
+
+    def mark_annotation_applied(self, rows):
+        with self._transaction() as db:
+            db.executemany(
+                'UPDATE rescan_annotation_deltas SET applied=1 WHERE object_key=?',
+                ((r['object_key'],) for r in rows),
+            )
+

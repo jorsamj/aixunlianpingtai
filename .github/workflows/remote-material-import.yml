@@ -191,6 +191,9 @@ jobs:
           grep -Fq 'build_storage_scan_material_review_archive' platform_core/node_agent_material_runtime.py
           grep -Fq 'intent=intent' platform_core/node_agent_material_runtime.py
           grep -Fq 'test_storage_rescan_root_review_is_explicit_and_preserves_same_hash_object_identity' tests/unit/test_remote_material_import.py
+          grep -Fq 'test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_identity' tests/unit/test_remote_material_import.py
+          grep -Fq 'annotation_source_evidence' platform_core/storage/import_candidates.py
+          grep -Fq 'test_rescan_annotation_source_evidence_tracks_sidecar_yaml_split_and_boxes' tests/unit/storage/test_rescan_tasks.py
           grep -Fq '_verify_remote_review_object' platform_core/storage/rescan_tasks.py
           grep -Fq 'test_remote_rescan_apply_uses_stat_identity_not_central_body_reads' tests/unit/storage/test_rescan_tasks.py
           grep -Fq 'data-import-mode="storage_scan"' static/app.js

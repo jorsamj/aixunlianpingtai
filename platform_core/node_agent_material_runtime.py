@@ -562,7 +562,10 @@ class AgentMaterialImportRunner:
             or mode not in {"zip_scan", "storage_scan"}
             or intent not in {"", "storage_rescan"}
             or import_format not in allowed_formats
-            or (intent == "storage_rescan" and (mode != "storage_scan" or import_format != "images"))
+            or (
+                intent == "storage_rescan"
+                and (mode != "storage_scan" or import_format not in {"images", "yolo"})
+            )
         ):
             raise AgentMaterialImportRuntimeError(
                 "portable material import start payload is invalid"

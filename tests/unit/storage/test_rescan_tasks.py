@@ -185,3 +185,54 @@ def test_remote_rescan_stat_verification_rejects_changed_etag():
             provider,
             candidate("images/a.jpg", "a" * 64, etag="etag-before"),
         )
+
+
+def test_rescan_annotation_source_evidence_tracks_sidecar_yaml_split_and_boxes(tmp_path):
+    store = RescanCandidateStore(tmp_path / "manifest.sqlite3")
+    store.inventory_many([
+        {"object_key": "data.yaml", "size_bytes": 40, "etag": "yaml-etag", "sha256": "1" * 64},
+        {"object_key": "labels/train/a.txt", "size_bytes": 20, "etag": "label-etag", "sha256": "2" * 64},
+    ])
+    store.manifest_many([{
+        "object_key": "images/train/a.jpg", "split": "train", "yaml_key": "data.yaml",
+    }])
+    store.set_label_mapping({0: "smoke"})
+    store.annotation_batch(
+        [{
+            "object_key": "images/train/a.jpg",
+            "label_key": "labels/train/a.txt",
+            "annotation_status": "annotated",
+            "box_count": 1,
+        }],
+        [{
+            "object_key": "images/train/a.jpg", "line_number": 1, "class_id": 0,
+            "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.25, "clipped": False,
+        }],
+        [],
+    )
+    first = store.annotation_source_evidence(
+        ["images/train/a.jpg"], source_format="yolo",
+    )["images/train/a.jpg"]
+    assert first["label_object"]["sha256"] == "2" * 64
+    assert first["dataset_object"]["sha256"] == "1" * 64
+    assert first["split"] == "train"
+    assert first["box_count"] == 1
+
+    store.inventory_many([{
+        "object_key": "labels/train/a.txt",
+        "size_bytes": 21,
+        "etag": "label-etag-2",
+        "sha256": "3" * 64,
+    }])
+    second = store.annotation_source_evidence(
+        ["images/train/a.jpg"], source_format="yolo",
+    )["images/train/a.jpg"]
+    assert second["source_digest"] != first["source_digest"]
+
+    store.restart_annotation_deltas()
+    store.annotation_delta_batch([{
+        "object_key": "images/train/a.jpg",
+        "category": "ANNOTATION_CHANGED",
+        "source_evidence": second,
+    }])
+    assert store.annotation_summary()["counts"] == {"ANNOTATION_CHANGED": 1}

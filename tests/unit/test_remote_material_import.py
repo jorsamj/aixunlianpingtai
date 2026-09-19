@@ -514,3 +514,54 @@ def test_storage_rescan_root_review_is_explicit_and_preserves_same_hash_object_i
     assert meta["target_prefix"] == ""
     assert {row["object_key"] for row in rows} == {"a.jpg", "nested/b.jpg"}
     assert {row["content_sha256"] for row in rows} == {digest}
+
+
+def test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_identity(tmp_path):
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (100, 80), "orange").save(image_buffer, format="JPEG")
+    image = image_buffer.getvalue()
+    yaml_bytes = b"path: .\ntrain: images/train\nnames:\n  0: smoke\n"
+    label_bytes = b"0 0.5 0.5 0.2 0.25\n"
+    payloads = {
+        "data.yaml": yaml_bytes,
+        "images/train/a.jpg": image,
+        "labels/train/a.txt": label_bytes,
+    }
+    rows = [
+        ObjectMetadata(
+            key=key,
+            size_bytes=len(value),
+            etag=f'"etag-{index}"',
+            sha256=hashlib.sha256(value).hexdigest(),
+            content_type="image/jpeg" if key.endswith(".jpg") else "text/plain",
+        )
+        for index, (key, value) in enumerate(payloads.items(), 1)
+    ]
+    provider = _StorageScanReviewProvider(rows, payloads)
+    archive = tmp_path / "yolo-rescan.zip"
+    built = build_storage_scan_material_review_archive(
+        provider,
+        archive,
+        task_id="rescan-yolo",
+        project_id="project-yolo",
+        execution_generation=2,
+        storage_source_id="s3-source",
+        storage_type="s3",
+        prefix="",
+        recursive=True,
+        import_format="yolo",
+        dataset_yaml="data.yaml",
+        intent="storage_rescan",
+    )
+    assert built["counts"]["IMPORTABLE"] == 1
+    with zipfile.ZipFile(archive, "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        annotation = json.loads(
+            review.read("annotations.jsonl").decode("utf-8").strip()
+        )
+    assert meta["intent"] == "storage_rescan"
+    assert meta["target_prefix"] == ""
+    assert meta["dataset_yaml"] == "data.yaml"
+    assert annotation["object_key"] == "images/train/a.jpg"
+    assert annotation["annotation_status"] == "annotated"
+    assert annotation["boxes"][0]["class_id"] == 0
