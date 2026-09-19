@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS model_artifacts (
     version_id TEXT NOT NULL,
     artifact_kind TEXT NOT NULL,
     target TEXT NOT NULL,
+    chip_code TEXT NOT NULL DEFAULT '',
     conversion_job_id TEXT NOT NULL DEFAULT '',
     file_name TEXT NOT NULL,
     source_path TEXT NOT NULL,
@@ -93,8 +94,6 @@ CREATE TABLE IF NOT EXISTS model_artifacts (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_model_artifacts_identity
-ON model_artifacts(project_id, algorithm_id, version_id, target, sha256);
 CREATE INDEX IF NOT EXISTS ix_model_artifacts_version
 ON model_artifacts(project_id, algorithm_id, version_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_model_artifacts_storage_status
@@ -111,6 +110,48 @@ class ModelArtifactRepository:
         self.lock = FileLock(str(self.root / ".config.lock"), timeout=30)
         with closing(self._connect()) as database:
             database.executescript(_SCHEMA)
+            self._migrate_schema(database)
+
+    @staticmethod
+    def _migrate_schema(database: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in database.execute("PRAGMA table_info(model_artifacts)").fetchall()
+        }
+        if "chip_code" not in columns:
+            database.execute(
+                "ALTER TABLE model_artifacts ADD COLUMN chip_code TEXT NOT NULL DEFAULT ''"
+            )
+        rows = database.execute(
+            "SELECT artifact_id, chip_code, metadata_json FROM model_artifacts"
+        ).fetchall()
+        for row in rows:
+            if str(row["chip_code"] or "").strip():
+                continue
+            try:
+                metadata = json.loads(str(row["metadata_json"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            chip = str(
+                metadata.get("chip_code")
+                or metadata.get("chip")
+                or metadata.get("soc_version")
+                or ""
+            ).strip().lower()
+            if chip:
+                database.execute(
+                    "UPDATE model_artifacts SET chip_code = ? WHERE artifact_id = ?",
+                    (chip, str(row["artifact_id"])),
+                )
+        database.execute("DROP INDEX IF EXISTS ux_model_artifacts_identity")
+        database.execute(
+            """
+            CREATE UNIQUE INDEX ux_model_artifacts_identity
+            ON model_artifacts(
+                project_id, algorithm_id, version_id, target, chip_code, sha256
+            )
+            """
+        )
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
@@ -159,32 +200,61 @@ class ModelArtifactRepository:
     def upsert(self, discovered: Mapping[str, Any]) -> dict[str, Any]:
         stamp = utc_now()
         metadata = dict(discovered.get("metadata") or {})
-        values = (
-            str(discovered["artifact_id"]), str(discovered["project_id"]), str(discovered["algorithm_id"]),
-            str(discovered["version_id"]), str(discovered.get("artifact_kind") or "conversion"),
-            str(discovered.get("target") or "unknown"), str(discovered.get("conversion_job_id") or ""),
-            str(discovered["file_name"]), str(discovered["source_path"]), str(discovered["sha256"]),
-            int(discovered["size_bytes"]), json.dumps(metadata, ensure_ascii=False, sort_keys=True), stamp, stamp,
-        )
+        chip_code = str(
+            discovered.get("chip_code")
+            or metadata.get("chip_code")
+            or metadata.get("chip")
+            or metadata.get("soc_version")
+            or ""
+        ).strip().lower()
+        requested_artifact_id = str(discovered["artifact_id"])
+        project_id = str(discovered["project_id"])
+        algorithm_id = str(discovered["algorithm_id"])
+        version_id = str(discovered["version_id"])
+        target = str(discovered.get("target") or "unknown")
+        digest = str(discovered["sha256"])
         with closing(self._connect()) as database:
+            existing = database.execute(
+                """
+                SELECT artifact_id
+                FROM model_artifacts
+                WHERE project_id = ? AND algorithm_id = ? AND version_id = ?
+                  AND target = ? AND chip_code = ? AND sha256 = ?
+                """,
+                (project_id, algorithm_id, version_id, target, chip_code, digest),
+            ).fetchone()
+            artifact_id = (
+                str(existing["artifact_id"])
+                if existing is not None
+                else requested_artifact_id
+            )
+            values = (
+                artifact_id, project_id, algorithm_id, version_id,
+                str(discovered.get("artifact_kind") or "conversion"),
+                target, chip_code, str(discovered.get("conversion_job_id") or ""),
+                str(discovered["file_name"]), str(discovered["source_path"]), digest,
+                int(discovered["size_bytes"]),
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True), stamp, stamp,
+            )
             database.execute(
                 """
                 INSERT INTO model_artifacts (
                     artifact_id, project_id, algorithm_id, version_id, artifact_kind, target,
-                    conversion_job_id, file_name, source_path, sha256, size_bytes, metadata_json,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    chip_code, conversion_job_id, file_name, source_path, sha256, size_bytes,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(artifact_id) DO UPDATE SET
                     source_path=excluded.source_path,
                     file_name=excluded.file_name,
                     size_bytes=excluded.size_bytes,
+                    chip_code=excluded.chip_code,
                     conversion_job_id=excluded.conversion_job_id,
                     metadata_json=excluded.metadata_json,
                     updated_at=excluded.updated_at
                 """,
                 values,
             )
-        return self.get(str(discovered["artifact_id"])) or {}
+        return self.get(artifact_id) or {}
 
     def patch(self, artifact_id: str, **changes: Any) -> dict[str, Any]:
         allowed = {"storage_source_id", "object_key", "storage_status", "storage_error", "uploaded_at", "updated_at"}
@@ -372,7 +442,7 @@ class ModelArtifactService:
                 raw = str(output.get("path") or "").strip()
                 if raw:
                     candidates.append(("conversion", target, Path(raw).expanduser(), str(job.get("id") or ""), {"chip_code": chip}))
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
         result: list[dict[str, Any]] = []
         for kind, target, path, job_id, metadata in candidates:
             try:
@@ -382,12 +452,13 @@ class ModelArtifactService:
             if not path.is_file() or path.stat().st_size <= 0:
                 continue
             digest = _sha256(path)
-            identity = (target, digest)
+            chip_code = str(metadata.get("chip_code") or "").strip().lower()
+            identity = (target, chip_code, digest)
             if identity in seen:
                 continue
             seen.add(identity)
             artifact_id = hashlib.sha256(
-                f"{project_id}:{algorithm_id}:{version_id}:{target}:{digest}".encode("utf-8")
+                f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_code}:{digest}".encode("utf-8")
             ).hexdigest()[:32]
             result.append({
                 "artifact_id": artifact_id,
@@ -396,6 +467,7 @@ class ModelArtifactService:
                 "version_id": version_id,
                 "artifact_kind": kind,
                 "target": target,
+                "chip_code": chip_code,
                 "conversion_job_id": job_id,
                 "file_name": path.name,
                 "source_path": str(path),
@@ -418,14 +490,20 @@ class ModelArtifactService:
         prefix = str(config.get("object_prefix") or "model-assets").strip().strip("/") or "model-assets"
         object_key = str(row.get("object_key") or "")
         if not object_key or str(row.get("storage_source_id") or "") != source_id:
-            object_key = "/".join([
+            identity_segments = [
                 prefix,
                 _safe_segment(row["project_id"], "project"),
                 _safe_segment(row["algorithm_id"], "algorithm"),
                 _safe_segment(row["version_id"], "version"),
                 _safe_segment(row["target"], "artifact"),
-                f"{str(row['sha256'])[:16]}-{_safe_segment(row['file_name'], 'model.bin')}",
-            ])
+            ]
+            chip_code = str(row.get("chip_code") or "").strip().lower()
+            if chip_code:
+                identity_segments.append(_safe_segment(chip_code, "chip"))
+            identity_segments.append(
+                f"{str(row['sha256'])[:16]}-{_safe_segment(row['file_name'], 'model.bin')}"
+            )
+            object_key = "/".join(identity_segments)
         if not force and str(row.get("storage_status") or "").upper() == "UPLOADED" and str(row.get("storage_source_id") or "") == source_id:
             try:
                 meta = provider.stat(object_key)
@@ -449,6 +527,7 @@ class ModelArtifactService:
                         "algorithm": str(row["algorithm_id"]),
                         "version": str(row["version_id"]),
                         "target": str(row["target"]),
+                        "chip_code": str(row.get("chip_code") or ""),
                     },
                 )
             if int(meta.size_bytes) != int(row["size_bytes"]):
@@ -557,8 +636,15 @@ class ModelArtifactService:
                 "请重新上传模型文件；禁止使用缺少服务端 SHA256 元数据的对象。",
                 409,
             )
+        artifact_metadata = dict(metadata or {})
+        chip_code = str(
+            artifact_metadata.get("chip_code")
+            or artifact_metadata.get("chip")
+            or artifact_metadata.get("soc_version")
+            or ""
+        ).strip().lower()
         artifact_id = hashlib.sha256(
-            f"{project_id}:{algorithm_id}:{version_id}:{target}:{digest}".encode("utf-8")
+            f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_code}:{digest}".encode("utf-8")
         ).hexdigest()[:32]
         row = self.repository.upsert({
             "artifact_id": artifact_id,
@@ -567,12 +653,13 @@ class ModelArtifactService:
             "version_id": str(version_id),
             "artifact_kind": str(artifact_kind or "original"),
             "target": str(target or "original"),
+            "chip_code": chip_code,
             "conversion_job_id": "",
             "file_name": Path(str(file_name or "model.pt")).name,
             "source_path": str(source_path or ""),
             "sha256": digest,
             "size_bytes": expected_size,
-            "metadata": dict(metadata or {}),
+            "metadata": artifact_metadata,
         })
         return self.repository.patch(
             str(row["artifact_id"]),
