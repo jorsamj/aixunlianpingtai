@@ -209,3 +209,83 @@ test('false-positive feedback requires explicit all-label negative confirmation'
   await expect.poll(()=>confirmed).not.toBeNull();
   expect(confirmed.confirm_all_labels_absent).toBe(true);
 });
+
+
+test('pending reviewed feedback can be dismissed without promotion or training', async ({page,request})=>{
+  const project=await (await request.post('/api/projects',{data:{
+    name:'忽略抽检-'+Date.now(),labels:['smoke'],
+  }})).json();
+  const encoded=encodeURIComponent(project.id);
+  const requested=[];
+  page.on('request',req=>requested.push(req.url()));
+  let staged=null;
+  let dismissed=null;
+  let feedbackStatus='pending_review';
+
+  await page.route('**/api/v16/inference_envs',route=>route.fulfill({
+    status:200,contentType:'application/json',
+    body:JSON.stringify({items:[{id:'feedback-env',name:'抽检环境',framework:'ultralytics',status:'ready'}]}),
+  }));
+  await page.route('**/api/v12/projects/'+encoded+'/test_models*',route=>route.fulfill({
+    status:200,contentType:'application/json',
+    body:JSON.stringify({ok:true,items:[{
+      label:'算法版本：烟雾识别 / 当前',model_source:'algorithm_version',framework:'ultralytics',
+      algorithm_id:'algo-feedback',version_id:'version-feedback',path:'/models/best.pt',
+    }]}),
+  }));
+  await page.route('**/api/v12/projects/'+encoded+'/predict',route=>route.fulfill({
+    status:200,contentType:'application/json',
+    body:JSON.stringify({
+      ok:true,prediction_id:'prediction-dismiss-1',feedback_eligible:true,
+      algorithm_id:'algo-feedback',version_id:'version-feedback',
+      model_sha256:'a'.repeat(64),input_sha256:'b'.repeat(64),
+      detections:[],image_url:'/placeholder.jpg',elapsed_ms:5,engine:'ultralytics',
+    }),
+  }));
+  await page.route('**/api/v63/projects/'+encoded+'/online-feedback?*',route=>route.fulfill({
+    status:200,contentType:'application/json',
+    body:JSON.stringify({ok:true,items:staged?[{...staged,status:feedbackStatus,source:{detection_count:0},result:dismissed?{dismissed:true}:{}}]:[]}),
+  }));
+  await page.route('**/api/v63/projects/'+encoded+'/online-feedback',async route=>{
+    if(route.request().method()!=='POST')return route.continue();
+    const body=route.request().postDataJSON();
+    staged={
+      id:'feedback-dismiss',prediction_id:body.prediction_id,status:'pending_review',
+      feedback_type:body.feedback_type,algorithm_id:'algo-feedback',version_id:'version-feedback',
+      model_sha256:'a'.repeat(64),input_sha256:'b'.repeat(64),material_id:'',created_at:'now',note:'',
+    };
+    await route.fulfill({status:201,contentType:'application/json',body:JSON.stringify({ok:true,idempotent:false,feedback:staged})});
+  });
+  await page.route('**/api/v63/projects/'+encoded+'/online-feedback/feedback-dismiss',route=>route.fulfill({
+    status:200,contentType:'application/json',body:JSON.stringify({ok:true,feedback:{
+      ...staged,source:{detections:[]},input_image_url:'/placeholder.jpg',result_image_url:'',result:{},
+    }}),
+  }));
+  await page.route('**/api/v63/projects/'+encoded+'/online-feedback/feedback-dismiss/dismiss',async route=>{
+    dismissed=route.request().postDataJSON();
+    feedbackStatus='dismissed';
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,idempotent:false,feedback:{
+      ...staged,status:'dismissed',material_id:'',result:{dismissed:true,dismiss_reason:'人工复核忽略'},
+    }})});
+  });
+
+  await page.addInitScript(projectId=>{
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'测试发布'}));
+  },project.id);
+  await page.goto('/');
+  await page.evaluate(()=>window.setPage('测试发布'));
+  await page.locator('#predFile').setInputFiles({name:'dismiss.bmp',mimeType:'image/bmp',buffer:bmp()});
+  await page.getByRole('button',{name:'开始测试'}).click();
+  await page.getByRole('button',{name:'提交抽检反馈'}).click();
+  const create=page.getByRole('dialog',{name:'提交线上抽检反馈'});
+  await create.locator('#feedbackType63').selectOption('needs_correction');
+  await create.getByRole('button',{name:'提交到待复核'}).click();
+  const review=page.getByRole('dialog',{name:'复核线上抽检反馈'});
+  await review.getByRole('button',{name:'忽略反馈'}).click();
+  await expect.poll(()=>dismissed).not.toBeNull();
+  expect(dismissed.expected_feedback_type).toBe('needs_correction');
+  await expect(page.locator('#onlineFeedbackRows63')).toContainText('已忽略');
+  expect(requested.filter(url=>url.includes('/train/start'))).toEqual([]);
+  expect(requested.filter(url=>/dataset.*revision/i.test(url))).toEqual([]);
+  expect(requested.filter(url=>url.includes('/jobs/'))).toEqual([]);
+});
