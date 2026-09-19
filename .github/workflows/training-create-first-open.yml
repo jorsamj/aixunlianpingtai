@@ -75,3 +75,5 @@ jobs:
         run: npm ci
       - name: Real Chrome first-open regression
         run: npx playwright test tests/browser/training-create-first-open.spec.mjs
+      - name: Feedback provenance browser guard
+        run: grep -Fq 'frozen feedback candidates stay aligned with training submit provenance' tests/browser/training-create-first-open.spec.mjs
