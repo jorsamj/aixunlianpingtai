@@ -241,8 +241,10 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert remote["task_kind"] == "TRAINING"
     assert remote["transport"] == "object-storage-v1"
     training = remote["training"]
+    assert training["schema_version"] == 2
     assert training["framework"] == "ultralytics"
     assert training["snapshot_id"]
+    assert len(training["dataset_revision_id"]) == 64
     assert training["model"]["type"] == "official"
     assert training["model"]["reference"] == "yolo11n.pt"
     bundle = training["bundle"]
@@ -254,12 +256,16 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert bundle["verified_files"] == 5
 
     assert (artifacts.artifact_path(target_id, "snapshot.json")).is_file()
-    assert (artifacts.artifact_path(target_id, "work/bundle/manifest.json")).is_file()
+    assert (artifacts.artifact_path(target_id, "dataset-revision.json")).is_file()
+    manifest = artifacts.read_json(target_id, "work/bundle/manifest.json")
+    assert manifest["dataset_revision_id"] == training["dataset_revision_id"]
+    assert manifest["dataset_revision_ref"] == "dataset-revision.json"
     assert (artifacts.artifact_path(target_id, "remote-training/training-bundle.zip")).is_file()
     assert provider.upload_calls
     prep_result = artifacts.read_json(prep_id, prep.result_ref)
     assert prep_result["training_task_id"] == target_id
     assert prep_result["status"] == "ready"
+    assert prep_result["dataset_revision_id"] == training["dataset_revision_id"]
     assert "url" not in str(prep_result).lower()
 
 
