@@ -19,7 +19,7 @@ from .algorithm_sql_store import AlgorithmSqlStore
 from .algorithms import list_algorithms
 from .annotations import atomic_write_json
 from .errors import PlatformError
-from .integration_audit import IntegrationAuditRepository
+from .integration_audit import IntegrationAuditRepository, redact
 from .secrets import SecretCredentialStore, secret_ref
 
 
@@ -353,7 +353,7 @@ class ChangLianClient:
         if not self.audit_callback:
             return
         try:
-            self.audit_callback({"provider": "changlian", **self.audit_context, **dict(event)})
+            self.audit_callback(redact({"provider": "changlian", **self.audit_context, **dict(event)}))
         except Exception:
             # Audit persistence must never change remote-call semantics.
             pass
@@ -421,8 +421,8 @@ class ChangLianClient:
         return body
 
     def _signature(self) -> Dict[str, str]:
-        payload = {"accessKey": self.access_key, "accessSecret": self.access_secret}
-        body = _unwrap(self._request("POST", self.endpoints.test_sign, json=payload))
+        params = {"access_key": self.access_key, "access_secret": self.access_secret}
+        body = _unwrap(self._request("POST", self.endpoints.test_sign, params=params))
         if not isinstance(body, dict):
             raise RuntimeError("签名测试接口未返回 timestamp / nonce / signature")
         timestamp = _value_from(body, "timestamp", "timeStamp")
