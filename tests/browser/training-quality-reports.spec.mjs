@@ -259,3 +259,63 @@ test('training queue displays numeric priorities and orders each resource by pri
   await expect(rows.nth(0).locator('.queuepos428')).toHaveText('队列第 1 位');
   await expect(rows.nth(2).locator('.queuepos428')).toHaveText('队列第 3 位');
 });
+
+
+test('training report shows requested epochs actual epochs stop reason and target status', async ({page, request}) => {
+  const {project} = await seedTrainingProject(request);
+  await page.route(`**/api/v44/projects/${project.id}/jobs/target-stop-job/report`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      job: {
+        id: 'target-stop-job',
+        asset_algorithm_name: '烟火迭代算法',
+        algorithm_name: 'Ultralytics Detect',
+        status: 'done',
+        training_outcome: 'target_reached',
+        requested_epochs: 100,
+        completed_epochs: 46,
+        completion_reason: 'quality_target_reached',
+        completion_message: '训练提前完成：map50 达到提前完成阈值 0.900，模型产物校验通过',
+        quality_gate_reason: 'map50 达到提前完成阈值 0.900',
+        quality_gate: {stop_threshold: 0.9},
+        elapsed_text: '10分',
+        models: ['best.pt'],
+      },
+      report: {
+        metrics: {
+          'metrics/precision(B)': 0.91,
+          'metrics/recall(B)': 0.90,
+          'metrics/mAP50(B)': 0.905,
+          'metrics/mAP50-95(B)': 0.72,
+        },
+        per_class: [],
+        weak_labels: [],
+        history: [{epoch: 45, map50: 0.89}, {epoch: 46, map50: 0.905}],
+        data_summary: {
+          counts: {train: 80, val: 20, train_boxes: 120, val_boxes: 30},
+          quality_gate: {eval_interval: 5, metric: 'map50', stage_eval_samples: 20},
+        },
+        configuration: {epochs: 100, model: 'yolo11n.pt'},
+        error_samples: [],
+      },
+    }),
+  }));
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
+  }, project.id);
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  await page.evaluate(() => window.trainingReport425('target-stop-job'));
+  const report = page.getByRole('dialog', {name: '训练报告'});
+  await expect(report).toBeVisible();
+  await expect(report.getByText('最大轮次', {exact: true})).toBeVisible();
+  await expect(report.getByText('100', {exact: true})).toBeVisible();
+  await expect(report.getByText('实际轮次', {exact: true})).toBeVisible();
+  await expect(report.getByText('46', {exact: true})).toBeVisible();
+  await expect(report.getByText('停止原因', {exact: true})).toBeVisible();
+  await expect(report.getByText('达到目标指标，提前完成', {exact: true})).toBeVisible();
+  await expect(report.getByText('目标状态', {exact: true})).toBeVisible();
+  await expect(report.getByText('已达标', {exact: true})).toBeVisible();
+});
