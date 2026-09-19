@@ -120,3 +120,13 @@ def test_evaluation_truth_rejects_invalid_content_identity():
         evaluation.build_evaluation_truth(
             {"status": "not_requested"}, task_id="train-2", model_sha256="not-a-sha",
         )
+
+
+def test_evaluation_truth_normalizes_legacy_passed_status():
+    value = evaluation.build_evaluation_truth(
+        {"status": "passed", "metrics": {"metrics/mAP50(B)": 0.8}},
+        task_id="legacy-remote-task",
+        model_sha256="c" * 64,
+    )
+    assert value["status"] == "succeeded"
+    assert value["metrics"]["metrics/mAP50(B)"] == 0.8

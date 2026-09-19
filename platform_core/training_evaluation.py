@@ -316,6 +316,10 @@ def build_evaluation_truth(
     """Normalize one post-training blind-test result into version-owned truth."""
     raw = dict(result) if isinstance(result, Mapping) else {}
     status = str(raw.get("status") or "not_requested").strip().lower()
+    # Result schema v1 stores one canonical success value. "passed" is the
+    # pre-v1 training-result spelling still present in durable historical jobs.
+    if status == "passed":
+        status = "succeeded"
     if status not in {"succeeded", "not_requested", "failed"}:
         raise ValueError("evaluation status is invalid")
     task = str(task_id or "").strip()
