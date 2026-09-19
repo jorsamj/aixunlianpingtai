@@ -63,7 +63,7 @@ test('training task refresh and actions patch the final table without rebuilding
   });
   await page.route(`**/api/projects/${encoded}/jobs/job-focused-1`, async route => {
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
-      id:'job-focused-1',status:jobStatus,requested_device:'auto',assigned_device:'cuda:0',actual_device:'cuda:0',
+      id:'job-focused-1',task_id:'job-focused-1',status:jobStatus,requested_device:'auto',assigned_device:'cuda:0',actual_device:'cuda:0',
       dataset_revision_id:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       snapshot_id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       current_epoch:11,total_epochs:30,message:'训练中',
