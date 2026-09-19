@@ -103,6 +103,7 @@ jobs:
           node_agent.py
           platform_core/node_agent_executor_loop.py
           platform_core/node_agent_material_runtime.py
+          platform_core/annotation_schema.py
           platform_core/remote_execution_transport.py
           platform_core/remote_material_import.py
           platform_core/storage/detection_import.py
@@ -112,6 +113,7 @@ jobs:
           platform_core/storage/rescan_tasks.py
           task_worker.py
           tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_annotation_schema.py
           tests/unit/test_remote_material_import.py
           tests/unit/storage/test_detection_import.py
           tests/unit/storage/test_yolo_import.py
@@ -126,6 +128,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_node_agent_material_runtime.py
+          tests/unit/test_annotation_schema.py
           tests/unit/test_remote_material_import.py
           tests/unit/storage/test_detection_import.py
           tests/unit/test_remote_material_lifecycle.py
@@ -166,6 +169,7 @@ jobs:
         run: >-
           python -m py_compile
           app.py
+          platform_core/annotation_schema.py
           platform_core/remote_execution_transport.py
           platform_core/remote_material_import.py
           platform_core/storage/import_tasks.py
@@ -198,6 +202,9 @@ jobs:
           grep -Fq 'test_agent_voc_storage_rescan_uses_same_durable_owner_and_product_contract' tests/api/test_server_material_import.py
           grep -Fq 'Pascal VOC rescan shares the same frontend delta' tests/browser/storage-source.spec.mjs
           grep -Fq 'annotation_source_evidence' platform_core/storage/import_candidates.py
+          grep -Fq 'CANONICAL_ANNOTATION_SCHEMA_VERSION = 1' platform_core/annotation_schema.py
+          grep -Fq 'build_canonical_annotation_evidence' platform_core/storage/import_candidates.py
+          grep -Fq 'test_canonical_evidence_v1_preserves_legacy_digest_semantics' tests/unit/test_annotation_schema.py
           grep -Fq '_record_text_identity' platform_core/storage/yolo_import.py
           grep -Fq 'YOLO_SOURCE_EVIDENCE_MISSING' platform_core/remote_material_import.py
           grep -Fq 'dataset_object' tests/unit/test_remote_material_import.py

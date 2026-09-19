@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable, Iterator, Mapping
 
+from ..annotation_schema import build_canonical_annotation_evidence
 from .errors import redact_storage_error
 
 
@@ -772,9 +773,6 @@ class RescanCandidateStore(ImportCandidateStore):
                 {'class_id': int(row['class_id']), 'name': str(row['name'])}
                 for row in db.execute('SELECT class_id,name FROM label_mapping ORDER BY class_id')
             ]
-            class_catalog_digest = hashlib.sha256(json.dumps(
-                classes, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
-            ).encode('utf-8')).hexdigest()
             ref_keys = sorted({
                 str(value)
                 for row in manifests.values()
@@ -823,28 +821,18 @@ class RescanCandidateStore(ImportCandidateStore):
             }
             label_key = str(manifest.get('label_key') or '')
             dataset_key = str(manifest.get('yaml_key') or '')
-            payload = {
-                'schema_version': 1,
-                'source_format': normalized_format,
-                'object_key': key,
-                'split': str(manifest.get('split') or ''),
-                'annotation_status': str(manifest.get('annotation_status') or 'unannotated'),
-                'label_key': label_key or None,
-                'label_object': refs.get(label_key) if label_key else None,
-                'dataset_key': dataset_key or None,
-                'dataset_object': refs.get(dataset_key) if dataset_key else None,
-                'class_catalog_digest': class_catalog_digest,
-                'boxes': boxes_by_key.get(key, []),
-            }
-            source_digest = hashlib.sha256(json.dumps(
-                payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
-                allow_nan=False,
-            ).encode('utf-8')).hexdigest()
-            result[key] = {
-                **payload,
-                'source_digest': source_digest,
-                'box_count': len(payload['boxes']),
-            }
+            result[key] = build_canonical_annotation_evidence(
+                source_format=normalized_format,
+                object_key=key,
+                split=str(manifest.get('split') or ''),
+                annotation_status=str(manifest.get('annotation_status') or 'unannotated'),
+                label_key=label_key or None,
+                label_object=refs.get(label_key) if label_key else None,
+                dataset_key=dataset_key or None,
+                dataset_object=refs.get(dataset_key) if dataset_key else None,
+                classes=classes,
+                boxes=boxes_by_key.get(key, []),
+            )
         return result
 
     def restart_annotation_review(self):
