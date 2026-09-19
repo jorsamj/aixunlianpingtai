@@ -502,14 +502,29 @@ window.__resourceDiscoveryDependencies={
     const project=String(pid()||'');if(!project){toast('请先选择项目');return}
     const base=`/api/v61/projects/${encodeURIComponent(project)}`;
     const savedKey=`mc_storage_rescan_${project}_${sourceId}`;
-    let taskId='',pollGeneration=0,preflight=null;
+    let taskId='',pollGeneration=0,preflight=null,lastTask=null;
     try{taskId=localStorage.getItem(savedKey)||''}catch(_){}
-    modal('存储源重新扫描 / 恢复',`<div class="form two"><div class="field"><label>执行位置</label><select id="sr61Execution" class="select"><option value="local">中央 Worker</option><option id="sr61AgentOption" value="agent" disabled>远程 Agent</option></select></div><div class="field"><label>执行资源</label><div id="sr61AgentTruth" class="item-sub">正在检查可用节点…</div></div></div><div id="sr61Status">正在读取任务…</div><div id="sr61Policy" hidden><label><input id="sr61New" type="checkbox" checked> 建立新增图片索引</label><br><label><input id="sr61Missing" type="checkbox" checked> 缺失文件标记不可用，保留索引</label><br><label><input id="sr61Changed" type="checkbox" checked> 更新变更内容，保留标注并标记需要复核</label><br><button id="sr61Confirm" class="btn primary">确认应用</button></div><div class="row end"><button id="sr61Start" class="btn primary">开始新的扫描</button><button id="sr61Cancel" class="btn">取消任务</button><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
-    const target=document.getElementById('sr61Status'),selection=document.getElementById('sr61Policy'),execution=document.getElementById('sr61Execution'),agentOption=document.getElementById('sr61AgentOption'),agentTruth=document.getElementById('sr61AgentTruth');
+    modal('存储源重新扫描 / 恢复',`<div class="form two"><div class="field"><label>执行位置</label><select id="sr61Execution" class="select"><option value="local">中央 Worker</option><option id="sr61AgentOption" value="agent" disabled>远程 Agent</option></select></div><div class="field"><label>执行资源</label><div id="sr61AgentTruth" class="item-sub">正在检查可用节点…</div></div><div class="field"><label>扫描内容</label><select id="sr61Format" class="select"><option value="images">仅图片</option><option value="yolo">图片 + YOLO 标注</option></select></div><div class="field"><label>YOLO data.yaml</label><input id="sr61DatasetYaml" class="input" disabled placeholder="可留空自动发现"></div></div><div id="sr61Status">正在读取任务…</div><div id="sr61Policy" hidden><div class="storage61-import-quality"><b>图片同步策略</b><label><input id="sr61New" type="checkbox" checked> 建立新增图片索引</label><br><label><input id="sr61Missing" type="checkbox" checked> 缺失图片标记不可用</label><br><label><input id="sr61Changed" type="checkbox" checked> 更新图片内容变化</label></div><div id="sr61AnnotationPolicy" class="storage61-import-quality" hidden><b>YOLO 标注同步策略</b><label><input id="sr61AnnotationChanged" type="checkbox" checked> 同步新增和变化标注</label><br><label><input id="sr61AnnotationRemoved" type="checkbox"> 外部标注删除时清空平台标注</label><br><label><input id="sr61AnnotationConflicts" type="checkbox"> 覆盖与平台人工修改冲突的标注</label><div id="sr61Quality"></div><div id="sr61Mapping"></div></div><div class="row end"><button id="sr61Confirm" class="btn primary">确认应用</button></div></div><div class="row end"><button id="sr61Start" class="btn primary">开始新的扫描</button><button id="sr61Cancel" class="btn">取消任务</button><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
+    const target=document.getElementById('sr61Status'),selection=document.getElementById('sr61Policy'),execution=document.getElementById('sr61Execution'),agentOption=document.getElementById('sr61AgentOption'),agentTruth=document.getElementById('sr61AgentTruth'),format=document.getElementById('sr61Format'),yaml=document.getElementById('sr61DatasetYaml'),annotationPolicy=document.getElementById('sr61AnnotationPolicy'),qualityBox=document.getElementById('sr61Quality'),mappingBox=document.getElementById('sr61Mapping');
     const endpoint=()=>`${base}/storage-rescans/${encodeURIComponent(taskId)}`;
     const active=()=>document.getElementById('sr61Status')===target;
     const terminal=status=>['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status);
     const statusName=status=>({QUEUED:'排队中',RUNNING:'执行中',AWAITING_CONFIRMATION:'待确认',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分完成',FAILED:'失败',CANCELLED:'已取消',CANCEL_REQUESTED:'正在取消',BLOCKED_BY_ENVIRONMENT:'环境阻塞',BLOCKED_BY_HARDWARE:'硬件阻塞'}[status]||status||'-');
+    const annotationNames={ANNOTATION_NEW:'新增标注',ANNOTATION_CHANGED:'标注变化',ANNOTATION_REMOVED:'标注缺失',ANNOTATION_UNCHANGED:'标注未变',ANNOTATION_CONFLICT:'标注冲突',ANNOTATION_INVALID:'标注异常'};
+    function syncFormat(){
+      const yolo=format?.value==='yolo';
+      if(yaml){yaml.disabled=!yolo||format.disabled;if(!yolo)yaml.value=''}
+      if(annotationPolicy)annotationPolicy.hidden=!yolo;
+    }
+    function renderYoloConfirm(task){
+      if(task.import_format!=='yolo'){annotationPolicy.hidden=true;qualityBox.innerHTML='';mappingBox.innerHTML='';return}
+      annotationPolicy.hidden=false;
+      const quality=task.quality||{},issues=quality.issues||{},issueCount=Object.values(issues).reduce((sum,value)=>sum+Number(value||0),0);
+      qualityBox.innerHTML=`<p><b>标注数据质量</b> · 有效框 ${Number(quality.boxes||0)} · 异常 ${issueCount}</p>${Object.keys(issues).length?`<p>${Object.entries(issues).map(([code,count])=>`${esc(code)}：${Number(count||0)}`).join(' · ')}</p><label><input id="sr61AcceptQuality" type="checkbox"> 已确认标注质量报告</label>`:''}`;
+      const labels=(state.project?.labels||state.currentProject?.labels||[]);
+      const classes=Array.isArray(task.external_classes)?task.external_classes:[];
+      mappingBox.innerHTML=classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签</b>${classes.map(row=>`<div class="storage61-mapping-row" data-rescan-class="${esc(row.class_id)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><input class="input" data-label-code value="${esc(row.target_label_code||'')}" placeholder="平台标签编码" aria-label="${esc(row.name)}的平台标签" list="sr61LabelCodes"><label><input type="checkbox" data-create-label> 新建标签</label></div>`).join('')}<datalist id="sr61LabelCodes">${labels.map(code=>`<option value="${esc(code)}"></option>`).join('')}</datalist></div>`:'';
+    }
     async function loadPreflight(){
       try{
         preflight=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans/preflight`);
@@ -518,7 +533,7 @@ window.__resourceDiscoveryDependencies={
         if(agentTruth)agentTruth.textContent=preflight.agent_available?(nodes.length?`可用 Agent：${nodes.map(node=>node.display_name||node.node_id).join('、')}`:'远程 Agent 可用'):(preflight.reason||'当前无可用远程 Agent');
         if(execution&&execution.value==='agent'&&!preflight.agent_available)execution.value='local';
       }catch(error){
-        preflight={agent_available:false,reason:error.message||String(error),eligible_nodes:[]};
+        preflight={agent_available:false,reason:error.message||String(error),eligible_nodes:[],agent_supported_formats:[],local_supported_formats:['images','yolo']};
         if(agentOption)agentOption.disabled=true;
         if(agentTruth)agentTruth.textContent=preflight.reason;
         if(execution)execution.value='local';
@@ -526,33 +541,61 @@ window.__resourceDiscoveryDependencies={
     }
     async function poll(generation){
       try{
-        const task=await api(endpoint());if(!active()||generation!==pollGeneration)return;
-        const names={NEW:'新增',MISSING:'缺失',CHANGED:'内容变更',UNCHANGED:'未变',INVALID:'无法校验',SKIPPED:'跳过'};
+        const task=await api(endpoint());if(!active()||generation!==pollGeneration)return;lastTask=task;
+        const names={NEW:'新增图片',MISSING:'缺失图片',CHANGED:'图片变化',UNCHANGED:'图片未变',INVALID:'图片异常',SKIPPED:'跳过'};
         const mode=task.execution_mode==='agent'?'远程 Agent':'中央 Worker';
         const runtime=[mode,task.worker_id?`Worker ${task.worker_id}`:'',task.resource_wait_reason||'',task.current_item||task.stage||''].filter(Boolean).join(' · ');
-        target.innerHTML=`<p><b>${esc(statusName(task.status))}</b> · ${esc(runtime)}</p><p>${Object.entries(names).map(([key,label])=>`${label} ${Number(task.counts?.[key]||0)}`).join(' · ')}</p>${Object.entries(task.examples||{}).filter(([,keys])=>keys.length).map(([key,keys])=>`<details><summary>${esc(names[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${task.error?`<p class="alert err">${esc(task.error.message||'扫描失败')}</p>`:''}`;
+        const imageLine=Object.entries(names).map(([key,label])=>`${label} ${Number(task.counts?.[key]||0)}`).join(' · ');
+        const annotationLine=task.import_format==='yolo'?Object.entries(annotationNames).map(([key,label])=>`${label} ${Number(task.annotation_counts?.[key]||0)}`).join(' · '):'';
+        target.innerHTML=`<p><b>${esc(statusName(task.status))}</b> · ${esc(runtime)}</p><p>${imageLine}</p>${annotationLine?`<p>${annotationLine}</p>`:''}${Object.entries(task.examples||{}).filter(([,keys])=>keys.length).map(([key,keys])=>`<details><summary>${esc(names[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${Object.entries(task.annotation_examples||{}).filter(([,keys])=>keys.length&&key!=='ANNOTATION_UNCHANGED').map(([key,keys])=>`<details><summary>${esc(annotationNames[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${task.error?`<p class="alert err">${esc(task.error.message||'扫描失败')}</p>`:''}`;
         selection.hidden=task.status!=='AWAITING_CONFIRMATION';
+        if(format){format.value=task.import_format||'images';format.disabled=!terminal(task.status)}
+        if(yaml){yaml.value=task.dataset_yaml||yaml.value;yaml.disabled=(task.import_format!=='yolo')||!terminal(task.status)}
+        syncFormat();
+        if(task.status==='AWAITING_CONFIRMATION')renderYoloConfirm(task);
         document.getElementById('sr61Start').disabled=!terminal(task.status);
         document.getElementById('sr61Cancel').disabled=terminal(task.status);
         if(execution)execution.disabled=!terminal(task.status);
         if(!terminal(task.status)&&task.status!=='AWAITING_CONFIRMATION')setTimeout(()=>{if(active()&&generation===pollGeneration)poll(generation)},2000);
       }catch(error){if(active()){target.textContent=error.message||String(error);document.getElementById('sr61Start').disabled=false}}
     }
+    format.onchange=syncFormat;
+    execution.onchange=()=>{
+      const supported=execution.value==='agent'?(preflight?.agent_supported_formats||['images']):(preflight?.local_supported_formats||['images','yolo']);
+      if(!supported.includes(format.value))format.value='images';
+      syncFormat();
+    };
     document.getElementById('sr61Start').onclick=async()=>{
-      const button=document.getElementById('sr61Start'),mode=execution?.value==='agent'?'agent':'local';
+      const button=document.getElementById('sr61Start'),mode=execution?.value==='agent'?'agent':'local',selectedFormat=format?.value==='yolo'?'yolo':'images';
       if(mode==='agent'&&!preflight?.agent_available){target.textContent=preflight?.reason||'当前没有可用远程 Agent';return}
-      button.disabled=true;if(execution)execution.disabled=true;
+      const supported=mode==='agent'?(preflight?.agent_supported_formats||['images']):(preflight?.local_supported_formats||['images','yolo']);
+      if(!supported.includes(selectedFormat)){target.textContent='当前执行位置不支持所选扫描内容';return}
+      button.disabled=true;if(execution)execution.disabled=true;if(format)format.disabled=true;if(yaml)yaml.disabled=true;
       try{
-        const task=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({execution_mode:mode})});
+        const body={execution_mode:mode};
+        if(selectedFormat==='yolo'){body.import_format='yolo';const yamlKey=String(yaml?.value||'').trim();if(yamlKey)body.dataset_yaml=yamlKey}
+        const task=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         taskId=task.task_id;try{localStorage.setItem(savedKey,taskId)}catch(_){}poll(++pollGeneration);
-      }catch(error){target.textContent=error.message||String(error);button.disabled=false;if(execution)execution.disabled=false}
+      }catch(error){target.textContent=error.message||String(error);button.disabled=false;if(execution)execution.disabled=false;if(format)format.disabled=false;syncFormat()}
     };
     document.getElementById('sr61Confirm').onclick=async()=>{
       const button=document.getElementById('sr61Confirm');button.disabled=true;
-      try{await api(`${endpoint()}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new:document.getElementById('sr61New').checked?'import':'ignore',missing:document.getElementById('sr61Missing').checked?'mark_unavailable':'ignore',changed:document.getElementById('sr61Changed').checked?'update':'ignore'})});selection.hidden=true;poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error);button.disabled=false}
+      try{
+        const body={new:document.getElementById('sr61New').checked?'import':'ignore',missing:document.getElementById('sr61Missing').checked?'mark_unavailable':'ignore',changed:document.getElementById('sr61Changed').checked?'update':'ignore',annotation_changed:document.getElementById('sr61AnnotationChanged').checked?'update':'ignore',annotation_removed:document.getElementById('sr61AnnotationRemoved').checked?'clear':'keep',annotation_conflicts:document.getElementById('sr61AnnotationConflicts').checked?'overwrite':'keep'};
+        if(lastTask?.import_format==='yolo'){
+          const rows=[...document.querySelectorAll('[data-rescan-class]')].map(row=>({classId:row.dataset.rescanClass,code:String(row.querySelector('[data-label-code]')?.value||'').trim(),create:!!row.querySelector('[data-create-label]')?.checked}));
+          if(rows.some(row=>!row.code))throw new Error('请完成所有外部类别的平台标签映射');
+          body.label_mapping=Object.fromEntries(rows.map(row=>[row.classId,row.code]));
+          body.create_labels=rows.filter(row=>row.create).map(row=>row.code);
+          body.accept_quality_report=!!document.getElementById('sr61AcceptQuality')?.checked;
+          if(Object.keys(lastTask.quality?.issues||{}).length&&!body.accept_quality_report)throw new Error('请先确认标注数据质量报告');
+        }
+        await api(`${endpoint()}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        selection.hidden=true;poll(++pollGeneration);
+      }catch(error){target.insertAdjacentHTML('beforeend',`<div class="alert err storage61-rescan-confirm-error">${esc(error.message||String(error))}</div>`);button.disabled=false}
     };
     document.getElementById('sr61Cancel').onclick=async()=>{if(taskId){try{await api(`${endpoint()}/cancel`,{method:'POST'});poll(++pollGeneration)}catch(error){target.textContent=error.message||String(error)}}};
-    await loadPreflight();
+    await loadPreflight();syncFormat();
     if(taskId)poll(++pollGeneration);else{target.textContent='尚未创建扫描任务。';document.getElementById('sr61Cancel').disabled=true}
   };
 

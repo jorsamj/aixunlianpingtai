@@ -267,3 +267,98 @@ test('storage rescan uses backend preflight and submits real Agent execution mod
   await expect(page.locator('#sr61Status')).toContainText('内容变更 3');
   await expect(page.locator('#sr61Policy')).toBeVisible();
 });
+
+
+test('YOLO rescan keeps frontend request, review truth, mapping and conflict policy aligned', async ({page}) => {
+  let submitted = null;
+  let confirmation = null;
+  await page.route('**/api/v61/storage-sources', async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({items:[{
+        id:'s3-yolo-rescan',name:'YOLO 长期素材库',type:'s3',enabled:true,
+        health_status:'AVAILABLE',config:{endpoint:'https://s3.example.test',bucket:'materials',prefix:''},
+      }]}),
+    });
+  });
+  await page.route('**/api/v61/projects/*/storage-sources/s3-yolo-rescan/rescans/preflight', async route => {
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({
+        local_available:true,default_execution_mode:'local',
+        local_supported_formats:['images','yolo'],
+        agent_available:true,agent_supported_formats:['images','yolo'],reason:'',
+        eligible_nodes:[{node_id:'agent-yolo-01',display_name:'YOLO 节点 01'}],
+      }),
+    });
+  });
+  await page.route('**/api/v61/projects/*/storage-sources/s3-yolo-rescan/rescans', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    submitted=route.request().postDataJSON();
+    await route.fulfill({
+      status:202,contentType:'application/json',
+      body:JSON.stringify({
+        task_id:'yolo-rescan-ui',project_id:'browser-project',status:'QUEUED',
+        execution_mode:'agent',import_format:'yolo',dataset_yaml:'datasets/fire/data.yaml',
+        counts:{},annotation_counts:{},examples:{},annotation_examples:{},
+      }),
+    });
+  });
+  await page.route('**/api/v61/projects/*/storage-rescans/yolo-rescan-ui/confirm', async route => {
+    confirmation=route.request().postDataJSON();
+    await route.fulfill({
+      status:202,contentType:'application/json',
+      body:JSON.stringify({
+        task_id:'yolo-rescan-ui',project_id:'browser-project',status:'QUEUED',
+        execution_mode:'agent',import_format:'yolo',dataset_yaml:'datasets/fire/data.yaml',
+        counts:{NEW:1},annotation_counts:{ANNOTATION_CHANGED:2},examples:{},annotation_examples:{},
+      }),
+    });
+  });
+  let getCount=0;
+  await page.route('**/api/v61/projects/*/storage-rescans/yolo-rescan-ui', async route => {
+    getCount+=1;
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify(getCount===1?{
+        task_id:'yolo-rescan-ui',project_id:'browser-project',status:'AWAITING_CONFIRMATION',
+        execution_mode:'agent',import_format:'yolo',dataset_yaml:'datasets/fire/data.yaml',
+        worker_id:'agent:agent-yolo-01',counts:{NEW:1,MISSING:0,CHANGED:0,UNCHANGED:8},
+        annotation_counts:{ANNOTATION_NEW:1,ANNOTATION_CHANGED:2,ANNOTATION_REMOVED:1,ANNOTATION_CONFLICT:1,ANNOTATION_UNCHANGED:4,ANNOTATION_INVALID:0},
+        examples:{NEW:['images/train/new.jpg']},
+        annotation_examples:{ANNOTATION_CHANGED:['images/train/a.jpg'],ANNOTATION_CONFLICT:['images/train/manual.jpg']},
+        quality:{boxes:3,issues:{}},
+        external_classes:[{class_id:'0',name:'smoke',target_label_code:'smoke'}],
+      }:{
+        task_id:'yolo-rescan-ui',project_id:'browser-project',status:'SUCCEEDED',
+        execution_mode:'agent',import_format:'yolo',counts:{NEW:1},annotation_counts:{ANNOTATION_CHANGED:2},
+        examples:{},annotation_examples:{},
+      }),
+    });
+  });
+
+  await openStoragePage(page);
+  const row=page.locator('.storage61-row').filter({hasText:'YOLO 长期素材库'});
+  await row.getByRole('button',{name:'重新扫描 / 恢复'}).click();
+  await page.locator('#sr61Execution').selectOption('agent');
+  await page.locator('#sr61Format').selectOption('yolo');
+  await page.locator('#sr61DatasetYaml').fill('datasets/fire/data.yaml');
+  await page.getByRole('button',{name:'开始新的扫描'}).click();
+
+  await expect.poll(()=>submitted).toEqual({
+    execution_mode:'agent',import_format:'yolo',dataset_yaml:'datasets/fire/data.yaml',
+  });
+  await expect(page.locator('#sr61Status')).toContainText('标注变化 2');
+  await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
+  await expect(page.locator('#sr61Mapping')).toContainText('smoke');
+  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('smoke');
+  await page.locator('#sr61AnnotationRemoved').check();
+  await page.locator('#sr61AnnotationConflicts').check();
+  await page.getByRole('button',{name:'确认应用'}).click();
+  await expect.poll(()=>confirmation).not.toBeNull();
+  expect(confirmation.annotation_changed).toBe('update');
+  expect(confirmation.annotation_removed).toBe('clear');
+  expect(confirmation.annotation_conflicts).toBe('overwrite');
+  expect(confirmation.label_mapping).toEqual({'0':'smoke'});
+});
