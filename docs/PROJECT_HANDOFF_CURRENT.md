@@ -63,6 +63,44 @@ revert: keep external algorithm integration off main
 ---
 
 
+# 最新关闭：Canonical Annotation Schema v1
+
+2026-09-19，YOLO / COCO / Pascal VOC 已共享的外部标注 evidence 已正式收敛为 **Canonical Annotation Schema v1**，CLOSED。
+
+关键约束与实现：
+
+- 新增 `platform_core/annotation_schema.py`，统一拥有 schema version、source format/status 校验、source object identity、normalized bbox、class catalog digest、稳定 source digest。
+- Parser owner 未变化：YOLO / COCO / VOC 仍只负责各自格式发现与解析；Canonical Schema 不重写 parser。
+- `ImportCandidateStore.annotation_source_evidence()` 不再自行拼接/计算 schema，而统一调用 canonical builder。
+- v1 保持旧 evidence **字段集合与 source_digest 计算语义兼容**；历史已同步 annotation 不会因本次抽象层升级被整体误判为 CHANGED。
+- source object identity 仍冻结 key 对应的 size / ETag / SHA256；bbox 继续使用 normalized `cx/cy/w/h`。
+- consumer-side fencing 已补齐：
+  - 构建 annotation delta 前验证 canonical evidence；
+  - apply 到 AnnotationRepository 前再次验证 schema / digest；
+  - source_format 与当前 durable rescan request 必须一致；
+  - evidence object_key 与 delta object_key 必须一致；
+  - 被篡改、损坏或错格式 task artifact fail closed。
+- Canonical schema 仍与平台 AnnotationRepository truth 分离；它描述的是外部来源 evidence，不成为第二个 annotation owner。
+- Frontend Impact Review：**无需 UI 修改**。公共 task/API 字段、状态枚举、mapping/quality/confirmation 结构均未变化；Real Chrome 回归通过。
+
+最终代码 HEAD：`e262819dd7c4eb7a245e43eefc91bc452a4060fc`。
+
+验收：
+
+- Remote Material Import push：Ubuntu / Windows / API / Real Chrome success。
+- Canonical schema builder/validator 在 Ubuntu + Windows contract 中通过。
+- source_digest legacy compatibility 对 YOLO / COCO / VOC 均通过。
+- Consumer-side tamper / format mismatch fencing 通过。
+- Node Agent Executor、Remote Cleaning、Remote Training、Remote Conversion、Central Assignment、Portable Deployment、RKNN Board Runtime 等共享回归全部 success。
+- 当前代码 HEAD 共 16 个相关 workflow：16 success / 0 failure / 0 pending。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一主线：**
+
+1. 复用现有 `platform_core/snapshots.py` / Snapshot V3，扩展 Dataset Snapshot / Revision，而不是新建第二套 snapshot。
+2. 下一版 snapshot 要把训练使用的 canonical annotation schema/source truth 与现有 content SHA / annotation_hash / split / label_schema 一起冻结。
+3. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 继续独立 OPEN。
+
 # 最新关闭：Remote storage_rescan Phase 2C — Pascal VOC Annotation Delta
 
 2026-09-19，现有 `MATERIAL_IMPORT + mode=storage_rescan` 已完成 **Pascal VOC XML 标注增量同步**，Phase 2C CLOSED。至此 Phase 2 的 YOLO / COCO / Pascal VOC 三种 annotation delta 均进入同一 durable owner、同一 review/confirm/repository truth。

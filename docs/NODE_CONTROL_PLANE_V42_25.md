@@ -6,6 +6,31 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Canonical Annotation Schema v1
+
+2026-09-19，YOLO / COCO / Pascal VOC 的 task-owned review evidence 已正式进入统一 Canonical Annotation Schema v1。
+
+- Parser 不变；schema 层只规范共享 evidence。
+- v1 字段与旧 source_digest 语义兼容，防止历史同步标注被全量误判为变化。
+- source identity、class catalog、normalized bbox、split、annotation status 统一进入稳定 digest。
+- delta build 与 apply 两端均执行 canonical validation；artifact tamper、format/object mismatch fail closed。
+- Agent 与中央边界不变；Agent 不访问中央 SQLite/NFS，也没有新 owner。
+- Frontend Impact Review 结论：public contract 不变，无需 UI 修改；Real Chrome 已验证未回归。
+
+最终代码 HEAD：`e262819dd7c4eb7a245e43eefc91bc452a4060fc`。
+
+验收：
+
+- Remote Material Import push：Ubuntu / Windows / API / Real Chrome success。
+- Canonical schema builder/validator 在 Ubuntu + Windows contract 中通过。
+- source_digest legacy compatibility 对 YOLO / COCO / VOC 均通过。
+- Consumer-side tamper / format mismatch fencing 通过。
+- Node Agent Executor、Remote Cleaning、Remote Training、Remote Conversion、Central Assignment、Portable Deployment、RKNN Board Runtime 等共享回归全部 success。
+- 当前代码 HEAD 共 16 个相关 workflow：16 success / 0 failure / 0 pending。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一主线：**在现有 Snapshot V3 上实现 Dataset Snapshot / Revision 与 Canonical Annotation Schema 的冻结集成。
+
 ## 0. 最新关闭：Remote storage_rescan Phase 2C — Pascal VOC annotation delta
 
 2026-09-19，`MATERIAL_IMPORT + mode=storage_rescan` 已完成 Pascal VOC XML 增量同步，仍复用 Central Scheduler / assignment lease / execution lease / generation fencing / server-confirm / local Repository commit，没有第二套 VOC owner。
