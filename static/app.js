@@ -4148,7 +4148,7 @@ window.installUsability417?.();
   const num=(id,fallback)=>{const value=Number(document.getElementById(id)?.value);return Number.isFinite(value)?value:fallback};
   const splitState=()=>{
     const draft=state.trainingDraft||{};
-    return {mode:draft.splitMode||'random_test_from_training_pool',train:new Set(draft.materialIds||[]),test:new Set(draft.testMaterialIds||[]),experiment:draft.experimentPercent??20,validation:draft.validationPercent??20};
+    return {mode:draft.splitMode||'random_test_from_training_pool',train:new Set(draft.materialIds||[]),test:new Set(draft.testMaterialIds||[]),experiment:draft.experimentPercent??20,validation:draft.validationPercent??20,benchmarkReuseEnabled:Boolean(draft.benchmarkReuseEnabled)};
   };
   const benchmarkReuseState=algorithmId=>{
     const row=state.trainingBenchmarkReuse||{},wanted=String(algorithmId||state.trainingDraft?.algorithmId||'');
