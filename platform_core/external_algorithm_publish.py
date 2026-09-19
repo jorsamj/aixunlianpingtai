@@ -409,6 +409,45 @@ class ExternalAlgorithmPublishService:
             "compute_platforms": external_cache.get("compute_platforms") or [],
         }
 
+    def _current_compute_platform_ids(self) -> set[str]:
+        rows = self.external_repository.cache().get("compute_platforms") or []
+        result: set[str] = set()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            value = str(
+                row.get("computePlatformId")
+                or row.get("compute_platform_id")
+                or row.get("id")
+                or ""
+            ).strip()
+            if value:
+                result.add(value)
+        return result
+
+    def _assert_current_compute_platform(self, compute_platform_id: Any, *, target: str = "") -> str:
+        value = str(compute_platform_id or "").strip()
+        if not value:
+            return ""
+        current = self._current_compute_platform_ids()
+        if not current:
+            raise PlatformError(
+                "EXTERNAL_COMPUTE_PLATFORM_CACHE_REQUIRED",
+                "尚未同步畅联云算力环境",
+                f"转换目标 {target or '-'} 配置了算力环境 {value}，但本平台没有可校验的最新算力环境主数据。",
+                "请先在“配置中心 → 平台对接”执行“立即同步”，再重新选择算力环境。",
+                409,
+            )
+        if value not in current:
+            raise PlatformError(
+                "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE",
+                "畅联云算力环境映射已失效",
+                f"转换目标 {target or '-'} 当前映射的 computePlatformId={value} 已不在最近一次同步的算力环境中。",
+                "请先重新同步畅联云主数据，然后重新选择该转换目标对应的算力环境。",
+                409,
+            )
+        return value
+
     def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
         source_id = str(payload.storage_source_id or "").strip()
         if source_id and self.storage_sources_factory().get(source_id) is None:
@@ -421,6 +460,9 @@ class ExternalAlgorithmPublishService:
                 "ARTIFACT_PUBLIC_URL_INVALID", "模型下载服务地址格式不正确", str(payload.public_base_url),
                 "请填写以 http:// 或 https:// 开头的本平台外部访问地址。", 422,
             )
+        for target, mapping in payload.target_mappings.items():
+            if mapping.enabled and str(mapping.compute_platform_id or "").strip():
+                self._assert_current_compute_platform(mapping.compute_platform_id, target=str(target))
         saved = self.repository.save_config(payload)
         # Backward compatible: an existing publication storage choice becomes the platform model-asset storage.
         if source_id:
@@ -557,7 +599,12 @@ class ExternalAlgorithmPublishService:
         row = mappings.get(str(target)) or {}
         if not isinstance(row, dict) or row.get("enabled") is False or not str(row.get("compute_platform_id") or "").strip():
             return None
-        return dict(row)
+        mapping = dict(row)
+        mapping["compute_platform_id"] = self._assert_current_compute_platform(
+            mapping.get("compute_platform_id"),
+            target=str(target),
+        )
+        return mapping
 
     @staticmethod
     def _remote_version_id(row: Mapping[str, Any]) -> str:
