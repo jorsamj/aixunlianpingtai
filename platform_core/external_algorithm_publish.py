@@ -565,7 +565,7 @@ class ExternalAlgorithmPublishService:
                 raw = str(output.get("path") or "").strip()
                 if raw:
                     candidates.append((target, Path(raw).expanduser(), chip))
-        dedupe: set[tuple[str, str]] = set()
+        dedupe: set[tuple[str, str, str]] = set()
         result: list[Dict[str, Any]] = []
         for target, path, chip in candidates:
             try:
@@ -575,11 +575,14 @@ class ExternalAlgorithmPublishService:
             if not path.is_file() or path.stat().st_size <= 0:
                 continue
             digest = _sha256(path)
-            key = (target, digest)
+            chip_identity = _canonical_chip_code(chip)
+            key = (target, chip_identity, digest)
             if key in dedupe:
                 continue
             dedupe.add(key)
-            artifact_id = hashlib.sha256(f"{project_id}:{algorithm_id}:{version_id}:{target}:{digest}".encode("utf-8")).hexdigest()[:32]
+            artifact_id = hashlib.sha256(
+                f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_identity}:{digest}".encode("utf-8")
+            ).hexdigest()[:32]
             result.append({
                 "artifact_id": artifact_id,
                 "project_id": project_id,
@@ -590,7 +593,7 @@ class ExternalAlgorithmPublishService:
                 "source_path": str(path),
                 "sha256": digest,
                 "size_bytes": path.stat().st_size,
-                "chip_code": chip,
+                "chip_code": chip_identity,
             })
         return result
 
