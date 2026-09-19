@@ -13,7 +13,7 @@ test('publish config normalizes storage, compute mappings and recovery paths', (
       public_base_url: 'https://algorithm.example.com',
       publish_original_model: true,
       target_mappings: {
-        rockchip: {compute_platform_id: 'cp-rk', chip_code: 'RK3588', enabled: true},
+        rockchip: {compute_platform_id: 'cp-rk', chip_code: 'RK3568', enabled: true},
       },
     },
     storage_sources: [{id: 'oss-models', name: '模型 OSS', type: 'oss'}],
@@ -23,7 +23,7 @@ test('publish config normalizes storage, compute mappings and recovery paths', (
   assert.equal(config.publicBaseUrl, 'https://algorithm.example.com');
   assert.equal(config.publishOriginalModel, true);
   assert.equal(config.targetMappings.rockchip.compute_platform_id, 'cp-rk');
-  assert.equal(config.targetMappings.rockchip.chip_code, 'RK3588');
+  assert.equal(config.targetMappings.rockchip.chip_code, 'RK3568');
   assert.equal(config.versionListByProduct, '/algorithm-version/listByProduct/{productId}');
   assert.equal(config.weightListByVersion, '/algorithm-weight/listByVersion/{algoVersionId}');
   assert.equal(config.storageSources.length, 1);
