@@ -251,9 +251,11 @@ installNavigationStability({
   requestScope: pageRequestScope,
   pollRegistry,
   persistNavigationState: currentState => persistUiState(currentState),
-  waitForNavigationReady: () => {
-    if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
-    return Promise.resolve();
+  waitForNavigationReady: async requestedPage => {
+    if (!state.uiReady && window.__v53InitPromise) await window.__v53InitPromise;
+    if (requestedPage === '测试发布' && typeof window.loadPageExtras413 === 'function') {
+      await window.loadPageExtras413(requestedPage);
+    }
   },
   beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
   performNavigation: page => {

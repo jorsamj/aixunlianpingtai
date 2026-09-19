@@ -3662,8 +3662,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(st&&!st.pending){const imgs=await safe(api(`/api/projects/${id}/images`));if(Array.isArray(imgs)){state.images=imgs;if(state.page==='数据集')renderDatasets424();try{renderSummary()}catch(e){}}}
     }finally{state.__annPoll412=false}
   }
-  async function extras412(){
-    if(!state.project)return;const id=state.project.id,page=state.page,tasks=[];
+  async function extras412(pageOverride){
+    if(!state.project)return;const id=state.project.id,page=String(pageOverride||state.page||''),tasks=[];
     const load=(key,url,field)=>tasks.push(api(url).then(value=>{state[key]=field?(value?.[field]||[]):value}));
     if(['训练任务','训练资源','自动迭代'].includes(page))load('targets',`/api/training_options?project_id=${id}`,'targets');
     if(['算法列表','训练任务','自动迭代'].includes(page))load('jobs',`/api/projects/${id}/jobs`);
@@ -4588,6 +4588,13 @@ window.installUsability417?.();
   renderTest=window.renderTest=function(){
     previousRenderTest63();
     const root=document.getElementById('view');
+    const readyEnvironment=(state.inferenceEnvs||[]).some(item=>item?.status==='ready');
+    const runButton=[...(root?.querySelectorAll?.('button')||[])].find(button=>button.textContent.trim()==='开始测试');
+    if(runButton){
+      const ready=!!(state.testModels||[]).length&&readyEnvironment;
+      runButton.disabled=!ready;
+      runButton.title=ready?'':'正在读取可用测试模型和推理环境';
+    }
     if(root&&!document.getElementById('onlineFeedback63')){
       root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本的测试结果可进入人工复核；确认后才允许提升为素材/标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">正在读取…</span><button class="btn small" onclick="openExternalFeedbackIntake63()">外部接入</button><button class="btn small" onclick="loadOnlineFeedback63()">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63"><tr><td colspan="6">正在读取…</td></tr></tbody></table></div></section>`);
     }
@@ -4596,7 +4603,7 @@ window.installUsability417?.();
 
   window.openExternalFeedbackIntake63=function(){
     const endpoint='/api/v63/projects/'+pid()+'/online-feedback/external-intake';
-    modal('外部抽检接入',`<div class="form online-feedback-intake63"><div class="alert soft"><b>统一进入待复核</b><span>外部 SaaS / 边缘端只能提交审核证据，不会自动修改素材、数据集、Dataset Revision 或训练任务。</span></div><div class="field"><label>接口</label><input class="input mono" readonly value="${esc(endpoint)}"></div><div class="field"><label>请求格式</label><input class="input mono" readonly value="multipart/form-data"></div><div class="table-wrap"><table class="table mini-table"><thead><tr><th>字段</th><th>要求</th></tr></thead><tbody><tr><td>algorithm_id / version_id</td><td>必须指向正式算法版本</td></tr><tr><td>model_sha256</td><td>必须与正式版本模型 SHA 一致</td></tr><tr><td>external_source / external_sample_id</td><td>外部来源与稳定样本编号</td></tr><tr><td>feedback_type</td><td>correct / false_positive / needs_correction</td></tr><tr><td>detections_json</td><td>预测框 JSON 数组</td></tr><tr><td>file</td><td>真实图片，最大 20MB</td></tr></tbody></table></div><div class="row end"><button class="btn primary" onclick="closeModal()">关闭</button></div></div>`,true);
+    modal('外部抽检接入',`<div class="form online-feedback-intake63"><div class="alert soft"><b>统一进入待复核</b><span>外部 SaaS / 边缘端只能提交审核证据，不会自动修改素材、数据集、Dataset Revision 或训练任务。</span></div><div class="field"><label>接口</label><input id="feedbackExternalEndpoint63" class="input mono" readonly value="${esc(endpoint)}"></div><div class="field"><label>请求格式</label><input id="feedbackExternalFormat63" class="input mono" readonly value="multipart/form-data"></div><div class="table-wrap"><table class="table mini-table"><thead><tr><th>字段</th><th>要求</th></tr></thead><tbody><tr><td>algorithm_id / version_id</td><td>必须指向正式算法版本</td></tr><tr><td>model_sha256</td><td>必须与正式版本模型 SHA 一致</td></tr><tr><td>external_source / external_sample_id</td><td>外部来源与稳定样本编号</td></tr><tr><td>feedback_type</td><td>correct / false_positive / needs_correction</td></tr><tr><td>detections_json</td><td>预测框 JSON 数组</td></tr><tr><td>file</td><td>真实图片，最大 20MB</td></tr></tbody></table></div><div class="row end"><button class="btn primary" onclick="closeModal()">关闭</button></div></div>`,true);
   };
 
   // Legacy v42 entry points are compatibility aliases only. They must not

@@ -55,13 +55,17 @@ jobs:
       - name: Feedback API contracts
         run: python -m pytest -q tests/api/test_online_feedback.py
       - name: Classic app syntax
-        run: node --check static/app.js
+        run: |
+          node --check static/app.js
+          node --check static/main.mjs
       - name: Permanent feedback guards
         shell: bash
         run: |
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           grep -Fq 'feedback_eligible' app.py
           grep -Fq 'predictBeforeFeedback63' static/app.js
+          grep -Fq 'loadPageExtras413(requestedPage)' static/main.mjs
+          grep -Fq 'feedbackExternalEndpoint63' static/app.js
           grep -Fq '/api/v63/projects/{project_id}/online-feedback' app.py
           grep -Fq 'confirm_all_labels_absent' app.py
           grep -Fq 'get_by_content_sha256' platform_core/material_repository.py
