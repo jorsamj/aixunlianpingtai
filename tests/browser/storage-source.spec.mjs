@@ -262,9 +262,9 @@ test('storage rescan uses backend preflight and submits real Agent execution mod
   expect(submitted).toEqual({execution_mode: 'agent'});
   await expect(page.locator('#sr61Status')).toContainText('待确认');
   await expect(page.locator('#sr61Status')).toContainText('远程 Agent');
-  await expect(page.locator('#sr61Status')).toContainText('新增 2');
-  await expect(page.locator('#sr61Status')).toContainText('缺失 1');
-  await expect(page.locator('#sr61Status')).toContainText('内容变更 3');
+  await expect(page.locator('#sr61Status')).toContainText('新增图片 2');
+  await expect(page.locator('#sr61Status')).toContainText('缺失图片 1');
+  await expect(page.locator('#sr61Status')).toContainText('图片变化 3');
   await expect(page.locator('#sr61Policy')).toBeVisible();
 });
 
