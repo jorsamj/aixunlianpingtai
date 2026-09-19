@@ -10,6 +10,7 @@ on:
       - 'static/main.mjs'
       - 'static/app.js'
       - 'static/modules/training-create-hydration.js'
+      - 'static/modules/training-draft.js'
       - 'static/modules/training-submit.js'
       - 'tests/frontend/training-create-hydration.test.mjs'
       - 'tests/frontend/training-modal-device-probe.test.mjs'
@@ -33,6 +34,7 @@ jobs:
       - name: Syntax check
         run: >-
           node --check static/modules/training-create-hydration.js &&
+          node --check static/modules/training-draft.js &&
           node --check static/modules/training-submit.js &&
           node --check static/main.mjs &&
           node --check tests/frontend/training-create-hydration.test.mjs &&
@@ -50,6 +52,10 @@ jobs:
           grep -Fq "training-create-hydration-422532" static/modules/training-create-hydration.js
           grep -Fq 'supplementCandidateContext' static/modules/training-submit.js
           grep -Fq 'supplement_candidate_set_id' static/modules/training-submit.js
+          grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js
+          grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
+          grep -Fq '/benchmark-reuse' static/app.js
+          grep -Fq 'verified fixed benchmark stays aligned from backend availability to training submit' tests/browser/training-create-first-open.spec.mjs
           grep -Fq 'window.TrainingSubmitRuntime?.updateReadiness?.();' static/app.js
           grep -Fq '/api/training_options?project_id=' static/modules/training-create-hydration.js
           grep -Fq '/api/system/recommendation' static/modules/training-create-hydration.js

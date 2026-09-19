@@ -224,3 +224,36 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   expect(submitted.supplement_candidate_set_id).toBe('a'.repeat(64));
   expect(submitted.train_image_ids).toEqual(['feedback-material', 'normal-material']);
 });
+
+
+test('verified fixed benchmark stays aligned from backend availability to training submit', async ({page, request}) => {
+  const {project, algorithmId} = await seedProject(request);
+  let submitted = null;
+  const scopeId = 'b'.repeat(64);
+  await page.route('**/api/training_options**', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targets:[{id:'benchmark-training-target',name:'Benchmark Training',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Ultralytics Detect',base_model:'yolo11n.pt',default_epochs:20,default_imgsz:640,default_batch:4}],base_models:[{value:'yolo11n.pt',label:'YOLO11n'}]}]})}));
+  await page.route('**/api/system/recommendation', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({device:'cpu',batch:4,workers:0})}));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));
+  await page.route('**/api/v12/projects/*/algorithms/*/benchmark-reuse', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({available:true,algorithm_id:algorithmId,source_version_id:'benchmark-version',source_version_name:'20260919150000',scope_id:scopeId,snapshot_id:'snapshot-benchmark',test_image_count:11,binding_level:'bundle_verified'})}));
+  await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {const body=route.request().postDataJSON(),count=Array.isArray(body?.image_ids)?body.image_ids.length:0;await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({requested_count:count,matched_count:count,eligible_count:count,eligible_total:count,box_count:count,size_bytes:count*1024,label_codes:['smoke'],label_counts:{smoke:count},repository_revision:1})});});
+  await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{id:'train_benchmark_browser'}})});});
+  await page.addInitScript(projectId => {localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page:'算法列表'}));}, project.id);
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  await page.evaluate(({algorithmId}) => {const asset=(state.algorithms||[]).find(row=>String(row?.id||'')===String(algorithmId));if(!asset)throw new Error('algorithm missing from browser state');asset.current_version_id='benchmark-version';asset.versions=[{id:'benchmark-version',version_name:'20260919150000',training_status:'SUCCEEDED',artifact_verified:true,trainable:true,framework:'ultralytics',label_schema:[{code:'smoke',class_id:0}]}];}, {algorithmId});
+  const card=page.locator('.alg428-card',{hasText:'首次打开配置回归'});
+  await card.getByRole('button',{name:'训练'}).click();
+  const dialog=page.getByRole('dialog',{name:'训练 · 首次打开配置回归'});
+  await expect(dialog).toBeVisible({timeout:10000});
+  await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
+  await expect(dialog.locator('#trV3BenchmarkReuse')).toBeChecked();
+  await expect(dialog.locator('[data-benchmark-mode]')).toContainText('服务端固定 Benchmark');
+  await page.evaluate(({algorithmId}) => {window.TrainingDraftRuntime.update({algorithmId});window.TrainingDraftRuntime.setMaterialIds(['train-material-a','train-material-b']);window.TrainingSubmitRuntime.updateReadiness();}, {algorithmId});
+  const submitButton=dialog.getByRole('button',{name:'开始训练'});
+  await expect(submitButton).toBeEnabled();
+  await submitButton.click();
+  await expect.poll(()=>submitted).not.toBeNull();
+  expect(submitted.benchmark_source_version_id).toBe('benchmark-version');
+  expect(submitted.benchmark_scope_id).toBe(scopeId);
+  expect(submitted.test_image_ids).toBeUndefined();
+  expect(submitted.experiment_percent).toBeUndefined();
+});
