@@ -47,7 +47,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 python-multipart pillow pyyaml requests filelock keyring cryptography boto3 oss2 pydantic
+        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 python-multipart pillow pyyaml requests psutil filelock keyring cryptography boto3 oss2 pydantic
       - name: Compile feedback runtime
         run: python -m py_compile app.py platform_core/online_feedback.py platform_core/material_repository.py platform_core/annotation_repository.py
       - name: Feedback repository contracts
