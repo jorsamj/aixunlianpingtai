@@ -96,4 +96,6 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /credentialBackendText/);
   assert.match(source, /MC_SECRET_MASTER_KEY/);
   assert.match(source, /安全存储不可用/);
+  assert.match(source, /data-external-automation-settings="1"/);
+  assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
 });
