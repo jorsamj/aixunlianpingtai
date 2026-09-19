@@ -4804,6 +4804,22 @@ window.installUsability417?.();
     const v=(a?.versions||[]).find(row=>String(row.id)===String(vid));
     const confirmed=v?.confirmed_iteration_action;
     if(confirmed?.status==='confirmed'&&confirmed.action==='supplement_data'){
+      const candidateSet=v?.supplement_data_candidate_set||null;
+      const labels=confirmed?.data_draft?.weak_labels||[];
+      // Persisted action truth owns the draft. Restore it before opening any
+      // candidate review so stable render/navigation cannot erase the source
+      // weak-label context after the confirm response.
+      state.iterationDataDraft={
+        ...(confirmed?.data_draft||{}),
+        feedback_candidate_set:candidateSet,
+      };
+      state.data412Labels=new Set(labels);
+      state.data429Labels=new Set(labels);
+      state.iterationFeedbackCandidateIds63=new Set((candidateSet?.material_ids||[]).map(String));
+      state.iterationFeedbackOnly63=!!state.iterationFeedbackCandidateIds63.size;
+      if(candidateSet?.candidate_set_id){
+        return enterSupplementDataset63(aid,vid,confirmed,candidateSet);
+      }
       return window.openSupplementFeedbackCandidates63(aid,vid,confirmed);
     }
     return resumeConfirmedIterationActionFeedback63?.(aid,vid);

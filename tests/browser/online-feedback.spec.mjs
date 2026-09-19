@@ -321,11 +321,13 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
   }})).json();
   const encoded=encodeURIComponent(project.id);
   let freezePayload=null;
+  let candidateListCalls=0;
   const requested=[];
   page.on('request',req=>requested.push(req.url()));
 
   await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-supp/versions/ver-supp/supplement-data-candidates`,async route=>{
     if(route.request().method()!=='GET')return route.continue();
+    candidateListCalls+=1;
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
       ok:true,action_id:'d'.repeat(64),total:2,returned:2,truncated:false,eligible:1,annotation_required:1,candidate_set:null,
       items:[
@@ -396,6 +398,20 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
   }]});
   await expect(page.getByText('已冻结反馈候选 1 张')).toBeVisible();
   await expect(page.getByText('尚未生成 Dataset Revision、Snapshot 或训练任务。')).toBeVisible();
+  expect(candidateListCalls).toBe(1);
+
+  // Persisted Candidate Set resumes directly to Dataset truth after a fresh
+  // transient UI state; it must not reopen/re-fetch the candidate review.
+  await page.evaluate(async()=>{
+    state.iterationDataDraft=null;
+    state.iterationFeedbackCandidateIds63=new Set();
+    state.iterationFeedbackOnly63=false;
+    await window.resumeConfirmedIterationAction429('algo-supp','ver-supp');
+  });
+  await expect.poll(async()=>page.evaluate(()=>state.iterationDataDraft?.weak_labels||[]))
+    .toEqual(['smoke']);
+  await expect(page.locator('.iteration-feedback-candidates63')).toContainText('已冻结反馈候选 1 张');
+  expect(candidateListCalls).toBe(1);
   expect(requested.some(url=>url.includes('/train/start'))).toBeFalsy();
   expect(requested.some(url=>url.includes('dataset_revisions'))).toBeFalsy();
 });
