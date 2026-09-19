@@ -11,6 +11,7 @@ from platform_core.external_algorithm_platform import (
     PROVIDER_CHANGLIAN,
     SOURCE_EXTERNAL,
     algorithm_is_external_readonly,
+    assert_external_algorithm_master_data_current,
     mirror_products_to_algorithms,
     resolve_external_training_analysis,
 )
@@ -363,6 +364,45 @@ def test_sync_mirror_failure_restores_previous_master_data_cache(tmp_path: Path,
     assert restored["compute_platforms"] == previous_cache["compute_platforms"]
     assert list_algorithms(algorithms_path) == []
     assert service.repository.history()[0]["status"] == "failed"
+
+
+def test_sync_binds_algorithm_mirror_to_master_data_digest(tmp_path: Path):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    algorithms_path = tmp_path / "project-digest" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    service.sync(project_id="p-digest", algorithms_path=algorithms_path)
+
+    cache = service.repository.cache()
+    row = list_algorithms(algorithms_path)[0]
+    assert len(cache["master_data_digest"]) == 64
+    assert row["external_master_data_digest"] == cache["master_data_digest"]
+    assert_external_algorithm_master_data_current(tmp_path, row)
+
+
+def test_readiness_and_training_guard_reject_stale_project_master_data(tmp_path: Path):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    algorithms_path = tmp_path / "project-stale-digest" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="p-stale-digest", algorithms_path=algorithms_path)
+    row = list_algorithms(algorithms_path)[0]
+
+    changed_cache = dict(service.repository.cache())
+    changed_cache["master_data_digest"] = "f" * 64
+    service.repository.save_cache(changed_cache)
+
+    readiness = service.readiness(algorithms_path=algorithms_path)
+    project = next(item for item in readiness["checks"] if item["key"] == "project_algorithms")
+    assert project["status"] == "blocked"
+    assert "旧主数据" in project["detail"]
+    assert readiness["ready"] is False
+
+    with pytest.raises(Exception) as error:
+        assert_external_algorithm_master_data_current(tmp_path, row)
+    assert getattr(error.value, "code", "") == "EXTERNAL_MASTER_DATA_STALE"
+    assert getattr(error.value, "status_code", 409) == 409
 
 
 def test_auto_sync_due_respects_switch_and_interval(tmp_path: Path):
