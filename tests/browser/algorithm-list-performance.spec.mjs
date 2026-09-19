@@ -409,6 +409,10 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('算法列表'));
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+  await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
+    .toBe('algorithm-list-runtime-422503');
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412))
+    .toBe(true);
   await page.evaluate(() => {
     state.algorithms = [{
       id:'algo-lineage-1',name:'溯源验收算法',industry:'测试',
