@@ -300,7 +300,18 @@ test('external feedback intake contract is exposed from reviewed feedback panel'
   await page.route('**/api/v63/projects/'+encoded+'/online-feedback?*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,items:[]})}));
   await page.addInitScript(projectId=>{localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'测试发布'}));},project.id);
   await page.goto('/');
-  await page.evaluate(()=>window.setPage('测试发布'));
+  await expect.poll(async()=>page.evaluate(projectId=>(state.projects||[]).some(row=>String(row.id)===String(projectId)),project.id)).toBe(true);
+  await page.evaluate(projectId=>{
+    const selected=(state.projects||[]).find(row=>String(row.id)===String(projectId));
+    if(!selected)throw new Error('test project is missing from loaded project truth');
+    state.project=selected;
+    try{
+      const saved=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');
+      saved.projectId=projectId;saved.page='测试发布';
+      localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(saved));
+    }catch(_){}
+    window.setPage('测试发布');
+  },project.id);
   await page.getByRole('button',{name:'外部接入'}).click();
   const dialog=page.getByRole('dialog',{name:'外部抽检接入'});
   await expect(dialog.locator('#feedbackExternalEndpoint63')).toHaveValue('/api/v63/projects/'+project.id+'/online-feedback/external-intake');
