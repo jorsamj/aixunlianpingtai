@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {
   algorithmSourceLabel,
   externalAlgorithmMapping,
+  externalAlgorithmTrainingReadiness,
   externalAnalysisOptions,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
@@ -60,6 +61,40 @@ test('external analysis options preserve all synced analysis methods', () => {
   assert.deepEqual(options.map(row => row.name), ['视觉分析 A', '视觉分析 B']);
 });
 
+test('external training readiness mirrors backend master-data fencing', () => {
+  const current = {
+    source_type: 'EXTERNAL',
+    provider_type: 'CHANG_LIAN',
+    external_active: true,
+    external_master_data_digest: 'digest-current',
+  };
+  assert.deepEqual(externalAlgorithmTrainingReadiness(current, 'digest-current'), {
+    ready: true, status: 'current', reason: '', message: '',
+  });
+
+  const stale = externalAlgorithmTrainingReadiness(current, 'digest-new');
+  assert.equal(stale.ready, false);
+  assert.equal(stale.status, 'stale');
+  assert.equal(stale.reason, 'external-master-data-stale');
+  assert.match(stale.message, /立即同步/);
+
+  const missingDigest = externalAlgorithmTrainingReadiness(
+    {...current, external_master_data_digest: ''},
+    'digest-current',
+  );
+  assert.equal(missingDigest.ready, false);
+  assert.equal(missingDigest.status, 'stale');
+
+  const inactive = externalAlgorithmTrainingReadiness(
+    {...current, external_active: false},
+    'digest-current',
+  );
+  assert.equal(inactive.ready, false);
+  assert.equal(inactive.status, 'inactive');
+
+  assert.equal(externalAlgorithmTrainingReadiness({id: 'local'}, '').ready, true);
+});
+
 test('external mapping exposes provider ids and sync state', () => {
   const mapping = externalAlgorithmMapping({
     source_type: 'EXTERNAL',
@@ -102,6 +137,9 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /人员网页登录账号不参与机器接口调用/);
   assert.match(source, /\/readiness\?project_id=/);
   assert.match(source, /loadReadiness/);
+  assert.match(source, /data-external-stale/);
+  assert.match(source, /external-master-data-stale/);
+  assert.match(source, /trainingReadiness/);
 });
 
 
