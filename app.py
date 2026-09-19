@@ -1431,7 +1431,7 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
 
 class StorageRescanCreateReq(BaseModel):
     execution_mode: Literal["local", "agent"] = "local"
-    import_format: Literal["images", "yolo"] = "images"
+    import_format: Literal["images", "yolo", "coco"] = "images"
     dataset_yaml: str = ""
 
     @model_validator(mode="after")
@@ -1561,8 +1561,8 @@ def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str
     return {
         'agent_available': True,
         'reason': '',
-        'agent_supported_formats': ['images', 'yolo'],
-        'local_supported_formats': ['images', 'yolo'],
+        'agent_supported_formats': ['images', 'yolo', 'coco'],
+        'local_supported_formats': ['images', 'yolo', 'coco'],
         'eligible_nodes': [
             {
                 'node_id': str(node.get('node_id') or ''),
@@ -1578,7 +1578,7 @@ def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str
 def storage_rescan_preflight(project_id: str, source_id: str):
     result = _storage_rescan_agent_preflight(project_id, source_id)
     result.setdefault('agent_supported_formats', [])
-    result.setdefault('local_supported_formats', ['images', 'yolo'])
+    result.setdefault('local_supported_formats', ['images', 'yolo', 'coco'])
     return {
         'local_available': True,
         'default_execution_mode': 'local',
@@ -1690,7 +1690,7 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
     annotation_confirmation = None
     labels_to_create: List[str] = []
     try:
-        if import_format == 'yolo':
+        if import_format in {'yolo', 'coco'}:
             manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
             store = RescanCandidateStore(manifest)
             quality = store.quality_summary()
@@ -1712,7 +1712,7 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
                 'accept_quality_report': payload.accept_quality_report,
             }
         elif payload.label_mapping or payload.create_labels:
-            raise ValueError('仅 YOLO 重新扫描允许提交外部类别映射')
+            raise ValueError('仅标注重新扫描允许提交外部类别映射')
         confirm_rescan(
             artifacts,
             task_id,

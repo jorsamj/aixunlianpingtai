@@ -816,3 +816,75 @@ def test_yolo_rescan_confirmation_freezes_intent_before_label_creation(
     )
     assert response.status_code == 202, response.text
     assert events == ["freeze", "label"]
+
+
+def test_agent_coco_storage_rescan_uses_same_durable_owner_and_format_contract(
+    client, tmp_path, monkeypatch,
+):
+    project = _project(client)
+    source = _source(client, tmp_path, source_type="s3")
+    calls = []
+
+    class FakeTransport:
+        def stage_material_storage_scan(self, **kwargs):
+            calls.append(dict(kwargs))
+            return {
+                "version": 1,
+                "task_kind": "MATERIAL_IMPORT",
+                "transport": "object-storage-v1",
+                "material_import": {
+                    "schema_version": 1,
+                    "mode": "storage_scan",
+                    "intent": "storage_rescan",
+                    "import_format": kwargs["import_format"],
+                    "dataset_yaml": "",
+                    "source": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "prefix": "",
+                        "recursive": True,
+                    },
+                    "target": {
+                        "storage_source_id": source["id"],
+                        "storage_type": "s3",
+                        "target_prefix": "",
+                    },
+                    "output": {
+                        "storage_source_id": source["id"],
+                        "object_key": "remote-execution/coco-rescan-review.zip",
+                        "file_name": "material-review.zip",
+                        "content_type": "application/zip",
+                    },
+                },
+            }
+
+    monkeypatch.setattr(
+        app_module,
+        "_storage_rescan_agent_preflight",
+        lambda _project_id, _source_id: {
+            "agent_available": True,
+            "reason": "",
+            "agent_supported_formats": ["images", "yolo", "coco"],
+            "local_supported_formats": ["images", "yolo", "coco"],
+            "eligible_nodes": [{"node_id": "agent-1", "display_name": "Agent 1"}],
+        },
+    )
+    monkeypatch.setattr(app_module, "_remote_execution_transport_service", lambda: FakeTransport())
+
+    response = client.post(
+        f"/api/v61/projects/{project['id']}/storage-sources/{source['id']}/rescans",
+        json={"execution_mode": "agent", "import_format": "coco"},
+    )
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    task = app_module.shared_task_repository().get(task_id)
+    request = app_module.shared_task_artifacts().read_json(task_id, "request.json")
+    assert task.kind is TaskKind.MATERIAL_IMPORT
+    assert task.required_capabilities == ("agent.remote",)
+    assert request["import_format"] == "coco"
+    assert request["dataset_yaml"] == ""
+    assert request["remote_execution"]["material_import"]["intent"] == "storage_rescan"
+    assert calls[-1]["import_format"] == "coco"
+    assert calls[-1]["dataset_yaml"] == ""
+    assert calls[-1]["allow_root"] is True
+    assert "credentials" not in str(request).lower()

@@ -504,7 +504,7 @@ window.__resourceDiscoveryDependencies={
     const savedKey=`mc_storage_rescan_${project}_${sourceId}`;
     let taskId='',pollGeneration=0,preflight=null,lastTask=null;
     try{taskId=localStorage.getItem(savedKey)||''}catch(_){}
-    modal('存储源重新扫描 / 恢复',`<div class="form two"><div class="field"><label>执行位置</label><select id="sr61Execution" class="select"><option value="local">中央 Worker</option><option id="sr61AgentOption" value="agent" disabled>远程 Agent</option></select></div><div class="field"><label>执行资源</label><div id="sr61AgentTruth" class="item-sub">正在检查可用节点…</div></div><div class="field"><label>扫描内容</label><select id="sr61Format" class="select"><option value="images">仅图片</option><option value="yolo">图片 + YOLO 标注</option></select></div><div class="field"><label>YOLO data.yaml</label><input id="sr61DatasetYaml" class="input" disabled placeholder="可留空自动发现"></div></div><div id="sr61Status">正在读取任务…</div><div id="sr61Policy" hidden><div class="storage61-import-quality"><b>图片同步策略</b><label><input id="sr61New" type="checkbox" checked> 建立新增图片索引（YOLO 模式包含对应标注）</label><br><label><input id="sr61Missing" type="checkbox" checked> 缺失图片标记不可用</label><br><label><input id="sr61Changed" type="checkbox" checked> 更新图片内容变化</label></div><div id="sr61AnnotationPolicy" class="storage61-import-quality" hidden><b>YOLO 标注同步策略</b><label><input id="sr61AnnotationChanged" type="checkbox" checked> 同步已有图片的新增和变化标注</label><br><label><input id="sr61AnnotationRemoved" type="checkbox"> 外部标注删除时清空平台标注</label><br><label><input id="sr61AnnotationConflicts" type="checkbox"> 覆盖与平台人工修改冲突的标注</label><div id="sr61Quality"></div><div id="sr61Mapping"></div></div><div class="row end"><button id="sr61Confirm" class="btn primary">确认应用</button></div></div><div class="row end"><button id="sr61Start" class="btn primary">开始新的扫描</button><button id="sr61Cancel" class="btn">取消任务</button><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
+    modal('存储源重新扫描 / 恢复',`<div class="form two"><div class="field"><label>执行位置</label><select id="sr61Execution" class="select"><option value="local">中央 Worker</option><option id="sr61AgentOption" value="agent" disabled>远程 Agent</option></select></div><div class="field"><label>执行资源</label><div id="sr61AgentTruth" class="item-sub">正在检查可用节点…</div></div><div class="field"><label>扫描内容</label><select id="sr61Format" class="select"><option value="images">仅图片</option><option value="yolo">图片 + YOLO 标注</option><option value="coco">图片 + COCO 标注</option></select></div><div class="field"><label>YOLO data.yaml</label><input id="sr61DatasetYaml" class="input" disabled placeholder="可留空自动发现"></div></div><div id="sr61Status">正在读取任务…</div><div id="sr61Policy" hidden><div class="storage61-import-quality"><b>图片同步策略</b><label><input id="sr61New" type="checkbox" checked> 建立新增图片索引（标注模式同时导入对应标注）</label><br><label><input id="sr61Missing" type="checkbox" checked> 缺失图片标记不可用</label><br><label><input id="sr61Changed" type="checkbox" checked> 更新图片内容变化</label></div><div id="sr61AnnotationPolicy" class="storage61-import-quality" hidden><b>外部标注同步策略</b><label><input id="sr61AnnotationChanged" type="checkbox" checked> 同步已有图片的新增和变化标注</label><br><label><input id="sr61AnnotationRemoved" type="checkbox"> 外部标注删除时清空平台标注</label><br><label><input id="sr61AnnotationConflicts" type="checkbox"> 覆盖与平台人工修改冲突的标注</label><div id="sr61Quality"></div><div id="sr61Mapping"></div></div><div class="row end"><button id="sr61Confirm" class="btn primary">确认应用</button></div></div><div class="row end"><button id="sr61Start" class="btn primary">开始新的扫描</button><button id="sr61Cancel" class="btn">取消任务</button><button class="btn" onclick="closeModal()">关闭</button></div>`,true);
     const target=document.getElementById('sr61Status'),selection=document.getElementById('sr61Policy'),execution=document.getElementById('sr61Execution'),agentOption=document.getElementById('sr61AgentOption'),agentTruth=document.getElementById('sr61AgentTruth'),format=document.getElementById('sr61Format'),yaml=document.getElementById('sr61DatasetYaml'),annotationPolicy=document.getElementById('sr61AnnotationPolicy'),qualityBox=document.getElementById('sr61Quality'),mappingBox=document.getElementById('sr61Mapping');
     const endpoint=()=>`${base}/storage-rescans/${encodeURIComponent(taskId)}`;
     const active=()=>document.getElementById('sr61Status')===target;
@@ -512,12 +512,12 @@ window.__resourceDiscoveryDependencies={
     const statusName=status=>({QUEUED:'排队中',RUNNING:'执行中',AWAITING_CONFIRMATION:'待确认',SUCCEEDED:'已完成',PARTIAL_SUCCESS:'部分完成',FAILED:'失败',CANCELLED:'已取消',CANCEL_REQUESTED:'正在取消',BLOCKED_BY_ENVIRONMENT:'环境阻塞',BLOCKED_BY_HARDWARE:'硬件阻塞'}[status]||status||'-');
     const annotationNames={ANNOTATION_NEW:'新增标注',ANNOTATION_CHANGED:'标注变化',ANNOTATION_REMOVED:'标注缺失',ANNOTATION_UNCHANGED:'标注未变',ANNOTATION_CONFLICT:'标注冲突',ANNOTATION_INVALID:'标注异常'};
     function syncFormat(){
-      const yolo=format?.value==='yolo';
+      const selected=String(format?.value||'images'),yolo=selected==='yolo',detection=['yolo','coco'].includes(selected);
       if(yaml){yaml.disabled=!yolo||format.disabled;if(!yolo)yaml.value=''}
-      if(annotationPolicy)annotationPolicy.hidden=!yolo;
+      if(annotationPolicy)annotationPolicy.hidden=!detection;
     }
-    function renderYoloConfirm(task){
-      if(task.import_format!=='yolo'){annotationPolicy.hidden=true;qualityBox.innerHTML='';mappingBox.innerHTML='';return}
+    function renderDetectionConfirm(task){
+      if(!['yolo','coco'].includes(task.import_format)){annotationPolicy.hidden=true;qualityBox.innerHTML='';mappingBox.innerHTML='';return}
       annotationPolicy.hidden=false;
       const quality=task.quality||{},issues=quality.issues||{},issueCount=Object.values(issues).reduce((sum,value)=>sum+Number(value||0),0);
       qualityBox.innerHTML=`<p><b>标注数据质量</b> · 有效框 ${Number(quality.boxes||0)} · 异常 ${issueCount}</p>${Object.keys(issues).length?`<p>${Object.entries(issues).map(([code,count])=>`${esc(code)}：${Number(count||0)}`).join(' · ')}</p><label><input id="sr61AcceptQuality" type="checkbox"> 已确认标注质量报告</label>`:''}`;
@@ -533,7 +533,7 @@ window.__resourceDiscoveryDependencies={
         if(agentTruth)agentTruth.textContent=preflight.agent_available?(nodes.length?`可用 Agent：${nodes.map(node=>node.display_name||node.node_id).join('、')}`:'远程 Agent 可用'):(preflight.reason||'当前无可用远程 Agent');
         if(execution&&execution.value==='agent'&&!preflight.agent_available)execution.value='local';
       }catch(error){
-        preflight={agent_available:false,reason:error.message||String(error),eligible_nodes:[],agent_supported_formats:[],local_supported_formats:['images','yolo']};
+        preflight={agent_available:false,reason:error.message||String(error),eligible_nodes:[],agent_supported_formats:[],local_supported_formats:['images','yolo','coco']};
         if(agentOption)agentOption.disabled=true;
         if(agentTruth)agentTruth.textContent=preflight.reason;
         if(execution)execution.value='local';
@@ -546,13 +546,13 @@ window.__resourceDiscoveryDependencies={
         const mode=task.execution_mode==='agent'?'远程 Agent':'中央 Worker';
         const runtime=[mode,task.worker_id?`Worker ${task.worker_id}`:'',task.resource_wait_reason||'',task.current_item||task.stage||''].filter(Boolean).join(' · ');
         const imageLine=Object.entries(names).map(([key,label])=>`${label} ${Number(task.counts?.[key]||0)}`).join(' · ');
-        const annotationLine=task.import_format==='yolo'?Object.entries(annotationNames).map(([key,label])=>`${label} ${Number(task.annotation_counts?.[key]||0)}`).join(' · '):'';
+        const annotationLine=['yolo','coco'].includes(task.import_format)?Object.entries(annotationNames).map(([key,label])=>`${label} ${Number(task.annotation_counts?.[key]||0)}`).join(' · '):'';
         target.innerHTML=`<p><b>${esc(statusName(task.status))}</b> · ${esc(runtime)}</p><p>${imageLine}</p>${annotationLine?`<p>${annotationLine}</p>`:''}${Object.entries(task.examples||{}).filter(([,keys])=>keys.length).map(([key,keys])=>`<details><summary>${esc(names[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${Object.entries(task.annotation_examples||{}).filter(([key,keys])=>keys.length&&key!=='ANNOTATION_UNCHANGED').map(([key,keys])=>`<details><summary>${esc(annotationNames[key]||key)}示例</summary>${keys.map(value=>`<div>${esc(value)}</div>`).join('')}</details>`).join('')}${task.error?`<p class="alert err">${esc(task.error.message||'扫描失败')}</p>`:''}`;
         selection.hidden=task.status!=='AWAITING_CONFIRMATION';
         if(format){format.value=task.import_format||'images';format.disabled=!terminal(task.status)}
         if(yaml){yaml.value=task.dataset_yaml||yaml.value;yaml.disabled=(task.import_format!=='yolo')||!terminal(task.status)}
         syncFormat();
-        if(task.status==='AWAITING_CONFIRMATION')renderYoloConfirm(task);
+        if(task.status==='AWAITING_CONFIRMATION')renderDetectionConfirm(task);
         document.getElementById('sr61Start').disabled=!terminal(task.status);
         document.getElementById('sr61Cancel').disabled=terminal(task.status);
         if(execution)execution.disabled=!terminal(task.status);
@@ -561,19 +561,20 @@ window.__resourceDiscoveryDependencies={
     }
     format.onchange=syncFormat;
     execution.onchange=()=>{
-      const supported=execution.value==='agent'?(preflight?.agent_supported_formats||['images']):(preflight?.local_supported_formats||['images','yolo']);
+      const supported=execution.value==='agent'?(preflight?.agent_supported_formats||['images']):(preflight?.local_supported_formats||['images','yolo','coco']);
       if(!supported.includes(format.value))format.value='images';
       syncFormat();
     };
     document.getElementById('sr61Start').onclick=async()=>{
-      const button=document.getElementById('sr61Start'),mode=execution?.value==='agent'?'agent':'local',selectedFormat=format?.value==='yolo'?'yolo':'images';
+      const button=document.getElementById('sr61Start'),mode=execution?.value==='agent'?'agent':'local',selectedFormat=['yolo','coco'].includes(format?.value)?format.value:'images';
       if(mode==='agent'&&!preflight?.agent_available){target.textContent=preflight?.reason||'当前没有可用远程 Agent';return}
-      const supported=mode==='agent'?(preflight?.agent_supported_formats||['images']):(preflight?.local_supported_formats||['images','yolo']);
+      const supported=mode==='agent'?(preflight?.agent_supported_formats||['images']):(preflight?.local_supported_formats||['images','yolo','coco']);
       if(!supported.includes(selectedFormat)){target.textContent='当前执行位置不支持所选扫描内容';return}
       button.disabled=true;if(execution)execution.disabled=true;if(format)format.disabled=true;if(yaml)yaml.disabled=true;
       try{
         const body={execution_mode:mode};
-        if(selectedFormat==='yolo'){body.import_format='yolo';const yamlKey=String(yaml?.value||'').trim();if(yamlKey)body.dataset_yaml=yamlKey}
+        if(['yolo','coco'].includes(selectedFormat))body.import_format=selectedFormat;
+        if(selectedFormat==='yolo'){const yamlKey=String(yaml?.value||'').trim();if(yamlKey)body.dataset_yaml=yamlKey}
         const task=await api(`${base}/storage-sources/${encodeURIComponent(sourceId)}/rescans`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         taskId=task.task_id;try{localStorage.setItem(savedKey,taskId)}catch(_){}poll(++pollGeneration);
       }catch(error){target.textContent=error.message||String(error);button.disabled=false;if(execution)execution.disabled=false;if(format)format.disabled=false;syncFormat()}
@@ -582,7 +583,7 @@ window.__resourceDiscoveryDependencies={
       const button=document.getElementById('sr61Confirm');button.disabled=true;
       try{
         const body={new:document.getElementById('sr61New').checked?'import':'ignore',missing:document.getElementById('sr61Missing').checked?'mark_unavailable':'ignore',changed:document.getElementById('sr61Changed').checked?'update':'ignore',annotation_changed:document.getElementById('sr61AnnotationChanged').checked?'update':'ignore',annotation_removed:document.getElementById('sr61AnnotationRemoved').checked?'clear':'keep',annotation_conflicts:document.getElementById('sr61AnnotationConflicts').checked?'overwrite':'keep'};
-        if(lastTask?.import_format==='yolo'){
+        if(['yolo','coco'].includes(lastTask?.import_format)){
           const rows=[...document.querySelectorAll('[data-rescan-class]')].map(row=>({classId:row.dataset.rescanClass,code:String(row.querySelector('[data-label-code]')?.value||'').trim(),create:!!row.querySelector('[data-create-label]')?.checked}));
           if(rows.some(row=>!row.code))throw new Error('请完成所有外部类别的平台标签映射');
           body.label_mapping=Object.fromEntries(rows.map(row=>[row.classId,row.code]));
