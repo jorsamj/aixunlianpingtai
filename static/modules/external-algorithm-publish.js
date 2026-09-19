@@ -188,7 +188,10 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       };
     }
     return {
-      storage_source_id: config?.storageSourceId || '',
+      // ModelArtifactRuntime is the single owner of model asset storage.
+      // Keep the legacy publish field empty so saving mappings/public URL cannot
+      // overwrite a newer model-asset storage choice.
+      storage_source_id: '',
       public_base_url: document.getElementById('externalPublishBaseUrl')?.value.trim() || '',
       publish_original_model: Boolean(document.getElementById('externalPublishOriginal')?.checked),
       target_mappings: mappings,
