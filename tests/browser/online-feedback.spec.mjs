@@ -322,8 +322,29 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
   const encoded=encodeURIComponent(project.id);
   let freezePayload=null;
   let candidateListCalls=0;
+  let persistedCandidateSet=null;
   const requested=[];
   page.on('request',req=>requested.push(req.url()));
+
+  const persistedAction={
+    schema_version:1,status:'confirmed',action:'supplement_data',action_id:'d'.repeat(64),
+    source:{algorithm_id:'algo-supp',version_id:'ver-supp',decision_id:'e'.repeat(64),evaluation_id:'a'.repeat(64)},
+    data_draft:{weak_labels:['smoke'],problem_samples:[],dataset_revision_id:'',snapshot_id:'snapshot-old'},
+  };
+  await page.route(`**/api/v12/projects/${encoded}/algorithms`,async route=>{
+    if(route.request().method()!=='GET')return route.continue();
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({items:[{
+        id:'algo-supp',name:'补数据算法',current_version_id:'ver-supp',
+        versions:[{
+          id:'ver-supp',version_name:'v-feedback',
+          confirmed_iteration_action:persistedAction,
+          ...(persistedCandidateSet?{supplement_data_candidate_set:persistedCandidateSet}:{}),
+        }],
+      }]}),
+    });
+  });
 
   await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-supp/versions/ver-supp/supplement-data-candidates`,async route=>{
     if(route.request().method()!=='GET')return route.continue();
@@ -352,13 +373,14 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
   });
   await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-supp/versions/ver-supp/supplement-data-candidates/freeze`,async route=>{
     freezePayload=route.request().postDataJSON();
+    persistedCandidateSet={
+      schema_version:1,status:'confirmed',candidate_set_id:'f'.repeat(64),action_id:'d'.repeat(64),
+      algorithm_id:'algo-supp',version_id:'ver-supp',feedback_ids:['feedback-ready'],
+      material_ids:['material-ready'],candidates:[{feedback_id:'feedback-ready',material_id:'material-ready'}],
+      frozen_at:'2026-09-19T06:02:00Z',automatic_execution:false,
+    };
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
-      ok:true,idempotent:false,candidate_set:{
-        schema_version:1,status:'confirmed',candidate_set_id:'f'.repeat(64),action_id:'d'.repeat(64),
-        algorithm_id:'algo-supp',version_id:'ver-supp',feedback_ids:['feedback-ready'],
-        material_ids:['material-ready'],candidates:[{feedback_id:'feedback-ready',material_id:'material-ready'}],
-        frozen_at:'2026-09-19T06:02:00Z',automatic_execution:false,
-      },
+      ok:true,idempotent:false,candidate_set:persistedCandidateSet,
     })});
   });
 
@@ -367,17 +389,7 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
   },project.id);
   await page.goto('/');
   await page.evaluate(async()=>{
-    state.algorithms=[{
-      id:'algo-supp',name:'补数据算法',current_version_id:'ver-supp',
-      versions:[{
-        id:'ver-supp',version_name:'v-feedback',
-        confirmed_iteration_action:{
-          schema_version:1,status:'confirmed',action:'supplement_data',action_id:'d'.repeat(64),
-          source:{algorithm_id:'algo-supp',version_id:'ver-supp',decision_id:'e'.repeat(64),evaluation_id:'a'.repeat(64)},
-          data_draft:{weak_labels:['smoke'],problem_samples:[],dataset_revision_id:'',snapshot_id:'snapshot-old'},
-        },
-      }],
-    }];
+    await window.AlgorithmListRuntime?.refresh?.({render:false});
     state.images=[{
       id:'material-ready',filename:'feedback-ready.jpg',annotated:true,processing_status:'processed',
       labels:['smoke'],size_bytes:100,created_at:'2026-09-19T06:00:00Z',url:'/static/placeholder.png',

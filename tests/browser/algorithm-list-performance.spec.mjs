@@ -462,6 +462,16 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await page.route(`**/api/projects/${encoded}/jobs`, async route => {
     await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify([])});
   });
+  await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-lineage-1/versions/version-lineage-1/supplement-data-candidates`, async route => {
+    if(route.request().method()!=='GET')return route.continue();
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({
+        ok:true,action_id:'f'.repeat(64),total:0,returned:0,truncated:false,
+        eligible:0,annotation_required:0,candidate_set:null,items:[],
+      }),
+    });
+  });
 
   await page.evaluate(() => window.setPage('算法列表'));
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
