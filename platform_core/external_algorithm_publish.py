@@ -885,6 +885,64 @@ class ExternalAlgorithmPublishService:
             )
         return self.repository.patch_artifact(str(current["artifact_id"]), external_weight_id=weight_id, sync_status="SYNCED", last_error="")
 
+    def _publish_transport_state(self) -> Dict[str, Any]:
+        issues: list[Dict[str, str]] = []
+        publish_config = self.repository.config()
+        public_base_url = str(publish_config.get("public_base_url") or "").strip().rstrip("/")
+        if not public_base_url:
+            issues.append({
+                "code": "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE",
+                "message": "尚未配置本平台外部访问地址",
+            })
+        model_asset_config = self.model_assets.repository.config()
+        storage_source_id = str(model_asset_config.get("storage_source_id") or "").strip()
+        if not storage_source_id:
+            issues.append({
+                "code": "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED",
+                "message": "尚未配置模型资产存储源",
+            })
+        elif self.storage_sources_factory().get(storage_source_id) is None:
+            issues.append({
+                "code": "ARTIFACT_STORAGE_SOURCE_NOT_FOUND",
+                "message": f"模型资产存储源不存在：{storage_source_id}",
+            })
+        return {
+            "ready": not issues,
+            "public_base_url": public_base_url,
+            "storage_source_id": storage_source_id,
+            "issues": issues,
+        }
+
+    def _assert_publish_transport_ready(self) -> Dict[str, Any]:
+        state = self._publish_transport_state()
+        if state["ready"]:
+            return state
+        issue = state["issues"][0]
+        code = str(issue.get("code") or "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE")
+        if code == "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED":
+            raise PlatformError(
+                code,
+                "模型资产存储尚未配置",
+                str(issue.get("message") or ""),
+                "请先在“模型资产存储”配置可用存储源，再同步到新畅联。",
+                409,
+            )
+        if code == "ARTIFACT_STORAGE_SOURCE_NOT_FOUND":
+            raise PlatformError(
+                code,
+                "模型资产存储源不存在",
+                str(issue.get("message") or ""),
+                "请重新选择可用的模型资产存储源。",
+                404,
+            )
+        raise PlatformError(
+            "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE",
+            "模型发布配置不完整",
+            str(issue.get("message") or ""),
+            "请在“平台对接 → 畅联云版本发布”填写本平台外部访问地址。",
+            422,
+        )
+
     def publication_status(self, project_id: str, algorithm_id: str, version_id: str) -> Dict[str, Any]:
         algorithm, version = self._algorithm_version(project_id, algorithm_id, version_id)
         publication = self.repository.publication(project_id, algorithm_id, version_id)
@@ -912,6 +970,7 @@ class ExternalAlgorithmPublishService:
                 ignored.append(row)
             classified.append(row)
         conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
+        transport = self._publish_transport_state()
         return {
             "ok": True,
             "algorithm": {"id": algorithm_id, "name": algorithm.get("name"), "external_product_id": algorithm.get("external_product_id")},
@@ -922,7 +981,11 @@ class ExternalAlgorithmPublishService:
             "mapped_artifact_count": len(mapped),
             "blocked_artifact_count": len(blocked),
             "ignored_artifact_count": len(ignored),
-            "publish_ready": bool(mapped) and not blocked and not conversion_active,
+            "transport_ready": bool(transport["ready"]),
+            "transport_issues": list(transport["issues"]),
+            "public_base_url_configured": bool(transport["public_base_url"]),
+            "model_asset_storage_source_id": str(transport["storage_source_id"] or ""),
+            "publish_ready": bool(mapped) and not blocked and not conversion_active and bool(transport["ready"]),
             "conversion_active": conversion_active,
         }
 
@@ -938,6 +1001,9 @@ class ExternalAlgorithmPublishService:
                 "MODEL_CONVERSION_STILL_RUNNING", "模型转换仍在进行", str(version.get("version_name") or version_id),
                 "请等待该版本转换任务结束后再同步；自动发布会在转换结束后继续。", 409,
             )
+        # Fail before any remote ChangLian write. Missing local delivery configuration
+        # must never create an empty remote Algorithm Version.
+        self._assert_publish_transport_ready()
         publication = self.repository.ensure_publication(project_id=project_id, algorithm=algorithm, version=version)
         if automatic and not self.repository.auto_retry_due(publication):
             return {"ok": True, "skipped": True, "reason": "retry_not_due", "publication": publication}
