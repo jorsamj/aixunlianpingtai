@@ -1,0 +1,175 @@
+name: External Algorithm Publish
+
+# Focused contract: platform model-asset storage, idempotent remote registration, and UI wiring.
+on:
+  pull_request:
+    paths:
+      - app.py
+      - platform_core/external_algorithm_publish.py
+      - platform_core/model_artifacts.py
+      - platform_core/integration_audit.py
+      - static/main.mjs
+      - static/index.html
+      - static/modules/external-algorithm-publish.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_model_artifacts.py
+      - tests/unit/test_integration_audit.py
+      - tests/frontend/external-algorithm-publish.test.mjs
+      - tests/browser/external-algorithm-publish.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - .github/workflows/external-algorithm-publish.yml
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - app.py
+      - platform_core/external_algorithm_publish.py
+      - platform_core/model_artifacts.py
+      - platform_core/integration_audit.py
+      - static/main.mjs
+      - static/index.html
+      - static/modules/external-algorithm-publish.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - tests/unit/test_external_algorithm_publish.py
+      - tests/unit/test_model_artifacts.py
+      - tests/unit/test_integration_audit.py
+      - tests/frontend/external-algorithm-publish.test.mjs
+      - tests/browser/external-algorithm-publish.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - .github/workflows/external-algorithm-publish.yml
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused Python dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring
+      - name: Backend external-publish and model-asset contracts
+        run: |
+          PYTHONPATH=. pytest -q --confcutdir=tests/unit \
+            tests/unit/test_external_algorithm_publish.py \
+            tests/unit/test_model_artifacts.py \
+            tests/unit/test_integration_audit.py
+      - name: Frontend external-publish contracts
+        run: |
+          node --test \
+            tests/frontend/external-algorithm-publish.test.mjs \
+            tests/frontend/model-artifact-runtime.test.mjs
+      - name: Syntax and wiring guards
+        run: |
+          python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/model_artifacts.py platform_core/integration_audit.py
+          node --check static/modules/external-algorithm-publish.js
+          node --check static/modules/model-artifact-runtime.js
+          node --check static/modules/algorithm-list-runtime.js
+          grep -q "external_algorithm_publish_router" app.py
+          grep -q "request_external_auto_publish_if_enabled" app.py
+          grep -q "installExternalAlgorithmPublishRuntime" static/main.mjs
+          grep -q "installModelArtifactRuntime" static/main.mjs
+          grep -q "external-algorithm-auto-publish" platform_core/external_algorithm_publish.py
+          grep -q "auto-upload-worker" platform_core/external_algorithm_publish.py
+          grep -q "external_version_publications" platform_core/external_algorithm_publish.py
+          grep -q "_remote_version_analysis_id" platform_core/external_algorithm_publish.py
+          grep -q "_assert_current_external_identity" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_STALE" platform_core/external_algorithm_publish.py
+          grep -q '"identity_ready": bool(identity\["ready"\])' platform_core/external_algorithm_publish.py
+          grep -q "test_publication_status_blocks_stale_changlian_master_data" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_historical_version_analysis_is_no_longer_current" tests/unit/test_external_algorithm_publish.py
+          grep -q "identity_ready === false" static/modules/external-algorithm-publish.js
+          grep -q "manual publish preflight blocks stale product and analysis identity before artifacts" tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
+          grep -q "def _mapping_state" platform_core/external_algorithm_publish.py
+          grep -q "def _publish_transport_state" platform_core/external_algorithm_publish.py
+          grep -q "def _assert_publish_transport_ready" platform_core/external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_blocks_before_remote_version_when_public_base_url_missing" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_before_remote_version_when_model_asset_storage_missing" tests/unit/test_external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_UPLOAD_FAILED" platform_core/external_algorithm_publish.py
+          grep -q "Upload and verify every local model artifact before creating a remote" platform_core/external_algorithm_publish.py
+          grep -q "test_model_asset_upload_failure_happens_before_remote_version_creation" tests/unit/test_external_algorithm_publish.py
+          grep -q "transport_ready === false" static/modules/external-algorithm-publish.js
+          grep -q "manual publish preflight blocks missing model delivery configuration" tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "MODEL_ARTIFACT_MAPPING_INCOMPLETE" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored" tests/unit/test_external_algorithm_publish.py
+          grep -q "export function publicationPreflight" static/modules/external-algorithm-publish.js
+          grep -q "publicationPreflight(status)" static/modules/external-algorithm-publish.js
+          grep -q "manual publish fetches read-only status before write request" tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_config_rejects_stale_compute_platform_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_save" tests/unit/test_external_algorithm_publish.py
+          grep -q 'data-external-publish-automation="1"' static/modules/external-algorithm-publish.js
+          grep -q "算力环境来自最近一次新畅联主数据同步" static/modules/external-algorithm-publish.js
+          grep -q "require_analysis_identity" platform_core/external_algorithm_publish.py
+          grep -q "_canonical_chip_code(discovered.get(\"chip_code\") or mapping.get(\"chip_code\") or \"\")" platform_core/external_algorithm_publish.py
+          grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs" tests/unit/test_external_algorithm_publish.py
+          grep -q "_DELIVERABLE_SUFFIXES" platform_core/external_algorithm_publish.py
+          grep -q "candidate.name.lower() == \"manifest.json\"" platform_core/external_algorithm_publish.py
+          grep -q "test_synced_changlian_identity_survives_training_choice_conversion_and_publish" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage" tests/unit/test_external_algorithm_publish.py
+          grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
+          grep -Fq "storage_source_id: ''" static/modules/external-algorithm-publish.js
+          grep -Fq '平台对接 → 模型资产存储' static/modules/external-algorithm-publish.js
+          grep -Fq '平台对接 → 畅联云版本发布' static/modules/external-algorithm-publish.js
+          grep -Fq '测试存储' tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
+          grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
+          grep -Fq 'len({row["source_sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'chip_code TEXT NOT NULL DEFAULT' platform_core/model_artifacts.py
+          grep -Fq 'ON model_artifacts(' platform_core/model_artifacts.py
+          grep -Fq 'project_id, algorithm_id, version_id, target, chip_code, sha256' platform_core/model_artifacts.py
+          grep -Fq 'identity = (target, chip_code, digest)' platform_core/model_artifacts.py
+          grep -Fq 'test_same_sha_rockchip_artifacts_remain_distinct_by_chip' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_repository_migrates_legacy_identity_index_to_chip_scope' tests/unit/test_model_artifacts.py
+          grep -q "芯片编码（转换产物优先）" static/modules/external-algorithm-publish.js
+          grep -q "model_artifacts" platform_core/model_artifacts.py
+          grep -q "storage-test" platform_core/external_algorithm_publish.py
+          grep -q "run-auto" platform_core/external_algorithm_publish.py
+          grep -q "registerDecorator('external-algorithm-publish'" static/modules/external-algorithm-publish.js
+          grep -q "模型资产存储" static/modules/model-artifact-runtime.js
+          grep -q "畅联云交互日志" static/modules/model-artifact-runtime.js
+          if grep -q "window.renderAlg412 =" static/modules/external-algorithm-publish.js; then echo "external publish must not wrap renderAlg412" >&2; exit 1; fi
+          test ! -e tools/_one_shot_model_asset_integration.py
+          test ! -e .github/workflows/_one_shot_model_asset_integration.yml
+          test "$(cat VERSION.txt)" = "42.24.0"
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome ChangLian publish preflight
+        run: npx playwright test tests/browser/external-algorithm-publish.spec.mjs
+      - name: Browser permanent guards
+        run: |
+          grep -Fq "changlian manual publish preflight blocks stale version analysis before POST" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "identity_ready: false" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "publishWrites).toBe(0)" tests/browser/external-algorithm-publish.spec.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

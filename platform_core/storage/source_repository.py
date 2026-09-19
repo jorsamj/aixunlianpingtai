@@ -133,9 +133,14 @@ class StorageSourceRepository:
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA foreign_keys=ON")
+        # Configure lock waiting before any pragma that may need a schema/write
+        # lock. Re-applying journal_mode=WAL on every short-lived repository
+        # connection can itself contend with concurrent requests.
         database.execute("PRAGMA busy_timeout=5000")
+        current_mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if current_mode != "wal":
+            database.execute("PRAGMA journal_mode=WAL")
+        database.execute("PRAGMA foreign_keys=ON")
         return database
 
     def journal_mode(self) -> str:

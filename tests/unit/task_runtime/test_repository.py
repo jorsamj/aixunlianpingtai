@@ -219,6 +219,58 @@ def test_resume_after_confirmation_requeues_material_import_and_is_idempotent(tm
     assert repository.resume_after_confirmation("import-1") == resumed
 
 
+def test_resume_after_confirmation_can_atomically_switch_remote_scan_to_local_indexer(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(
+        TaskRecord.new(
+            "import-remote-review",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "material-import:agent",
+            required_capabilities=("agent.remote",),
+        )
+    )
+    lease = repository.claim_next(
+        "agent-owner",
+        [TaskKind.MATERIAL_IMPORT],
+        {"agent.remote"},
+    )
+    assert lease is not None
+    repository.finish(
+        "import-remote-review",
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        result_ref="remote-results/1/result.json",
+    )
+
+    resumed = repository.resume_after_confirmation(
+        "import-remote-review",
+        required_capabilities=("storage.import",),
+    )
+
+    assert resumed.status is TaskStatus.QUEUED
+    assert resumed.stage == "indexing_queued"
+    assert resumed.required_capabilities == ("storage.import",)
+    assert resumed.result_ref == "remote-results/1/result.json"
+
+    # Confirmation is idempotent and must preserve/repair the local-write owner.
+    same = repository.resume_after_confirmation(
+        "import-remote-review",
+        required_capabilities=("storage.import",),
+    )
+    assert same.required_capabilities == ("storage.import",)
+
+    local = repository.claim_next(
+        "storage-import-worker",
+        [TaskKind.MATERIAL_IMPORT],
+        {"storage.import"},
+    )
+    assert local is not None
+    assert local.task.task_id == "import-remote-review"
+    assert local.task.stage == "indexing"
+
+
 def test_resume_after_confirmation_rejects_rejected_material_import(tmp_path):
     repository = TaskRepository(tmp_path / "tasks.sqlite3")
     repository.create(
@@ -362,3 +414,62 @@ def test_promote_can_move_a_task_ahead_even_when_current_priority_is_one(tmp_pat
     lease = repository.claim_next("worker", [TaskKind.TRAINING], {"cuda"})
     assert lease is not None
     assert lease.task.task_id == "promoted"
+
+
+def test_fail_queued_precondition_never_overwrites_running_or_cancelled_task(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    queued = TaskRecord.new(
+        "queued-precondition",
+        "project",
+        TaskKind.TRAINING,
+        "payload.json",
+        "training:remote",
+    )
+    repository.create(queued)
+    failed = repository.fail_queued_precondition(
+        queued.task_id,
+        "REMOTE_INPUT_FAILED",
+        status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+        stage="remote_input_preparation_failed",
+    )
+    assert failed.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
+    assert failed.stage == "remote_input_preparation_failed"
+    assert failed.error == "REMOTE_INPUT_FAILED"
+    assert failed.finished_at is not None
+
+    running = repository.create(
+        TaskRecord.new(
+            "running-precondition",
+            "project",
+            TaskKind.TRAINING,
+            "payload.json",
+            "training:remote",
+            required_capabilities=("cuda",),
+        )
+    )
+    lease = repository.claim_next("worker", [TaskKind.TRAINING], {"cuda"})
+    assert lease is not None and lease.task.task_id == running.task_id
+    unchanged = repository.fail_queued_precondition(
+        running.task_id,
+        "must-not-overwrite",
+        status=TaskStatus.FAILED,
+    )
+    assert unchanged.status is TaskStatus.RUNNING
+    assert unchanged.error != "must-not-overwrite"
+
+    cancelled = repository.create(
+        TaskRecord.new(
+            "cancelled-precondition",
+            "project",
+            TaskKind.TRAINING,
+            "payload.json",
+            "training:remote",
+        )
+    )
+    repository.request_cancel(cancelled.task_id)
+    unchanged = repository.fail_queued_precondition(
+        cancelled.task_id,
+        "must-not-revive",
+        status=TaskStatus.FAILED,
+    )
+    assert unchanged.status is TaskStatus.CANCELLED

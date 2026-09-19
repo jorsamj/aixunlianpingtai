@@ -1,3 +1,4 @@
+import hashlib
 import io
 import uuid
 from pathlib import Path
@@ -5,6 +6,8 @@ from pathlib import Path
 from PIL import Image
 
 import app as app_module
+from platform_core.model_artifacts import ModelArtifactConfigPayload, ModelArtifactRepository
+from platform_core.service_nodes import ServiceNodeRepository
 import platform_core.cleaning_batches as cleaning_batches
 from platform_core.cleaning import image_metrics
 from platform_core.cleaning_analysis_runtime import CleaningAnalysisTimeout
@@ -89,6 +92,130 @@ def test_v47_manual_clean_creation_publishes_material_batch_truth(client):
         assert isinstance(wait_reason, str)
 
     _assert_durable_clean_task(project_id, task_id, [image_id])
+
+
+
+def test_clean_agent_preflight_rejects_local_material_and_create_does_not_fallback(client):
+    project_id = _create_project(client, "clean-agent-local-rejected")
+    uploaded = _upload(client, project_id, "local-only.png")
+    image_id = uploaded["uploaded"][0]["id"]
+
+    preflight = client.post(
+        f"/api/v47/projects/{project_id}/clean-runtime/preflight",
+        json={"image_ids": [image_id]},
+    )
+    preflight.raise_for_status()
+    truth = preflight.json()
+    assert truth["local_available"] is True
+    assert truth["default_execution_mode"] == "local"
+    assert truth["agent_available"] is False
+    assert truth["selected_count"] == 1
+    assert truth["reason"]
+
+    rejected = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={
+            "image_ids": [image_id],
+            "task_name": "must not fall back local",
+            "execution_mode": "agent",
+        },
+    )
+    assert rejected.status_code == 409
+    assert not app_module.shared_task_repository().list(
+        project_id=project_id,
+        kinds={TaskKind.MATERIAL_BATCH},
+        limit=20,
+    ).items
+
+
+def test_v47_agent_clean_publishes_agent_remote_capability_when_portable(client):
+    project_id = _create_project(client, "clean-agent-portable")
+    uploaded = _upload(client, project_id, "portable.png")
+    image_id = uploaded["uploaded"][0]["id"]
+    payload_bytes = _png_bytes()
+    digest = hashlib.sha256(payload_bytes).hexdigest()
+
+    source_id = f"clean-s3-{uuid.uuid4().hex[:8]}"
+    app_module.storage_source_repository().create({
+        "id": source_id,
+        "name": "cleaning test object storage",
+        "type": "s3",
+        "config": {"bucket": "test-bucket"},
+        "enabled": True,
+    })
+    materials = app_module.material_store(project_id)
+    row = materials.get(image_id)
+    assert row is not None
+    row.update({
+        "storage_source_id": source_id,
+        "storage_type": "s3",
+        "object_key": f"clean/{image_id}.png",
+        "content_sha256": digest,
+        "size_bytes": len(payload_bytes),
+        "etag": "etag-clean-test",
+    })
+    materials.upsert(row)
+
+    ModelArtifactRepository(app_module.DATA_DIR).save_config(
+        ModelArtifactConfigPayload(
+            storage_source_id=source_id,
+            object_prefix="remote-execution",
+            auto_upload_enabled=True,
+        )
+    )
+
+    nodes = ServiceNodeRepository(app_module.shared_task_repository())
+    node_id = f"clean-agent-{uuid.uuid4().hex[:8]}"
+    _node, token = nodes.create({
+        "node_id": node_id,
+        "display_name": node_id,
+        "connection_mode": "agent",
+        "allowed_capabilities": ["cleaning"],
+    })
+    nodes.heartbeat(node_id, token, {
+        "hostname": node_id,
+        "reported_capabilities": ["cleaning"],
+        "resources": {
+            "memory": {"available_bytes": 8 * 1024**3},
+            "disk": {"free_bytes": 100 * 1024**3},
+            "gpu": {"available": False, "gpus": []},
+        },
+        "runtime": {},
+    })
+
+    preflight = client.post(
+        f"/api/v47/projects/{project_id}/clean-runtime/preflight",
+        json={"image_ids": [image_id]},
+    )
+    preflight.raise_for_status()
+    truth = preflight.json()
+    assert truth["agent_available"] is True
+    assert truth["selected_count"] == 1
+    assert truth["eligible_nodes"][0]["node_id"] == node_id
+
+    response = client.post(
+        f"/api/v47/projects/{project_id}/clean-tasks",
+        json={
+            "image_ids": [image_id],
+            "task_name": "portable remote clean",
+            "execution_mode": "agent",
+        },
+    )
+    response.raise_for_status()
+    body = response.json()
+    assert body["execution_mode"] == "agent"
+
+    task = app_module.shared_task_repository().get(body["id"])
+    assert task is not None
+    assert task.kind is TaskKind.MATERIAL_BATCH
+    assert tuple(task.required_capabilities) == ("agent.remote",)
+    request = app_module.shared_task_artifacts().read_json(
+        task.task_id, task.payload_ref, default={}
+    )
+    assert request["operation"] == "CLEAN"
+    assert request["execution_mode"] == "agent"
+    assert request["remote_execution"]["task_kind"] == "MATERIAL_BATCH"
+    assert request["remote_execution"]["transport"] == "object-storage-v1"
 
 
 def test_upload_batch_clean_association_points_to_same_durable_task(client):

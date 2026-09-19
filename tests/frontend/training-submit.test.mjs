@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 
 import {createTrainingDraft, trainingDraftToRequest} from '../../static/modules/training-draft.js';
 import {
+  benchmarkReuseContext,
   buildTrainingEngineParameters,
   buildTrainingStartPayload,
   installTrainingSubmitRuntime,
+  supplementCandidateContext,
   trainingSubmitReadiness,
   validateTrainingDevice,
 } from '../../static/modules/training-submit.js';
@@ -223,6 +225,55 @@ test('iteration block is enforced by TrainingSubmitRuntime before any POST', asy
   cleanup(runtime);
 });
 
+test('stale changlian master data disables submit and blocks network POST', async () => {
+  const state = baseState();
+  state.algorithms = [{
+    id: 'alg-1',
+    source_type: 'EXTERNAL',
+    provider_type: 'CHANG_LIAN',
+    external_active: true,
+    external_master_data_digest: 'old-digest',
+  }];
+  const {submitButton} = installDom();
+  const notices = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      calls += 1;
+      return {ok: true, async json() { return {}; }};
+    },
+    ExternalAlgorithmPlatformRuntime: {
+      trainingReadiness: () => ({
+        ready: false,
+        status: 'stale',
+        reason: 'external-master-data-stale',
+        message: '当前算法的畅联云主数据需要重新同步，请执行“立即同步”',
+      }),
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => draft(),
+      current: () => draft(),
+      inheritance: () => ({blocked: false}),
+    },
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.dataset.trainingSubmitReason, 'external-master-data-stale');
+  const result = await window.submitTrain429();
+
+  assert.equal(result, null);
+  assert.equal(calls, 0);
+  assert.match(notices.at(-1), /立即同步/);
+  cleanup(runtime);
+});
+
 test('double click cannot create two independent training tasks', async () => {
   const state = baseState();
   const {submitButton} = installDom();
@@ -289,5 +340,155 @@ test('refresh failure after successful POST does not invite a duplicate training
   assert.equal(calls, 1);
   assert.match(notices[0], /训练任务已进入后台队列/);
   assert.match(notices.at(-1), /列表刷新失败/);
+  cleanup(runtime);
+});
+
+
+test('confirmed iteration action lineage is injected only for matching current draft', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
+    training_draft:{task_id:'train_'+'a'.repeat(24)},
+  };
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return{task:{id:'task-action'}}}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.deepEqual(sent.iteration_action,{
+    action_id:'a'.repeat(64),decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64),
+    version_id:'v-current',dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1',
+  });
+  assert.equal(sent.task_id,'train_'+'a'.repeat(24));
+  assert.equal(state.trainingIterationAction,null);
+  cleanup(runtime);
+});
+
+test('confirmed iteration action is not injected into unrelated version draft', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'other',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'',snapshot_id:''},
+  };
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return{task:{id:'task-normal'}}}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.iteration_action,undefined);
+  assert.ok(state.trainingIterationAction);
+  cleanup(runtime);
+});
+
+test('supplement candidate context follows the inherited version and actual selected materials', () => {
+  const asset = {
+    id: 'alg-1', current_version_id: 'ver-1',
+    versions: [{id: 'ver-1', supplement_data_candidate_set: {
+      candidate_set_id: 'a'.repeat(64),
+      material_ids: ['img-2', 'img-3', 'img-not-selected'],
+    }}],
+  };
+  const value = draft({
+    baseVersionId: 'ver-1',
+    materialIds: ['img-1', 'img-2'],
+    testMaterialIds: ['img-3'],
+    splitMode: 'independent_test_set',
+  });
+  const context = supplementCandidateContext({asset, draft: value, inheritance: {versionId: 'ver-1'}});
+  assert.equal(context.candidateSetId, 'a'.repeat(64));
+  assert.equal(context.sourceCandidateCount, 3);
+  assert.deepEqual(context.adoptedMaterialIds, ['img-2', 'img-3']);
+  assert.equal(context.adoptedCount, 2);
+  assert.equal(context.active, true);
+});
+
+test('submit runtime carries candidate_set_id when selected materials adopt feedback candidates', async () => {
+  const value = draft({baseVersionId: 'ver-1'});
+  const state = baseState();
+  state.algorithms = [{
+    id: 'alg-1', current_version_id: 'ver-1',
+    versions: [{id: 'ver-1', supplement_data_candidate_set: {
+      candidate_set_id: 'b'.repeat(64), material_ids: ['img-2'],
+    }}],
+  }];
+  installDom();
+  let sent;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async (_url, init) => {
+      sent = JSON.parse(init.body);
+      return {ok: true, async json() { return {task: {id: 'task-feedback'}}; }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => value, current: () => value,
+      inheritance: () => ({blocked: false, versionId: 'ver-1'}),
+    },
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.supplement_candidate_set_id, 'b'.repeat(64));
+  cleanup(runtime);
+});
+test('fixed benchmark context requires current bundle-verified backend identity', () => {
+  const asset = {id: 'alg-1', current_version_id: 'ver-1'};
+  const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
+  const context = benchmarkReuseContext({
+    asset, draft: value, inheritance: {versionId: 'ver-1'},
+    benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 12, binding_level: 'bundle_verified'},
+  });
+  assert.equal(context.sourceVersionId, 'ver-1');
+  assert.equal(context.scopeId, 'c'.repeat(64));
+  assert.equal(context.testImageCount, 12);
+  assert.throws(() => benchmarkReuseContext({
+    asset: {...asset, current_version_id: 'ver-2'}, draft: value, inheritance: {versionId: 'ver-1'},
+    benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), test_image_count: 12, binding_level: 'bundle_verified'},
+  }), /来源版本已变化/);
+});
+
+test('benchmark availability loading blocks submit readiness until backend truth is known', () => {
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({benchmarkReuseEnabled: true}), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
+});
+
+test('submit runtime sends only fixed benchmark identity while exact test ids stay server-side', async () => {
+  const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
+  const state = baseState();
+  state.algorithms = [{id: 'alg-1', current_version_id: 'ver-1'}];
+  state.trainingBenchmarkReuse = {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', source_version_name: 'v1', scope_id: 'd'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 9, binding_level: 'bundle_verified', loading: false, load_error: false};
+  installDom();
+  let sent;
+  globalThis.window = {submitTrain429: () => 'legacy', fetch: async (_url, init) => { sent = JSON.parse(init.body); return {ok: true, async json() { return {task: {id: 'task-benchmark'}}; }}; }};
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state, projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => value, current: () => value, inheritance: () => ({blocked: false, versionId: 'ver-1'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.benchmark_source_version_id, 'ver-1');
+  assert.equal(sent.benchmark_scope_id, 'd'.repeat(64));
+  assert.equal(Object.hasOwn(sent, 'test_image_ids'), false);
+  assert.equal(Object.hasOwn(sent, 'experiment_percent'), false);
   cleanup(runtime);
 });

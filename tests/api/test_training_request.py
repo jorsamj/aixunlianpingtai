@@ -10,6 +10,25 @@ def _image_bytes(color: str) -> bytes:
     return stream.getvalue()
 
 
+def test_training_target_contract_rejects_invalid_metric_threshold_and_interval():
+    import app as app_module
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException, match="目标指标只支持"):
+        app_module.validate_train_request(app_module.TrainReq(eval_metric="accuracy"))
+
+    with pytest.raises(HTTPException, match="目标正确率必须在 0~1"):
+        app_module.validate_train_request(app_module.TrainReq(stop_threshold=90, eval_interval=10))
+
+    with pytest.raises(HTTPException, match="eval_interval 必须大于 0"):
+        app_module.validate_train_request(app_module.TrainReq(stop_threshold=0.9, eval_interval=0))
+
+    valid = app_module.TrainReq(stop_threshold=0.9, eval_interval=10, eval_metric="map50")
+    app_module.validate_train_request(valid)
+    assert valid.stop_threshold == 0.9
+    assert valid.eval_interval == 10
+
+
 def test_training_request_normalizes_legacy_boolean_cache_before_string_validation():
     import app as app_module
 
@@ -76,6 +95,7 @@ def test_training_job_locks_snapshot_base_and_requested_parameters(client, seede
     assert job["base_selection_reason"] == "mother_model"
     assert job["queue_priority"] == 50
     assert job["priority_scheme"] == "lower_number_first"
+    assert job["quality_gate"]["runtime_stop_policy"] == "target_only"
     assert len(job["snapshot_id"]) == 64
     expected = {
         "epochs": 3,
@@ -106,7 +126,8 @@ def test_legacy_training_route_also_requires_strict_latest_iteration_base(client
 
     monkeypatch.setattr(app_module, "_v54_iteration_base", strict_spy)
     monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
-    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value: value)
+    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value, _project_id=None: value)
+    monkeypatch.setattr(app_module, "check_ultralytics_train_runtime", lambda _python_path: "ok")
     monkeypatch.setattr(
         app_module,
         "build_dataset",
@@ -176,7 +197,8 @@ def test_product_training_ignores_requested_mother_model_when_latest_version_exi
         "trainable": True,
         "framework": "ultralytics",
     }]
-    app_module.save_algorithms_internal(project_id, rows)
+    from platform_core.algorithms import save_algorithms
+    save_algorithms(app_module.algorithms_file(project_id), rows)
 
     response = client.post(
         f"/api/v12/projects/{project_id}/train/start",
@@ -193,7 +215,7 @@ def test_product_training_ignores_requested_mother_model_when_latest_version_exi
     assert response.status_code == 200, response.text
     job = response.json()["job"]
     assert job["base_version_id"] == "latest-version"
-    assert job["base_selection_reason"] == "latest_verified_version"
+    assert job["base_selection_reason"] == "current_verified_version"
     assert job["model"] == str(latest_model.resolve())
 
 
@@ -235,7 +257,8 @@ def test_iteration_base_endpoint_ignores_failed_attempt_and_uses_latest_success(
             "framework": "ultralytics",
         },
     ]
-    app_module.save_algorithms_internal(project_id, algorithms)
+    from platform_core.algorithms import save_algorithms
+    save_algorithms(app_module.algorithms_file(project_id), algorithms)
     response = client.get(
         f"/api/v54/projects/{project_id}/algorithms/{algorithm['id']}/iteration-base?framework=ultralytics"
     )
@@ -286,7 +309,7 @@ def test_training_rejects_random_pool_without_two_valid_annotated_materials(clie
 
     project_id, image = seeded_project
     monkeypatch.setattr(app_module, "_v48_dispatch_training_queues", lambda _project_id: None)
-    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value: value)
+    monkeypatch.setattr(app_module, "resolve_ultralytics_model_path", lambda value, _project_id=None: value)
 
     algorithm = client.post(
         f"/api/v12/projects/{project_id}/algorithms",
@@ -379,7 +402,7 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
 
     assert response.status_code == 202, response.text
     task = response.json()["task"]
-    assert task["kind"] == "TRAINING"
+    assert task["task_type"] == "TRAINING"
     assert task["status"] == "QUEUED"
     persisted = app_module.shared_task_repository().get(task["id"])
     assert persisted is not None
@@ -391,6 +414,64 @@ def test_explicit_split_training_route_only_enqueues_durable_task(client, seeded
     assert payload["train_image_ids"] == ["train-a", "train-b"]
     assert payload["test_image_ids"] == ["test-a"]
     assert not payload.get("train_dataset_ids")
+
+
+def test_explicit_remote_training_enqueues_durable_input_preparation_without_legacy_server_id(
+    client, seeded_project
+):
+    import app as app_module
+    from platform_core.task_runtime import TaskKind, TaskStatus
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "远程准备训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "target": "remote",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "split_mode": "independent_test_set",
+            "train_image_ids": ["train-a", "train-b"],
+            "test_image_ids": ["test-a"],
+            "validation_percent": 20,
+            "experiment_percent": None,
+            "queue_priority": 9,
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    training = body["task"]
+    assert training["task_type"] == "TRAINING"
+    assert training["status"] == "QUEUED"
+    assert body["remote_input_state"] == "PREPARING"
+    prep_id = body["preparation_task_id"]
+
+    target = app_module.shared_task_repository().get(training["id"])
+    prep = app_module.shared_task_repository().get(prep_id)
+    assert target is not None and target.kind is TaskKind.TRAINING
+    assert target.status is TaskStatus.QUEUED
+    assert prep is not None and prep.kind is TaskKind.TRAINING_PREPARE
+    assert prep.status is TaskStatus.QUEUED
+    assert prep.required_capabilities == ("training.prepare",)
+    assert prep.resource_key == f"training-prepare:{project_id}"
+
+    payload = app_module.shared_task_artifacts().read_json(training["id"], "payload.json")
+    assert payload["target"] == "remote"
+    assert payload["remote_input_state"] == "PREPARING"
+    assert payload["remote_prepare_task_id"] == prep_id
+    assert "remote_execution" not in payload
+    prep_payload = app_module.shared_task_artifacts().read_json(prep_id, "payload.json")
+    assert prep_payload == {
+        "schema_version": 1,
+        "training_task_id": training["id"],
+        "project_id": project_id,
+    }
 
 
 def test_training_route_rejects_dataset_group_contract(client, seeded_project):
@@ -473,3 +554,583 @@ def test_explicit_material_selection_rejects_invalid_requests(client, seeded_pro
     )
     assert response.status_code == 400
     assert message in response.json()["detail"]
+
+
+def _iteration_version(version_id, *, decision_id, evaluation_id, decision="continue_training"):
+    return {
+        "id": version_id,
+        "version_name": f"20260919-{version_id}",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "stored_path": f"/models/{version_id}/best.pt",
+        "dataset_revision_id": "a" * 64,
+        "snapshot_id": f"snapshot-{version_id}",
+        "evaluation": {
+            "schema_version": 1, "evaluation_id": evaluation_id, "status": "succeeded",
+            "dataset_revision_id": "a" * 64, "snapshot_id": f"snapshot-{version_id}",
+            "model_sha256": "b" * 64, "metrics": {"metrics/mAP50(B)": 0.82},
+            "error_samples": [],
+        },
+        "iteration_decision": {
+            "schema_version": 1, "decision_id": decision_id, "evaluation_id": evaluation_id,
+            "decision": decision, "weak_labels": [], "recommended_actions": ["continue_from_current_version"],
+            "automatic_execution": False, "requires_confirmation": True,
+        },
+    }
+
+
+def test_iteration_action_confirmation_is_version_owned_and_fenced(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "确认动作验收", "industry": "测试", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(
+        app_module.algorithms_file(project_id), algorithm["id"],
+        _iteration_version("v-action-1", decision_id="c" * 64, evaluation_id="d" * 64),
+    )
+    url = f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-action-1/iteration-actions/confirm"
+    response = client.post(url, json={"decision_id": "c" * 64, "action": "continue_training"})
+    assert response.status_code == 200, response.text
+    action = response.json()["action"]
+    assert action["action"] == "continue_training"
+    assert action["automatic_execution"] is False
+    assert action["requires_user_submit"] is True
+    assert action["source"]["version_id"] == "v-action-1"
+    repeated = client.post(url, json={"decision_id": "c" * 64, "action": "continue_training"})
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["action"] == action
+
+    persisted = next(
+        row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
+    )["versions"][0]
+    assert persisted["confirmed_iteration_action"]["action_id"] == action["action_id"]
+
+    stale = client.post(url, json={"decision_id": "e" * 64, "action": "continue_training"})
+    assert stale.status_code == 409
+    assert "decision changed" in stale.text
+    wrong = client.post(url, json={"decision_id": "c" * 64, "action": "supplement_data"})
+    assert wrong.status_code == 409
+    assert "does not match" in wrong.text
+
+
+def test_iteration_action_confirmation_rejects_non_current_version(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "旧版本动作拒绝", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(app_module.algorithms_file(project_id), algorithm["id"],
+                   _iteration_version("v-old", decision_id="1" * 64, evaluation_id="2" * 64))
+    attach_version(app_module.algorithms_file(project_id), algorithm["id"],
+                   _iteration_version("v-current", decision_id="3" * 64, evaluation_id="4" * 64))
+    response = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-old/iteration-actions/confirm",
+        json={"decision_id": "1" * 64, "action": "continue_training"},
+    )
+    assert response.status_code == 409
+    assert "当前版本" in response.text
+
+
+def test_training_iteration_action_context_must_equal_persisted_confirmation(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "训练动作溯源", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(app_module.algorithms_file(project_id), algorithm["id"],
+                   _iteration_version("v-current", decision_id="5" * 64, evaluation_id="6" * 64))
+    confirm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
+        json={"decision_id": "5" * 64, "action": "continue_training"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    action = confirm.json()["action"]
+    context = {
+        "action_id": action["action_id"],
+        "decision_id": action["source"]["decision_id"],
+        "evaluation_id": action["source"]["evaluation_id"],
+        "version_id": action["source"]["version_id"],
+        "dataset_revision_id": action["source"]["dataset_revision_id"],
+        "snapshot_id": action["source"]["snapshot_id"],
+    }
+    current = next(
+        row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
+    )
+    accepted = app_module._validated_training_iteration_action(
+        current,
+        app_module.TrainReq(
+            task_id=action["training_draft"]["task_id"],
+            algorithm_asset_id=algorithm["id"],
+            iteration_action=context,
+        ),
+    )
+    assert accepted["action_id"] == action["action_id"]
+
+    tampered = dict(context, decision_id="7" * 64)
+    with pytest.raises(app_module.HTTPException) as error:
+        app_module._validated_training_iteration_action(
+            current,
+            app_module.TrainReq(
+                task_id=action["training_draft"]["task_id"],
+                algorithm_asset_id=algorithm["id"],
+                iteration_action=tampered,
+            ),
+        )
+    assert error.value.status_code == 409
+
+
+def test_confirmed_continue_training_rejects_arbitrary_task_id(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "动作任务幂等", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(
+        app_module.algorithms_file(project_id), algorithm["id"],
+        _iteration_version("v-current", decision_id="8" * 64, evaluation_id="9" * 64),
+    )
+    confirm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
+        json={"decision_id": "8" * 64, "action": "continue_training"},
+    )
+    action = confirm.json()["action"]
+    context = {
+        "action_id": action["action_id"],
+        "decision_id": action["source"]["decision_id"],
+        "evaluation_id": action["source"]["evaluation_id"],
+        "version_id": action["source"]["version_id"],
+        "dataset_revision_id": action["source"]["dataset_revision_id"],
+        "snapshot_id": action["source"]["snapshot_id"],
+    }
+    current = next(
+        row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
+    )
+    with pytest.raises(app_module.HTTPException) as error:
+        app_module._validated_training_iteration_action(
+            current,
+            app_module.TrainReq(
+                task_id="train_" + "f" * 24,
+                algorithm_asset_id=algorithm["id"],
+                iteration_action=context,
+            ),
+        )
+    assert error.value.status_code == 409
+    assert "固定任务 ID" in str(error.value.detail)
+
+
+def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, train_image = seeded_project
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("second-action.jpg", _image_bytes("navy"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "确认动作幂等训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(
+        app_module.algorithms_file(project_id), algorithm["id"],
+        _iteration_version("v-current", decision_id="a" * 64, evaluation_id="b" * 64),
+    )
+    confirm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
+        json={"decision_id": "a" * 64, "action": "continue_training"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    action = confirm.json()["action"]
+    task_id = action["training_draft"]["task_id"]
+    context = {
+        "action_id": action["action_id"],
+        "decision_id": action["source"]["decision_id"],
+        "evaluation_id": action["source"]["evaluation_id"],
+        "version_id": action["source"]["version_id"],
+        "dataset_revision_id": action["source"]["dataset_revision_id"],
+        "snapshot_id": action["source"]["snapshot_id"],
+    }
+    payload = {
+        "task_id": task_id,
+        "framework": "ultralytics",
+        "algorithm": "yolo11n_det",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [train_image["id"], second["id"]],
+        "test_image_ids": [],
+        "experiment_percent": 20,
+        "validation_percent": 20,
+        "device": "cpu",
+        "iteration_action": context,
+    }
+    first = client.post(f"/api/v12/projects/{project_id}/train/start", json=payload)
+    assert first.status_code == 202, first.text
+    assert first.json()["task"]["task_id"] == task_id
+
+    repeated = client.post(f"/api/v12/projects/{project_id}/train/start", json=payload)
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["task"]["task_id"] == task_id
+
+    job = app_module.read_json(app_module.project_dir(project_id) / "jobs" / task_id / "job.json", {})
+    assert job["confirmed_iteration_action"]["action_id"] == action["action_id"]
+    request = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert request["iteration_action"] == context
+
+
+def test_durable_training_requires_matching_supplement_candidate_set_identity(
+    client, seeded_project,
+):
+    import app as app_module
+    from platform_core.algorithms import save_algorithms
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.online_feedback import build_supplement_candidate_set
+
+    project_id, candidate_image = seeded_project
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("normal.jpg", _image_bytes("blue"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    for image in (candidate_image, second):
+        assert client.post(
+            f"/api/projects/{project_id}/annotations/{image['id']}",
+            json={"boxes": [{
+                "class_id": 0, "label": "fire",
+                "x1": 10, "y1": 10, "x2": 80, "y2": 80,
+            }]},
+        ).status_code == 200
+
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "反馈补数据训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    version_id = "feedback-base"
+    material = app_module.material_store(project_id).get(candidate_image["id"])
+    annotation = AnnotationRepository(
+        app_module.project_dir(project_id)
+    ).get(candidate_image["id"])
+    action = {
+        "status": "confirmed",
+        "action": "supplement_data",
+        "action_id": "a" * 64,
+        "source": {"algorithm_id": algorithm["id"], "version_id": version_id},
+    }
+    candidate_set = build_supplement_candidate_set(
+        action,
+        [{
+            "eligible": True,
+            "feedback_id": "feedback-1",
+            "feedback_type": "correct",
+            "material_id": candidate_image["id"],
+            "candidate_digest": "b" * 64,
+            "annotation_hash": annotation["content_digest"],
+            "annotation_state": annotation["annotation_state"],
+            "labels": ["fire"],
+            "model_sha256": "c" * 64,
+            "input_sha256": material["content_sha256"],
+            "confirmed_at": "2026-09-19T00:00:00Z",
+            "algorithm_id": algorithm["id"],
+            "version_id": version_id,
+        }],
+        frozen_at="2026-09-19T00:01:00Z",
+    )
+    algorithms = app_module.list_algorithms_internal(project_id)
+    target = next(row for row in algorithms if row["id"] == algorithm["id"])
+    target["current_version_id"] = version_id
+    target["versions"] = [{
+        "id": version_id,
+        "version_name": "20260919000100",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "supplement_data_candidate_set": candidate_set,
+    }]
+    save_algorithms(app_module.algorithms_file(project_id), algorithms)
+
+    base_request = {
+        "framework": "ultralytics",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [candidate_image["id"], second["id"]],
+        "test_image_ids": [],
+        "experiment_percent": 20,
+        "validation_percent": 20,
+        "device": "cpu",
+    }
+    missing = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json=base_request,
+    )
+    assert missing.status_code == 409
+    assert "Candidate Set" in missing.text
+
+    accepted = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            **base_request,
+            "supplement_candidate_set_id": candidate_set["candidate_set_id"],
+        },
+    )
+    assert accepted.status_code == 202, accepted.text
+    task_id = accepted.json()["task"]["task_id"]
+    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert payload["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
+    assert payload["supplement_candidate_set"]["candidate_set_id"] == candidate_set["candidate_set_id"]
+    job = app_module.read_json(
+        app_module.project_dir(project_id) / "jobs" / task_id / "job.json", {}
+    )
+    assert job["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
+
+
+def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
+    client, seeded_project,
+):
+    import app as app_module
+    from platform_core.algorithms import save_algorithms
+    from platform_core.training_evaluation import build_evaluation_benchmark_scope
+
+    project_id, benchmark_image = seeded_project
+    train_image = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("benchmark-train.jpg", _image_bytes("blue"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    train_image_2 = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("benchmark-train-2.jpg", _image_bytes("green"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    for image in (benchmark_image, train_image, train_image_2):
+        assert client.post(
+            f"/api/projects/{project_id}/annotations/{image['id']}",
+            json={"boxes": [{
+                "class_id": 0, "label": "fire",
+                "x1": 20, "y1": 20, "x2": 90, "y2": 90,
+            }]},
+        ).status_code == 200
+
+    material = app_module.MaterialRepository(
+        app_module.project_dir(project_id)
+    ).get(benchmark_image["id"])
+    annotation = app_module.AnnotationRepository(
+        app_module.project_dir(project_id)
+    ).get(benchmark_image["id"])
+    snapshot_id = "a" * 64
+    snapshot = {
+        "schema_version": 3,
+        "snapshot_id": snapshot_id,
+        "test_image_ids": [benchmark_image["id"]],
+        "label_schema": [{"class_id": 0, "code": "fire"}],
+        "images": [{
+            "image_id": benchmark_image["id"],
+            "role": "test",
+            "content_sha256": material["content_sha256"],
+            "annotation_hash": annotation["content_digest"],
+            "annotation_state": annotation["annotation_state"],
+        }],
+    }
+    snapshot_dir = app_module.project_dir(project_id) / "snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    app_module.atomic_write_json(snapshot_dir / f"{snapshot_id}.json", snapshot)
+    snapshot_scope = build_evaluation_benchmark_scope(snapshot)
+    scope_id = "b" * 64
+    scope = {
+        **snapshot_scope,
+        "scope_id": scope_id,
+        "binding_level": "bundle_verified",
+        "evaluation_input_digest": "c" * 64,
+        "training_input_policy": "ultralytics_jpeg_repair_v1",
+    }
+
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "固定评测基准训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    rows = app_module.list_algorithms_internal(project_id)
+    target = next(row for row in rows if row["id"] == algorithm["id"])
+    target["current_version_id"] = "benchmark-v1"
+    target["versions"] = [{
+        "id": "benchmark-v1",
+        "version_name": "benchmark-v1",
+        "snapshot_id": snapshot_id,
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "evaluation": {
+            "status": "succeeded",
+            "snapshot_id": snapshot_id,
+            "benchmark_scope": scope,
+        },
+    }]
+    save_algorithms(app_module.algorithms_file(project_id), rows)
+
+    availability = client.get(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/benchmark-reuse"
+    )
+    assert availability.status_code == 200
+    assert availability.json()["available"] is True
+    assert availability.json()["test_image_count"] == 1
+    assert "test_image_ids" not in availability.json()
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": [benchmark_image["id"], train_image["id"], train_image_2["id"]],
+            "validation_percent": 20,
+            "experiment_percent": 20,
+            "benchmark_source_version_id": "benchmark-v1",
+            "benchmark_scope_id": scope_id,
+        },
+    )
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task"]["id"]
+    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert payload["split_mode"] == "independent_test_set"
+    assert payload["train_image_ids"] == [train_image["id"], train_image_2["id"]]
+    assert payload["test_image_ids"] == [benchmark_image["id"]]
+    assert payload["benchmark_reuse"]["source_version_id"] == "benchmark-v1"
+    assert payload["benchmark_reuse"]["scope_id"] == scope_id
+    assert payload["benchmark_reuse"]["test_image_count"] == 1
+    assert payload["benchmark_reuse"]["selected_training_candidate_count"] == 3
+    assert payload["benchmark_reuse"]["reserved_training_candidate_count"] == 1
+    assert payload["benchmark_reuse"]["effective_training_candidate_count"] == 2
+
+
+def test_reusable_benchmark_rejects_stale_observed_scope(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "过期评测基准", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    seen = {}
+
+    def fake_resolve(_project_id, _algorithm, source_version_id="", observed_scope_id=""):
+        seen["source_version_id"] = source_version_id
+        seen["observed_scope_id"] = observed_scope_id
+        raise app_module.HTTPException(status_code=409, detail="Benchmark Scope 已变化")
+
+    monkeypatch.setattr(app_module, "_training_reusable_benchmark", fake_resolve)
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": ["train-a"],
+            "validation_percent": 20,
+            "experiment_percent": 20,
+            "benchmark_source_version_id": "version-old",
+            "benchmark_scope_id": "d" * 64,
+        },
+    )
+    assert response.status_code == 409
+    assert "Scope" in response.json()["detail"]
+    assert seen == {
+        "source_version_id": "version-old",
+        "observed_scope_id": "d" * 64,
+    }
+
+
+
+def test_rockchip_auto_conversion_uses_single_detected_supported_chip(monkeypatch):
+    import app as app_module
+
+    created = []
+
+    monkeypatch.setattr(app_module, "_v48_quality_reached", lambda _job: True)
+    monkeypatch.setattr(
+        app_module,
+        "_builtin_deploy_resources",
+        lambda: [{
+            "id": "rk-agent",
+            "name": "RKNN Agent",
+            "status": "ready",
+            "targets": ["rockchip"],
+            "supported_chips": ["rk3568"],
+        }],
+    )
+    monkeypatch.setattr(app_module, "_load_saved_deploy_resources", lambda: [])
+    monkeypatch.setattr(
+        app_module,
+        "v39_create_deploy_job",
+        lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "convert-rk3568"}},
+    )
+
+    result = app_module._v48_auto_convert_version(
+        "p1",
+        "a1",
+        {"id": "v1", "stored_path": "/models/best.pt"},
+        {"imgsz": 640, "auto_convert_targets": ["rockchip"]},
+    )
+
+    assert not result["errors"]
+    assert result["jobs"][0]["job_id"] == "convert-rk3568"
+    assert len(created) == 1
+    assert created[0][1].params["chip"] == "rk3568"
+
+
+def test_rockchip_auto_conversion_fails_closed_when_chip_is_ambiguous(monkeypatch):
+    import app as app_module
+
+    created = []
+
+    monkeypatch.setattr(app_module, "_v48_quality_reached", lambda _job: True)
+    monkeypatch.setattr(
+        app_module,
+        "_builtin_deploy_resources",
+        lambda: [{
+            "id": "rk-agent",
+            "name": "RKNN Agent",
+            "status": "ready",
+            "targets": ["rockchip"],
+            "supported_chips": ["rk3568", "rk3576", "rk3588"],
+        }],
+    )
+    monkeypatch.setattr(app_module, "_load_saved_deploy_resources", lambda: [])
+    monkeypatch.setattr(
+        app_module,
+        "v39_create_deploy_job",
+        lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "should-not-run"}},
+    )
+
+    result = app_module._v48_auto_convert_version(
+        "p1",
+        "a1",
+        {"id": "v1", "stored_path": "/models/best.pt"},
+        {"imgsz": 640, "auto_convert_targets": ["rockchip"]},
+    )
+
+    assert created == []
+    assert result["jobs"] == []
+    assert len(result["errors"]) == 1
+    assert "RK3568" in result["errors"][0]["message"]
+    assert "RK3576" in result["errors"][0]["message"]
+    assert "RK3588" not in result["errors"][0]["message"]

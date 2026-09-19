@@ -13,7 +13,7 @@ import uuid
 import zipfile
 import random
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -31,7 +31,11 @@ from PIL import Image, ImageDraw
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
 from platform_core.annotation_repository import AnnotationRepository
-from platform_core.storage.import_confirmation import confirm_import, public_quality
+from platform_core.storage.import_confirmation import (
+    confirm_import,
+    public_quality,
+    resolve_external_label_mapping,
+)
 from platform_core.algorithms import (
     attach_version as attach_algorithm_version,
     choose_algorithm_iteration_base,
@@ -39,11 +43,11 @@ from platform_core.algorithms import (
     delete_algorithm_version,
     is_trainable_version,
     project_current_version,
+    resolve_current_version_id,
     rollback_algorithm_version,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
     list_algorithms as list_algorithm_assets,
-    save_algorithms as save_algorithm_assets,
     update_algorithm as update_algorithm_asset,
     update_algorithm_version,
 )
@@ -76,6 +80,7 @@ from platform_core.resource_discovery.tasks import (
     PROGRESS_REF as RESOURCE_DISCOVERY_PROGRESS_REF,
 )
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore, secret_ref
+from platform_core.service_nodes import ServiceNodeRepository
 from platform_core.storage import (
     StorageError,
     StorageManager,
@@ -85,18 +90,20 @@ from platform_core.storage import (
     StorageType,
     redact_storage_error,
 )
-from platform_core.storage.import_candidates import ImportCandidateStore
+from platform_core.storage.import_candidates import ImportCandidateStore, RescanCandidateStore
 from platform_core.storage.import_tasks import (
     MANIFEST_REF as STORAGE_IMPORT_MANIFEST_REF,
     load_legacy_candidates,
     server_import_dir,
 )
+from platform_core.zip_multipart import ZipMultipartRepository
 from platform_core.storage.zip_import import (
     ServerZipImportError,
     resolve_server_zip,
     safe_member_path,
 )
 from platform_core.snapshots import build_snapshot, persist_snapshot
+from platform_core.training_lineage import build_training_lineage
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import apply_training_task_truth
 from platform_core.task_runtime import (
@@ -111,7 +118,7 @@ from platform_core.task_runtime import (
     task_to_public,
     training_queue_truth,
 )
-from platform_core.training_splits import SplitMode, SplitRequest
+from platform_core.training_splits import SplitMode, SplitRequest, exclude_reserved_test_components
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
 from platform_core.gpu_resources import GPUResourceManager, read_gpu_runtime_truth
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
@@ -870,6 +877,33 @@ def enrich_job_runtime(
             queue_priority=int(durable.priority),
             priority_scheme="lower_number_first",
         )
+        snapshot_truth = shared_task_artifacts().read_json(
+            durable.task_id,
+            "snapshot.json",
+            default={},
+        )
+        if isinstance(snapshot_truth, dict):
+            snapshot_id = str(snapshot_truth.get("snapshot_id") or "").strip()
+            revision_id = str(snapshot_truth.get("dataset_revision_id") or "").strip()
+            if snapshot_id:
+                job["snapshot_id"] = snapshot_id
+            if revision_id:
+                job["dataset_revision_id"] = revision_id
+        if durable.result_ref:
+            durable_result = shared_task_artifacts().read_json(
+                durable.task_id,
+                durable.result_ref,
+                default={},
+            )
+            if isinstance(durable_result, dict):
+                dataset_manifest_ref = str(
+                    durable_result.get("dataset_manifest_ref") or ""
+                ).strip()
+                if dataset_manifest_ref:
+                    # Training version archival consumes this exact task-owned
+                    # evidence. Keep the overlay deliberately whitelisted:
+                    # legacy job JSON must not become a second copy of result truth.
+                    job["dataset_manifest_ref"] = dataset_manifest_ref
         if durable.error:
             job["error"] = durable.error
             job["message"] = durable.error
@@ -1105,6 +1139,7 @@ class StorageSourceUpdateReq(BaseModel):
 
 class StorageImportScanReq(BaseModel):
     mode: Literal["storage_scan", "directory_scan", "server_zip"] = "storage_scan"
+    execution_mode: Literal["local", "agent"] = "local"
     storage_source_id: str
     prefix: str = ""
     recursive: bool = True
@@ -1115,16 +1150,32 @@ class StorageImportScanReq(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_fields(self):
-        if self.import_format in {'coco', 'voc'}:
-            raise ValueError('服务器导入暂不支持 COCO/VOC；请使用 YOLO 或明确选择仅图片')
+        if self.import_format in {'coco', 'voc'} and not (
+            self.execution_mode == "agent"
+            and self.mode in {"storage_scan", "server_zip"}
+        ):
+            raise ValueError('COCO/VOC 当前仅支持远程 Agent 的对象存储目录或服务器 ZIP 导入')
         if self.dataset_yaml:
             value = self.dataset_yaml.replace('\\', '/')
             if value.startswith('/') or ':' in value or '..' in value.split('/'):
                 raise ValueError('dataset_yaml 必须是存储源内的相对路径')
-            if self.import_format == 'images':
-                raise ValueError('仅图片模式不能提交 dataset_yaml')
+            if self.import_format != 'yolo':
+                raise ValueError('只有 YOLO 模式可以提交 dataset_yaml')
         zip_path = str(self.zip_path or "").strip()
         target_prefix = str(self.target_prefix or "").strip()
+        if self.execution_mode == "agent":
+            if self.mode not in {"server_zip", "storage_scan"}:
+                raise ValueError("Agent 素材导入仅支持对象存储扫描或服务器 ZIP 模式")
+            allowed_formats = {"images", "yolo", "coco", "voc"}
+            if self.import_format not in allowed_formats:
+                raise ValueError("Agent 当前模式不支持所选素材格式")
+            if self.import_format == "images" and self.dataset_yaml:
+                raise ValueError("Agent 仅图片模式不接受 dataset_yaml")
+            if self.dataset_yaml:
+                try:
+                    safe_member_path(str(self.dataset_yaml)).as_posix()
+                except ServerZipImportError as error:
+                    raise ValueError("Agent dataset_yaml 必须是扫描目录或 ZIP 根内的安全相对路径") from error
         if self.mode == "server_zip":
             if not zip_path:
                 raise ValueError("服务器 ZIP 模式必须选择 ZIP 文件")
@@ -1329,7 +1380,7 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
             continue
         if isinstance(raw, (int, float)):
             public[key] = max(0, raw)
-    for key in ("stage", "mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref", "import_format", "dataset_yaml"):
+    for key in ("stage", "mode", "execution_mode", "storage_source_id", "prefix", "manifest_ref", "scan_result_ref", "import_format", "dataset_yaml"):
         raw = value.get(key)
         if isinstance(raw, str):
             public[key] = _public_storage_import_text(raw)
@@ -1356,6 +1407,9 @@ def _public_storage_import_mapping(value: object) -> Optional[Dict[str, Any]]:
 
 def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
     artifacts = shared_task_artifacts()
+    request = _public_storage_import_mapping(
+        artifacts.read_json(task.task_id, task.payload_ref, default=None)
+    ) or {}
     result = None
     if task.result_ref:
         result = _public_storage_import_mapping(
@@ -1393,15 +1447,40 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "finished_at": task.finished_at,
+        "mode": request.get("mode"),
+        "execution_mode": request.get("execution_mode") or "local",
+        "storage_source_id": request.get("storage_source_id"),
+        "import_format": request.get("import_format"),
+        "prefix": request.get("prefix"),
+        "recursive": request.get("recursive"),
         "metrics": metrics,
         "result": result,
     }
+
+
+class StorageRescanCreateReq(BaseModel):
+    execution_mode: Literal["local", "agent"] = "local"
+    import_format: Literal["images", "yolo", "coco", "voc"] = "images"
+    dataset_yaml: str = ""
+
+    @model_validator(mode="after")
+    def validate_rescan_format(self):
+        self.dataset_yaml = str(self.dataset_yaml or "").strip().replace("\\", "/")
+        if self.import_format != "yolo" and self.dataset_yaml:
+            raise ValueError("dataset_yaml 仅适用于 YOLO 重新扫描")
+        return self
 
 
 class StorageRescanConfirmReq(BaseModel):
     new: Literal['import', 'ignore'] = 'import'
     missing: Literal['mark_unavailable', 'ignore'] = 'mark_unavailable'
     changed: Literal['update', 'ignore'] = 'update'
+    annotation_changed: Literal['update', 'ignore'] = 'update'
+    annotation_removed: Literal['clear', 'keep'] = 'keep'
+    annotation_conflicts: Literal['overwrite', 'keep'] = 'keep'
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
+    create_labels: List[str] = Field(default_factory=list)
+    accept_quality_report: bool = False
 
 
 def _storage_rescan_task(project_id: str, task_id: str):
@@ -1417,34 +1496,201 @@ def _storage_rescan_task(project_id: str, task_id: str):
 
 def _public_storage_rescan(task):
     artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task.task_id, task.payload_ref, default={})
     result = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
     checkpoint = artifacts.read_json(task.task_id, 'checkpoints/worker.json', default={})
     summary = result if 'counts' in result else checkpoint
-    return {'task_id': task.task_id, 'project_id': task.project_id, 'status': task.status.value,
-            'stage': task.stage, 'accepted': task.accepted,
-            'current_item': _public_storage_import_text(task.current_item or ''),
-            'error': _public_storage_import_mapping(result).get('error') if result else None,
-            'counts': {key: max(0, int(value)) for key, value in summary.get('counts', {}).items()
-                       if key in {'NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED'}},
-            'examples': {key: [_public_storage_import_text(value) for value in values[:20]]
-                         for key, values in summary.get('examples', {}).items()},
-            'applied': max(0, int(summary.get('applied') or 0))}
+    public_error = _public_storage_import_mapping(result).get('error') if result else None
+    annotation_counts = {
+        key: max(0, int(value))
+        for key, value in (summary.get('annotation_counts') or {}).items()
+        if key in {
+            'ANNOTATION_NEW', 'ANNOTATION_CHANGED', 'ANNOTATION_REMOVED',
+            'ANNOTATION_UNCHANGED', 'ANNOTATION_CONFLICT', 'ANNOTATION_INVALID',
+        }
+    }
+    annotation_examples = {
+        key: [_public_storage_import_text(value) for value in values[:20]]
+        for key, values in (summary.get('annotation_examples') or {}).items()
+    }
+    quality_view = public_quality(summary, _public_storage_import_text)
+    return {
+        'task_id': task.task_id,
+        'project_id': task.project_id,
+        'status': task.status.value,
+        'stage': task.stage,
+        'accepted': task.accepted,
+        'execution_mode': str(request.get('execution_mode') or 'local'),
+        'import_format': str(request.get('import_format') or summary.get('import_format') or 'images'),
+        'dataset_yaml': str(summary.get('dataset_yaml') or request.get('dataset_yaml') or ''),
+        'worker_id': str(task.worker_id or ''),
+        'resource_wait_reason': _public_storage_import_text(task.resource_wait_reason or ''),
+        'current_item': _public_storage_import_text(task.current_item or ''),
+        'error': public_error,
+        'counts': {
+            key: max(0, int(value))
+            for key, value in summary.get('counts', {}).items()
+            if key in {'NEW', 'MISSING', 'CHANGED', 'UNCHANGED', 'INVALID', 'SKIPPED'}
+        },
+        'examples': {
+            key: [_public_storage_import_text(value) for value in values[:20]]
+            for key, values in summary.get('examples', {}).items()
+        },
+        'annotation_counts': annotation_counts,
+        'annotation_examples': annotation_examples,
+        'annotation_applied': max(0, int(summary.get('annotation_applied') or 0)),
+        'quality': quality_view.get('quality'),
+        'external_classes': quality_view.get('external_classes', []),
+        'applied': max(0, int(summary.get('applied') or 0)),
+    }
+
+
+def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str, Any]:
+    get_project(project_id)
+    source = storage_source_repository().get(source_id)
+    if source is None:
+        return {'agent_available': False, 'reason': '存储源不存在', 'eligible_nodes': []}
+    if not source.enabled:
+        return {'agent_available': False, 'reason': '存储源已停用', 'eligible_nodes': []}
+    try:
+        source_type = StorageType.parse(source.type)
+    except ValueError:
+        return {'agent_available': False, 'reason': '存储源类型无效', 'eligible_nodes': []}
+    if source_type not in {StorageType.OSS, StorageType.S3}:
+        return {
+            'agent_available': False,
+            'reason': '远程重扫描仅支持 OSS / S3 / MinIO 对象存储',
+            'eligible_nodes': [],
+        }
+    nodes = [
+        node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+        if str(node.get('connection_mode') or '') == 'agent'
+        and bool(node.get('online'))
+        and 'material-import' in set(node.get('effective_capabilities') or [])
+    ]
+    if not nodes:
+        return {
+            'agent_available': False,
+            'reason': '当前没有在线且已授权素材导入能力的 Agent 节点',
+            'eligible_nodes': [],
+        }
+    try:
+        _remote_execution_transport_service().stage_material_storage_scan(
+            project_id=project_id,
+            task_id='storage-rescan-preflight',
+            storage_source_id=source_id,
+            prefix='',
+            recursive=True,
+            import_format='images',
+            allow_root=True,
+            intent='storage_rescan',
+        )
+    except RemoteExecutionTransportError as error:
+        return {'agent_available': False, 'reason': str(error), 'eligible_nodes': []}
+    return {
+        'agent_available': True,
+        'reason': '',
+        'agent_supported_formats': ['images', 'yolo', 'coco', 'voc'],
+        'local_supported_formats': ['images', 'yolo', 'coco', 'voc'],
+        'eligible_nodes': [
+            {
+                'node_id': str(node.get('node_id') or ''),
+                'display_name': str(node.get('display_name') or ''),
+                'build_id': str(node.get('build_id') or ''),
+            }
+            for node in nodes
+        ],
+    }
+
+
+@app.get('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans/preflight')
+def storage_rescan_preflight(project_id: str, source_id: str):
+    result = _storage_rescan_agent_preflight(project_id, source_id)
+    result.setdefault('agent_supported_formats', [])
+    result.setdefault('local_supported_formats', ['images', 'yolo', 'coco', 'voc'])
+    return {
+        'local_available': True,
+        'default_execution_mode': 'local',
+        **result,
+    }
 
 
 @app.post('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans', status_code=202)
-def create_storage_rescan(project_id: str, source_id: str):
+def create_storage_rescan(
+    project_id: str,
+    source_id: str,
+    payload: Optional[StorageRescanCreateReq] = None,
+):
     get_project(project_id)
     source = storage_source_repository().get(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail='存储源不存在')
     if not source.enabled:
         raise HTTPException(status_code=409, detail='存储源已停用')
+    request = payload or StorageRescanCreateReq()
+    execution_mode = str(request.execution_mode or 'local')
     task_id = uuid.uuid4().hex[:12]
-    shared_task_artifacts().atomic_write_json(task_id, 'request.json', {
-        'mode': 'storage_rescan', 'storage_source_id': source_id})
+    import_format = str(request.import_format or 'images')
+    request_payload: Dict[str, Any] = {
+        'mode': 'storage_rescan',
+        'execution_mode': execution_mode,
+        'storage_source_id': source_id,
+        'import_format': import_format,
+        'dataset_yaml': str(request.dataset_yaml or ''),
+    }
+    capabilities = ('storage.rescan',)
+    resource_key = f'storage:{source_id}'
+    if execution_mode == 'agent':
+        preflight = _storage_rescan_agent_preflight(project_id, source_id)
+        if not preflight.get('agent_available'):
+            raise HTTPException(
+                status_code=409,
+                detail=str(preflight.get('reason') or '远程重扫描当前不可用'),
+            )
+        try:
+            request_payload['remote_execution'] = (
+                _remote_execution_transport_service().stage_material_storage_scan(
+                    project_id=project_id,
+                    task_id=task_id,
+                    storage_source_id=source_id,
+                    prefix='',
+                    recursive=True,
+                    import_format=import_format,
+                    dataset_yaml=str(request.dataset_yaml or ''),
+                    allow_root=True,
+                    intent='storage_rescan',
+                )
+            )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message='远程存储重扫描准备失败',
+                detail=str(error),
+                solution='请检查对象存储连接和远程素材节点后重试。',
+                status_code=error.status_code,
+            ) from error
+        capabilities = ('agent.remote',)
+        resource_key = f'material-rescan:agent:{source_id}'
+
+    manifest = shared_task_artifacts().artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+    store = RescanCandidateStore(manifest)
+    store.set_meta(
+        'source_fingerprint',
+        hashlib.sha256(json.dumps(
+            [source.id, source.type, source.config],
+            sort_keys=True,
+        ).encode()).hexdigest(),
+    )
+    material_store(project_id).snapshot_storage_references(manifest, source_id)
+    shared_task_artifacts().atomic_write_json(task_id, 'request.json', request_payload)
     task = shared_task_repository().create(TaskRecord.new(
-        task_id, project_id, TaskKind.MATERIAL_IMPORT, 'request.json',
-        f'storage:{source_id}', required_capabilities=('storage.rescan',)))
+        task_id,
+        project_id,
+        TaskKind.MATERIAL_IMPORT,
+        'request.json',
+        resource_key,
+        required_capabilities=capabilities,
+    ))
     return _public_storage_rescan(task)
 
 
@@ -1459,9 +1705,57 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
     task = _storage_rescan_task(project_id, task_id)
     if task.status is not TaskStatus.AWAITING_CONFIRMATION and task.accepted is not True:
         raise HTTPException(status_code=409, detail='重扫描尚未进入待确认状态')
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task_id, task.payload_ref, default={})
+    import_format = str(request.get('import_format') or 'images')
+    policy = {
+        'new': payload.new,
+        'missing': payload.missing,
+        'changed': payload.changed,
+        'annotation_changed': payload.annotation_changed,
+        'annotation_removed': payload.annotation_removed,
+        'annotation_conflicts': payload.annotation_conflicts,
+    }
+    annotation_confirmation = None
+    labels_to_create: List[str] = []
     try:
-        confirm_rescan(shared_task_artifacts(), task_id, payload.model_dump())
-        task = shared_task_repository().resume_after_confirmation(task_id)
+        if import_format in {'yolo', 'coco', 'voc'}:
+            manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+            store = RescanCandidateStore(manifest)
+            quality = store.quality_summary()
+            if quality.get('issues') and not payload.accept_quality_report:
+                raise ValueError('请先确认并接受标注数据质量报告')
+            if any(normalize_label(code) != code for code in payload.create_labels):
+                raise ValueError('新建标签必须使用规范的平台标签编码')
+            project = get_project(project_id)
+            resolved, create = resolve_external_label_mapping(
+                store.external_classes(),
+                label_mapping=payload.label_mapping,
+                create_labels=payload.create_labels,
+                labels=project_label_items(project),
+            )
+            labels_to_create = list(create)
+            annotation_confirmation = {
+                'label_mapping': resolved,
+                'create_labels': create,
+                'accept_quality_report': payload.accept_quality_report,
+            }
+        elif payload.label_mapping or payload.create_labels:
+            raise ValueError('仅标注重新扫描允许提交外部类别映射')
+        confirm_rescan(
+            artifacts,
+            task_id,
+            policy,
+            annotation_confirmation=annotation_confirmation,
+        )
+        # Freeze durable intent before any project-label side effect. If label
+        # creation fails, retrying the same confirmation is safe and idempotent.
+        for code in labels_to_create:
+            ensure_label(get_project(project_id), code)
+        task = shared_task_repository().resume_after_confirmation(
+            task_id,
+            required_capabilities=('storage.rescan',),
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_rescan(task)
@@ -1481,16 +1775,27 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
         raise HTTPException(status_code=404, detail="存储源不存在")
     if not source.enabled:
         raise HTTPException(status_code=409, detail="存储源已停用")
-    if payload.mode in {"directory_scan", "server_zip"} and StorageType.parse(source.type) is not StorageType.LOCAL:
-        raise HTTPException(status_code=422, detail="目录扫描和服务器 ZIP 导入只能使用已启用的本地存储")
+    source_type = StorageType.parse(source.type)
+    if payload.mode == "directory_scan" and source_type is not StorageType.LOCAL:
+        raise HTTPException(status_code=422, detail="目录扫描只能使用已启用的本地存储")
+    if (
+        payload.mode == "server_zip"
+        and payload.execution_mode == "local"
+        and source_type is not StorageType.LOCAL
+    ):
+        raise HTTPException(status_code=422, detail="本地服务器 ZIP 导入只能使用本地目标存储")
+    if (
+        payload.execution_mode == "agent"
+        and payload.mode in {"server_zip", "storage_scan"}
+        and source_type not in {StorageType.OSS, StorageType.S3}
+    ):
+        raise HTTPException(status_code=422, detail="Agent 素材导入必须选择 OSS/S3/MinIO 对象存储")
     request_payload = payload.model_dump(mode="json")
+    resolved_zip = None
     if payload.mode == "server_zip":
         relative_zip = str(payload.zip_path or "").strip()
         try:
-            # Resolve now so an unsafe/out-of-root/missing request cannot create
-            # a durable task which is guaranteed to fail later. Only the caller's
-            # relative value is persisted; the resolved server path is discarded.
-            resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
+            resolved_zip = resolve_server_zip(server_import_dir(DATA_DIR), relative_zip)
             target_prefix = safe_member_path(
                 str(payload.target_prefix or "").strip()
             ).as_posix()
@@ -1507,10 +1812,50 @@ def create_storage_import_scan(project_id: str, payload: StorageImportScanReq):
         request_payload["zip_path"] = relative_zip
         request_payload["target_prefix"] = target_prefix
     task_id = uuid.uuid4().hex[:12]
+    if payload.execution_mode == "agent":
+        try:
+            transport = _remote_execution_transport_service()
+            if payload.mode == "storage_scan":
+                request_payload["remote_execution"] = transport.stage_material_storage_scan(
+                    project_id=project_id,
+                    task_id=task_id,
+                    storage_source_id=source.id,
+                    prefix=str(payload.prefix or ""),
+                    recursive=bool(payload.recursive),
+                    import_format=payload.import_format,
+                    dataset_yaml=str(payload.dataset_yaml or ""),
+                )
+            else:
+                request_payload["remote_execution"] = transport.stage_material_import(
+                    project_id=project_id,
+                    task_id=task_id,
+                    archive_path=resolved_zip,
+                    storage_source_id=source.id,
+                    target_prefix=request_payload["target_prefix"],
+                    import_format=payload.import_format,
+                    dataset_yaml=str(payload.dataset_yaml or ""),
+                )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message="远程素材导入准备失败",
+                detail=str(error),
+                solution="请检查目标对象存储、服务器 ZIP 文件和访问凭据后重试。",
+                status_code=error.status_code,
+            ) from error
     shared_task_artifacts().atomic_write_json(task_id, "request.json", request_payload)
     task = shared_task_repository().create(TaskRecord.new(
         task_id, project_id, TaskKind.MATERIAL_IMPORT, "request.json",
-        f"storage:{source.id}", required_capabilities=("storage.import",),
+        (
+            f"material-import:agent:{source.id}"
+            if payload.execution_mode == "agent"
+            else f"storage:{source.id}"
+        ),
+        required_capabilities=(
+            ("agent.remote",)
+            if payload.execution_mode == "agent"
+            else ("storage.import",)
+        ),
     ))
     return _public_storage_import_task(task)
 
@@ -1566,7 +1911,10 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
             object_keys=payload.object_keys, label_mapping=payload.label_mapping,
             create_labels=payload.create_labels, accept_quality_report=payload.accept_quality_report,
             labels=project_label_items(project), create_label=create_import_label)
-        updated = shared_task_repository().resume_after_confirmation(task_id)
+        updated = shared_task_repository().resume_after_confirmation(
+            task_id,
+            required_capabilities=("storage.import",),
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return _public_storage_import_task(updated)
@@ -5357,6 +5705,8 @@ def gpu_resources():
 
 
 class TrainReq(BaseModel):
+    task_id: Optional[str] = None
+
     @model_validator(mode="before")
     @classmethod
     def reject_dataset_group_contract(cls, value):
@@ -5449,7 +5799,13 @@ class TrainReq(BaseModel):
     continue_threshold: float = 0.0
     stop_threshold: float = 0.0
     auto_supplement: bool = False
+    iteration_action: Optional[Dict[str, str]] = None
+    supplement_candidate_set_id: Optional[str] = ""
     supplement_count: int = 0
+    # Reusable Benchmark v1. The browser submits identity only; exact test IDs
+    # are resolved from the source version/Snapshot by the control plane.
+    benchmark_source_version_id: Optional[str] = ""
+    benchmark_scope_id: Optional[str] = ""
     # v42.7 AI mid-training intervention. The AI is advisory within constrained actions; Ground Truth metrics stay authoritative.
     ai_intervention_enabled: bool = False
     ai_intervention_epochs: Optional[List[int]] = None
@@ -5461,6 +5817,7 @@ class TrainReq(BaseModel):
     # v42.8：训练任务队列与训练完成后的自动转换。
     queue_priority: StrictInt = 50
     auto_convert_targets: Optional[List[str]] = None
+    external_analysis_id: Optional[str] = None
 
 
 def validate_train_request(payload: TrainReq):
@@ -5504,13 +5861,24 @@ def validate_train_request(payload: TrainReq):
             raise HTTPException(status_code=400, detail=f"{name} 必须在 0~1 之间")
     if int(payload.eval_interval) < 0 or int(payload.val_max_samples) < 0:
         raise HTTPException(status_code=400, detail="阶段检查轮次和试验集抽查数量不能小于 0")
+    metric = str(payload.eval_metric or "map50").strip().lower()
+    if metric not in {"map50", "precision", "recall"}:
+        raise HTTPException(status_code=400, detail="目标指标只支持：mAP50 / Precision / Recall")
+    continue_threshold = float(payload.continue_threshold or 0)
+    stop_threshold = float(payload.stop_threshold or 0)
+    if not (0 <= continue_threshold <= 1):
+        raise HTTPException(status_code=400, detail="优化参考线必须在 0~1 之间")
+    if not (0 <= stop_threshold <= 1):
+        raise HTTPException(status_code=400, detail="目标正确率必须在 0~1 之间（例如 90% = 0.9）")
+    if stop_threshold > 0 and int(payload.eval_interval) <= 0:
+        raise HTTPException(status_code=400, detail="设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0")
     if payload.experiment_percent is not None and not (0 <= float(payload.experiment_percent) <= 100):
         raise HTTPException(status_code=400, detail="试验集比例必须在 0~100 之间")
     if payload.random_experiment_split and payload.selected_image_ids and len(set(payload.selected_image_ids)) >= 2:
         if not (0 < float(payload.experiment_percent) < 100):
             raise HTTPException(status_code=400, detail="启用随机试验集时，比例必须大于 0 且小于 100")
-    if payload.continue_threshold and payload.stop_threshold and float(payload.continue_threshold) >= float(payload.stop_threshold):
-        raise HTTPException(status_code=400, detail="继续训练下限必须小于提前完成阈值")
+    if continue_threshold and stop_threshold and continue_threshold >= stop_threshold:
+        raise HTTPException(status_code=400, detail="优化参考线必须小于目标正确率")
     # v42.8 起训练阶段不再支持 AI 中途介入；质量门禁完全由试验集 Ground Truth 指标决定。
     payload.ai_intervention_enabled = False
     payload.ai_intervention_epochs = []
@@ -5540,25 +5908,365 @@ def _explicit_training_split(payload: TrainReq) -> SplitRequest:
     )
 
 
-def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+def _training_reusable_benchmark(
+    project_id: str,
+    asset_algorithm: Optional[Dict[str, Any]],
+    source_version_id: str = "",
+    observed_scope_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    requested_version = str(source_version_id or "").strip()
+    requested_scope = str(observed_scope_id or "").strip().lower()
+    if not requested_version and not requested_scope:
+        return None
+    if not requested_version or not requested_scope:
+        raise HTTPException(
+            status_code=409,
+            detail="复用评测基准需要同时提交来源版本和已观察到的 Benchmark Scope，请刷新训练配置后重试",
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", requested_scope):
+        raise HTTPException(status_code=409, detail="Benchmark Scope 身份无效，请刷新训练配置后重试")
+    if not isinstance(asset_algorithm, dict):
+        raise HTTPException(status_code=409, detail="评测基准所属算法不存在")
+
     try:
-        split = _explicit_training_split(payload)
+        current_version_id = str(resolve_current_version_id(asset_algorithm) or "")
+    except PlatformError as error:
+        raise HTTPException(status_code=409, detail=error.detail or error.message) from error
+    if not current_version_id or requested_version != current_version_id:
+        raise HTTPException(
+            status_code=409,
+            detail="算法当前版本已变化，不能继续复用旧版本评测基准，请刷新训练配置后重试",
+        )
+    version = next(
+        (
+            row for row in list(asset_algorithm.get("versions") or [])
+            if str(row.get("id") or row.get("version_id") or "").strip() == current_version_id
+        ),
+        None,
+    )
+    evaluation = version.get("evaluation") if isinstance(version, dict) else None
+    evaluation = evaluation if isinstance(evaluation, dict) else {}
+    if str(evaluation.get("status") or "").strip().lower() != "succeeded":
+        raise HTTPException(status_code=409, detail="当前算法版本没有成功的独立评测，无法复用评测基准")
+    scope = evaluation.get("benchmark_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    scope_id = str(scope.get("scope_id") or "").strip().lower()
+    if scope.get("binding_level") != "bundle_verified" or not re.fullmatch(r"[0-9a-f]{64}", scope_id):
+        raise HTTPException(
+            status_code=409,
+            detail="当前算法版本缺少已校验 Test Bundle 的 Benchmark Scope，只能做描述性对比",
+        )
+    if scope_id != requested_scope:
+        raise HTTPException(status_code=409, detail="Benchmark Scope 已变化，请刷新训练配置后重新确认")
+
+    snapshot_id = str(evaluation.get("snapshot_id") or version.get("snapshot_id") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
+        raise HTTPException(status_code=409, detail="评测基准缺少有效训练 Snapshot")
+    snapshot_path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
+    if not snapshot_path.is_file():
+        raise HTTPException(status_code=409, detail="评测基准对应的训练 Snapshot 已不存在")
+    snapshot = read_json(snapshot_path, {})
+    if not isinstance(snapshot, dict) or str(snapshot.get("snapshot_id") or "").lower() != snapshot_id:
+        raise HTTPException(status_code=409, detail="评测基准 Snapshot 身份不一致")
+
+    from platform_core.training_evaluation import build_evaluation_benchmark_scope
+    try:
+        snapshot_scope = build_evaluation_benchmark_scope(snapshot)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    for key in ("test_image_count", "content_digest", "ground_truth_digest", "label_schema_digest"):
+        if str(scope.get(key) or "") != str(snapshot_scope.get(key) or ""):
+            raise HTTPException(
+                status_code=409,
+                detail="已归档 Benchmark Scope 与 Snapshot truth 不一致，不能复用",
+            )
+
+    raw_ids = snapshot.get("test_image_ids")
+    if raw_ids is None and isinstance(snapshot.get("ids"), dict):
+        raw_ids = snapshot["ids"].get("test")
+    test_ids = tuple(
+        dict.fromkeys(
+            str(value or "").strip()
+            for value in list(raw_ids or [])
+            if str(value or "").strip()
+        )
+    )
+    if not test_ids or len(test_ids) != int(scope.get("test_image_count") or 0):
+        raise HTTPException(status_code=409, detail="评测基准试验素材清单不完整")
+
+    records = {
+        str(row.get("image_id") or ""): row
+        for row in list(snapshot.get("images") or [])
+        if isinstance(row, dict) and str(row.get("image_id") or "")
+    }
+    materials = MaterialRepository(project_dir(project_id))
+    annotations = AnnotationRepository(project_dir(project_id)).get_many(test_ids)
+    for image_id in test_ids:
+        frozen = records.get(image_id)
+        material = materials.get(image_id)
+        annotation = annotations.get(image_id) or {}
+        if frozen is None or material is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 已不存在，请重新建立基准",
+            )
+        if str(material.get("content_sha256") or "").lower() != str(
+            frozen.get("content_sha256") or ""
+        ).lower():
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 内容已变化，请重新评测后再建立基准",
+            )
+        annotation_hash = str(
+            annotation.get("content_digest")
+            or material.get("annotation_hash")
+            or ""
+        ).lower()
+        annotation_state = str(
+            annotation.get("annotation_state")
+            or material.get("annotation_state")
+            or "unannotated"
+        )
+        if (
+            annotation_hash != str(frozen.get("annotation_hash") or "").lower()
+            or annotation_state != str(frozen.get("annotation_state") or "")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 标注已变化，请重新评测后再建立基准",
+            )
+    return {
+        "source_version_id": current_version_id,
+        "source_version_name": str(version.get("version_name") or current_version_id),
+        "scope_id": scope_id,
+        "snapshot_id": snapshot_id,
+        "test_image_ids": test_ids,
+        "test_image_count": len(test_ids),
+        "binding_level": "bundle_verified",
+    }
+
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/benchmark-reuse")
+def training_benchmark_reuse(project_id: str, algorithm_id: str):
+    get_project(project_id)
+    algorithm = next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(algorithm_id)
+        ),
+        None,
+    )
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="算法不存在")
+    try:
+        current_version_id = str(resolve_current_version_id(algorithm) or "")
+    except PlatformError as error:
+        return {"available": False, "reason": error.detail or error.message}
+    if not current_version_id:
+        return {"available": False, "reason": "当前算法还没有可复用评测基准的正式版本"}
+    version = next(
+        (row for row in list(algorithm.get("versions") or []) if str(row.get("id") or "") == current_version_id),
+        {},
+    )
+    evaluation = version.get("evaluation") if isinstance(version, dict) else {}
+    scope = evaluation.get("benchmark_scope") if isinstance(evaluation, dict) else {}
+    scope_id = str((scope or {}).get("scope_id") or "").strip().lower()
+    if not scope_id:
+        return {"available": False, "reason": "当前版本尚未冻结 Benchmark Scope"}
+    try:
+        resolved = _training_reusable_benchmark(
+            project_id, algorithm, current_version_id, scope_id,
+        )
+    except HTTPException as error:
+        return {"available": False, "reason": str(error.detail or "当前评测基准不可复用")}
+    return {
+        "available": True,
+        "algorithm_id": str(algorithm_id),
+        "source_version_id": resolved["source_version_id"],
+        "source_version_name": resolved["source_version_name"],
+        "scope_id": resolved["scope_id"],
+        "snapshot_id": resolved["snapshot_id"],
+        "test_image_count": resolved["test_image_count"],
+        "binding_level": resolved["binding_level"],
+    }
+
+
+def _training_supplement_candidate_set(
+    project_id: str,
+    asset_algorithm: Optional[Dict[str, Any]],
+    payload: TrainReq,
+    split: SplitRequest,
+) -> Optional[Dict[str, Any]]:
+    requested_id = str(payload.supplement_candidate_set_id or "").strip().lower()
+    if not isinstance(asset_algorithm, dict):
+        if requested_id:
+            raise HTTPException(status_code=409, detail="补数据 Candidate Set 所属算法不存在")
+        return None
+
+    current_version_id = str(asset_algorithm.get("current_version_id") or "").strip()
+    current_version = next(
+        (
+            row for row in list(asset_algorithm.get("versions") or [])
+            if str(row.get("id") or row.get("version_id") or "").strip() == current_version_id
+        ),
+        None,
+    )
+    candidate_set = (
+        current_version.get("supplement_data_candidate_set")
+        if isinstance(current_version, dict)
+        else None
+    )
+    if not isinstance(candidate_set, dict) or not str(candidate_set.get("candidate_set_id") or ""):
+        if requested_id:
+            raise HTTPException(status_code=409, detail="当前算法版本没有可用的补数据 Candidate Set")
+        return None
+
+    selected_ids = {
+        str(value)
+        for value in (*split.train_image_ids, *split.test_image_ids)
+        if str(value)
+    }
+    candidate_material_ids = {
+        str(value)
+        for value in list(candidate_set.get("material_ids") or [])
+        if str(value)
+    }
+    adopted_ids = sorted(selected_ids.intersection(candidate_material_ids))
+    if not adopted_ids:
+        if requested_id:
+            raise HTTPException(status_code=409, detail="本次训练未实际选择 Candidate Set 中的素材")
+        return None
+
+    candidate_set_id = str(candidate_set.get("candidate_set_id") or "").strip().lower()
+    if requested_id != candidate_set_id:
+        raise HTTPException(
+            status_code=409,
+            detail="训练请求缺少或使用了过期的 Candidate Set，请刷新训练配置后重试",
+        )
+
+    materials = MaterialRepository(project_dir(project_id))
+    annotations = AnnotationRepository(project_dir(project_id)).get_many(adopted_ids)
+    truth_rows = []
+    for material_id in adopted_ids:
+        material = materials.get(material_id)
+        if material is None:
+            raise HTTPException(status_code=409, detail=f"补数据素材 {material_id} 已不存在")
+        annotation = annotations.get(material_id) or {}
+        truth_rows.append({
+            "id": material_id,
+            "content_sha256": str(material.get("content_sha256") or ""),
+            "annotation_hash": str(
+                annotation.get("content_digest")
+                or material.get("annotation_hash")
+                or ""
+            ),
+            "annotation_state": str(
+                annotation.get("annotation_state")
+                or material.get("annotation_state")
+                or "unannotated"
+            ),
+        })
+
+    from platform_core.online_feedback import build_supplement_training_provenance
+    try:
+        build_supplement_training_provenance(candidate_set, selected_ids, truth_rows)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return dict(candidate_set)
+
+
+def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    benchmark_reuse = _training_reusable_benchmark(
+        project_id,
+        asset_algorithm,
+        str(payload.benchmark_source_version_id or ""),
+        str(payload.benchmark_scope_id or ""),
+    )
+    benchmark_selected_training_count = 0
+    benchmark_reserved_training_count = 0
+    try:
+        if benchmark_reuse:
+            if payload.test_image_ids:
+                raise ValueError("复用固定评测基准时不能同时提交前端试验素材清单")
+            train_ids = tuple(dict.fromkeys(
+                str(value).strip()
+                for value in (payload.train_image_ids or ())
+                if str(value).strip()
+            ))
+            benchmark_selected_training_count = len(train_ids)
+            reservation_rows = MaterialRepository(project_dir(project_id)).get_many(
+                (*train_ids, *benchmark_reuse["test_image_ids"])
+            )
+            train_ids, reserved_training_ids = exclude_reserved_test_components(
+                reservation_rows,
+                train_ids,
+                benchmark_reuse["test_image_ids"],
+            )
+            benchmark_reserved_training_count = len(reserved_training_ids)
+            if not train_ids:
+                raise ValueError("所选训练候选全部属于固定评测保留范围，请补充其他训练素材")
+            split = SplitRequest(
+                mode=SplitMode.INDEPENDENT_TEST_SET,
+                train_image_ids=train_ids,
+                test_image_ids=tuple(benchmark_reuse["test_image_ids"]),
+                experiment_percent=None,
+                validation_percent=payload.validation_percent,
+            )
+        else:
+            split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    supplement_candidate_set = _training_supplement_candidate_set(
+        project_id, asset_algorithm, payload, split,
+    )
+    confirmed_iteration_action = (
+        _validated_training_iteration_action(asset_algorithm, payload)
+        if asset_algorithm is not None and payload.iteration_action
+        else None
+    )
+    assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
+    external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
     if framework not in {"ultralytics", "paddle"}:
         raise HTTPException(status_code=400, detail="训练框架仅支持 ultralytics 或 paddle")
     target = str(payload.target or "local").strip().lower()
     if target == "remote":
-        remote_id = str(payload.server_id or "").strip()
-        if not remote_id:
-            raise HTTPException(status_code=400, detail="远程训练必须选择训练服务器")
+        # v42.25 control-plane scheduling replaces the legacy direct remote
+        # server upload path. server_id is retained only as an optional
+        # compatibility/affinity label; the central service-node allocator owns
+        # the actual Agent selection.
+        remote_id = str(payload.server_id or "").strip() or "scheduler"
         resource_key = f"training:remote:{remote_id}"
     else:
         device = normalize_training_device(payload.device)
         resource_key = f"training:{device}"
-    task_id = uuid.uuid4().hex[:12]
+    requested_task_id = str(payload.task_id or "").strip()
+    if requested_task_id and not re.fullmatch(r"train_[0-9a-f]{16,32}", requested_task_id):
+        raise HTTPException(status_code=422, detail="训练任务 ID 格式不正确")
+    task_id = requested_task_id or uuid.uuid4().hex[:12]
+    if requested_task_id:
+        existing_task = shared_task_repository().get(task_id)
+        if existing_task is not None:
+            if existing_task.project_id == project_id and existing_task.kind is TaskKind.TRAINING:
+                return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
+            raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
     request_payload = payload.model_dump(mode="json", exclude_none=True)
+    if supplement_candidate_set:
+        request_payload["supplement_candidate_set"] = supplement_candidate_set
+    if benchmark_reuse:
+        request_payload["benchmark_reuse"] = {
+            "source_algorithm_id": str(payload.algorithm_asset_id or ""),
+            "source_version_id": benchmark_reuse["source_version_id"],
+            "scope_id": benchmark_reuse["scope_id"],
+            "snapshot_id": benchmark_reuse["snapshot_id"],
+            "test_image_count": benchmark_reuse["test_image_count"],
+            "binding_level": benchmark_reuse["binding_level"],
+            "selected_training_candidate_count": benchmark_selected_training_count,
+            "reserved_training_candidate_count": benchmark_reserved_training_count,
+            "effective_training_candidate_count": len(split.train_image_ids),
+        }
+    prepare_task_id = f"trainprep_{task_id}"
     request_payload.update(
         {
             "split_mode": split.mode.value,
@@ -5568,6 +6276,15 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "validation_percent": split.validation_percent,
             "schema_version": 3,
             "requested_device": payload.device,
+            "external_analysis_id": external_analysis_id,
+            **(
+                {
+                    "remote_input_state": "PREPARING",
+                    "remote_prepare_task_id": prepare_task_id,
+                }
+                if target == "remote"
+                else {}
+            ),
         }
     )
     shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
@@ -5582,6 +6299,37 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             required_capabilities=(f"training.{framework}",),
         )
     )
+    preparation_record = None
+    if target == "remote":
+        try:
+            shared_task_artifacts().atomic_write_json(
+                prepare_task_id,
+                "payload.json",
+                {
+                    "schema_version": 1,
+                    "training_task_id": task_id,
+                    "project_id": project_id,
+                },
+            )
+            preparation_record = shared_task_repository().create(
+                TaskRecord.new(
+                    prepare_task_id,
+                    project_id,
+                    TaskKind.TRAINING_PREPARE,
+                    "payload.json",
+                    f"training-prepare:{project_id}",
+                    priority=int(payload.queue_priority),
+                    required_capabilities=("training.prepare",),
+                )
+            )
+        except Exception as error:
+            shared_task_repository().fail_queued_precondition(
+                task_id,
+                f"REMOTE_TRAINING_PREP_TASK_CREATE_FAILED: {error}",
+                status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                stage="remote_input_preparation_failed",
+            )
+            raise
     job_dir = project_dir(project_id) / "jobs" / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
@@ -5595,6 +6343,28 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "target": target,
             "asset_algorithm_id": payload.algorithm_asset_id,
             "algorithm_asset_id": payload.algorithm_asset_id,
+            "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
+            "external_provider": (asset_algorithm or {}).get("provider_type", ""),
+            "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
+            "external_analysis_id": external_analysis_id,
+            "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
+            "confirmed_iteration_action": confirmed_iteration_action,
+            "supplement_candidate_set_id": (
+                str(supplement_candidate_set.get("candidate_set_id") or "")
+                if supplement_candidate_set else ""
+            ),
+            "benchmark_reuse": (
+                {
+                    "source_version_id": benchmark_reuse["source_version_id"],
+                    "scope_id": benchmark_reuse["scope_id"],
+                    "snapshot_id": benchmark_reuse["snapshot_id"],
+                    "test_image_count": benchmark_reuse["test_image_count"],
+                    "selected_training_candidate_count": benchmark_selected_training_count,
+                    "reserved_training_candidate_count": benchmark_reserved_training_count,
+                    "effective_training_candidate_count": len(split.train_image_ids),
+                }
+                if benchmark_reuse else None
+            ),
             "algorithm": payload.algorithm,
             "model": payload.model,
             "queue_priority": int(payload.queue_priority),
@@ -5615,7 +6385,18 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     sync_jobs_index(project_id)
     return JSONResponse(
         status_code=202,
-        content={"ok": True, "task": _public_task(record)},
+        content={
+            "ok": True,
+            "task": _public_task(record),
+            **(
+                {
+                    "preparation_task_id": preparation_record.task_id,
+                    "remote_input_state": "PREPARING",
+                }
+                if preparation_record is not None
+                else {}
+            ),
+        },
     )
 
 
@@ -5656,6 +6437,9 @@ def start_train(project_id: str, payload: TrainReq):
     get_project(project_id)
     validate_train_request(payload)
     p = project_dir(project_id)
+    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
+    external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = (payload.framework or "ultralytics").strip().lower()
     # 所有训练入口都遵守同一迭代合同：已有版本时只能使用最新上一版本，
     # 且必须先通过实际训练运行时的权重加载校验，不能静默回退。
@@ -5708,12 +6492,16 @@ def start_train(project_id: str, payload: TrainReq):
     log_file = job_dir / "train.log"
     prefix = "paddle" if framework == "paddle" else "train"
     run_name = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
     job = {
         "id": job_id,
         "project_id": project_id,
         "asset_algorithm_id": (asset_algorithm or {}).get("id", ""),
         "asset_algorithm_name": (asset_algorithm or {}).get("name", ""),
+        "asset_algorithm_source_type": (asset_algorithm or {}).get("source_type", "LOCAL"),
+        "external_provider": (asset_algorithm or {}).get("provider_type", ""),
+        "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
+        "external_analysis_id": external_analysis_id,
+        "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
         "status": "queued",
         "target": payload.target,
         "framework": framework,
@@ -6255,10 +7043,6 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
     # Legacy defaults remain a read projection and are persisted on the next
     # explicit algorithm/version mutation through platform_core.algorithms.
     return [project_current_version(item) for item in data]
-
-def save_algorithms_internal(project_id: str, data: List[Dict[str, Any]]):
-    save_algorithm_assets(algorithms_file(project_id), data)
-
 
 _ACTIVE_VERSION_REFERENCE_STATUSES = {
     TaskStatus.QUEUED,
@@ -7248,6 +8032,232 @@ def _v54_iteration_base(
         "latest_version_name": (latest[0] if latest else {}).get("version_name") or "",
     }
 
+class ConfirmIterationActionReq(BaseModel):
+    decision_id: str
+    action: Literal["supplement_data", "continue_training", "business_validation", "manual_review"]
+
+
+class SupplementFeedbackCandidateSelection(BaseModel):
+    feedback_id: str
+    candidate_digest: str
+
+
+class FreezeSupplementFeedbackCandidatesReq(BaseModel):
+    candidates: List[SupplementFeedbackCandidateSelection] = Field(min_length=1, max_length=500)
+
+
+def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id: str):
+    get_project(project_id)
+    algorithm = next((row for row in list_algorithms_internal(project_id)
+                      if str(row.get("id")) == str(algorithm_id)), None)
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="算法不存在")
+    version = next((row for row in (algorithm.get("versions") or [])
+                    if str(row.get("id")) == str(version_id)), None)
+    if version is None:
+        raise HTTPException(status_code=404, detail="算法版本不存在")
+    return algorithm, version
+
+
+@app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/iteration-actions/confirm")
+def confirm_iteration_action(project_id: str, algorithm_id: str, version_id: str,
+                             payload: ConfirmIterationActionReq):
+    from platform_core.iteration_actions import build_confirmed_iteration_action
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    if str(algorithm.get("current_version_id") or "") != str(version_id):
+        raise HTTPException(status_code=409, detail="只能基于算法当前版本确认下一步动作，请刷新后重试")
+    try:
+        action = build_confirmed_iteration_action(
+            algorithm_id=algorithm_id, version=version,
+            requested_action=payload.action, decision_id=payload.decision_id,
+            confirmed_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    previous = version.get("confirmed_iteration_action")
+    if isinstance(previous, dict):
+        previous_id = str(previous.get("action_id") or "")
+        if previous_id == action["action_id"]:
+            return {"ok": True, "action": previous, "idempotent": True}
+        if previous_id:
+            raise HTTPException(status_code=409, detail="该版本已确认其他迭代动作，请刷新版本状态")
+    stored = update_algorithm_version(
+        algorithms_file(project_id), algorithm_id, version_id,
+        {"confirmed_iteration_action": action}, now=now_iso(),
+    )
+    return {"ok": True, "action": stored.get("confirmed_iteration_action") or action}
+
+
+def _validated_training_iteration_action(algorithm: Dict[str, Any], payload: TrainReq):
+    if not payload.iteration_action:
+        return None
+    from platform_core.iteration_actions import training_action_context
+    current_version_id = str(algorithm.get("current_version_id") or "")
+    version = next((row for row in (algorithm.get("versions") or [])
+                    if str(row.get("id")) == current_version_id), None)
+    if version is None:
+        raise HTTPException(status_code=409, detail="当前算法版本不存在，请刷新后重试")
+    stored = version.get("confirmed_iteration_action")
+    if not isinstance(stored, dict):
+        raise HTTPException(status_code=409, detail="当前版本没有已确认的继续训练动作")
+    try:
+        expected = training_action_context(stored)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    submitted = {str(k): str(v or "") for k, v in dict(payload.iteration_action).items()}
+    if submitted != expected:
+        raise HTTPException(status_code=409, detail="训练动作溯源已变化，请重新从独立评测确认继续训练")
+    if expected["version_id"] != current_version_id:
+        raise HTTPException(status_code=409, detail="继续训练动作不再指向当前版本")
+    expected_task_id = str((stored.get("training_draft") or {}).get("task_id") or "")
+    submitted_task_id = str(payload.task_id or "")
+    if not expected_task_id or submitted_task_id != expected_task_id:
+        raise HTTPException(status_code=409, detail="继续训练动作必须使用已确认的固定任务 ID")
+    return stored
+
+
+def _supplement_data_action(
+    project_id: str, algorithm_id: str, version_id: str,
+):
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    if str(algorithm.get("current_version_id") or "") != str(version_id):
+        raise HTTPException(status_code=409, detail="补数据候选只能基于算法当前版本，请刷新后重试")
+    action = version.get("confirmed_iteration_action")
+    source = dict(action.get("source") or {}) if isinstance(action, dict) else {}
+    if (
+        not isinstance(action, dict)
+        or str(action.get("status") or "") != "confirmed"
+        or str(action.get("action") or "") != "supplement_data"
+        or str(source.get("algorithm_id") or "") != str(algorithm_id)
+        or str(source.get("version_id") or "") != str(version_id)
+    ):
+        raise HTTPException(status_code=409, detail="当前版本没有已确认的补数据动作")
+    return algorithm, version, action
+
+
+def _supplement_feedback_candidates(project_id: str, feedback_rows):
+    from platform_core.online_feedback import build_supplement_candidate
+    materials = material_store(project_id)
+    material_ids = [
+        str(row.get("material_id") or "")
+        for row in feedback_rows
+        if str(row.get("material_id") or "")
+    ]
+    material_rows = {
+        str(row.get("id") or ""): row
+        for row in materials.get_many(material_ids)
+    }
+    annotations = AnnotationRepository(project_dir(project_id))
+    annotation_rows = annotations.get_many(list(material_rows)) if material_rows else {}
+    return [
+        build_supplement_candidate(
+            row,
+            material_rows.get(str(row.get("material_id") or "")),
+            annotation_rows.get(str(row.get("material_id") or "")),
+        )
+        for row in feedback_rows
+    ]
+
+
+@app.get("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates")
+def list_supplement_feedback_candidates(
+    project_id: str, algorithm_id: str, version_id: str,
+):
+    _, version, action = _supplement_data_action(project_id, algorithm_id, version_id)
+    repository = _online_feedback_repository(project_id)
+    rows, total = repository.list_confirmed_for_version(algorithm_id, version_id, limit=500)
+    candidates = _supplement_feedback_candidates(project_id, rows)
+    eligible = sum(1 for row in candidates if row.get("eligible") is True)
+    annotation_required = sum(
+        1 for row in candidates if "ANNOTATION_REQUIRED" in set(row.get("reason_codes") or [])
+    )
+    return {
+        "ok": True,
+        "action_id": str(action.get("action_id") or ""),
+        "total": total,
+        "returned": len(candidates),
+        "truncated": total > len(candidates),
+        "eligible": eligible,
+        "annotation_required": annotation_required,
+        "items": candidates,
+        "candidate_set": version.get("supplement_data_candidate_set"),
+    }
+
+
+@app.post("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates/freeze")
+def freeze_supplement_feedback_candidates(
+    project_id: str, algorithm_id: str, version_id: str,
+    payload: FreezeSupplementFeedbackCandidatesReq,
+):
+    from filelock import FileLock
+    from platform_core.online_feedback import build_supplement_candidate_set
+
+    _, _, action = _supplement_data_action(project_id, algorithm_id, version_id)
+    requested = {
+        str(row.feedback_id): str(row.candidate_digest).strip().lower()
+        for row in payload.candidates
+    }
+    if len(requested) != len(payload.candidates):
+        raise HTTPException(status_code=409, detail="补数据候选包含重复 feedback ID")
+    if any(
+        len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
+        for digest in requested.values()
+    ):
+        raise HTTPException(status_code=400, detail="补数据候选 digest 无效")
+
+    repository = _online_feedback_repository(project_id)
+    feedback_rows = repository.get_many(requested)
+    if len(feedback_rows) != len(requested):
+        raise HTTPException(status_code=409, detail="部分补数据反馈已经不存在，请刷新后重试")
+    for row in feedback_rows:
+        if (
+            str(row.get("status") or "") != "confirmed"
+            or str(row.get("algorithm_id") or "") != str(algorithm_id)
+            or str(row.get("version_id") or "") != str(version_id)
+        ):
+            raise HTTPException(status_code=409, detail="补数据反馈状态或版本已经变化，请刷新后重试")
+
+    candidates = _supplement_feedback_candidates(project_id, feedback_rows)
+    by_id = {str(row["feedback_id"]): row for row in candidates}
+    for feedback_id, digest in requested.items():
+        candidate = by_id.get(feedback_id)
+        if candidate is None or str(candidate.get("candidate_digest") or "") != digest:
+            raise HTTPException(status_code=409, detail="补数据候选素材或标注已经变化，请刷新后重试")
+        if candidate.get("eligible") is not True:
+            raise HTTPException(status_code=409, detail="所选反馈尚未具备可训练的正式标注，请先完成复核")
+    try:
+        candidate_set = build_supplement_candidate_set(
+            action,
+            [by_id[feedback_id] for feedback_id in requested],
+            frozen_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    lock_path = str(algorithms_file(project_id).resolve()) + ".supplement-feedback.lock"
+    with FileLock(lock_path, timeout=30):
+        _, latest_version, latest_action = _supplement_data_action(
+            project_id, algorithm_id, version_id,
+        )
+        if str(latest_action.get("action_id") or "") != str(candidate_set["action_id"]):
+            raise HTTPException(status_code=409, detail="补数据动作已经变化，请刷新后重试")
+        previous = latest_version.get("supplement_data_candidate_set")
+        if isinstance(previous, dict) and str(previous.get("candidate_set_id") or ""):
+            if str(previous.get("candidate_set_id")) == candidate_set["candidate_set_id"]:
+                return {"ok": True, "idempotent": True, "candidate_set": previous}
+            raise HTTPException(status_code=409, detail="该版本已经冻结另一组补数据候选，不能覆盖")
+        stored = update_algorithm_version(
+            algorithms_file(project_id), algorithm_id, version_id,
+            {"supplement_data_candidate_set": candidate_set},
+            now=now_iso(),
+        )
+    return {
+        "ok": True,
+        "idempotent": False,
+        "candidate_set": stored.get("supplement_data_candidate_set") or candidate_set,
+    }
+
+
 @app.post("/api/v12/projects/{project_id}/train/start")
 def v12_start_train(project_id: str, payload: TrainReq):
     get_project(project_id)
@@ -7260,6 +8270,9 @@ def v12_start_train(project_id: str, payload: TrainReq):
         raise HTTPException(status_code=400, detail="请选择要迭代训练的算法")
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
+    confirmed_iteration_action = _validated_training_iteration_action(asset_algorithm, payload)
+    if confirmed_iteration_action is not None and not payload.split_mode:
+        raise HTTPException(status_code=409, detail="已确认迭代动作只能通过 Durable Training 主路径创建任务")
     if payload.split_mode:
         return _enqueue_explicit_training(project_id, payload)
     mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
@@ -7379,12 +8392,13 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "snapshot_id": snapshot["snapshot_id"],
         "snapshot_path": str(snapshot_path),
         "data_yaml": build.get("data_yaml", ""),
-        "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0), "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent), "split_seed": int(build.get("split_seed") or payload.seed or 0)},
+        "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0), "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent), "split_seed": int(build.get("split_seed") or payload.seed or 0), "runtime_stop_policy": "target_only"},
         "ai_intervention": {"enabled": False},
         "queue_priority": int(payload.queue_priority),
         "priority_scheme": V56_PRIORITY_SCHEME,
         "auto_convert_targets": list(payload.auto_convert_targets or []),
         "train_request": payload.dict(),
+        "confirmed_iteration_action": confirmed_iteration_action,
         "run_name": run_name,
         "run_dir": str(p / "runs" / run_name),
         "created_at": now_iso(),
@@ -7852,18 +8866,21 @@ def v12_list_algorithms(project_id: str):
 @app.post("/api/v12/projects/{project_id}/algorithms")
 def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
     get_project(project_id)
+    assert_local_algorithm_create_allowed(DATA_DIR)
     item = create_algorithm_asset(algorithms_file(project_id), payload.model_dump(), now_iso())
     return {"ok": True, "algorithm": item}
 
 
 @app.put("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_update_algorithm(project_id: str, algorithm_id: str, payload: AlgorithmReq):
+    assert_algorithm_mutable(algorithms_file(project_id), algorithm_id)
     item = update_algorithm_asset(algorithms_file(project_id), algorithm_id, payload.model_dump(), now_iso())
     return {"ok": True, "algorithm": item}
 
 
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
 def v12_delete_algorithm(project_id: str, algorithm_id: str):
+    assert_algorithm_mutable(algorithms_file(project_id), algorithm_id)
     delete_algorithm_asset(algorithms_file(project_id), algorithm_id)
     return {"ok": True}
 
@@ -8093,6 +9110,18 @@ def _v48_quality_reached(job: Dict[str, Any]) -> bool:
     return value is not None and value>=target
 
 
+def _v48_supported_rockchip_chips(resource: Dict[str, Any]) -> List[str]:
+    remote_health = resource.get("remote_health")
+    remote_health = remote_health if isinstance(remote_health, dict) else {}
+    values = list(resource.get("supported_chips") or remote_health.get("supported_chips") or [])
+    chips = {
+        str(value or "").strip().lower()
+        for value in values
+        if str(value or "").strip().lower() in {"rk3568", "rk3576"}
+    }
+    return sorted(chips)
+
+
 def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
     targets=list(job.get("auto_convert_targets") or [])
     summary={"requested":targets,"jobs":[],"errors":[]}
@@ -8104,8 +9133,18 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
         if not resource:
             summary["errors"].append({"target":target,"message":"没有已检测通过的对应部署资源"});continue
         params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}
-        if target=="sophon": params["chip"]="bm1684x"
-        elif target=="rockchip": params["chip"]="rk3588"
+        if target=="sophon":
+            params["chip"]="bm1684x"
+        elif target=="rockchip":
+            chips=_v48_supported_rockchip_chips(resource)
+            if len(chips)!=1:
+                detail="、".join(chip.upper() for chip in chips) or "无"
+                summary["errors"].append({
+                    "target":target,
+                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568 或 RK3576 后手动转换。",
+                })
+                continue
+            params["chip"]=chips[0]
         elif target=="ascend":
             socs=resource.get("detected_soc_versions") or (resource.get("remote_health") or {}).get("soc_versions") or []
             if not socs:
@@ -8151,15 +9190,131 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     dst=vd/model_path.name;shutil.copy2(model_path,dst);stored_path=str(dst);model_name=dst.name;size_mb=round(dst.stat().st_size/1024/1024,2);model_type=dst.suffix.lower().lstrip('.')
     rep=job_report(project_id,str(job.get("id") or ""),Path(stored_path) if stored_path else None)
     accuracy=_v48_metric_from_job(job,"map50")
+    snapshot_id = str(job.get("snapshot_id") or "")
+    snapshot_truth = read_json(project_dir(project_id)/"snapshots"/f"{snapshot_id}.json", {}) if snapshot_id else {}
+    dataset_revision_id = str(
+        job.get("dataset_revision_id")
+        or (snapshot_truth.get("dataset_revision_id") if isinstance(snapshot_truth, dict) else "")
+        or ""
+    )
+    execution_resource = job.get("execution_resource")
+    execution_resource = execution_resource if isinstance(execution_resource, dict) else {}
+    model_sha256 = sha256_file(dst)
+    training_lineage = build_training_lineage(
+        task_id=str(job.get("task_id") or job.get("id") or ""),
+        snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
+        framework=str(job.get("framework") or "ultralytics"),
+        base_version_id=job.get("base_version_id"),
+        base_version_name=job.get("base_version_name"),
+        base_model=job.get("base_model_path") or job.get("model"),
+        base_selection_reason=job.get("base_selection_reason"),
+        execution={
+            "mode": execution_resource.get("type") or job.get("target") or "local",
+            "worker_id": job.get("worker_id"),
+            "requested_device": job.get("requested_device") or job.get("device"),
+            "assigned_device": job.get("assigned_device"),
+            "actual_device": job.get("actual_device"),
+            "resource_id": execution_resource.get("id"),
+            "resource_name": execution_resource.get("name"),
+        },
+        requested_params=job.get("requested_train_params"),
+        actual_params=job.get("actual_train_params"),
+        supplement_provenance=(
+            snapshot_truth.get("supplement_provenance")
+            if isinstance(snapshot_truth, dict)
+            else job.get("supplement_provenance")
+        ),
+        artifacts=[{
+            "role": "primary",
+            "file_name": model_name,
+            "sha256": model_sha256,
+            "size_bytes": int(dst.stat().st_size),
+            "verified": bool(job.get("artifact_verified")),
+        }],
+        training_status=("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
+        training_outcome=job.get("training_outcome"),
+        completion_reason=job.get("completion_reason"),
+        finished_at=job.get("finished_at") or now_iso(),
+    )
+    from platform_core.training_evaluation import (
+        build_evaluation_benchmark_scope,
+        build_evaluation_truth,
+        build_feedback_adoption_outcome,
+        build_iteration_decision,
+    )
+    training_report = job.get("training_report")
+    training_report = training_report if isinstance(training_report, dict) else {}
+    evaluation_task_id = str(job.get("task_id") or job.get("id") or "")
+    dataset_manifest = {}
+    dataset_manifest_ref = str(job.get("dataset_manifest_ref") or "").strip()
+    if evaluation_task_id and dataset_manifest_ref:
+        manifest_value = shared_task_artifacts().read_json(
+            evaluation_task_id, dataset_manifest_ref, default={}
+        )
+        dataset_manifest = manifest_value if isinstance(manifest_value, dict) else {}
+    benchmark_scope = build_evaluation_benchmark_scope(
+        snapshot_truth if isinstance(snapshot_truth, dict) else None,
+        dataset_manifest=dataset_manifest or None,
+    )
+    evaluation = build_evaluation_truth(
+        training_report.get("test_result"),
+        task_id=str(job.get("task_id") or job.get("id") or ""),
+        snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
+        model_sha256=model_sha256,
+        finished_at=job.get("finished_at") or now_iso(),
+        benchmark_scope=benchmark_scope,
+    )
+    iteration_decision = build_iteration_decision(
+        evaluation,
+        quality_gate=job.get("quality_gate"),
+    )
+    supplement_provenance = (
+        training_lineage.get("supplement_provenance")
+        if isinstance(training_lineage, dict)
+        else {}
+    )
+    feedback_adoption_outcome = {}
+    if isinstance(supplement_provenance, dict) and supplement_provenance:
+        lineage_base = (
+            training_lineage.get("base")
+            if isinstance(training_lineage.get("base"), dict)
+            else {}
+        )
+        source_version_id = str(lineage_base.get("version_id") or "").strip()
+        source_version = next(
+            (
+                row for row in (algo.get("versions") or [])
+                if str(row.get("id") or "") == source_version_id
+            ),
+            None,
+        )
+        feedback_adoption_outcome = build_feedback_adoption_outcome(
+            source_version.get("evaluation") if isinstance(source_version, dict) else None,
+            evaluation,
+            supplement_provenance,
+            source_version_id=source_version_id,
+            new_version_id=version_id,
+        )
     version={
         "id":version_id,"version_no":len(algo.get("versions") or [])+1,"version_name":version_name,
         "model_name":model_name,"model_key":f"job::{job.get('id')}::{version_name}","stored_path":stored_path,"type":model_type,"size_mb":size_mb,
         "job_id":job.get("id"),"remark":"训练结束自动生成版本","report":rep,"report_updated_at":now_iso(),
         "accuracy":accuracy,"accuracy_metric":"mAP50","quality_reached":_v48_quality_reached(job),"training_status":("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
         "framework": str(job.get("framework") or "ultralytics").strip().lower(),
+        "external_analysis_id": str(job.get("external_analysis_id") or ""),
         "trainable": bool(stored_path),
         "artifact_verified": bool(job.get("artifact_verified")) and bool(stored_path),
-        "snapshot_id": str(job.get("snapshot_id") or ""),
+        "snapshot_id": snapshot_id,
+        "dataset_revision_id": dataset_revision_id,
+        "training_lineage": training_lineage,
+        "evaluation": evaluation,
+        "iteration_decision": iteration_decision,
+        **(
+            {"feedback_adoption_outcome": feedback_adoption_outcome}
+            if feedback_adoption_outcome else {}
+        ),
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
         "base_version_id": str(job.get("base_version_id") or "").strip() or None,
@@ -8177,6 +9332,13 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     try:
         job["auto_conversion"]=version.get("auto_conversion");write_json(project_dir(project_id)/"jobs"/str(job.get("id"))/"job.json",job)
     except Exception:pass
+    request_external_auto_publish_if_enabled(
+        data_dir=DATA_DIR,
+        algorithms_path=algorithms_file(project_id),
+        algorithm_id=algorithm_id,
+        version_id=version_id,
+        now=now_iso(),
+    )
     return version
 
 
@@ -8352,6 +9514,7 @@ async def v12_predict_image(
     framework = (inference_framework or "ultralytics").lower()
     source = (model_source or "project").lower()
     model_value = ""
+    feedback_version = None
 
     # 解析模型来源。v27 修复：原始模型 builtin、算法版本、项目模型、本机模型、飞桨模型统一收口，避免 model_path 未定义。
     try:
@@ -8374,6 +9537,7 @@ async def v12_predict_image(
                         break
                 if not version:
                     raise HTTPException(status_code=404, detail="算法版本不存在")
+                feedback_version = dict(version)
                 model_path = Path(version.get("stored_path", ""))
                 if not model_path.exists():
                     raise HTTPException(status_code=404, detail="算法版本模型文件不存在")
@@ -8398,8 +9562,10 @@ async def v12_predict_image(
 
     python_path = resolve_inference_python(framework, inference_env_id)
     data = run_predict_by_env(framework, python_path, str(model_value), in_path, out_path, float(conf))
-    return {
+    response = {
         "ok": True,
+        "prediction_id": pred_id,
+        "feedback_eligible": False,
         "detections": data.get("detections", []),
         "image_url": f"/data/projects/{project_id}/predictions/{out_path.name}",
         "labels": project.get("labels", []),
@@ -8409,8 +9575,530 @@ async def v12_predict_image(
         "python_path": python_path,
         "note": data.get("note", ""),
     }
+    if feedback_version is not None and algorithm_id and version_id:
+        try:
+            from platform_core.online_feedback import validate_prediction_evidence
+            info = image_info(in_path)
+            evidence = validate_prediction_evidence({
+                "schema_version": 1,
+                "prediction_id": pred_id,
+                "algorithm_id": str(algorithm_id),
+                "version_id": str(version_id),
+                "model_sha256": sha256_file(Path(str(model_value))),
+                "input_sha256": sha256_file(in_path),
+                "original_filename": safe_filename(file.filename or f"{pred_id}{ext}"),
+                "input_file": in_path.name,
+                "width": int(info["width"]),
+                "height": int(info["height"]),
+                "confidence": float(conf),
+                "engine": data.get("engine") or framework,
+                "detections": list(data.get("detections") or []),
+                "created_at": now_iso(),
+                "source_channel": "platform_test",
+            })
+            write_json(p / "predictions" / f"{pred_id}.evidence.json", evidence)
+            response.update({
+                "feedback_eligible": True,
+                "algorithm_id": evidence["algorithm_id"],
+                "version_id": evidence["version_id"],
+                "model_sha256": evidence["model_sha256"],
+                "input_sha256": evidence["input_sha256"],
+            })
+        except (OSError, ValueError):
+            # Prediction remains usable even when evidence cannot be promoted.
+            response["feedback_eligible"] = False
+    return response
 
 
+class OnlineFeedbackCreateReq(BaseModel):
+    prediction_id: str
+    feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    note: str = ""
+
+
+class OnlineFeedbackConfirmReq(BaseModel):
+    expected_feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    dataset_id: str = "default"
+    confirm_all_labels_absent: bool = False
+
+
+class OnlineFeedbackDismissReq(BaseModel):
+    expected_feedback_type: Literal["correct", "false_positive", "needs_correction"]
+    reason: str = ""
+
+
+def _online_feedback_repository(project_id: str):
+    from platform_core.online_feedback import OnlineFeedbackRepository
+    return OnlineFeedbackRepository(project_dir(project_id))
+
+
+ONLINE_FEEDBACK_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+ONLINE_FEEDBACK_MAX_DETECTIONS_JSON = 2 * 1024 * 1024
+
+
+def _online_feedback_version_model_sha256(version: Mapping[str, Any]) -> str:
+    candidates: List[str] = []
+    stored_path = Path(str(version.get("stored_path") or ""))
+    if stored_path.is_file() and stored_path.stat().st_size > 0:
+        candidates.append(sha256_file(stored_path).lower())
+    lineage = version.get("training_lineage")
+    if isinstance(lineage, Mapping):
+        for artifact in lineage.get("artifacts") or []:
+            if not isinstance(artifact, Mapping):
+                continue
+            if str(artifact.get("role") or "") != "primary" or not bool(artifact.get("verified")):
+                continue
+            digest = str(artifact.get("sha256") or "").strip().lower()
+            if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest):
+                candidates.append(digest)
+    candidates = list(dict.fromkeys(candidates))
+    if not candidates:
+        raise HTTPException(
+            status_code=409,
+            detail="算法版本没有可验证的正式模型 SHA，请先恢复版本模型产物",
+        )
+    if len(candidates) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="算法版本模型文件与训练 lineage SHA 不一致，请先修复版本真值",
+        )
+    return candidates[0]
+
+
+def _online_prediction_evidence(project_id: str, prediction_id: str):
+    from platform_core.online_feedback import validate_prediction_evidence
+    prediction_id = str(prediction_id or "").strip()
+    if (
+        not prediction_id
+        or len(prediction_id) > 64
+        or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in prediction_id)
+    ):
+        raise HTTPException(status_code=400, detail="prediction_id 无效")
+    root = project_dir(project_id) / "predictions"
+    evidence = validate_prediction_evidence(
+        read_json(root / f"{prediction_id}.evidence.json", {})
+    )
+    if evidence["prediction_id"] != prediction_id:
+        raise HTTPException(status_code=409, detail="预测证据身份不一致，请重新测试")
+    input_file = str(evidence.get("input_file") or "")
+    if not input_file or Path(input_file).name != input_file:
+        raise HTTPException(status_code=409, detail="预测输入证据无效，请重新测试")
+    input_path = root / input_file
+    if not input_path.is_file() or sha256_file(input_path) != evidence["input_sha256"]:
+        raise HTTPException(status_code=409, detail="测试图片在抽检前已变化，请重新测试")
+    algorithm, version = _algorithm_version_for_action(
+        project_id, evidence["algorithm_id"], evidence["version_id"]
+    )
+    if _online_feedback_version_model_sha256(version) != evidence["model_sha256"]:
+        raise HTTPException(status_code=409, detail="算法版本模型已变化，请重新测试")
+    return evidence, input_path, algorithm, version
+
+
+def _online_feedback_box_signature(boxes: List[Dict[str, Any]]) -> List[Tuple[int, str, float, float, float, float]]:
+    """Compare reviewed prediction truth without depending on box IDs/order."""
+    result = []
+    for box in boxes or []:
+        result.append((
+            int(box.get("class_id") or 0),
+            str(box.get("label") or box.get("code") or ""),
+            round(float(box.get("x1") or 0), 4),
+            round(float(box.get("y1") or 0), 4),
+            round(float(box.get("x2") or 0), 4),
+            round(float(box.get("y2") or 0), 4),
+        ))
+    return sorted(result)
+
+
+def _online_feedback_prediction_boxes(project: Dict[str, Any], evidence: Dict[str, Any]):
+    active = [
+        item for item in project_label_items(project)
+        if str(item.get("status") or "active") == "active"
+    ]
+    by_code = {str(item["code"]): item for item in active}
+    by_display: Dict[str, List[Dict[str, Any]]] = {}
+    for item in active:
+        by_display.setdefault(str(item.get("display_name") or ""), []).append(item)
+    boxes = []
+    for detection in evidence.get("detections") or []:
+        label = str(detection.get("label") or "").strip()
+        item = by_code.get(label)
+        if item is None:
+            matches = by_display.get(label) or []
+            item = matches[0] if len(matches) == 1 else None
+        if item is None:
+            raise ValueError(f"预测标签 {label or '-'} 无法唯一映射到当前项目标签")
+        boxes.append({
+            "id": f"feedback-{evidence['prediction_id']}-{int(detection.get('index') or 0)}",
+            "class_id": int(item["class_id"]),
+            "label": str(item["code"]),
+            "x1": float(detection["x1"]), "y1": float(detection["y1"]),
+            "x2": float(detection["x2"]), "y2": float(detection["y2"]),
+        })
+    return boxes, [str(item["code"]) for item in active]
+
+
+@app.get("/api/v63/projects/{project_id}/online-feedback")
+def list_online_feedback(project_id: str, status: str = "", limit: int = 100):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    allowed = {"", "pending_review", "confirmed", "dismissed"}
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail="反馈状态无效")
+    rows = _online_feedback_repository(project_id).list(status=status, limit=limit)
+    return {"ok": True, "items": [public_feedback(row, compact=True) for row in rows]}
+
+
+@app.get("/api/v63/projects/{project_id}/online-feedback/{feedback_id}")
+def get_online_feedback(project_id: str, feedback_id: str):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    row = _online_feedback_repository(project_id).get(feedback_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    public = public_feedback(row)
+    try:
+        evidence, _, _, _ = _online_prediction_evidence(project_id, row["prediction_id"])
+        public["input_image_url"] = (
+            f"/data/projects/{project_id}/predictions/{evidence['input_file']}"
+        )
+        result_image = project_dir(project_id) / "predictions" / f"{row['prediction_id']}_result.jpg"
+        public["result_image_url"] = (
+            f"/data/projects/{project_id}/predictions/{result_image.name}"
+            if result_image.is_file() else ""
+        )
+    except (HTTPException, ValueError):
+        public["input_image_url"] = ""
+        public["result_image_url"] = ""
+    return {"ok": True, "feedback": public}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback", status_code=201)
+def create_online_feedback(project_id: str, payload: OnlineFeedbackCreateReq):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    try:
+        evidence, _, _, _ = _online_prediction_evidence(project_id, payload.prediction_id)
+        row, idempotent = _online_feedback_repository(project_id).stage(
+            evidence,
+            feedback_type=payload.feedback_type,
+            note=payload.note,
+            created_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/external-intake", status_code=201)
+async def create_external_online_feedback(
+    project_id: str,
+    algorithm_id: str = Form(...),
+    version_id: str = Form(...),
+    model_sha256: str = Form(...),
+    external_source: str = Form(...),
+    external_sample_id: str = Form(...),
+    feedback_type: Literal["correct", "false_positive", "needs_correction"] = Form(...),
+    detections_json: str = Form("[]"),
+    confidence: float = Form(0.25),
+    note: str = Form(""),
+    file: UploadFile = File(...),
+):
+    from platform_core.online_feedback import public_feedback, validate_prediction_evidence
+
+    get_project(project_id)
+    source_name = str(external_source or "").strip()
+    sample_id = str(external_sample_id or "").strip()
+    if (
+        not source_name or len(source_name) > 200
+        or not sample_id or len(sample_id) > 200
+        or any(ord(ch) < 32 for ch in source_name + sample_id)
+    ):
+        raise HTTPException(status_code=400, detail="外部来源或样本编号无效")
+    if len(str(detections_json or "")) > ONLINE_FEEDBACK_MAX_DETECTIONS_JSON:
+        raise HTTPException(status_code=413, detail="detections_json 过大")
+    try:
+        detections = json.loads(detections_json or "[]")
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=400, detail="detections_json 不是有效 JSON") from error
+    if not isinstance(detections, list):
+        raise HTTPException(status_code=400, detail="detections_json 必须是数组")
+
+    _, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    expected_model_sha = _online_feedback_version_model_sha256(version)
+    submitted_model_sha = str(model_sha256 or "").strip().lower()
+    if (
+        len(submitted_model_sha) != 64
+        or any(ch not in "0123456789abcdef" for ch in submitted_model_sha)
+    ):
+        raise HTTPException(status_code=400, detail="model_sha256 无效")
+    if submitted_model_sha != expected_model_sha:
+        raise HTTPException(status_code=409, detail="外部样本声明的模型 SHA 与正式算法版本不一致")
+
+    filename = safe_filename(file.filename or "external.jpg")
+    extension = Path(filename).suffix.lower()
+    if extension not in IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail="外部抽检仅支持图片文件")
+    raw = await file.read(ONLINE_FEEDBACK_MAX_IMAGE_BYTES + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="外部抽检图片为空")
+    if len(raw) > ONLINE_FEEDBACK_MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="外部抽检图片超过 20MB")
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            image.verify()
+        with Image.open(BytesIO(raw)) as image:
+            width, height = int(image.width), int(image.height)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="外部抽检图片无法解码") from error
+
+    input_sha = hashlib.sha256(raw).hexdigest()
+    identity = {
+        "external_source": source_name,
+        "external_sample_id": sample_id,
+        "algorithm_id": str(algorithm_id),
+        "version_id": str(version_id),
+    }
+    prediction_id = "ext_" + hashlib.sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()[:24]
+    root = project_dir(project_id) / "predictions"
+    root.mkdir(parents=True, exist_ok=True)
+    input_file = f"{prediction_id}_input{extension}"
+    input_path = root / input_file
+    evidence_path = root / f"{prediction_id}.evidence.json"
+
+    try:
+        incoming = validate_prediction_evidence({
+            "schema_version": 1,
+            "prediction_id": prediction_id,
+            "algorithm_id": str(algorithm_id),
+            "version_id": str(version_id),
+            "model_sha256": expected_model_sha,
+            "input_sha256": input_sha,
+            "original_filename": filename,
+            "input_file": input_file,
+            "width": width,
+            "height": height,
+            "confidence": float(confidence),
+            "engine": "external",
+            "detections": detections,
+            "created_at": now_iso(),
+            "source_channel": "external_upload",
+            "external_source": source_name,
+            "external_sample_id": sample_id,
+        })
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    evidence_reused = False
+    if evidence_path.is_file():
+        existing = validate_prediction_evidence(read_json(evidence_path, {}))
+        stable_keys = (
+            "prediction_id", "algorithm_id", "version_id", "model_sha256",
+            "input_sha256", "width", "height", "confidence", "engine",
+            "detections", "source_channel", "external_source", "external_sample_id",
+        )
+        if any(existing.get(key) != incoming.get(key) for key in stable_keys):
+            raise HTTPException(
+                status_code=409,
+                detail="同一外部样本编号已经绑定不同的图片或预测证据",
+            )
+        existing_input = root / str(existing.get("input_file") or "")
+        if (
+            not existing_input.is_file()
+            or sha256_file(existing_input) != existing["input_sha256"]
+        ):
+            raise HTTPException(status_code=409, detail="已存在的外部样本证据文件不完整")
+        incoming = existing
+        evidence_reused = True
+    else:
+        if input_path.exists():
+            raise HTTPException(status_code=409, detail="外部样本存在未完成的证据文件，请人工检查")
+        temporary = root / f".{prediction_id}.{uuid.uuid4().hex}.upload"
+        temporary.write_bytes(raw)
+        try:
+            os.replace(temporary, input_path)
+            write_json(evidence_path, incoming)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    try:
+        row, repository_reused = _online_feedback_repository(project_id).stage(
+            incoming,
+            feedback_type=feedback_type,
+            note=note,
+            created_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {
+        "ok": True,
+        "idempotent": bool(evidence_reused or repository_reused),
+        "feedback": public_feedback(row),
+    }
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/confirm")
+def confirm_online_feedback(
+    project_id: str, feedback_id: str, payload: OnlineFeedbackConfirmReq,
+):
+    from platform_core.online_feedback import public_feedback
+    project = get_project(project_id)
+    repository = _online_feedback_repository(project_id)
+    staged = repository.get(feedback_id)
+    if staged is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    if staged["status"] == "confirmed":
+        return {"ok": True, "idempotent": True, "feedback": public_feedback(staged)}
+    if staged["status"] != "pending_review":
+        raise HTTPException(status_code=409, detail="抽检反馈已结束")
+    if staged["feedback_type"] != payload.expected_feedback_type:
+        raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再确认")
+    try:
+        evidence, input_path, _, _ = _online_prediction_evidence(
+            project_id, staged["prediction_id"]
+        )
+        source = dict((staged.get("payload") or {}).get("source") or {})
+        for key in ("algorithm_id", "version_id", "model_sha256", "input_sha256"):
+            if str(source.get(key) or "") != str(evidence.get(key) or ""):
+                raise ValueError("抽检来源在确认前发生变化，请重新提交反馈")
+        dataset_id = str(payload.dataset_id or "default")
+        if dataset_id not in {str(row.get("id") or "") for row in ensure_default_datasets(project_id)}:
+            raise ValueError("目标数据集不存在")
+
+        materials = material_store(project_id)
+        material = materials.get_by_content_sha256(evidence["input_sha256"])
+        reused = material is not None
+        if material is None:
+            material = add_image_record(
+                project_id,
+                input_path,
+                evidence.get("original_filename") or input_path.name,
+                "online_feedback",
+                dataset_id,
+                "default_local",
+                content_sha256=evidence["input_sha256"],
+            )
+            if material is None:
+                raise ValueError("反馈图片无法写入素材库")
+        material_id = str(material["id"])
+        annotations = AnnotationRepository(project_dir(project_id))
+        current = annotations.get(material_id)
+        annotation_action = "manual_review"
+        if staged["feedback_type"] == "correct":
+            boxes, _ = _online_feedback_prediction_boxes(project, evidence)
+            if not boxes:
+                raise ValueError("当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本")
+            current_state = str(current.get("annotation_state") or "unannotated")
+            if current_state == "unannotated":
+                annotations.upsert(material_id, boxes, "annotated")
+                annotation_action = "prediction_confirmed_as_truth"
+            elif (
+                current_state == "annotated"
+                and _online_feedback_box_signature(current.get("boxes") or [])
+                == _online_feedback_box_signature(boxes)
+            ):
+                # Recovery/idempotency: annotation truth may have been written
+                # immediately before feedback finalization failed. Matching
+                # truth is safe to acknowledge; differing truth stays fenced.
+                annotation_action = "prediction_matches_existing_truth"
+            else:
+                raise ValueError("该素材已有不同的正式标注，线上抽检不能覆盖现有 Annotation truth")
+        elif staged["feedback_type"] == "false_positive":
+            if not payload.confirm_all_labels_absent:
+                raise ValueError("请明确确认画面中不存在当前启用标签目标")
+            _, active_codes = _online_feedback_prediction_boxes(project, {
+                **evidence, "detections": [],
+            })
+            if not active_codes:
+                raise ValueError("项目没有可用于负样本确认的启用标签")
+            state = str(current.get("annotation_state") or "unannotated")
+            if state == "annotated":
+                raise ValueError("该素材已有正式目标标注，不能直接改成负样本")
+            if state != "confirmed_empty":
+                annotations.upsert(
+                    material_id, [], "confirmed_empty", annotation_scope=active_codes
+                )
+            annotation_action = "confirmed_empty"
+        else:
+            annotation_action = "manual_annotation_required"
+
+        confirmed_at = now_iso()
+        latest_material = materials.get(material_id) or material
+        refs = [
+            dict(value) for value in list(latest_material.get("online_feedback_refs") or [])
+            if isinstance(value, dict) and str(value.get("feedback_id") or "") != str(feedback_id)
+        ][-49:]
+        refs.append({
+            "schema_version": 1,
+            "feedback_id": str(feedback_id),
+            "prediction_id": evidence["prediction_id"],
+            "algorithm_id": evidence["algorithm_id"],
+            "version_id": evidence["version_id"],
+            "model_sha256": evidence["model_sha256"],
+            "input_sha256": evidence["input_sha256"],
+            "feedback_type": staged["feedback_type"],
+            "confirmed_at": confirmed_at,
+        })
+        patch = {
+            "online_feedback_refs": refs,
+            "online_feedback_needs_review": staged["feedback_type"] == "needs_correction",
+            "updated_at": confirmed_at,
+        }
+        if staged["feedback_type"] in {"correct", "false_positive"}:
+            patch["processing_status"] = "processed"
+        elif staged["feedback_type"] == "needs_correction":
+            patch["processing_status"] = "pending_decision"
+        materials.patch({material_id: patch})
+
+        row, idempotent = repository.finalize(
+            feedback_id,
+            expected_feedback_type=payload.expected_feedback_type,
+            material_id=material_id,
+            result={
+                "annotation_action": annotation_action,
+                "material_reused": reused,
+                "needs_manual_annotation": staged["feedback_type"] == "needs_correction",
+                "dataset_id": dataset_id,
+            },
+            confirmed_at=confirmed_at,
+        )
+    except (ValueError, KeyError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/dismiss")
+def dismiss_online_feedback(
+    project_id: str, feedback_id: str, payload: OnlineFeedbackDismissReq,
+):
+    from platform_core.online_feedback import public_feedback
+    get_project(project_id)
+    repository = _online_feedback_repository(project_id)
+    staged = repository.get(feedback_id)
+    if staged is None:
+        raise HTTPException(status_code=404, detail="抽检反馈不存在")
+    if staged["feedback_type"] != payload.expected_feedback_type:
+        raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再处理")
+    if staged["status"] == "dismissed":
+        return {"ok": True, "idempotent": True, "feedback": public_feedback(staged)}
+    if staged["status"] != "pending_review":
+        raise HTTPException(status_code=409, detail="已确认反馈不能再忽略")
+    try:
+        row, idempotent = repository.finalize(
+            feedback_id,
+            expected_feedback_type=payload.expected_feedback_type,
+            material_id="",
+            result={
+                "dismissed": True,
+                "dismiss_reason": str(payload.reason or "").strip()[:1000],
+            },
+            confirmed_at=now_iso(),
+            status="dismissed",
+        )
+    except (ValueError, KeyError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
 
 
 def _project_label_names(project: Dict[str, Any]) -> List[str]:
@@ -8516,8 +10204,8 @@ def _v18_safe_extract(zip_path: Path, dest: Path, progress_cb=None):
                 raise HTTPException(status_code=400, detail=f'压缩包包含越权路径：{name}')
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member) as src, open(target, 'wb') as out:
-                shutil.copyfileobj(src, out, length=1024*1024)
-            if progress_cb and (idx==1 or idx==total or idx%20==0):
+                shutil.copyfileobj(src, out, length=8*1024*1024)
+            if progress_cb:
                 progress_cb(idx,total,f'正在解压 {idx}/{total} 个文件')
 
 
@@ -8660,7 +10348,7 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             report['boxes'] += len(boxes)
             if boxes: report['annotated_images'] += 1
             progress_done += 1
-            if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 COCO 图片 {progress_done}/{total_expected}')
+            if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 COCO 图片 {progress_done}/{total_expected}')
     report['detected_format'] = 'COCO'
     return True
 
@@ -8722,7 +10410,7 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 VOC 图片 {progress_done}/{total_expected}')
+        if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 VOC 图片 {progress_done}/{total_expected}')
     if any_imported:
         report['detected_format'] = 'Pascal VOC'
     return any_imported
@@ -8800,7 +10488,7 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb and (progress_done==1 or progress_done==total_expected or progress_done%20==0): progress_cb(progress_done,total_expected,f'正在导入 YOLO 图片 {progress_done}/{total_expected}')
+        if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 YOLO 图片 {progress_done}/{total_expected}')
     if any_imported:
         report['detected_format'] = 'YOLO'
     return any_imported
@@ -9072,7 +10760,13 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 if extracted.exists():
                     shutil.rmtree(extracted, ignore_errors=True)
                 extracted.mkdir(parents=True, exist_ok=True)
+                last_extract_emit = 0.0
                 def extract_progress(done,total,msg):
+                    nonlocal last_extract_emit
+                    tick = time.monotonic()
+                    if done != total and tick - last_extract_emit < 0.6:
+                        return
+                    last_extract_emit = tick
                     frac=done/max(1,total); prog=8+frac*24
                     elapsed=max(0.01,time.time()-processing_started)
                     eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
@@ -9087,7 +10781,13 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     parse_root = selected_root
                 v19_update_job(project_id, job_id, stage="正在识别标注格式", progress=38, processed=0)
                 imported = False
+                last_import_emit = 0.0
                 def import_progress(done,total,msg):
+                    nonlocal last_import_emit
+                    tick = time.monotonic()
+                    if done != total and tick - last_import_emit < 0.6:
+                        return
+                    last_import_emit = tick
                     frac=done/max(1,total); prog=45+frac*50
                     elapsed=max(0.01,time.time()-processing_started)
                     eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
@@ -9148,6 +10848,137 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
         shutil.rmtree(selected_root, ignore_errors=True)
 
 
+
+class V19MultipartUploadReq(BaseModel):
+    file_name: str
+    file_size: int = Field(gt=0)
+    fingerprint: str = ""
+    part_size: int = 8 * 1024 * 1024
+
+
+def _v19_multipart_repository(project_id: str) -> ZipMultipartRepository:
+    return ZipMultipartRepository(project_dir(project_id))
+
+
+@app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/uploads")
+def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19MultipartUploadReq):
+    get_project(project_id)
+    filename = safe_filename(payload.file_name or "dataset.zip")
+    if Path(filename).suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="文件类型不支持：请上传 .zip 压缩包。")
+    repository = _v19_multipart_repository(project_id)
+    try:
+        session = repository.create_or_resume(
+            dataset_id=dataset_id, file_name=filename, file_size=int(payload.file_size),
+            fingerprint=str(payload.fingerprint or ""), part_size=int(payload.part_size or 0),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    job_id = str(session["upload_id"])
+    current = read_json(v19_job_file(project_id, job_id), {})
+    if not isinstance(current, dict) or not current:
+        current = {
+            "id": job_id, "project_id": project_id, "dataset_id": dataset_id,
+            "batch_id": job_id, "file_name": filename,
+            "file_size_mb": round(int(payload.file_size) / 1024 / 1024, 2),
+            "uploaded_bytes": int(session.get("received_bytes") or 0),
+            "upload_progress": float(session.get("upload_progress") or 0),
+            "status": "uploading", "stage": "正在上传 ZIP", "progress": 0,
+            "message": "分片上传已创建，可断点续传",
+            "upload_session_id": job_id, "total_parts": int(session.get("total_parts") or 0),
+            "created_at": now_iso(), "updated_at": now_iso(),
+        }
+    else:
+        current.update({
+            "status": "uploading", "stage": "正在上传 ZIP",
+            "uploaded_bytes": int(session.get("received_bytes") or 0),
+            "upload_progress": float(session.get("upload_progress") or 0),
+            "message": f"继续上传：已完成 {len(session.get('completed_parts') or [])}/{int(session.get('total_parts') or 0)} 个分片",
+            "updated_at": now_iso(),
+        })
+    v19_write_job(project_id, current)
+    return {"ok": True, **session, "job": v19_public_job(project_id, current, image_limit=0)}
+
+
+@app.put("/api/v19/projects/{project_id}/import/uploads/{upload_id}/parts/{part_number}")
+async def v19_upload_multipart_part(project_id: str, upload_id: str, part_number: int, request: Request):
+    get_project(project_id)
+    repository = _v19_multipart_repository(project_id)
+    try:
+        payload = await request.body()
+        result = repository.write_part(upload_id, part_number, BytesIO(payload))
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    job = read_json(v19_job_file(project_id, upload_id), {})
+    if isinstance(job, dict) and job:
+        completed = len(result.get("completed_parts") or [])
+        total_parts = int(result.get("total_parts") or 0)
+        job.update({
+            "status": "uploading", "stage": "正在上传 ZIP",
+            "uploaded_bytes": int(result.get("received_bytes") or 0),
+            "upload_progress": float(result.get("upload_progress") or 0),
+            "message": f"已完成 {completed}/{total_parts} 个分片",
+            "updated_at": now_iso(),
+        })
+        v19_write_job(project_id, job)
+    return {"ok": True, **result}
+
+
+@app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete")
+def v19_complete_multipart_upload(project_id: str, upload_id: str):
+    get_project(project_id)
+    repository = _v19_multipart_repository(project_id)
+    try:
+        session = repository.get(upload_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
+    job = read_json(v19_job_file(project_id, upload_id), {})
+    if not isinstance(job, dict) or not job:
+        raise HTTPException(status_code=404, detail="ZIP 导入任务不存在")
+    jd = v19_job_dir(project_id, upload_id)
+    jd.mkdir(parents=True, exist_ok=True)
+    zip_path = jd / "source.zip"
+    try:
+        v19_update_job(project_id, upload_id, status="merging", stage="正在合并 ZIP 分片", progress=0,
+                       upload_progress=100, message="文件上传完成，正在服务器合并分片")
+        if not (str(session.get("status") or "") == "completed" and zip_path.is_file()):
+            repository.assemble(upload_id, zip_path)
+        v19_update_job(project_id, upload_id, status="validating", stage="正在校验 ZIP", progress=0,
+                       upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
+                       message="分片合并完成，正在检查 ZIP 目录结构")
+        scan_started = time.time()
+        scan = v19_scan_zip(zip_path)
+        scan_seconds = round(max(0.0, time.time() - scan_started), 2)
+        if scan.get("image_count", 0) == 0:
+            raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
+        scan_images = list(scan.pop("images", []) or [])
+        v19_write_scan_images(project_id, upload_id, scan_images)
+        finished = {
+            **job, **scan,
+            "id": upload_id, "project_id": project_id,
+            "dataset_id": job.get("dataset_id") or session.get("dataset_id") or "default",
+            "batch_id": upload_id, "file_name": job.get("file_name") or session.get("file_name") or "dataset.zip",
+            "file_size_mb": round(zip_path.stat().st_size / 1024 / 1024, 2),
+            "uploaded_bytes": zip_path.stat().st_size, "upload_progress": 100,
+            "scan_seconds": scan_seconds, "status": "selecting", "stage": "上传与校验完成", "progress": 0,
+            "message": "上传与 ZIP 校验完成，等待开始后台导入",
+            "scan_images_ref": "scan-images.json", "uploaded_at": now_iso(), "updated_at": now_iso(),
+        }
+        v19_write_job(project_id, finished)
+        return v19_public_job(project_id, finished, image_limit=500)
+    except zipfile.BadZipFile as error:
+        v19_update_job(project_id, upload_id, status="failed", stage="ZIP 校验失败", progress=0,
+                       upload_progress=100, error="压缩包已损坏、格式不正确或不是有效 ZIP。",
+                       message="ZIP 校验失败", finished_at=now_iso())
+        raise HTTPException(status_code=400, detail="ZIP 校验失败：压缩包已损坏、格式不正确或不是有效 ZIP。") from error
+    except Exception as error:
+        v19_update_job(project_id, upload_id, status="failed", stage="ZIP 处理失败", progress=0,
+                       upload_progress=100, error=str(error), message=str(error), finished_at=now_iso())
+        raise HTTPException(status_code=400, detail=f"ZIP 处理失败：{error}") from error
+
+
 @app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/jobs")
 async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFile = File(...)):
     get_project(project_id)
@@ -9164,7 +10995,7 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         # 分块落盘，避免大 ZIP 一次性读入内存。
         with zip_path.open("wb") as out:
             while True:
-                chunk = await file.read(1024 * 1024)
+                chunk = await file.read(8 * 1024 * 1024)
                 if not chunk:
                     break
                 out.write(chunk)
@@ -9228,6 +11059,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
 @app.get("/api/v19/projects/{project_id}/import/jobs")
 def v19_list_import_jobs(project_id: str):
     get_project(project_id)
+    _v19_multipart_repository(project_id).cleanup_expired_if_due(interval_seconds=60)
     jobs = []
     d = v19_import_jobs_dir(project_id)
     for jf in d.glob("*/job.json"):
@@ -11369,10 +13201,105 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+def _detect_agent_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(item)
+    kind = str(item.get("kind") or "").strip().lower()
+    if kind not in {"rockchip", "onnx", "ultralytics", "paddle"}:
+        item.update(
+            status="missing",
+            targets=[],
+            message="服务节点 Agent 当前只开放 ONNX 与瑞芯微 RKNN 转换",
+            agent_nodes=[],
+            supported_chips=[],
+            supported_precisions=[],
+            last_checked_at=now_iso(),
+        )
+        return item
+
+    required_capability = "conversion.rknn" if kind == "rockchip" else "conversion"
+    target = "rockchip" if kind == "rockchip" else "onnx"
+    nodes = ServiceNodeRepository(shared_task_repository()).list_public()
+    eligible = []
+    supported_chips = set()
+    supported_precisions = set()
+    for node in nodes:
+        if (
+            str(node.get("connection_mode") or "") != "agent"
+            or not bool(node.get("online"))
+            or required_capability not in set(node.get("effective_capabilities") or [])
+        ):
+            continue
+        node_runtime = node.get("runtime")
+        node_runtime = dict(node_runtime) if isinstance(node_runtime, Mapping) else {}
+        node_chips = []
+        node_precisions = ["fp32"] if kind != "rockchip" else []
+        if kind == "rockchip":
+            rknn = node_runtime.get("rknn_toolkit2")
+            rknn = dict(rknn) if isinstance(rknn, Mapping) else {}
+            node_chips = [
+                str(chip).strip().lower()
+                for chip in (rknn.get("supported_chips") or [])
+                if str(chip).strip().lower() in {"rk3568", "rk3576"}
+            ]
+            if not bool(rknn.get("available")) or not node_chips:
+                continue
+            node_precisions = ["fp16", "int8"]
+            supported_chips.update(node_chips)
+        supported_precisions.update(node_precisions)
+        node_row = {
+            "node_id": str(node.get("node_id") or ""),
+            "display_name": str(node.get("display_name") or ""),
+            "build_id": str(node.get("build_id") or ""),
+            "capability": required_capability,
+            "supported_chips": sorted(set(node_chips)),
+        }
+        if kind == "rockchip":
+            node_row["supported_precisions"] = sorted(set(node_precisions))
+        eligible.append(node_row)
+
+    if eligible:
+        detail = (
+            f"检测到 {len(eligible)} 个在线 Agent 可执行 RKNN 转换"
+            if kind == "rockchip"
+            else f"检测到 {len(eligible)} 个在线 Agent 可执行 ONNX 转换"
+        )
+        item.update(
+            status="ready",
+            targets=[target],
+            message=detail,
+            agent_nodes=eligible,
+            supported_chips=sorted(supported_chips),
+            last_checked_at=now_iso(),
+        )
+        if kind == "rockchip":
+            item["supported_precisions"] = sorted(supported_precisions)
+        else:
+            item.pop("supported_precisions", None)
+    else:
+        detail = (
+            "没有在线且已授权 conversion.rknn、并通过 RKNN-Toolkit2 探测的 Agent 节点"
+            if kind == "rockchip"
+            else "没有在线且已授权 conversion 能力的 Agent 节点"
+        )
+        item.update(
+            status="missing",
+            targets=[],
+            message=detail,
+            agent_nodes=[],
+            supported_chips=[],
+            last_checked_at=now_iso(),
+        )
+        if kind == "rockchip":
+            item["supported_precisions"] = []
+        else:
+            item.pop("supported_precisions", None)
+    return item
+
+
 class DeployResourceReq(BaseModel):
     name: str
     kind: str  # ultralytics / paddle / tensorrt / sophon / ascend / rockchip
-    mode: str = "local"  # local / remote
+    mode: Literal["local", "remote", "agent"] = "local"
     base_url: str = ""
     api_key: str = ""
     python_path: str = ""
@@ -11442,7 +13369,13 @@ def v39_detect_deploy_resource(resource_id: str):
     idx = next((i for i,x in enumerate(items) if x.get("id") == resource_id), None)
     if idx is None: raise HTTPException(status_code=404, detail="部署资源不存在")
     item = items[idx]; runtime = _deploy_resource_runtime(item)
-    checked = _detect_remote_deploy_resource(runtime) if str(item.get("mode")) == "remote" else _detect_local_deploy_resource(runtime)
+    mode = str(item.get("mode") or "local").strip().lower()
+    if mode == "remote":
+        checked = _detect_remote_deploy_resource(runtime)
+    elif mode == "agent":
+        checked = _detect_agent_deploy_resource(runtime)
+    else:
+        checked = _detect_local_deploy_resource(runtime)
     checked.pop("api_key", None)
     if item.get("secret_ref"): checked["secret_ref"] = item.get("secret_ref")
     items[idx] = checked; _save_deploy_resources(items)
@@ -11669,14 +13602,66 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
 @app.post("/api/v39/projects/{project_id}/deploy/jobs")
 def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     source=_resolve_deploy_source(project_id,payload.source_id);resource=_deploy_resource_by_id(payload.resource_id)
+    resource_mode = str(resource.get("mode") or "local").strip().lower()
+    if resource_mode == "agent":
+        resource = _detect_agent_deploy_resource(resource)
     if resource.get("status") != "ready":
         raise HTTPException(status_code=400, detail="当前部署资源不可用，请先到“部署资源”执行检测")
     if payload.target not in (resource.get("targets") or []):
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
+    params=dict(payload.params or {})
+    if resource_mode == "agent" and str(payload.target or "").strip().lower() == "rockchip":
+        requested = dict(params)
+        precision = str(requested.get("precision") or "fp16").strip().lower()
+        chip = str(requested.get("chip") or "").strip().lower()
+        supported_chips = {
+            str(value or "").strip().lower()
+            for value in (resource.get("supported_chips") or [])
+            if str(value or "").strip()
+        }
+        supported_precisions = {
+            str(value or "").strip().lower()
+            for value in (resource.get("supported_precisions") or ["fp16", "int8"])
+            if str(value or "").strip()
+        }
+        if precision not in supported_precisions:
+            allowed_precision = "、".join(sorted(supported_precisions)) or "fp16、int8"
+            raise HTTPException(
+                status_code=400,
+                detail=f"该 RKNN Agent 当前不支持精度 {precision or '未选择'}；可用：{allowed_precision}",
+            )
+        if not chip or (supported_chips and chip not in supported_chips):
+            allowed = "、".join(sorted(supported_chips)) or "rk3568、rk3576"
+            raise HTTPException(
+                status_code=400,
+                detail=f"该 RKNN Agent 当前不支持芯片 {chip or '未选择'}；可用：{allowed}",
+            )
+    portable_calibration = None
+    if (
+        resource_mode == "agent"
+        and str(payload.target or "").strip().lower() == "rockchip"
+        and str(params.get("precision") or "fp16").strip().lower() == "int8"
+    ):
+        try:
+            portable_calibration = _remote_execution_transport_service().build_rknn_calibration_snapshot(
+                project_id=project_id,
+                dataset_id=payload.dataset_id,
+                split=payload.calibration_split,
+                limit=max(1, int(payload.calibration_count)),
+            )
+        except RemoteExecutionTransportError as error:
+            raise PlatformError(
+                code=error.code,
+                message="RKNN INT8 校准集准备失败",
+                detail=str(error),
+                solution="请确认校准图片位于已启用 OSS/S3/MinIO，且每张图片都有稳定 object_key、size 与 SHA256，然后重试。",
+                status_code=error.status_code,
+            ) from error
+        params["calibration_count"] = int(portable_calibration["item_count"])
+        params["calibration_snapshot"] = str(portable_calibration["snapshot_id"])
     job_id=uuid.uuid4().hex[:12];jd=_deploy_job_dir(project_id,job_id);srcd=jd/"source";srcd.mkdir(parents=True,exist_ok=True)
     src=Path(str(source.get("path")));local_src=srcd/src.name;shutil.copy2(src,local_src)
-    params=dict(payload.params or {})
     params.setdefault("config_path",source.get("config_path") or "")
     params.setdefault("model_name",src.stem)
 
@@ -11694,7 +13679,7 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     if paddle_env.get("paddle2onnx_path") and not resource_for_job.get("paddle2onnx_path"):
         resource_for_job["paddle2onnx_path"]=paddle_env.get("paddle2onnx_path")
     cal_dir=None
-    if payload.target in {"sophon", "rockchip", "tensorrt"} and str(params.get("precision") or "").lower()=="int8":
+    if resource_mode != "agent" and payload.target in {"sophon", "rockchip", "tensorrt"} and str(params.get("precision") or "").lower()=="int8":
         cal_dir=jd/"calibration"
         count=_deploy_prepare_calibration(project_id,payload.dataset_id,payload.calibration_split,max(1,int(payload.calibration_count)),cal_dir)
         if count<=0: raise HTTPException(status_code=400,detail="INT8 转换需要校准图片，但当前选择的数据集/分组没有可用图片")
@@ -11715,22 +13700,393 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
         "sha256": sha256_file(local_src),
     }
     job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
+    portable_conversion = None
+    conversion_target = str(payload.target or "").strip().lower()
+    should_stage_portable = (
+        (resource_mode == "agent" and conversion_target in {"onnx", "rockchip"})
+        or (resource_mode == "local" and conversion_target == "onnx")
+    )
+    if should_stage_portable:
+        try:
+            portable_conversion = _remote_execution_transport_service().stage_model_conversion(
+                project_id=project_id,
+                task_id=job_id,
+                source_id=payload.source_id,
+                source_path=src,
+                algorithm_id=str(source.get("algorithm_id") or ""),
+                version_id=str(source.get("version_id") or ""),
+                target=payload.target,
+                params=params,
+                calibration_snapshot=portable_calibration,
+            )
+            job["remote_portability"] = {
+                "status": "ready",
+                "transport": "object-storage-v1",
+                "task_kind": "MODEL_CONVERSION",
+            }
+        except RemoteExecutionTransportError as error:
+            if resource_mode == "agent":
+                raise PlatformError(
+                    code=error.code,
+                    message="Agent 模型转换准备失败",
+                    detail=str(error),
+                    solution="请检查模型资产对象存储、源模型完整性、目标参数以及 Agent conversion / conversion.rknn 节点状态后重试。",
+                    status_code=error.status_code,
+                ) from error
+            # Portable staging remains additive for the existing local path.
+            job["remote_portability"] = {
+                "status": "unavailable",
+                "code": error.code,
+                "message": str(error),
+            }
     _write_deploy_job(project_id,job)
-    if str(resource.get("mode"))=="remote":
+    if resource_mode=="remote":
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
-        shared_task_artifacts().atomic_write_json(job_id, "request.json", {
-            "job_dir": str(jd), "worker_path": str(BASE_DIR / "deployment_worker.py"),
+        request_payload = {
+            "job_dir": str(jd),
+            "worker_path": str(BASE_DIR / "deployment_worker.py"),
             "python_path": sys.executable,
-        })
+            "execution_mode": "agent" if resource_mode == "agent" else "local",
+            "target": conversion_target,
+        }
+        if portable_conversion is not None:
+            request_payload["remote_execution"] = portable_conversion
+        shared_task_artifacts().atomic_write_json(job_id, "request.json", request_payload)
         shared_task_repository().create(TaskRecord.new(
             job_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
             f"conversion:{resource.get('id') or payload.target}",
-            required_capabilities=("conversion.runtime",),
+            required_capabilities=(
+                ("agent.remote",)
+                if resource_mode == "agent"
+                else ("conversion.runtime",)
+            ),
         ))
         job["task_id"] = job_id
         _write_deploy_job(project_id, job)
     return {"ok":True,"job":job}
+
+
+def _eligible_rknn_board_nodes(chip: str) -> list[dict[str, Any]]:
+    chip = str(chip or "").strip().lower()
+    if chip not in {"rk3568", "rk3576"}:
+        return []
+    rows = ServiceNodeRepository(shared_task_repository()).list_public()
+    eligible = []
+    for node in rows:
+        if (
+            str(node.get("connection_mode") or "") != "agent"
+            or not bool(node.get("online"))
+            or "deployment-test.rknn" not in set(node.get("effective_capabilities") or [])
+        ):
+            continue
+        runtime = node.get("runtime")
+        runtime = dict(runtime) if isinstance(runtime, Mapping) else {}
+        board = runtime.get("rknn_board")
+        board = dict(board) if isinstance(board, Mapping) else {}
+        if not bool(board.get("available")) or str(board.get("chip") or "").strip().lower() != chip:
+            continue
+        eligible.append({
+            "node_id": str(node.get("node_id") or ""),
+            "display_name": str(node.get("display_name") or ""),
+            "build_id": str(node.get("build_id") or ""),
+            "chip": chip,
+            "rknn_lite_version": str(board.get("rknn_lite_version") or ""),
+        })
+    return eligible
+
+
+def _rknn_hardware_validation_context(project_id: str, job_id: str) -> dict[str, Any]:
+    get_project(project_id)
+    job = _read_deploy_job(project_id, job_id)
+    if str(job.get("target") or "").strip().lower() not in {"rockchip", "rknn"}:
+        raise HTTPException(status_code=400, detail="只有 RKNN 转换任务支持瑞芯微板端验证")
+    job_dir = _deploy_job_dir(project_id, job_id).resolve()
+    manifest_path = (job_dir / "artifacts" / "manifest.json").resolve()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=409, detail="RKNN 转换产物尚未形成可验证 manifest")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(status_code=409, detail="RKNN 转换 manifest 无法读取")
+    target = manifest.get("target") if isinstance(manifest, Mapping) else None
+    output = manifest.get("output") if isinstance(manifest, Mapping) else None
+    if (
+        not isinstance(target, Mapping)
+        or str(target.get("kind") or "") != "rockchip"
+        or not isinstance(output, Mapping)
+    ):
+        raise HTTPException(status_code=409, detail="当前转换结果不是可验证的 RKNN 产物")
+    chip = str(target.get("chip") or "").strip().lower()
+    if chip not in {"rk3568", "rk3576"}:
+        raise HTTPException(status_code=400, detail=f"当前板端验证不支持芯片 {chip or '未指定'}")
+
+    model_name = Path(str(output.get("file_name") or "")).name
+    model_path = (job_dir / "artifacts" / model_name).resolve()
+    if (
+        not model_name
+        or model_path.parent != (job_dir / "artifacts").resolve()
+        or model_path.suffix.lower() != ".rknn"
+        or not model_path.is_file()
+        or model_path.stat().st_size <= 0
+    ):
+        raise HTTPException(status_code=409, detail="RKNN 模型文件不存在或不可验证")
+    expected_sha = str(output.get("sha256") or "").strip().lower()
+    try:
+        expected_size = int(output.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        expected_size = 0
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+        or expected_size <= 0
+        or model_path.stat().st_size != expected_size
+        or sha256_file(model_path) != expected_sha
+    ):
+        raise HTTPException(status_code=409, detail="RKNN 模型与转换 manifest 的 size/SHA256 不一致")
+
+    return {
+        "job": job,
+        "job_dir": job_dir,
+        "manifest": manifest,
+        "chip": chip,
+        "model_name": model_name,
+        "model_path": model_path,
+        "model_sha256": expected_sha,
+        "model_size_bytes": expected_size,
+        "hardware_verified": manifest.get("hardware_verified") is True,
+        "board_nodes": _eligible_rknn_board_nodes(chip),
+    }
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/preflight")
+def v39_rknn_hardware_test_preflight(project_id: str, job_id: str):
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    nodes = list(context["board_nodes"])
+    already_verified = bool(context["hardware_verified"])
+    ready = bool(nodes) and not already_verified
+    reason = ""
+    solution = ""
+    if already_verified:
+        reason = "该 RKNN 产物已完成板端 Runtime 验证"
+    elif not nodes:
+        reason = f"当前没有匹配 {str(context['chip']).upper()} 的在线瑞芯微板端节点"
+        solution = "请先在对应 Rockchip 设备安装 Node Agent / RKNNLite，并确认节点 ONLINE 且 effective capability 包含 deployment-test.rknn。"
+    return {
+        "ok": True,
+        "ready": ready,
+        "already_verified": already_verified,
+        "chip": context["chip"],
+        "model": {
+            "file_name": context["model_name"],
+            "size_bytes": context["model_size_bytes"],
+            "sha256": context["model_sha256"],
+        },
+        "board_nodes": nodes,
+        "reason": reason,
+        "solution": solution,
+    }
+
+
+def _rknn_hardware_acceptance_report(project_id: str, job_id: str) -> dict[str, Any]:
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    if not context["hardware_verified"]:
+        raise HTTPException(status_code=409, detail="该 RKNN 产物尚未完成真实板端 Runtime 验证")
+    manifest = context["manifest"]
+    job = context["job"]
+    verification = manifest.get("hardware_verification") if isinstance(manifest, Mapping) else None
+    job_verification = job.get("hardware_verification") if isinstance(job, Mapping) else None
+    if not isinstance(verification, Mapping):
+        raise HTTPException(status_code=409, detail="当前板端验收记录缺少 durable hardware_verification 证据")
+    chip = str(verification.get("chip") or "").strip().lower()
+    task_id = str(verification.get("task_id") or "").strip()
+    node_id = str(verification.get("node_id") or "").strip()
+    engine = str(verification.get("engine") or "").strip().lower()
+    verified_at = str(verification.get("verified_at") or "").strip()
+    model_sha = str(verification.get("model_sha256") or "").strip().lower()
+    try:
+        generation = int(verification.get("execution_generation") or 0)
+        model_size = int(verification.get("model_size_bytes") or 0)
+        inference_ms = float(verification.get("inference_ms"))
+        output_count = int(verification.get("output_count"))
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="当前板端验收记录的数值证据无效") from error
+    input_evidence = verification.get("input")
+    if not isinstance(input_evidence, Mapping):
+        raise HTTPException(status_code=409, detail="当前板端验收记录缺少测试图 evidence")
+    input_sha = str(input_evidence.get("sha256") or "").strip().lower()
+    try:
+        input_size = int(input_evidence.get("size_bytes") or 0)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail="当前板端验收记录的测试图 size 无效") from error
+    if (
+        chip != str(context["chip"])
+        or not task_id
+        or generation <= 0
+        or not node_id
+        or engine != "rknn-lite2"
+        or not verified_at
+        or model_sha != str(context["model_sha256"])
+        or model_size != int(context["model_size_bytes"])
+        or not re.fullmatch(r"[0-9a-f]{64}", input_sha)
+        or input_size <= 0
+        or inference_ms < 0
+        or output_count <= 0
+    ):
+        raise HTTPException(status_code=409, detail="当前板端验收记录不满足完整留证要求")
+    if isinstance(job_verification, Mapping):
+        if (
+            str(job_verification.get("task_id") or "") != task_id
+            or str(job_verification.get("node_id") or "") != node_id
+            or str(job_verification.get("chip") or "").strip().lower() != chip
+        ):
+            raise HTTPException(status_code=409, detail="job.json 与 manifest 的板端验收 evidence 不一致")
+    target = manifest.get("target") if isinstance(manifest, Mapping) else {}
+    return {
+        "ok": True,
+        "report_version": 1,
+        "status": "passed",
+        "acceptance_scope": "rknn_runtime_hardware",
+        "project_id": str(project_id),
+        "conversion_job_id": str(job_id),
+        "model": {
+            "file_name": context["model_name"],
+            "size_bytes": context["model_size_bytes"],
+            "sha256": context["model_sha256"],
+        },
+        "target": {
+            "chip": chip,
+            "precision": str((target or {}).get("precision") or ""),
+        },
+        "board": {
+            "node_id": node_id,
+            "rknn_lite_version": str(verification.get("rknn_lite_version") or ""),
+        },
+        "verification": {
+            "task_id": task_id,
+            "execution_generation": generation,
+            "verified_at": verified_at,
+            "engine": engine,
+            "input": {
+                "file_name": Path(str(input_evidence.get("file_name") or "input")).name,
+                "size_bytes": input_size,
+                "sha256": input_sha,
+            },
+            "inference_ms": inference_ms,
+            "output_count": output_count,
+            "output_shapes": list(verification.get("output_shapes") or []),
+        },
+        "accuracy_verified": False,
+        "statement": "本报告仅证明该 RKNN 产物已在匹配 Rockchip 板卡上完成 RKNNLite Runtime 推理验证，不代表算法准确率或业务效果验收。",
+    }
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests/report")
+def v39_rknn_hardware_acceptance_report(
+    project_id: str,
+    job_id: str,
+    download: bool = Query(False),
+):
+    report = _rknn_hardware_acceptance_report(project_id, job_id)
+    headers = {}
+    if download:
+        safe_job = re.sub(r"[^A-Za-z0-9._-]+", "-", str(job_id)).strip("-") or "rknn"
+        headers["Content-Disposition"] = f'attachment; filename="rknn-hardware-acceptance-{safe_job}.json"'
+    return JSONResponse(content=report, headers=headers)
+
+
+@app.post("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/hardware-tests")
+async def v39_create_rknn_hardware_test(
+    project_id: str,
+    job_id: str,
+    file: UploadFile = File(...),
+):
+    context = _rknn_hardware_validation_context(project_id, job_id)
+    job = context["job"]
+    job_dir = context["job_dir"]
+    chip = str(context["chip"])
+    model_path = context["model_path"]
+    if context["hardware_verified"]:
+        raise HTTPException(status_code=409, detail="该 RKNN 产物已完成板端 Runtime 验证")
+
+    nodes = list(context["board_nodes"])
+    if not nodes:
+        raise PlatformError(
+            code="RKNN_BOARD_NODE_UNAVAILABLE",
+            message="没有可用的瑞芯微板端验证节点",
+            detail=f"需要在线、已授权 deployment-test.rknn 且真实识别为 {chip.upper()} 的 RKNNLite Agent",
+            solution="请在对应 RK3568/RK3576 设备部署 Node Agent，并安装可用的 RKNN-Toolkit-Lite2 后重试。",
+            status_code=409,
+        )
+
+    extension = Path(file.filename or "test.jpg").suffix.lower()
+    if extension not in IMAGE_EXTS:
+        extension = ".jpg"
+    task_id = uuid.uuid4().hex[:12]
+    prediction_dir = project_dir(project_id) / "predictions" / task_id
+    prediction_dir.mkdir(parents=True, exist_ok=True)
+    input_path = prediction_dir / f"input{extension}"
+    input_path.write_bytes(await file.read())
+    if input_path.stat().st_size <= 0:
+        input_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="板端验证图片为空")
+
+    params = job.get("params")
+    params = dict(params) if isinstance(params, Mapping) else {}
+    try:
+        input_size = int(params.get("input_size") or 640)
+    except (TypeError, ValueError):
+        input_size = 640
+    try:
+        remote_execution = _remote_execution_transport_service().stage_rknn_board_validation(
+            project_id=project_id,
+            task_id=task_id,
+            conversion_job_id=job_id,
+            model_path=model_path,
+            input_path=input_path,
+            chip=chip,
+            input_size=input_size,
+        )
+    except RemoteExecutionTransportError as error:
+        input_path.unlink(missing_ok=True)
+        try:
+            prediction_dir.rmdir()
+        except OSError:
+            pass
+        raise PlatformError(
+            code=error.code,
+            message="RKNN 板端验证准备失败",
+            detail=str(error),
+            solution="请检查对象存储、RKNN 产物完整性和板端节点状态后重试。",
+            status_code=error.status_code,
+        ) from error
+
+    request = {
+        "execution_mode": "agent",
+        "framework": "rknn",
+        "runtime_format": "rknn",
+        "source_conversion_job_id": job_id,
+        "chip": chip,
+        "input_size": input_size,
+        "model_path": str(model_path),
+        "input_path": str(input_path),
+        "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
+        "remote_execution": remote_execution,
+    }
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+    record = shared_task_repository().create(TaskRecord.new(
+        task_id,
+        project_id,
+        TaskKind.DEPLOYMENT_TEST,
+        "request.json",
+        f"deployment-rknn-board:{chip}",
+        required_capabilities=("agent.remote",),
+    ))
+    return JSONResponse(status_code=202, content={
+        **public_deployment_test(record),
+        "board_nodes": nodes,
+        "source_conversion_job_id": job_id,
+        "chip": chip,
+    })
 
 
 @app.get("/api/v39/projects/{project_id}/deploy/jobs")
@@ -11922,7 +14278,7 @@ def _v40_run_component_scan(scan_id: str):
         saved=_load_saved_deploy_resources()
         checked=[]
         for r in saved:
-            if str(r.get("mode"))=="remote":
+            if str(r.get("mode")) in {"remote", "agent"}:
                 continue
             try:
                 cr=_detect_local_deploy_resource(r)
@@ -12569,19 +14925,26 @@ class V42PolicyReq(BaseModel):
 def v42_policies(project_id: str):get_project(project_id);return {"ok":True,"items":_v42_list(project_id,'iteration_policies')}
 
 
+def _legacy_iteration_write_disabled() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "旧 v42 自动迭代写入口已停用。请使用 v63 线上抽检/反馈完成 review/confirm，"
+            "再通过 Dataset Revision → Durable TRAINING → Evaluation → Confirmed Action 链继续迭代。"
+        ),
+    )
+
+
 @app.post('/api/v42/projects/{project_id}/iteration-policies')
 def v42_create_policy(project_id: str,payload:V42PolicyReq):
     get_project(project_id)
-    if not payload.name.strip():raise HTTPException(status_code=400,detail='策略名称不能为空')
-    rows=_v42_list(project_id,'iteration_policies');item={"id":uuid.uuid4().hex[:12],**payload.dict(),"created_at":now_iso(),"updated_at":now_iso()};rows.insert(0,item);_v42_save(project_id,'iteration_policies',rows[:100]);return item
+    _legacy_iteration_write_disabled()
 
 
 @app.put('/api/v42/projects/{project_id}/iteration-policies/{policy_id}')
 def v42_update_policy(project_id:str,policy_id:str,payload:V42PolicyReq):
-    rows=_v42_list(project_id,'iteration_policies')
-    for i,x in enumerate(rows):
-        if x.get('id')==policy_id:rows[i]={**x,**payload.dict(),"updated_at":now_iso()};_v42_save(project_id,'iteration_policies',rows);return rows[i]
-    raise HTTPException(status_code=404,detail='迭代策略不存在')
+    get_project(project_id)
+    _legacy_iteration_write_disabled()
 
 
 @app.delete('/api/v42/projects/{project_id}/iteration-policies/{policy_id}')
@@ -12621,21 +14984,7 @@ def v42_online_feedback(project_id: str, algorithm_id: Optional[str] = None):
 @app.post('/api/v42/projects/{project_id}/online-feedback')
 def v42_submit_online_feedback(project_id: str, payload: V42OnlineFeedbackReq):
     get_project(project_id)
-    if not next((x for x in list_algorithms_internal(project_id) if x.get('id')==payload.algorithm_id),None):
-        raise HTTPException(status_code=404,detail='算法不存在')
-    item={"id":uuid.uuid4().hex[:12],**payload.dict(),"created_at":now_iso()}
-    # 外部系统/大模型抽查判为错误时，可把原图自动回流到指定数据集；失败只记录原因，不伪造素材。
-    if (not payload.correct) and (payload.image_url or '').strip() and (payload.dataset_id or '').strip():
-        try:
-            rr=requests.get((payload.image_url or '').strip(),timeout=20);rr.raise_for_status()
-            ext=Path((payload.image_url or '').split('?',1)[0]).suffix.lower();ext=ext if ext in IMAGE_EXTS else '.jpg'
-            tmp=project_dir(project_id)/'v42'/'feedback_tmp';tmp.mkdir(parents=True,exist_ok=True)
-            fp=tmp/f"feedback_{item['id']}{ext}";fp.write_bytes(rr.content)
-            rec=add_image_record(project_id,fp,fp.name,'online_feedback',payload.dataset_id or 'default')
-            item['returned_image_id']=rec.get('id') if rec else ''
-        except Exception as e:item['return_error']=str(e)
-    rows=_v42_list(project_id,'online_feedback');rows.insert(0,item);_v42_save(project_id,'online_feedback',rows[:5000])
-    return {"ok":True,"item":item,"summary":_v42_audit_summary(project_id,payload.algorithm_id)}
+    _legacy_iteration_write_disabled()
 
 
 def _v42_hygiene_report(project_id: str, dataset_id: str, max_scan: int = 1000) -> Dict[str, Any]:
@@ -12822,11 +15171,8 @@ def v42_iteration_runs(project_id:str):return {"ok":True,"items":_v42_list(proje
 
 @app.post('/api/v42/projects/{project_id}/iteration-policies/{policy_id}/run')
 def v42_run_policy(project_id:str,policy_id:str):
-    policy=_v42_get(project_id,'iteration_policies',policy_id)
-    if not policy:raise HTTPException(status_code=404,detail='迭代策略不存在')
-    run={"id":uuid.uuid4().hex[:12],"policy_id":policy_id,"policy_name":policy.get('name'),"algorithm_id":policy.get('algorithm_id'),"status":"queued","stage":"等待启动","result":"","loop":0,"history":[],"created_at":now_iso(),"updated_at":now_iso()}
-    rows=_v42_list(project_id,'iteration_runs');rows.insert(0,run);_v42_save(project_id,'iteration_runs',rows[:100])
-    th=threading.Thread(target=_v42_run_iteration,args=(project_id,run['id'],dict(policy)),daemon=True);th.start();return run
+    get_project(project_id)
+    _legacy_iteration_write_disabled()
 
 
 @app.get('/api/v42/projects/{project_id}/quality-overview')
@@ -13125,6 +15471,7 @@ from platform_core.cleaning import (
 
 class V47CleanReq(BaseModel):
     image_ids: Optional[List[str]] = None
+    execution_mode: str = 'local'
     exact_duplicate: bool = True
     near_duplicate: bool = True
     near_duplicate_hamming: int = 5
@@ -13143,6 +15490,10 @@ class V47CleanReq(BaseModel):
 
 class V47CleanConfirmReq(BaseModel):
     delete_ids: List[str]
+
+
+class V47CleanRuntimeReq(BaseModel):
+    image_ids: Optional[List[str]] = None
 
 
 def _v47_run_clean_task(project_id: str, task_id: str, payload: Dict[str, Any]):
@@ -13250,9 +15601,171 @@ def v47_list_clean_tasks(project_id: str):
 
 
 
+def _v47_clean_execution_mode(value: Any) -> str:
+    mode = str(value or 'local').strip().lower()
+    if mode not in {'local', 'agent'}:
+        raise ValueError('清洗执行方式仅支持 local 或 agent')
+    return mode
+
+
+def _v47_clean_required_capabilities(request: Dict[str, Any]) -> Tuple[str, ...]:
+    if (
+        str(request.get('operation') or '').upper() == MaterialBatchOperation.CLEAN.value
+        and str(request.get('execution_mode') or 'local').lower() == 'agent'
+    ):
+        return ('agent.remote',)
+    return ('materials.batch',)
+
+
+def _v47_clean_agent_preflight(project_id: str, image_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    get_project(project_id)
+    selected = list(dict.fromkeys(
+        str(value).strip() for value in (image_ids or []) if str(value).strip()
+    ))
+    if len(selected) > 500:
+        return {
+            'agent_available': False,
+            'reason': '显式选择超过 500 张，请改用筛选范围后再创建清洗任务',
+            'selected_count': len(selected),
+            'eligible_nodes': [],
+        }
+
+    materials = material_store(project_id)
+    clauses: List[str] = []
+    params: List[Any] = []
+    if selected:
+        clauses.append('m.id IN (' + ','.join('?' for _ in selected) + ')')
+        params.extend(selected)
+    where = (' WHERE ' + ' AND '.join(clauses)) if clauses else ''
+    with closing(materials._connect()) as database:
+        row = database.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN trim(object_key)='' OR length(trim(content_sha256))<>64 "
+            "OR size_bytes<=0 THEN 1 ELSE 0 END),0) AS incomplete "
+            "FROM materials m" + where,
+            params,
+        ).fetchone()
+        total = int(row['total'] or 0)
+        incomplete = int(row['incomplete'] or 0)
+        sources = database.execute(
+            "SELECT storage_source_id,storage_type,COUNT(*) AS total "
+            "FROM materials m" + where + " GROUP BY storage_source_id,storage_type "
+            "ORDER BY storage_source_id",
+            params,
+        ).fetchall()
+
+    if selected and total != len(selected):
+        return {
+            'agent_available': False,
+            'reason': '所选素材已发生变化，请刷新后重新选择',
+            'selected_count': total,
+            'eligible_nodes': [],
+        }
+    if total <= 0:
+        return {
+            'agent_available': False,
+            'reason': '没有可清洗的素材',
+            'selected_count': 0,
+            'eligible_nodes': [],
+        }
+    if incomplete:
+        return {
+            'agent_available': False,
+            'reason': f'有 {incomplete} 张素材缺少对象存储大小或 SHA256 证据',
+            'selected_count': total,
+            'eligible_nodes': [],
+        }
+
+    source_repo = storage_source_repository()
+    source_truth = []
+    for row in sources:
+        source_id = str(row['storage_source_id'] or '')
+        configured = source_repo.get(source_id)
+        try:
+            storage_type = StorageType.parse(configured.type if configured is not None else row['storage_type'])
+        except ValueError:
+            storage_type = None
+        portable = bool(
+            configured is not None
+            and configured.enabled
+            and storage_type in {StorageType.OSS, StorageType.S3}
+        )
+        source_truth.append({
+            'storage_source_id': source_id,
+            'storage_type': storage_type.value if storage_type is not None else str(row['storage_type'] or ''),
+            'count': int(row['total'] or 0),
+            'portable': portable,
+        })
+    blocked = [row for row in source_truth if not row['portable']]
+    if blocked:
+        names = '、'.join(row['storage_source_id'] or 'default_local' for row in blocked[:3])
+        return {
+            'agent_available': False,
+            'reason': f'本次范围包含不可远程读取的素材存储：{names}',
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    nodes = [
+        node for node in ServiceNodeRepository(shared_task_repository()).list_public()
+        if str(node.get('connection_mode') or '') == 'agent'
+        and bool(node.get('online'))
+        and 'cleaning' in set(node.get('effective_capabilities') or [])
+    ]
+    if not nodes:
+        return {
+            'agent_available': False,
+            'reason': '当前没有在线且已授权 cleaning 能力的 Agent 节点',
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    try:
+        _remote_execution_transport_service().build_cleaning_remote_contract(
+            project_id,
+            'cleaning-preflight',
+        )
+    except RemoteExecutionTransportError as error:
+        return {
+            'agent_available': False,
+            'reason': str(error),
+            'selected_count': total,
+            'sources': source_truth,
+            'eligible_nodes': [],
+        }
+
+    return {
+        'agent_available': True,
+        'reason': '',
+        'selected_count': total,
+        'sources': source_truth,
+        'eligible_nodes': [
+            {
+                'node_id': str(node.get('node_id') or ''),
+                'display_name': str(node.get('display_name') or node.get('node_id') or ''),
+                'build_id': str(node.get('build_id') or ''),
+            }
+            for node in nodes
+        ],
+    }
+
+
+@app.post('/api/v47/projects/{project_id}/clean-runtime/preflight')
+def v47_clean_runtime_preflight(project_id: str, payload: V47CleanRuntimeReq):
+    truth = _v47_clean_agent_preflight(project_id, payload.image_ids)
+    return {
+        'local_available': True,
+        'default_execution_mode': 'local',
+        **truth,
+    }
+
+
 def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[str, Any]:
     data = payload.model_dump() if hasattr(payload, 'model_dump') else payload.dict()
     image_ids = list(dict.fromkeys(str(x) for x in (data.pop('image_ids', None) or []) if str(x)))
+    execution_mode = _v47_clean_execution_mode(data.pop('execution_mode', 'local'))
     selection: Dict[str, Any]
     if image_ids:
         selection = {'scope': 'SELECTED', 'image_ids': image_ids}
@@ -13261,6 +15774,8 @@ def _v47_material_batch_payload(project_id: str, payload: V47CleanReq) -> Dict[s
     draft = {'operation': MaterialBatchOperation.CLEAN.value, 'selection_spec': selection, 'options': data}
     estimate = estimate_material_batch(project_id, material_store(project_id), draft)
     draft['selection_spec'] = estimate['selection_spec']
+    if execution_mode == 'agent':
+        draft['execution_mode'] = 'agent'
     return draft
 
 
@@ -13278,9 +15793,13 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
     request_payload = {**options, 'image_ids': list(selection.get('image_ids') or [])}
     confirmed = artifacts.read_json(task.task_id, 'clean_confirmation.json', default=None)
     public_status = str(body.get('status') or task.status.value)
+    execution_mode = str(request.get('execution_mode') or 'local').lower()
     if public_status in {'QUEUED', 'WAITING_RESOURCE'}:
         status = 'queued'
-        status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
+        if public_status == 'WAITING_RESOURCE' and execution_mode == 'agent':
+            status_text = '等待远程清洗节点'
+        else:
+            status_text = '等待资源' if public_status == 'WAITING_RESOURCE' else '排队中'
     elif public_status == 'RUNNING':
         status, status_text = 'running', '清洗中'
     elif public_status == 'CANCEL_REQUESTED':
@@ -13309,10 +15828,13 @@ def _v47_clean_compat_task(task: TaskRecord) -> Dict[str, Any]:
         'finished_at': body.get('finished_at'),
         'request_payload': request_payload,
         'resource_queue_position': body.get('resource_queue_position'),
+        'resource_queue_position_exact': bool(body.get('resource_queue_position_exact')),
         'resource_wait_reason': body.get('resource_wait_reason'),
         'worker_id': body.get('worker_id'),
         'lease_expires_at': body.get('lease_expires_at'),
+        'current_item': body.get('current_item'),
         'durable_task_kind': TaskKind.MATERIAL_BATCH.value,
+        'execution_mode': execution_mode,
     }
 
 
@@ -13341,6 +15863,16 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
         return _v47_clean_compat_task(existing), False
 
     batch_payload = _v47_material_batch_payload(project_id, payload)
+    if str(batch_payload.get('execution_mode') or 'local') == 'agent':
+        preflight = _v47_clean_agent_preflight(project_id, payload.image_ids)
+        if not preflight.get('agent_available'):
+            raise ValueError(str(preflight.get('reason') or '远程清洗当前不可用'))
+        batch_payload['remote_execution'] = (
+            _remote_execution_transport_service().build_cleaning_remote_contract(
+                project_id,
+                requested_id,
+            )
+        )
     prepared_request = _v47_material_batch_request(requested_id)
     if prepared_request:
         def semantic_request(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -13351,13 +15883,15 @@ def _v62_prepare_clean_compat(project_id: str, payload: V47CleanReq, task_id: Op
                 'operation': value.get('operation'),
                 'selection_spec': selection,
                 'options': dict(value.get('options') or {}),
+                'execution_mode': str(value.get('execution_mode') or 'local'),
             }
 
         if semantic_request(prepared_request) != semantic_request(batch_payload):
             raise ValueError('清洗任务 ID 已关联不同请求')
         prepared = TaskRecord.new(
             requested_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
-            f'materials:{project_id}', required_capabilities=('materials.batch',),
+            f'materials:{project_id}',
+            required_capabilities=_v47_clean_required_capabilities(prepared_request),
         )
         return _v47_clean_compat_task(prepared), False
 
@@ -13383,7 +15917,8 @@ def _v62_publish_clean_compat(project_id: str, task_id: str) -> Dict[str, Any]:
         raise ValueError('清洗任务尚未准备完成')
     prepared = TaskRecord.new(
         task_id, project_id, TaskKind.MATERIAL_BATCH, 'request.json',
-        f'materials:{project_id}', required_capabilities=('materials.batch',),
+        f'materials:{project_id}',
+        required_capabilities=_v47_clean_required_capabilities(request),
     )
     published = publish_prepared_material_batch(prepared, repository, shared_task_artifacts())
     return _v47_clean_compat_task(published)
@@ -13556,8 +16091,11 @@ def _v47_create_clean_task_record(
 
 @app.post('/api/v47/projects/{project_id}/clean-tasks')
 def v47_create_clean_task(project_id: str, payload: V47CleanReq):
-    task, _ = _v62_prepare_clean_compat(project_id, payload)
-    return _v62_publish_clean_compat(project_id, str(task['id']))
+    try:
+        task, _ = _v62_prepare_clean_compat(project_id, payload)
+        return _v62_publish_clean_compat(project_id, str(task['id']))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 class V55UploadDecisionsReq(BaseModel):
@@ -14519,6 +17057,35 @@ async def create_deployment_test(
         "runner_path": str(BASE_DIR / ("predict_paddle_runner.py" if framework == "paddle" else "predict_ultralytics_runner.py")),
         "conf": max(0.0, min(1.0, float(conf))), "runtime_format": suffix.lstrip("."),
     }
+    try:
+        remote_execution = _remote_execution_transport_service().stage_deployment_test(
+            project_id=project_id,
+            task_id=task_id,
+            input_path=input_path,
+            model_path=model_path,
+            model_reference=model_reference,
+            model_reference_type=model_reference_type,
+            algorithm_id=algorithm_id,
+            version_id=version_id,
+            framework=framework,
+            runtime_format=suffix.lstrip("."),
+            confidence=max(0.0, min(1.0, float(conf))),
+        )
+    except RemoteExecutionTransportError as error:
+        input_path.unlink(missing_ok=True)
+        try:
+            prediction_dir.rmdir()
+        except OSError:
+            pass
+        raise PlatformError(
+            code=error.code,
+            message="远程部署准备失败",
+            detail=str(error),
+            solution="请检查模型资产对象存储、访问凭据和对象完整性后重试。",
+            status_code=error.status_code,
+        ) from error
+    if remote_execution is not None:
+        request["remote_execution"] = remote_execution
     shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
     record = shared_task_repository().create(TaskRecord.new(
         task_id, project_id, TaskKind.DEPLOYMENT_TEST, "request.json", f"deployment-runtime:{suffix}",
@@ -14716,7 +17283,7 @@ def _v53_set_bootstrap(progress:int, stage:str, message:str="", **extra):
 def _v53_project_counts(project:Dict[str,Any])->Dict[str,int]:
     pid=str(project.get("id") or "")
     if not pid:return {"images":0,"algorithms":0,"versions":0,"jobs":0}
-    image_count=material_store(pid).count(); algs=read_json(project_dir(pid)/"algorithms.json",[]); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
+    image_count=material_store(pid).count(); algs=list_algorithm_assets(algorithms_file(pid)); jobs=read_json(project_dir(pid)/"jobs"/"index.json",[])
     if not isinstance(algs,list):algs=[]
     if not isinstance(jobs,list):jobs=[]
     return {"images":image_count,"algorithms":len(algs),"versions":sum(len(a.get("versions") or []) for a in algs if isinstance(a,dict)),"jobs":len(jobs)}
@@ -14861,8 +17428,151 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
     return {'ok': True, 'base': _v54_iteration_base(project_id, algorithm_id, framework, strict_latest=True)}
 
 
+from platform_core.external_algorithm_platform import (
+    assert_algorithm_mutable,
+    assert_external_algorithm_master_data_current,
+    assert_local_algorithm_create_allowed,
+    resolve_external_training_analysis,
+    external_algorithm_platform_router,
+)
+from platform_core.external_algorithm_publish import (
+    external_algorithm_publish_router,
+    request_external_auto_publish_if_enabled,
+)
 from platform_core.material_batches import material_batch_router
+from platform_core.training_recovery_api import training_recovery_router
+from platform_core.remote_execution_transport import (
+    RemoteExecutionTransportError,
+    RemoteExecutionTransportService,
+)
 
+
+def _remote_execution_transport_service():
+    return RemoteExecutionTransportService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+        task_artifacts=shared_task_artifacts(),
+    )
+
+
+def _resolve_agent_execution_payload(task, payload, assignment):
+    return _remote_execution_transport_service().resolve_execution_payload(
+        task,
+        payload,
+        assignment,
+    )
+
+
+def _prepare_agent_result_upload(task, payload, evidence):
+    return _remote_execution_transport_service().prepare_result_upload(
+        task,
+        payload,
+        evidence,
+    )
+
+
+def _confirm_agent_result_upload(task, payload, evidence):
+    return _remote_execution_transport_service().confirm_result_upload(
+        task,
+        payload,
+        evidence,
+    )
+
+
+def _commit_agent_result_publication(task, payload, evidence, confirmed):
+    return _remote_execution_transport_service().commit_result_publication(
+        task,
+        payload,
+        evidence,
+        confirmed,
+    )
+
+
+def _prepare_agent_training_model_uploads(task, payload, *, execution_generation, models):
+    return _remote_execution_transport_service().prepare_training_model_uploads(
+        task,
+        payload,
+        execution_generation=execution_generation,
+        models=models,
+    )
+
+
+def _confirm_agent_training_model_uploads(task, payload, *, execution_generation, models):
+    return _remote_execution_transport_service().confirm_training_model_uploads(
+        task,
+        payload,
+        execution_generation=execution_generation,
+        models=models,
+    )
+
+
+def _agent_material_scan_page(task, payload, *, cursor=None, limit=100):
+    return _remote_execution_transport_service().material_scan_page(
+        task,
+        payload,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+def _agent_material_scan_read(task, payload, *, object_key):
+    return _remote_execution_transport_service().material_scan_read_contract(
+        task,
+        payload,
+        object_key=object_key,
+    )
+
+
+def _agent_clean_selection_page(task, payload, *, cursor=None, limit=100):
+    return _remote_execution_transport_service().clean_selection_page(
+        task,
+        payload,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+def _agent_clean_selection_read(task, payload, *, image_id):
+    return _remote_execution_transport_service().clean_selection_read_contract(
+        task,
+        payload,
+        image_id=image_id,
+    )
+
+
+app.include_router(external_algorithm_platform_router(
+    data_dir=DATA_DIR,
+    get_project=get_project,
+    algorithms_file=algorithms_file,
+    secret_store_factory=_v35_secret_store,
+))
+app.include_router(external_algorithm_publish_router(
+    data_dir=DATA_DIR,
+    get_project=get_project,
+    project_dir=project_dir,
+    algorithms_file=algorithms_file,
+    external_secret_store_factory=_v35_secret_store,
+    storage_sources_factory=storage_source_repository,
+    storage_credentials_factory=storage_credentials,
+))
 app.include_router(material_batch_router(
     get_project, material_store, shared_task_repository, shared_task_artifacts,
+))
+app.include_router(training_recovery_router(
+    get_project,
+    shared_task_repository,
+    shared_task_artifacts,
+    agent_execution_payload_resolver=_resolve_agent_execution_payload,
+    agent_result_upload_preparer=_prepare_agent_result_upload,
+    agent_result_upload_confirmer=_confirm_agent_result_upload,
+    agent_result_commit_handler=_commit_agent_result_publication,
+    agent_training_model_upload_preparer=_prepare_agent_training_model_uploads,
+    agent_training_model_upload_confirmer=_confirm_agent_training_model_uploads,
+    agent_material_scan_page_provider=_agent_material_scan_page,
+    agent_material_scan_read_provider=_agent_material_scan_read,
+    agent_clean_selection_page_provider=_agent_clean_selection_page,
+    agent_clean_selection_read_provider=_agent_clean_selection_read,
 ))

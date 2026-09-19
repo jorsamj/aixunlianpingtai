@@ -30,14 +30,50 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let destroyed = false;
   let inflight = null;
   let lastRefreshAt = 0;
+  let decoratorQueued = false;
+  const decorators = new Map();
   const originalToggle412 = window.toggleAlgorithm412;
   const originalToggle428 = window.toggleAlgorithm428;
+
+  function runDecorators() {
+    if (destroyed || String(state().page || '') !== ALGORITHM_PAGE) return false;
+    if (doc && !doc.getElementById('alg412List')) return false;
+    for (const [name, callback] of decorators.entries()) {
+      try {
+        callback?.({state: state(), root: doc?.getElementById('alg412List') || null});
+      } catch (error) {
+        console.warn?.(`algorithm list decorator failed: ${name}`, error);
+      }
+    }
+    return true;
+  }
+
+  function scheduleDecorators() {
+    if (destroyed || decoratorQueued) return;
+    decoratorQueued = true;
+    queueMicrotask(() => {
+      decoratorQueued = false;
+      runDecorators();
+    });
+  }
+
+  function registerDecorator(name, callback) {
+    const key = String(name || '').trim();
+    if (!key) throw new Error('算法列表扩展名称不能为空');
+    if (typeof callback !== 'function') throw new Error(`算法列表扩展 ${key} 必须是函数`);
+    decorators.set(key, callback);
+    scheduleDecorators();
+    return () => {
+      if (decorators.get(key) === callback) decorators.delete(key);
+    };
+  }
 
   function renderCards() {
     if (String(state().page || '') !== ALGORITHM_PAGE) return false;
     if (doc && !doc.getElementById('alg412List')) return false;
     if (typeof window.renderAlg412 !== 'function') return false;
     window.renderAlg412();
+    scheduleDecorators();
     return true;
   }
 
@@ -114,20 +150,29 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     ).finally(() => { target.disabled = false; });
   };
 
+  const domObserver = doc?.body ? new MutationObserver(() => {
+    if (String(state().page || '') === ALGORITHM_PAGE) scheduleDecorators();
+  }) : null;
+  domObserver?.observe(doc.body, {childList: true, subtree: true});
+
   window.toggleAlgorithm412 = toggle;
   window.toggleAlgorithm428 = toggle;
   doc?.addEventListener?.('click', onRefreshCapture, true);
 
   const runtime = {
-    build: 'algorithm-list-runtime-422503',
+    build: 'algorithm-list-runtime-422504',
     toggle,
     refresh,
     renderCards,
+    registerDecorator,
+    runDecorators,
     state() {
-      return {inflight: Boolean(inflight), lastRefreshAt};
+      return {inflight: Boolean(inflight), lastRefreshAt, decorators: [...decorators.keys()]};
     },
     destroy() {
       destroyed = true;
+      decorators.clear();
+      domObserver?.disconnect();
       doc?.removeEventListener?.('click', onRefreshCapture, true);
       if (window.toggleAlgorithm412 === toggle) window.toggleAlgorithm412 = originalToggle412;
       if (window.toggleAlgorithm428 === toggle) window.toggleAlgorithm428 = originalToggle428;
@@ -137,5 +182,6 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   };
   window.AlgorithmListRuntime = runtime;
   window.__algorithmListRuntimeInstalled = true;
+  scheduleDecorators();
   return runtime;
 }

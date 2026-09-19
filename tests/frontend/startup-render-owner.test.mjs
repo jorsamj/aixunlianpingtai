@@ -26,3 +26,15 @@ test('bounded startup cleanup timer cannot return after final render ownership',
   assert.equal(app.includes('new MutationObserver'), false);
   assert.equal(app.includes('window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});'), true);
 });
+
+
+test('v42 dashboard renderer only calls helpers from its own scope', () => {
+  const start = app.indexOf('function renderDashboardBody42()');
+  const end = app.indexOf('window.renderHomeDashboard=renderHomeDashboard', start);
+  assert.ok(start >= 0 && end > start);
+  const block = app.slice(start, end);
+  assert.match(block, /fmtHours42\(jobDuration42\(j\)\)/);
+  assert.match(block, /fmtHours42\(d\.totalSeconds\)/);
+  assert.match(block, /fmtHours42\(d\.avgSeconds\)/);
+  assert.doesNotMatch(block, /fmtHours422|jobDuration422/);
+});

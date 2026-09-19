@@ -1,0 +1,215 @@
+name: External Algorithm Platform
+
+on:
+  pull_request:
+    paths:
+      - app.py
+      - requirements.txt
+      - platform_core/secrets.py
+      - platform_core/external_algorithm_platform.py
+      - platform_core/integration_audit.py
+      - platform_core/storage/source_repository.py
+      - static/main.mjs
+      - static/app.js
+      - static/index.html
+      - static/modules/external-algorithm-platform.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - static/modules/training-submit.js
+      - tests/unit/test_secrets.py
+      - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_integration_audit.py
+      - tests/unit/test_changlian_audit_client.py
+      - tests/unit/storage/test_source_repository.py
+      - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/browser/external-algorithm-platform.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - tests/frontend/algorithm-list-runtime.test.mjs
+      - tests/frontend/startup-render-owner.test.mjs
+      - docs/PROJECT_HANDOFF_CURRENT.md
+      - docs/BUG_AUDIT_2026-09-17.md
+      - .github/workflows/external-algorithm-platform.yml
+  push:
+    branches:
+      - feature/external-algorithm-platform
+      - feature/external-algorithm-publishing
+    paths:
+      - app.py
+      - requirements.txt
+      - platform_core/secrets.py
+      - platform_core/external_algorithm_platform.py
+      - platform_core/integration_audit.py
+      - platform_core/storage/source_repository.py
+      - static/main.mjs
+      - static/app.js
+      - static/index.html
+      - static/modules/external-algorithm-platform.js
+      - static/modules/model-artifact-runtime.js
+      - static/modules/algorithm-list-runtime.js
+      - static/modules/training-submit.js
+      - tests/unit/test_secrets.py
+      - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_integration_audit.py
+      - tests/unit/test_changlian_audit_client.py
+      - tests/unit/storage/test_source_repository.py
+      - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/browser/external-algorithm-platform.spec.mjs
+      - tests/frontend/model-artifact-runtime.test.mjs
+      - tests/frontend/algorithm-list-runtime.test.mjs
+      - tests/frontend/startup-render-owner.test.mjs
+      - docs/PROJECT_HANDOFF_CURRENT.md
+      - docs/BUG_AUDIT_2026-09-17.md
+      - .github/workflows/external-algorithm-platform.yml
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused Python dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring cryptography
+      - name: Backend external-platform contracts
+        run: |
+          PYTHONPATH=. pytest -q --confcutdir=tests/unit \
+            tests/unit/test_secrets.py \
+            tests/unit/test_external_algorithm_platform.py \
+            tests/unit/test_integration_audit.py \
+            tests/unit/test_changlian_audit_client.py \
+            tests/unit/storage/test_source_repository.py
+      - name: Frontend external-platform contracts
+        run: |
+          node --test \
+            tests/frontend/external-algorithm-platform.test.mjs \
+            tests/frontend/model-artifact-runtime.test.mjs \
+            tests/frontend/algorithm-list-runtime.test.mjs \
+            tests/frontend/startup-render-owner.test.mjs
+      - name: Syntax and wiring guards
+        run: |
+          python -m py_compile app.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/integration_audit.py platform_core/storage/source_repository.py
+          node --check static/modules/external-algorithm-platform.js
+          node --check static/modules/model-artifact-runtime.js
+          node --check static/modules/algorithm-list-runtime.js
+          node --check static/modules/training-submit.js
+          grep -q "external_algorithm_platform_router" app.py
+          grep -q "installExternalAlgorithmPlatformRuntime" static/main.mjs
+          grep -q "installModelArtifactRuntime" static/main.mjs
+          grep -q "DEFAULT_AUTO_SYNC_INTERVAL_SECONDS" platform_core/external_algorithm_platform.py
+          grep -q "external-algorithm-platform-auto-sync" platform_core/external_algorithm_platform.py
+          grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
+          grep -q "externalAlgorithmTrainingReadiness" static/modules/external-algorithm-platform.js
+          grep -q "data-external-stale" static/modules/external-algorithm-platform.js
+          grep -q "external-master-data-stale" static/modules/external-algorithm-platform.js
+          grep -q "trainingReadiness" static/modules/external-algorithm-platform.js
+          grep -Fq "externalCategorySignature" static/modules/external-algorithm-platform.js
+          grep -Fq "v42 dashboard renderer only calls helpers from its own scope" tests/frontend/startup-render-owner.test.mjs
+          grep -Fq 'database.execute("PRAGMA busy_timeout=5000")' platform_core/storage/source_repository.py
+          grep -Fq 'if current_mode != "wal":' platform_core/storage/source_repository.py
+          grep -Fq "test_existing_wal_connection_does_not_reapply_journal_mode" tests/unit/storage/test_source_repository.py
+          grep -q "test_sign_bridge" platform_core/external_algorithm_platform.py
+          grep -q "def _validated_external_items" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_PRODUCT_ID_MISSING" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_ANALYSIS_ID_MISSING" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
+          grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_fails_closed_when_product_id_is_missing" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_fails_closed_when_analysis_id_is_missing" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_fails_closed_when_compute_platform_id_is_missing" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_cache_write_failure_does_not_mutate_algorithm_mirror" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_mirror_failure_restores_previous_master_data_cache" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_rejects_concurrent_project_sync_without_mutating_state" tests/unit/test_external_algorithm_platform.py
+          grep -q "EXTERNAL_PLATFORM_SYNC_BUSY" platform_core/external_algorithm_platform.py
+          grep -q "def _sync_lock" platform_core/external_algorithm_platform.py
+          grep -q "def master_data_digest" platform_core/external_algorithm_platform.py
+          grep -q "external_master_data_digest" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_MASTER_DATA_STALE" platform_core/external_algorithm_platform.py
+          grep -q "test_sync_binds_algorithm_mirror_to_master_data_digest" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_readiness_and_training_guard_reject_stale_project_master_data" tests/unit/test_external_algorithm_platform.py
+          grep -q "previous_cache = self.repository.cache()" platform_core/external_algorithm_platform.py
+          grep -q "def flatten_category_tree" platform_core/external_algorithm_platform.py
+          grep -q "test_connection_and_diagnostics_count_full_category_tree" tests/unit/test_external_algorithm_platform.py
+          grep -q '"access_key": self.access_key' platform_core/external_algorithm_platform.py
+          grep -q '"access_secret": self.access_secret' platform_core/external_algorithm_platform.py
+          grep -q '_request("POST", self.endpoints.test_sign, params=params)' platform_core/external_algorithm_platform.py
+          grep -q 'audit_callback(redact(' platform_core/external_algorithm_platform.py
+          if grep -q 'self.endpoints.test_sign, json=' platform_core/external_algorithm_platform.py; then echo "test-sign must use documented query parameters, not JSON body" >&2; exit 1; fi
+          grep -q "resolve_external_training_analysis" app.py
+          grep -q "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js
+          grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
+          grep -q "def readiness(self" platform_core/external_algorithm_platform.py
+          grep -q '@router.get("/readiness")' platform_core/external_algorithm_platform.py
+          grep -q '"human_login_required": False' platform_core/external_algorithm_platform.py
+          grep -q '"auth_type": "application_credentials"' platform_core/external_algorithm_platform.py
+          grep -q "test_readiness_blocks_until_saved_synced_and_project_algorithm_exists" tests/unit/test_external_algorithm_platform.py
+          grep -q '"scope": "master_data_training"' platform_core/external_algorithm_platform.py
+          grep -q "主数据 / 训练准备状态" static/modules/external-algorithm-platform.js
+          grep -q "转换与版本/权重发布由版本页同步前的发布预检单独判断" static/modules/external-algorithm-platform.js
+          grep -q "人员网页登录账号不参与机器接口调用" static/modules/external-algorithm-platform.js
+          grep -q "def test_connection(payload: Optional\[ExternalPlatformConfigPayload\] = None)" platform_core/external_algorithm_platform.py
+          grep -q "interaction-logs" platform_core/external_algorithm_platform.py
+          grep -q "IntegrationAuditRepository" platform_core/external_algorithm_platform.py
+          grep -q "复制诊断信息" static/modules/model-artifact-runtime.js
+          grep -q "id=\"externalConnectionResult\"" static/modules/external-algorithm-platform.js
+          grep -q "id=\"externalSecretToggle\"" static/modules/external-algorithm-platform.js
+          grep -q "credentialBackendText" static/modules/external-algorithm-platform.js
+          grep -q "MC_SECRET_MASTER_KEY" static/modules/external-algorithm-platform.js
+          grep -q "EncryptedFileSecretStore" platform_core/secrets.py
+          grep -q "MC_CHANGLIAN_ACCESS_KEY" platform_core/secrets.py
+          grep -q "cryptography>=" requirements.txt
+          grep -q "CLOSED — Headless Linux Secret 持久化" docs/PROJECT_HANDOFF_CURRENT.md
+          grep -q "CLOSED — Multipart session TTL / GC" docs/PROJECT_HANDOFF_CURRENT.md
+          grep -q "CLOSED-04 — Headless Linux 新畅联 Secret 安全持久化" docs/BUG_AUDIT_2026-09-17.md
+          grep -q "CLOSED-05 — Multipart session TTL / GC" docs/BUG_AUDIT_2026-09-17.md
+          grep -q "const payload = collectForm();" static/modules/external-algorithm-platform.js
+          if grep -q "window.renderAlg412 =" static/modules/external-algorithm-platform.js; then echo "external platform must not wrap renderAlg412" >&2; exit 1; fi
+          if grep -q "下一阶段" static/modules/external-algorithm-platform.js; then echo "stale phase wording remains" >&2; exit 1; fi
+          test ! -e tools/_one_shot_model_asset_integration.py
+          test ! -e .github/workflows/_one_shot_model_asset_integration.yml
+          test ! -e tools/finalize_external_platform_credentials_ui.py
+          test ! -e tools/fix_external_platform_connectivity_result.py
+          test ! -e .github/workflows/external-platform-credentials-one-shot.yml
+          test ! -e tools/_one_shot_secret_gc_ui.py
+          test ! -e .github/workflows/_one_shot_secret_gc_ui.yml
+          test ! -e tools/_one_shot_secret_gc_docs.py
+          test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
+          test "$(cat VERSION.txt)" = "42.24.0"
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome ChangLian manual connectivity flow
+        run: npx playwright test tests/browser/external-algorithm-platform.spec.mjs
+      - name: Browser permanent guards
+        run: |
+          grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'data-external-stale' static/modules/external-algorithm-platform.js
+          grep -Fq 'data-changlian-readiness="ready"' tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "主数据与训练条件已就绪" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "转换与版本/权重发布由版本页同步前的发布预检单独判断" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'data-external-automation-settings="1"' static/modules/external-algorithm-platform.js
+          grep -Fq "产品分析方式" static/modules/external-algorithm-platform.js
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"

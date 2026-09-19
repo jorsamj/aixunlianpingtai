@@ -98,3 +98,73 @@ def test_database_constraints_reject_duplicate_names(tmp_path):
     repository.create({"id": "a", "name": "same", "type": "local", "config": {"root": "a"}})
     with pytest.raises(sqlite3.IntegrityError):
         repository.create({"id": "b", "name": "same", "type": "local", "config": {"root": "b"}})
+
+
+
+def test_existing_wal_connection_does_not_reapply_journal_mode(monkeypatch, tmp_path):
+    class Cursor:
+        def __init__(self, value=None):
+            self.value = value
+
+        def fetchone(self):
+            return [self.value]
+
+    class FakeDatabase:
+        def __init__(self):
+            self.row_factory = None
+            self.calls = []
+
+        def execute(self, statement, *_args):
+            self.calls.append(statement)
+            if statement == "PRAGMA journal_mode":
+                return Cursor("wal")
+            if statement == "PRAGMA journal_mode=WAL":
+                raise AssertionError("WAL mode must not be reapplied when already active")
+            return Cursor(None)
+
+    fake = FakeDatabase()
+    import platform_core.storage.source_repository as source_repository_module
+    monkeypatch.setattr(source_repository_module.sqlite3, "connect", lambda *_args, **_kwargs: fake)
+    repository = object.__new__(StorageSourceRepository)
+    repository.path = tmp_path / "storage.sqlite3"
+
+    connected = repository._connect()
+
+    assert connected is fake
+    assert fake.calls[:2] == ["PRAGMA busy_timeout=5000", "PRAGMA journal_mode"]
+    assert "PRAGMA journal_mode=WAL" not in fake.calls
+    assert fake.calls[-1] == "PRAGMA foreign_keys=ON"
+
+
+def test_non_wal_connection_sets_busy_timeout_before_switching_mode(monkeypatch, tmp_path):
+    class Cursor:
+        def __init__(self, value=None):
+            self.value = value
+
+        def fetchone(self):
+            return [self.value]
+
+    class FakeDatabase:
+        def __init__(self):
+            self.row_factory = None
+            self.calls = []
+
+        def execute(self, statement, *_args):
+            self.calls.append(statement)
+            if statement == "PRAGMA journal_mode":
+                return Cursor("delete")
+            return Cursor(None)
+
+    fake = FakeDatabase()
+    import platform_core.storage.source_repository as source_repository_module
+    monkeypatch.setattr(source_repository_module.sqlite3, "connect", lambda *_args, **_kwargs: fake)
+    repository = object.__new__(StorageSourceRepository)
+    repository.path = tmp_path / "storage.sqlite3"
+
+    repository._connect()
+
+    assert fake.calls[:3] == [
+        "PRAGMA busy_timeout=5000",
+        "PRAGMA journal_mode",
+        "PRAGMA journal_mode=WAL",
+    ]

@@ -569,6 +569,68 @@ def attach_ai_continuation_callbacks(
 
 
 
+def effective_training_patience(requested_patience, requested_epochs, stop_threshold):
+    """Prevent generic patience from ending target-driven training before its business target."""
+    try:
+        requested = max(0, int(requested_patience or 0))
+    except (TypeError, ValueError, OverflowError):
+        requested = 0
+    try:
+        epochs = max(1, int(requested_epochs or 1))
+    except (TypeError, ValueError, OverflowError):
+        epochs = 1
+    try:
+        target = float(stop_threshold or 0)
+    except (TypeError, ValueError, OverflowError):
+        target = 0.0
+    if target > 0:
+        # Keep Ultralytics' built-in patience beyond the requested training horizon.
+        # The quality-target callback remains the only automatic early-stop owner.
+        return max(requested, epochs + 1)
+    return requested
+
+
+def decide_training_quality_gate(value, *, metric, stop_threshold, continue_threshold=0.0):
+    """Return stage-evaluation truth without allowing low scores to stop training."""
+    try:
+        numeric = None if value is None else float(value)
+    except (TypeError, ValueError, OverflowError):
+        numeric = None
+    try:
+        target = float(stop_threshold or 0)
+    except (TypeError, ValueError, OverflowError):
+        target = 0.0
+    try:
+        reference = float(continue_threshold or 0)
+    except (TypeError, ValueError, OverflowError):
+        reference = 0.0
+    if numeric is None:
+        return {
+            "decision": "unknown",
+            "should_stop": False,
+            "reason": "",
+            "advisory": "",
+        }
+    if target > 0 and numeric >= target:
+        return {
+            "decision": "target_reached",
+            "should_stop": True,
+            "reason": f"{metric} 达到提前完成阈值 {target:.3f}",
+            "advisory": "",
+        }
+    advisory = (
+        f"{metric} 低于优化参考线 {reference:.3f}，继续训练至达标或最大 Epoch"
+        if reference > 0 and numeric < reference
+        else ""
+    )
+    return {
+        "decision": "continue_below_target" if target > 0 else "continue",
+        "should_stop": False,
+        "reason": "",
+        "advisory": advisory,
+    }
+
+
 def derive_training_completion_metadata(
     trainer, *, requested_epochs, completed_epochs, gate_reason, ai_plan=None
 ):
@@ -730,7 +792,7 @@ def main():
         "project": str(runs_dir),
         "name": args.run_name,
         "exist_ok": True,
-        "patience": args.patience,
+        "patience": effective_training_patience(args.patience, args.epochs, args.stop_threshold),
         "workers": args.workers,
         "optimizer": args.optimizer,
         "lr0": args.lr0,
@@ -857,13 +919,18 @@ def main():
             value=metric_value(metrics,args.eval_metric)
             ev={"epoch":epoch,"metric":args.eval_metric,"value":value,"time":now_iso(),"sample_count":len(sampled_files),"sample_mode":sample_mode,"sampled_files":sampled_files[:200]}
             if sample_note: ev["sample_note"]=sample_note
-            if value is not None:
-                if args.stop_threshold>0 and value>=args.stop_threshold:
-                    ev["decision"]="target_reached";gate_reason=f"{args.eval_metric} 达到提前完成阈值 {args.stop_threshold:.3f}";trainer.stop=True
-                elif args.continue_threshold>0 and value<args.continue_threshold:
-                    ev["decision"]="below_gate";gate_reason=f"{args.eval_metric} 低于继续训练阈值 {args.continue_threshold:.3f}";trainer.stop=True
-                else:
-                    ev["decision"]="continue"
+            decision=decide_training_quality_gate(
+                value,
+                metric=args.eval_metric,
+                stop_threshold=args.stop_threshold,
+                continue_threshold=args.continue_threshold,
+            )
+            ev["decision"]=decision["decision"]
+            if decision["advisory"]:
+                ev["advisory"]=decision["advisory"]
+            if decision["should_stop"]:
+                gate_reason=decision["reason"]
+                trainer.stop=True
             gate_events.append(ev)
             update_job(job_file, gate_events=gate_events, quality_gate_reason=gate_reason)
             print(f"[质量门禁] epoch={epoch} 抽取={len(sampled_files)}张 {args.eval_metric}={value} decision={ev.get('decision','unknown')}",flush=True)
@@ -1021,7 +1088,7 @@ def main():
                 update_job(
                     job_file,
                     progress_percent=max(96.0,float(current_job.get("progress_percent") or 0.0)),
-                    current_item="独立试验集盲测",
+                    current_item="独立评测集盲测",
                     message="训练完成，正在对无标注试验图片执行盲测",
                 )
 
@@ -1061,7 +1128,7 @@ def main():
                 training_report["test_per_class"]=blind_result.get("per_class") or []
                 training_report["test_protocol"]=blind_result.get("protocol") or {}
             except Exception as te:
-                training_report["test_note"]="独立试验集盲测失败："+str(te)
+                training_report["test_note"]="独立评测集盲测失败："+str(te)
                 training_report["test_result"]={
                     "status":"failed",
                     "metrics":{},

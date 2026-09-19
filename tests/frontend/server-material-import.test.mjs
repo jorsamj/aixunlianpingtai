@@ -18,10 +18,67 @@ test('server material import requests contain source-relative fields and explici
     mode: 'server_zip', import_format: 'auto', storage_source_id: 'local-a', zip_path: 'fire.zip', target_prefix: 'fire', recursive: true,
   });
   assert.deepEqual(buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'agent', storageSourceId: 's3-a',
+    zipPath: 'coco.zip', targetPrefix: 'incoming/coco', importFormat: 'coco',
+  }), {
+    mode: 'server_zip', execution_mode: 'agent', import_format: 'coco',
+    storage_source_id: 's3-a', zip_path: 'coco.zip', target_prefix: 'incoming/coco', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'agent', storageSourceId: 's3-a',
+    zipPath: 'voc.zip', targetPrefix: 'incoming/voc', importFormat: 'voc',
+  }), {
+    mode: 'server_zip', execution_mode: 'agent', import_format: 'voc',
+    storage_source_id: 's3-a', zip_path: 'voc.zip', target_prefix: 'incoming/voc', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
     mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'dataset', importFormat: 'yolo', datasetYaml: 'data.yaml',
   }), {
     mode: 'directory_scan', import_format: 'yolo', dataset_yaml: 'data.yaml', storage_source_id: 'local-a', prefix: 'dataset', recursive: true,
   });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets/fire/2026',
+    recursive: true, importFormat: 'yolo', datasetYaml: 'datasets/fire/2026/data.yaml',
+  }), {
+    mode: 'storage_scan', execution_mode: 'agent', import_format: 'yolo',
+    dataset_yaml: 'datasets/fire/2026/data.yaml', storage_source_id: 's3-a',
+    prefix: 'datasets/fire/2026', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets/coco',
+    recursive: true, importFormat: 'coco',
+  }), {
+    mode: 'storage_scan', execution_mode: 'agent', import_format: 'coco',
+    storage_source_id: 's3-a', prefix: 'datasets/coco', recursive: true,
+  });
+  assert.deepEqual(buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets/voc',
+    recursive: false, importFormat: 'voc',
+  }), {
+    mode: 'storage_scan', execution_mode: 'agent', import_format: 'voc',
+    storage_source_id: 's3-a', prefix: 'datasets/voc', recursive: false,
+  });
+  assert.throws(() => buildServerImportRequest({
+    mode: 'directory_scan', storageSourceId: 'local-a', prefix: 'dataset', importFormat: 'coco',
+  }), /仅支持远程 Agent/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'local', storageSourceId: 'local-a',
+    zipPath: 'coco.zip', targetPrefix: 'incoming/coco', importFormat: 'coco',
+  }), /服务器 ZIP 仅支持远程 Agent/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'server_zip', executionMode: 'agent', storageSourceId: 's3-a',
+    zipPath: 'coco.zip', targetPrefix: 'incoming/coco', importFormat: 'auto',
+  }), /远程 Agent ZIP 导入/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'dataset',
+    importFormat: 'voc', datasetYaml: 'data.yaml',
+  }), /只有 YOLO/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: '', importFormat: 'images',
+  }), /对象存储目录/);
+  assert.throws(() => buildServerImportRequest({
+    mode: 'storage_scan', storageSourceId: 's3-a', prefix: 'datasets', importFormat: 'auto',
+  }), /远程对象存储扫描/);
 });
 
 test('server material import view uses real counters and distinct confirmation state', () => {
@@ -46,6 +103,31 @@ test('resource-waiting storage import remains active until durable truth changes
   });
   assert.equal(waiting.active, true);
   assert.equal(waiting.terminal, false);
+
+  const remoteWaiting = serverImportView({
+    status: 'WAITING_RESOURCE',
+    execution_mode: 'agent',
+    resource_wait_reason: 'NO_COMPATIBLE_NODE',
+  });
+  assert.match(remoteWaiting.text, /等待远程素材节点/);
+
+  const remoteRunning = serverImportView({
+    status: 'RUNNING',
+    execution_mode: 'agent',
+    stage: 'REMOTE_MATERIAL_SCANNING',
+    current_item: 'datasets/fire/a.jpg',
+  });
+  assert.match(remoteRunning.text, /正在扫描对象存储/);
+  assert.match(remoteRunning.text, /datasets\/fire\/a.jpg/);
+
+  const confirmationWinsOverStaleStage = serverImportView({
+    status: 'AWAITING_CONFIRMATION',
+    execution_mode: 'agent',
+    stage: 'REMOTE_MATERIAL_REVIEWING',
+    current_item: 'datasets/fire/a.jpg',
+  });
+  assert.equal(confirmationWinsOverStaleStage.canConfirm, true);
+  assert.equal(confirmationWinsOverStaleStage.text, '扫描完成，等待确认建立素材索引');
 });
 
 

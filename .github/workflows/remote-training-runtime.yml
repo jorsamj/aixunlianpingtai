@@ -1,0 +1,294 @@
+name: Remote Training Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'app.py'
+      - 'train_worker.py'
+      - 'platform_core/remote_training_transport.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/model_artifacts.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'node_agent.py'
+      - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/training_tasks.py'
+      - 'platform_core/snapshots.py'
+      - 'platform_core/training_lineage.py'
+      - 'platform_core/training_evaluation.py'
+      - 'platform_core/iteration_actions.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/task_runtime/models.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'platform_core/worker_registry.py'
+      - 'platform_core/worker_supervisor.py'
+      - 'tests/unit/test_remote_training_transport.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_training_early_stopping_reason.py'
+      - 'tests/unit/test_remote_training_results.py'
+      - 'tests/unit/test_training_lineage.py'
+      - 'tests/unit/test_training_evaluation.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/unit/test_model_artifacts.py'
+      - 'tests/api/test_agent_result_upload_api.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/unit/task_runtime/test_worker_registry.py'
+      - 'tests/unit/task_runtime/test_repository.py'
+      - 'tests/integration/test_remote_training_prepare_task.py'
+      - 'tests/integration/test_training_task_worker.py'
+      - 'tests/api/test_training_request.py'
+      - '.github/workflows/remote-training-runtime.yml'
+  pull_request:
+    branches:
+      - main
+      - refactor/frontend-runtime-stabilization
+    paths:
+      - 'app.py'
+      - 'train_worker.py'
+      - 'platform_core/remote_training_transport.py'
+      - 'platform_core/remote_training_results.py'
+      - 'platform_core/node_agent_training_runtime.py'
+      - 'platform_core/node_agent_executor_runtime.py'
+      - 'platform_core/node_agent_executor_loop.py'
+      - 'platform_core/agent_execution.py'
+      - 'platform_core/remote_execution_transport.py'
+      - 'platform_core/model_artifacts.py'
+      - 'platform_core/training_recovery_api.py'
+      - 'node_agent.py'
+      - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/training_tasks.py'
+      - 'platform_core/snapshots.py'
+      - 'platform_core/training_lineage.py'
+      - 'platform_core/training_evaluation.py'
+      - 'platform_core/iteration_actions.py'
+      - 'platform_core/task_node_assignments.py'
+      - 'platform_core/task_runtime/models.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'platform_core/worker_registry.py'
+      - 'platform_core/worker_supervisor.py'
+      - 'tests/unit/test_remote_training_transport.py'
+      - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_training_early_stopping_reason.py'
+      - 'tests/unit/test_remote_training_results.py'
+      - 'tests/unit/test_training_lineage.py'
+      - 'tests/unit/test_training_evaluation.py'
+      - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_agent_result_upload.py'
+      - 'tests/unit/test_node_agent_executor_runtime.py'
+      - 'tests/unit/test_node_agent_executor_loop.py'
+      - 'tests/unit/test_node_agent_entrypoint.py'
+      - 'tests/unit/test_model_artifacts.py'
+      - 'tests/api/test_agent_result_upload_api.py'
+      - 'tests/unit/test_task_node_assignments.py'
+      - 'tests/unit/task_runtime/test_worker_registry.py'
+      - 'tests/unit/task_runtime/test_repository.py'
+      - 'tests/integration/test_remote_training_prepare_task.py'
+      - 'tests/integration/test_training_task_worker.py'
+      - 'tests/api/test_training_request.py'
+      - '.github/workflows/remote-training-runtime.yml'
+
+jobs:
+  preparation-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused training preparation dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest pillow pyyaml filelock requests psutil keyring cryptography pydantic opencv-python-headless fastapi httpx
+      - name: Compile remote training preparation chain
+        run: >-
+          python -m py_compile
+          platform_core/remote_training_transport.py
+          platform_core/remote_training_results.py
+          platform_core/remote_training_tasks.py
+          platform_core/training_tasks.py
+          platform_core/snapshots.py
+          platform_core/training_lineage.py
+          platform_core/training_evaluation.py
+          platform_core/iteration_actions.py
+          platform_core/node_agent_training_runtime.py
+          platform_core/node_agent_executor_runtime.py
+          platform_core/node_agent_executor_loop.py
+          platform_core/agent_execution.py
+          platform_core/remote_execution_transport.py
+          platform_core/model_artifacts.py
+          platform_core/training_recovery_api.py
+          node_agent.py
+          train_worker.py
+          platform_core/task_node_assignments.py
+          platform_core/task_runtime/models.py
+          platform_core/task_runtime/repository.py
+          platform_core/worker_registry.py
+          platform_core/worker_supervisor.py
+          tests/unit/test_remote_training_transport.py
+          tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_training_early_stopping_reason.py
+          tests/unit/test_remote_training_results.py
+          tests/unit/test_training_lineage.py
+          tests/unit/test_training_evaluation.py
+          tests/unit/test_remote_execution_transport.py
+          tests/unit/test_agent_result_upload.py
+          tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+          tests/unit/test_model_artifacts.py
+          tests/unit/test_task_node_assignments.py
+          tests/unit/task_runtime/test_worker_registry.py
+          tests/unit/task_runtime/test_repository.py
+          tests/integration/test_remote_training_prepare_task.py
+          tests/integration/test_training_task_worker.py
+      - name: Portable bundle and scheduler contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_remote_training_transport.py
+          tests/unit/test_task_node_assignments.py
+      - name: Agent portable training subprocess lifecycle
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_training_early_stopping_reason.py
+          tests/unit/test_node_agent_executor_runtime.py
+          tests/unit/test_node_agent_executor_loop.py
+          tests/unit/test_node_agent_entrypoint.py
+      - name: Remote training publication and model asset contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_remote_training_results.py
+          tests/unit/test_training_evaluation.py
+          tests/unit/test_remote_execution_transport.py
+          tests/unit/test_agent_result_upload.py
+          tests/unit/test_model_artifacts.py
+      - name: Worker registration and repository fencing
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit/task_runtime
+          tests/unit/task_runtime/test_worker_registry.py
+          tests/unit/task_runtime/test_repository.py
+      - name: Durable preparation integration
+        run: >-
+          python -m pytest -q --confcutdir=tests/integration
+          tests/integration/test_remote_training_prepare_task.py
+          tests/integration/test_training_task_worker.py
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused training API dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography
+      - name: Compile production training creation path
+        run: >-
+          python -m py_compile
+          app.py
+          platform_core/remote_training_transport.py
+          platform_core/remote_training_tasks.py
+          platform_core/task_node_assignments.py
+          platform_core/worker_registry.py
+      - name: Remote training creation API
+        run: >-
+          python -m pytest -q
+          tests/api/test_training_request.py
+          tests/api/test_agent_result_upload_api.py
+      - name: Permanent remote training preparation guards
+        shell: bash
+        run: |
+          grep -Fq 'TRAINING_PREPARE = "TRAINING_PREPARE"' platform_core/task_runtime/models.py
+          grep -Fq '"training-prep": "platform_core.remote_training_tasks"' platform_core/worker_registry.py
+          grep -Fq '"training-prep",' platform_core/worker_supervisor.py
+          grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
+          grep -Fq '"remote_input_state": "PREPARING"' app.py
+          grep -Fq '"runtime_stop_policy": "target_only"' app.py
+          grep -Fq '目标正确率必须在 0~1 之间' app.py
+          grep -Fq '设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0' app.py
+          grep -Fq 'test_training_target_contract_rejects_invalid_metric_threshold_and_interval' tests/api/test_training_request.py
+          grep -Fq 'assert_external_algorithm_master_data_current' app.py
+          test "$(grep -Fc 'assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)' app.py)" = "2"
+          grep -Fq "val_dir=root/'images'/'val'" train_worker.py
+          grep -Fq 'test_images_dir=dataset_root/"images"/"test"' train_worker.py
+          grep -Fq 'current_item="独立评测集盲测"' train_worker.py
+          if grep -Fq '独立试验集盲测' train_worker.py; then echo 'final test split must be presented as evaluation, not validation/trial data' >&2; exit 1; fi
+          if grep -Fq 'params["chip"]="rk3588"' app.py; then echo 'training auto-conversion must not hardcode RK3588' >&2; exit 1; fi
+          grep -Fq '"remote_input_state": "READY"' platform_core/remote_training_tasks.py
+          grep -Fq '"task_kind": "TRAINING"' platform_core/remote_training_tasks.py
+          grep -Fq '"transport": "object-storage-v1"' platform_core/remote_training_tasks.py
+          grep -Fq '"dataset_revision_id": str(snapshot.get("dataset_revision_id") or "")' platform_core/remote_training_tasks.py
+          grep -Fq '"supplement_provenance": snapshot.get("supplement_provenance")' platform_core/remote_training_tasks.py
+          grep -Fq 'supplement_candidate_set_id' app.py
+          grep -Fq 'test_durable_training_requires_matching_supplement_candidate_set_identity' tests/api/test_training_request.py
+          grep -Fq 'test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency' tests/integration/test_remote_training_prepare_task.py
+          grep -Fq 'supplement_provenance=job.get("supplement_provenance")' platform_core/training_tasks.py
+          grep -Fq 'training.dataset_revision_id' platform_core/remote_execution_transport.py
+          grep -Fq '"training_lineage": training_lineage' platform_core/remote_execution_transport.py
+          grep -Fq 'supplement_provenance=(' platform_core/remote_execution_transport.py
+          grep -Fq '"supplement_provenance": snapshot.get("supplement_provenance")' platform_core/remote_training_tasks.py
+          grep -Fq '"evaluation": evaluation' platform_core/remote_execution_transport.py
+          grep -Fq 'build_evaluation_benchmark_scope' platform_core/remote_execution_transport.py
+          grep -Fq 'benchmark_scope=benchmark_scope' platform_core/remote_execution_transport.py
+          grep -Fq 'binding_level"] == "bundle_verified"' tests/unit/test_remote_execution_transport.py
+          grep -Fq '"training_lineage": training_lineage' platform_core/training_tasks.py
+          grep -Fq '"evaluation": evaluation' platform_core/training_tasks.py
+          grep -Fq '"iteration_decision": iteration_decision' platform_core/training_tasks.py
+          grep -Fq 'def build_evaluation_truth' platform_core/training_evaluation.py
+          grep -Fq 'def build_confirmed_iteration_action' platform_core/iteration_actions.py
+          grep -Fq 'confirmed_iteration_action' app.py
+          grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
+          grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
+          grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
+          grep -Fq 'include_model_bytes=False' platform_core/node_agent_training_runtime.py
+          grep -Fq 'training-models/prepare' platform_core/agent_execution.py
+          grep -Fq 'training-models/confirm' platform_core/agent_execution.py
+          grep -Fq 'REMOTE_TRAINING_MODELS_NOT_CONFIRMED' platform_core/agent_execution.py
+          grep -Fq 'register_verified_remote_artifact' platform_core/model_artifacts.py
+          grep -Fq 'prepare_training_model_uploads' platform_core/remote_execution_transport.py
+          grep -Fq 'confirm_training_model_uploads' platform_core/remote_execution_transport.py
+          grep -Fq 'AgentTrainingRunner' node_agent.py
+          grep -Fq 'def effective_training_patience' train_worker.py
+          grep -Fq 'def decide_training_quality_gate' train_worker.py
+          grep -Fq '"decision": "continue_below_target"' train_worker.py
+          grep -Fq 'test_below_target_never_stops_training_even_below_reference_line' tests/unit/test_training_early_stopping_reason.py
+          grep -Fq 'test_stage_gate_uses_validation_split_not_final_test_split' tests/unit/test_training_early_stopping_reason.py
+          grep -Fq "val_dir=root/'images'/'val'" train_worker.py
+          ! grep -Fq 'import sqlite3' platform_core/node_agent_training_runtime.py
+          ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
+          grep -Fq 'return "agent"' platform_core/task_node_assignments.py
+          grep -Fq 'SUPPORTED_AGENT_EXECUTOR_CAPABILITIES = frozenset({' platform_core/node_agent_executor_loop.py
+          grep -Fq '"conversion",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"deployment-test",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"material-import",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"training",' platform_core/node_agent_executor_loop.py
+          grep -Fq 'SUPPORTED_AGENT_TASK_KINDS = frozenset({' platform_core/node_agent_executor_loop.py
+          grep -Fq '"DEPLOYMENT_TEST",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MATERIAL_IMPORT",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"MODEL_CONVERSION",' platform_core/node_agent_executor_loop.py
+          grep -Fq '"TRAINING",' platform_core/node_agent_executor_loop.py
+          ! grep -Fq 'sqlite3' platform_core/remote_training_transport.py
+          ! grep -Fq 'TaskRepository' platform_core/remote_training_transport.py
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check

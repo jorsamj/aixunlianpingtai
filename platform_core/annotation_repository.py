@@ -143,6 +143,24 @@ class AnnotationRepository:
             'version': 0,
         }
 
+    def get_many(self, image_ids):
+        ids = list(dict.fromkeys(self._id(value) for value in image_ids))
+        if len(ids) > 500:
+            raise ValueError("annotation batch lookup is limited to 500 image ids")
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f"SELECT * FROM annotations WHERE image_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        result = {str(row["image_id"]): self._decode_persisted_row(row) for row in rows}
+        for image_id in ids:
+            if image_id not in result:
+                result[image_id] = self.get(image_id)
+        return result
+
     def summary(self):
         """Count persisted states; legacy JSON remains a per-image lazy fallback."""
         with closing(self._connect()) as db:

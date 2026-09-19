@@ -12,14 +12,15 @@ from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
 from platform_core.node_identity import resolve_node_identity
 from platform_core.storage.material_cache_runtime import MaterialCacheRuntimeReporter
+from platform_core.remote_material_lifecycle import RemoteMaterialStagingGCReporter
 from platform_core.upgrade_guard import ensure_worker_build_compatible, write_worker_build_marker
 from platform_core.task_runtime import (
     ArtifactStore,
     DuplicateWorkerInstance,
-    FencedTaskRepository,
     Scheduler,
     WorkerInstanceService,
 )
+from platform_core.task_node_assignments import AssignmentAwareFencedTaskRepository
 from platform_core.gpu_reservations_v2 import NodeScopedGPUResourceManager
 from platform_core.training_devices import training_python
 from platform_core.worker_registry import resolve_worker_registration
@@ -103,7 +104,7 @@ def main(argv=None) -> int:
         )
 
     runtime_dir = data_dir / "task_runtime"
-    repository = FencedTaskRepository(runtime_dir / "tasks.sqlite3")
+    repository = AssignmentAwareFencedTaskRepository(runtime_dir / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime_dir / "artifacts")
     registration = resolve_worker_registration(data_dir, roles)
     handlers = registration.handlers
@@ -126,6 +127,7 @@ def main(argv=None) -> int:
                     "training_slot": args.training_slot or "default",
                     "worker_slot": instance_slot,
                     "execution_fencing": True,
+                    "central_assignment_fencing": True,
                     "build_id": build_id,
                     "node_id": node_identity.node_id,
                     "hostname": node_identity.hostname,
@@ -169,6 +171,19 @@ def main(argv=None) -> int:
     except Exception:
         pass
     instance_lease.add_renew_hook(cache_reporter.report)
+
+    material_gc_reporter = None
+    if "storage" in set(instance_roles):
+        material_gc_reporter = RemoteMaterialStagingGCReporter(
+            repository,
+            artifacts,
+            data_dir,
+        )
+        try:
+            material_gc_reporter.report()
+        except Exception:
+            pass
+        instance_lease.add_renew_hook(material_gc_reporter.report)
 
     try:
         write_worker_build_marker(data_dir, build_id)

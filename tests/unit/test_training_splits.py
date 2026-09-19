@@ -1,6 +1,11 @@
 import pytest
 
-from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
+from platform_core.training_splits import (
+    SplitMode,
+    SplitRequest,
+    build_split_manifest,
+    exclude_reserved_test_components,
+)
 
 
 def image(image_id, dataset, content_hash, group, source="upload"):
@@ -215,3 +220,21 @@ def test_legacy_confirmed_empty_without_scope_uses_global_scope_compatibility():
         seed=5,
     )
     assert "negative" in set().union(*(set(ids) for ids in manifest.ids.values()))
+
+
+def test_reserved_test_components_are_removed_before_fixed_benchmark_training():
+    rows = [
+        image("benchmark", "test", "same-content", "benchmark-group"),
+        image("duplicate-content", "train", "same-content", "other-group"),
+        image("same-group", "train", "unique-group-content", "benchmark-group"),
+        image("safe", "train", "safe-content", "safe-group"),
+    ]
+
+    filtered, excluded = exclude_reserved_test_components(
+        rows,
+        ("benchmark", "duplicate-content", "same-group", "safe"),
+        ("benchmark",),
+    )
+
+    assert filtered == ("safe",)
+    assert excluded == ("benchmark", "duplicate-content", "same-group")

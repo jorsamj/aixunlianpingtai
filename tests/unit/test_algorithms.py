@@ -186,7 +186,7 @@ def test_attach_version_is_idempotent_for_training_task(tmp_path: Path):
     first = attach_version(path, "algorithm-one", version)
     second = attach_version(path, "algorithm-one", {**version, "id": "duplicate-version"})
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]["versions"]
+    stored = algorithms_module.list_algorithms(path)[0]["versions"]
     assert first["id"] == "version-one"
     assert second["id"] == "version-one"
     assert [row["task_id"] for row in stored] == ["train-one"]
@@ -269,7 +269,7 @@ def test_rollback_persists_pointer_and_audit_without_deleting_current_version(tm
         expected_current_version_id="v5",
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert result["previous_current_version_id"] == "v5"
     assert result["current_version_id"] == "v3"
     assert result["deleted_version_id"] is None
@@ -313,6 +313,7 @@ def test_rollback_and_delete_preflight_failure_is_atomic(tmp_path: Path):
 
     assert error.value.code == "ALGORITHM_VERSION_IN_USE"
     assert json.loads(path.read_text(encoding="utf-8")) == original
+    assert algorithms_module.list_algorithms(path)[0]["current_version_id"] == original[0].get("current_version_id")
 
 
 def test_rollback_and_delete_records_cleanup_failure_after_trusted_pointer_switch(tmp_path: Path):
@@ -340,7 +341,7 @@ def test_rollback_and_delete_records_cleanup_failure_after_trusted_pointer_switc
         },
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert result["current_version_id"] == "v3"
     assert result["deleted_version_id"] == "v5"
     assert result["cleanup_status"] == "cleanup_failed"
@@ -379,7 +380,7 @@ def test_attach_version_makes_new_version_current_and_preserves_base_as_parent_t
 
     attach_version(path, "algorithm-one", next_version)
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     saved = next(row for row in stored["versions"] if row["id"] == "v6")
     assert stored["current_version_id"] == "v6"
     assert saved["base_version_id"] == "v3"
@@ -405,7 +406,7 @@ def test_version_patch_keeps_current_pointer_and_other_versions(tmp_path: Path):
         now="2026-09-16T01:00:00+00:00",
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert stored["current_version_id"] == "v6"
     assert {row["id"] for row in stored["versions"]} == {"v3", "v6"}
     current = next(row for row in stored["versions"] if row["id"] == "v6")
@@ -423,6 +424,7 @@ def test_direct_delete_rejects_current_version_without_mutating_store(tmp_path: 
 
     assert error.value.code == "ALGORITHM_CURRENT_VERSION_DELETE_FORBIDDEN"
     assert json.loads(path.read_text(encoding="utf-8")) == original
+    assert algorithms_module.list_algorithms(path)[0]["current_version_id"] == original[0].get("current_version_id")
 
 
 def test_direct_delete_historical_version_keeps_current_and_records_audit(tmp_path: Path):
@@ -444,7 +446,7 @@ def test_direct_delete_historical_version_keeps_current_and_records_audit(tmp_pa
         cleanup=lambda _algorithm, _version: {"status": "cleanup_completed", "targets": [], "errors": []},
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert result["action"] == "delete_version"
     assert result["deleted_version_id"] == "v3"
     assert stored["current_version_id"] == "v5"

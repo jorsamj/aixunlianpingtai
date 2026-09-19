@@ -4,12 +4,14 @@ from pathlib import Path
 
 from PIL import Image
 
+from platform_core.algorithms import list_algorithms
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.storage import StorageSourceRepository
+import platform_core.training_tasks as training_tasks_module
 from platform_core.training_tasks import TrainingHandler
 
 
-def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp_path: Path):
+def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp_path: Path, monkeypatch):
     data_dir = tmp_path / "data"
     project_id = "project-one"
     project = data_dir / "projects" / project_id
@@ -88,6 +90,9 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         "imgsz": 64,
         "batch": 2,
         "device": "cpu",
+        "eval_metric": "map50",
+        "continue_threshold": 0.60,
+        "stop_threshold": 0.90,
     }
     artifacts.atomic_write_json("task-one", "payload.json", payload)
     repository.create(
@@ -114,11 +119,41 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
                 "best_path": str(model),
                 "training_outcome": "completed",
                 "finished_at": "2026-09-15T01:02:03+00:00",
-                "training_report": {"metrics": {"metrics/mAP50(B)": 0.75}},
+                "training_report": {
+                    "metrics": {"metrics/mAP50(B)": 0.75},
+                    "test_result": {
+                        "status": "succeeded",
+                        "metrics": {
+                            "metrics/precision(B)": 0.80,
+                            "metrics/recall(B)": 0.78,
+                            "metrics/mAP50(B)": 0.75,
+                            "metrics/mAP50-95(B)": 0.55,
+                        },
+                        "per_class": [],
+                        "weak_labels": [],
+                        "error_samples": [],
+                    },
+                },
             }
         )
         job_file.write_text(json.dumps(job), encoding="utf-8")
         return job
+
+    # This integration owns Durable TrainingHandler snapshot/materialization/finalization
+    # truth. Device-runtime probing has its own focused tests and would otherwise
+    # require installing the full Torch runtime in this lightweight CI job.
+    monkeypatch.setattr(
+        training_tasks_module,
+        "validate_training_device",
+        lambda _python, device: {
+            "requested_device": device,
+            "assigned_device": device,
+            "actual_device": device,
+            "torch_version": "test-runtime",
+            "cuda_available": False,
+            "gpus": [],
+        },
+    )
 
     handler = TrainingHandler(data_dir, process_runner=fake_runner)
     scheduler = Scheduler(
@@ -146,7 +181,19 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     }
     assert "image-1" in bundled_ids and "image-4" in bundled_ids
     assert not (project / "uploads" / "image-1.jpg").exists()
-    versions = json.loads((project / "algorithms.json").read_text(encoding="utf-8"))[0]["versions"]
+    versions = list_algorithms(project / "algorithms.json")[0]["versions"]
     assert len(versions) == 1
     assert versions[0]["training_status"] == "SUCCEEDED"
     assert versions[0]["snapshot_id"] == result["snapshot_id"]
+    assert versions[0]["dataset_revision_id"] == result["dataset_revision_id"]
+    assert versions[0]["training_lineage"]["task_id"] == "task-one"
+    assert versions[0]["training_lineage"]["snapshot_id"] == result["snapshot_id"]
+    assert versions[0]["training_lineage"]["dataset_revision_id"] == result["dataset_revision_id"]
+    assert versions[0]["evaluation"]["status"] == "succeeded"
+    assert versions[0]["evaluation"]["metrics"]["metrics/mAP50(B)"] == 0.75
+    assert versions[0]["iteration_decision"]["decision"] == "continue_training"
+    assert versions[0]["iteration_decision"]["quality_gate"]["continue_threshold"] == 0.6
+    assert versions[0]["iteration_decision"]["quality_gate"]["stop_threshold"] == 0.9
+    assert result["training_lineage"] == versions[0]["training_lineage"]
+    assert result["evaluation"] == versions[0]["evaluation"]
+    assert result["iteration_decision"] == versions[0]["iteration_decision"]
