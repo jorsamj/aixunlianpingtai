@@ -6,10 +6,11 @@ from PIL import Image
 
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.storage import StorageSourceRepository
+import platform_core.training_tasks as training_tasks_module
 from platform_core.training_tasks import TrainingHandler
 
 
-def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp_path: Path):
+def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp_path: Path, monkeypatch):
     data_dir = tmp_path / "data"
     project_id = "project-one"
     project = data_dir / "projects" / project_id
@@ -136,6 +137,22 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         )
         job_file.write_text(json.dumps(job), encoding="utf-8")
         return job
+
+    # This integration owns Durable TrainingHandler snapshot/materialization/finalization
+    # truth. Device-runtime probing has its own focused tests and would otherwise
+    # require installing the full Torch runtime in this lightweight CI job.
+    monkeypatch.setattr(
+        training_tasks_module,
+        "validate_training_device",
+        lambda _python, device: {
+            "requested_device": device,
+            "assigned_device": device,
+            "actual_device": device,
+            "torch_version": "test-runtime",
+            "cuda_available": False,
+            "gpus": [],
+        },
+    )
 
     handler = TrainingHandler(data_dir, process_runner=fake_runner)
     scheduler = Scheduler(
