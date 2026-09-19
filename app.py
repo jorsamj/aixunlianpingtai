@@ -102,6 +102,7 @@ from platform_core.storage.zip_import import (
     safe_member_path,
 )
 from platform_core.snapshots import build_snapshot, persist_snapshot
+from platform_core.training_lineage import build_training_lineage
 from platform_core.upload_batches import UploadBatchStore, apply_decisions
 from platform_core.training_job_projection import apply_training_task_truth
 from platform_core.task_runtime import (
@@ -8560,6 +8561,47 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     dst=vd/model_path.name;shutil.copy2(model_path,dst);stored_path=str(dst);model_name=dst.name;size_mb=round(dst.stat().st_size/1024/1024,2);model_type=dst.suffix.lower().lstrip('.')
     rep=job_report(project_id,str(job.get("id") or ""),Path(stored_path) if stored_path else None)
     accuracy=_v48_metric_from_job(job,"map50")
+    snapshot_id = str(job.get("snapshot_id") or "")
+    snapshot_truth = read_json(project_dir(project_id)/"snapshots"/f"{snapshot_id}.json", {}) if snapshot_id else {}
+    dataset_revision_id = str(
+        job.get("dataset_revision_id")
+        or (snapshot_truth.get("dataset_revision_id") if isinstance(snapshot_truth, dict) else "")
+        or ""
+    )
+    execution_resource = job.get("execution_resource")
+    execution_resource = execution_resource if isinstance(execution_resource, dict) else {}
+    training_lineage = build_training_lineage(
+        task_id=str(job.get("task_id") or job.get("id") or ""),
+        snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
+        framework=str(job.get("framework") or "ultralytics"),
+        base_version_id=job.get("base_version_id"),
+        base_version_name=job.get("base_version_name"),
+        base_model=job.get("base_model_path") or job.get("model"),
+        base_selection_reason=job.get("base_selection_reason"),
+        execution={
+            "mode": execution_resource.get("type") or job.get("target") or "local",
+            "worker_id": job.get("worker_id"),
+            "requested_device": job.get("requested_device") or job.get("device"),
+            "assigned_device": job.get("assigned_device"),
+            "actual_device": job.get("actual_device"),
+            "resource_id": execution_resource.get("id"),
+            "resource_name": execution_resource.get("name"),
+        },
+        requested_params=job.get("requested_train_params"),
+        actual_params=job.get("actual_train_params"),
+        artifacts=[{
+            "role": "primary",
+            "file_name": model_name,
+            "sha256": sha256_file(dst),
+            "size_bytes": int(dst.stat().st_size),
+            "verified": bool(job.get("artifact_verified")),
+        }],
+        training_status=("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
+        training_outcome=job.get("training_outcome"),
+        completion_reason=job.get("completion_reason"),
+        finished_at=job.get("finished_at") or now_iso(),
+    )
     version={
         "id":version_id,"version_no":len(algo.get("versions") or [])+1,"version_name":version_name,
         "model_name":model_name,"model_key":f"job::{job.get('id')}::{version_name}","stored_path":stored_path,"type":model_type,"size_mb":size_mb,
@@ -8569,7 +8611,9 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "external_analysis_id": str(job.get("external_analysis_id") or ""),
         "trainable": bool(stored_path),
         "artifact_verified": bool(job.get("artifact_verified")) and bool(stored_path),
-        "snapshot_id": str(job.get("snapshot_id") or ""),
+        "snapshot_id": snapshot_id,
+        "dataset_revision_id": dataset_revision_id,
+        "training_lineage": training_lineage,
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
         "base_version_id": str(job.get("base_version_id") or "").strip() or None,

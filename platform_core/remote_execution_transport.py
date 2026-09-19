@@ -39,6 +39,7 @@ from .remote_material_lifecycle import RemoteMaterialStagingLifecycle
 from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
+from .training_lineage import build_training_lineage
 
 
 REMOTE_TRANSFER_TTL_SECONDS = 900
@@ -3145,6 +3146,54 @@ class RemoteExecutionTransportService:
         if not finished_at:
             finished_at = str(getattr(task, "updated_at", "") or "")
         version_name = f"remote-g{generation}-{version_id[-6:]}"
+        base_model_name = str(model_contract.get("reference") or "")
+        if not base_model_name:
+            download = model_contract.get("download")
+            if isinstance(download, Mapping):
+                base_model_name = str(download.get("file_name") or "")
+        worker_id = str(getattr(task, "worker_id", "") or "")
+        selected_gpu = result.get("selected_gpu")
+        selected_gpu = dict(selected_gpu) if isinstance(selected_gpu, Mapping) else {}
+        actual_params = report.get("configuration")
+        actual_params = dict(actual_params) if isinstance(actual_params, Mapping) else {}
+        training_lineage = build_training_lineage(
+            task_id=str(task.task_id),
+            snapshot_id=str(training.get("snapshot_id") or ""),
+            dataset_revision_id=str(training.get("dataset_revision_id") or ""),
+            framework="ultralytics",
+            base_version_id=expected_base_id,
+            base_version_name=model_contract.get("base_version_name"),
+            base_model=base_model_name,
+            base_selection_reason=model_contract.get("base_selection_reason"),
+            execution={
+                "mode": "agent",
+                "worker_id": worker_id,
+                "execution_generation": generation,
+                "requested_device": payload.get("requested_device") or payload.get("device"),
+                "assigned_device": result.get("assigned_device") or report.get("assigned_device"),
+                "actual_device": result.get("actual_device") or report.get("actual_device"),
+                "gpu_id": selected_gpu.get("id"),
+                "gpu_uuid": selected_gpu.get("uuid"),
+                "gpu_name": selected_gpu.get("name"),
+                "gpu_index": selected_gpu.get("index"),
+            },
+            requested_params=training.get("params") if isinstance(training.get("params"), Mapping) else {},
+            actual_params=actual_params,
+            artifacts=[{
+                "role": item.get("role"),
+                "artifact_id": item.get("artifact_id"),
+                "file_name": Path(str(item.get("object_key") or "")).name,
+                "sha256": item.get("sha256"),
+                "size_bytes": item.get("size_bytes"),
+                "storage_source_id": item.get("storage_source_id"),
+                "object_key": item.get("object_key"),
+                "verified": True,
+            } for item in committed_models],
+            training_status="PARTIAL_SUCCESS" if partial else "SUCCEEDED",
+            training_outcome=result.get("training_outcome"),
+            completion_reason=completion.get("completion_reason"),
+            finished_at=finished_at,
+        )
         version = {
             "id": version_id,
             "version_name": version_name,
@@ -3170,6 +3219,7 @@ class RemoteExecutionTransportService:
             "framework": "ultralytics",
             "snapshot_id": str(training.get("snapshot_id") or ""),
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
+            "training_lineage": training_lineage,
             "result_ref": f"remote-results/{generation}/result.json",
             "task_id": str(task.task_id),
             "job_id": str(task.task_id),

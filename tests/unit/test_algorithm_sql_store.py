@@ -229,3 +229,34 @@ def test_external_sync_cannot_overwrite_concurrent_training_version(tmp_path: Pa
     assert persisted["name"] == "并发算法（更新）"
     assert persisted["current_version_id"] == "concurrent-v1"
     assert [row["id"] for row in persisted["versions"]] == ["concurrent-v1"]
+
+
+def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Path):
+    project = tmp_path / "projects" / "p-lineage"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+    create_algorithm(
+        json_path,
+        {"name": "溯源算法", "remark": "", "industry": "测试", "algorithm_type": "yolo_ultralytics"},
+        "2026-09-19T00:00:00Z",
+        algorithm_id="a-lineage",
+    )
+    lineage = {
+        "schema_version": 1, "task_id": "train-lineage",
+        "dataset_revision_id": "a" * 64, "snapshot_id": "b" * 64,
+        "execution": {"mode": "agent", "worker_id": "agent:node-1", "node_id": "node-1"},
+    }
+    attach_version(
+        json_path, "a-lineage",
+        {
+            "id": "v-lineage", "version_name": "20260919000000",
+            "training_status": "SUCCEEDED", "artifact_verified": True, "trainable": True,
+            "framework": "ultralytics", "stored_path": "/models/v-lineage/best.pt",
+            "dataset_revision_id": "a" * 64, "snapshot_id": "b" * 64,
+            "training_lineage": lineage, "created_at": "2026-09-19T00:10:00Z",
+        },
+    )
+    persisted = list_algorithms(json_path)[0]["versions"][0]
+    assert persisted["dataset_revision_id"] == "a" * 64
+    assert persisted["training_lineage"] == lineage
