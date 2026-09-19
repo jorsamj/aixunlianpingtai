@@ -80,6 +80,8 @@ jobs:
           grep -Fq '"iteration_decision": iteration_decision' app.py
           grep -Fq 'def build_evaluation_truth' platform_core/training_evaluation.py
           grep -Fq 'def build_iteration_decision' platform_core/training_evaluation.py
+          grep -Fq 'def build_feedback_adoption_outcome' platform_core/training_evaluation.py
+          grep -Fq '"feedback_adoption_outcome": feedback_adoption_outcome' app.py
           grep -Fq 'def build_confirmed_iteration_action' platform_core/iteration_actions.py
           grep -Fq 'confirmed_iteration_action' app.py
           grep -Fq 'def build_training_lineage' platform_core/training_lineage.py
@@ -134,6 +136,8 @@ jobs:
           grep -Fq '独立评测' static/app.js
           grep -Fq '迭代决策' static/app.js
           grep -Fq '系统仅给出建议，不会自动发起下一次训练' static/app.js
+          grep -Fq '补数据效果' static/app.js
+          grep -Fq '仅描述本次采用反馈后的评测变化，不会自动触发下一轮训练' static/app.js
           grep -Fq 'confirmIterationAction429' static/app.js
           grep -Fq 'resumeConfirmedIterationAction429' static/app.js
           grep -Fq 'iteration-action-confirmed429' static/app.js

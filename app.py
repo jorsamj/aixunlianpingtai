@@ -8939,7 +8939,11 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         completion_reason=job.get("completion_reason"),
         finished_at=job.get("finished_at") or now_iso(),
     )
-    from platform_core.training_evaluation import build_evaluation_truth, build_iteration_decision
+    from platform_core.training_evaluation import (
+        build_evaluation_truth,
+        build_feedback_adoption_outcome,
+        build_iteration_decision,
+    )
     training_report = job.get("training_report")
     training_report = training_report if isinstance(training_report, dict) else {}
     evaluation = build_evaluation_truth(
@@ -8954,6 +8958,28 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         evaluation,
         quality_gate=job.get("quality_gate"),
     )
+    supplement_provenance = (
+        training_lineage.get("supplement_provenance")
+        if isinstance(training_lineage, dict)
+        else {}
+    )
+    feedback_adoption_outcome = {}
+    if isinstance(supplement_provenance, dict) and supplement_provenance:
+        source_version_id = str(supplement_provenance.get("version_id") or "").strip()
+        source_version = next(
+            (
+                row for row in (algo.get("versions") or [])
+                if str(row.get("id") or "") == source_version_id
+            ),
+            None,
+        )
+        feedback_adoption_outcome = build_feedback_adoption_outcome(
+            source_version.get("evaluation") if isinstance(source_version, dict) else None,
+            evaluation,
+            supplement_provenance,
+            source_version_id=source_version_id,
+            new_version_id=version_id,
+        )
     version={
         "id":version_id,"version_no":len(algo.get("versions") or [])+1,"version_name":version_name,
         "model_name":model_name,"model_key":f"job::{job.get('id')}::{version_name}","stored_path":stored_path,"type":model_type,"size_mb":size_mb,
@@ -8968,6 +8994,10 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "training_lineage": training_lineage,
         "evaluation": evaluation,
         "iteration_decision": iteration_decision,
+        **(
+            {"feedback_adoption_outcome": feedback_adoption_outcome}
+            if feedback_adoption_outcome else {}
+        ),
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
         "base_version_id": str(job.get("base_version_id") or "").strip() or None,

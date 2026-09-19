@@ -440,6 +440,28 @@ test('algorithm version exposes persisted training lineage without job refetch',
         error_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3,fp_labels:['smoke'],fn_labels:['smoke']}],
         protocol:{mode:'blind_image_only_inference_then_hidden_ground_truth_scoring',operating_conf:0.25,matching_iou:0.5},
       },
+      feedback_adoption_outcome:{
+        schema_version:1,outcome_id:'9'.repeat(64),status:'comparable',
+        source_version_id:'version-source-0',new_version_id:'version-lineage-1',
+        candidate_set_id:'8'.repeat(64),adoption_id:'7'.repeat(64),action_id:'6'.repeat(64),
+        source_evaluation_id:'5'.repeat(64),new_evaluation_id:'d'.repeat(64),
+        source_candidate_count:3,adopted_candidate_count:2,
+        overall_metrics:{
+          'metrics/mAP50(B)':{before:0.61,after:0.76,delta:0.15},
+          'metrics/recall(B)':{before:0.58,after:0.70,delta:0.12},
+        },
+        source_weak_labels:['smoke'],
+        weak_label_effects:[{
+          label:'smoke',comparable:true,direction:'improved',
+          weak_signal:{before:0.58,after:0.70,delta:0.12},
+          metrics:{
+            map50:{before:0.61,after:0.76,delta:0.15},
+            recall:{before:0.58,after:0.70,delta:0.12},
+          },
+          false_positive:{before:4,after:2},false_negative:{before:5,after:3},
+        }],
+        reason_codes:[],descriptive_only:true,automatic_execution:false,
+      },
       iteration_decision:{
         schema_version:1,decision_id:'e'.repeat(64),evaluation_id:'d'.repeat(64),
         decision:'needs_data',
@@ -526,6 +548,11 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#modalBody')).toContainText('需补充数据');
   await expect(page.locator('#modalBody')).toContainText('补充弱标签数据');
   await expect(page.locator('#modalBody')).toContainText('系统仅给出建议，不会自动发起下一次训练');
+  await expect(page.locator('#modalBody')).toContainText('补数据效果');
+  await expect(page.locator('#modalBody')).toContainText('采用反馈');
+  await expect(page.locator('#modalBody')).toContainText('+15.0 pp');
+  await expect(page.locator('#modalBody')).toContainText('改善');
+  await expect(page.locator('#modalBody')).toContainText('仅描述本次采用反馈后的评测变化，不会自动触发下一轮训练');
   await expect(page.locator('#modalBody').getByRole('button',{name:'确认准备补数据'})).toBeVisible();
   await page.locator('#modalBody').getByRole('button',{name:'确认准备补数据'}).click();
   await expect.poll(()=>confirmedActionBody).toEqual({

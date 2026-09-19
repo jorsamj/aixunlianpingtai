@@ -206,3 +206,109 @@ def test_iteration_decision_is_deterministic_for_same_version_truth():
     )
     assert first["decision_id"] == second["decision_id"]
     assert first["decision"] == "continue_training"
+
+
+def test_feedback_adoption_outcome_compares_persisted_evaluations_and_source_weak_labels():
+    source = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "metrics": {
+            "metrics/precision(B)": 0.70,
+            "metrics/recall(B)": 0.52,
+            "metrics/mAP50(B)": 0.60,
+            "metrics/mAP50-95(B)": 0.40,
+        },
+        "per_class": [{
+            "class_id": 0, "label": "smoke", "precision": 0.70, "recall": 0.52,
+            "map50": 0.60, "map50_95": 0.40, "true_positive": 10,
+            "false_positive": 4, "false_negative": 8, "ground_truth_count": 18,
+            "prediction_count": 14,
+        }],
+        "weak_labels": ["smoke"],
+    }, task_id="source-task", model_sha256="1" * 64)
+    current = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "metrics": {
+            "metrics/precision(B)": 0.82,
+            "metrics/recall(B)": 0.72,
+            "metrics/mAP50(B)": 0.78,
+            "metrics/mAP50-95(B)": 0.55,
+        },
+        "per_class": [{
+            "class_id": 0, "label": "smoke", "precision": 0.82, "recall": 0.72,
+            "map50": 0.78, "map50_95": 0.55, "true_positive": 14,
+            "false_positive": 2, "false_negative": 4, "ground_truth_count": 18,
+            "prediction_count": 16,
+        }],
+        "weak_labels": [],
+    }, task_id="new-task", model_sha256="2" * 64)
+    provenance = {
+        "schema_version": 1,
+        "candidate_set_id": "a" * 64,
+        "adoption_id": "b" * 64,
+        "action_id": "c" * 64,
+        "algorithm_id": "algo-1",
+        "version_id": "source-v1",
+        "source_candidate_count": 3,
+        "adopted_candidate_count": 2,
+        "adopted_feedback_ids": ["feedback-1", "feedback-2"],
+    }
+    outcome = evaluation.build_feedback_adoption_outcome(
+        source, current, provenance,
+        source_version_id="source-v1",
+        new_version_id="new-v2",
+    )
+    assert outcome["status"] == "comparable"
+    assert outcome["automatic_execution"] is False
+    assert outcome["descriptive_only"] is True
+    assert outcome["overall_metrics"]["metrics/mAP50(B)"]["delta"] == 0.18
+    effect = outcome["weak_label_effects"][0]
+    assert effect["label"] == "smoke"
+    assert effect["direction"] == "improved"
+    assert effect["metrics"]["recall"]["delta"] == 0.2
+    assert effect["weak_signal"]["delta"] == 0.18
+    assert effect["false_negative"] == {"before": 8, "after": 4}
+    assert len(outcome["outcome_id"]) == 64
+
+
+def test_feedback_adoption_outcome_is_descriptive_when_evaluation_is_not_comparable():
+    source = evaluation.build_evaluation_truth({"status": "not_requested"}, task_id="source-task")
+    current = evaluation.build_evaluation_truth({"status": "failed"}, task_id="new-task")
+    provenance = {
+        "schema_version": 1,
+        "candidate_set_id": "a" * 64,
+        "adoption_id": "b" * 64,
+        "action_id": "c" * 64,
+        "algorithm_id": "algo-1",
+        "version_id": "source-v1",
+        "source_candidate_count": 1,
+        "adopted_candidate_count": 1,
+        "adopted_feedback_ids": ["feedback-1"],
+    }
+    outcome = evaluation.build_feedback_adoption_outcome(
+        source, current, provenance,
+        source_version_id="source-v1",
+        new_version_id="new-v2",
+    )
+    assert outcome["status"] == "not_comparable"
+    assert "source_evaluation_not_succeeded" in outcome["reason_codes"]
+    assert "new_evaluation_not_succeeded" in outcome["reason_codes"]
+    assert outcome["overall_metrics"] == {}
+    assert outcome["automatic_execution"] is False
+
+
+def test_feedback_adoption_outcome_rejects_source_version_mismatch():
+    import pytest
+    with pytest.raises(ValueError, match="source version"):
+        evaluation.build_feedback_adoption_outcome(
+            {"status": "succeeded", "evaluation_id": "1" * 64},
+            {"status": "succeeded", "evaluation_id": "2" * 64},
+            {
+                "schema_version": 1,
+                "candidate_set_id": "a" * 64,
+                "adoption_id": "b" * 64,
+                "action_id": "c" * 64,
+                "version_id": "source-v1",
+            },
+            source_version_id="other-version",
+            new_version_id="new-v2",
+        )

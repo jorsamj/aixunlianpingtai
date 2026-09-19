@@ -506,3 +506,167 @@ def build_iteration_decision(
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")).hexdigest()
     return {**identity, "decision_id": decision_id}
+
+
+FEEDBACK_ADOPTION_OUTCOME_SCHEMA_VERSION = 1
+
+
+def _evaluation_class_map(value: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    rows = value.get("per_class") if isinstance(value, Mapping) else []
+    result: dict[str, dict[str, Any]] = {}
+    for raw in list(rows or [])[:10000]:
+        if not isinstance(raw, Mapping):
+            continue
+        label = str(raw.get("label") or "").strip()
+        if label:
+            result[label] = dict(raw)
+    return result
+
+
+def build_feedback_adoption_outcome(
+    source_evaluation: Mapping[str, Any] | None,
+    new_evaluation: Mapping[str, Any] | None,
+    supplement_provenance: Mapping[str, Any] | None,
+    *,
+    source_version_id: Any,
+    new_version_id: Any,
+) -> dict[str, Any]:
+    """Describe before/after effectiveness for one feedback-backed training adoption.
+
+    This is persisted descriptive truth only. It never schedules training or
+    mutates feedback/candidate/dataset owners.
+    """
+    provenance = dict(supplement_provenance) if isinstance(supplement_provenance, Mapping) else {}
+    if not provenance:
+        return {}
+    if int(provenance.get("schema_version") or 0) != 1:
+        raise ValueError("supplement provenance schema is unsupported")
+
+    source_version = str(source_version_id or "").strip()
+    new_version = str(new_version_id or "").strip()
+    provenance_version = str(provenance.get("version_id") or "").strip()
+    if not source_version or not new_version or not provenance_version:
+        raise ValueError("feedback adoption outcome requires source and new version identity")
+    if source_version != provenance_version:
+        raise ValueError("supplement provenance source version does not match training base version")
+
+    candidate_set_id = _sha256_identity(provenance.get("candidate_set_id"), "candidate_set_id")
+    adoption_id = _sha256_identity(provenance.get("adoption_id"), "adoption_id")
+    action_id = _sha256_identity(provenance.get("action_id"), "action_id")
+    if not candidate_set_id or not adoption_id or not action_id:
+        raise ValueError("supplement provenance identity is incomplete")
+
+    source = dict(source_evaluation) if isinstance(source_evaluation, Mapping) else {}
+    new = dict(new_evaluation) if isinstance(new_evaluation, Mapping) else {}
+    source_eval_id = _sha256_identity(source.get("evaluation_id"), "source_evaluation_id")
+    new_eval_id = _sha256_identity(new.get("evaluation_id"), "new_evaluation_id")
+
+    reasons: list[str] = []
+    if not source_eval_id:
+        reasons.append("source_evaluation_missing")
+    if not new_eval_id:
+        reasons.append("new_evaluation_missing")
+    if str(source.get("status") or "").strip().lower() != "succeeded":
+        reasons.append("source_evaluation_not_succeeded")
+    if str(new.get("status") or "").strip().lower() != "succeeded":
+        reasons.append("new_evaluation_not_succeeded")
+
+    overall: dict[str, Any] = {}
+    if not reasons:
+        source_metrics = source.get("metrics") if isinstance(source.get("metrics"), Mapping) else {}
+        new_metrics = new.get("metrics") if isinstance(new.get("metrics"), Mapping) else {}
+        for key in _EVALUATION_METRICS:
+            if source_metrics.get(key) is None or new_metrics.get(key) is None:
+                continue
+            before = round(_finite(source_metrics.get(key)), 6)
+            after = round(_finite(new_metrics.get(key)), 6)
+            overall[key] = {
+                "before": before,
+                "after": after,
+                "delta": round(after - before, 6),
+            }
+
+    source_classes = _evaluation_class_map(source)
+    new_classes = _evaluation_class_map(new)
+    weak_labels = list(dict.fromkeys(
+        str(value)[:1000]
+        for value in list(source.get("weak_labels") or [])[:100]
+        if str(value or "").strip()
+    ))
+    weak_label_effects: list[dict[str, Any]] = []
+    if not reasons:
+        for label in weak_labels:
+            before_row = source_classes.get(label)
+            after_row = new_classes.get(label)
+            if not before_row or not after_row:
+                weak_label_effects.append({
+                    "label": label,
+                    "comparable": False,
+                    "reason": "label_missing_from_evaluation",
+                })
+                continue
+            metric_rows = {}
+            for public_key, raw_key in (
+                ("precision", "precision"),
+                ("recall", "recall"),
+                ("map50", "map50"),
+                ("map50_95", "map50_95"),
+            ):
+                before = round(_finite(before_row.get(raw_key)), 6)
+                after = round(_finite(after_row.get(raw_key)), 6)
+                metric_rows[public_key] = {
+                    "before": before,
+                    "after": after,
+                    "delta": round(after - before, 6),
+                }
+            weak_before = min(metric_rows["recall"]["before"], metric_rows["map50"]["before"])
+            weak_after = min(metric_rows["recall"]["after"], metric_rows["map50"]["after"])
+            weak_delta = round(weak_after - weak_before, 6)
+            weak_label_effects.append({
+                "label": label,
+                "comparable": True,
+                "direction": "improved" if weak_delta > 0 else "declined" if weak_delta < 0 else "unchanged",
+                "weak_signal": {
+                    "before": round(weak_before, 6),
+                    "after": round(weak_after, 6),
+                    "delta": weak_delta,
+                },
+                "metrics": metric_rows,
+                "false_positive": {
+                    "before": max(0, int(before_row.get("false_positive") or 0)),
+                    "after": max(0, int(after_row.get("false_positive") or 0)),
+                },
+                "false_negative": {
+                    "before": max(0, int(before_row.get("false_negative") or 0)),
+                    "after": max(0, int(after_row.get("false_negative") or 0)),
+                },
+            })
+
+    identity = {
+        "schema_version": FEEDBACK_ADOPTION_OUTCOME_SCHEMA_VERSION,
+        "status": "comparable" if not reasons else "not_comparable",
+        "source_version_id": source_version,
+        "new_version_id": new_version,
+        "candidate_set_id": candidate_set_id,
+        "adoption_id": adoption_id,
+        "action_id": action_id,
+        "source_evaluation_id": source_eval_id,
+        "new_evaluation_id": new_eval_id,
+        "source_candidate_count": max(0, int(provenance.get("source_candidate_count") or 0)),
+        "adopted_candidate_count": max(0, int(provenance.get("adopted_candidate_count") or 0)),
+        "adopted_feedback_ids": [
+            str(value)[:240]
+            for value in list(provenance.get("adopted_feedback_ids") or [])[:500]
+            if str(value or "").strip()
+        ],
+        "overall_metrics": overall,
+        "source_weak_labels": weak_labels,
+        "weak_label_effects": weak_label_effects,
+        "reason_codes": list(dict.fromkeys(reasons)),
+        "descriptive_only": True,
+        "automatic_execution": False,
+    }
+    outcome_id = hashlib.sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    return {**identity, "outcome_id": outcome_id}

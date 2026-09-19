@@ -254,6 +254,17 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
         "metrics": {"metrics/mAP50(B)": 0.88},
         "per_class": [{"class_id": 0, "label": "smoke", "map50": 0.88}],
     }
+    feedback_adoption_outcome = {
+        "schema_version": 1, "outcome_id": "9" * 64, "status": "comparable",
+        "source_version_id": "v-source", "new_version_id": "v-lineage",
+        "candidate_set_id": "8" * 64, "adoption_id": "7" * 64,
+        "source_evaluation_id": "6" * 64, "new_evaluation_id": "e" * 64,
+        "overall_metrics": {
+            "metrics/mAP50(B)": {"before": 0.7, "after": 0.88, "delta": 0.18},
+        },
+        "weak_label_effects": [{"label": "smoke", "direction": "improved"}],
+        "descriptive_only": True, "automatic_execution": False,
+    }
     iteration_decision = {
         "schema_version": 1, "decision_id": "f" * 64,
         "evaluation_id": "e" * 64, "decision": "continue_training",
@@ -273,6 +284,7 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
             "dataset_revision_id": "a" * 64, "snapshot_id": "b" * 64,
             "training_lineage": lineage, "evaluation": evaluation,
             "iteration_decision": iteration_decision,
+            "feedback_adoption_outcome": feedback_adoption_outcome,
             "created_at": "2026-09-19T00:10:00Z",
         },
     )
@@ -281,3 +293,4 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
     assert persisted["training_lineage"] == lineage
     assert persisted["evaluation"] == evaluation
     assert persisted["iteration_decision"] == iteration_decision
+    assert persisted["feedback_adoption_outcome"] == feedback_adoption_outcome
