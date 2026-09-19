@@ -74,6 +74,43 @@ def _iteration_action(value: Mapping[str, Any] | None) -> dict[str, Any]:
     return result
 
 
+def _supplement_provenance(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    result = {
+        "schema_version": int(value.get("schema_version") or 0),
+        "candidate_set_id": _sha256(value.get("candidate_set_id"), "supplement.candidate_set_id"),
+        "adoption_id": _sha256(value.get("adoption_id"), "supplement.adoption_id"),
+        "action_id": _sha256(value.get("action_id"), "supplement.action_id"),
+        "algorithm_id": _text(value.get("algorithm_id")),
+        "version_id": _text(value.get("version_id")),
+        "source_candidate_count": max(0, int(value.get("source_candidate_count") or 0)),
+        "adopted_candidate_count": max(0, int(value.get("adopted_candidate_count") or 0)),
+        "adopted_material_count": max(0, int(value.get("adopted_material_count") or 0)),
+        "adopted_feedback_ids": [_text(item) for item in list(value.get("adopted_feedback_ids") or [])[:500] if _text(item)],
+        "adopted_material_ids": [_text(item) for item in list(value.get("adopted_material_ids") or [])[:500] if _text(item)],
+        "automatic_execution": False,
+    }
+    candidates = []
+    for raw in list(value.get("adopted_candidates") or [])[:500]:
+        if not isinstance(raw, Mapping):
+            continue
+        candidates.append({
+            "feedback_id": _text(raw.get("feedback_id")),
+            "feedback_type": _text(raw.get("feedback_type")),
+            "material_id": _text(raw.get("material_id")),
+            "candidate_digest": _sha256(raw.get("candidate_digest"), "supplement.candidate_digest"),
+            "annotation_hash": _sha256(raw.get("annotation_hash"), "supplement.annotation_hash"),
+            "annotation_state": _text(raw.get("annotation_state")),
+            "model_sha256": _sha256(raw.get("model_sha256"), "supplement.model_sha256"),
+            "input_sha256": _sha256(raw.get("input_sha256"), "supplement.input_sha256"),
+        })
+    if result["schema_version"] != 1 or not candidates:
+        raise ValueError("supplement provenance is incomplete")
+    result["adopted_candidates"] = candidates
+    return result
+
+
 def _artifact_rows(values: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
     rows = []
     for raw in values or []:
@@ -106,6 +143,7 @@ def build_training_lineage(
     requested_params: Mapping[str, Any] | None = None,
     actual_params: Mapping[str, Any] | None = None,
     iteration_action: Mapping[str, Any] | None = None,
+    supplement_provenance: Mapping[str, Any] | None = None,
     artifacts: Iterable[Mapping[str, Any]] | None = None,
     training_status: Any = "",
     training_outcome: Any = "",
@@ -156,6 +194,10 @@ def build_training_lineage(
     action = _iteration_action(iteration_action)
     if action:
         lineage["iteration_action"] = action
+
+    supplement = _supplement_provenance(supplement_provenance)
+    if supplement:
+        lineage["supplement_provenance"] = supplement
 
     artifact_rows = _artifact_rows(artifacts)
     if artifact_rows:

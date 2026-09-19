@@ -11,7 +11,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 
 SCHEMA_VERSION = 1
@@ -327,6 +327,116 @@ def build_supplement_candidate_set(
         "candidate_set_id": hashlib.sha256(_canonical(identity).encode("utf-8")).hexdigest(),
         "status": "confirmed",
         "frozen_at": _text(frozen_at, 100),
+        "automatic_execution": False,
+    }
+
+
+def build_supplement_training_provenance(
+    candidate_set: Mapping[str, Any],
+    selected_material_ids: Iterable[object],
+    truth_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Freeze and verify the feedback subset actually used by one training snapshot."""
+    if not isinstance(candidate_set, Mapping) or str(candidate_set.get("status") or "") != "confirmed":
+        raise ValueError("supplement training provenance requires a confirmed candidate set")
+    try:
+        schema_version = int(candidate_set.get("schema_version") or 0)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("supplement candidate set schema_version is invalid") from error
+    if schema_version != 1:
+        raise ValueError("unsupported supplement candidate set schema_version")
+
+    action_id = _sha(candidate_set.get("action_id"), "action_id")
+    candidate_set_id = _sha(candidate_set.get("candidate_set_id"), "candidate_set_id")
+    algorithm_id = _text(candidate_set.get("algorithm_id"), 200)
+    version_id = _text(candidate_set.get("version_id"), 200)
+    raw_candidates = [
+        dict(row) for row in list(candidate_set.get("candidates") or [])
+        if isinstance(row, Mapping)
+    ]
+    if not algorithm_id or not version_id or not raw_candidates or len(raw_candidates) > 500:
+        raise ValueError("supplement candidate set identity is incomplete")
+
+    source_identity = {
+        "schema_version": schema_version,
+        "action_id": action_id,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "feedback_ids": [str(value) for value in list(candidate_set.get("feedback_ids") or [])],
+        "material_ids": [str(value) for value in list(candidate_set.get("material_ids") or [])],
+        "candidates": raw_candidates,
+    }
+    expected_candidate_set_id = hashlib.sha256(
+        _canonical(source_identity).encode("utf-8")
+    ).hexdigest()
+    if expected_candidate_set_id != candidate_set_id:
+        raise ValueError("supplement candidate set identity does not match its frozen contents")
+
+    selected = {str(value) for value in selected_material_ids if str(value)}
+    truths: dict[str, dict[str, Any]] = {}
+    for raw in truth_rows:
+        row = dict(raw)
+        material_id = str(
+            row.get("material_id") or row.get("image_id") or row.get("id") or ""
+        )
+        if material_id:
+            truths[material_id] = row
+
+    adopted = []
+    for raw in raw_candidates:
+        material_id = _text(raw.get("material_id"), 100)
+        if material_id not in selected:
+            continue
+        truth = truths.get(material_id)
+        if truth is None:
+            raise ValueError(f"supplement material {material_id} is missing from training truth")
+        input_sha = _sha(raw.get("input_sha256"), "input_sha256")
+        current_sha = _sha(truth.get("content_sha256"), "content_sha256")
+        if current_sha != input_sha:
+            raise ValueError(f"supplement material {material_id} content changed after candidate freeze")
+        annotation_hash = _sha(raw.get("annotation_hash"), "annotation_hash")
+        current_annotation_hash = _sha(
+            truth.get("annotation_hash") or truth.get("content_digest"),
+            "current annotation_hash",
+        )
+        if current_annotation_hash != annotation_hash:
+            raise ValueError(f"supplement material {material_id} annotation changed after candidate freeze")
+        annotation_state = _text(raw.get("annotation_state"), 100)
+        current_state = _text(truth.get("annotation_state"), 100)
+        if current_state != annotation_state:
+            raise ValueError(f"supplement material {material_id} annotation state changed after candidate freeze")
+        adopted.append({
+            "feedback_id": _text(raw.get("feedback_id"), 100),
+            "feedback_type": _text(raw.get("feedback_type"), 100),
+            "material_id": material_id,
+            "candidate_digest": _sha(raw.get("candidate_digest"), "candidate_digest"),
+            "annotation_hash": annotation_hash,
+            "annotation_state": annotation_state,
+            "model_sha256": _sha(raw.get("model_sha256"), "model_sha256"),
+            "input_sha256": input_sha,
+        })
+
+    if not adopted:
+        raise ValueError("supplement candidate set has no material in the final training selection")
+    adopted = sorted(adopted, key=lambda row: (row["material_id"], row["feedback_id"]))
+    adoption_identity = {
+        "schema_version": 1,
+        "candidate_set_id": candidate_set_id,
+        "action_id": action_id,
+        "algorithm_id": algorithm_id,
+        "version_id": version_id,
+        "adopted_candidates": adopted,
+    }
+    return {
+        **adoption_identity,
+        "adoption_id": hashlib.sha256(
+            _canonical(adoption_identity).encode("utf-8")
+        ).hexdigest(),
+        "source_candidate_count": len(raw_candidates),
+        "adopted_candidate_count": len(adopted),
+        "adopted_material_count": len({row["material_id"] for row in adopted}),
+        "adopted_feedback_ids": [row["feedback_id"] for row in adopted],
+        "adopted_material_ids": sorted({row["material_id"] for row in adopted}),
         "automatic_execution": False,
     }
 

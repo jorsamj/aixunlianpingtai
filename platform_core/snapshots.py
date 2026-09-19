@@ -6,6 +6,7 @@ from typing import Any, Mapping, Sequence
 
 from .annotations import atomic_write_json
 from .annotation_schema import CANONICAL_ANNOTATION_SCHEMA_VERSION, CANONICAL_SOURCE_FORMATS
+from .online_feedback import build_supplement_training_provenance
 from .training_splits import SplitManifest
 
 
@@ -80,6 +81,7 @@ def _external_annotation_provenance(
 def _dataset_revision_payload(
     records: Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]],
+    supplement_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     fields = (
         "image_id",
@@ -105,19 +107,23 @@ def _dataset_revision_payload(
         {field: record.get(field) for field in fields}
         for record in sorted(records, key=lambda row: str(row.get("image_id") or ""))
     ]
-    return {
+    payload = {
         "schema_version": DATASET_REVISION_SCHEMA_VERSION,
         "canonical_annotation_schema_version": CANONICAL_ANNOTATION_SCHEMA_VERSION,
         "label_schema": _stable_schema(label_schema),
         "images": images,
     }
+    if supplement_provenance:
+        payload["supplement_provenance"] = dict(supplement_provenance)
+    return payload
 
 
 def _dataset_revision_id(
     records: Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]],
+    supplement_provenance: Mapping[str, Any] | None = None,
 ) -> str:
-    payload = _dataset_revision_payload(records, label_schema)
+    payload = _dataset_revision_payload(records, label_schema, supplement_provenance)
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
@@ -131,7 +137,13 @@ def ensure_dataset_revision(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     value = dict(snapshot)
     records = list(value.get("images") or [])
     label_schema = list(value.get("label_schema") or [])
-    expected = _dataset_revision_id(records, label_schema)
+    expected = _dataset_revision_id(
+        records,
+        label_schema,
+        value.get("supplement_provenance")
+        if isinstance(value.get("supplement_provenance"), Mapping)
+        else None,
+    )
     actual = str(value.get("dataset_revision_id") or "").strip().lower()
     if actual and actual != expected:
         raise ValueError("Snapshot dataset_revision_id 与冻结数据 truth 不一致")
@@ -145,7 +157,13 @@ def dataset_revision_document(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     normalized = ensure_dataset_revision(snapshot)
     records = list(normalized.get("images") or [])
     label_schema = list(normalized.get("label_schema") or [])
-    payload = _dataset_revision_payload(records, label_schema)
+    payload = _dataset_revision_payload(
+        records,
+        label_schema,
+        normalized.get("supplement_provenance")
+        if isinstance(normalized.get("supplement_provenance"), Mapping)
+        else None,
+    )
     return {
         "dataset_revision_id": str(normalized["dataset_revision_id"]),
         "created_at": str(normalized.get("created_at") or datetime.now(timezone.utc).isoformat()),
@@ -238,13 +256,22 @@ def build_snapshot(
     val_image_ids: Sequence[str] | Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]] | None = None,
     seed: int | None = None,
+    *,
+    supplement_candidate_set: Mapping[str, Any] | None = None,
 ) -> dict:
     if isinstance(train_image_ids, SplitManifest):
         if label_schema is not None:
             raise TypeError("V2 snapshot 的标签结构应作为第三个参数传入")
-        return _build_snapshot_v2(images, train_image_ids, val_image_ids)  # type: ignore[arg-type]
+        return _build_snapshot_v2(
+            images,
+            train_image_ids,
+            val_image_ids,
+            supplement_candidate_set=supplement_candidate_set,
+        )  # type: ignore[arg-type]
     if label_schema is None or seed is None:
         raise TypeError("旧版 snapshot 需要 label_schema 和 seed")
+    if supplement_candidate_set:
+        raise ValueError("补数据 Candidate Set 仅支持 Durable Split Snapshot")
     stable_schema = _stable_schema(label_schema)
     schema_codes = {str(item["code"]) for item in stable_schema}
     by_id = {str(image.get("id")): image for image in images if image.get("id") is not None}
@@ -311,6 +338,8 @@ def _build_snapshot_v2(
     images: Sequence[Mapping[str, Any]],
     manifest: SplitManifest,
     label_schema: Sequence[Mapping[str, Any]],
+    *,
+    supplement_candidate_set: Mapping[str, Any] | None = None,
 ) -> dict:
     stable_schema = _stable_schema(label_schema)
     schema_codes = {str(item["code"]) for item in stable_schema}
@@ -388,7 +417,20 @@ def _build_snapshot_v2(
         content_hash: list(image_ids)
         for content_hash, image_ids in sorted((manifest.duplicate_groups or {}).items())
     }
-    dataset_revision_id = _dataset_revision_id(records, stable_schema)
+    supplement_provenance = (
+        build_supplement_training_provenance(
+            supplement_candidate_set,
+            (row["image_id"] for row in records),
+            records,
+        )
+        if supplement_candidate_set
+        else None
+    )
+    dataset_revision_id = _dataset_revision_id(
+        records,
+        stable_schema,
+        supplement_provenance,
+    )
     payload = {
         "schema_version": 3,
         "dataset_revision_schema_version": DATASET_REVISION_SCHEMA_VERSION,
@@ -413,6 +455,8 @@ def _build_snapshot_v2(
         "negative_origin_counts": dict(sorted(negative_origin_counts.items())),
         "images": records,
     }
+    if supplement_provenance:
+        payload["supplement_provenance"] = supplement_provenance
     snapshot_id = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
     return {
         "snapshot_id": snapshot_id,

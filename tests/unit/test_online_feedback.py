@@ -8,6 +8,7 @@ from platform_core.online_feedback import (
     OnlineFeedbackRepository,
     build_supplement_candidate,
     build_supplement_candidate_set,
+    build_supplement_training_provenance,
     public_feedback,
     validate_prediction_evidence,
 )
@@ -172,3 +173,50 @@ def test_needs_correction_candidate_waits_for_formal_annotation(tmp_path: Path):
     )
     assert pending["eligible"] is False
     assert "ANNOTATION_REQUIRED" in pending["reason_codes"]
+
+
+def test_supplement_training_provenance_freezes_actual_subset_and_rejects_stale_truth():
+    action = {
+        "status": "confirmed", "action": "supplement_data", "action_id": "1" * 64,
+        "source": {"algorithm_id": "alg-1", "version_id": "ver-1"},
+    }
+    candidates = []
+    for index in range(2):
+        candidates.append({
+            "eligible": True,
+            "feedback_id": f"feedback-{index}",
+            "feedback_type": "correct",
+            "material_id": f"material-{index}",
+            "candidate_digest": str(index + 2) * 64,
+            "annotation_hash": str(index + 4) * 64,
+            "annotation_state": "annotated",
+            "labels": ["smoke"],
+            "model_sha256": "a" * 64,
+            "input_sha256": str(index + 6) * 64,
+            "confirmed_at": "2026-09-19T00:00:00Z",
+            "algorithm_id": "alg-1",
+            "version_id": "ver-1",
+        })
+    candidate_set = build_supplement_candidate_set(
+        action, candidates, frozen_at="2026-09-19T00:01:00Z",
+    )
+    truth = [{
+        "id": "material-1", "content_sha256": "7" * 64,
+        "annotation_hash": "5" * 64, "annotation_state": "annotated",
+    }]
+    provenance = build_supplement_training_provenance(
+        candidate_set, ["material-1", "normal-material"], truth,
+    )
+    assert provenance["candidate_set_id"] == candidate_set["candidate_set_id"]
+    assert provenance["adopted_feedback_ids"] == ["feedback-1"]
+    assert provenance["adopted_material_ids"] == ["material-1"]
+    assert provenance["adopted_candidate_count"] == 1
+    assert provenance["source_candidate_count"] == 2
+    assert provenance["automatic_execution"] is False
+
+    with pytest.raises(ValueError, match="annotation changed"):
+        build_supplement_training_provenance(
+            candidate_set,
+            ["material-1"],
+            [dict(truth[0], annotation_hash="f" * 64)],
+        )

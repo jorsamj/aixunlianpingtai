@@ -77,3 +77,30 @@ def test_training_lineage_carries_public_confirmed_iteration_action():
         "snapshot_id": "snapshot-prev",
     }
     assert "private" not in str(lineage)
+
+
+def test_training_lineage_carries_bounded_supplement_feedback_provenance():
+    provenance = {
+        "schema_version": 1, "candidate_set_id": "a" * 64,
+        "adoption_id": "b" * 64, "action_id": "c" * 64,
+        "algorithm_id": "alg-prev", "version_id": "ver-prev",
+        "source_candidate_count": 2, "adopted_candidate_count": 1,
+        "adopted_material_count": 1, "adopted_feedback_ids": ["feedback-1"],
+        "adopted_material_ids": ["material-1"], "automatic_execution": False,
+        "adopted_candidates": [{
+            "feedback_id": "feedback-1", "feedback_type": "needs_correction",
+            "material_id": "material-1", "candidate_digest": "d" * 64,
+            "annotation_hash": "e" * 64, "annotation_state": "annotated",
+            "model_sha256": "f" * 64, "input_sha256": "1" * 64,
+        }],
+        "private_note": "do-not-leak",
+    }
+    lineage = build_training_lineage(
+        task_id="train-feedback",
+        dataset_revision_id="2" * 64,
+        supplement_provenance=provenance,
+    )
+    assert lineage["supplement_provenance"]["candidate_set_id"] == "a" * 64
+    assert lineage["supplement_provenance"]["adopted_feedback_ids"] == ["feedback-1"]
+    assert lineage["supplement_provenance"]["automatic_execution"] is False
+    assert "private_note" not in str(lineage)

@@ -301,3 +301,66 @@ def test_legacy_snapshot_gets_deterministic_revision_without_changing_snapshot_i
     assert first["snapshot_id"] == "legacy-snapshot"
     assert first["dataset_revision_id"] == second["dataset_revision_id"]
     assert len(first["dataset_revision_id"]) == 64
+
+
+def test_feedback_provenance_changes_only_feedback_backed_revision_identity():
+    images = []
+    for index in range(4):
+        images.append({
+            "id": f"img-{index}", "processing_status": "processed",
+            "content_sha256": str(index + 1) * 64,
+            "annotation_state": "annotated", "annotation_hash": str(index + 5) * 64,
+            "annotation_scope": ["fire"],
+            "boxes": [{"label": "fire", "x1": 1, "y1": 1, "x2": 5, "y2": 5}],
+            "width": 10, "height": 10,
+        })
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=25,
+            validation_percent=25,
+        ),
+        seed=7,
+    )
+    candidate_set = {
+        "schema_version": 1, "status": "confirmed", "action_id": "a" * 64,
+        "algorithm_id": "alg", "version_id": "ver",
+        "feedback_ids": ["f0", "f3"], "material_ids": ["img-0", "img-3"],
+        "candidates": [
+            {
+                "feedback_id": "f0", "feedback_type": "correct", "material_id": "img-0",
+                "candidate_digest": "b" * 64, "annotation_hash": "5" * 64,
+                "annotation_state": "annotated", "labels": ["fire"],
+                "model_sha256": "c" * 64, "input_sha256": "1" * 64,
+                "confirmed_at": "2026-09-19T00:00:00Z",
+            },
+            {
+                "feedback_id": "f3", "feedback_type": "correct", "material_id": "img-3",
+                "candidate_digest": "d" * 64, "annotation_hash": "8" * 64,
+                "annotation_state": "annotated", "labels": ["fire"],
+                "model_sha256": "c" * 64, "input_sha256": "4" * 64,
+                "confirmed_at": "2026-09-19T00:00:01Z",
+            },
+        ],
+    }
+    import hashlib, json
+    identity = {key: candidate_set[key] for key in (
+        "schema_version", "action_id", "algorithm_id", "version_id",
+        "feedback_ids", "material_ids", "candidates",
+    )}
+    candidate_set["candidate_set_id"] = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+    normal = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+    feedback = build_snapshot(
+        images, manifest, [{"code": "fire", "class_id": 0}],
+        supplement_candidate_set=candidate_set,
+    )
+    assert normal["dataset_revision_id"] != feedback["dataset_revision_id"]
+    assert feedback["supplement_provenance"]["candidate_set_id"] == candidate_set["candidate_set_id"]
+    assert set(feedback["supplement_provenance"]["adopted_material_ids"]) == {"img-0", "img-3"}
+    revision = dataset_revision_document(feedback)
+    assert revision["supplement_provenance"]["adoption_id"] == feedback["supplement_provenance"]["adoption_id"]
