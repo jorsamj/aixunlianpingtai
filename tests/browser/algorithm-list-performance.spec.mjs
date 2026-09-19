@@ -405,36 +405,63 @@ test('algorithm create edit delete uses authoritative local state without broad 
 test('algorithm version exposes persisted training lineage without job refetch', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
+
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
-  await page.evaluate(() => window.setPage('算法列表'));
-  await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
     .toBe('algorithm-list-runtime-422504');
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412))
     .toBe(true);
-  await page.evaluate(() => {
-    state.algorithms = [{
-      id:'algo-lineage-1',name:'溯源验收算法',industry:'测试',
-      algorithm_type:'yolo_ultralytics',current_version_id:'version-lineage-1',
-      versions:[{
-        id:'version-lineage-1',version_name:'20260919103000',training_status:'SUCCEEDED',
-        model_name:'best.pt',stored_path:'/models/best.pt',created_at:'2026-09-19T10:30:00Z',
-        training_lineage:{
-          schema_version:1,task_id:'train-lineage-1',dataset_revision_id:'a'.repeat(64),
-          snapshot_id:'b'.repeat(64),framework:'ultralytics',
-          base:{model:'yolo11n.pt',selection_reason:'mother_model'},
-          execution:{mode:'agent',worker_id:'agent:node-7',node_id:'node-7',execution_generation:4,actual_device:'cuda:0'},
-          parameters:{actual:{epochs:30,batch:4,imgsz:640}},
-          artifacts:[{role:'best',file_name:'best.pt',sha256:'c'.repeat(64),size_bytes:1234}],
-        },
-      }],
-    }];
-    state.jobs=[];state.alg428Expanded={'algo-lineage-1':true};window.renderAlgorithms423();
+
+  const projectId = await page.evaluate(() => state.project?.id);
+  expect(projectId).toBeTruthy();
+  const encoded = encodeURIComponent(projectId);
+  const lineageAlgorithm = {
+    id:'algo-lineage-1',name:'溯源验收算法',industry:'测试',
+    algorithm_type:'yolo_ultralytics',current_version_id:'version-lineage-1',
+    versions:[{
+      id:'version-lineage-1',version_name:'20260919103000',training_status:'SUCCEEDED',
+      model_name:'best.pt',stored_path:'/models/best.pt',created_at:'2026-09-19T10:30:00Z',
+      training_lineage:{
+        schema_version:1,task_id:'train-lineage-1',dataset_revision_id:'a'.repeat(64),
+        snapshot_id:'b'.repeat(64),framework:'ultralytics',
+        base:{model:'yolo11n.pt',selection_reason:'mother_model'},
+        execution:{mode:'agent',worker_id:'agent:node-7',node_id:'node-7',execution_generation:4,actual_device:'cuda:0'},
+        parameters:{actual:{epochs:30,batch:4,imgsz:640}},
+        artifacts:[{role:'best',file_name:'best.pt',sha256:'c'.repeat(64),size_bytes:1234}],
+      },
+    }],
+  };
+
+  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({items:[lineageAlgorithm]}),
+    });
   });
-  const requests=[];
-  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/'))requests.push(url.pathname)});
+  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify([])});
+  });
+
+  await page.evaluate(() => window.setPage('算法列表'));
+  await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+  await page.evaluate(async () => {
+    await window.AlgorithmListRuntime.refresh({render:false});
+    state.alg428Expanded = {};
+    window.renderAlgorithms423();
+  });
+
   const card=page.locator('.alg428-card').filter({hasText:'溯源验收算法'});
+  await expect(card).toBeVisible();
+  await card.locator('.alg428-main').click();
+  await expect(card).toHaveClass(/open/);
+  await expect(card.getByRole('button',{name:'训练溯源'})).toBeVisible();
+
+  const requests=[];
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.pathname.startsWith('/api/'))requests.push(url.pathname);
+  });
   await card.getByRole('button',{name:'训练溯源'}).click();
   await expect(page.locator('#modalBody')).toContainText('数据版本');
   await expect(page.locator('#modalBody')).toContainText('train-lineage-1');
