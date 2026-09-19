@@ -595,3 +595,82 @@ def test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_id
     )
     assert refs["data.yaml"]["sha256"] == hashlib.sha256(yaml_bytes).hexdigest()
     assert refs["labels/train/a.txt"]["sha256"] == hashlib.sha256(label_bytes).hexdigest()
+
+
+def test_storage_rescan_root_coco_carries_verified_json_source_evidence(tmp_path):
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (100, 80), "orange").save(image_buffer, format="JPEG")
+    image = image_buffer.getvalue()
+    coco = json.dumps({
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 100, "height": 80}],
+        "annotations": [{"id": 1, "image_id": 1, "category_id": 7, "bbox": [10, 20, 30, 40]}],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }, separators=(",", ":")).encode()
+    json_key = "train/_annotations.coco.json"
+    payloads = {"train/a.jpg": image, json_key: coco}
+    provider = _StorageScanReviewProvider(
+        [
+            ObjectMetadata(
+                key=key,
+                size_bytes=len(value),
+                etag=f'"etag-{index}"',
+                content_type="image/jpeg" if key.endswith(".jpg") else "application/json",
+                sha256="" if key.endswith(".json") else hashlib.sha256(value).hexdigest(),
+            )
+            for index, (key, value) in enumerate(payloads.items(), 1)
+        ],
+        payloads,
+    )
+    archive = tmp_path / "coco-rescan.zip"
+    built = build_storage_scan_material_review_archive(
+        provider,
+        archive,
+        task_id="rescan-coco",
+        project_id="project-coco-rescan",
+        execution_generation=3,
+        storage_source_id="s3-source",
+        storage_type="s3",
+        prefix="",
+        recursive=True,
+        import_format="coco",
+        intent="storage_rescan",
+    )
+    expected_sha = hashlib.sha256(coco).hexdigest()
+    with zipfile.ZipFile(archive, "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        annotation = json.loads(
+            review.read(REVIEW_DETECTION_ANNOTATIONS_MEMBER).decode("utf-8").strip()
+        )
+    assert meta["intent"] == "storage_rescan"
+    assert meta["target_prefix"] == ""
+    assert annotation["label_key"] == json_key
+    assert annotation["dataset_key"] == json_key
+    assert annotation["label_object"]["sha256"] == expected_sha
+    assert annotation["dataset_object"]["sha256"] == expected_sha
+
+    artifacts = ArtifactStore(tmp_path / "coco-rescan-artifacts")
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id="rescan-coco",
+        project_id="project-coco-rescan",
+        execution_generation=3,
+        archive_path=built["path"],
+        archive_sha256=built["sha256"],
+        archive_size_bytes=built["size_bytes"],
+        expected_source_id="s3-source",
+        expected_storage_type="s3",
+        expected_prefix="",
+        expected_mode="storage_scan",
+        expected_import_format="coco",
+        expected_intent="storage_rescan",
+        platform_labels=[],
+    )
+    assert committed["material_review_committed"] is True
+    store = ImportCandidateStore(
+        artifacts.artifact_path("rescan-coco", MANIFEST_REF)
+    )
+    identity = store.inventory_for_keys([json_key])[json_key]
+    assert identity["sha256"] == expected_sha
+    annotation_truth = store.annotations_for_keys(["train/a.jpg"])["train/a.jpg"]
+    assert annotation_truth["label_key"] == json_key
+    assert annotation_truth["yaml_key"] == json_key

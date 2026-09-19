@@ -881,10 +881,19 @@ def _build_detection_storage_scan_review_archive(
     prefix: str,
     recursive: bool,
     import_format: str,
+    intent: str = "",
     cancelled: Callable[[], bool] | None = None,
     progress: Callable[[int, int, str], object] | None = None,
 ) -> dict[str, Any]:
-    target_prefix = safe_member_path(str(prefix)).as_posix()
+    normalized_intent = str(intent or "").strip().lower()
+    if normalized_intent not in {"", "storage_rescan"}:
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_INTENT_INVALID",
+            "unsupported detection review intent",
+            422,
+        )
+    raw_prefix = str(prefix or "").strip().replace("\\", "/").strip("/")
+    target_prefix = safe_member_path(raw_prefix).as_posix() if raw_prefix else ""
     target = Path(destination).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     local_fd, local_name = tempfile.mkstemp(
@@ -902,7 +911,14 @@ def _build_detection_storage_scan_review_archive(
         lambda current, scan_prefix, scan_recursive: current.iter_objects(
             scan_prefix, recursive=scan_recursive
         ),
-        _inspect_storage_scan_image,
+        (
+            lambda current, item, **kwargs: _inspect_storage_scan_image(
+                current,
+                item,
+                **kwargs,
+                deduplicate=normalized_intent != "storage_rescan",
+            )
+        ),
         storage_source_id=storage_source_id,
         storage_type=storage_type,
         cancelled=(cancelled or (lambda: False)),
@@ -1009,6 +1025,7 @@ def _build_detection_storage_scan_review_archive(
                 "project_id": str(project_id),
                 "execution_generation": int(execution_generation),
                 "mode": "storage_scan",
+                "intent": normalized_intent,
                 "payload_mode": "source_reference",
                 "import_format": str(detected.import_format),
                 "storage_source_id": str(storage_source_id),
@@ -1108,10 +1125,10 @@ def build_storage_scan_material_review_archive(
             "storage_scan review requires an explicit object prefix",
             422,
         )
-    if normalized_intent == "storage_rescan" and selected_format not in {"images", "yolo"}:
+    if normalized_intent == "storage_rescan" and selected_format not in {"images", "yolo", "coco"}:
         raise RemoteMaterialImportError(
             "REMOTE_MATERIAL_RESCAN_FORMAT_UNSUPPORTED",
-            "storage_rescan Phase 2A supports image or YOLO reconciliation",
+            "storage_rescan Phase 2B supports image, YOLO or COCO reconciliation",
             422,
         )
     target_prefix = safe_member_path(raw_prefix).as_posix() if raw_prefix else ""
@@ -1139,6 +1156,7 @@ def build_storage_scan_material_review_archive(
             prefix=target_prefix,
             recursive=recursive,
             import_format=selected_format,
+            intent=normalized_intent,
             cancelled=cancelled,
             progress=progress,
         )
@@ -1877,8 +1895,61 @@ def _commit_detection_review_annotations(
     states: list[dict[str, Any]] = []
     boxes: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
+    source_inventory: dict[str, dict[str, Any]] = {}
     total_boxes = 0
     total_issues = 0
+    rescan_evidence_required = str(meta.get("intent") or "") == "storage_rescan"
+
+    def verified_source_object(value, key: str | None):
+        if not key:
+            if value is not None:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_REVIEW_INVALID",
+                    "detection review contains source metadata without an object key",
+                    422,
+                )
+            return None
+        if value is None:
+            if rescan_evidence_required:
+                raise RemoteMaterialImportError(
+                    "REMOTE_DETECTION_SOURCE_EVIDENCE_MISSING",
+                    "COCO rescan review is missing annotation source identity evidence",
+                    409,
+                )
+            return None
+        if not isinstance(value, Mapping):
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_REVIEW_INVALID",
+                "detection source identity evidence must be an object",
+                422,
+            )
+        try:
+            size_bytes = int(value.get("size_bytes") or 0)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_REVIEW_INVALID",
+                "detection source identity size is invalid",
+                422,
+            ) from error
+        etag = str(value.get("etag") or "")
+        sha256 = str(value.get("sha256") or "").strip().lower()
+        if (
+            size_bytes <= 0
+            or not etag
+            or len(sha256) != 64
+            or any(character not in "0123456789abcdef" for character in sha256)
+        ):
+            raise RemoteMaterialImportError(
+                "REMOTE_DETECTION_SOURCE_EVIDENCE_INVALID",
+                "detection source identity evidence is incomplete",
+                422,
+            )
+        return {
+            "object_key": key,
+            "size_bytes": size_bytes,
+            "etag": etag,
+            "sha256": sha256,
+        }
 
     def flush() -> None:
         if states or boxes or issues:
@@ -1886,6 +1957,9 @@ def _commit_detection_review_annotations(
             states.clear()
             boxes.clear()
             issues.clear()
+        if source_inventory:
+            store.inventory_many(source_inventory.values())
+            source_inventory.clear()
 
     with annotations_path.open("r", encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
@@ -1942,6 +2016,35 @@ def _commit_detection_review_annotations(
             label_key = row.get("label_key")
             if label_key is not None:
                 label_key = safe_member_path(str(label_key)).as_posix()
+            dataset_key = row.get("dataset_key")
+            dataset_key = (
+                safe_member_path(str(dataset_key)).as_posix()
+                if dataset_key
+                else None
+            )
+            if rescan_evidence_required:
+                if not label_key or not dataset_key or label_key != dataset_key:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_SOURCE_EVIDENCE_INVALID",
+                        "COCO rescan requires one exact annotation JSON source identity",
+                        409,
+                    )
+                label_object = verified_source_object(row.get("label_object"), label_key)
+                dataset_object = verified_source_object(row.get("dataset_object"), dataset_key)
+                if label_object != dataset_object:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_SOURCE_EVIDENCE_INVALID",
+                        "COCO annotation source evidence does not reconcile",
+                        409,
+                    )
+                previous = source_inventory.get(dataset_key)
+                if previous is not None and previous != dataset_object:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_DETECTION_SOURCE_EVIDENCE_INVALID",
+                        "COCO review contains conflicting source object evidence",
+                        409,
+                    )
+                source_inventory[dataset_key] = dataset_object
 
             raw_boxes = row.get("boxes")
             raw_issues = row.get("issues")
@@ -2069,9 +2172,13 @@ def _commit_detection_review_annotations(
             store.manifest_many([{
                 "object_key": key,
                 "split": split,
-                "yaml_key": safe_member_path(
-                    str(manifest_identity or annotations_member)
-                ).as_posix(),
+                "yaml_key": (
+                    dataset_key
+                    if rescan_evidence_required
+                    else safe_member_path(
+                        str(manifest_identity or annotations_member)
+                    ).as_posix()
+                ),
             }])
             if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
                 flush()
@@ -2522,7 +2629,7 @@ def commit_material_review_archive(
         allow_root = (
             normalized_intent == "storage_rescan"
             and str(expected_mode or "") == "storage_scan"
-            and str(expected_import_format or "") in {"images", "yolo"}
+            and str(expected_import_format or "") in {"images", "yolo", "coco"}
             and not str(expected_prefix or "").strip()
         )
         if normalized_intent == "storage_rescan" and not allow_root:

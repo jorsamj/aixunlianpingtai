@@ -156,3 +156,47 @@ def test_voc_scan_maps_names_and_rejects_unsafe_xml_declarations(tmp_path):
     import pytest
     with pytest.raises(Exception, match="forbidden declarations"):
         unsafe.scan("voc", prefix="dataset", recursive=True)
+
+
+def test_coco_scan_hashes_real_annotation_json_bytes(tmp_path):
+    import hashlib
+    image = _jpg()
+    coco_bytes = json.dumps({
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 100, "height": 80}],
+        "annotations": [],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }, separators=(",", ":")).encode()
+    payloads = {
+        "dataset/train/a.jpg": image,
+        "dataset/train/_annotations.coco.json": coco_bytes,
+    }
+    provider = MemoryProvider(payloads)
+    metadata = [
+        ObjectMetadata(
+            key=item.key,
+            size_bytes=item.size_bytes,
+            etag=item.etag,
+            content_type=item.content_type,
+            sha256="" if item.key.endswith(".json") else item.sha256,
+        )
+        for item in _metadata(payloads)
+    ]
+    store = ImportCandidateStore(tmp_path / "verified-coco.sqlite3")
+    scanner = DetectionDatasetScanner(
+        provider,
+        store,
+        lambda _provider, prefix, recursive: (
+            item for item in metadata
+            if not prefix or item.key == prefix or item.key.startswith(prefix.rstrip("/") + "/")
+        ),
+        _inspect,
+        storage_source_id="s3-source",
+        storage_type="s3",
+    )
+    scanner.scan("coco", prefix="dataset", recursive=True)
+    identity = store.inventory_for_keys(
+        ["dataset/train/_annotations.coco.json"]
+    )["dataset/train/_annotations.coco.json"]
+    assert identity["sha256"] == hashlib.sha256(coco_bytes).hexdigest()
+    assert identity["size_bytes"] == len(coco_bytes)
+    assert identity["etag"]

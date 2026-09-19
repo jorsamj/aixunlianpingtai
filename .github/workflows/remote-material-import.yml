@@ -202,6 +202,9 @@ jobs:
           grep -Fq 'platform annotation changed after rescan review' platform_core/storage/rescan_tasks.py
           grep -Fq 'test_yolo_rescan_rejects_platform_annotation_edit_after_review' tests/unit/storage/test_rescan_tasks.py
           grep -Fq 'test_yolo_rescan_new_material_records_imported_annotation_provenance' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq '_read_annotation_source' platform_core/storage/detection_import.py
+          grep -Fq 'test_coco_scan_hashes_real_annotation_json_bytes' tests/unit/storage/test_detection_import.py
+          grep -Fq 'test_storage_rescan_root_coco_carries_verified_json_source_evidence' tests/unit/test_remote_material_import.py
           grep -Fq '_build_annotation_deltas' platform_core/storage/rescan_tasks.py
           grep -Fq 'test_yolo_annotation_delta_distinguishes_new_change_conflict_and_removed' tests/unit/storage/test_rescan_tasks.py
           grep -Fq '_verify_remote_review_object' platform_core/storage/rescan_tasks.py

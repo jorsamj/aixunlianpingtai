@@ -6,6 +6,7 @@ never creates platform labels or Material/AnnotationRepository records.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import xml.etree.ElementTree as ET
@@ -202,6 +203,37 @@ class DetectionDatasetScanner:
         if batch:
             self.store.inventory_many(batch)
 
+    def _read_annotation_source(self, key: str, maximum: int) -> bytes:
+        """Read bounded annotation bytes and freeze their verified source identity."""
+        raw = _read_bounded(self.provider, key, maximum)
+        current = self.store.inventory_for_keys([key]).get(key)
+        if current is None:
+            raise DetectionImportError(
+                "DETECTION_SOURCE_CHANGED",
+                "annotation source disappeared during scan",
+            )
+        actual_size = len(raw)
+        listed_size = int(current.get("size_bytes") or 0)
+        if listed_size and listed_size != actual_size:
+            raise DetectionImportError(
+                "DETECTION_SOURCE_CHANGED",
+                "annotation source size changed while being read",
+            )
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        listed_sha = str(current.get("sha256") or "").strip().lower()
+        if listed_sha and listed_sha != actual_sha:
+            raise DetectionImportError(
+                "DETECTION_SOURCE_CHANGED",
+                "annotation source hash changed while being read",
+            )
+        self.store.inventory_many([{
+            "object_key": key,
+            "size_bytes": actual_size,
+            "etag": str(current.get("etag") or ""),
+            "sha256": actual_sha,
+        }])
+        return raw
+
     def _resolve_image(self, file_name: str, *, annotation_key: str, prefix: str) -> str | None:
         raw = str(file_name or "").strip().replace("\\", "/")
         if not raw:
@@ -264,7 +296,7 @@ class DetectionDatasetScanner:
         for key in sorted(self._json_keys):
             _cancelled(self.cancelled)
             try:
-                raw = _read_bounded(self.provider, key, MAX_COCO_JSON_BYTES)
+                raw = self._read_annotation_source(key, MAX_COCO_JSON_BYTES)
                 payload = json.loads(raw.decode("utf-8-sig"))
             except DetectionImportError:
                 raise
@@ -436,7 +468,7 @@ class DetectionDatasetScanner:
 
         for annotation_index, annotation_key in enumerate(xml_keys, start=1):
             _cancelled(self.cancelled)
-            raw = _read_bounded(self.provider, annotation_key, MAX_VOC_XML_BYTES)
+            raw = self._read_annotation_source(annotation_key, MAX_VOC_XML_BYTES)
             lowered = raw.lower()
             if b"<!doctype" in lowered or b"<!entity" in lowered:
                 raise DetectionImportError("VOC_XML_UNSAFE", "Pascal VOC XML contains forbidden declarations")
