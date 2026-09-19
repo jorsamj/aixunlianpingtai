@@ -438,8 +438,15 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialManaged ? 'disabled' : ''} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
             <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" ${credentialManaged ? 'disabled' : ''} placeholder="${credentialManaged ? '由环境变量管理' : (credential.configured ? '已配置，留空表示继续使用原 Secret' : '请输入 AccessSecret')}"><button type="button" class="btn" id="externalSecretToggle" ${credentialManaged ? 'disabled' : ''}>显示</button></div></div>
             <div class="field full"><div class="subline">凭据状态：${credentialStatusText} · 存储后端：${escapeHtml(credentialBackendText)}。${credentialHelpText}</div>${credential.available === false ? '<div class="alert warn" style="margin-top:10px">当前只能查看公开配置，保存 AccessKey / AccessSecret 会失败关闭（fail-closed），不会降级成明文 JSON。</div>' : ''}</div>
-            <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（后台每 ${Math.round(c.autoSyncIntervalSeconds / 60)} 分钟检查）</label>
-            <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布</label>
+            <div class="field full">
+              <details data-external-automation-settings="1">
+                <summary>高级设置 · 自动化</summary>
+                <div class="form two" style="margin-top:12px">
+                  <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（后台每 ${Math.round(c.autoSyncIntervalSeconds / 60)} 分钟检查）</label>
+                  <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布</label>
+                </div>
+              </details>
+            </div>
           </div>
           <div class="row end"><button class="btn primary" id="externalPlatformSave">保存配置</button></div>
         </div>
