@@ -350,7 +350,7 @@ def test_draft_connection_test_does_not_persist_credentials_or_url(tmp_path: Pat
 
     assert result["ok"] is True
     assert result["base_url"] == "https://draft.example"
-    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms"]
+    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis"]
     assert "draft-secret" not in str(result)
     assert service.repository.config()["base_url"] == "https://saved.example"
     ref = service.repository.config()["credential_ref"]
