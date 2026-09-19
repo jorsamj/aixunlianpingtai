@@ -562,3 +562,117 @@ def test_coco_annotation_delta_and_apply_share_generic_external_provenance(tmp_p
     saved = materials.get("old-coco")
     assert saved["external_annotation"]["source_format"] == "coco"
     assert saved["external_annotation"]["source_digest"] == pending[0]["source_evidence"]["source_digest"]
+
+
+def test_coco_annotation_delta_marks_removed_json_reference(tmp_path):
+    from platform_core.storage.rescan_tasks import _build_annotation_deltas
+
+    data_dir = tmp_path / "data"
+    project_id = "project-coco-removed"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    row = material("old-coco-removed", "images/train/removed.jpg", "b" * 64)
+    row["external_annotation"] = {
+        "schema_version": 1,
+        "source_format": "coco",
+        "source_digest": "old-coco-source",
+        "annotation_status": "annotated",
+        "synced_annotation_hash": "",
+    }
+    materials.upsert(row)
+
+    store = RescanCandidateStore(tmp_path / "coco-removed.sqlite3")
+    materials.snapshot_storage_references(store.path, "s3-a")
+    store.upsert_many([candidate(
+        row["object_key"], row["content_sha256"], etag=row["etag"],
+    )])
+    store.set_label_mapping({7: "smoke"})
+
+    summary = _build_annotation_deltas(store, project_path, source_format="coco")
+    assert summary["counts"] == {"ANNOTATION_REMOVED": 1}
+    pending = store.pending_annotation_deltas(["ANNOTATION_REMOVED"])
+    assert pending[0]["source_evidence"]["source_format"] == "coco"
+    assert pending[0]["source_evidence"]["annotation_status"] == "unannotated"
+
+
+def test_coco_rescan_rejects_platform_annotation_edit_after_review(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = "project-coco-stale"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    materials.upsert(material("old-coco-stale", "images/train/a.jpg", "c" * 64))
+    annotations = AnnotationRepository(project_path)
+    reviewed = annotations.upsert(
+        "old-coco-stale",
+        [{
+            "id": "old-coco-stale-1", "label": "smoke", "class_id": 0,
+            "x1": 8, "y1": 8, "x2": 24, "y2": 24,
+        }],
+    )
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "coco-stale-rescan"
+    store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    store.set_meta("annotation_confirmation", {
+        "label_mapping": {"7": "smoke"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    evidence = {
+        "schema_version": 1,
+        "source_format": "coco",
+        "object_key": "images/train/a.jpg",
+        "split": "train",
+        "annotation_status": "annotated",
+        "label_key": "annotations/train.json",
+        "dataset_key": "annotations/train.json",
+        "class_catalog_digest": "d" * 64,
+        "source_digest": "new-coco-source",
+        "box_count": 1,
+        "boxes": [{
+            "line_number": 1, "class_id": 7,
+            "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.25, "clipped": False,
+        }],
+    }
+    store.annotation_delta_batch([{
+        "object_key": "images/train/a.jpg",
+        "image_id": "old-coco-stale",
+        "category": "ANNOTATION_CHANGED",
+        "source_evidence": evidence,
+        "platform_annotation_hash": reviewed["content_digest"],
+        "platform_annotation_state": "annotated",
+    }])
+
+    annotations.upsert(
+        "old-coco-stale",
+        [{
+            "id": "old-coco-stale-1", "label": "smoke", "class_id": 0,
+            "x1": 10, "y1": 10, "x2": 30, "y2": 30,
+        }],
+    )
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    with pytest.raises(ValueError, match="platform annotation changed after rescan review"):
+        handler._apply_annotation_rescan(
+            context,
+            SimpleNamespace(id="s3-a"),
+            store,
+            materials,
+            {
+                "new": "ignore", "missing": "ignore", "changed": "ignore",
+                "annotation_changed": "update",
+                "annotation_removed": "keep",
+                "annotation_conflicts": "keep",
+            },
+            {"import_format": "coco"},
+        )
