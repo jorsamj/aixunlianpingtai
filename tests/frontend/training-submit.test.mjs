@@ -418,7 +418,8 @@ test('fixed benchmark context requires current bundle-verified backend identity'
 });
 
 test('benchmark availability loading blocks submit readiness until backend truth is known', () => {
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({benchmarkReuseEnabled: true}), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: true, reason: ''});
   assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
 });
 

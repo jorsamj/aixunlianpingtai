@@ -4030,11 +4030,13 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
     try{
       const value=await api(`/api/v12/projects/${pid()}/algorithms/${encodeURIComponent(algorithmId)}/benchmark-reuse`);
-      if(String(state.trainingDraft?.algorithmId||'')!==algorithmId)return;
+      const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
+      if(activeAlgorithmId!==algorithmId)return;
       state.trainingBenchmarkReuse={...value,algorithm_id:algorithmId,loading:false,load_error:false};
       if(value?.available)window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:true,splitMode:'random_test_from_training_pool',testMaterialIds:[]});
     }catch(error){
-      if(String(state.trainingDraft?.algorithmId||'')!==algorithmId)return;
+      const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
+      if(activeAlgorithmId!==algorithmId)return;
       state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:false,load_error:true,reason:String(error?.message||error||'固定评测基准读取失败')};
       window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
     }
@@ -4312,7 +4314,7 @@ window.installUsability417?.();
     const resultPromise=previousStart?.(aid);
     const applyDevices=devices=>{state.trainingDevicesV3={...devices,loading:false};state.trainingDevicesV3LoadedAt=Date.now();const recommendedDevice=devices?.recommended||'auto';window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;renderSplit()};
     if(cacheFresh){applyDevices(cachedDevices)}else{api('/api/v62/training-devices').then(applyDevices).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}})}
-    const result=await resultPromise;loadTrainingBenchmarkReuseV1(aid);[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
+    const result=await resultPromise;window.TrainingDraftRuntime?.update?.({algorithmId:String(aid||'')});loadTrainingBenchmarkReuseV1(aid);[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
     const historicalLog=window.showTrainLog423;
   window.showTrainLog423=async function(id){

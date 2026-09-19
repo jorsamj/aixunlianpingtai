@@ -103,8 +103,8 @@ export function validateTrainingDevice(draft, devices = []) {
 export function trainingSubmitReadiness({draft, inheritance, benchmarkStatus, submitting = false} = {}) {
   if (submitting) return {ready: false, reason: 'submitting'};
   if (!String(draft?.algorithmId || '').trim()) return {ready: false, reason: 'algorithm'};
-  if (benchmarkStatus?.loading) return {ready: false, reason: 'benchmark-loading'};
-  if (benchmarkStatus?.load_error) return {ready: false, reason: 'benchmark-error'};
+  if (draft?.benchmarkReuseEnabled && benchmarkStatus?.loading) return {ready: false, reason: 'benchmark-loading'};
+  if (draft?.benchmarkReuseEnabled && benchmarkStatus?.load_error) return {ready: false, reason: 'benchmark-error'};
   if ((draft?.materialIds || []).length < 2) return {ready: false, reason: 'materials'};
   if (inheritance?.blocked) return {ready: false, reason: 'iteration'};
   return {ready: true, reason: ''};
