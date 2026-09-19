@@ -561,6 +561,47 @@ def _stable_external_id(provider: str, product_id: str) -> str:
     return f"ext_{provider.lower()}_{digest}"
 
 
+def master_data_digest(
+    *,
+    categories: Iterable[Mapping[str, Any]],
+    products: Iterable[Mapping[str, Any]],
+    analyses_by_product: Mapping[str, Iterable[Mapping[str, Any]]],
+    compute_platforms: Iterable[Mapping[str, Any]],
+) -> str:
+    def stable_rows(rows: Iterable[Mapping[str, Any]], id_resolver: Callable[[Mapping[str, Any]], str]):
+        values = [dict(row) for row in rows]
+        return sorted(
+            values,
+            key=lambda row: (
+                str(id_resolver(row) or ""),
+                json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            ),
+        )
+
+    canonical = {
+        "categories": stable_rows(
+            categories,
+            lambda row: str(_value_from(row, "categoryId", "id") or ""),
+        ),
+        "products": stable_rows(products, _product_id),
+        "analyses_by_product": {
+            str(product_id): stable_rows(rows, _analysis_id)
+            for product_id, rows in sorted(
+                ((str(key), value) for key, value in analyses_by_product.items()),
+                key=lambda item: item[0],
+            )
+        },
+        "compute_platforms": stable_rows(compute_platforms, _compute_platform_id),
+    }
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def mirror_products_to_algorithms(
     *,
     algorithms_path: Path,
@@ -569,6 +610,7 @@ def mirror_products_to_algorithms(
     analyses_by_product: Mapping[str, Iterable[Mapping[str, Any]]],
     provider: str = PROVIDER_CHANGLIAN,
     synced_at: Optional[str] = None,
+    master_digest: str = "",
 ) -> Dict[str, int]:
     synced_at = synced_at or utc_now()
     algorithms_path = Path(algorithms_path)
@@ -612,6 +654,7 @@ def mirror_products_to_algorithms(
             ),
             "external_active": True,
             "external_last_synced_at": synced_at,
+            "external_master_data_digest": str(master_digest or ""),
         }
 
     return AlgorithmSqlStore(algorithms_path).sync_external_algorithms(incoming, provider=provider, synced_at=synced_at)
@@ -683,6 +726,27 @@ def resolve_external_training_analysis(algorithm: Mapping[str, Any] | None, requ
     return requested or default_id or (analysis_ids[0] if analysis_ids else "")
 
 
+def assert_external_algorithm_master_data_current(data_dir: Path, algorithm: Mapping[str, Any] | None) -> None:
+    if not algorithm:
+        return
+    if str(algorithm.get("source_type") or "").upper() != SOURCE_EXTERNAL:
+        return
+    if str(algorithm.get("provider_type") or "").upper() != PROVIDER_CHANGLIAN:
+        return
+    cache = ExternalPlatformRepository(Path(data_dir)).cache()
+    expected = str(cache.get("master_data_digest") or "").strip()
+    actual = str(algorithm.get("external_master_data_digest") or "").strip()
+    if expected and actual and actual == expected:
+        return
+    raise PlatformError(
+        "EXTERNAL_MASTER_DATA_STALE",
+        "当前算法的畅联云主数据需要重新同步",
+        str(algorithm.get("name") or algorithm.get("id") or ""),
+        "请到“配置中心 → 平台对接”执行“立即同步”，再重新创建训练任务。",
+        409,
+    )
+
+
 def assert_local_algorithm_create_allowed(data_dir: Path) -> None:
     config = ExternalPlatformRepository(Path(data_dir)).config()
     if str(config.get("mode") or "local") == "external":
@@ -738,6 +802,7 @@ class ExternalAlgorithmPlatformService:
             "last_sync": last,
             "cache": {
                 "synced_at": cache.get("synced_at"),
+                "master_data_digest": cache.get("master_data_digest"),
                 "category_count": len(cache.get("categories") or []),
                 "product_count": len(cache.get("products") or []),
                 "analysis_count": sum(len(rows) for rows in (cache.get("analyses_by_product") or {}).values()),
@@ -771,6 +836,12 @@ class ExternalAlgorithmPlatformService:
             except Exception:
                 external_rows = []
         active_external = [row for row in external_rows if row.get("external_active") is not False]
+        current_master_digest = str(cache.get("master_data_digest") or "").strip()
+        stale_external = [
+            row for row in active_external
+            if not current_master_digest
+            or str(row.get("external_master_data_digest") or "").strip() != current_master_digest
+        ]
 
         checks = [
             {
@@ -840,9 +911,13 @@ class ExternalAlgorithmPlatformService:
             checks.append({
                 "key": "project_algorithms",
                 "name": "当前项目畅联云算法",
-                "status": "ready" if active_external else "blocked",
+                "status": "ready" if active_external and not stale_external else "blocked",
                 "count": len(active_external),
-                "detail": f"同步算法 {len(external_rows)} 个，当前可训练 {len(active_external)} 个",
+                "detail": (
+                    f"同步算法 {len(external_rows)} 个，当前可训练 {len(active_external)} 个"
+                    if not stale_external
+                    else f"有 {len(stale_external)} 个算法仍基于旧主数据，请重新同步当前项目"
+                ),
             })
 
         blocking = [row for row in checks if row.get("status") == "blocked"]
@@ -1128,10 +1203,17 @@ class ExternalAlgorithmPlatformService:
                     entity_name=f"算法产品 {pid} 的分析方式",
                 )
             synced_at = utc_now()
+            digest = master_data_digest(
+                categories=categories,
+                products=products,
+                analyses_by_product=analyses_by_product,
+                compute_platforms=compute_platforms,
+            )
             cache = {
                 "schema_version": CACHE_SCHEMA_VERSION,
                 "provider": "changlian",
                 "synced_at": synced_at,
+                "master_data_digest": digest,
                 "categories": categories,
                 "products": products,
                 "analyses_by_product": analyses_by_product,
@@ -1147,6 +1229,7 @@ class ExternalAlgorithmPlatformService:
                     analyses_by_product=analyses_by_product,
                     provider=PROVIDER_CHANGLIAN,
                     synced_at=synced_at,
+                    master_digest=digest,
                 )
             except Exception:
                 # Keep cache and project algorithm mirror on the same successful
