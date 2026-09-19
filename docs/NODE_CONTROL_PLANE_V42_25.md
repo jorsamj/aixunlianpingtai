@@ -6,6 +6,33 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Online Algorithm Sampling / Feedback v1
+
+2026-09-19，线上抽检与外部回流已接入 reviewed feedback owner，CLOSED。
+
+- feedback durable truth 为 `pending_review / confirmed / dismissed`。
+- 测试发布预测与 external intake 都冻结 algorithm/version/model SHA/input SHA/source evidence。
+- external intake 只 stage review，不直接写 Material/Annotation/Dataset Revision/Training。
+- confirm 后才复用现有 MaterialRepository / AnnotationRepository：
+  - correct → 仅在不覆盖不同正式标注时确认 prediction truth；
+  - false_positive → 必须用户明确确认全标签负样本；
+  - needs_correction → 保留人工修正，不自动把错误预测写入 truth。
+- dismiss 无素材、标注、revision、training 副作用。
+- legacy v42 automatic feedback/iteration write 已退役。
+- 没有新增 Scheduler/Training owner；后续 Dataset Revision、Snapshot、TRAINING 仍走已 CLOSED 的中央链。
+- Frontend 全部使用 v63 reviewed contract，Real Chrome 覆盖提交、复核、忽略与 external intake。
+
+Acceptance HEAD：`7a1ade605b6a55e1fe9027a86dc6756af795456b`。
+
+- Online Feedback Runtime push `35427702717`：Ubuntu contract / Windows contract / Real Chrome 全部 success。
+- Online Feedback Runtime PR `35427704825`：Ubuntu contract / Windows contract / Real Chrome 全部 success。
+- Product code HEAD `05ba04f132e746ac3bd96b05790f0b526acd0236` 的其他共享 workflows 均 success；当时唯一红项是 Online Feedback Runtime，根因仅为 focused CI 缺少 OpenCV 依赖和测试使用了不存在的 MaterialRepository.list()，均已在 acceptance HEAD 修正。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一主线：Feedback → Supplement Data Candidate / Dataset Revision Candidate v1。**
+
+确认后的 feedback 只能先形成冻结候选/补数据草稿，用户再次确认素材范围后才能进入既有 Dataset Revision → Snapshot → Durable TRAINING 链。不得引入自动回炉 owner。
+
 ## 0. 最新关闭：Iteration Decision → Confirmed Action v1
 
 2026-09-19，版本级迭代决策已接到显式用户确认后的正式产品动作，CLOSED。

@@ -3,6 +3,57 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Online Algorithm Sampling / Feedback v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Online sampling, test-publish feedback, and external SaaS/edge sample intake now
+share one reviewed feedback contract. No second training owner or automatic
+retraining path was introduced.
+
+Feedback has only three durable states: `pending_review`, `confirmed`, and
+`dismissed`. Each record is bound to prediction/external sample identity,
+algorithm/version, model SHA256, input SHA256, detections, confidence, engine,
+and source channel evidence.
+
+External intake at
+`/api/v63/projects/{project_id}/online-feedback/external-intake` verifies the
+formal algorithm version and exact model SHA, validates the uploaded image and
+bounded detection evidence, then stages `pending_review` only. It does not
+write MaterialRepository, AnnotationRepository, Dataset Revision, Snapshot, or
+TRAINING.
+
+Explicit user confirmation is required before promotion:
+- `correct` may confirm prediction boxes only when they do not overwrite
+  different existing annotation truth;
+- `false_positive` requires explicit all-active-label negative confirmation;
+- `needs_correction` remains a manual annotation path.
+
+Confirmed samples reuse material by content SHA when possible and otherwise
+enter the existing MaterialRepository. AnnotationRepository remains the sole
+formal annotation owner. Dismissed feedback has no material, annotation,
+revision, or training side effect. Legacy v42 feedback/automatic iteration
+writes are retired.
+
+Frontend Impact Review is complete. Test Publish uses the v63 reviewed flow for
+submit/review/confirm/dismiss/external intake. The legacy audit-connect alias
+routes only to the new reviewed external-intake contract. Real Chrome verifies
+the product flow and absence of automatic training/revision side effects.
+
+Acceptance HEAD: `7a1ade605b6a55e1fe9027a86dc6756af795456b`.
+
+- Online Feedback Runtime push `35427702717`：Ubuntu contract / Windows contract / Real Chrome 全部 success。
+- Online Feedback Runtime PR `35427704825`：Ubuntu contract / Windows contract / Real Chrome 全部 success。
+- Product code HEAD `05ba04f132e746ac3bd96b05790f0b526acd0236` 的其他共享 workflows 均 success；当时唯一红项是 Online Feedback Runtime，根因仅为 focused CI 缺少 OpenCV 依赖和测试使用了不存在的 MaterialRepository.list()，均已在 acceptance HEAD 修正。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**NEXT:** Feedback → Supplement Data Candidate / Dataset Revision Candidate v1.
+Only confirmed feedback may enter a frozen supplement-data candidate set. The
+user must explicitly confirm the selected material scope before the existing
+Dataset Revision → Snapshot → Durable TRAINING chain is invoked. Every later
+revision/snapshot/training lineage must remain traceable back to feedback IDs.
+Rockchip physical-board acceptance remains independently OPEN.
+
 ## Current closure — Iteration Decision → Confirmed Action v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.

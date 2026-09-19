@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`4076f8adb376c24e32db78cf3bd15f83182ebcb4`  
+本轮产品实现基线：`7a1ade605b6a55e1fe9027a86dc6756af795456b`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,70 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Online Algorithm Sampling / Feedback v1
+
+2026-09-19，线上算法抽检、测试发布反馈和外部 SaaS / 边缘样本已经接入统一的 **reviewed feedback intake**，**Online Algorithm Sampling / Feedback v1 CLOSED**。没有新增第二套训练 owner，也没有让反馈直接修改 Dataset Revision 或自动启动训练。
+
+当前正式语义：
+
+- 唯一反馈状态为 `pending_review / confirmed / dismissed`；前端不自行推算状态。
+- 正式测试发布预测可以提交三类反馈：
+  - `correct`
+  - `false_positive`
+  - `needs_correction`
+- 每条反馈冻结并校验：
+  - prediction / external sample identity；
+  - algorithm_id / version_id；
+  - model SHA256；
+  - input SHA256；
+  - 原预测 detections / confidence / engine；
+  - 来源通道、外部来源和外部样本编号。
+- 外部 SaaS / 边缘端通过 `/api/v63/projects/{project_id}/online-feedback/external-intake` 上传图片和预测证据：
+  - 仅接受真实图片；
+  - 大小和 detections JSON 有上限；
+  - 必须绑定当前正式算法版本及完全一致的 model SHA；
+  - 相同外部样本编号的证据变化会 fail closed；
+  - 接入后只进入 `pending_review`，不会直接进入素材库、Dataset Revision 或训练。
+- 用户显式确认后才允许 promotion：
+  - `correct`：预测框与当前 Annotation truth 不冲突时，可作为正式标注；
+  - `false_positive`：必须显式确认“当前启用标签均不存在”，才可形成 confirmed-empty 负样本；
+  - `needs_correction`：只进入人工标注/修正状态，不把错误预测自动写成 truth。
+- 已有素材按 content SHA256 复用；不存在时才进入现有 MaterialRepository；AnnotationRepository 仍是唯一正式标注 owner。
+- 如果素材已有不同正式标注，feedback confirm 不允许覆盖，必须人工处理。
+- confirm 后 MaterialRepository 持久化 bounded `online_feedback_refs`，包含 feedback / prediction / algorithm / version / model / input identity。
+- dismiss 是显式终止动作：
+  - 状态写为 `dismissed`；
+  - 不创建素材；
+  - 不修改 AnnotationRepository；
+  - 不创建 Dataset Revision；
+  - 不创建 TRAINING task。
+- v42 legacy feedback / automatic iteration write 已退役；旧入口不再偷偷写入新的训练迭代 truth。
+- Frontend Impact Review 已完成：
+  - 测试发布页使用 v63 reviewed flow；
+  - 提交反馈、待复核、确认、忽略、外部接入都来自真实后端；
+  - legacy `openAuditConnect42` 只映射到新的 reviewed external intake，不再展示旧 v42 contract；
+  - 页面明确提示“不会自动修改素材、数据集、Dataset Revision 或训练任务”；
+  - Real Chrome 已覆盖正式预测反馈、误检负样本确认、待复核忽略、external intake contract。
+
+最终 acceptance HEAD：`7a1ade605b6a55e1fe9027a86dc6756af795456b`。
+
+最终验收：
+
+- Online Feedback Runtime push `35427702717`：Ubuntu contract / Windows contract / Real Chrome 全部 success。
+- Online Feedback Runtime PR `35427704825`：Ubuntu contract / Windows contract / Real Chrome 全部 success。
+- Product code HEAD `05ba04f132e746ac3bd96b05790f0b526acd0236` 的其他共享 workflows 均 success；当时唯一红项是 Online Feedback Runtime，根因仅为 focused CI 缺少 OpenCV 依赖和测试使用了不存在的 MaterialRepository.list()，均已在 acceptance HEAD 修正。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一软件主线：Feedback → Supplement Data Candidate / Dataset Revision Candidate v1。**
+
+1. 只从 `confirmed` feedback 生成补数据候选，不消费 dismissed / pending_review。
+2. 候选必须冻结 feedback_id / material_id / annotation hash / algorithm version / model SHA / source evidence。
+3. 支持按算法版本、标签、false-positive / correction / weak label 等筛选和批量加入补数据草稿。
+4. 继续复用现有 supplement_data / Dataset Revision / Snapshot owner；用户确认素材范围后才形成新的 Dataset Revision。
+5. 不允许 feedback confirm 后自动创建 Dataset Revision，更不允许自动发起训练。
+6. 生成的新 revision / snapshot / training lineage 必须能反向追溯到具体 feedback IDs。
+7. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 继续独立 OPEN。
 
 # 最新关闭：Iteration Decision → Confirmed Action v1
 
