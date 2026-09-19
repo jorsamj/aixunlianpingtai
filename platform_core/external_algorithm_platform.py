@@ -800,10 +800,22 @@ class ExternalAlgorithmPlatformService:
         auth = record("auth", "应用鉴权", client.probe)
         if auth is not None:
             record("categories", "算法品目", client.category_tree, count_items=True)
-            record("products", "算法产品", client.products, count_items=True)
+            products = record("products", "算法产品", client.products, count_items=True)
             record("compute_platforms", "算力环境", client.compute_platforms, count_items=True)
+            product_rows = extract_items(products) if products is not None else []
+            if product_rows:
+                product_id = _product_id(product_rows[0])
+                if product_id:
+                    record("analysis", "产品分析方式", lambda: client.analyses(product_id), count_items=True)
+            else:
+                steps.append({
+                    "key": "analysis",
+                    "name": "产品分析方式",
+                    "status": "skipped",
+                    "detail": "当前没有可用于连接测试的算法产品",
+                })
         return {
-            "ok": bool(steps) and all(row.get("status") == "success" for row in steps),
+            "ok": bool(steps) and all(row.get("status") in {"success", "skipped"} for row in steps),
             "provider": "changlian",
             "provider_name": "新畅联",
             "base_url": normalize_base_url(payload.base_url if payload is not None else self.repository.config().get("base_url")),
