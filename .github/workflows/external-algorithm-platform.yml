@@ -124,6 +124,13 @@ jobs:
           grep -q "resolve_external_training_analysis" app.py
           grep -q "registerDecorator('external-algorithm-platform'" static/modules/external-algorithm-platform.js
           grep -q "def _client_for_payload" platform_core/external_algorithm_platform.py
+          grep -q "def readiness(self" platform_core/external_algorithm_platform.py
+          grep -q '@router.get("/readiness")' platform_core/external_algorithm_platform.py
+          grep -q '"human_login_required": False' platform_core/external_algorithm_platform.py
+          grep -q '"auth_type": "application_credentials"' platform_core/external_algorithm_platform.py
+          grep -q "test_readiness_blocks_until_saved_synced_and_project_algorithm_exists" tests/unit/test_external_algorithm_platform.py
+          grep -q "联调准备状态" static/modules/external-algorithm-platform.js
+          grep -q "人员网页登录账号不参与机器接口调用" static/modules/external-algorithm-platform.js
           grep -q "def test_connection(payload: Optional\[ExternalPlatformConfigPayload\] = None)" platform_core/external_algorithm_platform.py
           grep -q "interaction-logs" platform_core/external_algorithm_platform.py
           grep -q "IntegrationAuditRepository" platform_core/external_algorithm_platform.py
@@ -178,6 +185,8 @@ jobs:
       - name: Browser permanent guards
         run: |
           grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'data-changlian-readiness="ready"' tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq 'data-external-automation-settings="1"' static/modules/external-algorithm-platform.js
           grep -Fq "产品分析方式" static/modules/external-algorithm-platform.js
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
