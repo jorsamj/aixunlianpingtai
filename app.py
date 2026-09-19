@@ -1688,6 +1688,7 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
         'annotation_conflicts': payload.annotation_conflicts,
     }
     annotation_confirmation = None
+    labels_to_create: List[str] = []
     try:
         if import_format == 'yolo':
             manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
@@ -1704,8 +1705,7 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
                 create_labels=payload.create_labels,
                 labels=project_label_items(project),
             )
-            for code in create:
-                ensure_label(get_project(project_id), code)
+            labels_to_create = list(create)
             annotation_confirmation = {
                 'label_mapping': resolved,
                 'create_labels': create,
@@ -1719,6 +1719,10 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
             policy,
             annotation_confirmation=annotation_confirmation,
         )
+        # Freeze durable intent before any project-label side effect. If label
+        # creation fails, retrying the same confirmation is safe and idempotent.
+        for code in labels_to_create:
+            ensure_label(get_project(project_id), code)
         task = shared_task_repository().resume_after_confirmation(
             task_id,
             required_capabilities=('storage.rescan',),

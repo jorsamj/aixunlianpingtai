@@ -344,6 +344,8 @@ test('YOLO rescan keeps frontend request, review truth, mapping and conflict pol
   await page.locator('#sr61Execution').selectOption('agent');
   await page.locator('#sr61Format').selectOption('yolo');
   await page.locator('#sr61DatasetYaml').fill('datasets/fire/data.yaml');
+  await expect(page.locator('#sr61Policy')).toContainText('YOLO 模式包含对应标注');
+  await expect(page.locator('#sr61AnnotationPolicy')).toContainText('同步已有图片的新增和变化标注');
   await page.getByRole('button',{name:'开始新的扫描'}).click();
 
   await expect.poll(()=>submitted).toEqual({
