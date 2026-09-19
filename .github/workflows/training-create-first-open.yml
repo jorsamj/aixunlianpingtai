@@ -56,6 +56,10 @@ jobs:
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq '/benchmark-reuse' static/app.js
           grep -Fq 'verified fixed benchmark stays aligned from backend availability to training submit' tests/browser/training-create-first-open.spec.mjs
+          test "$(grep -Fc 'async function loadTrainingBenchmarkReuseV1' static/app.js)" = "1"
+          stable_line="$(grep -nF 'Durable v3 exact-material training split UI' static/app.js | head -1 | cut -d: -f1)"
+          benchmark_line="$(grep -nF 'async function loadTrainingBenchmarkReuseV1' static/app.js | head -1 | cut -d: -f1)"
+          test -n "$stable_line" && test -n "$benchmark_line" && test "$benchmark_line" -gt "$stable_line"
           grep -Fq 'window.TrainingSubmitRuntime?.updateReadiness?.();' static/app.js
           grep -Fq '/api/training_options?project_id=' static/modules/training-create-hydration.js
           grep -Fq '/api/system/recommendation' static/modules/training-create-hydration.js

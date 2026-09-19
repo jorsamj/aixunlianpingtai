@@ -4017,31 +4017,6 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const input=root.querySelector('#tr429ExperimentPercent');
     input?.addEventListener('input',()=>{const v=Math.max(1,Math.min(99,Number(input.value)||20));state.train429ExperimentPercent=v;const note=root.querySelector('.train429-split-summary b');if(note)note.textContent=`${train} / ${exp}${unassigned?` · 未分配 ${unassigned}`:''}`});
   }
-  window.toggleTrainBenchmarkReuseV1=enabled=>{
-    const benchmark=benchmarkReuseState();
-    if(enabled&&!benchmark?.available)return toast(benchmark?.reason||'当前没有可复用的固定评测基准');
-    window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:Boolean(enabled),...(enabled?{splitMode:'random_test_from_training_pool',testMaterialIds:[]}:{})});
-    renderSplit();
-  };
-  async function loadTrainingBenchmarkReuseV1(aid){
-    const algorithmId=String(aid||'');
-    state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:true,load_error:false,reason:''};
-    window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
-    renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
-    try{
-      const value=await api(`/api/v12/projects/${pid()}/algorithms/${encodeURIComponent(algorithmId)}/benchmark-reuse`);
-      const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
-      if(activeAlgorithmId!==algorithmId)return;
-      state.trainingBenchmarkReuse={...value,algorithm_id:algorithmId,loading:false,load_error:false};
-      if(value?.available)window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:true,splitMode:'random_test_from_training_pool',testMaterialIds:[]});
-    }catch(error){
-      const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
-      if(activeAlgorithmId!==algorithmId)return;
-      state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:false,load_error:true,reason:String(error?.message||error||'固定评测基准读取失败')};
-      window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
-    }
-    renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
-  }
   window.startAlgorithmTraining429=async function(aid){
     state.train429ExperimentPercent=Number(state.train429ExperimentPercent||20);
     const result=baseStartTraining415?.(aid);
@@ -4301,6 +4276,31 @@ window.installUsability417?.();
     const splitMode=mode==='independent_test_set'?'independent_test_set':'random_test_from_training_pool';
     window.TrainingDraftRuntime.update({splitMode,benchmarkReuseEnabled:false,...(splitMode==='independent_test_set'?{}:{testMaterialIds:[]})});renderSplit()
   };
+  window.toggleTrainBenchmarkReuseV1=enabled=>{
+    const benchmark=benchmarkReuseState();
+    if(enabled&&!benchmark?.available)return toast(benchmark?.reason||'当前没有可复用的固定评测基准');
+    window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:Boolean(enabled),...(enabled?{splitMode:'random_test_from_training_pool',testMaterialIds:[]}:{})});
+    renderSplit();
+  };
+  async function loadTrainingBenchmarkReuseV1(aid){
+    const algorithmId=String(aid||'');
+    state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:true,load_error:false,reason:''};
+    window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
+    renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
+    try{
+      const value=await api(`/api/v12/projects/${pid()}/algorithms/${encodeURIComponent(algorithmId)}/benchmark-reuse`);
+      const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
+      if(activeAlgorithmId!==algorithmId)return;
+      state.trainingBenchmarkReuse={...value,algorithm_id:algorithmId,loading:false,load_error:false};
+      if(value?.available)window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:true,splitMode:'random_test_from_training_pool',testMaterialIds:[]});
+    }catch(error){
+      const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
+      if(activeAlgorithmId!==algorithmId)return;
+      state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:false,load_error:true,reason:String(error?.message||error||'固定评测基准读取失败')};
+      window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
+    }
+    renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
+  }
   window.startAlgorithmTraining429=async function(aid){
     if(!state.uiReady&&window.__v53InitPromise)await window.__v53InitPromise;
     if(!(state.targets||[]).some(target=>target.status==='ready')){
