@@ -5861,13 +5861,24 @@ def validate_train_request(payload: TrainReq):
             raise HTTPException(status_code=400, detail=f"{name} 必须在 0~1 之间")
     if int(payload.eval_interval) < 0 or int(payload.val_max_samples) < 0:
         raise HTTPException(status_code=400, detail="阶段检查轮次和试验集抽查数量不能小于 0")
+    metric = str(payload.eval_metric or "map50").strip().lower()
+    if metric not in {"map50", "precision", "recall"}:
+        raise HTTPException(status_code=400, detail="目标指标只支持：mAP50 / Precision / Recall")
+    continue_threshold = float(payload.continue_threshold or 0)
+    stop_threshold = float(payload.stop_threshold or 0)
+    if not (0 <= continue_threshold <= 1):
+        raise HTTPException(status_code=400, detail="优化参考线必须在 0~1 之间")
+    if not (0 <= stop_threshold <= 1):
+        raise HTTPException(status_code=400, detail="目标正确率必须在 0~1 之间（例如 90% = 0.9）")
+    if stop_threshold > 0 and int(payload.eval_interval) <= 0:
+        raise HTTPException(status_code=400, detail="设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0")
     if payload.experiment_percent is not None and not (0 <= float(payload.experiment_percent) <= 100):
         raise HTTPException(status_code=400, detail="试验集比例必须在 0~100 之间")
     if payload.random_experiment_split and payload.selected_image_ids and len(set(payload.selected_image_ids)) >= 2:
         if not (0 < float(payload.experiment_percent) < 100):
             raise HTTPException(status_code=400, detail="启用随机试验集时，比例必须大于 0 且小于 100")
-    if payload.continue_threshold and payload.stop_threshold and float(payload.continue_threshold) >= float(payload.stop_threshold):
-        raise HTTPException(status_code=400, detail="继续训练下限必须小于提前完成阈值")
+    if continue_threshold and stop_threshold and continue_threshold >= stop_threshold:
+        raise HTTPException(status_code=400, detail="优化参考线必须小于目标正确率")
     # v42.8 起训练阶段不再支持 AI 中途介入；质量门禁完全由试验集 Ground Truth 指标决定。
     payload.ai_intervention_enabled = False
     payload.ai_intervention_epochs = []
