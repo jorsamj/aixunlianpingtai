@@ -2,7 +2,13 @@ import json
 from pathlib import Path
 
 from platform_core.algorithms import list_algorithms, save_algorithms
-from platform_core.external_algorithm_platform import ExternalPlatformRepository
+from platform_core.external_algorithm_platform import (
+    EndpointPayload,
+    ExternalAlgorithmPlatformService,
+    ExternalPlatformConfigPayload,
+    ExternalPlatformRepository,
+    resolve_external_training_analysis,
+)
 from platform_core.external_algorithm_publish import (
     ExternalAlgorithmPublishService,
     ExternalPublishConfigPayload,
@@ -59,6 +65,53 @@ class FakePublishingClient:
         row = {"weightId": f"w-{type(self).weight_creates}", **dict(payload)}
         type(self).weights.append(row)
         return {"code": 200, "data": {"weightId": row["weightId"]}}
+
+
+class FakeChangLianSyncClient:
+    def __init__(self, **_kwargs):
+        pass
+
+    def category_tree(self):
+        return {
+            "code": 200,
+            "data": [{
+                "categoryId": "category-root",
+                "categoryName": "园区安全",
+                "children": [{
+                    "categoryId": "category-smoking",
+                    "categoryName": "抽烟行为",
+                }],
+            }],
+        }
+
+    def products(self):
+        return {
+            "code": 200,
+            "data": [{
+                "productId": "product-live-1",
+                "productName": "抽烟检测",
+                "categoryId": "category-smoking",
+            }],
+        }
+
+    def analyses(self, product_id):
+        assert product_id == "product-live-1"
+        return {
+            "code": 200,
+            "data": [
+                {"analysisId": "analysis-day", "analysisName": "白天视觉分析"},
+                {"analysisId": "analysis-night", "analysisName": "夜间视觉分析"},
+            ],
+        }
+
+    def compute_platforms(self):
+        return {
+            "code": 200,
+            "data": [{
+                "computePlatformId": "cp-rk",
+                "computePlatformName": "瑞芯微 RKNN",
+            }],
+        }
 
 
 class RecoveringPublishingClient(FakePublishingClient):
@@ -161,6 +214,7 @@ def _seed_conversion(
     job_id="convert-1",
     chip="rk3568",
     content=b"converted-rknn",
+    algorithm_id="a1",
 ):
     job_root = _project_dir(root, project_id) / "deployment" / "jobs" / job_id
     output = job_root / "outputs" / "model.rknn"
@@ -170,8 +224,8 @@ def _seed_conversion(
         "id": job_id,
         "status": "done",
         "target": target,
-        "source_id": f"version::a1::{version_id}",
-        "source_meta": {"algorithm_id": "a1", "version_id": version_id},
+        "source_id": f"version::{algorithm_id}::{version_id}",
+        "source_meta": {"algorithm_id": algorithm_id, "version_id": version_id},
         "params": {"chip": chip},
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
@@ -198,6 +252,89 @@ def _service(root: Path, memory: MemorySecretStore, client_factory=FakePublishin
         },
     ))
     return service
+
+
+def test_synced_changlian_identity_survives_training_choice_conversion_and_publish(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+
+    platform = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=FakeChangLianSyncClient,
+    )
+    platform.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+
+    algorithms_path = _algorithms_file(tmp_path, "p1")
+    save_algorithms(algorithms_path, [])
+    synced = platform.sync(project_id="p1", algorithms_path=algorithms_path)
+    assert synced["ok"] is True
+
+    algorithms = list_algorithms(algorithms_path)
+    assert len(algorithms) == 1
+    algorithm = algorithms[0]
+    assert algorithm["external_product_id"] == "product-live-1"
+    assert algorithm["external_category_id"] == "category-smoking"
+    assert set(algorithm["external_analysis_ids"]) == {"analysis-day", "analysis-night"}
+
+    selected_analysis = resolve_external_training_analysis(algorithm, "analysis-night")
+    assert selected_analysis == "analysis-night"
+
+    model = _project_dir(tmp_path, "p1") / "algorithm_versions" / algorithm["id"] / "v-live" / "best.pt"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"trained-model")
+    algorithm["versions"] = [{
+        "id": "v-live",
+        "version_name": "20260919230000",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "stored_path": str(model),
+        "model_name": model.name,
+        "external_analysis_id": selected_analysis,
+    }]
+    algorithm["current_version_id"] = "v-live"
+    save_algorithms(algorithms_path, algorithms)
+
+    _seed_conversion(
+        tmp_path,
+        project_id="p1",
+        version_id="v-live",
+        target="rockchip",
+        job_id="convert-rk3576-live",
+        chip="rk3576",
+        content=b"rk3576-live-model",
+        algorithm_id=algorithm["id"],
+    )
+
+    publish = _service(tmp_path, memory)
+    result = publish.publish(
+        project_id="p1",
+        algorithm_id=algorithm["id"],
+        version_id="v-live",
+    )
+
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert result["publication"]["external_product_id"] == "product-live-1"
+    assert result["publication"]["external_analysis_id"] == "analysis-night"
+    assert FakePublishingClient.last_version_payload == {
+        "versionName": "20260919230000",
+        "versionNo": "20260919230000",
+        "analysisId": "analysis-night",
+    }
+    assert FakePublishingClient.last_weight_payload["algoVersionId"] == "av-1"
+    assert FakePublishingClient.last_weight_payload["computePlatformId"] == "cp-rk"
+    assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3576"
+    assert FakePublishingClient.last_weight_payload["fileName"] == "model.rknn"
+    assert FakePublishingClient.last_weight_payload["filePath"].startswith(
+        "https://platform.example/api/v64/model-artifacts/"
+    )
 
 
 def test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage(tmp_path: Path):
