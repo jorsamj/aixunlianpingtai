@@ -282,7 +282,7 @@ class DetectionDatasetScanner:
             chunk = items[offset:offset + BATCH_SIZE]
             existing = self.store.existing_candidate_keys(str(item.key) for item in chunk)
             rows = [
-                self._inspect(item, set())
+                self._inspect(str(item.key), set())
                 for item in chunk
                 if str(item.key) not in existing
             ]
