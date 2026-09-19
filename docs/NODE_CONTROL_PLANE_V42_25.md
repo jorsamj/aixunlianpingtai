@@ -6,6 +6,36 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Feedback Adoption → Iteration Outcome / Effectiveness v1
+
+2026-09-19，feedback adoption 已形成 Algorithm Version persisted effectiveness truth，CLOSED。
+
+控制面边界：
+
+- 不新增 durable TaskKind / Scheduler owner；effectiveness 是版本归档阶段的派生长期 truth。
+- 输入严格限定为 persisted source/new Evaluation + new training lineage supplement provenance。
+- source version 使用 `training_lineage.base.version_id`，必须与 supplement provenance source version 一致，防止 provenance 自证。
+- deterministic outcome 保存 candidate_set/adoption/action/source-new evaluation identities、总体 metrics delta 和 source weak-label effects。
+- Evaluation 不完整或失败时保存 `not_comparable`，不伪造 improvement。
+- `descriptive_only=true`、`automatic_execution=false`，不会从效果结果直接 enqueue TRAINING。
+- Algorithm SQL Store 保持唯一 Algorithm Version owner；新字段 SQL round-trip 已覆盖。
+- 前端版本“独立评测”只消费 persisted outcome，不从 raw feedback / draft / job 推导效果。
+- UI 同屏展示 adopted feedback count、mAP50/Recall delta、弱标签变化和 Outcome/Candidate Set/Adoption provenance。
+
+Acceptance code/test HEAD：`c26b7449b06697fcac52979e9bb8483138ebbbab`。
+
+- Current-head shared regression at `c26b7449b06697fcac52979e9bb8483138ebbbab`: 17 workflows / 17 success / 0 failure / 0 pending.
+- Algorithm SQL Store `35432975461`: contracts + Real Chrome lineage success. This run covers the Effectiveness implementation code; later commits only fixed unrelated browser test project setup.
+- Online Feedback Runtime push `35433393053`: Ubuntu / Windows / Real Chrome success.
+- Online Feedback Runtime PR `35433395739`: Ubuntu / Windows / Real Chrome success.
+- Remote Training `35433395670`, Node Agent `35433395713`, Material Import `35433395706`, Cleaning `35433395720`, Conversion `35433395702`, RKNN `35433395700`, Portable Deployment `35433395671`, Central Assignment `35433395650`, Task Runtime Truth `35433395684` all success.
+- `VERSION.txt = 42.24.0` unchanged.
+
+**NEXT：Evaluation Benchmark Scope v1。**
+利用 Snapshot 的 test image IDs、content SHA256、annotation hash 冻结 benchmark identity；严格 before/after comparison 必须绑定同一 benchmark truth。当前 v1 仍保持描述性，不宣称因果。
+
+Rockchip physical-board acceptance 继续独立 OPEN。
+
 ## 0. 最新关闭：Supplement Candidate Set → Dataset Revision / Snapshot / Training Lineage v1
 
 2026-09-19，Feedback Candidate 已进入现有 Durable TRAINING lineage，CLOSED。

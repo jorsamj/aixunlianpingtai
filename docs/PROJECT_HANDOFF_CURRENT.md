@@ -7,11 +7,50 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`49becaf398403b76e4209ed35ca18aaa8ef860a1`  
+本轮产品实现基线：`c26b7449b06697fcac52979e9bb8483138ebbbab`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
 ---
+
+# 最新关闭：Feedback Adoption → Iteration Outcome / Effectiveness v1
+
+2026-09-19，已把“实际采用了哪些 feedback”与新版本独立 Evaluation 的结果连接成 Algorithm Version 长期 truth，**Effectiveness v1 CLOSED**。
+
+当前 CLOSED 边界：
+
+- 不新增 task/database owner。效果结果继续由 Algorithm Version 持久化，字段为 `feedback_adoption_outcome`。
+- 输入只来自：
+  1. source Algorithm Version persisted `evaluation`；
+  2. new Algorithm Version persisted `evaluation`；
+  3. new version `training_lineage.supplement_provenance`。
+- 不读取前端临时 draft，不从 online feedback 列表重新猜 adoption，也不重新计算 Candidate Set。
+- source version 不是从 supplement provenance 自证：必须来自真实 `training_lineage.base.version_id`，再与 provenance `version_id` fail-closed 对账。
+- outcome 持久化 source/new version、candidate_set_id、adoption_id、action_id、source/new evaluation_id、采用 feedback 数量与 feedback IDs。
+- 总体效果保存 Precision / Recall / mAP50 / mAP50-95 的 before / after / delta。
+- 弱标签效果以 **source evaluation 的 persisted weak_labels** 为基线，保存逐标签 Precision / Recall / mAP50 / mAP50-95、FP/FN、弱项信号变化与 `improved / declined / unchanged`。
+- 如果 source/new evaluation 不存在、未成功或无法形成完整证据，则 outcome 保存为 `not_comparable` 和 reason_codes，而不是伪造改善结论。
+- outcome 明确 `descriptive_only=true`、`automatic_execution=false`；**不会自动创建下一轮训练、Candidate Set、Dataset Revision 或任务**。
+- SQL Algorithm Version round-trip 已覆盖新字段，历史版本没有该字段时仍兼容。
+- Frontend Impact Review 已完成：现有“独立评测”弹窗直接读取 persisted `feedback_adoption_outcome`，展示“补数据效果”、采用反馈数量、总体 delta、原弱标签变化和完整 provenance；页面不自己计算效果。
+- 前端明确提示：“仅描述本次采用反馈后的评测变化，不会自动触发下一轮训练。”
+- Real Chrome 已验证版本 persisted truth → 独立评测弹窗，无 job refetch、无自动训练副作用。
+- 共享 Online Feedback Real Chrome 中发现的两个 project-state race 已通过显式 pin 测试项目 truth 修复；没有为测试修改生产行为。
+
+Acceptance code/test HEAD：`c26b7449b06697fcac52979e9bb8483138ebbbab`。
+
+- Current-head shared regression at `c26b7449b06697fcac52979e9bb8483138ebbbab`: 17 workflows / 17 success / 0 failure / 0 pending.
+- Algorithm SQL Store `35432975461`: contracts + Real Chrome lineage success. This run covers the Effectiveness implementation code; later commits only fixed unrelated browser test project setup.
+- Online Feedback Runtime push `35433393053`: Ubuntu / Windows / Real Chrome success.
+- Online Feedback Runtime PR `35433395739`: Ubuntu / Windows / Real Chrome success.
+- Remote Training `35433395670`, Node Agent `35433395713`, Material Import `35433395706`, Cleaning `35433395720`, Conversion `35433395702`, RKNN `35433395700`, Portable Deployment `35433395671`, Central Assignment `35433395650`, Task Runtime Truth `35433395684` all success.
+- `VERSION.txt = 42.24.0` unchanged.
+
+**NEXT：Evaluation Benchmark Scope v1。**
+
+当前 Effectiveness v1 是**描述性** before/after：它比较两个版本各自已持久化的独立 Evaluation，但不宣称指标变化由补数据单独造成。下一阶段应基于 Snapshot 已有 `test_image_ids + content_sha256 + annotation_hash` 冻结可复用的 Benchmark Scope identity；只有同一 benchmark / 同一 ground-truth truth 才标记为严格 comparable。这个阶段仍只增强评测严谨性，不自动触发下一轮训练。
+
+Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 继续独立 OPEN。
 
 # 0. 接手第一分钟必须执行
 

@@ -3,6 +3,58 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Feedback Adoption -> Iteration Outcome / Effectiveness v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+A feedback-backed training adoption now produces persisted, version-owned
+effectiveness truth without introducing a new task or database owner.
+
+The new Algorithm Version field is `feedback_adoption_outcome`. It is derived
+only from the source version's persisted independent Evaluation, the new
+version's persisted Evaluation, and the new version's
+`training_lineage.supplement_provenance`. It does not reread transient UI
+drafts, rescan feedback rows, or rebuild a Candidate Set.
+
+Source identity is fail-closed: the source version comes from the real training
+lineage base version and must match the supplement provenance source version.
+The deterministic outcome records source/new version identity,
+candidate_set_id, adoption_id, action_id, source/new evaluation IDs, adopted
+feedback identity, overall Precision/Recall/mAP50/mAP50-95 before/after deltas,
+and per-source-weak-label metric / FP / FN effects.
+
+If the required persisted evaluations are missing or unsuccessful, the outcome
+is `not_comparable` with reason codes rather than an invented improvement.
+Every outcome is `descriptive_only=true` and
+`automatic_execution=false`; it never creates another training task.
+
+Frontend Impact Review is complete. The existing Algorithm Version independent
+Evaluation modal reads the persisted outcome directly and shows “补数据效果”,
+adopted feedback count, overall metric deltas, source weak-label changes and
+Outcome/Candidate Set/Adoption provenance. The browser does not calculate the
+effect itself and explicitly says that the report will not automatically start
+another training iteration.
+
+Acceptance code/test HEAD:
+`c26b7449b06697fcac52979e9bb8483138ebbbab`.
+
+- Current-head shared regression at `c26b7449b06697fcac52979e9bb8483138ebbbab`: 17 workflows / 17 success / 0 failure / 0 pending.
+- Algorithm SQL Store `35432975461`: contracts + Real Chrome lineage success. This run covers the Effectiveness implementation code; later commits only fixed unrelated browser test project setup.
+- Online Feedback Runtime push `35433393053`: Ubuntu / Windows / Real Chrome success.
+- Online Feedback Runtime PR `35433395739`: Ubuntu / Windows / Real Chrome success.
+- Remote Training `35433395670`, Node Agent `35433395713`, Material Import `35433395706`, Cleaning `35433395720`, Conversion `35433395702`, RKNN `35433395700`, Portable Deployment `35433395671`, Central Assignment `35433395650`, Task Runtime Truth `35433395684` all success.
+- `VERSION.txt = 42.24.0` unchanged.
+
+**NEXT / OPEN:** Evaluation Benchmark Scope v1. Snapshot v3 already persists
+test_image_ids plus per-image content SHA256 and annotation hash. The next
+evaluation-hardening phase should freeze a reusable benchmark identity from that
+truth so that strict before/after comparability requires the same test cohort
+and ground truth. Effectiveness v1 remains a descriptive comparison and does
+not claim causal attribution.
+
+Rockchip real RK3568/RK3576 physical-board acceptance remains independently
+OPEN; software CI does not substitute for field NPU acceptance.
+
 ## Current closure — Supplement Candidate Set -> Revision / Snapshot / Training Lineage v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
