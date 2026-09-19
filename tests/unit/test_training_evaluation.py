@@ -130,3 +130,79 @@ def test_evaluation_truth_normalizes_legacy_passed_status():
     )
     assert value["status"] == "succeeded"
     assert value["metrics"]["metrics/mAP50(B)"] == 0.8
+
+
+def test_iteration_decision_reuses_training_gate_and_prioritizes_weak_label_data():
+    truth = evaluation.build_evaluation_truth(
+        {
+            "status": "succeeded",
+            "metrics": {"metrics/mAP50(B)": 0.78},
+            "per_class": [{
+                "class_id": 0, "label": "smoke", "precision": 0.8, "recall": 0.6,
+                "map50": 0.7, "false_positive": 2, "false_negative": 3,
+            }],
+            "weak_labels": ["smoke"],
+            "error_samples": [{"image": "a.jpg", "fp_count": 2, "fn_count": 3}],
+        },
+        task_id="train-decision-1",
+    )
+    decision = evaluation.build_iteration_decision(
+        truth,
+        quality_gate={"metric": "map50", "continue_threshold": 0.65, "stop_threshold": 0.90},
+    )
+    assert decision["decision"] == "needs_data"
+    assert decision["quality_gate"]["metric_key"] == "metrics/mAP50(B)"
+    assert decision["quality_gate"]["metric_value"] == 0.78
+    assert decision["weak_labels"] == ["smoke"]
+    assert decision["signals"]["false_positive"] == 2
+    assert decision["signals"]["false_negative"] == 3
+    assert "supplement_weak_label_data" in decision["recommended_actions"]
+    assert decision["automatic_execution"] is False
+    assert decision["requires_confirmation"] is True
+
+
+def test_iteration_decision_ready_continue_and_manual_review_are_explicit():
+    ready = evaluation.build_iteration_decision(
+        evaluation.build_evaluation_truth(
+            {"status": "succeeded", "metrics": {"metrics/mAP50(B)": 0.92}},
+            task_id="train-ready",
+        ),
+        quality_gate={"metric": "map50", "continue_threshold": 0.70, "stop_threshold": 0.90},
+    )
+    assert ready["decision"] == "ready_for_business_validation"
+
+    ongoing = evaluation.build_iteration_decision(
+        evaluation.build_evaluation_truth(
+            {"status": "succeeded", "metrics": {"metrics/mAP50(B)": 0.82}},
+            task_id="train-ongoing",
+        ),
+        quality_gate={"metric": "map50", "continue_threshold": 0.70, "stop_threshold": 0.90},
+    )
+    assert ongoing["decision"] == "continue_training"
+    assert ongoing["recommended_actions"] == ["continue_from_current_version"]
+
+    no_gate = evaluation.build_iteration_decision(
+        evaluation.build_evaluation_truth(
+            {"status": "succeeded", "metrics": {"metrics/mAP50(B)": 0.82}},
+            task_id="train-no-gate",
+        ),
+    )
+    assert no_gate["decision"] == "review_required"
+    assert no_gate["reason_codes"] == ["stop_threshold_not_configured"]
+
+
+def test_iteration_decision_is_deterministic_for_same_version_truth():
+    truth = evaluation.build_evaluation_truth(
+        {"status": "succeeded", "metrics": {"metrics/recall(B)": 0.81}},
+        task_id="train-deterministic",
+    )
+    first = evaluation.build_iteration_decision(
+        truth,
+        quality_gate={"metric": "recall", "continue_threshold": 0.7, "stop_threshold": 0.9},
+    )
+    second = evaluation.build_iteration_decision(
+        truth,
+        quality_gate={"metric": "recall", "continue_threshold": 0.7, "stop_threshold": 0.9},
+    )
+    assert first["decision_id"] == second["decision_id"]
+    assert first["decision"] == "continue_training"

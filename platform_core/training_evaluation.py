@@ -12,12 +12,21 @@ from PIL import Image
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 _DEFAULT_IOUS = tuple(round(0.5 + index * 0.05, 2) for index in range(10))
 EVALUATION_SCHEMA_VERSION = 1
+ITERATION_DECISION_SCHEMA_VERSION = 1
 _EVALUATION_METRICS = (
     "metrics/precision(B)",
     "metrics/recall(B)",
     "metrics/mAP50(B)",
     "metrics/mAP50-95(B)",
 )
+_DECISION_METRIC_KEYS = {
+    "map50": "metrics/mAP50(B)",
+    "map50-95": "metrics/mAP50-95(B)",
+    "map50_95": "metrics/mAP50-95(B)",
+    "map5095": "metrics/mAP50-95(B)",
+    "precision": "metrics/precision(B)",
+    "recall": "metrics/recall(B)",
+}
 
 
 def _sha256_identity(value: Any, field: str) -> str:
@@ -394,3 +403,106 @@ def build_evaluation_truth(
         "finished_at": str(finished_at or "").strip(),
         "failure_reason": "evaluation_failed" if status == "failed" else "",
     }
+
+
+def build_iteration_decision(
+    evaluation: Mapping[str, Any] | None,
+    *,
+    quality_gate: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one advisory, version-owned next-step decision from evaluation truth.
+
+    This function never schedules work. It snapshots the existing training
+    quality-gate semantics so frontend and backend cannot infer different
+    conclusions from the same persisted evaluation.
+    """
+    value = dict(evaluation) if isinstance(evaluation, Mapping) else {}
+    gate = dict(quality_gate) if isinstance(quality_gate, Mapping) else {}
+    evaluation_status = str(value.get("status") or "not_requested").strip().lower()
+    metric_name = str(gate.get("metric") or "map50").strip().lower().replace(" ", "")
+    metric_key = _DECISION_METRIC_KEYS.get(metric_name)
+    metrics = value.get("metrics") if isinstance(value.get("metrics"), Mapping) else {}
+    metric_value = None
+    if metric_key and metrics.get(metric_key) is not None:
+        metric_value = round(_finite(metrics.get(metric_key)), 6)
+
+    continue_threshold = max(0.0, _finite(gate.get("continue_threshold")))
+    stop_threshold = max(0.0, _finite(gate.get("stop_threshold")))
+    weak_labels = sorted({
+        str(label)[:1000]
+        for label in list(value.get("weak_labels") or [])
+        if str(label or "").strip()
+    })
+    per_class = [row for row in list(value.get("per_class") or []) if isinstance(row, Mapping)]
+    total_fp = sum(max(0, int(row.get("false_positive") or 0)) for row in per_class)
+    total_fn = sum(max(0, int(row.get("false_negative") or 0)) for row in per_class)
+    error_sample_count = len([
+        row for row in list(value.get("error_samples") or [])[:200]
+        if isinstance(row, Mapping)
+    ])
+
+    reasons: list[str] = []
+    actions: list[str] = []
+    if evaluation_status == "not_requested":
+        decision = "review_required"
+        reasons.append("evaluation_not_requested")
+        actions.append("configure_independent_test_split")
+    elif evaluation_status == "failed":
+        decision = "review_required"
+        reasons.append("evaluation_failed")
+        actions.append("inspect_evaluation_failure")
+    elif metric_key is None or metric_value is None:
+        decision = "review_required"
+        reasons.append("decision_metric_unavailable")
+        actions.append("review_evaluation_configuration")
+    elif weak_labels:
+        decision = "needs_data"
+        reasons.append("weak_labels_present")
+        actions.extend(("supplement_weak_label_data", "review_fp_fn_samples"))
+        if continue_threshold > 0 and metric_value < continue_threshold:
+            reasons.append("metric_below_continue_threshold")
+    elif continue_threshold > 0 and metric_value < continue_threshold:
+        decision = "needs_data"
+        reasons.append("metric_below_continue_threshold")
+        actions.extend(("supplement_training_data", "review_fp_fn_samples"))
+    elif stop_threshold > 0 and metric_value >= stop_threshold:
+        decision = "ready_for_business_validation"
+        reasons.append("stop_threshold_reached")
+        actions.append("proceed_to_business_validation")
+    elif stop_threshold > 0:
+        decision = "continue_training"
+        reasons.append("metric_below_stop_threshold")
+        actions.append("continue_from_current_version")
+    else:
+        decision = "review_required"
+        reasons.append("stop_threshold_not_configured")
+        actions.append("configure_quality_gate")
+
+    if (total_fp or total_fn) and "review_fp_fn_samples" not in actions:
+        actions.append("review_fp_fn_samples")
+    identity = {
+        "schema_version": ITERATION_DECISION_SCHEMA_VERSION,
+        "evaluation_id": str(value.get("evaluation_id") or ""),
+        "decision": decision,
+        "quality_gate": {
+            "metric": metric_name,
+            "metric_key": metric_key or "",
+            "metric_value": metric_value,
+            "continue_threshold": round(continue_threshold, 6),
+            "stop_threshold": round(stop_threshold, 6),
+        },
+        "weak_labels": weak_labels,
+        "signals": {
+            "false_positive": total_fp,
+            "false_negative": total_fn,
+            "error_sample_count": error_sample_count,
+        },
+        "reason_codes": reasons,
+        "recommended_actions": list(dict.fromkeys(actions)),
+        "automatic_execution": False,
+        "requires_confirmation": True,
+    }
+    decision_id = hashlib.sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    return {**identity, "decision_id": decision_id}

@@ -8603,7 +8603,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         completion_reason=job.get("completion_reason"),
         finished_at=job.get("finished_at") or now_iso(),
     )
-    from platform_core.training_evaluation import build_evaluation_truth
+    from platform_core.training_evaluation import build_evaluation_truth, build_iteration_decision
     training_report = job.get("training_report")
     training_report = training_report if isinstance(training_report, dict) else {}
     evaluation = build_evaluation_truth(
@@ -8613,6 +8613,10 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         dataset_revision_id=dataset_revision_id,
         model_sha256=model_sha256,
         finished_at=job.get("finished_at") or now_iso(),
+    )
+    iteration_decision = build_iteration_decision(
+        evaluation,
+        quality_gate=job.get("quality_gate"),
     )
     version={
         "id":version_id,"version_no":len(algo.get("versions") or [])+1,"version_name":version_name,
@@ -8627,6 +8631,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "dataset_revision_id": dataset_revision_id,
         "training_lineage": training_lineage,
         "evaluation": evaluation,
+        "iteration_decision": iteration_decision,
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
         "base_version_id": str(job.get("base_version_id") or "").strip() or None,
