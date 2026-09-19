@@ -104,7 +104,31 @@ def build_confirmed_iteration_action(*, algorithm_id: str, version: Mapping[str,
         result["validation_entry"] = {
             "algorithm_id": source["algorithm_id"],
             "version_id": source["version_id"],
+            "decision_id": source["decision_id"],
+            "evaluation_id": source["evaluation_id"],
+            "dataset_revision_id": source["dataset_revision_id"],
+            "snapshot_id": source["snapshot_id"],
             "model_sha256": _sha(evaluation.get("model_sha256"), "model_sha256", optional=True),
+        }
+    elif action == "manual_review":
+        result["review_entry"] = {
+            "algorithm_id": source["algorithm_id"],
+            "version_id": source["version_id"],
+            "decision_id": source["decision_id"],
+            "evaluation_id": source["evaluation_id"],
+            "dataset_revision_id": source["dataset_revision_id"],
+            "snapshot_id": source["snapshot_id"],
+            "weak_labels": weak_labels,
+            "reason_codes": [
+                _text(value, 200)
+                for value in list(decision.get("reason_codes") or [])[:100]
+                if _text(value, 200)
+            ],
+            "recommended_actions": [
+                _text(value, 200)
+                for value in list(decision.get("recommended_actions") or [])[:100]
+                if _text(value, 200)
+            ],
         }
     return result
 

@@ -135,6 +135,9 @@ jobs:
           grep -Fq '迭代决策' static/app.js
           grep -Fq '系统仅给出建议，不会自动发起下一次训练' static/app.js
           grep -Fq 'confirmIterationAction429' static/app.js
+          grep -Fq 'resumeConfirmedIterationAction429' static/app.js
+          grep -Fq 'iteration-action-confirmed429' static/app.js
+          grep -Fq 'review_entry' platform_core/iteration_actions.py
           grep -Fq 'payload.iteration_action' static/modules/training-submit.js
           grep -Fq 'stable algorithm version renderer exposes persisted training lineage action' tests/frontend/algorithm-lineage-stable-renderer.test.mjs
           grep -Fq 'algorithm version exposes persisted training lineage without job refetch' tests/browser/algorithm-list-performance.spec.mjs

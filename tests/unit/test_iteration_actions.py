@@ -37,3 +37,38 @@ def test_confirmed_action_rejects_stale_or_wrong_action():
         build_confirmed_iteration_action(algorithm_id="a1",version=version,requested_action="continue_training",decision_id="b"*64,confirmed_at="now")
     with pytest.raises(ValueError,match="does not match"):
         build_confirmed_iteration_action(algorithm_id="a1",version=version,requested_action="supplement_data",decision_id="c"*64,confirmed_at="now")
+
+
+def test_manual_review_action_carries_durable_product_entry():
+    version, action = _version("review_required")
+    version["iteration_decision"]["reason_codes"] = ["evaluation_missing", "manual_check"]
+    version["iteration_decision"]["recommended_actions"] = [
+        "configure_independent_test_split", "review_evaluation_configuration",
+    ]
+    result = build_confirmed_iteration_action(
+        algorithm_id="a1", version=version, requested_action=action,
+        decision_id="c" * 64, confirmed_at="now",
+    )
+    assert result["action"] == "manual_review"
+    assert result["review_entry"]["decision_id"] == "c" * 64
+    assert result["review_entry"]["evaluation_id"] == "e" * 64
+    assert result["review_entry"]["dataset_revision_id"] == "d" * 64
+    assert result["review_entry"]["snapshot_id"] == "snapshot-v3"
+    assert result["review_entry"]["reason_codes"] == ["evaluation_missing", "manual_check"]
+    assert result["review_entry"]["recommended_actions"] == [
+        "configure_independent_test_split", "review_evaluation_configuration",
+    ]
+
+
+def test_business_validation_entry_carries_frozen_source_identity():
+    version, action = _version("ready_for_business_validation")
+    result = build_confirmed_iteration_action(
+        algorithm_id="a1", version=version, requested_action=action,
+        decision_id="c" * 64, confirmed_at="now",
+    )
+    entry = result["validation_entry"]
+    assert entry["decision_id"] == "c" * 64
+    assert entry["evaluation_id"] == "e" * 64
+    assert entry["dataset_revision_id"] == "d" * 64
+    assert entry["snapshot_id"] == "snapshot-v3"
+    assert entry["model_sha256"] == "a" * 64

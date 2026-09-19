@@ -478,18 +478,20 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(card.getByRole('button',{name:'训练溯源'})).toBeVisible();
 
   let confirmedActionBody=null;
+  const persistedAction={
+    schema_version:1,action_id:'f'.repeat(64),action:'supplement_data',status:'confirmed',
+    source:{decision_id:'e'.repeat(64),evaluation_id:'d'.repeat(64),algorithm_id:'algo-lineage-1',
+      version_id:'version-lineage-1',dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
+    weak_labels:['smoke'],automatic_execution:false,requires_user_submit:false,confirmed_at:'2026-09-19T05:10:00Z',
+    data_draft:{weak_labels:['smoke'],problem_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3}],
+      dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
+  };
   await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-lineage-1/versions/version-lineage-1/iteration-actions/confirm`, async route=>{
     confirmedActionBody=route.request().postDataJSON();
+    lineageAlgorithm.versions[0].confirmed_iteration_action=persistedAction;
     await route.fulfill({
       status:200,contentType:'application/json',
-      body:JSON.stringify({ok:true,action:{
-        schema_version:1,action_id:'f'.repeat(64),action:'supplement_data',status:'confirmed',
-        source:{decision_id:'e'.repeat(64),evaluation_id:'d'.repeat(64),algorithm_id:'algo-lineage-1',
-          version_id:'version-lineage-1',dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
-        weak_labels:['smoke'],automatic_execution:false,requires_user_submit:false,
-        data_draft:{weak_labels:['smoke'],problem_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3}],
-          dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
-      }}),
+      body:JSON.stringify({ok:true,action:persistedAction}),
     });
   });
   const requests=[];
@@ -520,6 +522,25 @@ test('algorithm version exposes persisted training lineage without job refetch',
     decision_id:'e'.repeat(64),action:'supplement_data',
   });
   await expect.poll(async()=>page.evaluate(()=>state.iterationDataDraft?.weak_labels||[])).toEqual(['smoke']);
+  expect(requests.filter(path=>path.includes('/train/start'))).toEqual([]);
+
+  // Simulate a fresh UI state: the draft must be recoverable from persisted
+  // version truth without confirming the action a second time.
+  await page.evaluate(async()=>{
+    state.iterationDataDraft=null;
+    await window.AlgorithmListRuntime.refresh({render:false});
+    state.alg428Expanded={};
+    window.renderAlgorithms423();
+  });
+  const refreshed=page.locator('.alg428-card').filter({hasText:'溯源验收算法'});
+  await refreshed.locator('.alg428-main').click();
+  await refreshed.getByRole('button',{name:'独立评测'}).click();
+  await expect(page.locator('#modalBody')).toContainText('已确认：补数据');
+  await expect(page.locator('#modalBody').getByRole('button',{name:'继续补数据'})).toBeVisible();
+  const confirmCallsBefore=requests.filter(path=>path.includes('/iteration-actions/confirm')).length;
+  await page.locator('#modalBody').getByRole('button',{name:'继续补数据'}).click();
+  await expect.poll(async()=>page.evaluate(()=>state.iterationDataDraft?.weak_labels||[])).toEqual(['smoke']);
+  expect(requests.filter(path=>path.includes('/iteration-actions/confirm')).length).toBe(confirmCallsBefore);
   expect(requests.filter(path=>path.includes('/train/start'))).toEqual([]);
   expect(requests.filter(path=>path.includes('/jobs/'))).toEqual([]);
   expect(pageErrors).toEqual([]);
