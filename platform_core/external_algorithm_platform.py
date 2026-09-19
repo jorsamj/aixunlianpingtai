@@ -505,6 +505,32 @@ def _analysis_id(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "analysisId", "analysis_id", "id") or "").strip()
 
 
+def _compute_platform_id(row: Mapping[str, Any]) -> str:
+    return str(_value_from(row, "computePlatformId", "compute_platform_id", "id") or "").strip()
+
+
+def _validated_external_items(
+    value: Any,
+    *,
+    id_resolver: Callable[[Mapping[str, Any]], str],
+    error_code: str,
+    entity_name: str,
+) -> list[Dict[str, Any]]:
+    rows = extract_items(value)
+    missing = [index for index, row in enumerate(rows, start=1) if not id_resolver(row)]
+    if missing:
+        preview = "、".join(str(index) for index in missing[:10])
+        suffix = "…" if len(missing) > 10 else ""
+        raise PlatformError(
+            error_code,
+            f"{entity_name}缺少业务 ID",
+            f"新畅联返回的{entity_name}记录中，第 {preview}{suffix} 条无法解析正式业务 ID。",
+            "请核对新畅联接口字段契约；平台不会静默跳过缺少业务 ID 的主数据。",
+            502,
+        )
+    return rows
+
+
 def _analysis_name(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "analysisName", "analysisTypeName", "name", "analysisType") or "").strip()
 
@@ -800,13 +826,42 @@ class ExternalAlgorithmPlatformService:
         auth = record("auth", "应用鉴权", client.probe)
         if auth is not None:
             record("categories", "算法品目", client.category_tree, count_items=True)
-            products = record("products", "算法产品", client.products, count_items=True)
-            record("compute_platforms", "算力环境", client.compute_platforms, count_items=True)
-            product_rows = extract_items(products) if products is not None else []
+            products = record(
+                "products",
+                "算法产品",
+                lambda: _validated_external_items(
+                    client.products(),
+                    id_resolver=_product_id,
+                    error_code="EXTERNAL_PRODUCT_ID_MISSING",
+                    entity_name="算法产品",
+                ),
+                count_items=True,
+            )
+            record(
+                "compute_platforms",
+                "算力环境",
+                lambda: _validated_external_items(
+                    client.compute_platforms(),
+                    id_resolver=_compute_platform_id,
+                    error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
+                    entity_name="算力环境",
+                ),
+                count_items=True,
+            )
+            product_rows = products if isinstance(products, list) else []
             if product_rows:
                 product_id = _product_id(product_rows[0])
-                if product_id:
-                    record("analysis", "产品分析方式", lambda: client.analyses(product_id), count_items=True)
+                record(
+                    "analysis",
+                    "产品分析方式",
+                    lambda: _validated_external_items(
+                        client.analyses(product_id),
+                        id_resolver=_analysis_id,
+                        error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                        entity_name="产品分析方式",
+                    ),
+                    count_items=True,
+                )
             else:
                 steps.append({
                     "key": "analysis",
@@ -849,13 +904,42 @@ class ExternalAlgorithmPlatformService:
         if auth is None:
             return {"ok": False, "provider": "changlian", "auth_mode": "test_sign_bridge", "steps": steps}
         categories = record("categories", "算法品目", client.category_tree, count_items=True)
-        products = record("products", "算法产品", client.products, count_items=True)
-        record("compute_platforms", "算力环境", client.compute_platforms, count_items=True)
-        product_rows = extract_items(products) if products is not None else []
+        products = record(
+            "products",
+            "算法产品",
+            lambda: _validated_external_items(
+                client.products(),
+                id_resolver=_product_id,
+                error_code="EXTERNAL_PRODUCT_ID_MISSING",
+                entity_name="算法产品",
+            ),
+            count_items=True,
+        )
+        record(
+            "compute_platforms",
+            "算力环境",
+            lambda: _validated_external_items(
+                client.compute_platforms(),
+                id_resolver=_compute_platform_id,
+                error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
+                entity_name="算力环境",
+            ),
+            count_items=True,
+        )
+        product_rows = products if isinstance(products, list) else []
         if product_rows:
             product_id = _product_id(product_rows[0])
-            if product_id:
-                record("analysis", "产品分析方式", lambda: client.analyses(product_id), count_items=True)
+            record(
+                "analysis",
+                "产品分析方式",
+                lambda: _validated_external_items(
+                    client.analyses(product_id),
+                    id_resolver=_analysis_id,
+                    error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                    entity_name="产品分析方式",
+                ),
+                count_items=True,
+            )
         else:
             steps.append({"key": "analysis", "name": "产品分析方式", "status": "skipped", "detail": "当前没有可用于抽查的算法产品"})
         return {
@@ -894,14 +978,27 @@ class ExternalAlgorithmPlatformService:
         client = self._client()
         try:
             categories = flatten_category_tree(client.category_tree())
-            products = extract_items(client.products())
-            compute_platforms = extract_items(client.compute_platforms())
+            products = _validated_external_items(
+                client.products(),
+                id_resolver=_product_id,
+                error_code="EXTERNAL_PRODUCT_ID_MISSING",
+                entity_name="算法产品",
+            )
+            compute_platforms = _validated_external_items(
+                client.compute_platforms(),
+                id_resolver=_compute_platform_id,
+                error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
+                entity_name="算力环境",
+            )
             analyses_by_product: Dict[str, list[Dict[str, Any]]] = {}
             for product in products:
                 pid = _product_id(product)
-                if not pid:
-                    continue
-                analyses_by_product[pid] = extract_items(client.analyses(pid))
+                analyses_by_product[pid] = _validated_external_items(
+                    client.analyses(pid),
+                    id_resolver=_analysis_id,
+                    error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                    entity_name=f"算法产品 {pid} 的分析方式",
+                )
             synced_at = utc_now()
             cache = {
                 "schema_version": CACHE_SCHEMA_VERSION,
