@@ -557,7 +557,7 @@ def test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_id
     with zipfile.ZipFile(archive, "r") as review:
         meta = json.loads(review.read("meta.json"))
         annotation = json.loads(
-            review.read("annotations.jsonl").decode("utf-8").strip()
+            review.read("yolo/annotations.jsonl").decode("utf-8").strip()
         )
     assert meta["intent"] == "storage_rescan"
     assert meta["target_prefix"] == ""
