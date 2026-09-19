@@ -423,7 +423,7 @@ export function installExternalAlgorithmPlatformRuntime({
       </div>
 
       <section class="panel">
-        <div class="panel-head"><div><div class="panel-title">算法主数据来源</div><div class="subline">外部平台模式下，新建算法由外部平台负责，本平台继续负责数据、训练、评测和转换。</div></div></div>
+        <div class="panel-head"><div><div class="panel-title">算法主数据来源</div><div class="subline">先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境。</div></div></div>
         <div class="panel-body">
           <div class="form two">
             <div class="field full">
