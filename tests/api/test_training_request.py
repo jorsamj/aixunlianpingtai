@@ -534,3 +534,125 @@ def test_explicit_material_selection_rejects_invalid_requests(client, seeded_pro
     )
     assert response.status_code == 400
     assert message in response.json()["detail"]
+
+
+def _iteration_version(version_id, *, decision_id, evaluation_id, decision="continue_training"):
+    return {
+        "id": version_id,
+        "version_name": f"20260919-{version_id}",
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "stored_path": f"/models/{version_id}/best.pt",
+        "dataset_revision_id": "a" * 64,
+        "snapshot_id": f"snapshot-{version_id}",
+        "evaluation": {
+            "schema_version": 1, "evaluation_id": evaluation_id, "status": "succeeded",
+            "dataset_revision_id": "a" * 64, "snapshot_id": f"snapshot-{version_id}",
+            "model_sha256": "b" * 64, "metrics": {"metrics/mAP50(B)": 0.82},
+            "error_samples": [],
+        },
+        "iteration_decision": {
+            "schema_version": 1, "decision_id": decision_id, "evaluation_id": evaluation_id,
+            "decision": decision, "weak_labels": [], "recommended_actions": ["continue_from_current_version"],
+            "automatic_execution": False, "requires_confirmation": True,
+        },
+    }
+
+
+def test_iteration_action_confirmation_is_version_owned_and_fenced(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "确认动作验收", "industry": "测试", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(
+        app_module.algorithms_file(project_id), algorithm["id"],
+        _iteration_version("v-action-1", decision_id="c" * 64, evaluation_id="d" * 64),
+    )
+    url = f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-action-1/iteration-actions/confirm"
+    response = client.post(url, json={"decision_id": "c" * 64, "action": "continue_training"})
+    assert response.status_code == 200, response.text
+    action = response.json()["action"]
+    assert action["action"] == "continue_training"
+    assert action["automatic_execution"] is False
+    assert action["requires_user_submit"] is True
+    assert action["source"]["version_id"] == "v-action-1"
+
+    persisted = next(
+        row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
+    )["versions"][0]
+    assert persisted["confirmed_iteration_action"]["action_id"] == action["action_id"]
+
+    stale = client.post(url, json={"decision_id": "e" * 64, "action": "continue_training"})
+    assert stale.status_code == 409
+    assert "decision changed" in stale.text
+    wrong = client.post(url, json={"decision_id": "c" * 64, "action": "supplement_data"})
+    assert wrong.status_code == 409
+    assert "does not match" in wrong.text
+
+
+def test_iteration_action_confirmation_rejects_non_current_version(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "旧版本动作拒绝", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(app_module.algorithms_file(project_id), algorithm["id"],
+                   _iteration_version("v-old", decision_id="1" * 64, evaluation_id="2" * 64))
+    attach_version(app_module.algorithms_file(project_id), algorithm["id"],
+                   _iteration_version("v-current", decision_id="3" * 64, evaluation_id="4" * 64))
+    response = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-old/iteration-actions/confirm",
+        json={"decision_id": "1" * 64, "action": "continue_training"},
+    )
+    assert response.status_code == 409
+    assert "当前版本" in response.text
+
+
+def test_training_iteration_action_context_must_equal_persisted_confirmation(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "训练动作溯源", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(app_module.algorithms_file(project_id), algorithm["id"],
+                   _iteration_version("v-current", decision_id="5" * 64, evaluation_id="6" * 64))
+    confirm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
+        json={"decision_id": "5" * 64, "action": "continue_training"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    action = confirm.json()["action"]
+    context = {
+        "action_id": action["action_id"],
+        "decision_id": action["source"]["decision_id"],
+        "evaluation_id": action["source"]["evaluation_id"],
+        "version_id": action["source"]["version_id"],
+        "dataset_revision_id": action["source"]["dataset_revision_id"],
+        "snapshot_id": action["source"]["snapshot_id"],
+    }
+    current = next(
+        row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
+    )
+    accepted = app_module._validated_training_iteration_action(
+        current, app_module.TrainReq(algorithm_asset_id=algorithm["id"], iteration_action=context),
+    )
+    assert accepted["action_id"] == action["action_id"]
+
+    tampered = dict(context, decision_id="7" * 64)
+    with pytest.raises(app_module.HTTPException) as error:
+        app_module._validated_training_iteration_action(
+            current, app_module.TrainReq(algorithm_asset_id=algorithm["id"], iteration_action=tampered),
+        )
+    assert error.value.status_code == 409
