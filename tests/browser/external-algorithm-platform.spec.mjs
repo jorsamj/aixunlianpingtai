@@ -169,3 +169,100 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(analysisRow.getByText('跳过', {exact: true})).toBeVisible();
   await expect(analysisRow).toContainText('当前没有可用于连接测试的算法产品');
 });
+
+
+test('stale changlian algorithm is visibly blocked before training submit', async ({page, request}) => {
+  const project = await (await request.post('/api/projects', {data: {
+    name: `畅联云旧主数据-${Date.now()}`,
+    labels: [{code: 'smoke', display_name: '烟雾'}],
+  }})).json();
+  const created = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
+    name: '待同步抽烟检测',
+    industry: '测试',
+    algorithm_type: 'yolo_ultralytics',
+    remark: '',
+  }})).json();
+  const algorithmId = created.algorithm.id;
+
+  await page.route('**/api/v63/external-algorithm-platform/config', route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        config: {
+          mode: 'external',
+          provider: 'changlian',
+          provider_name: '新畅联',
+          base_url: 'https://saved.example.test',
+          auto_sync_enabled: false,
+          auto_sync_interval_seconds: 600,
+          auto_publish_enabled: false,
+          auth_mode: 'test_sign_bridge',
+          credentials: {configured: true, masked: 'AK-****1234', available: true, backend: 'encrypted_file', writable: true},
+          cache: {
+            master_data_digest: 'digest-current',
+            category_count: 1,
+            product_count: 1,
+            analysis_count: 1,
+            compute_platform_count: 1,
+          },
+          endpoints: {},
+        },
+      }),
+    });
+  });
+  await page.route('**/api/v63/external-algorithm-platform/cache', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ok: true,
+      cache: {
+        provider: 'changlian',
+        master_data_digest: 'digest-current',
+        categories: [{categoryId: 'c1', categoryName: '行为分析'}],
+        products: [{productId: 'p1', productName: '待同步抽烟检测', categoryId: 'c1'}],
+        analyses_by_product: {p1: [{analysisId: 'a1', analysisName: '视觉智能分析'}]},
+        compute_platforms: [{computePlatformId: 'cp1', computePlatformName: 'RK3568'}],
+      },
+    }),
+  }));
+
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
+  }, project.id);
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+  await expect.poll(async () => page.evaluate(() => window.ExternalAlgorithmPlatformRuntime?.config?.()?.mode || ''))
+    .toBe('external');
+
+  await page.evaluate(async ({algorithmId}) => {
+    await window.AlgorithmListRuntime?.refresh?.({render: false});
+    const asset = (state.algorithms || []).find(row => String(row.id) === String(algorithmId));
+    if (!asset) throw new Error('algorithm missing');
+    Object.assign(asset, {
+      source_type: 'EXTERNAL',
+      provider_type: 'CHANG_LIAN',
+      source_name: '新畅联',
+      external_product_id: 'p1',
+      external_category_id: 'c1',
+      external_analysis_id: 'a1',
+      external_analysis_ids: ['a1'],
+      external_analyses: [{analysis_id: 'a1', analysis_name: '视觉智能分析'}],
+      external_active: true,
+      external_master_data_digest: 'digest-old',
+      external_last_synced_at: '2026-09-19T12:00:00Z',
+    });
+    window.setPage?.('算法列表');
+    window.AlgorithmListRuntime?.renderCards?.();
+    window.AlgorithmListRuntime?.runDecorators?.();
+  }, {algorithmId});
+
+  const card = page.locator('.alg428-card', {hasText: '待同步抽烟检测'});
+  await expect(card).toBeVisible();
+  await expect(card.locator('[data-external-stale]')).toHaveText('待同步');
+  const trainButton = card.getByRole('button', {name: '训练'});
+  await expect(trainButton).toBeDisabled();
+  await expect(trainButton).toHaveAttribute('title', /立即同步/);
+});
