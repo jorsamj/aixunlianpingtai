@@ -1,0 +1,101 @@
+name: Online Feedback Runtime
+
+on:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - app.py
+      - platform_core/online_feedback.py
+      - platform_core/material_repository.py
+      - platform_core/annotation_repository.py
+      - static/app.js
+      - tests/unit/test_online_feedback.py
+      - tests/api/test_online_feedback.py
+      - tests/browser/online-feedback.spec.mjs
+      - .github/workflows/online-feedback-runtime.yml
+  pull_request:
+    paths:
+      - app.py
+      - platform_core/online_feedback.py
+      - platform_core/material_repository.py
+      - platform_core/annotation_repository.py
+      - static/app.js
+      - tests/unit/test_online_feedback.py
+      - tests/api/test_online_feedback.py
+      - tests/browser/online-feedback.spec.mjs
+      - .github/workflows/online-feedback-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check pytest fastapi python-multipart pillow pyyaml requests filelock keyring cryptography boto3 oss2 pydantic
+      - name: Compile feedback runtime
+        run: python -m py_compile app.py platform_core/online_feedback.py platform_core/material_repository.py platform_core/annotation_repository.py
+      - name: Feedback repository contracts
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_online_feedback.py
+      - name: Feedback API contracts
+        run: python -m pytest -q tests/api/test_online_feedback.py
+      - name: Classic app syntax
+        run: node --check static/app.js
+      - name: Permanent feedback guards
+        shell: bash
+        run: |
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          grep -Fq 'feedback_eligible' app.py
+          grep -Fq '/api/v63/projects/{project_id}/online-feedback' app.py
+          grep -Fq 'confirm_all_labels_absent' app.py
+          grep -Fq 'get_by_content_sha256' platform_core/material_repository.py
+          grep -Fq 'OnlineFeedbackRepository' platform_core/online_feedback.py
+          grep -Fq 'online_feedback_needs_review' app.py
+          grep -Fq '正式算法版本可提交抽检反馈' static/app.js
+          grep -Fq '不会自动修改素材、数据集或训练任务' static/app.js
+          grep -Fq 'test_feedback_confirm_rejects_changed_prediction_input' tests/api/test_online_feedback.py
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome reviewed feedback flow
+        run: npx playwright test tests/browser/online-feedback.spec.mjs
+      - name: Browser permanent guards
+        run: |
+          grep -Fq 'openPredictionFeedback63' static/app.js
+          grep -Fq 'openOnlineFeedbackReview63' static/app.js
+          grep -Fq 'confirmOnlineFeedback63' static/app.js
+          grep -Fq 'formal version prediction enters reviewed online feedback without automatic retraining' tests/browser/online-feedback.spec.mjs
+          grep -Fq 'false-positive feedback requires explicit all-label negative confirmation' tests/browser/online-feedback.spec.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
