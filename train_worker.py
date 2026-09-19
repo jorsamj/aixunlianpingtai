@@ -1088,7 +1088,7 @@ def main():
                 update_job(
                     job_file,
                     progress_percent=max(96.0,float(current_job.get("progress_percent") or 0.0)),
-                    current_item="独立试验集盲测",
+                    current_item="独立评测集盲测",
                     message="训练完成，正在对无标注试验图片执行盲测",
                 )
 
@@ -1128,7 +1128,7 @@ def main():
                 training_report["test_per_class"]=blind_result.get("per_class") or []
                 training_report["test_protocol"]=blind_result.get("protocol") or {}
             except Exception as te:
-                training_report["test_note"]="独立试验集盲测失败："+str(te)
+                training_report["test_note"]="独立评测集盲测失败："+str(te)
                 training_report["test_result"]={
                     "status":"failed",
                     "metrics":{},
