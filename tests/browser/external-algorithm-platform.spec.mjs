@@ -68,6 +68,33 @@ test('changlian platform page tests draft credentials before manual sync', async
     });
   });
 
+  await page.route('**/api/v63/external-algorithm-platform/readiness?project_id=*', async route => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        ready: true,
+        provider: 'changlian',
+        auth_type: 'application_credentials',
+        human_login_required: false,
+        blocking_keys: [],
+        checks: [
+          {key: 'human_login', name: '人员登录账号', status: 'not_required', detail: '系统对接不使用人员用户名/密码；内部 API 使用 AccessKey / AccessSecret 应用鉴权。'},
+          {key: 'external_mode', name: '外部平台模式', status: 'ready', detail: '已启用新畅联'},
+          {key: 'base_url', name: 'API 服务地址', status: 'ready', detail: 'https://saved.example.test'},
+          {key: 'credentials', name: '应用凭据', status: 'ready', detail: '已配置 · encrypted_file'},
+          {key: 'last_sync', name: '最近主数据同步', status: 'ready', detail: '2026-09-19T12:00:00Z'},
+          {key: 'categories', name: '算法品目', status: 'ready', count: 2},
+          {key: 'products', name: '算法产品', status: 'ready', count: 3},
+          {key: 'analyses', name: '产品分析方式', status: 'ready', count: 4},
+          {key: 'compute_platforms', name: '算力环境', status: 'ready', count: 2},
+          {key: 'project_algorithms', name: '当前项目畅联云算法', status: 'ready', count: 1, detail: '同步算法 1 个，当前可训练 1 个'},
+        ],
+      }),
+    });
+  });
+
   await page.route('**/api/v63/external-algorithm-platform/test', async route => {
     testedPayload = route.request().postDataJSON();
     await route.fulfill({
@@ -99,6 +126,13 @@ test('changlian platform page tests draft credentials before manual sync', async
 
   await page.evaluate(() => window.setPage('平台对接'));
   await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible({timeout: 10_000});
+
+  const readiness = page.locator('[data-changlian-readiness="ready"]');
+  await expect(readiness.getByText('基础条件已就绪')).toBeVisible();
+  await expect(readiness.getByRole('cell', {name: '人员登录账号'})).toBeVisible();
+  await expect(readiness.getByText('无需', {exact: true})).toBeVisible();
+  await expect(readiness).toContainText('AccessKey / AccessSecret');
+  await expect(readiness.getByRole('cell', {name: '当前项目畅联云算法'})).toBeVisible();
 
   await page.locator('#externalBaseUrl').fill('https://draft.example.test');
   await page.locator('#externalAccessKey').fill('draft-ak');
