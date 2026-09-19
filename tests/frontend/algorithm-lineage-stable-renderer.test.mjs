@@ -24,3 +24,11 @@ test('canonical algorithm route still renders through stable renderAlg412 owner'
   const region = source.slice(start, source.indexOf('window.toggleAlgorithm412', start));
   assert.match(region, /renderAlg412\(\)/);
 });
+
+
+test('stable algorithm version renderer exposes persisted evaluation action', () => {
+  const renderer = stableVersionRenderer();
+  assert.match(renderer, /v\.evaluation/);
+  assert.match(renderer, /openVersionEvaluation429/);
+  assert.match(renderer, /独立评测/);
+});
