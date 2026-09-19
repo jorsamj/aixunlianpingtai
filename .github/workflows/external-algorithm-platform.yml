@@ -8,7 +8,9 @@ on:
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
       - platform_core/integration_audit.py
+      - platform_core/storage/source_repository.py
       - static/main.mjs
+      - static/app.js
       - static/index.html
       - static/modules/external-algorithm-platform.js
       - static/modules/model-artifact-runtime.js
@@ -18,10 +20,12 @@ on:
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
+      - tests/unit/storage/test_source_repository.py
       - tests/frontend/external-algorithm-platform.test.mjs
       - tests/browser/external-algorithm-platform.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
+      - tests/frontend/startup-render-owner.test.mjs
       - docs/PROJECT_HANDOFF_CURRENT.md
       - docs/BUG_AUDIT_2026-09-17.md
       - .github/workflows/external-algorithm-platform.yml
@@ -35,7 +39,9 @@ on:
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
       - platform_core/integration_audit.py
+      - platform_core/storage/source_repository.py
       - static/main.mjs
+      - static/app.js
       - static/index.html
       - static/modules/external-algorithm-platform.js
       - static/modules/model-artifact-runtime.js
@@ -45,10 +51,12 @@ on:
       - tests/unit/test_external_algorithm_platform.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
+      - tests/unit/storage/test_source_repository.py
       - tests/frontend/external-algorithm-platform.test.mjs
       - tests/browser/external-algorithm-platform.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
+      - tests/frontend/startup-render-owner.test.mjs
       - docs/PROJECT_HANDOFF_CURRENT.md
       - docs/BUG_AUDIT_2026-09-17.md
       - .github/workflows/external-algorithm-platform.yml
@@ -72,16 +80,18 @@ jobs:
             tests/unit/test_secrets.py \
             tests/unit/test_external_algorithm_platform.py \
             tests/unit/test_integration_audit.py \
-            tests/unit/test_changlian_audit_client.py
+            tests/unit/test_changlian_audit_client.py \
+            tests/unit/storage/test_source_repository.py
       - name: Frontend external-platform contracts
         run: |
           node --test \
             tests/frontend/external-algorithm-platform.test.mjs \
             tests/frontend/model-artifact-runtime.test.mjs \
-            tests/frontend/algorithm-list-runtime.test.mjs
+            tests/frontend/algorithm-list-runtime.test.mjs \
+            tests/frontend/startup-render-owner.test.mjs
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/integration_audit.py
+          python -m py_compile app.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/integration_audit.py platform_core/storage/source_repository.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/model-artifact-runtime.js
           node --check static/modules/algorithm-list-runtime.js
@@ -92,6 +102,11 @@ jobs:
           grep -q "DEFAULT_AUTO_SYNC_INTERVAL_SECONDS" platform_core/external_algorithm_platform.py
           grep -q "external-algorithm-platform-auto-sync" platform_core/external_algorithm_platform.py
           grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
+          grep -Fq "externalCategorySignature" static/modules/external-algorithm-platform.js
+          grep -Fq "v42 dashboard renderer only calls helpers from its own scope" tests/frontend/startup-render-owner.test.mjs
+          grep -Fq 'database.execute("PRAGMA busy_timeout=5000")' platform_core/storage/source_repository.py
+          grep -Fq 'if current_mode != "wal":' platform_core/storage/source_repository.py
+          grep -Fq "test_existing_wal_connection_does_not_reapply_journal_mode" tests/unit/storage/test_source_repository.py
           grep -q "test_sign_bridge" platform_core/external_algorithm_platform.py
           grep -q "def _validated_external_items" platform_core/external_algorithm_platform.py
           grep -q "EXTERNAL_PRODUCT_ID_MISSING" platform_core/external_algorithm_platform.py
