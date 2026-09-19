@@ -281,6 +281,25 @@ def test_service_sync_saves_redacted_config_cache_history_and_mirror(tmp_path: P
     assert row["source_type"] == SOURCE_EXTERNAL
 
 
+def test_sync_rejects_concurrent_project_sync_without_mutating_state(tmp_path: Path):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    algorithms_path = tmp_path / "project-sync-busy" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    before_cache = service.repository.cache()
+    lock = service._sync_lock("p-sync-busy")
+
+    with lock.acquire(timeout=0):
+        with pytest.raises(Exception) as error:
+            service.sync(project_id="p-sync-busy", algorithms_path=algorithms_path)
+
+    assert getattr(error.value, "code", "") == "EXTERNAL_PLATFORM_SYNC_BUSY"
+    assert getattr(error.value, "status_code", 409) == 409
+    assert list_algorithms(algorithms_path) == []
+    assert service.repository.cache() == before_cache
+    assert service.repository.history() == []
+
+
 def test_sync_cache_write_failure_does_not_mutate_algorithm_mirror(tmp_path: Path, monkeypatch):
     import platform_core.external_algorithm_platform as platform_module
 
