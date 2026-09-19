@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from platform_core.external_algorithm_platform import (
     ChangLianClient,
     ChangLianEndpoints,
