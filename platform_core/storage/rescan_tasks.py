@@ -11,6 +11,7 @@ from filelock import FileLock
 from PIL import Image
 
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core.annotation_schema import validate_canonical_annotation_evidence
 from platform_core.material_repository import MaterialRepository
 from platform_core.task_runtime import TaskStatus
 
@@ -186,7 +187,14 @@ def _build_annotation_deltas(store, project_path: Path, *, source_format: str):
         for candidate in page:
             key = candidate['object_key']
             old = baseline.get(key)
-            source = evidence[key]
+            source = validate_canonical_annotation_evidence(evidence[key])
+            if (
+                str(source.get('source_format') or '') != normalized
+                or str(source.get('object_key') or '') != str(key)
+            ):
+                raise ValueError(
+                    'canonical annotation evidence does not match rescan source identity'
+                )
             current_annotation = current.get(str((old or {}).get('id') or ''))
             deltas.append({
                 'object_key': key,
@@ -427,7 +435,16 @@ class StorageRescanHandler(StorageImportHandler):
                     continue
                 material_id = str(material['id'])
                 category = row['category']
-                evidence = dict(row.get('source_evidence') or {})
+                evidence = validate_canonical_annotation_evidence(
+                    dict(row.get('source_evidence') or {})
+                )
+                if (
+                    str(evidence.get('source_format') or '') != source_format
+                    or str(evidence.get('object_key') or '') != str(row['object_key'])
+                ):
+                    raise ValueError(
+                        'canonical annotation evidence does not match rescan apply identity'
+                    )
                 current_annotation = current_annotations.get(material_id) or {}
                 current_hash = str(
                     current_annotation.get('content_digest')

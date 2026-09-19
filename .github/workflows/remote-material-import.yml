@@ -205,6 +205,9 @@ jobs:
           grep -Fq 'CANONICAL_ANNOTATION_SCHEMA_VERSION = 1' platform_core/annotation_schema.py
           grep -Fq 'build_canonical_annotation_evidence' platform_core/storage/import_candidates.py
           grep -Fq 'test_canonical_evidence_v1_preserves_legacy_digest_semantics' tests/unit/test_annotation_schema.py
+          grep -Fq 'validate_canonical_annotation_evidence' platform_core/storage/rescan_tasks.py
+          grep -Fq 'test_rescan_apply_rejects_tampered_canonical_annotation_evidence' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'test_rescan_apply_rejects_canonical_evidence_format_mismatch' tests/unit/storage/test_rescan_tasks.py
           grep -Fq '_record_text_identity' platform_core/storage/yolo_import.py
           grep -Fq 'YOLO_SOURCE_EVIDENCE_MISSING' platform_core/remote_material_import.py
           grep -Fq 'dataset_object' tests/unit/test_remote_material_import.py

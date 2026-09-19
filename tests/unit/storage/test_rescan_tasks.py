@@ -5,6 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core.annotation_schema import (
+    CanonicalAnnotationSchemaError,
+    build_canonical_annotation_evidence,
+)
 from platform_core.material_repository import MaterialRepository
 from platform_core.storage.import_candidates import RescanCandidateStore
 from platform_core.storage.import_tasks import MANIFEST_REF
@@ -322,24 +326,29 @@ def test_yolo_annotation_delta_distinguishes_new_change_conflict_and_removed(tmp
     ) >= 2
 
 
-def _yolo_evidence(*, source_digest="source-new", status="annotated"):
+def _yolo_evidence(*, status="annotated"):
     boxes = [] if status != "annotated" else [{
         "line_number": 1, "class_id": 0,
         "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.25, "clipped": False,
     }]
-    return {
-        "schema_version": 1,
-        "source_format": "yolo",
-        "object_key": "images/train/a.jpg",
-        "split": "train",
-        "annotation_status": status,
-        "label_key": "labels/train/a.txt" if status != "unannotated" else None,
-        "dataset_key": "data.yaml",
-        "class_catalog_digest": "c" * 64,
-        "source_digest": source_digest,
-        "box_count": len(boxes),
-        "boxes": boxes,
-    }
+    label_key = "labels/train/a.txt" if status != "unannotated" else None
+    return build_canonical_annotation_evidence(
+        source_format="yolo",
+        object_key="images/train/a.jpg",
+        split="train",
+        annotation_status=status,
+        label_key=label_key,
+        label_object=(
+            {"size_bytes": 20, "etag": "label-etag", "sha256": "1" * 64}
+            if label_key else None
+        ),
+        dataset_key="data.yaml",
+        dataset_object={
+            "size_bytes": 40, "etag": "yaml-etag", "sha256": "2" * 64,
+        },
+        classes=[{"class_id": 0, "name": "smoke"}],
+        boxes=boxes,
+    )
 
 
 def test_yolo_rescan_rejects_platform_annotation_edit_after_review(tmp_path):
@@ -628,22 +637,25 @@ def test_coco_rescan_rejects_platform_annotation_edit_after_review(tmp_path):
         "create_labels": [],
         "accept_quality_report": False,
     })
-    evidence = {
-        "schema_version": 1,
-        "source_format": "coco",
-        "object_key": "images/train/a.jpg",
-        "split": "train",
-        "annotation_status": "annotated",
-        "label_key": "annotations/train.json",
-        "dataset_key": "annotations/train.json",
-        "class_catalog_digest": "d" * 64,
-        "source_digest": "new-coco-source",
-        "box_count": 1,
-        "boxes": [{
+    evidence = build_canonical_annotation_evidence(
+        source_format="coco",
+        object_key="images/train/a.jpg",
+        split="train",
+        annotation_status="annotated",
+        label_key="annotations/train.json",
+        label_object={
+            "size_bytes": 128, "etag": "coco-json", "sha256": "3" * 64,
+        },
+        dataset_key="annotations/train.json",
+        dataset_object={
+            "size_bytes": 128, "etag": "coco-json", "sha256": "3" * 64,
+        },
+        classes=[{"class_id": 7, "name": "smoke"}],
+        boxes=[{
             "line_number": 1, "class_id": 7,
             "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.25, "clipped": False,
         }],
-    }
+    )
     store.annotation_delta_batch([{
         "object_key": "images/train/a.jpg",
         "image_id": "old-coco-stale",
@@ -776,3 +788,124 @@ def test_voc_annotation_delta_and_apply_share_generic_external_provenance(tmp_pa
     saved = materials.get("old-voc")
     assert saved["external_annotation"]["source_format"] == "voc"
     assert saved["external_annotation"]["source_digest"] == evidence["source_digest"]
+
+
+def test_rescan_apply_rejects_tampered_canonical_annotation_evidence(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = "project-tampered-canonical"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    materials.upsert(material("old-tampered", "images/train/a.jpg", "a" * 64))
+    annotations = AnnotationRepository(project_path)
+    reviewed = annotations.upsert(
+        "old-tampered",
+        [{
+            "id": "old-tampered-1", "label": "smoke", "class_id": 0,
+            "x1": 8, "y1": 8, "x2": 24, "y2": 24,
+        }],
+    )
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "tampered-canonical-rescan"
+    store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    store.set_meta("annotation_confirmation", {
+        "label_mapping": {"0": "smoke"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    evidence = _yolo_evidence()
+    evidence["split"] = "val"
+    store.annotation_delta_batch([{
+        "object_key": "images/train/a.jpg",
+        "image_id": "old-tampered",
+        "category": "ANNOTATION_CHANGED",
+        "source_evidence": evidence,
+        "platform_annotation_hash": reviewed["content_digest"],
+        "platform_annotation_state": "annotated",
+    }])
+
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    with pytest.raises(CanonicalAnnotationSchemaError, match="source_digest"):
+        handler._apply_annotation_rescan(
+            context,
+            SimpleNamespace(id="s3-a"),
+            store,
+            materials,
+            {
+                "new": "ignore", "missing": "ignore", "changed": "ignore",
+                "annotation_changed": "update",
+                "annotation_removed": "keep",
+                "annotation_conflicts": "keep",
+            },
+            {"import_format": "yolo"},
+        )
+
+
+def test_rescan_apply_rejects_canonical_evidence_format_mismatch(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = "project-format-mismatch"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    materials.upsert(material("old-format", "images/train/a.jpg", "a" * 64))
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "format-mismatch-rescan"
+    store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    store.set_meta("annotation_confirmation", {
+        "label_mapping": {"0": "smoke"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    yolo = _yolo_evidence()
+    coco = build_canonical_annotation_evidence(
+        source_format="coco",
+        object_key=yolo["object_key"],
+        split=yolo["split"],
+        annotation_status=yolo["annotation_status"],
+        label_key="annotations/train.json",
+        label_object={
+            "size_bytes": 128, "etag": "coco-json", "sha256": "4" * 64,
+        },
+        dataset_key="annotations/train.json",
+        dataset_object={
+            "size_bytes": 128, "etag": "coco-json", "sha256": "4" * 64,
+        },
+        classes=[{"class_id": 0, "name": "smoke"}],
+        boxes=yolo["boxes"],
+    )
+    store.annotation_delta_batch([{
+        "object_key": "images/train/a.jpg",
+        "image_id": "old-format",
+        "category": "ANNOTATION_CHANGED",
+        "source_evidence": coco,
+        "platform_annotation_hash": "",
+        "platform_annotation_state": "unannotated",
+    }])
+
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    with pytest.raises(ValueError, match="does not match rescan apply identity"):
+        handler._apply_annotation_rescan(
+            context,
+            SimpleNamespace(id="s3-a"),
+            store,
+            materials,
+            {
+                "new": "ignore", "missing": "ignore", "changed": "ignore",
+                "annotation_changed": "update",
+                "annotation_removed": "keep",
+                "annotation_conflicts": "keep",
+            },
+            {"import_format": "yolo"},
+        )
