@@ -225,6 +225,10 @@ jobs:
           grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
           grep -Fq '"remote_input_state": "PREPARING"' app.py
           grep -Fq '"runtime_stop_policy": "target_only"' app.py
+          grep -Fq "val_dir=root/'images'/'val'" train_worker.py
+          grep -Fq 'test_images_dir=dataset_root/"images"/"test"' train_worker.py
+          grep -Fq 'current_item="独立评测集盲测"' train_worker.py
+          if grep -Fq '独立试验集盲测' train_worker.py; then echo 'final test split must be presented as evaluation, not validation/trial data' >&2; exit 1; fi
           if grep -Fq 'params["chip"]="rk3588"' app.py; then echo 'training auto-conversion must not hardcode RK3588' >&2; exit 1; fi
           grep -Fq '"remote_input_state": "READY"' platform_core/remote_training_tasks.py
           grep -Fq '"task_kind": "TRAINING"' platform_core/remote_training_tasks.py
