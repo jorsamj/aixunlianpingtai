@@ -17,6 +17,7 @@ on:
       - tests/unit/test_model_artifacts.py
       - tests/unit/test_integration_audit.py
       - tests/frontend/external-algorithm-publish.test.mjs
+      - tests/browser/external-algorithm-publish.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - .github/workflows/external-algorithm-publish.yml
   push:
@@ -36,6 +37,7 @@ on:
       - tests/unit/test_model_artifacts.py
       - tests/unit/test_integration_audit.py
       - tests/frontend/external-algorithm-publish.test.mjs
+      - tests/browser/external-algorithm-publish.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - .github/workflows/external-algorithm-publish.yml
 
@@ -77,6 +79,13 @@ jobs:
           grep -q "auto-upload-worker" platform_core/external_algorithm_publish.py
           grep -q "external_version_publications" platform_core/external_algorithm_publish.py
           grep -q "_remote_version_analysis_id" platform_core/external_algorithm_publish.py
+          grep -q "_assert_current_external_identity" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_STALE" platform_core/external_algorithm_publish.py
+          grep -q '"identity_ready": bool(identity\["ready"\])' platform_core/external_algorithm_publish.py
+          grep -q "test_publication_status_blocks_stale_changlian_master_data" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_historical_version_analysis_is_no_longer_current" tests/unit/test_external_algorithm_publish.py
+          grep -q "identity_ready === false" static/modules/external-algorithm-publish.js
+          grep -q "manual publish preflight blocks stale product and analysis identity before artifacts" tests/frontend/external-algorithm-publish.test.mjs
           grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
           grep -q "def _mapping_state" platform_core/external_algorithm_publish.py
           grep -q "def _publish_transport_state" platform_core/external_algorithm_publish.py
@@ -135,3 +144,32 @@ jobs:
           test ! -e tools/_one_shot_model_asset_integration.py
           test ! -e .github/workflows/_one_shot_model_asset_integration.yml
           test "$(cat VERSION.txt)" = "42.24.0"
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome ChangLian publish preflight
+        run: npx playwright test tests/browser/external-algorithm-publish.spec.mjs
+      - name: Browser permanent guards
+        run: |
+          grep -Fq "changlian manual publish preflight blocks stale version analysis before POST" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "identity_ready: false" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "publishWrites).toBe(0)" tests/browser/external-algorithm-publish.spec.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
