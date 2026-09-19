@@ -8379,7 +8379,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "snapshot_id": snapshot["snapshot_id"],
         "snapshot_path": str(snapshot_path),
         "data_yaml": build.get("data_yaml", ""),
-        "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0), "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent), "split_seed": int(build.get("split_seed") or payload.seed or 0)},
+        "quality_gate": {"eval_interval": int(payload.eval_interval or 0), "metric": payload.eval_metric or "map50", "continue_threshold": float(payload.continue_threshold or 0), "stop_threshold": float(payload.stop_threshold or 0), "stage_eval_samples": int(payload.val_max_samples or 0), "experiment_percent": float(build.get("experiment_percent") or payload.experiment_percent), "split_seed": int(build.get("split_seed") or payload.seed or 0), "runtime_stop_policy": "target_only"},
         "ai_intervention": {"enabled": False},
         "queue_priority": int(payload.queue_priority),
         "priority_scheme": V56_PRIORITY_SCHEME,
@@ -9097,6 +9097,18 @@ def _v48_quality_reached(job: Dict[str, Any]) -> bool:
     return value is not None and value>=target
 
 
+def _v48_supported_rockchip_chips(resource: Dict[str, Any]) -> List[str]:
+    remote_health = resource.get("remote_health")
+    remote_health = remote_health if isinstance(remote_health, dict) else {}
+    values = list(resource.get("supported_chips") or remote_health.get("supported_chips") or [])
+    chips = {
+        str(value or "").strip().lower()
+        for value in values
+        if str(value or "").strip().lower() in {"rk3568", "rk3576"}
+    }
+    return sorted(chips)
+
+
 def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
     targets=list(job.get("auto_convert_targets") or [])
     summary={"requested":targets,"jobs":[],"errors":[]}
@@ -9108,8 +9120,18 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
         if not resource:
             summary["errors"].append({"target":target,"message":"没有已检测通过的对应部署资源"});continue
         params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}
-        if target=="sophon": params["chip"]="bm1684x"
-        elif target=="rockchip": params["chip"]="rk3588"
+        if target=="sophon":
+            params["chip"]="bm1684x"
+        elif target=="rockchip":
+            chips=_v48_supported_rockchip_chips(resource)
+            if len(chips)!=1:
+                detail="、".join(chip.upper() for chip in chips) or "无"
+                summary["errors"].append({
+                    "target":target,
+                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568 或 RK3576 后手动转换。",
+                })
+                continue
+            params["chip"]=chips[0]
         elif target=="ascend":
             socs=resource.get("detected_soc_versions") or (resource.get("remote_health") or {}).get("soc_versions") or []
             if not socs:
