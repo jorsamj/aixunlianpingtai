@@ -434,6 +434,11 @@ test('algorithm version exposes persisted training lineage without job refetch',
         schema_version:1,evaluation_id:'d'.repeat(64),status:'succeeded',
         task_id:'train-lineage-1',dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64),
         model_sha256:'c'.repeat(64),image_count:12,
+        benchmark_scope:{
+          schema_version:1,scope_id:'4'.repeat(64),test_image_count:12,
+          content_digest:'3'.repeat(64),ground_truth_digest:'2'.repeat(64),label_schema_digest:'1'.repeat(64),
+        },
+        evaluation_protocol_id:'0'.repeat(64),
         metrics:{'metrics/precision(B)':0.82,'metrics/recall(B)':0.70,'metrics/mAP50(B)':0.76,'metrics/mAP50-95(B)':0.55},
         per_class:[{class_id:0,label:'smoke',precision:0.82,recall:0.70,map50:0.76,map50_95:0.55,true_positive:7,false_positive:2,false_negative:3}],
         weak_labels:['smoke'],
@@ -445,6 +450,9 @@ test('algorithm version exposes persisted training lineage without job refetch',
         source_version_id:'version-source-0',new_version_id:'version-lineage-1',
         candidate_set_id:'8'.repeat(64),adoption_id:'7'.repeat(64),action_id:'6'.repeat(64),
         source_evaluation_id:'5'.repeat(64),new_evaluation_id:'d'.repeat(64),
+        comparison_mode:'strict',strictly_comparable:true,comparison_reason_codes:[],
+        source_benchmark_scope_id:'4'.repeat(64),new_benchmark_scope_id:'4'.repeat(64),
+        source_evaluation_protocol_id:'0'.repeat(64),new_evaluation_protocol_id:'0'.repeat(64),
         source_candidate_count:3,adopted_candidate_count:2,
         overall_metrics:{
           'metrics/mAP50(B)':{before:0.61,after:0.76,delta:0.15},
@@ -549,6 +557,8 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#modalBody')).toContainText('补充弱标签数据');
   await expect(page.locator('#modalBody')).toContainText('系统仅给出建议，不会自动发起下一次训练');
   await expect(page.locator('#modalBody')).toContainText('补数据效果');
+  await expect(page.locator('#modalBody')).toContainText('严格可比');
+  await expect(page.locator('#modalBody')).toContainText('评测基准');
   await expect(page.locator('#modalBody')).toContainText('采用反馈');
   await expect(page.locator('#modalBody')).toContainText('+15.0 pp');
   await expect(page.locator('#modalBody')).toContainText('改善');

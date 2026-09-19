@@ -12,6 +12,7 @@ from PIL import Image
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 _DEFAULT_IOUS = tuple(round(0.5 + index * 0.05, 2) for index in range(10))
 EVALUATION_SCHEMA_VERSION = 1
+EVALUATION_BENCHMARK_SCOPE_SCHEMA_VERSION = 1
 ITERATION_DECISION_SCHEMA_VERSION = 1
 _EVALUATION_METRICS = (
     "metrics/precision(B)",
@@ -313,6 +314,109 @@ def evaluate_blind_detection(
     }
 
 
+def build_evaluation_benchmark_scope(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Freeze the exact Snapshot v3 test cohort and ground-truth identity.
+
+    Legacy snapshots remain readable but cannot claim strict benchmark
+    comparability because they do not contain the complete content/annotation
+    truth required by this scope.
+    """
+    raw = dict(snapshot) if isinstance(snapshot, Mapping) else {}
+    try:
+        snapshot_schema = int(raw.get("schema_version") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    if snapshot_schema < 3:
+        return {}
+
+    raw_ids = raw.get("test_image_ids")
+    if raw_ids is None and isinstance(raw.get("ids"), Mapping):
+        raw_ids = raw["ids"].get("test")
+    if not isinstance(raw_ids, list):
+        raise ValueError("benchmark scope requires Snapshot v3 test_image_ids")
+    test_ids = [str(value or "").strip() for value in raw_ids]
+    if any(not value for value in test_ids) or len(set(test_ids)) != len(test_ids):
+        raise ValueError("benchmark scope test_image_ids are invalid")
+    if not test_ids:
+        return {}
+
+    records: dict[str, dict[str, Any]] = {}
+    for raw_record in list(raw.get("images") or []):
+        if not isinstance(raw_record, Mapping):
+            continue
+        image_id = str(raw_record.get("image_id") or "").strip()
+        if not image_id:
+            continue
+        if image_id in records:
+            raise ValueError("benchmark scope contains duplicate image truth")
+        records[image_id] = dict(raw_record)
+
+    label_schema = []
+    seen_codes = set()
+    seen_classes = set()
+    for raw_label in list(raw.get("label_schema") or []):
+        if not isinstance(raw_label, Mapping):
+            continue
+        code = str(raw_label.get("code") or "").strip()
+        if not code:
+            continue
+        try:
+            class_id = int(raw_label.get("class_id"))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("benchmark scope label schema class_id is invalid") from error
+        if class_id < 0 or code in seen_codes or class_id in seen_classes:
+            raise ValueError("benchmark scope label schema is ambiguous")
+        seen_codes.add(code)
+        seen_classes.add(class_id)
+        label_schema.append({"class_id": class_id, "code": code})
+    label_schema.sort(key=lambda row: (row["class_id"], row["code"]))
+    label_schema_digest = hashlib.sha256(json.dumps(
+        label_schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+    content_truth = []
+    ground_truth = []
+    for image_id in sorted(test_ids):
+        record = records.get(image_id)
+        if record is None:
+            raise ValueError(f"benchmark test image {image_id} is missing from snapshot truth")
+        role = str(record.get("role") or "").strip()
+        if role and role != "test":
+            raise ValueError(f"benchmark image {image_id} is not frozen as test")
+        content_sha = _sha256_identity(record.get("content_sha256"), "benchmark content_sha256")
+        annotation_hash = _sha256_identity(record.get("annotation_hash"), "benchmark annotation_hash")
+        if not content_sha or not annotation_hash:
+            raise ValueError("benchmark scope requires content and annotation SHA256 truth")
+        annotation_state = str(record.get("annotation_state") or "").strip()
+        if annotation_state not in {"annotated", "confirmed_empty", "unannotated"}:
+            raise ValueError("benchmark scope annotation_state is invalid")
+        content_truth.append({"image_id": image_id, "content_sha256": content_sha})
+        ground_truth.append({
+            "image_id": image_id,
+            "annotation_hash": annotation_hash,
+            "annotation_state": annotation_state,
+        })
+
+    content_digest = hashlib.sha256(json.dumps(
+        content_truth, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    ground_truth_digest = hashlib.sha256(json.dumps(
+        {"label_schema_digest": label_schema_digest, "items": ground_truth},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    identity = {
+        "schema_version": EVALUATION_BENCHMARK_SCOPE_SCHEMA_VERSION,
+        "test_image_count": len(test_ids),
+        "content_digest": content_digest,
+        "ground_truth_digest": ground_truth_digest,
+        "label_schema_digest": label_schema_digest,
+    }
+    scope_id = hashlib.sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return {**identity, "scope_id": scope_id}
+
+
 def build_evaluation_truth(
     result: Mapping[str, Any] | None,
     *,
@@ -321,6 +425,7 @@ def build_evaluation_truth(
     dataset_revision_id: Any = "",
     model_sha256: Any = "",
     finished_at: Any = "",
+    benchmark_scope: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize one post-training blind-test result into version-owned truth."""
     raw = dict(result) if isinstance(result, Mapping) else {}
@@ -378,6 +483,30 @@ def build_evaluation_truth(
         "weak_label_threshold": round(_finite(protocol_raw.get("weak_label_threshold"), 0.75), 6),
         "iou_thresholds": [round(_finite(value), 6) for value in list(protocol_raw.get("iou_thresholds") or [])[:20]],
     }
+    evaluation_protocol_id = hashlib.sha256(json.dumps(
+        protocol, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    scope = {}
+    if isinstance(benchmark_scope, Mapping) and benchmark_scope:
+        try:
+            scope_schema = int(benchmark_scope.get("schema_version") or 0)
+            test_image_count = max(0, int(benchmark_scope.get("test_image_count") or 0))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("evaluation benchmark scope is invalid") from error
+        if scope_schema != EVALUATION_BENCHMARK_SCOPE_SCHEMA_VERSION or test_image_count <= 0:
+            raise ValueError("evaluation benchmark scope schema/count is invalid")
+        scope = {
+            "schema_version": scope_schema,
+            "scope_id": _sha256_identity(benchmark_scope.get("scope_id"), "benchmark scope_id"),
+            "test_image_count": test_image_count,
+            "content_digest": _sha256_identity(benchmark_scope.get("content_digest"), "benchmark content_digest"),
+            "ground_truth_digest": _sha256_identity(benchmark_scope.get("ground_truth_digest"), "benchmark ground_truth_digest"),
+            "label_schema_digest": _sha256_identity(benchmark_scope.get("label_schema_digest"), "benchmark label_schema_digest"),
+        }
+        if not all(scope.get(key) for key in ("scope_id", "content_digest", "ground_truth_digest", "label_schema_digest")):
+            raise ValueError("evaluation benchmark scope identity is incomplete")
+        if status == "succeeded" and max(0, int(raw.get("image_count") or 0)) != test_image_count:
+            raise ValueError("evaluation image_count does not match frozen benchmark scope")
     identity = {
         "schema_version": EVALUATION_SCHEMA_VERSION,
         "status": status,
@@ -393,6 +522,8 @@ def build_evaluation_truth(
         "ground_truth_box_count": max(0, int(raw.get("ground_truth_box_count") or 0)),
         "prediction_box_count": max(0, int(raw.get("prediction_box_count") or 0)),
         "protocol": protocol,
+        "evaluation_protocol_id": evaluation_protocol_id,
+        **({"benchmark_scope": scope} if scope else {}),
     }
     evaluation_id = hashlib.sha256(json.dumps(
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -571,6 +702,31 @@ def build_feedback_adoption_outcome(
     if str(new.get("status") or "").strip().lower() != "succeeded":
         reasons.append("new_evaluation_not_succeeded")
 
+    source_scope = source.get("benchmark_scope") if isinstance(source.get("benchmark_scope"), Mapping) else {}
+    new_scope = new.get("benchmark_scope") if isinstance(new.get("benchmark_scope"), Mapping) else {}
+    source_scope_id = _sha256_identity(source_scope.get("scope_id"), "source benchmark scope_id")
+    new_scope_id = _sha256_identity(new_scope.get("scope_id"), "new benchmark scope_id")
+    source_protocol_id = _sha256_identity(source.get("evaluation_protocol_id"), "source evaluation_protocol_id")
+    new_protocol_id = _sha256_identity(new.get("evaluation_protocol_id"), "new evaluation_protocol_id")
+    comparison_reasons: list[str] = []
+    if not reasons:
+        if not source_scope_id or not new_scope_id:
+            comparison_reasons.append("benchmark_scope_missing")
+        elif source_scope_id != new_scope_id:
+            comparison_reasons.append("benchmark_scope_mismatch")
+        if not source_protocol_id or not new_protocol_id:
+            comparison_reasons.append("evaluation_protocol_missing")
+        elif source_protocol_id != new_protocol_id:
+            comparison_reasons.append("evaluation_protocol_mismatch")
+    strictly_comparable = not reasons and not comparison_reasons
+    comparison_mode = (
+        "strict"
+        if strictly_comparable
+        else "descriptive"
+        if not reasons
+        else "unavailable"
+    )
+
     overall: dict[str, Any] = {}
     if not reasons:
         source_metrics = source.get("metrics") if isinstance(source.get("metrics"), Mapping) else {}
@@ -663,6 +819,13 @@ def build_feedback_adoption_outcome(
         "source_weak_labels": weak_labels,
         "weak_label_effects": weak_label_effects,
         "reason_codes": list(dict.fromkeys(reasons)),
+        "comparison_mode": comparison_mode,
+        "strictly_comparable": strictly_comparable,
+        "comparison_reason_codes": list(dict.fromkeys(comparison_reasons)),
+        "source_benchmark_scope_id": source_scope_id,
+        "new_benchmark_scope_id": new_scope_id,
+        "source_evaluation_protocol_id": source_protocol_id,
+        "new_evaluation_protocol_id": new_protocol_id,
         "descriptive_only": True,
         "automatic_execution": False,
     }

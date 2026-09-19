@@ -8940,12 +8940,16 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         finished_at=job.get("finished_at") or now_iso(),
     )
     from platform_core.training_evaluation import (
+        build_evaluation_benchmark_scope,
         build_evaluation_truth,
         build_feedback_adoption_outcome,
         build_iteration_decision,
     )
     training_report = job.get("training_report")
     training_report = training_report if isinstance(training_report, dict) else {}
+    benchmark_scope = build_evaluation_benchmark_scope(
+        snapshot_truth if isinstance(snapshot_truth, dict) else None
+    )
     evaluation = build_evaluation_truth(
         training_report.get("test_result"),
         task_id=str(job.get("task_id") or job.get("id") or ""),
@@ -8953,6 +8957,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         dataset_revision_id=dataset_revision_id,
         model_sha256=model_sha256,
         finished_at=job.get("finished_at") or now_iso(),
+        benchmark_scope=benchmark_scope,
     )
     iteration_decision = build_iteration_decision(
         evaluation,

@@ -78,6 +78,7 @@ jobs:
           grep -Fq '"training_lineage": training_lineage' app.py
           grep -Fq '"evaluation": evaluation' app.py
           grep -Fq '"iteration_decision": iteration_decision' app.py
+          grep -Fq 'def build_evaluation_benchmark_scope' platform_core/training_evaluation.py
           grep -Fq 'def build_evaluation_truth' platform_core/training_evaluation.py
           grep -Fq 'def build_iteration_decision' platform_core/training_evaluation.py
           grep -Fq 'def build_feedback_adoption_outcome' platform_core/training_evaluation.py
@@ -137,6 +138,9 @@ jobs:
           grep -Fq '迭代决策' static/app.js
           grep -Fq '系统仅给出建议，不会自动发起下一次训练' static/app.js
           grep -Fq '补数据效果' static/app.js
+          grep -Fq '严格可比' static/app.js
+          grep -Fq '评测基准' static/app.js
+          grep -Fq 'benchmark_scope=benchmark_scope' app.py
           grep -Fq '仅描述本次采用反馈后的评测变化，不会自动触发下一轮训练' static/app.js
           grep -Fq 'confirmIterationAction429' static/app.js
           grep -Fq 'resumeConfirmedIterationAction429' static/app.js

@@ -258,6 +258,9 @@ def test_feedback_adoption_outcome_compares_persisted_evaluations_and_source_wea
         new_version_id="new-v2",
     )
     assert outcome["status"] == "comparable"
+    assert outcome["comparison_mode"] == "descriptive"
+    assert outcome["strictly_comparable"] is False
+    assert "benchmark_scope_missing" in outcome["comparison_reason_codes"]
     assert outcome["automatic_execution"] is False
     assert outcome["descriptive_only"] is True
     assert outcome["overall_metrics"]["metrics/mAP50(B)"]["delta"] == 0.18
@@ -331,3 +334,157 @@ def test_feedback_adoption_outcome_requires_training_base_to_match_provenance():
             source_version_id="actual-training-base-v2",
             new_version_id="new-v3",
         )
+
+
+def _benchmark_snapshot(*, test_annotation_hash="b" * 64, train_hash="9" * 64):
+    return {
+        "schema_version": 3,
+        "test_image_ids": ["test-1"],
+        "label_schema": [{"class_id": 0, "code": "smoke"}],
+        "images": [
+            {
+                "image_id": "train-1", "role": "train",
+                "content_sha256": train_hash,
+                "annotation_hash": "8" * 64,
+                "annotation_state": "annotated",
+            },
+            {
+                "image_id": "test-1", "role": "test",
+                "content_sha256": "a" * 64,
+                "annotation_hash": test_annotation_hash,
+                "annotation_state": "annotated",
+            },
+        ],
+    }
+
+
+def test_evaluation_benchmark_scope_is_stable_for_same_test_truth_only():
+    first = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
+    train_changed = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(train_hash="7" * 64)
+    )
+    ground_truth_changed = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(test_annotation_hash="c" * 64)
+    )
+    assert first["scope_id"] == train_changed["scope_id"]
+    assert first["scope_id"] != ground_truth_changed["scope_id"]
+    assert first["test_image_count"] == 1
+    assert len(first["content_digest"]) == 64
+    assert len(first["ground_truth_digest"]) == 64
+
+
+def test_evaluation_truth_persists_benchmark_and_rejects_partial_test_execution():
+    import pytest
+    scope = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
+    result = evaluation.build_evaluation_truth(
+        {
+            "status": "succeeded",
+            "image_count": 1,
+            "metrics": {"metrics/mAP50(B)": 0.8},
+            "protocol": {
+                "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+                "operating_conf": 0.25,
+                "matching_iou": 0.5,
+                "iou_thresholds": [0.5, 0.55],
+            },
+        },
+        task_id="benchmark-task",
+        snapshot_id="1" * 64,
+        model_sha256="2" * 64,
+        benchmark_scope=scope,
+    )
+    assert result["benchmark_scope"]["scope_id"] == scope["scope_id"]
+    assert len(result["evaluation_protocol_id"]) == 64
+    with pytest.raises(ValueError, match="image_count"):
+        evaluation.build_evaluation_truth(
+            {"status": "succeeded", "image_count": 0},
+            task_id="partial-benchmark-task",
+            benchmark_scope=scope,
+        )
+
+
+def test_feedback_adoption_outcome_marks_same_benchmark_and_protocol_strictly_comparable():
+    scope = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
+    raw = {
+        "status": "succeeded",
+        "image_count": 1,
+        "metrics": {
+            "metrics/precision(B)": 0.7,
+            "metrics/recall(B)": 0.6,
+            "metrics/mAP50(B)": 0.65,
+            "metrics/mAP50-95(B)": 0.4,
+        },
+        "protocol": {
+            "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+            "operating_conf": 0.25,
+            "matching_iou": 0.5,
+            "iou_thresholds": [0.5, 0.55],
+        },
+    }
+    source = evaluation.build_evaluation_truth(
+        raw, task_id="strict-source", model_sha256="1" * 64,
+        benchmark_scope=scope,
+    )
+    current_raw = dict(raw)
+    current_raw["metrics"] = {
+        **raw["metrics"],
+        "metrics/recall(B)": 0.75,
+        "metrics/mAP50(B)": 0.8,
+    }
+    current = evaluation.build_evaluation_truth(
+        current_raw, task_id="strict-new", model_sha256="2" * 64,
+        benchmark_scope=scope,
+    )
+    provenance = {
+        "schema_version": 1,
+        "candidate_set_id": "a" * 64,
+        "adoption_id": "b" * 64,
+        "action_id": "c" * 64,
+        "version_id": "source-v1",
+    }
+    outcome = evaluation.build_feedback_adoption_outcome(
+        source, current, provenance,
+        source_version_id="source-v1", new_version_id="new-v2",
+    )
+    assert outcome["status"] == "comparable"
+    assert outcome["comparison_mode"] == "strict"
+    assert outcome["strictly_comparable"] is True
+    assert outcome["comparison_reason_codes"] == []
+    assert outcome["source_benchmark_scope_id"] == scope["scope_id"]
+    assert outcome["new_benchmark_scope_id"] == scope["scope_id"]
+
+
+def test_feedback_adoption_outcome_keeps_different_benchmarks_descriptive():
+    source_scope = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
+    new_scope = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(test_annotation_hash="c" * 64)
+    )
+    raw = {
+        "status": "succeeded", "image_count": 1,
+        "metrics": {"metrics/mAP50(B)": 0.7},
+        "protocol": {
+            "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+            "operating_conf": 0.25, "matching_iou": 0.5,
+        },
+    }
+    source = evaluation.build_evaluation_truth(
+        raw, task_id="descriptive-source", benchmark_scope=source_scope,
+    )
+    current = evaluation.build_evaluation_truth(
+        raw, task_id="descriptive-new", benchmark_scope=new_scope,
+    )
+    outcome = evaluation.build_feedback_adoption_outcome(
+        source, current,
+        {
+            "schema_version": 1,
+            "candidate_set_id": "a" * 64,
+            "adoption_id": "b" * 64,
+            "action_id": "c" * 64,
+            "version_id": "source-v1",
+        },
+        source_version_id="source-v1", new_version_id="new-v2",
+    )
+    assert outcome["status"] == "comparable"
+    assert outcome["comparison_mode"] == "descriptive"
+    assert outcome["strictly_comparable"] is False
+    assert "benchmark_scope_mismatch" in outcome["comparison_reason_codes"]
