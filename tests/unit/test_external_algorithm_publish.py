@@ -244,8 +244,9 @@ def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
     _seed_external_algorithm(tmp_path)
-    _seed_conversion(tmp_path, job_id="convert-rk3568", chip="rk3568", content=b"rk3568-model")
-    _seed_conversion(tmp_path, job_id="convert-rk3576", chip="rk3576", content=b"rk3576-model")
+    shared_bytes = b"same-rknn-bytes-different-chip-contract"
+    _seed_conversion(tmp_path, job_id="convert-rk3568", chip="rk3568", content=shared_bytes)
+    _seed_conversion(tmp_path, job_id="convert-rk3576", chip="rk3576", content=shared_bytes)
     service = _service(tmp_path, memory)
 
     result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
@@ -256,6 +257,8 @@ def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path
     assert {row["computePlatformId"] for row in FakePublishingClient.weights} == {"cp-rk"}
     artifacts = result["artifacts"]
     assert {row["chip_code"] for row in artifacts} == {"RK3568", "RK3576"}
+    assert len({row["artifact_id"] for row in artifacts}) == 2
+    assert len({row["source_sha256"] for row in artifacts}) == 1
 
 
 def test_republish_is_idempotent(tmp_path: Path):
