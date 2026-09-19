@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`7a1ade605b6a55e1fe9027a86dc6756af795456b`  
+本轮产品实现基线：`a54e0e735b27bde400b205fe1d07ede03903a973`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,55 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Feedback → Supplement Data Candidate v1
+
+2026-09-19，已确认线上反馈现在可以进入**版本级补数据候选集**，**Supplement Data Candidate v1 CLOSED**。候选集仍然只是补数据草稿 truth，不会自动创建 Dataset Revision、Snapshot 或训练任务。
+
+当前正式语义：
+
+- 只有 `status=confirmed` 且与当前 algorithm/version 完全一致的 feedback 才进入候选查询；`pending_review / dismissed` 不会出现。
+- 每条候选由后端读取当前 MaterialRepository + AnnotationRepository truth，冻结：
+  - feedback_id / feedback_type；
+  - material_id；
+  - algorithm_id / version_id；
+  - model SHA256 / input SHA256；
+  - 当前 annotation_state / annotation_hash / annotation_scope / labels；
+  - confirmed_at / source channel。
+- 后端统一给出 `eligible / reason_codes / candidate_digest`；前端不自行判断可用性。
+- `needs_correction` 在正式标注仍为 unannotated 时只能显示“待人工标注”，不能加入候选集；人工标注完成后才可成为 eligible。
+- 用户在“继续补数据”中显式勾选后提交 `feedback_id + candidate_digest`；冻结时服务端重新读取素材/标注 truth。查看后素材或标注变化会 409 fail closed。
+- 冻结结果作为当前 Algorithm Version 的 `supplement_data_candidate_set` 长期保存：
+  - deterministic candidate_set_id；
+  - action_id；
+  - feedback_ids / material_ids；
+  - 每条 annotation_hash / candidate_digest / model/input identity；
+  - `automatic_execution=false`。
+- 同一 candidate set 重试幂等；同一版本若已经冻结另一组 candidate set，拒绝覆盖，避免 lineage 漂移。
+- 前端继续复用现有“数据集”页，不新增平行页面：
+  - 先展示后端反馈候选；
+  - eligible 默认可勾选，未完成标注候选不可勾；
+  - “冻结并进入数据集”后展示 Candidate Set；
+  - 可切换“仅看反馈候选 / 显示全部素材”；
+  - 页面明确提示“尚未生成 Dataset Revision、Snapshot 或训练任务”。
+- Candidate v1 不修改 Dataset Revision / Snapshot owner，也不调用 `/train/start`。
+- Real Chrome 覆盖：confirmed supplement_data → 候选弹窗 → eligible/ineligible truth → freeze → 数据集页 Candidate Set banner，并永久断言没有自动训练/Revision。
+
+Acceptance HEAD：`a54e0e735b27bde400b205fe1d07ede03903a973`。
+
+- Online Feedback Runtime push `35428464451`：Ubuntu / Windows contract / Real Chrome 全部 success。
+- Online Feedback Runtime PR `35428467030`：Ubuntu / Windows contract / Real Chrome 全部 success。
+- 当前 code HEAD `a54e0e735b27bde400b205fe1d07ede03903a973`：17 个相关 workflows，0 failure / 0 pending；Node Agent Executor API / Ubuntu / Windows 也全部 success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一主线：Supplement Candidate Set → Dataset Revision / Snapshot / Training Lineage v1。**
+
+1. 用户真正提交训练前，必须重新核对 candidate set 中的 material content identity 与 annotation_hash；变化则 fail closed。
+2. 新 Dataset Revision / Snapshot 必须携带 candidate_set_id 与 feedback IDs 的可追溯 provenance。
+3. Training Lineage / Algorithm Version 必须保存该 candidate set identity，使新模型能反向追到具体反馈。
+4. 仍由用户在既有训练配置中确认最终素材范围；candidate set 不能自动发起训练。
+5. 若最终训练选择只使用 candidate set 的一部分，必须冻结“实际采用的 feedback/material 子集”，不能把未使用反馈写进 lineage。
+6. Rockchip 实机 acceptance 继续独立 OPEN。
 
 # 最新关闭：Online Algorithm Sampling / Feedback v1
 

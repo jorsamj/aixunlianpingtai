@@ -6,6 +6,29 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Feedback → Supplement Data Candidate v1
+
+2026-09-19，confirmed online feedback 已接入现有 supplement_data 数据草稿，CLOSED。
+
+- 只查询当前 algorithm/version 的 confirmed feedback。
+- Candidate truth 由后端基于 MaterialRepository + AnnotationRepository 生成；前端只消费 `eligible/reason_codes/candidate_digest`。
+- needs_correction 未完成正式标注时不可冻结。
+- freeze 使用 feedback_id + candidate_digest 二次校验，素材/标注变化 fail closed。
+- candidate set 作为 Algorithm Version 长期 truth 持久化，单版本 immutable：同 set 幂等，不同 set 冲突。
+- 不新建数据库 owner、不创建 Dataset Revision/Snapshot、不创建 TRAINING。
+- 前端复用数据集页，Real Chrome 覆盖 review → freeze → dataset。
+- Central Scheduler / Agent / Training owners 均未改变。
+
+Acceptance HEAD：`a54e0e735b27bde400b205fe1d07ede03903a973`。
+
+- Online Feedback Runtime push `35428464451`：Ubuntu / Windows contract / Real Chrome 全部 success。
+- Online Feedback Runtime PR `35428467030`：Ubuntu / Windows contract / Real Chrome 全部 success。
+- 当前 code HEAD `a54e0e735b27bde400b205fe1d07ede03903a973`：17 个相关 workflows，0 failure / 0 pending；Node Agent Executor API / Ubuntu / Windows 也全部 success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**NEXT：Candidate Set → Dataset Revision / Snapshot / Training Lineage v1。**
+训练提交前重新验证冻结素材/标注 identity；只有实际进入训练选择的 feedback 子集才能进入 Revision/Snapshot/Lineage。
+
 ## 0. 最新关闭：Online Algorithm Sampling / Feedback v1
 
 2026-09-19，线上抽检与外部回流已接入 reviewed feedback owner，CLOSED。

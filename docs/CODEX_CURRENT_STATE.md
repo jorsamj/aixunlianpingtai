@@ -3,6 +3,46 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Feedback → Supplement Data Candidate v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Confirmed online feedback now enters a version-owned supplement-data candidate
+workflow without introducing a second data or training owner.
+
+Only confirmed feedback bound to the exact current algorithm/version is
+considered. The backend joins feedback with current MaterialRepository and
+AnnotationRepository truth and returns authoritative `eligible`,
+`reason_codes`, and `candidate_digest` values. Pending/dismissed feedback is
+excluded. A needs-correction sample remains ineligible until formal annotation
+truth exists.
+
+The user explicitly selects candidates. Freeze posts feedback IDs together with
+the observed candidate digests; the server rereads current material/annotation
+truth and fails closed when it changed. The resulting
+`supplement_data_candidate_set` is stored on the Algorithm Version with a
+deterministic candidate_set_id, feedback/material IDs, annotation hashes, and
+model/input identities. Repeating the same set is idempotent; a different set
+cannot overwrite the frozen version truth.
+
+Frontend Impact Review is complete. The existing Dataset page is reused:
+review candidate list → freeze → Dataset page candidate banner/filter. No
+parallel page or owner was added, and the UI explicitly states that no Dataset
+Revision, Snapshot, or TRAINING task exists yet.
+
+Acceptance HEAD: `a54e0e735b27bde400b205fe1d07ede03903a973`.
+
+- Online Feedback Runtime push `35428464451`：Ubuntu / Windows contract / Real Chrome 全部 success。
+- Online Feedback Runtime PR `35428467030`：Ubuntu / Windows contract / Real Chrome 全部 success。
+- 当前 code HEAD `a54e0e735b27bde400b205fe1d07ede03903a973`：17 个相关 workflows，0 failure / 0 pending；Node Agent Executor API / Ubuntu / Windows 也全部 success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**NEXT:** Supplement Candidate Set → Dataset Revision / Snapshot / Training
+Lineage v1. Before training submit, revalidate candidate material/annotation
+identities and carry only the actually selected feedback subset into revision,
+snapshot, training lineage, and the produced Algorithm Version. Automatic
+training remains forbidden.
+
 ## Current closure — Online Algorithm Sampling / Feedback v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
