@@ -8570,6 +8570,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     )
     execution_resource = job.get("execution_resource")
     execution_resource = execution_resource if isinstance(execution_resource, dict) else {}
+    model_sha256 = sha256_file(dst)
     training_lineage = build_training_lineage(
         task_id=str(job.get("task_id") or job.get("id") or ""),
         snapshot_id=snapshot_id,
@@ -8593,13 +8594,24 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         artifacts=[{
             "role": "primary",
             "file_name": model_name,
-            "sha256": sha256_file(dst),
+            "sha256": model_sha256,
             "size_bytes": int(dst.stat().st_size),
             "verified": bool(job.get("artifact_verified")),
         }],
         training_status=("PARTIAL_SUCCESS" if normalized_status == "PARTIAL_SUCCESS" else "SUCCEEDED"),
         training_outcome=job.get("training_outcome"),
         completion_reason=job.get("completion_reason"),
+        finished_at=job.get("finished_at") or now_iso(),
+    )
+    from platform_core.training_evaluation import build_evaluation_truth
+    training_report = job.get("training_report")
+    training_report = training_report if isinstance(training_report, dict) else {}
+    evaluation = build_evaluation_truth(
+        training_report.get("test_result"),
+        task_id=str(job.get("task_id") or job.get("id") or ""),
+        snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
+        model_sha256=model_sha256,
         finished_at=job.get("finished_at") or now_iso(),
     )
     version={
@@ -8614,6 +8626,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         "snapshot_id": snapshot_id,
         "dataset_revision_id": dataset_revision_id,
         "training_lineage": training_lineage,
+        "evaluation": evaluation,
         "result_ref": str(job.get("result_ref") or ""),
         "task_id": str(job.get("task_id") or job.get("id") or ""),
         "base_version_id": str(job.get("base_version_id") or "").strip() or None,

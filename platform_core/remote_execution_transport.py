@@ -40,6 +40,7 @@ from .storage.zip_import import safe_member_path
 from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .storage import StorageProviderFactory, StorageType
 from .training_lineage import build_training_lineage
+from .training_evaluation import build_evaluation_truth
 
 
 REMOTE_TRANSFER_TTL_SECONDS = 900
@@ -3156,6 +3157,18 @@ class RemoteExecutionTransportService:
         selected_gpu = dict(selected_gpu) if isinstance(selected_gpu, Mapping) else {}
         actual_params = report.get("configuration")
         actual_params = dict(actual_params) if isinstance(actual_params, Mapping) else {}
+        primary_model = next(
+            (item for item in committed_models if str(item.get("role") or "") == primary_role),
+            committed_models[0] if committed_models else {},
+        )
+        evaluation = build_evaluation_truth(
+            report.get("test_result") if isinstance(report.get("test_result"), Mapping) else {},
+            task_id=str(task.task_id),
+            snapshot_id=str(training.get("snapshot_id") or ""),
+            dataset_revision_id=str(training.get("dataset_revision_id") or ""),
+            model_sha256=str(primary_model.get("sha256") or ""),
+            finished_at=finished_at,
+        )
         training_lineage = build_training_lineage(
             task_id=str(task.task_id),
             snapshot_id=str(training.get("snapshot_id") or ""),
@@ -3220,6 +3233,7 @@ class RemoteExecutionTransportService:
             "snapshot_id": str(training.get("snapshot_id") or ""),
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
             "training_lineage": training_lineage,
+            "evaluation": evaluation,
             "result_ref": f"remote-results/{generation}/result.json",
             "task_id": str(task.task_id),
             "job_id": str(task.task_id),
