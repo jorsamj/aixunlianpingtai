@@ -67,6 +67,14 @@ export function publicationPreflight(status = {}) {
   if (status.conversion_active) {
     return {ready: false, message: '模型转换仍在进行，请等待转换完成后再同步到新畅联。'};
   }
+  if (status.transport_ready === false) {
+    const issues = Array.isArray(status.transport_issues) ? status.transport_issues : [];
+    const detail = issues.map(row => row?.message).filter(Boolean).join('；');
+    return {
+      ready: false,
+      message: detail || '模型发布传输配置尚未就绪，请先配置外部访问地址和模型资产存储。',
+    };
+  }
   const discovered = Array.isArray(status.discovered) ? status.discovered : [];
   if (!discovered.length) {
     return {ready: false, message: '当前版本还没有可发布的转换产物，请先完成模型转换。'};
