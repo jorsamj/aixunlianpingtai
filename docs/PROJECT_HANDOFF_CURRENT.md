@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`c6c7289b3a13d20053e1a8aed44525a4901f5059`  
+本轮产品实现基线：`d11d0e16998e7630bbc5811a937ba3c21395548e`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,67 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Training Evaluation / Iteration Decision v1
+
+2026-09-19，Dataset Revision → Snapshot → TRAINING → Algorithm Version 之后的正式独立评测与迭代决策已闭环，**Training Evaluation / Iteration Decision v1 CLOSED**。没有创建第二套训练 owner，也没有由前端自行推算结论。
+
+当前正式语义：
+
+- 训练完成后，算法版本继续持久化 frozen test split 的独立评测 truth：
+  - overall Precision / Recall / mAP50 / mAP50-95；
+  - per-label Precision / Recall / mAP；
+  - TP / FP / FN；
+  - weak labels；
+  - FP/FN 问题样本；
+  - evaluation_id / task_id / snapshot_id / dataset_revision_id / model SHA256。
+- 新增 version-owned `iteration_decision.schema_version=1`，由后端 `build_iteration_decision()` 从 **persisted evaluation + 原训练 quality_gate** 确定性生成。
+- 决策继续复用已有训练门禁语义，不新造阈值体系：
+  - 未配置独立评测 / 评测失败 / 指标不可用 / 未配置 stop threshold → `review_required`；
+  - 存在 weak labels → `needs_data`；
+  - 最终指标低于原 `continue_threshold` → `needs_data`；
+  - 指标位于 continue / stop threshold 之间 → `continue_training`；
+  - 达到原 `stop_threshold` 且不存在 weak labels → `ready_for_business_validation`。
+- decision 同时冻结：
+  - metric / metric_key / metric_value；
+  - continue_threshold / stop_threshold；
+  - weak label 优先顺序；
+  - FP / FN / problem sample signals；
+  - reason_codes；
+  - recommended_actions；
+  - deterministic decision_id。
+- decision 明确 `automatic_execution=false`、`requires_confirmation=true`：本阶段**只形成正式建议，不自动补数据、不自动创建下一次训练任务、不改变已 CLOSED 的转换触发语义**。
+- Algorithm SQL Store round-trip 已覆盖 `iteration_decision`，历史 job 清理后版本仍保留完整决策 truth。
+- Frontend Impact Review 已同批完成：
+  - “独立评测”弹窗直接读取 `version.evaluation + version.iteration_decision`；
+  - 页面不重新读取历史 job，也不按自己的阈值重新计算；
+  - 显示“可进入业务验证 / 需补充数据 / 建议继续训练 / 需人工确认”；
+  - 显示使用指标、继续训练下限、达标阈值、弱标签建议、FP/FN 问题样本；
+  - 明确展示“系统仅给出建议，不会自动发起下一次训练”；
+  - Real Chrome 已验证正式算法列表 → 版本 → 独立评测 → 迭代决策链。
+- weak label 顺序保持评测侧“更弱优先”的原始顺序，不再被字母排序破坏。
+
+最终代码验收 HEAD：`d11d0e16998e7630bbc5811a937ba3c21395548e`。
+
+最终验收：
+
+- 当前代码 HEAD 共 **17 个 workflow：17 success / 0 failure / 0 pending**。
+- Algorithm SQL Store push `35422469494`：contracts + Real Chrome success。
+- Remote Training Runtime push `35422469499`：Windows / Ubuntu preparation contracts + API success。
+- Training Input Integrity、GPU Runtime Truth、Central Node Assignment、Task Runtime Truth、Node Agent Executor、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、Remote RKNN Board Runtime Protocol、Storage Cache Governance、External Algorithm Platform / Publish 全部 success。
+- Algorithm SQL Store unit 已验证 decision contract、确定性 decision_id、SQL round-trip。
+- Real Chrome 已验证 UI 读取 persisted decision truth，且不重新请求历史 `/jobs`。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一软件主线：Iteration Decision → Confirmed Action v1。**
+
+1. `needs_data`：基于 weak labels + FP/FN 问题样本生成“补数据草稿/入口”，由用户确认素材范围；不得自动改 Dataset Revision。
+2. `continue_training`：复用现有算法训练入口，预填当前算法/当前版本/建议关注标签，用户确认后才创建新的 Durable TRAINING。
+3. `ready_for_business_validation`：进入业务验证/部署验证入口；不在本阶段偷偷改变既有自动转换 owner/门槛。
+4. `review_required`：保持人工确认，不自动执行。
+5. 所有动作必须引用原 `decision_id / evaluation_id / dataset_revision_id / snapshot_id / version_id`，形成下一轮 lineage，不建立第二套训练或数据 owner。
+6. 后续线上算法抽检/回流仍接入同一 Dataset Revision → TRAINING → Evaluation → Iteration Decision 链。
+7. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 继续独立 OPEN。
 
 # 最新关闭：Training Lineage / Algorithm Version Provenance v1
 

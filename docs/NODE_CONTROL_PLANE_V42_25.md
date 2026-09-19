@@ -6,6 +6,35 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Training Evaluation / Iteration Decision v1
+
+2026-09-19，现有 Durable TRAINING → Algorithm Version 控制面已补齐正式独立评测后的迭代决策，CLOSED。
+
+- Evaluation 与 Iteration Decision 都由算法版本长期持有，不新增 task owner / DB owner。
+- decision 使用 server-confirm/归档后的版本 truth：evaluation_id、dataset revision、snapshot、model SHA、总体/标签级指标、FP/FN、weak labels。
+- 决策复用原 TRAINING quality gate：
+  - `review_required`
+  - `needs_data`
+  - `continue_training`
+  - `ready_for_business_validation`
+- 原 `eval_metric / continue_threshold / stop_threshold` 语义保持不变；没有第二套前端阈值。
+- decision_id 确定性生成，weak label 严重程度顺序保留。
+- `automatic_execution=false`、`requires_confirmation=true`；Central Scheduler 不会因为 decision 自动派发另一条 TRAINING。
+- Algorithm SQL Store 保持 decision round-trip；历史 job 清理不影响版本决策。
+- Frontend Impact Review 已完成：算法版本“独立评测”读取 persisted decision，显示决策/阈值/建议动作/FP-FN 信号，不自行推算，也不重取历史 job。
+- Real Chrome 已覆盖版本 → 独立评测 → 迭代决策。
+
+最终代码验收 HEAD：`d11d0e16998e7630bbc5811a937ba3c21395548e`。
+
+- 17 workflow 全部 success，0 failure / 0 pending。
+- Algorithm SQL Store `35422469494`：contracts + Real Chrome success。
+- Remote Training Runtime `35422469499`：Windows / Ubuntu + API success。
+- Node Agent Executor、Central Node Assignment、Task Runtime Truth、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、Remote RKNN Board Runtime Protocol 等共享回归全部 success。
+- `VERSION.txt = 42.24.0`。
+
+**下一主线：Iteration Decision → Confirmed Action v1。**
+决策只负责产生 truth，下一阶段才把它接到用户确认后的补数据草稿、继续训练草稿、业务验证入口；所有后续 Durable TRAINING 仍走现有 Scheduler / lease / generation / server-confirm owner，不得新造自动回炉 owner。Rockchip 真实板卡 acceptance 继续独立 OPEN。
+
 ## 0. 最新关闭：Training Lineage / Algorithm Version Provenance v1
 
 2026-09-19，训练结果到算法版本的可追溯链已进入正式控制面 truth，CLOSED。

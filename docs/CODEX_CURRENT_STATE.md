@@ -3,6 +3,60 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Training Evaluation / Iteration Decision v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The existing algorithm-version owner now persists both blind-test `evaluation`
+truth and a deterministic `iteration_decision` v1. No second training owner,
+evaluation database, or frontend-derived decision path was introduced.
+
+`build_iteration_decision()` consumes the persisted evaluation plus the
+training task's existing quality gate. It therefore reuses the already-defined
+`eval_metric / continue_threshold / stop_threshold` semantics instead of
+inventing a second threshold system.
+
+The persisted decision states are:
+
+- `review_required`: independent evaluation is absent/failed, its metric is
+  unavailable, or no final stop threshold was configured.
+- `needs_data`: weak labels are present or the final metric falls below the
+  original continue threshold.
+- `continue_training`: the metric is above the continue threshold but below
+  the configured stop threshold.
+- `ready_for_business_validation`: the stop threshold is reached and there
+  are no weak labels.
+
+The version also freezes metric name/key/value, both thresholds, ordered weak
+labels, FP/FN/problem-sample signals, reason codes, recommended actions and a
+stable decision ID. `automatic_execution=false` and
+`requires_confirmation=true`: this closure does not create a new training
+task, mutate data, or silently change conversion semantics.
+
+Algorithm SQL Store round-trip preserves `iteration_decision`. Frontend Impact
+Review is complete: the stable version evaluation modal reads only persisted
+`version.evaluation + version.iteration_decision`, shows the backend decision
+and recommended actions, and explicitly states that no next training run is
+started automatically. Real Chrome verifies this without historical `/jobs`
+refetch.
+
+Acceptance code HEAD: `d11d0e16998e7630bbc5811a937ba3c21395548e`.
+
+- 17 workflows: 17 success / 0 failure / 0 pending.
+- Algorithm SQL Store push `35422469494`: contracts + Real Chrome success.
+- Remote Training Runtime push `35422469499`: Windows / Ubuntu contracts + API success.
+- Shared Training / Scheduler / Agent / Material / Cleaning / Conversion / RKNN
+  / Deployment regressions are green.
+- `VERSION.txt` remains `42.24.0`.
+
+**OPEN / next:** Iteration Decision → Confirmed Action v1. Wire the persisted
+decision to explicit user-confirmed product actions: weak-label/data supplement
+draft, current-version retraining draft, business-validation entry, or manual
+review. Every action must carry decision/evaluation/version/dataset/snapshot
+identity into the next lineage and must reuse the existing Durable TRAINING and
+data owners. Online algorithm sampling/feedback can then enter this same chain.
+Rockchip physical-board acceptance remains independently OPEN.
+
 ## Current closure — Training Lineage / Algorithm Version Provenance v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
