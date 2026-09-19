@@ -735,3 +735,84 @@ def test_agent_yolo_storage_rescan_uses_same_durable_owner_and_format_contract(
     assert calls[-1]["import_format"] == "yolo"
     assert calls[-1]["dataset_yaml"] == "datasets/fire/data.yaml"
     assert "credentials" not in str(request).lower()
+
+
+def test_yolo_rescan_confirmation_freezes_intent_before_label_creation(
+    client, monkeypatch,
+):
+    project = _project(client)
+    task_id = uuid.uuid4().hex
+    artifacts = app_module.shared_task_artifacts()
+    repository = app_module.shared_task_repository()
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "mode": "storage_rescan",
+        "execution_mode": "local",
+        "storage_source_id": "default_local",
+        "import_format": "yolo",
+        "dataset_yaml": "data.yaml",
+    })
+    repository.create(TaskRecord.new(
+        task_id,
+        project["id"],
+        TaskKind.MATERIAL_IMPORT,
+        "request.json",
+        f"storage:rescan-confirm-{task_id}",
+        priority=1,
+        required_capabilities=("storage.rescan",),
+    ))
+    lease = repository.claim_next(
+        f"rescan-confirm-test-{task_id}",
+        (TaskKind.MATERIAL_IMPORT,),
+        {"storage.rescan"},
+    )
+    assert lease is not None and lease.task.task_id == task_id
+    repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        None,
+    )
+
+    events = []
+    import platform_core.storage.rescan_tasks as rescan_tasks
+
+    def fake_confirm(_artifacts, _task_id, _policy, annotation_confirmation=None):
+        assert annotation_confirmation == {
+            "label_mapping": {"0": "smoke"},
+            "create_labels": ["smoke"],
+            "accept_quality_report": False,
+        }
+        events.append("freeze")
+        return _policy
+
+    def fake_resolve(_classes, *, label_mapping=None, create_labels=None, labels):
+        assert label_mapping == {"0": "smoke"}
+        assert create_labels == ["smoke"]
+        return {"0": "smoke"}, ["smoke"]
+
+    def fake_ensure_label(_project, code):
+        assert code == "smoke"
+        assert events == ["freeze"]
+        events.append("label")
+        return code
+
+    monkeypatch.setattr(rescan_tasks, "confirm_rescan", fake_confirm)
+    monkeypatch.setattr(app_module, "resolve_external_label_mapping", fake_resolve)
+    monkeypatch.setattr(app_module, "ensure_label", fake_ensure_label)
+
+    response = client.post(
+        f"/api/v61/projects/{project['id']}/storage-rescans/{task_id}/confirm",
+        json={
+            "new": "ignore",
+            "missing": "ignore",
+            "changed": "ignore",
+            "annotation_changed": "update",
+            "annotation_removed": "keep",
+            "annotation_conflicts": "keep",
+            "label_mapping": {"0": "smoke"},
+            "create_labels": ["smoke"],
+            "accept_quality_report": False,
+        },
+    )
+    assert response.status_code == 202, response.text
+    assert events == ["freeze", "label"]
