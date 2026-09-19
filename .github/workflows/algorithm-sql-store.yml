@@ -13,6 +13,8 @@ on:
       - platform_core/algorithms.py
       - platform_core/external_algorithm_platform.py
       - platform_core/external_algorithm_publish.py
+      - static/app.js
+      - tests/browser/algorithm-list-performance.spec.mjs
       - tests/unit/test_algorithm_sql_store.py
       - tests/unit/test_training_lineage.py
       - tests/unit/test_algorithm_sql_app_contract.py
@@ -83,3 +85,32 @@ jobs:
           test ! -e .github/workflows/algorithm-sql-migration-one-shot.yml
           test ! -e .github/workflows/algorithm-sql-crud-one-shot.yml
           test ! -e .github/workflows/algorithm-sql-read-bypass-one-shot.yml
+
+
+  real-chrome-lineage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome algorithm version lineage
+        run: npx playwright test tests/browser/algorithm-list-performance.spec.mjs
+      - name: Lineage UI permanent guard
+        run: |
+          grep -Fq 'openVersionLineage429' static/app.js
+          grep -Fq '训练溯源' static/app.js
+          grep -Fq 'algorithm version exposes persisted training lineage without job refetch' tests/browser/algorithm-list-performance.spec.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
