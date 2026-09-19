@@ -888,6 +888,21 @@ def enrich_job_runtime(
                 job["snapshot_id"] = snapshot_id
             if revision_id:
                 job["dataset_revision_id"] = revision_id
+        if durable.result_ref:
+            durable_result = shared_task_artifacts().read_json(
+                durable.task_id,
+                durable.result_ref,
+                default={},
+            )
+            if isinstance(durable_result, dict):
+                dataset_manifest_ref = str(
+                    durable_result.get("dataset_manifest_ref") or ""
+                ).strip()
+                if dataset_manifest_ref:
+                    # Training version archival consumes this exact task-owned
+                    # evidence. Keep the overlay deliberately whitelisted:
+                    # legacy job JSON must not become a second copy of result truth.
+                    job["dataset_manifest_ref"] = dataset_manifest_ref
         if durable.error:
             job["error"] = durable.error
             job["message"] = durable.error
