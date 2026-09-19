@@ -845,6 +845,7 @@ class ExternalAlgorithmPlatformService:
         return {
             "ok": True,
             "ready": not blocking,
+            "scope": "master_data_training",
             "provider": "changlian",
             "auth_type": "application_credentials",
             "human_login_required": False,
