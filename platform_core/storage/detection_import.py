@@ -338,6 +338,7 @@ class DetectionDatasetScanner:
 
         names: dict[int, str] = {}
         seen_splits: dict[str, str] = {}
+        seen_annotation_sources: dict[str, str] = {}
         seen_hashes: set[str] = set()
         missing_images = 0
         total_boxes = 0
@@ -388,7 +389,14 @@ class DetectionDatasetScanner:
                         "DETECTION_SPLIT_AMBIGUOUS",
                         "one image is referenced by multiple dataset splits",
                     )
+                previous_source = seen_annotation_sources.get(key)
+                if previous_source and previous_source != annotation_key:
+                    raise DetectionImportError(
+                        "COCO_IMAGE_AMBIGUOUS",
+                        "one image is referenced by multiple COCO annotation documents",
+                    )
                 seen_splits[key] = split
+                seen_annotation_sources[key] = annotation_key
                 candidate = self._inspect(key, seen_hashes)
                 candidate_batch.append(candidate)
                 if len(candidate_batch) >= BATCH_SIZE:

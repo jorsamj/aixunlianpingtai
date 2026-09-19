@@ -223,3 +223,28 @@ def test_coco_rescan_can_add_unreferenced_images_without_rereading_existing_cand
     assert {row["object_key"] for row in store.iter_candidates()} == {
         "dataset/train/a.jpg", "dataset/extra.jpg",
     }
+
+
+def test_coco_scan_rejects_same_image_from_multiple_annotation_documents(tmp_path):
+    import pytest
+
+    image = _jpg()
+    first = json.dumps({
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 100, "height": 80}],
+        "annotations": [],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }).encode()
+    second = json.dumps({
+        "images": [{"id": 2, "file_name": "a.jpg", "width": 100, "height": 80}],
+        "annotations": [],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }).encode()
+    payloads = {
+        "dataset/train/a.jpg": image,
+        "dataset/train/annotations-a.json": first,
+        "dataset/train/annotations-b.json": second,
+    }
+    scanner, _store = _scanner(tmp_path, payloads)
+
+    with pytest.raises(Exception, match="multiple COCO annotation documents"):
+        scanner.scan("coco", prefix="dataset", recursive=True)
