@@ -399,14 +399,23 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
     localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'算法列表'}));
   },project.id);
   await page.goto('/');
-  await page.evaluate(async()=>{
+  await expect.poll(async()=>page.evaluate(projectId=>(state.projects||[]).some(row=>String(row.id)===String(projectId)),project.id)).toBe(true);
+  await page.evaluate(async projectId=>{
+    const selected=(state.projects||[]).find(row=>String(row.id)===String(projectId));
+    if(!selected)throw new Error('test project is missing from loaded project truth');
+    state.project=selected;
+    try{
+      const saved=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');
+      saved.projectId=projectId;saved.page='算法列表';
+      localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(saved));
+    }catch(_){}
     await window.AlgorithmListRuntime?.refresh?.({render:false});
     state.images=[{
       id:'material-ready',filename:'feedback-ready.jpg',annotated:true,processing_status:'processed',
       labels:['smoke'],size_bytes:100,created_at:'2026-09-19T06:00:00Z',url:'/static/placeholder.png',
     }];
     await window.resumeConfirmedIterationAction429('algo-supp','ver-supp');
-  });
+  },project.id);
 
   const dialog=page.getByRole('dialog',{name:'补数据反馈候选'});
   await expect(dialog).toContainText('可直接加入 1 条');
