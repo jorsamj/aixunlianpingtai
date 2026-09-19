@@ -266,6 +266,8 @@ def create_training_result_archive(
             "best_epoch",
             "completed_epochs",
             "requested_epochs",
+            "runtime_stop_policy",
+            "quality_gate",
             "actual_device",
             "assigned_device",
             "requested_device",

@@ -25,3 +25,11 @@ test('final deployment test consumes unified durable queue and progress truth wh
   assert.match(finalLayer,/runtimeText/);
   assert.doesNotMatch(finalLayer,/\['QUEUED','RUNNING','CANCEL_REQUESTED'\]\.includes\(task\.status\)/);
 });
+
+
+test('rockchip conversion UI only permits RK3568 and RK3576',()=>{
+  assert.doesNotMatch(source,/rk3588/i);
+  assert.match(source,/瑞芯微转换仅支持 RK3568 或 RK3576/);
+  assert.match(source,/rk3568/);
+  assert.match(source,/rk3576/);
+});

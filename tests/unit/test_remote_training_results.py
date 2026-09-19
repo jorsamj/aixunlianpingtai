@@ -25,6 +25,12 @@ def _job(project: Path):
         "completion_reason": "requested_epochs_completed",
         "completed_epochs": 3,
         "requested_epochs": 3,
+        "runtime_stop_policy": "target_only",
+        "quality_gate": {
+            "runtime_stop_policy": "target_only",
+            "stop_threshold": 0.9,
+            "eval_interval": 10,
+        },
         "best_path": str(best),
         "last_path": str(last),
         "verified_models": [str(best), str(last)],
@@ -63,6 +69,8 @@ def test_training_result_archive_round_trip_verifies_identity_and_models(tmp_pat
         expected_snapshot_id="snapshot-one",
     )
     assert verified.manifest["training_outcome"] == "completed"
+    assert verified.manifest["completion"]["runtime_stop_policy"] == "target_only"
+    assert verified.manifest["completion"]["quality_gate"]["runtime_stop_policy"] == "target_only"
     assert verified.manifest["training_report"]["metrics"]["metrics/mAP50(B)"] == 0.75
     assert {row["role"] for row in verified.models} == {"best", "last"}
     assert all((verified.root / row["ref"]).is_file() for row in verified.models)

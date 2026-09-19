@@ -82,6 +82,7 @@ def _portable_params(payload: Mapping[str, Any]) -> dict[str, Any]:
         value = payload[key]
         if value is None or isinstance(value, (str, int, float, bool)):
             result[key] = value
+    result["runtime_stop_policy"] = "target_only"
     return result
 
 

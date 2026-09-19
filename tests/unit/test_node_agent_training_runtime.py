@@ -414,6 +414,7 @@ def training_lease(tmp_path, *, generation=3, model=None):
             "optimizer": "auto",
             "seed": 9,
             "resource_strategy": "auto",
+            "runtime_stop_policy": "target_only",
         },
         "result": {
             "type": "object",
@@ -469,6 +470,7 @@ parser.add_argument("--assigned-device", required=True)
 parser.add_argument("--requested-device", required=True)
 parser.add_argument("--job-id", required=True)
 parser.add_argument("--run-name", required=True)
+parser.add_argument("--runtime-stop-policy", required=True)
 args, _unknown = parser.parse_known_args()
 
 runtime_root = Path(__file__).resolve().parent
@@ -484,6 +486,7 @@ runtime_root.joinpath("worker-args.json").write_text(
         "requested_device": args.requested_device,
         "job_id": args.job_id,
         "run_name": args.run_name,
+        "runtime_stop_policy": args.runtime_stop_policy,
     }}, sort_keys=True),
     encoding="utf-8",
 )
@@ -521,6 +524,7 @@ job.update({{
     "completion_reason": "requested_epochs_completed",
     "completed_epochs": 3,
     "requested_epochs": 3,
+    "runtime_stop_policy": args.runtime_stop_policy,
     "requested_device": args.requested_device,
     "assigned_device": args.assigned_device,
     "actual_device": args.assigned_device,
@@ -604,6 +608,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
     assert args["device"] == "cuda:1"
     assert args["assigned_device"] == "cuda:1"
     assert args["requested_device"] == "auto"
+    assert args["runtime_stop_policy"] == "target_only"
     assert args["model"] == "yolo11n.pt"
     assert Path(args["data"]).name == "data.yaml"
 
@@ -616,6 +621,7 @@ def test_real_subprocess_remote_training_success(tmp_path):
         assert manifest["execution_generation"] == current.generation
         assert manifest["snapshot_id"] == "snapshot-agent"
         assert manifest["model_transport"] == "separate-object-v1"
+        assert manifest["completion"]["runtime_stop_policy"] == "target_only"
         assert len(manifest["models"]) == 2
         assert archive.namelist() == ["manifest.json"]
 

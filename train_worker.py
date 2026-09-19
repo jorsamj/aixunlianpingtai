@@ -763,6 +763,7 @@ def main():
     parser.add_argument("--eval-metric", default="map50")
     parser.add_argument("--continue-threshold", type=float, default=0.0)
     parser.add_argument("--stop-threshold", type=float, default=0.0)
+    parser.add_argument("--runtime-stop-policy", default="target_only")
     parser.add_argument("--auto-supplement", default="false")
     parser.add_argument("--supplement-count", type=int, default=0)
     parser.add_argument("--ai-intervention", default="false")
@@ -773,12 +774,16 @@ def main():
     parser.add_argument("--ai-extra-epochs", type=int, default=20)
     parser.add_argument("--ai-max-rounds", type=int, default=1)
     args = parser.parse_args()
+    runtime_stop_policy = str(args.runtime_stop_policy or "target_only").strip().lower()
+    if runtime_stop_policy != "target_only":
+        raise RuntimeError("TRAINING_STOP_POLICY_UNSUPPORTED: target_only required")
 
     project_dir = Path(args.project_dir)
     job_file = project_dir / "jobs" / args.job_id / "job.json"
     runs_dir = project_dir / "runs"
     models_dir = project_dir / "models"
     models_dir.mkdir(exist_ok=True)
+    update_job(job_file, runtime_stop_policy=runtime_stop_policy)
 
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)

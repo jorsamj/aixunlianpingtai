@@ -252,6 +252,7 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert len(training["dataset_revision_id"]) == 64
     assert training["model"]["type"] == "official"
     assert training["model"]["reference"] == "yolo11n.pt"
+    assert training["params"]["runtime_stop_policy"] == "target_only"
     bundle = training["bundle"]
     assert bundle["storage_source_id"] == source.id
     assert bundle["object_key"].startswith("training-bundles/")

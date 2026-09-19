@@ -909,6 +909,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     for option in ("resource_context", "resource_resolution", "metrics_db"):
         if payload.get(option):
             argv.extend(["--" + option.replace("_", "-"), str(payload[option])])
+    argv.extend(["--runtime-stop-policy", "target_only"])
     return argv
 
 
@@ -1275,6 +1276,7 @@ class TrainingHandler:
         final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
         requested = snapshot.get("requested") if isinstance(snapshot.get("requested"), dict) else {}
         quality_gate = job.get("quality_gate") if isinstance(job.get("quality_gate"), dict) else {
+            "runtime_stop_policy": "target_only",
             "eval_interval": int(payload.get("eval_interval") or 0),
             "metric": str(payload.get("eval_metric") or "map50"),
             "continue_threshold": float(payload.get("continue_threshold") or 0),
@@ -1737,6 +1739,7 @@ class TrainingHandler:
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
             "quality_gate": {
+                "runtime_stop_policy": "target_only",
                 "eval_interval": int(payload.get("eval_interval") or 0),
                 "metric": str(payload.get("eval_metric") or "map50"),
                 "continue_threshold": float(payload.get("continue_threshold") or 0),

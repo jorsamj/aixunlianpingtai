@@ -591,6 +591,13 @@ class AgentTrainingRunner:
         batch = int(self._parameter(payload, "batch", 4))
         workers = max(0, int(self._parameter(payload, "workers", 0)))
         run_name = f"remote_{lease.task_id}_{lease.generation}"
+        runtime_stop_policy = str(
+            self._parameter(payload, "runtime_stop_policy", "target_only") or "target_only"
+        ).strip().lower()
+        if runtime_stop_policy != "target_only":
+            raise AgentTrainingRuntimeError(
+                "remote training runtime_stop_policy must be target_only"
+            )
         if (
             bool(self._parameter(payload, "auto_supplement", False))
             or int(self._parameter(payload, "supplement_count", 0) or 0) > 0
@@ -614,6 +621,15 @@ class AgentTrainingRunner:
                 "requested_device": requested_device,
                 "assigned_device": selected_device,
                 "selected_gpu": gpu,
+                "runtime_stop_policy": runtime_stop_policy,
+                "quality_gate": {
+                    "runtime_stop_policy": runtime_stop_policy,
+                    "eval_interval": max(0, int(self._parameter(payload, "eval_interval", 0))),
+                    "metric": str(self._parameter(payload, "eval_metric", "map50") or "map50"),
+                    "continue_threshold": float(self._parameter(payload, "continue_threshold", 0.0)),
+                    "stop_threshold": float(self._parameter(payload, "stop_threshold", 0.0)),
+                    "stage_eval_samples": max(0, int(self._parameter(payload, "val_max_samples", 0))),
+                },
                 "total_epochs": epochs,
                 "progress_percent": 0,
                 "message": "Agent 已接收远程训练任务",
@@ -727,6 +743,8 @@ class AgentTrainingRunner:
             str(float(self._parameter(payload, "continue_threshold", 0.0))),
             "--stop-threshold",
             str(float(self._parameter(payload, "stop_threshold", 0.0))),
+            "--runtime-stop-policy",
+            runtime_stop_policy,
             # Supplemental material/AI configuration is control-plane state and
             # is not portable yet. Never fake it on an Agent.
             "--auto-supplement",
@@ -842,6 +860,7 @@ class AgentTrainingRunner:
             "best_epoch",
             "completed_epochs",
             "requested_epochs",
+            "runtime_stop_policy",
             "requested_device",
             "assigned_device",
             "actual_device",
