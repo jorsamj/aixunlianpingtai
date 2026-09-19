@@ -159,6 +159,8 @@ test('training target is the only automatic early-stop control', async ({page, r
   const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
   await expect(dialog).toBeVisible({timeout: 10_000});
 
+  await dialog.getByText('进阶配置（可选）', {exact: true}).click();
+  await expect(dialog.getByRole('button', {name: '编辑全部训练参数'})).toBeVisible();
   await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await expect(settings).toBeVisible();
