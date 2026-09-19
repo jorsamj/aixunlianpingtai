@@ -91,7 +91,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await page.locator('.deploy-target-card', {hasText: '华为 Atlas'}).click();
   await expect(page.locator('#dpSoc')).toBeVisible();
   await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
-  await expect(page.locator('#dpChip option')).toHaveText(['RK3588', 'RK3576', 'RK3568']);
+  await expect(page.locator('#dpChip option')).toHaveText(['RK3568', 'RK3576']);
   await page.locator('.deploy-target-card', {hasText: 'NVIDIA TensorRT'}).click();
   await expect(page.locator('#dpTargetEnvironment')).toBeVisible();
 });
@@ -186,7 +186,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
 
   await page.evaluate(() => window.setPage('部署转换'));
   await page.locator('.deploy-target-card', {hasText: '瑞芯微 RKNN'}).click();
-  await expect(page.locator('#dpChip option')).toHaveText(['RK3588', 'RK3576', 'RK3568']);
+  await expect(page.locator('#dpChip option')).toHaveText(['RK3568', 'RK3576']);
 });
 
 
