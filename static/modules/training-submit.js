@@ -243,10 +243,16 @@ export function installTrainingSubmitRuntime({
     const benchmarkStatus = String(state.trainingBenchmarkReuse?.algorithm_id || '') === String(draft?.algorithmId || '')
       ? state.trainingBenchmarkReuse
       : null;
-    const readiness = trainingSubmitReadiness({draft, inheritance, benchmarkStatus, submitting});
+    const baseReadiness = trainingSubmitReadiness({draft, inheritance, benchmarkStatus, submitting});
     const asset = (state.algorithms || []).find(
       row => String(row?.id || '') === String(draft?.algorithmId || '')
     );
+    const externalReadiness = asset
+      ? window.ExternalAlgorithmPlatformRuntime?.trainingReadiness?.(asset.id)
+      : null;
+    const readiness = baseReadiness.ready && externalReadiness?.ready === false
+      ? {ready: false, reason: externalReadiness.reason || 'external-master-data'}
+      : baseReadiness;
     let supplementContext = null;
     try {
       supplementContext = supplementCandidateContext({asset, draft, inheritance});
@@ -287,6 +293,10 @@ export function installTrainingSubmitRuntime({
       lastStage = 'resolve-algorithm';
       const asset = (state.algorithms || []).find(row => String(row?.id || '') === String(draft.algorithmId || ''));
       if (!asset) throw new Error('当前训练算法不存在，请刷新算法列表后重试');
+      const externalReadiness = window.ExternalAlgorithmPlatformRuntime?.trainingReadiness?.(asset.id);
+      if (externalReadiness?.ready === false) {
+        throw new Error(externalReadiness.message || '当前畅联云算法主数据未就绪，请重新同步后再训练');
+      }
       const benchmarkContext = benchmarkReuseContext({asset, draft, inheritance, benchmark: state.trainingBenchmarkReuse});
 
       lastStage = 'resolve-target';
