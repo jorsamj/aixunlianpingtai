@@ -93,7 +93,7 @@ test('training task refresh and actions patch the final table without rebuilding
   await expect(page.locator('.trainlog428')).toContainText('bbbbbbbbbbbb');
   await expect(page.locator('.trainlog428')).toContainText('训练快照');
   await expect(page.locator('.trainlog428')).toContainText('aaaaaaaaaaaa');
-  await page.getByRole('button', {name: '关闭'}).click();
+  await page.locator('.trainlog428').getByRole('button', {name: '关闭', exact: true}).click();
 
   apiRequests.length = 0;
   await page.locator('.train428-refresh').click();
