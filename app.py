@@ -9059,6 +9059,21 @@ def _online_prediction_evidence(project_id: str, prediction_id: str):
     return evidence, input_path, algorithm, version
 
 
+def _online_feedback_box_signature(boxes: List[Dict[str, Any]]) -> List[Tuple[int, str, float, float, float, float]]:
+    """Compare reviewed prediction truth without depending on box IDs/order."""
+    result = []
+    for box in boxes or []:
+        result.append((
+            int(box.get("class_id") or 0),
+            str(box.get("label") or box.get("code") or ""),
+            round(float(box.get("x1") or 0), 4),
+            round(float(box.get("y1") or 0), 4),
+            round(float(box.get("x2") or 0), 4),
+            round(float(box.get("y2") or 0), 4),
+        ))
+    return sorted(result)
+
+
 def _online_feedback_prediction_boxes(project: Dict[str, Any], evidence: Dict[str, Any]):
     active = [
         item for item in project_label_items(project)
@@ -9190,10 +9205,21 @@ def confirm_online_feedback(
             boxes, _ = _online_feedback_prediction_boxes(project, evidence)
             if not boxes:
                 raise ValueError("当前预测没有检测框；如画面确实无目标，请使用“误检/画面无目标”确认负样本")
-            if str(current.get("annotation_state") or "unannotated") != "unannotated":
-                raise ValueError("该素材已有正式标注，线上抽检不能覆盖现有 Annotation truth")
-            annotations.upsert(material_id, boxes, "annotated")
-            annotation_action = "prediction_confirmed_as_truth"
+            current_state = str(current.get("annotation_state") or "unannotated")
+            if current_state == "unannotated":
+                annotations.upsert(material_id, boxes, "annotated")
+                annotation_action = "prediction_confirmed_as_truth"
+            elif (
+                current_state == "annotated"
+                and _online_feedback_box_signature(current.get("boxes") or [])
+                == _online_feedback_box_signature(boxes)
+            ):
+                # Recovery/idempotency: annotation truth may have been written
+                # immediately before feedback finalization failed. Matching
+                # truth is safe to acknowledge; differing truth stays fenced.
+                annotation_action = "prediction_matches_existing_truth"
+            else:
+                raise ValueError("该素材已有不同的正式标注，线上抽检不能覆盖现有 Annotation truth")
         elif staged["feedback_type"] == "false_positive":
             if not payload.confirm_all_labels_absent:
                 raise ValueError("请明确确认画面中不存在当前启用标签目标")

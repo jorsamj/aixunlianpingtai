@@ -207,3 +207,84 @@ def test_feedback_list_does_not_expose_prediction_file_path(client):
     row = response.json()["items"][0]
     assert "input_file" not in row["source"]
     assert row["source"]["detection_count"] == 0
+
+
+def test_correct_feedback_recovers_when_existing_truth_exactly_matches_prediction(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    detections = [{
+        "class_id": 0, "label": "smoke", "confidence": 0.93,
+        "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+    }]
+    prediction_id, input_path = _prediction(
+        project["id"], algorithm_id, version, detections=detections, suffix="recovery",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+
+    material = app_module.add_image_record(
+        project["id"], input_path, "recovery.jpg", "online_feedback",
+        "default", "default_local",
+        content_sha256=app_module.sha256_file(input_path),
+    )
+    assert material is not None
+    AnnotationRepository(app_module.project_dir(project["id"])).upsert(
+        material["id"],
+        [{
+            "id": f"feedback-{prediction_id}-0",
+            "class_id": 0, "label": "smoke",
+            "x1": 10.0, "y1": 8.0, "x2": 60.0, "y2": 52.0,
+        }],
+        "annotated",
+    )
+
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/confirm",
+        json={
+            "expected_feedback_type": "correct",
+            "dataset_id": "default",
+            "confirm_all_labels_absent": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+    feedback = response.json()["feedback"]
+    assert feedback["material_id"] == material["id"]
+    assert feedback["result"]["material_reused"] is True
+    assert feedback["result"]["annotation_action"] == "prediction_matches_existing_truth"
+
+
+def test_correct_feedback_rejects_different_existing_truth(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    prediction_id, input_path = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+        suffix="conflict",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+    material = app_module.add_image_record(
+        project["id"], input_path, "conflict.jpg", "raw",
+        "default", "default_local",
+        content_sha256=app_module.sha256_file(input_path),
+    )
+    assert material is not None
+    AnnotationRepository(app_module.project_dir(project["id"])).upsert(
+        material["id"],
+        [{
+            "id": "manual-box", "class_id": 0, "label": "smoke",
+            "x1": 1, "y1": 2, "x2": 20, "y2": 25,
+        }],
+        "annotated",
+    )
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/confirm",
+        json={
+            "expected_feedback_type": "correct",
+            "dataset_id": "default",
+            "confirm_all_labels_absent": False,
+        },
+    )
+    assert response.status_code == 409
+    assert "不能覆盖" in response.text
