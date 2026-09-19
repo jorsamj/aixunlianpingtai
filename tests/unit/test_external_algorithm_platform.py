@@ -388,3 +388,96 @@ def test_draft_connection_blank_secret_reuses_saved_secret_without_exposing_it(t
     assert captured[-1]["access_key"] == "saved-ak"
     assert captured[-1]["access_secret"] == "saved-secret"
     assert "saved-secret" not in str(result)
+
+
+
+class MissingProductIdClient(FakeChangLianClient):
+    def products(self):
+        return {"data": [{"productName": "缺少 Product ID", "categoryId": "c1"}]}
+
+
+class MissingAnalysisIdClient(FakeChangLianClient):
+    def analyses(self, product_id):
+        assert product_id == "p1"
+        return {"data": [{"analysisName": "缺少 Analysis ID"}]}
+
+
+class MissingComputePlatformIdClient(FakeChangLianClient):
+    def compute_platforms(self):
+        return {"data": [{"computePlatformName": "缺少 Compute Platform ID"}]}
+
+
+def _configured_external_service(tmp_path: Path, client_factory):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=client_factory,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    return service
+
+
+def test_connection_fails_when_product_records_have_no_business_id(tmp_path: Path):
+    service = _configured_external_service(tmp_path, MissingProductIdClient)
+
+    result = service.test_connection()
+
+    assert result["ok"] is False
+    products = next(row for row in result["steps"] if row["key"] == "products")
+    assert products["status"] == "failed"
+    assert "正式业务 ID" in products["detail"]
+    analysis = next(row for row in result["steps"] if row["key"] == "analysis")
+    assert analysis["status"] == "skipped"
+
+
+def test_sync_fails_closed_when_product_id_is_missing(tmp_path: Path):
+    service = _configured_external_service(tmp_path, MissingProductIdClient)
+    algorithms_path = tmp_path / "project-product-id" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    with pytest.raises(Exception) as error:
+        service.sync(project_id="p-product-id", algorithms_path=algorithms_path)
+
+    assert getattr(error.value, "code", "") == "EXTERNAL_PRODUCT_ID_MISSING"
+    assert list_algorithms(algorithms_path) == []
+    assert service.repository.cache().get("provider") is None
+    assert service.repository.history()[0]["status"] == "failed"
+
+
+def test_sync_fails_closed_when_analysis_id_is_missing(tmp_path: Path):
+    service = _configured_external_service(tmp_path, MissingAnalysisIdClient)
+    algorithms_path = tmp_path / "project-analysis-id" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    with pytest.raises(Exception) as error:
+        service.sync(project_id="p-analysis-id", algorithms_path=algorithms_path)
+
+    assert getattr(error.value, "code", "") == "EXTERNAL_ANALYSIS_ID_MISSING"
+    assert list_algorithms(algorithms_path) == []
+    assert service.repository.cache().get("provider") is None
+    assert service.repository.history()[0]["status"] == "failed"
+
+
+def test_sync_fails_closed_when_compute_platform_id_is_missing(tmp_path: Path):
+    service = _configured_external_service(tmp_path, MissingComputePlatformIdClient)
+    algorithms_path = tmp_path / "project-compute-id" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    with pytest.raises(Exception) as error:
+        service.sync(project_id="p-compute-id", algorithms_path=algorithms_path)
+
+    assert getattr(error.value, "code", "") == "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING"
+    assert list_algorithms(algorithms_path) == []
+    assert service.repository.cache().get("provider") is None
+    assert service.repository.history()[0]["status"] == "failed"
