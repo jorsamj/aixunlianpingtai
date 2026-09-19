@@ -364,7 +364,7 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
     localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({projectId,page:'算法列表'}));
   },project.id);
   await page.goto('/');
-  await page.evaluate(()=>{
+  await page.evaluate(async()=>{
     state.algorithms=[{
       id:'algo-supp',name:'补数据算法',current_version_id:'ver-supp',
       versions:[{
@@ -380,8 +380,8 @@ test('confirmed feedback candidates are frozen before dataset revision or traini
       id:'material-ready',filename:'feedback-ready.jpg',annotated:true,processing_status:'processed',
       labels:['smoke'],size_bytes:100,created_at:'2026-09-19T06:00:00Z',url:'/static/placeholder.png',
     }];
+    await window.resumeConfirmedIterationAction429('algo-supp','ver-supp');
   });
-  await page.evaluate(()=>window.resumeConfirmedIterationAction429('algo-supp','ver-supp'));
 
   const dialog=page.getByRole('dialog',{name:'补数据反馈候选'});
   await expect(dialog).toContainText('可直接加入 1 条');
