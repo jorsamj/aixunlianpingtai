@@ -10,6 +10,25 @@ def _image_bytes(color: str) -> bytes:
     return stream.getvalue()
 
 
+def test_training_target_contract_rejects_invalid_metric_threshold_and_interval():
+    import app as app_module
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException, match="目标指标只支持"):
+        app_module.validate_train_request(app_module.TrainReq(eval_metric="accuracy"))
+
+    with pytest.raises(HTTPException, match="目标正确率必须在 0~1"):
+        app_module.validate_train_request(app_module.TrainReq(stop_threshold=90, eval_interval=10))
+
+    with pytest.raises(HTTPException, match="eval_interval 必须大于 0"):
+        app_module.validate_train_request(app_module.TrainReq(stop_threshold=0.9, eval_interval=0))
+
+    valid = app_module.TrainReq(stop_threshold=0.9, eval_interval=10, eval_metric="map50")
+    app_module.validate_train_request(valid)
+    assert valid.stop_threshold == 0.9
+    assert valid.eval_interval == 10
+
+
 def test_training_request_normalizes_legacy_boolean_cache_before_string_validation():
     import app as app_module
 
