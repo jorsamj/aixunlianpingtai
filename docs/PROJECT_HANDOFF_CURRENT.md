@@ -63,6 +63,55 @@ revert: keep external algorithm integration off main
 ---
 
 
+# 最新关闭：Remote storage_rescan Phase 2C — Pascal VOC Annotation Delta
+
+2026-09-19，现有 `MATERIAL_IMPORT + mode=storage_rescan` 已完成 **Pascal VOC XML 标注增量同步**，Phase 2C CLOSED。至此 Phase 2 的 YOLO / COCO / Pascal VOC 三种 annotation delta 均进入同一 durable owner、同一 review/confirm/repository truth。
+
+已关闭范围：
+
+- Local 与 Agent 都支持 `import_format=images|yolo|coco|voc`；preflight、API schema、前端下拉、确认策略使用同一后端 truth。
+- VOC 继续复用现有 `DetectionDatasetScanner`，没有新增 VOC Parser owner、TaskKind 或 AnnotationRepository。
+- Agent 通过 execution-fenced broker + short-lived GET 读取真实 XML/image bytes；不访问中央 SQLite/NFS，不接收长期对象存储凭据。
+- portable review 冻结 XML source object identity：object key / size / ETag / SHA256，并保存 split、external class catalog、normalized boxes、quality issues 与 per-image `source_digest`。
+- 图片与标注 delta 分开：
+  - 图片：`NEW/MISSING/CHANGED/UNCHANGED/INVALID/SKIPPED`
+  - 标注：`ANNOTATION_NEW/CHANGED/REMOVED/UNCHANGED/CONFLICT/INVALID`
+- XML 删除、XML 内容变化但图片未变、类别/bbox/split 变化都会进入 annotation delta。
+- 外部 source evidence 与平台 AnnotationRepository truth 分离；review→confirm 间发生人工修改时 stale-write fencing fail closed，要求重新扫描。
+- 新增图片继续由既有 MATERIAL_IMPORT indexer 建正式 Material/Annotation truth；rescan 只补 external provenance。
+- VOC ambiguity fail closed：同一图片被多个 Pascal VOC XML 文档引用时拒绝。
+- 用户确认复用统一的 label mapping / create_labels / quality acceptance / removal policy / conflict policy，并保持“先冻结 durable intent → 再创建标签 → 再 resume task”。
+- Frontend Impact Review 同批完成：
+  - “重新扫描 / 恢复”新增“图片 + Pascal VOC 标注”；
+  - YOLO data.yaml 仍只在 YOLO 模式启用；
+  - VOC 图片增量、标注增量、quality、label mapping、删除/冲突策略全部来自真实后端 task；
+  - Real Chrome 覆盖 Agent VOC request → review truth → mapping → confirmation body。
+
+最终代码 HEAD：`5a1c18c8fc18c783a95d55f4f6a3ad826ffef69a`。
+
+最终验收：
+
+- Remote Material Import push `35412658236`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35412660855`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor push `35412658140` / PR `35412660966`：success。
+- Central Node Assignment push `35412658117` / PR `35412660834`：success。
+- Task Runtime Truth `35412660757`：success。
+- Remote Training Runtime push `35412658157` / PR `35412660756`：success。
+- Remote Conversion Runtime push `35412658182` / PR `35412660808`：success。
+- Remote Cleaning Runtime push `35412658119` / PR `35412660762`：success。
+- Portable Deployment push `35412658228` / PR `35412660767`：success。
+- Remote RKNN Board Runtime Protocol push `35412658162` / PR `35412660872`：success。
+- Storage Cache Governance `35412660802`：success。
+- 当前代码 HEAD 共 28 个相关 workflow：28 success / 0 failure / 0 pending。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一主线：**
+
+1. Canonical Annotation Schema v1：把当前 YOLO/COCO/VOC 已共享 evidence 正式版本化成平台 contract，不重写 Parser。
+2. Dataset Snapshot / Revision：冻结素材、标注版本、split 和对象 SHA，保证训练可复现。
+3. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 继续独立 OPEN。
+4. TensorRT / Sophon / Ascend 继续暂缓。
+
 # 最新关闭：Remote storage_rescan Phase 2B — COCO Annotation Delta
 
 2026-09-19，现有 `MATERIAL_IMPORT + mode=storage_rescan` 在 Phase 2A YOLO 基础上完成 **COCO annotation JSON 增量同步**，Phase 2B CLOSED。没有新增 TaskKind、COCO Parser owner、AnnotationRepository 或第二套 rescan。

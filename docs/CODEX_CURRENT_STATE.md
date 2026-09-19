@@ -3,6 +3,58 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Remote storage_rescan Phase 2C Pascal VOC Annotation Delta CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The existing `MATERIAL_IMPORT + mode=storage_rescan` owner now reconciles
+Pascal VOC XML annotation changes through the same durable flow used by Phase 1
+images, Phase 2A YOLO and Phase 2B COCO. No second VOC parser, TaskKind or
+AnnotationRepository owner was introduced.
+
+Local and Agent product truth is now `import_format=images|yolo|coco|voc`.
+The Agent reuses `DetectionDatasetScanner`, the execution-fenced broker and
+short-lived GET contracts. It freezes XML object identity (key, size, ETag and
+SHA256), split, external class catalog, normalized boxes, quality issues and
+per-image source digest without opening central SQLite/NFS or receiving
+long-lived object-store credentials.
+
+Image delta and annotation delta remain separate. VOC uses the shared
+`ANNOTATION_NEW / CHANGED / REMOVED / UNCHANGED / CONFLICT / INVALID`
+categories. XML deletion or XML/class/bbox/split changes are detected even when
+image bytes are unchanged.
+
+External source evidence remains distinct from platform AnnotationRepository
+truth. Manual annotation edits after review are protected by stale-write
+fencing. New images continue through the existing MATERIAL_IMPORT indexer and
+rescan records provenance instead of creating a second annotation write path.
+Ambiguous multiple VOC XML references for one image fail closed.
+
+Frontend Impact Review is complete. Preflight, API schema and storage rescan UI
+expose the same four formats. Pascal VOC uses backend task truth for image and
+annotation counts, quality, external-class mapping, removal/conflict policy and
+confirmation. Real Chrome covers the Agent VOC request/review/confirmation chain.
+
+Acceptance at code HEAD `5a1c18c8fc18c783a95d55f4f6a3ad826ffef69a`:
+- Remote Material Import push `35412658236`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35412660855`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor push `35412658140` / PR `35412660966`：success。
+- Central Node Assignment push `35412658117` / PR `35412660834`：success。
+- Task Runtime Truth `35412660757`：success。
+- Remote Training Runtime push `35412658157` / PR `35412660756`：success。
+- Remote Conversion Runtime push `35412658182` / PR `35412660808`：success。
+- Remote Cleaning Runtime push `35412658119` / PR `35412660762`：success。
+- Portable Deployment push `35412658228` / PR `35412660767`：success。
+- Remote RKNN Board Runtime Protocol push `35412658162` / PR `35412660872`：success。
+- Storage Cache Governance `35412660802`：success。
+- 当前代码 HEAD 共 28 个相关 workflow：28 success / 0 failure / 0 pending。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**OPEN / next:** formalize the already-shared YOLO/COCO/VOC evidence as
+Canonical Annotation Schema v1, then build Dataset Snapshot / Revision on top of
+that versioned annotation truth. Rockchip physical-board acceptance remains
+independently OPEN.
+
 ## Current closure — Remote storage_rescan Phase 2B COCO Annotation Delta CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.

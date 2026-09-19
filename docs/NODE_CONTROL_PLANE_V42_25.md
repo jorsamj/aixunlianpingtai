@@ -6,6 +6,47 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Remote storage_rescan Phase 2C — Pascal VOC annotation delta
+
+2026-09-19，`MATERIAL_IMPORT + mode=storage_rescan` 已完成 Pascal VOC XML 增量同步，仍复用 Central Scheduler / assignment lease / execution lease / generation fencing / server-confirm / local Repository commit，没有第二套 VOC owner。
+
+控制面与 Agent 边界：
+
+- durable request / preflight / frontend 统一支持 `images|yolo|coco|voc`。
+- Agent 通过 broker list + short-lived GET 读取 XML/image，冻结 XML key/size/ETag/SHA256、split、class catalog、normalized boxes 与 source digest；长期凭据和中央 SQLite/NFS 不下发。
+- server-confirm 后中央端复用 task-owned ImportCandidateStore / RescanCandidateStore 生成 image delta 与 annotation delta。
+- VOC 与 YOLO/COCO 使用同一 `ANNOTATION_NEW/CHANGED/REMOVED/UNCHANGED/CONFLICT/INVALID` 状态集合。
+- 外部 evidence 与 AnnotationRepository truth 分离；review→confirm 间平台人工标注变化继续由 stale-write fencing 拒绝覆盖。
+- 新增图片仍只由既有 MATERIAL_IMPORT indexer 写正式 truth；rescan 只记录 external provenance。
+- 同一图片被多个 VOC XML 引用时 fail closed。
+- 用户确认、mapping、quality、removed/conflict policy、标签创建顺序与 YOLO/COCO 共用同一逻辑。
+- Frontend Impact Review 已完成，Real Chrome 验证 Agent VOC 产品链。
+
+最终代码 HEAD：`5a1c18c8fc18c783a95d55f4f6a3ad826ffef69a`。
+
+验收：
+
+- Remote Material Import push `35412658236`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35412660855`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor push `35412658140` / PR `35412660966`：success。
+- Central Node Assignment push `35412658117` / PR `35412660834`：success。
+- Task Runtime Truth `35412660757`：success。
+- Remote Training Runtime push `35412658157` / PR `35412660756`：success。
+- Remote Conversion Runtime push `35412658182` / PR `35412660808`：success。
+- Remote Cleaning Runtime push `35412658119` / PR `35412660762`：success。
+- Portable Deployment push `35412658228` / PR `35412660767`：success。
+- Remote RKNN Board Runtime Protocol push `35412658162` / PR `35412660872`：success。
+- Storage Cache Governance `35412660802`：success。
+- 当前代码 HEAD 共 28 个相关 workflow：28 success / 0 failure / 0 pending。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**OPEN：**
+
+1. Canonical Annotation Schema v1 contract/versioning。
+2. Dataset Snapshot / Revision。
+3. Rockchip 用户真实板卡 acceptance。
+4. TensorRT / Sophon / Ascend 继续暂缓。
+
 ## 0. 最新关闭：Remote storage_rescan Phase 2B — COCO annotation delta
 
 2026-09-19，`MATERIAL_IMPORT + mode=storage_rescan` 已在同一 durable owner 上完成 COCO annotation JSON 增量同步。Phase 2A YOLO 继续成立，没有新增 TaskKind 或并行 annotation owner。
