@@ -225,6 +225,8 @@ jobs:
           grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
           grep -Fq '"remote_input_state": "PREPARING"' app.py
           grep -Fq '"runtime_stop_policy": "target_only"' app.py
+          grep -Fq 'assert_external_algorithm_master_data_current' app.py
+          test "$(grep -Fc 'assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)' app.py)" = "2"
           grep -Fq "val_dir=root/'images'/'val'" train_worker.py
           grep -Fq 'test_images_dir=dataset_root/"images"/"test"' train_worker.py
           grep -Fq 'current_item="独立评测集盲测"' train_worker.py
