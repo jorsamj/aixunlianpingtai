@@ -101,6 +101,16 @@ def _status_time(value: str) -> datetime | None:
         return None
 
 
+def _canonical_chip_code(value: Any) -> str:
+    text = str(value or "").strip()
+    compact = re.sub(r"[^A-Za-z0-9]+", "", text).upper()
+    if compact == "RK3568":
+        return "RK3568"
+    if compact == "RK3576":
+        return "RK3576"
+    return text
+
+
 class TargetMapping(BaseModel):
     compute_platform_id: str = ""
     chip_code: str = ""
@@ -302,7 +312,7 @@ class ExternalPublicationRepository:
                     artifact_id, publication_key, str(discovered["project_id"]), str(discovered["algorithm_id"]),
                     str(discovered["version_id"]), str(discovered["target"]), str(discovered["file_name"]),
                     str(discovered["source_path"]), str(discovered["sha256"]), int(discovered["size_bytes"]),
-                    str(mapping.get("compute_platform_id") or ""), str(mapping.get("chip_code") or discovered.get("chip_code") or ""),
+                    str(mapping.get("compute_platform_id") or ""), _canonical_chip_code(discovered.get("chip_code") or mapping.get("chip_code") or ""),
                     stamp, stamp,
                 ),
             )
@@ -506,7 +516,7 @@ class ExternalAlgorithmPublishService:
                 continue
             target = str(job.get("target") or "").strip().lower() or "converted"
             params = job.get("params") or {}
-            chip = str(params.get("chip") or params.get("soc_version") or "")
+            chip = _canonical_chip_code(params.get("chip") or params.get("soc_version") or "")
             for output in job.get("outputs") or []:
                 if not isinstance(output, dict) or output.get("available") is False:
                     continue
