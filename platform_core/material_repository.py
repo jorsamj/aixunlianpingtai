@@ -294,6 +294,21 @@ class MaterialRepository:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
         return self._row_payload(row) if row else None
 
+    def get_by_content_sha256(self, content_sha256: str) -> dict[str, Any] | None:
+        content_sha256 = str(content_sha256 or "").strip().lower()
+        if (
+            len(content_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in content_sha256)
+        ):
+            return None
+        with closing(self._connect()) as database:
+            row = database.execute(
+                "SELECT payload_json FROM materials "
+                "WHERE lower(trim(content_sha256))=? ORDER BY created_at,id LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
+        return self._row_payload(row) if row else None
+
     def get_many(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
         if not ids:
