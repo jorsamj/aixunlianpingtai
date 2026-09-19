@@ -76,6 +76,7 @@ def test_training_job_locks_snapshot_base_and_requested_parameters(client, seede
     assert job["base_selection_reason"] == "mother_model"
     assert job["queue_priority"] == 50
     assert job["priority_scheme"] == "lower_number_first"
+    assert job["quality_gate"]["runtime_stop_policy"] == "target_only"
     assert len(job["snapshot_id"]) == 64
     expected = {
         "epochs": 3,
@@ -1037,3 +1038,80 @@ def test_reusable_benchmark_rejects_stale_observed_scope(client, seeded_project,
         "source_version_id": "version-old",
         "observed_scope_id": "d" * 64,
     }
+
+
+
+def test_rockchip_auto_conversion_uses_single_detected_supported_chip(monkeypatch):
+    import app as app_module
+
+    created = []
+
+    monkeypatch.setattr(app_module, "_v48_quality_reached", lambda _job: True)
+    monkeypatch.setattr(
+        app_module,
+        "_builtin_deploy_resources",
+        lambda: [{
+            "id": "rk-agent",
+            "name": "RKNN Agent",
+            "status": "ready",
+            "targets": ["rockchip"],
+            "supported_chips": ["rk3568"],
+        }],
+    )
+    monkeypatch.setattr(app_module, "_load_saved_deploy_resources", lambda: [])
+    monkeypatch.setattr(
+        app_module,
+        "v39_create_deploy_job",
+        lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "convert-rk3568"}},
+    )
+
+    result = app_module._v48_auto_convert_version(
+        "p1",
+        "a1",
+        {"id": "v1", "stored_path": "/models/best.pt"},
+        {"imgsz": 640, "auto_convert_targets": ["rockchip"]},
+    )
+
+    assert not result["errors"]
+    assert result["jobs"][0]["job_id"] == "convert-rk3568"
+    assert len(created) == 1
+    assert created[0][1].params["chip"] == "rk3568"
+
+
+def test_rockchip_auto_conversion_fails_closed_when_chip_is_ambiguous(monkeypatch):
+    import app as app_module
+
+    created = []
+
+    monkeypatch.setattr(app_module, "_v48_quality_reached", lambda _job: True)
+    monkeypatch.setattr(
+        app_module,
+        "_builtin_deploy_resources",
+        lambda: [{
+            "id": "rk-agent",
+            "name": "RKNN Agent",
+            "status": "ready",
+            "targets": ["rockchip"],
+            "supported_chips": ["rk3568", "rk3576", "rk3588"],
+        }],
+    )
+    monkeypatch.setattr(app_module, "_load_saved_deploy_resources", lambda: [])
+    monkeypatch.setattr(
+        app_module,
+        "v39_create_deploy_job",
+        lambda project_id, payload: created.append((project_id, payload)) or {"job": {"id": "should-not-run"}},
+    )
+
+    result = app_module._v48_auto_convert_version(
+        "p1",
+        "a1",
+        {"id": "v1", "stored_path": "/models/best.pt"},
+        {"imgsz": 640, "auto_convert_targets": ["rockchip"]},
+    )
+
+    assert created == []
+    assert result["jobs"] == []
+    assert len(result["errors"]) == 1
+    assert "RK3568" in result["errors"][0]["message"]
+    assert "RK3576" in result["errors"][0]["message"]
+    assert "RK3588" not in result["errors"][0]["message"]
