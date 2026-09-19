@@ -1475,6 +1475,13 @@ def _write_yolo_review_page(
     source_keys = [str(row["object_key"]) for row in page]
     annotations = store.annotations_for_keys(source_keys)
     issues = store.annotation_issues_for_keys(source_keys)
+    source_ref_keys = sorted({
+        str(value)
+        for annotation in annotations.values()
+        for value in (annotation.get("label_key"), annotation.get("yaml_key"))
+        if str(value or "").strip()
+    })
+    source_objects = store.inventory_for_keys(source_ref_keys)
     for candidate in page:
         source_key = safe_member_path(str(candidate["object_key"])).as_posix()
         target_key = (
@@ -1531,16 +1538,25 @@ def _write_yolo_review_page(
             "boxes": [],
         }
         issue_rows = issues.get(source_key) or []
+        label_key = (
+            safe_member_path(str(annotation.get("label_key"))).as_posix()
+            if annotation.get("label_key")
+            else None
+        )
+        dataset_key = (
+            safe_member_path(str(annotation.get("yaml_key"))).as_posix()
+            if annotation.get("yaml_key")
+            else None
+        )
         annotations_stream.write(
             json.dumps(
                 {
                     "object_key": target_key,
                     "split": str(annotation.get("split") or ""),
-                    "label_key": (
-                        safe_member_path(str(annotation.get("label_key"))).as_posix()
-                        if annotation.get("label_key")
-                        else None
-                    ),
+                    "label_key": label_key,
+                    "label_object": source_objects.get(label_key) if label_key else None,
+                    "dataset_key": dataset_key,
+                    "dataset_object": source_objects.get(dataset_key) if dataset_key else None,
                     "annotation_status": str(
                         annotation.get("annotation_status") or "unannotated"
                     ),
@@ -2123,13 +2139,69 @@ def _commit_yolo_review_annotations(
         names[class_id] = name
     store.set_label_mapping(names)
 
-    expected_prefix_path = safe_member_path(expected_prefix)
+    expected_prefix_path = (
+        safe_member_path(expected_prefix)
+        if str(expected_prefix or "").strip()
+        else PurePosixPath()
+    )
     seen: set[str] = set()
     states: list[dict[str, Any]] = []
     boxes: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
+    source_inventory: dict[str, dict[str, Any]] = {}
     total_boxes = 0
     total_issues = 0
+    rescan_evidence_required = str(meta.get("intent") or "") == "storage_rescan"
+
+    def verified_source_object(value, key: str | None, *, required: bool):
+        if not key:
+            if value is not None:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_REVIEW_INVALID",
+                    "YOLO review contains source metadata without an object key",
+                    422,
+                )
+            return None
+        if value is None:
+            if required:
+                raise RemoteMaterialImportError(
+                    "REMOTE_YOLO_SOURCE_EVIDENCE_MISSING",
+                    "YOLO rescan review is missing source object identity evidence",
+                    409,
+                )
+            return None
+        if not isinstance(value, Mapping):
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_REVIEW_INVALID",
+                "YOLO source identity evidence must be an object",
+                422,
+            )
+        try:
+            size_bytes = int(value.get("size_bytes") or 0)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_REVIEW_INVALID",
+                "YOLO source identity size is invalid",
+                422,
+            ) from error
+        etag = str(value.get("etag") or "")
+        sha256 = str(value.get("sha256") or "").strip().lower()
+        if (
+            size_bytes < 0
+            or len(sha256) != 64
+            or any(character not in "0123456789abcdef" for character in sha256)
+        ):
+            raise RemoteMaterialImportError(
+                "REMOTE_YOLO_SOURCE_EVIDENCE_INVALID",
+                "YOLO source identity evidence is incomplete",
+                422,
+            )
+        return {
+            "object_key": key,
+            "size_bytes": size_bytes,
+            "etag": etag,
+            "sha256": sha256,
+        }
 
     def flush() -> None:
         if states or boxes or issues:
@@ -2137,6 +2209,9 @@ def _commit_yolo_review_annotations(
             states.clear()
             boxes.clear()
             issues.clear()
+        if source_inventory:
+            store.inventory_many(source_inventory.values())
+            source_inventory.clear()
 
     with annotations_path.open("r", encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
@@ -2193,6 +2268,42 @@ def _commit_yolo_review_annotations(
             label_key = row.get("label_key")
             if label_key is not None:
                 label_key = safe_member_path(str(label_key)).as_posix()
+            dataset_key = row.get("dataset_key") or meta.get("dataset_yaml")
+            dataset_key = (
+                safe_member_path(str(dataset_key)).as_posix()
+                if dataset_key
+                else None
+            )
+            expected_dataset_key = str(meta.get("dataset_yaml") or "")
+            if expected_dataset_key:
+                expected_dataset_key = safe_member_path(expected_dataset_key).as_posix()
+                if dataset_key != expected_dataset_key:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_DATASET_MISMATCH",
+                        "YOLO review dataset source differs from its metadata",
+                        409,
+                    )
+            label_object = verified_source_object(
+                row.get("label_object"),
+                label_key,
+                required=rescan_evidence_required and label_key is not None,
+            )
+            dataset_object = verified_source_object(
+                row.get("dataset_object"),
+                dataset_key,
+                required=rescan_evidence_required,
+            )
+            for source_object in (label_object, dataset_object):
+                if source_object is None:
+                    continue
+                previous = source_inventory.get(source_object["object_key"])
+                if previous is not None and previous != source_object:
+                    raise RemoteMaterialImportError(
+                        "REMOTE_YOLO_SOURCE_EVIDENCE_INVALID",
+                        "YOLO review contains conflicting source object evidence",
+                        409,
+                    )
+                source_inventory[source_object["object_key"]] = source_object
 
             raw_boxes = row.get("boxes")
             raw_issues = row.get("issues")
@@ -2320,9 +2431,12 @@ def _commit_yolo_review_annotations(
             store.manifest_many([{
                 "object_key": key,
                 "split": split,
-                "yaml_key": safe_member_path(
-                    str(meta.get("dataset_yaml") or "data.yaml")
-                ).as_posix(),
+                "yaml_key": (
+                    dataset_key
+                    or safe_member_path(
+                        str(meta.get("dataset_yaml") or "data.yaml")
+                    ).as_posix()
+                ),
             }])
             if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
                 flush()

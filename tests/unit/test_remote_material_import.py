@@ -565,3 +565,33 @@ def test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_id
     assert annotation["object_key"] == "images/train/a.jpg"
     assert annotation["annotation_status"] == "annotated"
     assert annotation["boxes"][0]["class_id"] == 0
+    assert annotation["label_object"]["sha256"] == hashlib.sha256(label_bytes).hexdigest()
+    assert annotation["dataset_object"]["sha256"] == hashlib.sha256(yaml_bytes).hexdigest()
+
+    artifacts = ArtifactStore(tmp_path / "yolo-rescan-artifacts")
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id="rescan-yolo",
+        project_id="project-yolo",
+        execution_generation=2,
+        archive_path=built["path"],
+        archive_sha256=built["sha256"],
+        archive_size_bytes=built["size_bytes"],
+        expected_source_id="s3-source",
+        expected_storage_type="s3",
+        expected_prefix="",
+        expected_mode="storage_scan",
+        expected_import_format="yolo",
+        expected_dataset_yaml="data.yaml",
+        expected_intent="storage_rescan",
+        platform_labels=[],
+    )
+    assert committed["material_review_committed"] is True
+    committed_store = ImportCandidateStore(
+        artifacts.artifact_path("rescan-yolo", MANIFEST_REF)
+    )
+    refs = committed_store.inventory_for_keys(
+        ["data.yaml", "labels/train/a.txt"]
+    )
+    assert refs["data.yaml"]["sha256"] == hashlib.sha256(yaml_bytes).hexdigest()
+    assert refs["labels/train/a.txt"]["sha256"] == hashlib.sha256(label_bytes).hexdigest()
