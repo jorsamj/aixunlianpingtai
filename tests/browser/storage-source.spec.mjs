@@ -438,3 +438,81 @@ test('COCO rescan uses the same frontend delta, mapping and confirmation truth',
   expect(confirmation.annotation_changed).toBe('update');
   expect(confirmation.annotation_conflicts).toBe('keep');
 });
+
+
+test('Pascal VOC rescan shares the same frontend delta, mapping and confirmation truth', async ({page}) => {
+  let submitted=null,confirmation=null;
+  await page.route('**/api/v61/storage-sources', async route => {
+    if(route.request().method()!=='GET')return route.continue();
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
+      id:'s3-voc-rescan',name:'VOC 长期素材库',type:'s3',enabled:true,
+      health_status:'AVAILABLE',config:{endpoint:'https://s3.example.test',bucket:'materials',prefix:''},
+    }]})});
+  });
+  await page.route('**/api/v61/projects/*/storage-sources/s3-voc-rescan/rescans/preflight', async route => {
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+      local_available:true,default_execution_mode:'local',
+      local_supported_formats:['images','yolo','coco','voc'],
+      agent_available:true,agent_supported_formats:['images','yolo','coco','voc'],reason:'',
+      eligible_nodes:[{node_id:'agent-voc-01',display_name:'VOC 节点 01'}],
+    })});
+  });
+  await page.route('**/api/v61/projects/*/storage-sources/s3-voc-rescan/rescans', async route => {
+    if(route.request().method()!=='POST')return route.continue();
+    submitted=route.request().postDataJSON();
+    await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({
+      task_id:'voc-rescan-ui',project_id:'browser-project',status:'QUEUED',
+      execution_mode:'agent',import_format:'voc',dataset_yaml:'',
+      counts:{},annotation_counts:{},examples:{},annotation_examples:{},
+    })});
+  });
+  await page.route('**/api/v61/projects/*/storage-rescans/voc-rescan-ui/confirm', async route => {
+    confirmation=route.request().postDataJSON();
+    await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({
+      task_id:'voc-rescan-ui',project_id:'browser-project',status:'QUEUED',
+      execution_mode:'agent',import_format:'voc',counts:{},annotation_counts:{},
+    })});
+  });
+  let getCount=0;
+  await page.route('**/api/v61/projects/*/storage-rescans/voc-rescan-ui', async route => {
+    getCount+=1;
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(getCount===1?{
+      task_id:'voc-rescan-ui',project_id:'browser-project',status:'AWAITING_CONFIRMATION',
+      execution_mode:'agent',import_format:'voc',worker_id:'agent:agent-voc-01',
+      counts:{NEW:1,MISSING:0,CHANGED:0,UNCHANGED:6},
+      annotation_counts:{ANNOTATION_NEW:1,ANNOTATION_CHANGED:2,ANNOTATION_REMOVED:1,ANNOTATION_CONFLICT:1,ANNOTATION_UNCHANGED:2,ANNOTATION_INVALID:0},
+      examples:{NEW:['dataset/train/JPEGImages/new.jpg']},
+      annotation_examples:{
+        ANNOTATION_CHANGED:['dataset/train/JPEGImages/a.jpg'],
+        ANNOTATION_CONFLICT:['dataset/train/JPEGImages/manual.jpg']
+      },
+      quality:{boxes:3,issues:{}},
+      external_classes:[{class_id:'0',name:'fire',target_label_code:'fire'}],
+    }:{
+      task_id:'voc-rescan-ui',project_id:'browser-project',status:'SUCCEEDED',
+      execution_mode:'agent',import_format:'voc',
+      counts:{NEW:1},annotation_counts:{ANNOTATION_CHANGED:2},
+      examples:{},annotation_examples:{},
+    })});
+  });
+
+  await openStoragePage(page);
+  const row=page.locator('.storage61-row').filter({hasText:'VOC 长期素材库'});
+  await row.getByRole('button',{name:'重新扫描 / 恢复'}).click();
+  await page.locator('#sr61Execution').selectOption('agent');
+  await expect(page.locator('#sr61Format option[value="voc"]')).toBeEnabled();
+  await page.locator('#sr61Format').selectOption('voc');
+  await expect(page.locator('#sr61DatasetYaml')).toBeDisabled();
+  await expect(page.locator('#sr61AnnotationPolicy')).toContainText('外部标注同步策略');
+  await page.getByRole('button',{name:'开始新的扫描'}).click();
+
+  await expect.poll(()=>submitted).toEqual({execution_mode:'agent',import_format:'voc'});
+  await expect(page.locator('#sr61Status')).toContainText('标注变化 2');
+  await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
+  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('fire');
+  await page.getByRole('button',{name:'确认应用'}).click();
+  await expect.poll(()=>confirmation).not.toBeNull();
+  expect(confirmation.label_mapping).toEqual({'0':'fire'});
+  expect(confirmation.annotation_changed).toBe('update');
+  expect(confirmation.annotation_conflicts).toBe('keep');
+});

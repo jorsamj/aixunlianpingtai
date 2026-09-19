@@ -195,6 +195,8 @@ jobs:
           grep -Fq 'intent=intent' platform_core/node_agent_material_runtime.py
           grep -Fq 'test_storage_rescan_root_review_is_explicit_and_preserves_same_hash_object_identity' tests/unit/test_remote_material_import.py
           grep -Fq 'test_storage_rescan_root_yolo_review_keeps_annotation_evidence_and_object_identity' tests/unit/test_remote_material_import.py
+          grep -Fq 'test_agent_voc_storage_rescan_uses_same_durable_owner_and_product_contract' tests/api/test_server_material_import.py
+          grep -Fq 'Pascal VOC rescan shares the same frontend delta' tests/browser/storage-source.spec.mjs
           grep -Fq 'annotation_source_evidence' platform_core/storage/import_candidates.py
           grep -Fq '_record_text_identity' platform_core/storage/yolo_import.py
           grep -Fq 'YOLO_SOURCE_EVIDENCE_MISSING' platform_core/remote_material_import.py
