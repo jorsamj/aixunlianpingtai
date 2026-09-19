@@ -32,6 +32,17 @@ test('publish config normalizes storage, compute mappings and recovery paths', (
   assert.equal(config.computePlatforms.length, 1);
 });
 
+test('publish UI leaves model asset storage ownership to ModelArtifactRuntime', () => {
+  const source = readFileSync(
+    new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /ModelArtifactRuntime is the single owner of model asset storage/);
+  assert.match(source, /storage_source_id:\s*''/);
+  assert.doesNotMatch(source, /storage_source_id:\s*config\?\.storageSourceId/);
+});
+
+
 test('version publish action reflects durable publication state', () => {
   assert.equal(publicationActionLabel({}), '同步到新畅联');
   assert.equal(publicationActionLabel({external_publish_requested_at: '2026-09-17T12:00:00Z'}), '待同步');
