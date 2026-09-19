@@ -32,6 +32,8 @@ class FakeSession:
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
         if url.endswith("/internal/auth/test-sign"):
+            assert kwargs.get("params") == {"access_key": "ak", "access_secret": "secret"}
+            assert "json" not in kwargs
             return FakeResponse({"code": 200, "data": {"timestamp": "100", "nonce": "abc", "signature": "sig"}})
         if url.endswith("/internal/auth/token"):
             assert kwargs["headers"]["Access-Key"] == "ak"
@@ -61,6 +63,41 @@ def test_changlian_auth_chain_uses_test_sign_then_token_then_bearer():
         "/internal/auth/token",
         "/algorithm-category/tree",
     ]
+
+
+def test_changlian_default_endpoints_match_documented_core_contract():
+    endpoints = ChangLianEndpoints()
+    assert endpoints.test_sign == "/internal/auth/test-sign"
+    assert endpoints.token == "/internal/auth/token"
+    assert endpoints.category_tree == "/algorithm-category/tree"
+    assert endpoints.product_list == "/algorithm-product/listAll"
+    assert endpoints.analysis_by_product == "/algorithm-product-analysis/listByProduct/{productId}"
+    assert endpoints.compute_platform_list == "/compute-platform/listAll"
+    assert endpoints.version_create == "/algorithm-version/add"
+    assert endpoints.weight_create == "/algorithm-weight/add"
+
+
+def test_changlian_auth_audit_redacts_credentials_before_callback():
+    session = FakeSession()
+    events = []
+    client = ChangLianClient(
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=ChangLianEndpoints(),
+        session=session,
+        audit_callback=events.append,
+    )
+
+    client.category_tree()
+
+    signature = next(event for event in events if event.get("operation") == "auth_signature")
+    assert signature["request"]["params"] == {"access_key": "***", "access_secret": "***"}
+    token = next(event for event in events if event.get("operation") == "auth_token")
+    assert token["request"]["headers"]["Access-Key"] == "***"
+    assert token["request"]["headers"]["Signature"] == "***"
+    category = next(event for event in events if event.get("operation") == "category_list")
+    assert category["request"]["headers"]["Authorization"] == "***"
 
 
 def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
