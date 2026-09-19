@@ -81,6 +81,7 @@ export function createTrainingDraft(values = {}) {
     newLabelCodes,
     effectiveLabelCodes: unique([...inheritedLabelCodes, ...newLabelCodes]),
     inheritancePending: Boolean(values.inheritancePending),
+    benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     resource: {
       strategy: String(values.resource?.strategy || 'auto'),
       device: String(values.resource?.device || 'auto'),

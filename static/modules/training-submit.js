@@ -100,9 +100,11 @@ export function validateTrainingDevice(draft, devices = []) {
   return match;
 }
 
-export function trainingSubmitReadiness({draft, inheritance, submitting = false} = {}) {
+export function trainingSubmitReadiness({draft, inheritance, benchmarkStatus, submitting = false} = {}) {
   if (submitting) return {ready: false, reason: 'submitting'};
   if (!String(draft?.algorithmId || '').trim()) return {ready: false, reason: 'algorithm'};
+  if (benchmarkStatus?.loading) return {ready: false, reason: 'benchmark-loading'};
+  if (benchmarkStatus?.load_error) return {ready: false, reason: 'benchmark-error'};
   if ((draft?.materialIds || []).length < 2) return {ready: false, reason: 'materials'};
   if (inheritance?.blocked) return {ready: false, reason: 'iteration'};
   return {ready: true, reason: ''};
@@ -143,6 +145,41 @@ export function supplementCandidateContext({asset, draft, inheritance} = {}) {
   };
 }
 
+export function benchmarkReuseContext({asset, draft, inheritance, benchmark} = {}) {
+  if (!draft?.benchmarkReuseEnabled) return null;
+  if (!asset || !draft) throw new Error('固定评测基准所属算法不存在，请刷新后重试');
+  if (!benchmark || benchmark.loading) throw new Error('固定评测基准正在校验，请稍后再提交训练');
+  if (benchmark.load_error) throw new Error(benchmark.reason || '固定评测基准读取失败，请刷新后重试');
+  if (benchmark.available !== true) throw new Error(benchmark.reason || '当前版本没有可复用的固定评测基准');
+  const algorithmId = String(asset.id || '').trim();
+  if (String(benchmark.algorithm_id || '').trim() !== algorithmId) {
+    throw new Error('固定评测基准所属算法已变化，请重新打开训练窗口');
+  }
+  const currentVersionId = String(asset.current_version_id || '').trim();
+  const sourceVersionId = String(benchmark.source_version_id || '').trim();
+  const draftVersionId = String(draft.baseVersionId || inheritance?.versionId || currentVersionId || '').trim();
+  if (!sourceVersionId || !currentVersionId || sourceVersionId !== currentVersionId
+      || (draftVersionId && draftVersionId !== sourceVersionId)) {
+    throw new Error('固定评测基准来源版本已变化，请重新打开训练窗口');
+  }
+  const scopeId = String(benchmark.scope_id || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(scopeId)) throw new Error('固定评测基准 Scope 状态异常，请重新评测后再训练');
+  if (String(benchmark.binding_level || '') !== 'bundle_verified') {
+    throw new Error('当前评测基准未绑定已校验 Test Bundle，不能用于严格复用');
+  }
+  const testImageCount = Number(benchmark.test_image_count || 0);
+  if (!Number.isInteger(testImageCount) || testImageCount <= 0) {
+    throw new Error('固定评测基准试验素材数量异常，请重新评测后再训练');
+  }
+  return {
+    algorithmId,
+    sourceVersionId,
+    scopeId,
+    snapshotId: String(benchmark.snapshot_id || '').trim(),
+    testImageCount,
+    bindingLevel: 'bundle_verified',
+  };
+}
 function renderSupplementCandidateSummary(context) {
   if (typeof document === 'undefined') return;
   const root = document.querySelector?.('.train-v3-summary');
@@ -203,7 +240,10 @@ export function installTrainingSubmitRuntime({
     const state = getState?.() || {};
     const draft = state.trainingDraft || trainingDraftRuntime.current?.() || trainingDraftRuntime.sync();
     const inheritance = trainingDraftRuntime.inheritance?.() || state.trainingDraftInheritance || {};
-    const readiness = trainingSubmitReadiness({draft, inheritance, submitting});
+    const benchmarkStatus = String(state.trainingBenchmarkReuse?.algorithm_id || '') === String(draft?.algorithmId || '')
+      ? state.trainingBenchmarkReuse
+      : null;
+    const readiness = trainingSubmitReadiness({draft, inheritance, benchmarkStatus, submitting});
     const asset = (state.algorithms || []).find(
       row => String(row?.id || '') === String(draft?.algorithmId || '')
     );
@@ -247,6 +287,7 @@ export function installTrainingSubmitRuntime({
       lastStage = 'resolve-algorithm';
       const asset = (state.algorithms || []).find(row => String(row?.id || '') === String(draft.algorithmId || ''));
       if (!asset) throw new Error('当前训练算法不存在，请刷新算法列表后重试');
+      const benchmarkContext = benchmarkReuseContext({asset, draft, inheritance, benchmark: state.trainingBenchmarkReuse});
 
       lastStage = 'resolve-target';
       const targetId = document.getElementById('tr429Target')?.value || '';
@@ -263,6 +304,13 @@ export function installTrainingSubmitRuntime({
       validateTrainingDevice(draft, state.trainingDevicesV3?.options || []);
       lastStage = 'build-payload';
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
+      if (benchmarkContext) {
+        if ((draft.testMaterialIds || []).length) throw new Error('复用固定评测基准时不能同时选择前端独立试验素材');
+        delete payload.test_image_ids;
+        delete payload.experiment_percent;
+        payload.benchmark_source_version_id = benchmarkContext.sourceVersionId;
+        payload.benchmark_scope_id = benchmarkContext.scopeId;
+      }
       const supplementContext = supplementCandidateContext({asset, draft, inheritance});
       if (supplementContext?.active) {
         payload.supplement_candidate_set_id = supplementContext.candidateSetId;

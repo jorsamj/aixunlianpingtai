@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {createTrainingDraft, trainingDraftToRequest} from '../../static/modules/training-draft.js';
 import {
+  benchmarkReuseContext,
   buildTrainingEngineParameters,
   buildTrainingStartPayload,
   installTrainingSubmitRuntime,
@@ -398,5 +399,46 @@ test('submit runtime carries candidate_set_id when selected materials adopt feed
   });
   await window.submitTrain429();
   assert.equal(sent.supplement_candidate_set_id, 'b'.repeat(64));
+  cleanup(runtime);
+});
+test('fixed benchmark context requires current bundle-verified backend identity', () => {
+  const asset = {id: 'alg-1', current_version_id: 'ver-1'};
+  const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
+  const context = benchmarkReuseContext({
+    asset, draft: value, inheritance: {versionId: 'ver-1'},
+    benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 12, binding_level: 'bundle_verified'},
+  });
+  assert.equal(context.sourceVersionId, 'ver-1');
+  assert.equal(context.scopeId, 'c'.repeat(64));
+  assert.equal(context.testImageCount, 12);
+  assert.throws(() => benchmarkReuseContext({
+    asset: {...asset, current_version_id: 'ver-2'}, draft: value, inheritance: {versionId: 'ver-1'},
+    benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), test_image_count: 12, binding_level: 'bundle_verified'},
+  }), /来源版本已变化/);
+});
+
+test('benchmark availability loading blocks submit readiness until backend truth is known', () => {
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
+});
+
+test('submit runtime sends only fixed benchmark identity while exact test ids stay server-side', async () => {
+  const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
+  const state = baseState();
+  state.algorithms = [{id: 'alg-1', current_version_id: 'ver-1'}];
+  state.trainingBenchmarkReuse = {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', source_version_name: 'v1', scope_id: 'd'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 9, binding_level: 'bundle_verified', loading: false, load_error: false};
+  installDom();
+  let sent;
+  globalThis.window = {submitTrain429: () => 'legacy', fetch: async (_url, init) => { sent = JSON.parse(init.body); return {ok: true, async json() { return {task: {id: 'task-benchmark'}}; }}; }};
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state, projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => value, current: () => value, inheritance: () => ({blocked: false, versionId: 'ver-1'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.benchmark_source_version_id, 'ver-1');
+  assert.equal(sent.benchmark_scope_id, 'd'.repeat(64));
+  assert.equal(Object.hasOwn(sent, 'test_image_ids'), false);
+  assert.equal(Object.hasOwn(sent, 'experiment_percent'), false);
   cleanup(runtime);
 });
