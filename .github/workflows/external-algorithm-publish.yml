@@ -77,6 +77,12 @@ jobs:
           grep -q "auto-upload-worker" platform_core/external_algorithm_publish.py
           grep -q "external_version_publications" platform_core/external_algorithm_publish.py
           grep -q "_remote_version_analysis_id" platform_core/external_algorithm_publish.py
+          grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
+          grep -q "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_config_rejects_stale_compute_platform_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_save" tests/unit/test_external_algorithm_publish.py
+          grep -q 'data-external-publish-automation="1"' static/modules/external-algorithm-publish.js
+          grep -q "算力环境来自最近一次新畅联主数据同步" static/modules/external-algorithm-publish.js
           grep -q "require_analysis_identity" platform_core/external_algorithm_publish.py
           grep -q "_canonical_chip_code(discovered.get(\"chip_code\") or mapping.get(\"chip_code\") or \"\")" platform_core/external_algorithm_publish.py
           grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
