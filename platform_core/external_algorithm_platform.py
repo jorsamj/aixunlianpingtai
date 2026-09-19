@@ -1122,15 +1122,27 @@ class ExternalAlgorithmPlatformService:
                 "analyses_by_product": analyses_by_product,
                 "compute_platforms": compute_platforms,
             }
-            mirror = mirror_products_to_algorithms(
-                algorithms_path=algorithms_path,
-                products=products,
-                categories=categories,
-                analyses_by_product=analyses_by_product,
-                provider=PROVIDER_CHANGLIAN,
-                synced_at=synced_at,
-            )
+            previous_cache = self.repository.cache()
             self.repository.save_cache(cache)
+            try:
+                mirror = mirror_products_to_algorithms(
+                    algorithms_path=algorithms_path,
+                    products=products,
+                    categories=categories,
+                    analyses_by_product=analyses_by_product,
+                    provider=PROVIDER_CHANGLIAN,
+                    synced_at=synced_at,
+                )
+            except Exception:
+                # Keep cache and project algorithm mirror on the same successful
+                # synchronization generation. AlgorithmSqlStore rolls back its
+                # SQLite transaction; restore the previous cache before surfacing
+                # the failed manual/automatic sync.
+                try:
+                    self.repository.save_cache(previous_cache)
+                except Exception:
+                    pass
+                raise
             history.update({
                 "status": "success",
                 "finished_at": utc_now(),
