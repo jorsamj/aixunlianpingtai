@@ -247,6 +247,13 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
         "dataset_revision_id": "a" * 64, "snapshot_id": "b" * 64,
         "execution": {"mode": "agent", "worker_id": "agent:node-1", "node_id": "node-1"},
     }
+    evaluation = {
+        "schema_version": 1, "evaluation_id": "e" * 64, "status": "succeeded",
+        "task_id": "train-lineage", "dataset_revision_id": "a" * 64,
+        "snapshot_id": "b" * 64, "model_sha256": "c" * 64,
+        "metrics": {"metrics/mAP50(B)": 0.88},
+        "per_class": [{"class_id": 0, "label": "smoke", "map50": 0.88}],
+    }
     attach_version(
         json_path, "a-lineage",
         {
@@ -254,9 +261,11 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
             "training_status": "SUCCEEDED", "artifact_verified": True, "trainable": True,
             "framework": "ultralytics", "stored_path": "/models/v-lineage/best.pt",
             "dataset_revision_id": "a" * 64, "snapshot_id": "b" * 64,
-            "training_lineage": lineage, "created_at": "2026-09-19T00:10:00Z",
+            "training_lineage": lineage, "evaluation": evaluation,
+            "created_at": "2026-09-19T00:10:00Z",
         },
     )
     persisted = list_algorithms(json_path)[0]["versions"][0]
     assert persisted["dataset_revision_id"] == "a" * 64
     assert persisted["training_lineage"] == lineage
+    assert persisted["evaluation"] == evaluation
