@@ -112,7 +112,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       return `<tr data-publish-target="${escapeHtml(key)}">
         <td><label class="field check"><input data-publish-enabled type="checkbox" ${row.enabled !== false ? 'checked' : ''}> ${escapeHtml(label)}</label></td>
         <td><select class="select" data-publish-platform>${computeOptions(row.compute_platform_id || '')}</select></td>
-        <td><input class="input" data-publish-chip value="${escapeHtml(row.chip_code || '')}" placeholder="如 RK3568 / RK3576 / Ascend310B / BM1684X"></td>
+        <td><input class="input" data-publish-chip value="${escapeHtml(row.chip_code || '')}" placeholder="兜底值，如 RK3568 / RK3576"></td>
       </tr>`;
     }).join('');
   }
@@ -127,7 +127,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
           <label class="field check"><input id="externalPublishOriginal" type="checkbox" ${c.publishOriginalModel ? 'checked' : ''}> 将原始训练权重也登记为畅联云权重（文件本身始终自动归档）</label>
         </div>
         <div class="panel-title" style="margin:18px 0 10px">转换目标 → 新畅联算力环境映射</div>
-        <table class="table"><thead><tr><th>转换目标</th><th>算力环境</th><th>芯片编码</th></tr></thead><tbody>${mappingRows()}</tbody></table>
+        <table class="table"><thead><tr><th>转换目标</th><th>算力环境</th><th>芯片编码（转换产物优先）</th></tr></thead><tbody>${mappingRows()}</tbody></table>
         <details style="margin-top:16px"><summary>幂等恢复接口</summary><div class="form two" style="margin-top:12px">
           <div class="field"><label>按产品查询版本</label><input id="externalPublishVersionList" class="input" value="${escapeHtml(c.versionListByProduct)}"></div>
           <div class="field"><label>按版本查询权重</label><input id="externalPublishWeightList" class="input" value="${escapeHtml(c.weightListByVersion)}"></div>
