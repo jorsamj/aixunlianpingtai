@@ -6,6 +6,8 @@ import pytest
 
 from platform_core.online_feedback import (
     OnlineFeedbackRepository,
+    build_supplement_candidate,
+    build_supplement_candidate_set,
     public_feedback,
     validate_prediction_evidence,
 )
@@ -107,3 +109,66 @@ def test_prediction_evidence_preserves_bounded_external_provenance():
     assert normalized["source_channel"] == "external_upload"
     assert normalized["external_source"] == "edge-gateway-01"
     assert normalized["external_sample_id"] == "camera-12-0001"
+
+
+def test_confirmed_feedback_candidate_freezes_current_annotation_identity(tmp_path: Path):
+    repo = OnlineFeedbackRepository(tmp_path)
+    staged, _ = repo.stage(
+        evidence(), feedback_type="correct", note="可补数据",
+        created_at="2026-09-19T00:00:00+00:00",
+    )
+    confirmed, _ = repo.finalize(
+        staged["id"], expected_feedback_type="correct",
+        material_id="material-1",
+        result={"annotation_action": "prediction_confirmed_as_truth"},
+        confirmed_at="2026-09-19T00:01:00+00:00",
+    )
+    material = {
+        "id": "material-1",
+        "content_sha256": "b" * 64,
+        "annotation_state": "annotated",
+        "annotation_hash": "c" * 64,
+    }
+    annotation = {
+        "annotation_state": "annotated",
+        "content_digest": "c" * 64,
+        "annotation_scope": ["smoke"],
+        "boxes": [{"label": "smoke"}],
+    }
+    candidate = build_supplement_candidate(confirmed, material, annotation)
+    assert candidate["eligible"] is True
+    assert candidate["annotation_hash"] == "c" * 64
+    assert candidate["labels"] == ["smoke"]
+    assert len(candidate["candidate_digest"]) == 64
+
+    action = {
+        "status": "confirmed", "action": "supplement_data",
+        "action_id": "d" * 64,
+        "source": {"algorithm_id": "algorithm-1", "version_id": "version-1"},
+    }
+    frozen = build_supplement_candidate_set(
+        action, [candidate], frozen_at="2026-09-19T00:02:00+00:00",
+    )
+    assert frozen["feedback_ids"] == [confirmed["id"]]
+    assert frozen["material_ids"] == ["material-1"]
+    assert frozen["automatic_execution"] is False
+
+
+def test_needs_correction_candidate_waits_for_formal_annotation(tmp_path: Path):
+    repo = OnlineFeedbackRepository(tmp_path)
+    staged, _ = repo.stage(
+        evidence(), feedback_type="needs_correction", note="漏检",
+        created_at="2026-09-19T00:00:00+00:00",
+    )
+    confirmed, _ = repo.finalize(
+        staged["id"], expected_feedback_type="needs_correction",
+        material_id="material-1",
+        result={"annotation_action": "manual_annotation_required"},
+        confirmed_at="2026-09-19T00:01:00+00:00",
+    )
+    material = {"id": "material-1", "content_sha256": "b" * 64}
+    pending = build_supplement_candidate(
+        confirmed, material, {"annotation_state": "unannotated", "boxes": []},
+    )
+    assert pending["eligible"] is False
+    assert "ANNOTATION_REQUIRED" in pending["reason_codes"]

@@ -80,6 +80,10 @@ jobs:
           grep -Fq '/online-feedback/external-intake' app.py
           grep -Fq 'ONLINE_FEEDBACK_MAX_IMAGE_BYTES' app.py
           grep -Fq 'test_external_feedback_intake_stages_review_without_material_or_training_side_effect' tests/api/test_online_feedback.py
+          grep -Fq 'build_supplement_candidate_set' platform_core/online_feedback.py
+          grep -Fq 'supplement-data-candidates/freeze' app.py
+          grep -Fq 'test_confirmed_feedback_candidates_freeze_without_revision_or_training_side_effect' tests/api/test_online_feedback.py
+          grep -Fq 'test_feedback_candidate_freeze_rejects_stale_annotation_and_excludes_pending' tests/api/test_online_feedback.py
 
   real-chrome:
     runs-on: ubuntu-24.04

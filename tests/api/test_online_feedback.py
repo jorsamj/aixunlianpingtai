@@ -422,3 +422,170 @@ def test_external_feedback_intake_rejects_wrong_model_sha_and_sample_identity_co
     )
     assert conflict.status_code == 409
     assert "绑定不同" in conflict.text
+
+
+def _enable_supplement_action(project_id: str, algorithm_id: str, version_id: str):
+    action = {
+        "schema_version": 1,
+        "action": "supplement_data",
+        "status": "confirmed",
+        "action_id": "d" * 64,
+        "confirmed_at": app_module.now_iso(),
+        "automatic_execution": False,
+        "requires_user_submit": False,
+        "source": {
+            "decision_id": "e" * 64,
+            "evaluation_id": "f" * 64,
+            "algorithm_id": algorithm_id,
+            "version_id": version_id,
+            "dataset_revision_id": "",
+            "snapshot_id": "snapshot-feedback",
+        },
+        "weak_labels": ["smoke"],
+        "data_draft": {
+            "weak_labels": ["smoke"],
+            "problem_samples": [],
+            "dataset_revision_id": "",
+            "snapshot_id": "snapshot-feedback",
+        },
+    }
+    app_module.update_algorithm_version(
+        app_module.algorithms_file(project_id),
+        algorithm_id,
+        version_id,
+        {"confirmed_iteration_action": action},
+        now=app_module.now_iso(),
+    )
+    return action
+
+
+def test_confirmed_feedback_candidates_freeze_without_revision_or_training_side_effect(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    _enable_supplement_action(project["id"], algorithm_id, version["id"])
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.93,
+            "x1": 10, "y1": 8, "x2": 60, "y2": 52,
+        }],
+        suffix="candidate",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+    confirmed = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/confirm",
+        json={
+            "expected_feedback_type": "correct",
+            "dataset_id": "default",
+            "confirm_all_labels_absent": False,
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+
+    snapshots = app_module.project_dir(project["id"]) / "snapshots"
+    revisions = app_module.project_dir(project["id"]) / "dataset_revisions"
+    before_snapshots = set(snapshots.glob("*.json")) if snapshots.exists() else set()
+    before_revisions = set(revisions.glob("*.json")) if revisions.exists() else set()
+
+    listing = client.get(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates"
+    )
+    assert listing.status_code == 200, listing.text
+    body = listing.json()
+    assert body["total"] == 1
+    assert body["eligible"] == 1
+    candidate = body["items"][0]
+    assert candidate["feedback_id"] == staged["id"]
+    assert candidate["eligible"] is True
+
+    frozen = client.post(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates/freeze",
+        json={"candidates": [{
+            "feedback_id": candidate["feedback_id"],
+            "candidate_digest": candidate["candidate_digest"],
+        }]},
+    )
+    assert frozen.status_code == 200, frozen.text
+    candidate_set = frozen.json()["candidate_set"]
+    assert candidate_set["feedback_ids"] == [staged["id"]]
+    assert candidate_set["material_ids"] == [confirmed.json()["feedback"]["material_id"]]
+    assert candidate_set["automatic_execution"] is False
+    assert (set(snapshots.glob("*.json")) if snapshots.exists() else set()) == before_snapshots
+    assert (set(revisions.glob("*.json")) if revisions.exists() else set()) == before_revisions
+
+    algorithm = next(
+        row for row in app_module.list_algorithms_internal(project["id"])
+        if row["id"] == algorithm_id
+    )
+    persisted = next(row for row in algorithm["versions"] if row["id"] == version["id"])
+    assert persisted["supplement_data_candidate_set"]["candidate_set_id"] == candidate_set["candidate_set_id"]
+
+    repeated = client.post(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates/freeze",
+        json={"candidates": [{
+            "feedback_id": candidate["feedback_id"],
+            "candidate_digest": candidate["candidate_digest"],
+        }]},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+
+
+def test_feedback_candidate_freeze_rejects_stale_annotation_and_excludes_pending(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    _enable_supplement_action(project["id"], algorithm_id, version["id"])
+
+    prediction_id, _ = _prediction(
+        project["id"], algorithm_id, version,
+        detections=[{
+            "class_id": 0, "label": "smoke", "confidence": 0.9,
+            "x1": 10, "y1": 10, "x2": 50, "y2": 50,
+        }],
+        suffix="stale-candidate",
+    )
+    staged = _stage(client, project["id"], prediction_id, "correct")
+    confirmed = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/{staged['id']}/confirm",
+        json={
+            "expected_feedback_type": "correct",
+            "dataset_id": "default",
+            "confirm_all_labels_absent": False,
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    pending_prediction, _ = _prediction(
+        project["id"], algorithm_id, version, detections=[], suffix="pending-candidate",
+    )
+    _stage(client, project["id"], pending_prediction, "needs_correction")
+
+    listing = client.get(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates"
+    )
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 1
+    candidate = listing.json()["items"][0]
+    material_id = confirmed.json()["feedback"]["material_id"]
+
+    AnnotationRepository(app_module.project_dir(project["id"])).upsert(
+        material_id,
+        [{
+            "id": "manual-new", "class_id": 0, "label": "smoke",
+            "x1": 12, "y1": 12, "x2": 55, "y2": 55,
+        }],
+        "annotated",
+    )
+    stale = client.post(
+        f"/api/v63/projects/{project['id']}/algorithms/{algorithm_id}/versions/"
+        f"{version['id']}/supplement-data-candidates/freeze",
+        json={"candidates": [{
+            "feedback_id": candidate["feedback_id"],
+            "candidate_digest": candidate["candidate_digest"],
+        }]},
+    )
+    assert stale.status_code == 409
+    assert "已经变化" in stale.text

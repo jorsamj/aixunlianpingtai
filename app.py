@@ -7667,6 +7667,15 @@ class ConfirmIterationActionReq(BaseModel):
     action: Literal["supplement_data", "continue_training", "business_validation", "manual_review"]
 
 
+class SupplementFeedbackCandidateSelection(BaseModel):
+    feedback_id: str
+    candidate_digest: str
+
+
+class FreezeSupplementFeedbackCandidatesReq(BaseModel):
+    candidates: List[SupplementFeedbackCandidateSelection] = Field(min_length=1, max_length=500)
+
+
 def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id: str):
     get_project(project_id)
     algorithm = next((row for row in list_algorithms_internal(project_id)
@@ -7735,6 +7744,148 @@ def _validated_training_iteration_action(algorithm: Dict[str, Any], payload: Tra
     if not expected_task_id or submitted_task_id != expected_task_id:
         raise HTTPException(status_code=409, detail="继续训练动作必须使用已确认的固定任务 ID")
     return stored
+
+
+def _supplement_data_action(
+    project_id: str, algorithm_id: str, version_id: str,
+):
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    if str(algorithm.get("current_version_id") or "") != str(version_id):
+        raise HTTPException(status_code=409, detail="补数据候选只能基于算法当前版本，请刷新后重试")
+    action = version.get("confirmed_iteration_action")
+    source = dict(action.get("source") or {}) if isinstance(action, dict) else {}
+    if (
+        not isinstance(action, dict)
+        or str(action.get("status") or "") != "confirmed"
+        or str(action.get("action") or "") != "supplement_data"
+        or str(source.get("algorithm_id") or "") != str(algorithm_id)
+        or str(source.get("version_id") or "") != str(version_id)
+    ):
+        raise HTTPException(status_code=409, detail="当前版本没有已确认的补数据动作")
+    return algorithm, version, action
+
+
+def _supplement_feedback_candidates(project_id: str, feedback_rows):
+    from platform_core.online_feedback import build_supplement_candidate
+    materials = material_store(project_id)
+    material_ids = [
+        str(row.get("material_id") or "")
+        for row in feedback_rows
+        if str(row.get("material_id") or "")
+    ]
+    material_rows = {
+        str(row.get("id") or ""): row
+        for row in materials.get_many(material_ids)
+    }
+    annotations = AnnotationRepository(project_dir(project_id))
+    annotation_rows = annotations.get_many(list(material_rows)) if material_rows else {}
+    return [
+        build_supplement_candidate(
+            row,
+            material_rows.get(str(row.get("material_id") or "")),
+            annotation_rows.get(str(row.get("material_id") or "")),
+        )
+        for row in feedback_rows
+    ]
+
+
+@app.get("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates")
+def list_supplement_feedback_candidates(
+    project_id: str, algorithm_id: str, version_id: str,
+):
+    _, version, action = _supplement_data_action(project_id, algorithm_id, version_id)
+    repository = _online_feedback_repository(project_id)
+    rows, total = repository.list_confirmed_for_version(algorithm_id, version_id, limit=500)
+    candidates = _supplement_feedback_candidates(project_id, rows)
+    eligible = sum(1 for row in candidates if row.get("eligible") is True)
+    annotation_required = sum(
+        1 for row in candidates if "ANNOTATION_REQUIRED" in set(row.get("reason_codes") or [])
+    )
+    return {
+        "ok": True,
+        "action_id": str(action.get("action_id") or ""),
+        "total": total,
+        "returned": len(candidates),
+        "truncated": total > len(candidates),
+        "eligible": eligible,
+        "annotation_required": annotation_required,
+        "items": candidates,
+        "candidate_set": version.get("supplement_data_candidate_set"),
+    }
+
+
+@app.post("/api/v63/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/supplement-data-candidates/freeze")
+def freeze_supplement_feedback_candidates(
+    project_id: str, algorithm_id: str, version_id: str,
+    payload: FreezeSupplementFeedbackCandidatesReq,
+):
+    from filelock import FileLock
+    from platform_core.online_feedback import build_supplement_candidate_set
+
+    _, _, action = _supplement_data_action(project_id, algorithm_id, version_id)
+    requested = {
+        str(row.feedback_id): str(row.candidate_digest).strip().lower()
+        for row in payload.candidates
+    }
+    if len(requested) != len(payload.candidates):
+        raise HTTPException(status_code=409, detail="补数据候选包含重复 feedback ID")
+    if any(
+        len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
+        for digest in requested.values()
+    ):
+        raise HTTPException(status_code=400, detail="补数据候选 digest 无效")
+
+    repository = _online_feedback_repository(project_id)
+    feedback_rows = repository.get_many(requested)
+    if len(feedback_rows) != len(requested):
+        raise HTTPException(status_code=409, detail="部分补数据反馈已经不存在，请刷新后重试")
+    for row in feedback_rows:
+        if (
+            str(row.get("status") or "") != "confirmed"
+            or str(row.get("algorithm_id") or "") != str(algorithm_id)
+            or str(row.get("version_id") or "") != str(version_id)
+        ):
+            raise HTTPException(status_code=409, detail="补数据反馈状态或版本已经变化，请刷新后重试")
+
+    candidates = _supplement_feedback_candidates(project_id, feedback_rows)
+    by_id = {str(row["feedback_id"]): row for row in candidates}
+    for feedback_id, digest in requested.items():
+        candidate = by_id.get(feedback_id)
+        if candidate is None or str(candidate.get("candidate_digest") or "") != digest:
+            raise HTTPException(status_code=409, detail="补数据候选素材或标注已经变化，请刷新后重试")
+        if candidate.get("eligible") is not True:
+            raise HTTPException(status_code=409, detail="所选反馈尚未具备可训练的正式标注，请先完成复核")
+    try:
+        candidate_set = build_supplement_candidate_set(
+            action,
+            [by_id[feedback_id] for feedback_id in requested],
+            frozen_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    lock_path = str(algorithms_file(project_id).resolve()) + ".supplement-feedback.lock"
+    with FileLock(lock_path, timeout=30):
+        _, latest_version, latest_action = _supplement_data_action(
+            project_id, algorithm_id, version_id,
+        )
+        if str(latest_action.get("action_id") or "") != str(candidate_set["action_id"]):
+            raise HTTPException(status_code=409, detail="补数据动作已经变化，请刷新后重试")
+        previous = latest_version.get("supplement_data_candidate_set")
+        if isinstance(previous, dict) and str(previous.get("candidate_set_id") or ""):
+            if str(previous.get("candidate_set_id")) == candidate_set["candidate_set_id"]:
+                return {"ok": True, "idempotent": True, "candidate_set": previous}
+            raise HTTPException(status_code=409, detail="该版本已经冻结另一组补数据候选，不能覆盖")
+        stored = update_algorithm_version(
+            algorithms_file(project_id), algorithm_id, version_id,
+            {"supplement_data_candidate_set": candidate_set},
+            now=now_iso(),
+        )
+    return {
+        "ok": True,
+        "idempotent": False,
+        "candidate_set": stored.get("supplement_data_candidate_set") or candidate_set,
+    }
 
 
 @app.post("/api/v12/projects/{project_id}/train/start")
