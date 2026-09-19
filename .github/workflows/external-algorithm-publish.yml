@@ -84,6 +84,9 @@ jobs:
           grep -q "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED" platform_core/external_algorithm_publish.py
           grep -q "test_publish_blocks_before_remote_version_when_public_base_url_missing" tests/unit/test_external_algorithm_publish.py
           grep -q "test_publish_blocks_before_remote_version_when_model_asset_storage_missing" tests/unit/test_external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_UPLOAD_FAILED" platform_core/external_algorithm_publish.py
+          grep -q "Upload and verify every local model artifact before creating a remote" platform_core/external_algorithm_publish.py
+          grep -q "test_model_asset_upload_failure_happens_before_remote_version_creation" tests/unit/test_external_algorithm_publish.py
           grep -q "transport_ready === false" static/modules/external-algorithm-publish.js
           grep -q "manual publish preflight blocks missing model delivery configuration" tests/frontend/external-algorithm-publish.test.mjs
           grep -q "MODEL_ARTIFACT_MAPPING_INCOMPLETE" platform_core/external_algorithm_publish.py
