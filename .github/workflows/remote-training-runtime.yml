@@ -226,6 +226,8 @@ jobs:
           grep -Fq 'test_durable_training_requires_matching_supplement_candidate_set_identity' tests/api/test_training_request.py
           grep -Fq 'training.dataset_revision_id' platform_core/remote_execution_transport.py
           grep -Fq '"training_lineage": training_lineage' platform_core/remote_execution_transport.py
+          grep -Fq 'supplement_provenance=(' platform_core/remote_execution_transport.py
+          grep -Fq '"supplement_provenance": snapshot.get("supplement_provenance")' platform_core/remote_training_tasks.py
           grep -Fq '"evaluation": evaluation' platform_core/remote_execution_transport.py
           grep -Fq '"training_lineage": training_lineage' platform_core/training_tasks.py
           grep -Fq '"evaluation": evaluation' platform_core/training_tasks.py

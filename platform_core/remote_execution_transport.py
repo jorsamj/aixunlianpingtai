@@ -3193,6 +3193,11 @@ class RemoteExecutionTransportService:
             requested_params=training.get("params") if isinstance(training.get("params"), Mapping) else {},
             actual_params=actual_params,
             iteration_action=payload.get("iteration_action"),
+            supplement_provenance=(
+                training.get("supplement_provenance")
+                if isinstance(training.get("supplement_provenance"), Mapping)
+                else payload.get("supplement_provenance")
+            ),
             artifacts=[{
                 "role": item.get("role"),
                 "artifact_id": item.get("artifact_id"),
