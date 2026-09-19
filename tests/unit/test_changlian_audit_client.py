@@ -18,6 +18,8 @@ class FakeResponse:
 class FakeSession:
     def request(self, method, url, **kwargs):
         if url.endswith("/internal/auth/test-sign"):
+            assert kwargs.get("params") == {"access_key": "ak-sensitive", "access_secret": "secret-sensitive"}
+            assert "json" not in kwargs
             return FakeResponse({"code": 200, "data": {"timestamp": "100", "nonce": "n1", "signature": "sig"}})
         if url.endswith("/internal/auth/token"):
             return FakeResponse(
@@ -58,5 +60,5 @@ def test_changlian_http_client_records_every_remote_step_and_redacts_credentials
     token = next(row for row in rows if row["operation"] == "auth_token")
     assert token["request"]["headers"]["Access-Key"] == "***"
     signature = next(row for row in rows if row["operation"] == "auth_signature")
-    assert signature["request"]["json"]["accessSecret"] == "***"
-    assert signature["request"]["json"]["accessKey"] == "***"
+    assert signature["request"]["params"]["access_secret"] == "***"
+    assert signature["request"]["params"]["access_key"] == "***"
