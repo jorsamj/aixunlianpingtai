@@ -357,8 +357,16 @@ def test_cache_schema_v2_is_rejected_after_writable_hardlink_fix(tmp_path):
 def test_cache_restore_preserves_dataset_revision_evidence(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
-    (source / "snapshot.json").write_text('{"snapshot_id":"snap","dataset_revision_id":"rev"}', encoding="utf-8")
-    (source / "dataset-revision.json").write_text('{"dataset_revision_id":"rev"}', encoding="utf-8")
+    snapshot_id = "a" * 64
+    revision_id = "b" * 64
+    (source / "snapshot.json").write_text(
+        json.dumps({"snapshot_id": snapshot_id, "dataset_revision_id": revision_id}),
+        encoding="utf-8",
+    )
+    (source / "dataset-revision.json").write_text(
+        json.dumps({"dataset_revision_id": revision_id}),
+        encoding="utf-8",
+    )
     (source / "data.yaml").write_text("path: .\n", encoding="utf-8")
     (source / "images").mkdir()
     (source / "labels").mkdir()
@@ -369,8 +377,8 @@ def test_cache_restore_preserves_dataset_revision_evidence(tmp_path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
     manifest = {
         "schema_version": 3,
-        "snapshot_id": "snap",
-        "dataset_revision_id": "rev",
+        "snapshot_id": snapshot_id,
+        "dataset_revision_id": revision_id,
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": sha(source / "snapshot.json"),
         "dataset_revision_ref": "dataset-revision.json",
@@ -386,6 +394,6 @@ def test_cache_restore_preserves_dataset_revision_evidence(tmp_path):
     }
     (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     cache = TrainingBundleCache(tmp_path / "data", "project", max_bytes=0, ttl_seconds=0)
-    entry, _ = cache.publish_verified(source, "snap", verified_files=1)
+    entry, _ = cache.publish_verified(source, snapshot_id, verified_files=1)
     restored, _ = cache.restore(entry, tmp_path / "work")
     assert (restored / "dataset-revision.json").read_bytes() == (source / "dataset-revision.json").read_bytes()
