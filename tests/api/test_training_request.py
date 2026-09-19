@@ -881,3 +881,150 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
         app_module.project_dir(project_id) / "jobs" / task_id / "job.json", {}
     )
     assert job["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
+
+
+def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
+    client, seeded_project,
+):
+    import app as app_module
+    from platform_core.algorithms import save_algorithms
+    from platform_core.training_evaluation import build_evaluation_benchmark_scope
+
+    project_id, benchmark_image = seeded_project
+    train_image = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("benchmark-train.jpg", _image_bytes("blue"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    for image in (benchmark_image, train_image):
+        assert client.post(
+            f"/api/projects/{project_id}/annotations/{image['id']}",
+            json={"boxes": [{
+                "class_id": 0, "label": "fire",
+                "x1": 20, "y1": 20, "x2": 90, "y2": 90,
+            }]},
+        ).status_code == 200
+
+    material = app_module.MaterialRepository(
+        app_module.project_dir(project_id)
+    ).get(benchmark_image["id"])
+    annotation = app_module.AnnotationRepository(
+        app_module.project_dir(project_id)
+    ).get(benchmark_image["id"])
+    snapshot_id = "a" * 64
+    snapshot = {
+        "schema_version": 3,
+        "snapshot_id": snapshot_id,
+        "test_image_ids": [benchmark_image["id"]],
+        "label_schema": [{"class_id": 0, "code": "fire"}],
+        "images": [{
+            "image_id": benchmark_image["id"],
+            "role": "test",
+            "content_sha256": material["content_sha256"],
+            "annotation_hash": annotation["content_digest"],
+            "annotation_state": annotation["annotation_state"],
+        }],
+    }
+    snapshot_dir = app_module.project_dir(project_id) / "snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    app_module.atomic_write_json(snapshot_dir / f"{snapshot_id}.json", snapshot)
+    snapshot_scope = build_evaluation_benchmark_scope(snapshot)
+    scope_id = "b" * 64
+    scope = {
+        **snapshot_scope,
+        "scope_id": scope_id,
+        "binding_level": "bundle_verified",
+        "evaluation_input_digest": "c" * 64,
+        "training_input_policy": "ultralytics_jpeg_repair_v1",
+    }
+
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "固定评测基准训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    rows = app_module.list_algorithms_internal(project_id)
+    target = next(row for row in rows if row["id"] == algorithm["id"])
+    target["current_version_id"] = "benchmark-v1"
+    target["versions"] = [{
+        "id": "benchmark-v1",
+        "version_name": "benchmark-v1",
+        "snapshot_id": snapshot_id,
+        "training_status": "SUCCEEDED",
+        "artifact_verified": True,
+        "trainable": True,
+        "framework": "ultralytics",
+        "evaluation": {
+            "status": "succeeded",
+            "snapshot_id": snapshot_id,
+            "benchmark_scope": scope,
+        },
+    }]
+    save_algorithms(app_module.algorithms_file(project_id), rows)
+
+    availability = client.get(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/benchmark-reuse"
+    )
+    assert availability.status_code == 200
+    assert availability.json()["available"] is True
+    assert availability.json()["test_image_count"] == 1
+    assert "test_image_ids" not in availability.json()
+
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "model": "yolo11n.pt",
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": [train_image["id"]],
+            "validation_percent": 20,
+            "experiment_percent": 20,
+            "benchmark_source_version_id": "benchmark-v1",
+            "benchmark_scope_id": scope_id,
+        },
+    )
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task"]["id"]
+    payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert payload["split_mode"] == "independent_test_set"
+    assert payload["test_image_ids"] == [benchmark_image["id"]]
+    assert payload["benchmark_reuse"]["source_version_id"] == "benchmark-v1"
+    assert payload["benchmark_reuse"]["scope_id"] == scope_id
+    assert payload["benchmark_reuse"]["test_image_count"] == 1
+
+
+def test_reusable_benchmark_rejects_stale_observed_scope(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "过期评测基准", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    seen = {}
+
+    def fake_resolve(_project_id, _algorithm, source_version_id="", observed_scope_id=""):
+        seen["source_version_id"] = source_version_id
+        seen["observed_scope_id"] = observed_scope_id
+        raise app_module.HTTPException(status_code=409, detail="Benchmark Scope 已变化")
+
+    monkeypatch.setattr(app_module, "_training_reusable_benchmark", fake_resolve)
+    response = client.post(
+        f"/api/v12/projects/{project_id}/train/start",
+        json={
+            "framework": "ultralytics",
+            "algorithm_asset_id": algorithm["id"],
+            "split_mode": "random_test_from_training_pool",
+            "train_image_ids": ["train-a"],
+            "validation_percent": 20,
+            "experiment_percent": 20,
+            "benchmark_source_version_id": "version-old",
+            "benchmark_scope_id": "d" * 64,
+        },
+    )
+    assert response.status_code == 409
+    assert "Scope" in response.json()["detail"]
+    assert seen == {
+        "source_version_id": "version-old",
+        "observed_scope_id": "d" * 64,
+    }

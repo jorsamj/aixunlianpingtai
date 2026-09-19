@@ -98,4 +98,7 @@ jobs:
           fi
           test ! -e tools/_one_shot_task_filtered_negative.py
           test ! -e .github/workflows/_one_shot_task_filtered_negative.yml
+          grep -Fq 'benchmark_source_version_id' app.py
+          grep -Fq 'def _training_reusable_benchmark' app.py
+          grep -Fq 'test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids' tests/api/test_training_request.py
           test "$(cat VERSION.txt)" = "42.24.0"

@@ -43,6 +43,7 @@ from platform_core.algorithms import (
     delete_algorithm_version,
     is_trainable_version,
     project_current_version,
+    resolve_current_version_id,
     rollback_algorithm_version,
     create_algorithm as create_algorithm_asset,
     delete_algorithm as delete_algorithm_asset,
@@ -5801,6 +5802,10 @@ class TrainReq(BaseModel):
     iteration_action: Optional[Dict[str, str]] = None
     supplement_candidate_set_id: Optional[str] = ""
     supplement_count: int = 0
+    # Reusable Benchmark v1. The browser submits identity only; exact test IDs
+    # are resolved from the source version/Snapshot by the control plane.
+    benchmark_source_version_id: Optional[str] = ""
+    benchmark_scope_id: Optional[str] = ""
     # v42.7 AI mid-training intervention. The AI is advisory within constrained actions; Ground Truth metrics stay authoritative.
     ai_intervention_enabled: bool = False
     ai_intervention_epochs: Optional[List[int]] = None
@@ -5892,6 +5897,189 @@ def _explicit_training_split(payload: TrainReq) -> SplitRequest:
     )
 
 
+def _training_reusable_benchmark(
+    project_id: str,
+    asset_algorithm: Optional[Dict[str, Any]],
+    source_version_id: str = "",
+    observed_scope_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    requested_version = str(source_version_id or "").strip()
+    requested_scope = str(observed_scope_id or "").strip().lower()
+    if not requested_version and not requested_scope:
+        return None
+    if not requested_version or not requested_scope:
+        raise HTTPException(
+            status_code=409,
+            detail="复用评测基准需要同时提交来源版本和已观察到的 Benchmark Scope，请刷新训练配置后重试",
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", requested_scope):
+        raise HTTPException(status_code=409, detail="Benchmark Scope 身份无效，请刷新训练配置后重试")
+    if not isinstance(asset_algorithm, dict):
+        raise HTTPException(status_code=409, detail="评测基准所属算法不存在")
+
+    try:
+        current_version_id = str(resolve_current_version_id(asset_algorithm) or "")
+    except PlatformError as error:
+        raise HTTPException(status_code=409, detail=error.detail or error.message) from error
+    if not current_version_id or requested_version != current_version_id:
+        raise HTTPException(
+            status_code=409,
+            detail="算法当前版本已变化，不能继续复用旧版本评测基准，请刷新训练配置后重试",
+        )
+    version = next(
+        (
+            row for row in list(asset_algorithm.get("versions") or [])
+            if str(row.get("id") or row.get("version_id") or "").strip() == current_version_id
+        ),
+        None,
+    )
+    evaluation = version.get("evaluation") if isinstance(version, dict) else None
+    evaluation = evaluation if isinstance(evaluation, dict) else {}
+    if str(evaluation.get("status") or "").strip().lower() != "succeeded":
+        raise HTTPException(status_code=409, detail="当前算法版本没有成功的独立评测，无法复用评测基准")
+    scope = evaluation.get("benchmark_scope")
+    scope = scope if isinstance(scope, dict) else {}
+    scope_id = str(scope.get("scope_id") or "").strip().lower()
+    if scope.get("binding_level") != "bundle_verified" or not re.fullmatch(r"[0-9a-f]{64}", scope_id):
+        raise HTTPException(
+            status_code=409,
+            detail="当前算法版本缺少已校验 Test Bundle 的 Benchmark Scope，只能做描述性对比",
+        )
+    if scope_id != requested_scope:
+        raise HTTPException(status_code=409, detail="Benchmark Scope 已变化，请刷新训练配置后重新确认")
+
+    snapshot_id = str(evaluation.get("snapshot_id") or version.get("snapshot_id") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
+        raise HTTPException(status_code=409, detail="评测基准缺少有效训练 Snapshot")
+    snapshot_path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
+    if not snapshot_path.is_file():
+        raise HTTPException(status_code=409, detail="评测基准对应的训练 Snapshot 已不存在")
+    snapshot = read_json(snapshot_path, {})
+    if not isinstance(snapshot, dict) or str(snapshot.get("snapshot_id") or "").lower() != snapshot_id:
+        raise HTTPException(status_code=409, detail="评测基准 Snapshot 身份不一致")
+
+    from platform_core.training_evaluation import build_evaluation_benchmark_scope
+    try:
+        snapshot_scope = build_evaluation_benchmark_scope(snapshot)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    for key in ("test_image_count", "content_digest", "ground_truth_digest", "label_schema_digest"):
+        if str(scope.get(key) or "") != str(snapshot_scope.get(key) or ""):
+            raise HTTPException(
+                status_code=409,
+                detail="已归档 Benchmark Scope 与 Snapshot truth 不一致，不能复用",
+            )
+
+    raw_ids = snapshot.get("test_image_ids")
+    if raw_ids is None and isinstance(snapshot.get("ids"), dict):
+        raw_ids = snapshot["ids"].get("test")
+    test_ids = tuple(
+        dict.fromkeys(
+            str(value or "").strip()
+            for value in list(raw_ids or [])
+            if str(value or "").strip()
+        )
+    )
+    if not test_ids or len(test_ids) != int(scope.get("test_image_count") or 0):
+        raise HTTPException(status_code=409, detail="评测基准试验素材清单不完整")
+
+    records = {
+        str(row.get("image_id") or ""): row
+        for row in list(snapshot.get("images") or [])
+        if isinstance(row, dict) and str(row.get("image_id") or "")
+    }
+    materials = MaterialRepository(project_dir(project_id))
+    annotations = AnnotationRepository(project_dir(project_id)).get_many(test_ids)
+    for image_id in test_ids:
+        frozen = records.get(image_id)
+        material = materials.get(image_id)
+        annotation = annotations.get(image_id) or {}
+        if frozen is None or material is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 已不存在，请重新建立基准",
+            )
+        if str(material.get("content_sha256") or "").lower() != str(
+            frozen.get("content_sha256") or ""
+        ).lower():
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 内容已变化，请重新评测后再建立基准",
+            )
+        annotation_hash = str(
+            annotation.get("content_digest")
+            or material.get("annotation_hash")
+            or ""
+        ).lower()
+        annotation_state = str(
+            annotation.get("annotation_state")
+            or material.get("annotation_state")
+            or "unannotated"
+        )
+        if (
+            annotation_hash != str(frozen.get("annotation_hash") or "").lower()
+            or annotation_state != str(frozen.get("annotation_state") or "")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"评测基准素材 {image_id} 标注已变化，请重新评测后再建立基准",
+            )
+    return {
+        "source_version_id": current_version_id,
+        "source_version_name": str(version.get("version_name") or current_version_id),
+        "scope_id": scope_id,
+        "snapshot_id": snapshot_id,
+        "test_image_ids": test_ids,
+        "test_image_count": len(test_ids),
+        "binding_level": "bundle_verified",
+    }
+
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/benchmark-reuse")
+def training_benchmark_reuse(project_id: str, algorithm_id: str):
+    get_project(project_id)
+    algorithm = next(
+        (
+            row for row in list_algorithms_internal(project_id)
+            if str(row.get("id") or "") == str(algorithm_id)
+        ),
+        None,
+    )
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="算法不存在")
+    try:
+        current_version_id = str(resolve_current_version_id(algorithm) or "")
+    except PlatformError as error:
+        return {"available": False, "reason": error.detail or error.message}
+    if not current_version_id:
+        return {"available": False, "reason": "当前算法还没有可复用评测基准的正式版本"}
+    version = next(
+        (row for row in list(algorithm.get("versions") or []) if str(row.get("id") or "") == current_version_id),
+        {},
+    )
+    evaluation = version.get("evaluation") if isinstance(version, dict) else {}
+    scope = evaluation.get("benchmark_scope") if isinstance(evaluation, dict) else {}
+    scope_id = str((scope or {}).get("scope_id") or "").strip().lower()
+    if not scope_id:
+        return {"available": False, "reason": "当前版本尚未冻结 Benchmark Scope"}
+    try:
+        resolved = _training_reusable_benchmark(
+            project_id, algorithm, current_version_id, scope_id,
+        )
+    except HTTPException as error:
+        return {"available": False, "reason": str(error.detail or "当前评测基准不可复用")}
+    return {
+        "available": True,
+        "algorithm_id": str(algorithm_id),
+        "source_version_id": resolved["source_version_id"],
+        "source_version_name": resolved["source_version_name"],
+        "scope_id": resolved["scope_id"],
+        "snapshot_id": resolved["snapshot_id"],
+        "test_image_count": resolved["test_image_count"],
+        "binding_level": resolved["binding_level"],
+    }
+
+
 def _training_supplement_candidate_set(
     project_id: str,
     asset_algorithm: Optional[Dict[str, Any]],
@@ -5977,11 +6165,31 @@ def _training_supplement_candidate_set(
 
 
 def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    benchmark_reuse = _training_reusable_benchmark(
+        project_id,
+        asset_algorithm,
+        str(payload.benchmark_source_version_id or ""),
+        str(payload.benchmark_scope_id or ""),
+    )
     try:
-        split = _explicit_training_split(payload)
+        if benchmark_reuse:
+            if payload.test_image_ids:
+                raise ValueError("复用固定评测基准时不能同时提交前端试验素材清单")
+            train_ids = tuple(payload.train_image_ids or ())
+            if set(train_ids).intersection(benchmark_reuse["test_image_ids"]):
+                raise ValueError("本次训练素材包含固定评测基准图片，请从训练素材中移除后重试")
+            split = SplitRequest(
+                mode=SplitMode.INDEPENDENT_TEST_SET,
+                train_image_ids=train_ids,
+                test_image_ids=tuple(benchmark_reuse["test_image_ids"]),
+                experiment_percent=None,
+                validation_percent=payload.validation_percent,
+            )
+        else:
+            split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
     supplement_candidate_set = _training_supplement_candidate_set(
         project_id, asset_algorithm, payload, split,
     )
@@ -6018,6 +6226,15 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     request_payload = payload.model_dump(mode="json", exclude_none=True)
     if supplement_candidate_set:
         request_payload["supplement_candidate_set"] = supplement_candidate_set
+    if benchmark_reuse:
+        request_payload["benchmark_reuse"] = {
+            "source_algorithm_id": str(payload.algorithm_asset_id or ""),
+            "source_version_id": benchmark_reuse["source_version_id"],
+            "scope_id": benchmark_reuse["scope_id"],
+            "snapshot_id": benchmark_reuse["snapshot_id"],
+            "test_image_count": benchmark_reuse["test_image_count"],
+            "binding_level": benchmark_reuse["binding_level"],
+        }
     prepare_task_id = f"trainprep_{task_id}"
     request_payload.update(
         {
@@ -6104,6 +6321,15 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "supplement_candidate_set_id": (
                 str(supplement_candidate_set.get("candidate_set_id") or "")
                 if supplement_candidate_set else ""
+            ),
+            "benchmark_reuse": (
+                {
+                    "source_version_id": benchmark_reuse["source_version_id"],
+                    "scope_id": benchmark_reuse["scope_id"],
+                    "snapshot_id": benchmark_reuse["snapshot_id"],
+                    "test_image_count": benchmark_reuse["test_image_count"],
+                }
+                if benchmark_reuse else None
             ),
             "algorithm": payload.algorithm,
             "model": payload.model,
