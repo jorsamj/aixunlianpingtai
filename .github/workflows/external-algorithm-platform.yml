@@ -102,6 +102,10 @@ jobs:
           grep -q "DEFAULT_AUTO_SYNC_INTERVAL_SECONDS" platform_core/external_algorithm_platform.py
           grep -q "external-algorithm-platform-auto-sync" platform_core/external_algorithm_platform.py
           grep -q "masterDataPreviewHtml" static/modules/external-algorithm-platform.js
+          grep -q "externalAlgorithmTrainingReadiness" static/modules/external-algorithm-platform.js
+          grep -q "data-external-stale" static/modules/external-algorithm-platform.js
+          grep -q "external-master-data-stale" static/modules/external-algorithm-platform.js
+          grep -q "trainingReadiness" static/modules/external-algorithm-platform.js
           grep -Fq "externalCategorySignature" static/modules/external-algorithm-platform.js
           grep -Fq "v42 dashboard renderer only calls helpers from its own scope" tests/frontend/startup-render-owner.test.mjs
           grep -Fq 'database.execute("PRAGMA busy_timeout=5000")' platform_core/storage/source_repository.py
@@ -200,6 +204,8 @@ jobs:
       - name: Browser permanent guards
         run: |
           grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'data-external-stale' static/modules/external-algorithm-platform.js
           grep -Fq 'data-changlian-readiness="ready"' tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "主数据与训练条件已就绪" tests/browser/external-algorithm-platform.spec.mjs
