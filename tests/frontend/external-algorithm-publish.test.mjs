@@ -79,6 +79,27 @@ test('manual publish preflight blocks incomplete artifact preparation', () => {
   assert.match(blocked.message, /补齐/);
 });
 
+test('manual publish preflight blocks missing model delivery configuration', () => {
+  const result = publicationPreflight({
+    conversion_active: false,
+    transport_ready: false,
+    transport_issues: [
+      {code: 'EXTERNAL_PUBLISH_CONFIG_INCOMPLETE', message: '尚未配置本平台外部访问地址'},
+      {code: 'MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED', message: '尚未配置模型资产存储源'},
+    ],
+    discovered: [{target: 'rockchip', publish_mapping_status: 'mapped'}],
+    mapped_artifact_count: 1,
+    blocked_artifact_count: 0,
+    ignored_artifact_count: 0,
+    publish_ready: false,
+  });
+
+  assert.equal(result.ready, false);
+  assert.match(result.message, /外部访问地址/);
+  assert.match(result.message, /模型资产存储源/);
+});
+
+
 test('manual publish preflight accepts mapped artifacts and reports intentional ignores', () => {
   const result = publicationPreflight({
     conversion_active: false,
