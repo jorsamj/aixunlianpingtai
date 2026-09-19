@@ -1,4 +1,5 @@
 import hashlib
+import sqlite3
 import json
 from pathlib import Path
 
@@ -69,7 +70,7 @@ def _seed(root: Path):
         "target": "rockchip",
         "source_id": "version::local-a1::v1",
         "source_meta": {"algorithm_id": "local-a1", "version_id": "v1"},
-        "params": {"chip": "rk3588"},
+        "params": {"chip": "rk3568"},
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
     (root / "projects.json").write_text(json.dumps([{"id": "p1", "name": "项目1"}]), encoding="utf-8")
@@ -95,6 +96,118 @@ def test_auto_upload_archives_original_and_conversion_for_local_algorithm(tmp_pa
         expected = model.read_bytes() if row["target"] == "original" else output.read_bytes()
         assert stored.read_bytes() == expected
         assert row["object_key"].startswith("models-central/p1/local-a1/v1/")
+
+
+def test_same_sha_rockchip_artifacts_remain_distinct_by_chip(tmp_path: Path):
+    _model, first_output = _seed(tmp_path)
+    shared = b"same-rknn-bytes-different-chip"
+    first_output.write_bytes(shared)
+    project = _project_dir(tmp_path, "p1")
+    conversion = project / "deployment" / "jobs" / "convert-rk3576"
+    second_output = conversion / "artifacts" / "model.rknn"
+    second_output.parent.mkdir(parents=True, exist_ok=True)
+    second_output.write_bytes(shared)
+    (conversion / "job.json").write_text(json.dumps({
+        "id": "convert-rk3576",
+        "status": "done",
+        "target": "rockchip",
+        "source_id": "version::local-a1::v1",
+        "source_meta": {"algorithm_id": "local-a1", "version_id": "v1"},
+        "params": {"chip": "rk3576"},
+        "outputs": [{"path": str(second_output), "available": True}],
+    }), encoding="utf-8")
+    service = _service(tmp_path)
+
+    result = service.run_auto_upload_once()
+
+    assert result["discovered"] == 3
+    rockchip = [
+        row for row in service.repository.list(
+            project_id="p1", algorithm_id="local-a1", version_id="v1"
+        )
+        if row["target"] == "rockchip"
+    ]
+    assert len(rockchip) == 2
+    assert {row["chip_code"] for row in rockchip} == {"rk3568", "rk3576"}
+    assert len({row["artifact_id"] for row in rockchip}) == 2
+    assert len({row["object_key"] for row in rockchip}) == 2
+    assert all(
+        f"/{row['chip_code']}/" in f"/{row['object_key']}/"
+        for row in rockchip
+    )
+
+
+def test_repository_migrates_legacy_identity_index_to_chip_scope(tmp_path: Path):
+    root = tmp_path / "model_artifacts"
+    root.mkdir(parents=True, exist_ok=True)
+    database_path = root / "artifacts.sqlite3"
+    with sqlite3.connect(database_path) as database:
+        database.executescript("""
+        CREATE TABLE model_artifacts (
+            artifact_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            algorithm_id TEXT NOT NULL,
+            version_id TEXT NOT NULL,
+            artifact_kind TEXT NOT NULL,
+            target TEXT NOT NULL,
+            conversion_job_id TEXT NOT NULL DEFAULT '',
+            file_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            storage_source_id TEXT NOT NULL DEFAULT '',
+            object_key TEXT NOT NULL DEFAULT '',
+            storage_status TEXT NOT NULL DEFAULT 'PENDING',
+            storage_error TEXT NOT NULL DEFAULT '',
+            uploaded_at TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX ux_model_artifacts_identity
+        ON model_artifacts(project_id, algorithm_id, version_id, target, sha256);
+        """)
+        database.execute(
+            """
+            INSERT INTO model_artifacts (
+                artifact_id, project_id, algorithm_id, version_id, artifact_kind,
+                target, conversion_job_id, file_name, source_path, sha256,
+                size_bytes, metadata_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-rk3568", "p1", "a1", "v1", "conversion", "rockchip",
+                "convert-old", "model.rknn", "/old/model.rknn", "a" * 64, 100,
+                json.dumps({"chip_code": "rk3568"}), "2026-09-19T00:00:00Z",
+                "2026-09-19T00:00:00Z",
+            ),
+        )
+
+    from platform_core.model_artifacts import ModelArtifactRepository
+    repository = ModelArtifactRepository(tmp_path)
+
+    legacy = repository.get("legacy-rk3568")
+    assert legacy["chip_code"] == "rk3568"
+    inserted = repository.upsert({
+        "artifact_id": "new-rk3576",
+        "project_id": "p1",
+        "algorithm_id": "a1",
+        "version_id": "v1",
+        "artifact_kind": "conversion",
+        "target": "rockchip",
+        "chip_code": "rk3576",
+        "conversion_job_id": "convert-new",
+        "file_name": "model.rknn",
+        "source_path": "/new/model.rknn",
+        "sha256": "a" * 64,
+        "size_bytes": 100,
+        "metadata": {"chip_code": "rk3576"},
+    })
+    assert inserted["artifact_id"] == "new-rk3576"
+    assert {
+        row["chip_code"]
+        for row in repository.list(project_id="p1", algorithm_id="a1", version_id="v1")
+    } == {"rk3568", "rk3576"}
 
 
 def test_auto_upload_is_idempotent_and_keeps_one_index_per_content(tmp_path: Path):
