@@ -5882,6 +5882,11 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    confirmed_iteration_action = (
+        _validated_training_iteration_action(asset_algorithm, payload)
+        if asset_algorithm is not None and payload.iteration_action
+        else None
+    )
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
     if framework not in {"ultralytics", "paddle"}:
@@ -5990,6 +5995,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "external_product_id": (asset_algorithm or {}).get("external_product_id", ""),
             "external_analysis_id": external_analysis_id,
             "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
+            "confirmed_iteration_action": confirmed_iteration_action,
             "algorithm": payload.algorithm,
             "model": payload.model,
             "queue_priority": int(payload.queue_priority),
