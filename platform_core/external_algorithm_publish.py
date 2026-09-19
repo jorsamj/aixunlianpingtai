@@ -464,9 +464,12 @@ class ExternalAlgorithmPublishService:
             if mapping.enabled and str(mapping.compute_platform_id or "").strip():
                 self._assert_current_compute_platform(mapping.compute_platform_id, target=str(target))
         saved = self.repository.save_config(payload)
-        # Backward compatible: an existing publication storage choice becomes the platform model-asset storage.
-        if source_id:
-            current = self.model_assets.repository.config()
+        # Legacy migration only: model-asset storage is the canonical owner.
+        # Never overwrite an explicit current model-asset storage choice with a
+        # stale external-publish storage_source_id.
+        current = self.model_assets.repository.config()
+        current_source_id = str(current.get("storage_source_id") or "").strip()
+        if source_id and not current_source_id:
             self.model_assets.save_config(ModelArtifactConfigPayload(
                 storage_source_id=source_id,
                 object_prefix=str(current.get("object_prefix") or "model-assets"),
