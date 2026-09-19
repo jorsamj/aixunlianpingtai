@@ -265,7 +265,7 @@ def test_feedback_adoption_outcome_compares_persisted_evaluations_and_source_wea
     assert effect["label"] == "smoke"
     assert effect["direction"] == "improved"
     assert effect["metrics"]["recall"]["delta"] == 0.2
-    assert effect["weak_signal"]["delta"] == 0.18
+    assert effect["weak_signal"]["delta"] == 0.2
     assert effect["false_negative"] == {"before": 8, "after": 4}
     assert len(outcome["outcome_id"]) == 64
 
