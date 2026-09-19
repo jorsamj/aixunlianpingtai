@@ -254,7 +254,6 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
       external_master_data_digest: 'digest-old',
       external_last_synced_at: '2026-09-19T12:00:00Z',
     });
-    window.setPage?.('算法列表');
     window.AlgorithmListRuntime?.renderCards?.();
     window.AlgorithmListRuntime?.runDecorators?.();
   }, {algorithmId});
