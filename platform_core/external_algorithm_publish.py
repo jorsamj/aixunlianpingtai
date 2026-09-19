@@ -951,7 +951,14 @@ class ExternalAlgorithmPublishService:
             if state.get("mapping"):
                 selected.append((item, state["mapping"]))
             elif state.get("status") == "blocked":
-                blocked.append({**dict(item), "detail": state.get("detail") or ""})
+                blocked.append({
+                    **dict(item),
+                    "detail": state.get("detail") or "",
+                    "code": state.get("code") or "",
+                    "message": state.get("message") or "",
+                    "solution": state.get("solution") or "",
+                    "status_code": state.get("status_code") or 409,
+                })
         if blocked:
             specific = next((row for row in blocked if str(row.get("code") or "").startswith("EXTERNAL_COMPUTE_PLATFORM_")), None)
             if specific is not None:
