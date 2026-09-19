@@ -225,6 +225,9 @@ jobs:
           grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
           grep -Fq '"remote_input_state": "PREPARING"' app.py
           grep -Fq '"runtime_stop_policy": "target_only"' app.py
+          grep -Fq '目标正确率必须在 0~1 之间' app.py
+          grep -Fq '设置目标正确率后，每隔几轮检查 eval_interval 必须大于 0' app.py
+          grep -Fq 'test_training_target_contract_rejects_invalid_metric_threshold_and_interval' tests/api/test_training_request.py
           grep -Fq 'assert_external_algorithm_master_data_current' app.py
           test "$(grep -Fc 'assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)' app.py)" = "2"
           grep -Fq "val_dir=root/'images'/'val'" train_worker.py
