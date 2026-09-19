@@ -453,3 +453,64 @@ def test_detection_zip_review_round_trip_commits_embedded_annotation_truth(tmp_p
     )
     staged = staging.get_many([expected_key])
     assert staged[expected_key]["payload_member"].startswith("files/")
+
+
+def test_storage_rescan_root_review_is_explicit_and_preserves_same_hash_object_identity(tmp_path):
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (24, 18), "purple").save(image_buffer, format="JPEG")
+    image = image_buffer.getvalue()
+    digest = hashlib.sha256(image).hexdigest()
+    provider = _StorageScanReviewProvider(
+        [
+            ObjectMetadata(
+                key="a.jpg", size_bytes=len(image), etag='"etag-a"',
+                sha256=digest, content_type="image/jpeg",
+            ),
+            ObjectMetadata(
+                key="nested/b.jpg", size_bytes=len(image), etag='"etag-b"',
+                sha256=digest, content_type="image/jpeg",
+            ),
+        ],
+        {"a.jpg": image, "nested/b.jpg": image},
+    )
+    with pytest.raises(RemoteMaterialImportError) as blocked:
+        build_storage_scan_material_review_archive(
+            provider,
+            tmp_path / "blocked.zip",
+            task_id="rescan-root",
+            project_id="project-rescan",
+            execution_generation=1,
+            storage_source_id="s3-source",
+            storage_type="s3",
+            prefix="",
+            recursive=True,
+            import_format="images",
+        )
+    assert blocked.value.code == "REMOTE_MATERIAL_PREFIX_REQUIRED"
+
+    archive = tmp_path / "rescan.zip"
+    built = build_storage_scan_material_review_archive(
+        provider,
+        archive,
+        task_id="rescan-root",
+        project_id="project-rescan",
+        execution_generation=2,
+        storage_source_id="s3-source",
+        storage_type="s3",
+        prefix="",
+        recursive=True,
+        import_format="images",
+        intent="storage_rescan",
+    )
+    assert built["counts"]["IMPORTABLE"] == 2
+    assert built["counts"].get("DUPLICATE", 0) == 0
+    with zipfile.ZipFile(archive, "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        rows = [
+            json.loads(line)
+            for line in review.read("review.jsonl").decode("utf-8").splitlines()
+        ]
+    assert meta["intent"] == "storage_rescan"
+    assert meta["target_prefix"] == ""
+    assert {row["object_key"] for row in rows} == {"a.jpg", "nested/b.jpg"}
+    assert {row["content_sha256"] for row in rows} == {digest}

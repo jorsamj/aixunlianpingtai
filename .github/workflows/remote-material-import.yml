@@ -189,6 +189,8 @@ jobs:
           grep -Fq "storage rescan uses backend preflight" tests/browser/storage-source.spec.mjs
           grep -Fq 'material_scan_page_provider' platform_core/agent_execution.py
           grep -Fq 'build_storage_scan_material_review_archive' platform_core/node_agent_material_runtime.py
+          grep -Fq 'intent=intent' platform_core/node_agent_material_runtime.py
+          grep -Fq 'test_storage_rescan_root_review_is_explicit_and_preserves_same_hash_object_identity' tests/unit/test_remote_material_import.py
           grep -Fq 'data-import-mode="storage_scan"' static/app.js
           grep -Fq "execution_mode: 'agent'" static/modules/server-material-import.js
           grep -Fq 'required_capabilities=(' app.py

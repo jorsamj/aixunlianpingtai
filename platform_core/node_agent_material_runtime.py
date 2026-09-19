@@ -720,6 +720,7 @@ class AgentMaterialImportRunner:
                     recursive=bool(source_contract.get("recursive", True)),
                     import_format=str(payload.get("import_format") or ""),
                     dataset_yaml=str(payload.get("dataset_yaml") or ""),
+                    intent=intent,
                     **review_kwargs,
                 )
             else:

@@ -326,6 +326,7 @@ def _inspect_storage_scan_image(
     storage_source_id: str,
     storage_type: str,
     seen_hashes: set[str],
+    deduplicate: bool = True,
 ) -> dict[str, Any]:
     key = safe_member_path(str(item.key)).as_posix()
     row = {
@@ -374,7 +375,7 @@ def _inspect_storage_scan_image(
                 "storage_scan image hash changed while it was reviewed",
                 409,
             )
-        duplicate = actual_sha in seen_hashes
+        duplicate = bool(deduplicate and actual_sha in seen_hashes)
         seen_hashes.add(actual_sha)
         row.update({
             "content_sha256": actual_sha,
@@ -1087,12 +1088,33 @@ def build_storage_scan_material_review_archive(
     recursive: bool,
     import_format: str,
     dataset_yaml: str = "",
+    intent: str = "",
     cancelled: Callable[[], bool] | None = None,
     progress: Callable[[int, int, str], object] | None = None,
 ) -> dict[str, Any]:
     """Build a metadata-only review from an execution-fenced storage broker."""
-    target_prefix = safe_member_path(str(prefix)).as_posix()
     selected_format = str(import_format or "").strip().lower()
+    normalized_intent = str(intent or "").strip().lower()
+    if normalized_intent not in {"", "storage_rescan"}:
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_INTENT_INVALID",
+            "unsupported portable material scan intent",
+            422,
+        )
+    raw_prefix = str(prefix or "").strip().replace("\\", "/").strip("/")
+    if not raw_prefix and normalized_intent != "storage_rescan":
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_PREFIX_REQUIRED",
+            "storage_scan review requires an explicit object prefix",
+            422,
+        )
+    if normalized_intent == "storage_rescan" and selected_format != "images":
+        raise RemoteMaterialImportError(
+            "REMOTE_MATERIAL_RESCAN_FORMAT_UNSUPPORTED",
+            "storage_rescan Phase 1 supports image-object reconciliation only",
+            422,
+        )
+    target_prefix = safe_member_path(raw_prefix).as_posix() if raw_prefix else ""
     if selected_format not in {"images", "yolo", "coco", "voc"}:
         raise RemoteMaterialImportError(
             "REMOTE_MATERIAL_FORMAT_UNSUPPORTED",
@@ -1142,7 +1164,7 @@ def build_storage_scan_material_review_archive(
         counts: dict[str, int] = {}
         seen_hashes: set[str] = set()
         candidate_count = 0
-        prefix_path = safe_member_path(target_prefix)
+        prefix_path = safe_member_path(target_prefix) if target_prefix else PurePosixPath()
         try:
             with rows_file.open("wb") as rows_stream:
                 for item in provider.iter_objects(target_prefix, recursive=bool(recursive)):
@@ -1170,6 +1192,7 @@ def build_storage_scan_material_review_archive(
                             storage_source_id=storage_source_id,
                             storage_type=storage_type,
                             seen_hashes=seen_hashes,
+                            deduplicate=normalized_intent != "storage_rescan",
                         )
                     else:
                         row = {
@@ -1209,6 +1232,7 @@ def build_storage_scan_material_review_archive(
                 "project_id": str(project_id),
                 "execution_generation": int(execution_generation),
                 "mode": "storage_scan",
+                "intent": normalized_intent,
                 "payload_mode": "source_reference",
                 "import_format": "images",
                 "storage_source_id": str(storage_source_id),
@@ -1615,6 +1639,7 @@ def _read_review_rows(
     expected_storage_type: str,
     expected_prefix: str,
     require_payload: bool = True,
+    allow_root: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     rows_path = review_root / REVIEW_ROWS_MEMBER
     if not rows_path.is_file() or rows_path.is_symlink():
@@ -1658,7 +1683,19 @@ def _read_review_rows(
                 )
             seen.add(key)
             relative_key = safe_member_path(key)
-            prefix = safe_member_path(expected_prefix)
+            prefix = (
+                safe_member_path(expected_prefix)
+                if str(expected_prefix or "").strip()
+                else PurePosixPath()
+                if allow_root
+                else None
+            )
+            if prefix is None:
+                raise RemoteMaterialImportError(
+                    "REMOTE_MATERIAL_PREFIX_REQUIRED",
+                    "review verification requires an explicit target prefix",
+                    422,
+                )
             if relative_key.parts[: len(prefix.parts)] != prefix.parts:
                 raise RemoteMaterialImportError(
                     "REMOTE_MATERIAL_TARGET_MISMATCH",
@@ -2308,6 +2345,7 @@ def commit_material_review_archive(
     expected_mode: str = "zip_scan",
     expected_import_format: str = "images",
     expected_dataset_yaml: str = "",
+    expected_intent: str = "",
     platform_labels: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     archive = Path(archive_path).resolve()
@@ -2354,6 +2392,30 @@ def commit_material_review_archive(
                 422,
             )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        normalized_intent = str(expected_intent or "").strip().lower()
+        if normalized_intent not in {"", "storage_rescan"}:
+            raise RemoteMaterialImportError(
+                "REMOTE_MATERIAL_INTENT_INVALID",
+                "review verification intent is invalid",
+                422,
+            )
+        allow_root = (
+            normalized_intent == "storage_rescan"
+            and str(expected_mode or "") == "storage_scan"
+            and str(expected_import_format or "") == "images"
+            and not str(expected_prefix or "").strip()
+        )
+        if normalized_intent == "storage_rescan" and not allow_root:
+            raise RemoteMaterialImportError(
+                "REMOTE_MATERIAL_RESCAN_CONTRACT_INVALID",
+                "storage_rescan review must cover the complete image source",
+                409,
+            )
+        normalized_prefix = (
+            safe_member_path(expected_prefix).as_posix()
+            if str(expected_prefix or "").strip()
+            else ""
+        )
         if (
             not isinstance(meta, dict)
             or int(meta.get("schema_version") or 0) != REVIEW_SCHEMA_VERSION
@@ -2364,7 +2426,8 @@ def commit_material_review_archive(
             or str(meta.get("import_format") or "") != str(expected_import_format or "images")
             or str(meta.get("storage_source_id") or "") != expected_source_id
             or str(meta.get("storage_type") or "") != expected_storage_type
-            or str(meta.get("target_prefix") or "") != safe_member_path(expected_prefix).as_posix()
+            or str(meta.get("target_prefix") or "") != normalized_prefix
+            or str(meta.get("intent") or "") != normalized_intent
         ):
             raise RemoteMaterialImportError(
                 "REMOTE_MATERIAL_REVIEW_INVALID",
@@ -2404,6 +2467,7 @@ def commit_material_review_archive(
             expected_storage_type=expected_storage_type,
             expected_prefix=expected_prefix,
             require_payload=str(expected_mode or "zip_scan") != "storage_scan",
+            allow_root=allow_root,
         )
         if int(meta.get("candidate_count") or -1) != len(candidates):
             raise RemoteMaterialImportError(
@@ -2481,7 +2545,7 @@ def commit_material_review_archive(
                 else "agent_zip_scan"
             ),
             "storage_source_id": expected_source_id,
-            "prefix": safe_member_path(expected_prefix).as_posix(),
+            "prefix": normalized_prefix,
             "recursive": True,
             "scanned_files": scanned,
             "importable_images": counts.get("IMPORTABLE", 0),

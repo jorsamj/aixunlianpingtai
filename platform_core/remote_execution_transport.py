@@ -3719,6 +3719,7 @@ class RemoteExecutionTransportService:
                 expected_mode=str(material.get("mode") or "zip_scan"),
                 expected_import_format=str(material.get("import_format") or "images"),
                 expected_dataset_yaml=str(material.get("dataset_yaml") or ""),
+                expected_intent=str(material.get("intent") or ""),
                 platform_labels=self._project_label_items(str(task.project_id)),
             )
         except RemoteMaterialImportError as error:
