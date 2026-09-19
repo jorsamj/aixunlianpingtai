@@ -6,6 +6,28 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Training Lineage / Algorithm Version Provenance v1
+
+2026-09-19，训练结果到算法版本的可追溯链已进入正式控制面 truth，CLOSED。
+
+- Local TRAINING 与 Remote Agent TRAINING 都写同一 `training_lineage v1`。
+- lineage 持久化 task / snapshot / dataset revision / base version / model / execution / device / GPU / requested+actual params / verified artifacts / outcome。
+- Remote Agent lineage 使用 server-confirm 后的 execution generation、node/worker、模型 artifact truth，不信任前端推算。
+- lineage builder 采用字段 allow-list；对象存储 signed URL、secret、长期凭据不会进入版本。
+- Algorithm SQL Store 保持 lineage round-trip；版本成为训练 provenance 的长期 owner，而不是依赖 transient job。
+- Dataset Revision 与 Snapshot 仍保持原 owner；lineage 只引用其 immutable identity，不复制 snapshot 数据。
+- Frontend Impact Review 已完成：稳定算法版本 renderer 读取 persisted `training_lineage`，显示“训练溯源”；Real Chrome 证明无需历史 job refetch。
+
+最终验收 HEAD：`c6c7289b3a13d20053e1a8aed44525a4901f5059`。
+
+- 当前代码 HEAD `c6c7289b3a13d20053e1a8aed44525a4901f5059`：21 个相关 workflow，21 success / 0 failure / 0 pending。
+- Training Input Integrity、Remote Training Runtime、Node Agent Executor、Central Node Assignment、Task Runtime Truth、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、Remote RKNN Board Runtime Protocol 均 success。
+- Algorithm SQL Store / Training Task Visibility / External Algorithm Platform / Publish 等共享回归 success。
+- Real Chrome 已验证算法版本“训练溯源”来自持久化版本 truth，点击查看不会重新请求历史 job。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一主线：**在同一 Durable TRAINING owner 后增加正式 Evaluation truth 和自动迭代决策；不得创建第二套训练/版本 owner。真实 Rockchip 板卡 acceptance 继续独立 OPEN。
+
 ## 0. 最新关闭：Dataset Snapshot / Revision v1
 
 2026-09-19，Snapshot V3 已扩展 Dataset Revision v1，训练输入身份正式进入中央控制面与 Remote TRAINING contract。

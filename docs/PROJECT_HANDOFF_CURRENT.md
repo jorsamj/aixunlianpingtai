@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`ac1470c9049f7151fb6ae78daf6d21802ea6a263`  
+本轮产品实现基线：`c6c7289b3a13d20053e1a8aed44525a4901f5059`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,57 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Training Lineage / Algorithm Version Provenance v1
+
+2026-09-19，Dataset Revision v1 之上的正式训练溯源链已完成，**Training Lineage / Algorithm Version Provenance v1 CLOSED**。
+
+当前正式语义：
+
+- 每个新训练完成后的算法版本持久化 `training_lineage.schema_version=1`，不依赖当前 job 缓存。
+- lineage 统一串联：
+  - `task_id`
+  - `snapshot_id`
+  - `dataset_revision_id`
+  - framework
+  - base version / base model / base selection reason
+  - execution mode / worker / Agent node / execution generation
+  - requested / assigned / actual device
+  - GPU identity（公开安全字段）
+  - requested / actual training params
+  - verified model artifact identity（role / artifact id / file name / SHA256 / size / object ref）
+  - training outcome / completion reason / finished_at。
+- 本地训练与 Remote Agent TRAINING 走同一个 `build_training_lineage()` contract，不产生两套 provenance 结构。
+- lineage builder 使用 allow-list，只保留公开安全的 primitive 字段；signed URL、secret URL、凭据等不会进入算法版本。
+- dataset revision 必须是合法 SHA256；不合法直接 fail closed。
+- base model 只持久化安全文件名，不泄露本机绝对路径。
+- Algorithm SQL Store round-trip 已验证 `dataset_revision_id / snapshot_id / training_lineage` 不丢失。
+- Remote Agent server-confirm 后写入版本时，lineage 与模型 artifact、dataset revision、execution generation 使用同一确认后的 truth。
+- Frontend Impact Review 已同批完成：
+  - 算法版本稳定 renderer 只有在 `training_lineage` 存在时展示“训练溯源”；
+  - 溯源页直接读取算法版本持久化 lineage；
+  - 显示数据版本、训练快照、训练任务、基础模型/版本、执行节点/设备、实际训练参数和模型产物；
+  - 不通过历史 `/jobs` 二次拼装，历史 task 清理后版本溯源仍成立；
+  - Real Chrome 已验证正式算法列表 → 版本 → 训练溯源链。
+
+最终验收 HEAD：`c6c7289b3a13d20053e1a8aed44525a4901f5059`。
+
+- 当前代码 HEAD `c6c7289b3a13d20053e1a8aed44525a4901f5059`：21 个相关 workflow，21 success / 0 failure / 0 pending。
+- Training Input Integrity、Remote Training Runtime、Node Agent Executor、Central Node Assignment、Task Runtime Truth、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、Remote RKNN Board Runtime Protocol 均 success。
+- Algorithm SQL Store / Training Task Visibility / External Algorithm Platform / Publish 等共享回归 success。
+- Real Chrome 已验证算法版本“训练溯源”来自持久化版本 truth，点击查看不会重新请求历史 job。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一软件主线：**
+
+1. 基于 Dataset Revision + Snapshot V3 + Training Lineage，进入 **自动评测 / 训练迭代闭环**：
+   - 训练完成；
+   - 使用冻结 test split 做正式评测；
+   - 产出总体指标 + 标签级 Precision / Recall / mAP；
+   - 识别弱标签、FP/FN 和问题样本；
+   - 不达标时进入明确的“需补数据 / 需继续训练 / 人工确认”决策，不新建第二套训练 owner。
+2. 后续再把线上算法抽检/回流接到同一个 Dataset Revision → Training → Evaluation → Version lineage 链。
+3. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 继续独立 OPEN。
 
 # 最新关闭：Dataset Snapshot / Revision v1 — 训练数据可复现性
 

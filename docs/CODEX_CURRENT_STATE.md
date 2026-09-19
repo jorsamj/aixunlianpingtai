@@ -3,6 +3,49 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Training Lineage / Algorithm Version Provenance v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Algorithm versions now own stable training provenance instead of depending on
+transient job/cache state. Both local training and Remote Agent training build
+the same `training_lineage` schema v1.
+
+The persisted lineage references the immutable Dataset Revision and Snapshot,
+then records task identity, framework, selected base version/model/reason,
+execution mode/worker/Agent node/generation, requested/assigned/actual device,
+public GPU identity, requested/actual training parameters, verified model
+artifacts and the final training outcome.
+
+`platform_core/training_lineage.py` is public-safe by construction: persisted
+fields are allow-listed primitives, model paths collapse to safe filenames, and
+signed URLs/secrets/credentials are excluded. Dataset revision IDs are validated
+as SHA256 identities.
+
+Local archival and Remote Agent server-confirm both persist lineage on the
+algorithm version. Algorithm SQL Store round-trip preserves the lineage, so
+historical provenance survives job cleanup and restart.
+
+Frontend Impact Review is complete. The stable algorithm-version renderer shows
+“训练溯源” only when persisted lineage exists. The modal reads the version truth
+directly and shows dataset revision, snapshot, task, base model/version,
+execution/node/device, effective parameters and model artifact identity. Real
+Chrome verifies the flow without refetching historical `/jobs`.
+
+Acceptance at HEAD `c6c7289b3a13d20053e1a8aed44525a4901f5059`:
+
+- 当前代码 HEAD `c6c7289b3a13d20053e1a8aed44525a4901f5059`：21 个相关 workflow，21 success / 0 failure / 0 pending。
+- Training Input Integrity、Remote Training Runtime、Node Agent Executor、Central Node Assignment、Task Runtime Truth、Portable Deployment、Remote Material Import、Remote Cleaning、Remote Conversion、Remote RKNN Board Runtime Protocol 均 success。
+- Algorithm SQL Store / Training Task Visibility / External Algorithm Platform / Publish 等共享回归 success。
+- Real Chrome 已验证算法版本“训练溯源”来自持久化版本 truth，点击查看不会重新请求历史 job。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**OPEN / next:** build the formal post-training Evaluation truth on the existing
+Durable TRAINING/version chain: frozen test-split evaluation, overall and
+per-label metrics, FP/FN/weak-label evidence, and an explicit retraining/data
+decision. Do not create a second training owner. Rockchip physical-board
+acceptance remains independently OPEN.
+
 ## Current closure — Dataset Snapshot / Revision v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
