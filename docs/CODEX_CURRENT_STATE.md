@@ -3,6 +3,60 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Evaluation Benchmark Scope v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+Independent Evaluation now persists a benchmark identity that distinguishes
+Snapshot test truth from the exact verified Test Bundle that was actually
+evaluated.
+
+No new TaskKind, scheduler owner, database owner, or automatic retraining path
+was introduced. Snapshot v3 remains the source of test cohort and hidden
+ground-truth identity. Benchmark Scope v1 freezes test image IDs, source
+content SHA256, annotation hash/state, and label-schema identity.
+
+A Snapshot-only benchmark is persisted as
+`binding_level=snapshot_truth` and is descriptive only. Strict comparison
+requires `binding_level=bundle_verified`, which additionally validates the
+task-owned `work/bundle/manifest.json`: exact test cohort, Snapshot source
+SHA256, materialized evaluation image SHA256, hidden label SHA256 and one
+training-input policy. Those inputs produce a deterministic
+`evaluation_input_digest`.
+
+Evaluation protocol identity is versioned with
+`evaluation_protocol_version=1`. Feedback-adoption before/after results are
+strict only when both evaluations succeeded, both benchmark scopes are
+bundle-verified and equal, and both evaluation protocol IDs are equal.
+Historical or incomplete evidence receives
+`benchmark_input_binding_missing` and remains descriptive.
+
+Local and Remote Agent training use the same truth. The local compatibility
+job overlay whitelists only `dataset_manifest_ref` from the Durable TRAINING
+result so version archival can read the task-owned manifest without copying
+the whole result into legacy job JSON. Remote server-confirm reads the target
+TRAINING task's `snapshot.json` and `work/bundle/manifest.json` directly
+before persisting the remote Algorithm Version evaluation. Agent permissions
+did not change; the Agent still cannot access central SQLite/NFS.
+
+Frontend Impact Review is complete. The existing independent Evaluation modal
+renders persisted benchmark identity and binding level, showing “已校验 Test
+Bundle” for bundle-verified evidence and “仅 Snapshot truth” otherwise. The
+browser does not calculate strictness.
+
+- Acceptance code HEAD：`ac8ac782632c3d63cb7ed6a8c807a826451abb5e`。
+- Current-head shared regression：23 workflows / 23 success / 0 failure / 0 pending。
+- Remote Training Runtime push `35436884535`：API + Ubuntu + Windows success。
+- Remote Training Runtime PR `35436887856`：API + Ubuntu + Windows success。
+- Parent `6c2c7c92d733176a24438c22cea570bc4786b5a8` 的 Algorithm SQL Store `35436643513`：contracts + Real Chrome lineage success。
+- Parent `6c2c7c92d733176a24438c22cea570bc4786b5a8` 的 Training Task Visibility `35436643535`：Unified training job overlay truth + Real Chrome success。
+- `VERSION.txt = 42.24.0` unchanged。
+
+**OPEN:** real RK3568/RK3576 physical-board acceptance remains independent.
+Benchmark v1 does not introduce a standalone Benchmark Registry or automatic
+cross-snapshot re-evaluation owner; such a future phase must reuse the existing
+Evaluation/Durable Task architecture.
+
 ## Current closure — Feedback Adoption -> Iteration Outcome / Effectiveness v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.

@@ -6,6 +6,38 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Evaluation Benchmark Scope v1
+
+2026-09-19，Evaluation 的严格可比性已绑定 Snapshot + 实际 verified Test Bundle，CLOSED。
+
+控制面边界：
+
+- 不新增 TaskKind / Scheduler owner / Evaluation DB；Benchmark Scope 随 Algorithm Version evaluation 持久化。
+- Snapshot v3 冻结 test cohort、source content SHA、annotation hash/state 与 label schema。
+- `snapshot_truth` 只表示固定 Snapshot Ground Truth，不足以做严格 before/after。
+- `bundle_verified` 额外验证 task-owned Dataset Manifest 的 exact test IDs、source SHA、实际 materialized test image SHA、hidden label SHA 与 `training_input_policy`，形成 `evaluation_input_digest`。
+- strict comparison 仅在两边：
+  - Evaluation succeeded；
+  - scope_id 相同；
+  - 都是 `bundle_verified`；
+  - `evaluation_protocol_id` 相同；
+  时成立。
+- Evaluation Protocol 正式 versioned：`evaluation_protocol_version=1`。
+- Local training：Durable result → whitelist `dataset_manifest_ref` → Algorithm Version archive。
+- Remote training：Agent 仍只做 portable execution；server-confirm 在中央端读取目标 TRAINING task 的 Snapshot + Bundle Manifest，生成同一 Benchmark Scope。
+- Agent 不读取中央 SQLite/NFS，也没有收到新的长期凭据或 benchmark 决策权限。
+- Frontend 只消费 persisted evaluation truth，展示“已校验 Test Bundle / 仅 Snapshot truth”和 strict/descriptive reason。
+
+- Acceptance code HEAD：`ac8ac782632c3d63cb7ed6a8c807a826451abb5e`。
+- Current-head shared regression：23 workflows / 23 success / 0 failure / 0 pending。
+- Remote Training Runtime push `35436884535`：API + Ubuntu + Windows success。
+- Remote Training Runtime PR `35436887856`：API + Ubuntu + Windows success。
+- Parent `6c2c7c92d733176a24438c22cea570bc4786b5a8` 的 Algorithm SQL Store `35436643513`：contracts + Real Chrome lineage success。
+- Parent `6c2c7c92d733176a24438c22cea570bc4786b5a8` 的 Training Task Visibility `35436643535`：Unified training job overlay truth + Real Chrome success。
+- `VERSION.txt = 42.24.0` unchanged。
+
+**OPEN：**真实 RK3568 / RK3576 板卡 acceptance。未来若做固定 Benchmark 的跨 Snapshot 主动重评，必须继续复用现有 Durable Evaluation/Training truth，不能由前端或第二套 owner 自行计算。
+
 ## 0. 最新关闭：Feedback Adoption → Iteration Outcome / Effectiveness v1
 
 2026-09-19，feedback adoption 已形成 Algorithm Version persisted effectiveness truth，CLOSED。

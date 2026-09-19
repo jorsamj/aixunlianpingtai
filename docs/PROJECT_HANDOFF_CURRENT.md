@@ -7,11 +7,66 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`c26b7449b06697fcac52979e9bb8483138ebbbab`  
+本轮产品实现基线：`ac8ac782632c3d63cb7ed6a8c807a826451abb5e`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
 ---
+
+# 最新关闭：Evaluation Benchmark Scope v1
+
+2026-09-19，独立 Evaluation 已从“各版本自己的 Test 指标”升级为带**固定评测输入身份**的 Benchmark Scope，**Evaluation Benchmark Scope v1 CLOSED**。
+
+当前 CLOSED 边界：
+
+- 不新增 TaskKind、Scheduler、Evaluation 数据库或自动回炉 owner；Benchmark Scope 继续作为 Algorithm Version persisted `evaluation` truth。
+- Snapshot v3 仍是测试 cohort / Ground Truth 的唯一来源，冻结：
+  - `test_image_ids`
+  - 每张 source `content_sha256`
+  - `annotation_hash / annotation_state`
+  - label schema digest。
+- 仅 Snapshot truth 不再足够宣称“严格可比”。Benchmark Scope 明确区分：
+  - `binding_level=snapshot_truth`：只有 Snapshot test truth，历史/证据不完整场景只能描述性比较；
+  - `binding_level=bundle_verified`：额外绑定实际 materialized Test Bundle。
+- `bundle_verified` 会逐张核对 task-owned `work/bundle/manifest.json`：
+  - test cohort IDs 必须与 Snapshot 完全一致；
+  - `source_content_sha256` 必须与 Snapshot source truth 一致；
+  - 实际评测图片 `content_sha256`（包括训练输入规范化后的真实字节）；
+  - hidden Ground Truth `label_sha256`；
+  - `training_input_policy`；
+  - 生成 deterministic `evaluation_input_digest`。
+- 因此未来即使同一 source 图片在 materialization/normalization policy 下产生不同实际评测字节，也不会被误判成同一严格 Benchmark。
+- Evaluation protocol identity 正式带 `evaluation_protocol_version=1`；protocol ID 把 schema version 与 operating_conf / matching_iou / blind-evaluation mode 一起冻结。
+- Feedback Adoption Effectiveness 的 strict 条件现在必须同时满足：
+  1. source/new Evaluation 都成功；
+  2. 两边 Benchmark Scope ID 相同；
+  3. 两边均为 `bundle_verified`；
+  4. Evaluation Protocol ID 相同。
+- 任一版本缺少实际 Test Bundle binding 时，后端持久化 `benchmark_input_binding_missing`，只能 `comparison_mode=descriptive`，前端不得自己升级为“严格可比”。
+- Local TRAINING 与 Remote Agent TRAINING 已使用同一 Benchmark truth：
+  - Local 归档从 Durable TRAINING result 白名单投影 `dataset_manifest_ref`，再读取同一 task-owned manifest；
+  - overlay 不复制整个 result，只投影该证据引用，避免 legacy job 成为第二套 result truth；
+  - Remote server-confirm 直接读取目标 TRAINING task 的 `snapshot.json + work/bundle/manifest.json`，构建完全相同的 `bundle_verified` scope；
+  - Agent 不增加权限，也不读取中央 SQLite/NFS。
+- Frontend Impact Review 已完成：
+  - “独立评测”展示评测基准与“评测输入绑定”；
+  - `bundle_verified` 显示“已校验 Test Bundle”；
+  - 历史 Snapshot-only 显示“仅 Snapshot truth”；
+  - strict/descriptive 与原因全部来自 persisted backend truth，页面不自行计算。
+- Benchmark Scope 仍只增强评测严谨性，`automatic_execution=false` 语义不变，不会自动创建下一轮 TRAINING。
+
+- Acceptance code HEAD：`ac8ac782632c3d63cb7ed6a8c807a826451abb5e`。
+- Current-head shared regression：23 workflows / 23 success / 0 failure / 0 pending。
+- Remote Training Runtime push `35436884535`：API + Ubuntu + Windows success。
+- Remote Training Runtime PR `35436887856`：API + Ubuntu + Windows success。
+- Parent `6c2c7c92d733176a24438c22cea570bc4786b5a8` 的 Algorithm SQL Store `35436643513`：contracts + Real Chrome lineage success。
+- Parent `6c2c7c92d733176a24438c22cea570bc4786b5a8` 的 Training Task Visibility `35436643535`：Unified training job overlay truth + Real Chrome success。
+- `VERSION.txt = 42.24.0` unchanged。
+
+**仍然 OPEN：**
+
+1. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance；软件 CI 不能替代现场 NPU 验收。
+2. Benchmark v1 已解决“什么时候可以严格比较”，但没有创建独立 Benchmark Registry / 主动重评任务 owner；后续若需要跨不同训练 Snapshot 强制复用固定 Benchmark，应继续复用现有 Evaluation / Durable Task 架构设计，不得让前端自行重算。
 
 # 最新关闭：Feedback Adoption → Iteration Outcome / Effectiveness v1
 
