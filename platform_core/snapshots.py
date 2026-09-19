@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .annotations import atomic_write_json
+from .annotation_schema import CANONICAL_ANNOTATION_SCHEMA_VERSION, CANONICAL_SOURCE_FORMATS
 from .training_splits import SplitManifest
 
 
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
+DATASET_REVISION_SCHEMA_VERSION = 1
 
 
 def _canonical(value: Any) -> str:
@@ -20,6 +22,118 @@ def _stable_schema(label_schema: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         [dict(item) for item in label_schema if item.get("code")],
         key=lambda item: (int(item.get("class_id", 10**9)), str(item.get("code"))),
     )
+
+
+
+
+def _sha256_hex(value: object, field: str) -> str:
+    text = str(value or "").strip().lower()
+    if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
+        raise ValueError(f"{field} 必须是 SHA256")
+    return text
+
+
+def _external_annotation_provenance(
+    image: Mapping[str, Any],
+    *,
+    annotation_hash: str,
+) -> dict[str, Any] | None:
+    value = image.get("external_annotation")
+    if value in (None, {}):
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("external_annotation 必须是对象")
+    try:
+        schema_version = int(value.get("schema_version") or 0)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("external_annotation.schema_version 无效") from error
+    if schema_version != CANONICAL_ANNOTATION_SCHEMA_VERSION:
+        raise ValueError("external_annotation schema 版本不受支持")
+    source_format = str(value.get("source_format") or "").strip().lower()
+    if source_format not in CANONICAL_SOURCE_FORMATS:
+        raise ValueError("external_annotation source_format 不受支持")
+    source_digest = _sha256_hex(
+        value.get("source_digest"),
+        "external_annotation.source_digest",
+    )
+    synced_hash = str(value.get("synced_annotation_hash") or "").strip().lower()
+    if synced_hash:
+        synced_hash = _sha256_hex(
+            synced_hash,
+            "external_annotation.synced_annotation_hash",
+        )
+    return {
+        "schema_version": schema_version,
+        "source_format": source_format,
+        "source_digest": source_digest,
+        "annotation_status": str(value.get("annotation_status") or ""),
+        "split": str(value.get("split") or ""),
+        "label_key": str(value.get("label_key") or "") or None,
+        "dataset_key": str(value.get("dataset_key") or "") or None,
+        "synced_annotation_hash": synced_hash,
+        "platform_annotation_hash": str(annotation_hash or ""),
+        "needs_review": bool(image.get("external_annotation_needs_review")),
+        "review_reason": str(image.get("external_annotation_review_reason") or ""),
+    }
+
+
+def _dataset_revision_payload(
+    records: Sequence[Mapping[str, Any]],
+    label_schema: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    fields = (
+        "image_id",
+        "dataset_id",
+        "source_type",
+        "source_ref",
+        "group_id",
+        "content_sha256",
+        "storage_source_id",
+        "storage_type",
+        "object_key",
+        "annotation_state",
+        "annotation_scope",
+        "annotation_hash",
+        "negative_origin",
+        "source_annotation_state",
+        "source_labels",
+        "box_count",
+        "labels",
+        "external_annotation",
+    )
+    images = [
+        {field: record.get(field) for field in fields}
+        for record in sorted(records, key=lambda row: str(row.get("image_id") or ""))
+    ]
+    return {
+        "schema_version": DATASET_REVISION_SCHEMA_VERSION,
+        "canonical_annotation_schema_version": CANONICAL_ANNOTATION_SCHEMA_VERSION,
+        "label_schema": _stable_schema(label_schema),
+        "images": images,
+    }
+
+
+def _dataset_revision_id(
+    records: Sequence[Mapping[str, Any]],
+    label_schema: Sequence[Mapping[str, Any]],
+) -> str:
+    payload = _dataset_revision_payload(records, label_schema)
+    return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+
+
+def dataset_revision_document(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    records = list(snapshot.get("images") or [])
+    label_schema = list(snapshot.get("label_schema") or [])
+    payload = _dataset_revision_payload(records, label_schema)
+    expected = _dataset_revision_id(records, label_schema)
+    actual = str(snapshot.get("dataset_revision_id") or "").strip().lower()
+    if actual != expected:
+        raise ValueError("Snapshot dataset_revision_id 与冻结数据 truth 不一致")
+    return {
+        "dataset_revision_id": actual,
+        "created_at": str(snapshot.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        **payload,
+    }
 
 
 def _annotation_state(image: Mapping[str, Any], boxes: Sequence[Mapping[str, Any]]) -> str:
@@ -246,6 +360,10 @@ def _build_snapshot_v2(
                     "stored_name": str(image.get("stored_name") or ""),
                     "box_count": len(boxes),
                     "labels": labels,
+                    "external_annotation": _external_annotation_provenance(
+                        image,
+                        annotation_hash=annotation_hash,
+                    ),
                 }
             )
     ids = {role: list(manifest.ids[role]) for role in ("train", "validation", "test")}
@@ -253,8 +371,12 @@ def _build_snapshot_v2(
         content_hash: list(image_ids)
         for content_hash, image_ids in sorted((manifest.duplicate_groups or {}).items())
     }
+    dataset_revision_id = _dataset_revision_id(records, stable_schema)
     payload = {
         "schema_version": 3,
+        "dataset_revision_schema_version": DATASET_REVISION_SCHEMA_VERSION,
+        "canonical_annotation_schema_version": CANONICAL_ANNOTATION_SCHEMA_VERSION,
+        "dataset_revision_id": dataset_revision_id,
         "training_input_policy": TRAINING_INPUT_POLICY,
         "mode": manifest.mode.value,
         "test_seed": manifest.test_seed,
@@ -295,4 +417,20 @@ def persist_snapshot(directory: Path, snapshot: Mapping[str, Any]) -> Path:
             raise ValueError(f"Snapshot {snapshot_id} 已存在但内容不一致")
         return path
     atomic_write_json(path, dict(snapshot))
+    return path
+
+
+
+def persist_dataset_revision(directory: Path, snapshot: Mapping[str, Any]) -> Path:
+    revision = dataset_revision_document(snapshot)
+    revision_id = str(revision["dataset_revision_id"])
+    path = directory / f"{revision_id}.json"
+    if path.exists():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        comparable_existing = {key: value for key, value in existing.items() if key != "created_at"}
+        comparable_new = {key: value for key, value in revision.items() if key != "created_at"}
+        if comparable_existing != comparable_new:
+            raise ValueError(f"Dataset Revision {revision_id} 已存在但内容不一致")
+        return path
+    atomic_write_json(path, revision)
     return path

@@ -1,6 +1,10 @@
 import pytest
 
-from platform_core.snapshots import build_snapshot
+from platform_core.snapshots import (
+    build_snapshot,
+    dataset_revision_document,
+    persist_dataset_revision,
+)
 from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
 
 
@@ -159,3 +163,125 @@ def test_snapshot_records_canonical_duplicate_exclusions():
     assert snapshot["excluded_duplicate_ids"] == ["b"]
     assert snapshot["duplicate_groups"] == {"same": ["a", "b"]}
     assert snapshot["counts"]["total"] == 6
+
+
+def _revision_images():
+    images = []
+    for index in range(8):
+        annotation_hash = f"{index + 20:064x}"
+        row = {
+            "id": str(index),
+            "dataset_id": "pool",
+            "processing_status": "processed",
+            "stored_name": f"{index}.jpg",
+            "group_id": f"group-{index}",
+            "content_sha256": f"{index + 1:064x}",
+            "size_bytes": 100 + index,
+            "storage_source_id": "s3-main",
+            "storage_type": "s3",
+            "object_key": f"images/{index}.jpg",
+            "annotated": True,
+            "annotation_state": "annotated",
+            "annotation_scope": ["fire"],
+            "annotation_hash": annotation_hash,
+            "boxes": [{"label": "fire", "x1": 1, "y1": 1, "x2": 2, "y2": 2}],
+        }
+        if index == 0:
+            row["external_annotation"] = {
+                "schema_version": 1,
+                "source_format": "yolo",
+                "source_digest": "a" * 64,
+                "annotation_status": "annotated",
+                "split": "train",
+                "label_key": "labels/0.txt",
+                "dataset_key": "data.yaml",
+                "synced_annotation_hash": annotation_hash,
+            }
+        images.append(row)
+    return images
+
+
+def test_dataset_revision_is_split_independent_but_snapshot_is_not():
+    images = _revision_images()
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(row["id"] for row in images),
+        experiment_percent=25,
+        validation_percent=25,
+    )
+    first_manifest = build_split_manifest(images, request, seed=11)
+    second_manifest = build_split_manifest(images, request, seed=19)
+    first = build_snapshot(images, first_manifest, [{"code": "fire", "class_id": 0}])
+    second = build_snapshot(images, second_manifest, [{"code": "fire", "class_id": 0}])
+
+    assert first["dataset_revision_schema_version"] == 1
+    assert first["canonical_annotation_schema_version"] == 1
+    assert first["dataset_revision_id"] == second["dataset_revision_id"]
+    assert first["snapshot_id"] != second["snapshot_id"]
+    provenance = next(
+        row["external_annotation"]
+        for row in first["images"]
+        if row["image_id"] == "0"
+    )
+    assert provenance["source_format"] == "yolo"
+    assert provenance["source_digest"] == "a" * 64
+    assert provenance["platform_annotation_hash"] == f"{20:064x}"
+
+
+def test_dataset_revision_changes_with_platform_or_external_annotation_truth():
+    images = _revision_images()
+    request = SplitRequest(
+        mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(row["id"] for row in images),
+        experiment_percent=25,
+        validation_percent=25,
+    )
+    manifest = build_split_manifest(images, request, seed=7)
+    original = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+
+    changed_external = [dict(row) for row in images]
+    changed_external[0]["external_annotation"] = {
+        **dict(images[0]["external_annotation"]),
+        "source_digest": "b" * 64,
+    }
+    external_snapshot = build_snapshot(
+        changed_external,
+        manifest,
+        [{"code": "fire", "class_id": 0}],
+    )
+    assert external_snapshot["dataset_revision_id"] != original["dataset_revision_id"]
+
+    changed_platform = [dict(row) for row in images]
+    changed_platform[1]["annotation_hash"] = "f" * 64
+    platform_snapshot = build_snapshot(
+        changed_platform,
+        manifest,
+        [{"code": "fire", "class_id": 0}],
+    )
+    assert platform_snapshot["dataset_revision_id"] != original["dataset_revision_id"]
+
+
+def test_dataset_revision_document_and_persistence_are_immutable(tmp_path):
+    images = _revision_images()
+    manifest = build_split_manifest(
+        images,
+        SplitRequest(
+            mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+            train_image_ids=tuple(row["id"] for row in images),
+            experiment_percent=25,
+            validation_percent=25,
+        ),
+        seed=13,
+    )
+    snapshot = build_snapshot(images, manifest, [{"code": "fire", "class_id": 0}])
+    revision = dataset_revision_document(snapshot)
+    path = persist_dataset_revision(tmp_path / "dataset_revisions", snapshot)
+
+    assert revision["dataset_revision_id"] == snapshot["dataset_revision_id"]
+    assert path.name == f"{snapshot['dataset_revision_id']}.json"
+    assert persist_dataset_revision(tmp_path / "dataset_revisions", snapshot) == path
+
+    tampered = dict(snapshot)
+    tampered["dataset_revision_id"] = "0" * 64
+    with pytest.raises(ValueError, match="dataset_revision_id"):
+        dataset_revision_document(tampered)
