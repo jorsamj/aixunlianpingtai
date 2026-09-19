@@ -437,8 +437,10 @@ test('algorithm version exposes persisted training lineage without job refetch',
         benchmark_scope:{
           schema_version:1,scope_id:'4'.repeat(64),test_image_count:12,
           content_digest:'3'.repeat(64),ground_truth_digest:'2'.repeat(64),label_schema_digest:'1'.repeat(64),
+          binding_level:'bundle_verified',evaluation_input_digest:'f'.repeat(64),
+          training_input_policy:'ultralytics_jpeg_repair_v1',
         },
-        evaluation_protocol_id:'0'.repeat(64),
+        evaluation_protocol_version:1,evaluation_protocol_id:'0'.repeat(64),
         metrics:{'metrics/precision(B)':0.82,'metrics/recall(B)':0.70,'metrics/mAP50(B)':0.76,'metrics/mAP50-95(B)':0.55},
         per_class:[{class_id:0,label:'smoke',precision:0.82,recall:0.70,map50:0.76,map50_95:0.55,true_positive:7,false_positive:2,false_negative:3}],
         weak_labels:['smoke'],
@@ -452,6 +454,7 @@ test('algorithm version exposes persisted training lineage without job refetch',
         source_evaluation_id:'5'.repeat(64),new_evaluation_id:'d'.repeat(64),
         comparison_mode:'strict',strictly_comparable:true,comparison_reason_codes:[],
         source_benchmark_scope_id:'4'.repeat(64),new_benchmark_scope_id:'4'.repeat(64),
+        source_benchmark_binding_level:'bundle_verified',new_benchmark_binding_level:'bundle_verified',
         source_evaluation_protocol_id:'0'.repeat(64),new_evaluation_protocol_id:'0'.repeat(64),
         source_candidate_count:3,adopted_candidate_count:2,
         overall_metrics:{
@@ -559,6 +562,7 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#modalBody')).toContainText('补数据效果');
   await expect(page.locator('#modalBody')).toContainText('严格可比');
   await expect(page.locator('#modalBody')).toContainText('评测基准');
+  await expect(page.locator('#modalBody')).toContainText('已校验 Test Bundle');
   await expect(page.locator('#modalBody')).toContainText('采用反馈');
   await expect(page.locator('#modalBody')).toContainText('+15.0 pp');
   await expect(page.locator('#modalBody')).toContainText('改善');

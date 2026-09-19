@@ -358,6 +358,24 @@ def _benchmark_snapshot(*, test_annotation_hash="b" * 64, train_hash="9" * 64):
     }
 
 
+
+
+def _benchmark_manifest(*, test_content_hash="d" * 64, label_hash="e" * 64):
+    return {
+        "schema_version": 3,
+        "snapshot_id": "",
+        "training_input_policy": "ultralytics_jpeg_repair_v1",
+        "splits": {
+            "test": [{
+                "image_id": "test-1",
+                "source_content_sha256": "a" * 64,
+                "content_sha256": test_content_hash,
+                "label_sha256": label_hash,
+                "training_input_policy": "ultralytics_jpeg_repair_v1",
+            }],
+        },
+    }
+
 def test_evaluation_benchmark_scope_is_stable_for_same_test_truth_only():
     first = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
     train_changed = evaluation.build_evaluation_benchmark_scope(
@@ -369,8 +387,16 @@ def test_evaluation_benchmark_scope_is_stable_for_same_test_truth_only():
     assert first["scope_id"] == train_changed["scope_id"]
     assert first["scope_id"] != ground_truth_changed["scope_id"]
     assert first["test_image_count"] == 1
+    assert first["binding_level"] == "snapshot_truth"
     assert len(first["content_digest"]) == 64
     assert len(first["ground_truth_digest"]) == 64
+    bound = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(), _benchmark_manifest(),
+    )
+    assert bound["binding_level"] == "bundle_verified"
+    assert len(bound["evaluation_input_digest"]) == 64
+    assert bound["training_input_policy"] == "ultralytics_jpeg_repair_v1"
+    assert bound["scope_id"] != first["scope_id"]
 
 
 def test_evaluation_truth_persists_benchmark_and_rejects_partial_test_execution():
@@ -394,6 +420,7 @@ def test_evaluation_truth_persists_benchmark_and_rejects_partial_test_execution(
         benchmark_scope=scope,
     )
     assert result["benchmark_scope"]["scope_id"] == scope["scope_id"]
+    assert result["evaluation_protocol_version"] == 1
     assert len(result["evaluation_protocol_id"]) == 64
     with pytest.raises(ValueError, match="image_count"):
         evaluation.build_evaluation_truth(
@@ -404,7 +431,9 @@ def test_evaluation_truth_persists_benchmark_and_rejects_partial_test_execution(
 
 
 def test_feedback_adoption_outcome_marks_same_benchmark_and_protocol_strictly_comparable():
-    scope = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
+    scope = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(), _benchmark_manifest(),
+    )
     raw = {
         "status": "succeeded",
         "image_count": 1,
@@ -455,9 +484,12 @@ def test_feedback_adoption_outcome_marks_same_benchmark_and_protocol_strictly_co
 
 
 def test_feedback_adoption_outcome_keeps_different_benchmarks_descriptive():
-    source_scope = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
+    source_scope = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(), _benchmark_manifest(),
+    )
     new_scope = evaluation.build_evaluation_benchmark_scope(
-        _benchmark_snapshot(test_annotation_hash="c" * 64)
+        _benchmark_snapshot(test_annotation_hash="c" * 64),
+        _benchmark_manifest(),
     )
     raw = {
         "status": "succeeded", "image_count": 1,
@@ -488,3 +520,56 @@ def test_feedback_adoption_outcome_keeps_different_benchmarks_descriptive():
     assert outcome["comparison_mode"] == "descriptive"
     assert outcome["strictly_comparable"] is False
     assert "benchmark_scope_mismatch" in outcome["comparison_reason_codes"]
+
+
+def test_feedback_adoption_outcome_keeps_snapshot_only_benchmark_descriptive():
+    scope = evaluation.build_evaluation_benchmark_scope(_benchmark_snapshot())
+    raw = {
+        "status": "succeeded",
+        "image_count": 1,
+        "metrics": {"metrics/mAP50(B)": 0.7},
+        "protocol": {
+            "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+            "operating_conf": 0.25,
+            "matching_iou": 0.5,
+        },
+    }
+    source = evaluation.build_evaluation_truth(
+        raw, task_id="snapshot-only-source", benchmark_scope=scope,
+    )
+    current = evaluation.build_evaluation_truth(
+        raw, task_id="snapshot-only-new", benchmark_scope=scope,
+    )
+    outcome = evaluation.build_feedback_adoption_outcome(
+        source,
+        current,
+        {
+            "schema_version": 1,
+            "candidate_set_id": "a" * 64,
+            "adoption_id": "b" * 64,
+            "action_id": "c" * 64,
+            "version_id": "source-v1",
+        },
+        source_version_id="source-v1",
+        new_version_id="new-v2",
+    )
+    assert outcome["comparison_mode"] == "descriptive"
+    assert outcome["strictly_comparable"] is False
+    assert "benchmark_input_binding_missing" in outcome["comparison_reason_codes"]
+
+
+def test_evaluation_benchmark_scope_rejects_manifest_cohort_or_source_mismatch():
+    import pytest
+    wrong_cohort = _benchmark_manifest()
+    wrong_cohort["splits"]["test"][0]["image_id"] = "other-test"
+    with pytest.raises(ValueError, match="unknown test image|cohort"):
+        evaluation.build_evaluation_benchmark_scope(
+            _benchmark_snapshot(), wrong_cohort,
+        )
+
+    wrong_source = _benchmark_manifest()
+    wrong_source["splits"]["test"][0]["source_content_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="differs from snapshot truth"):
+        evaluation.build_evaluation_benchmark_scope(
+            _benchmark_snapshot(), wrong_source,
+        )

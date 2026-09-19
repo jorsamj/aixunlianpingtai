@@ -13,6 +13,7 @@ _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 _DEFAULT_IOUS = tuple(round(0.5 + index * 0.05, 2) for index in range(10))
 EVALUATION_SCHEMA_VERSION = 1
 EVALUATION_BENCHMARK_SCOPE_SCHEMA_VERSION = 1
+EVALUATION_PROTOCOL_SCHEMA_VERSION = 1
 ITERATION_DECISION_SCHEMA_VERSION = 1
 _EVALUATION_METRICS = (
     "metrics/precision(B)",
@@ -314,7 +315,10 @@ def evaluate_blind_detection(
     }
 
 
-def build_evaluation_benchmark_scope(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
+def build_evaluation_benchmark_scope(
+    snapshot: Mapping[str, Any] | None,
+    dataset_manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Freeze the exact Snapshot v3 test cohort and ground-truth identity.
 
     Legacy snapshots remain readable but cannot claim strict benchmark
@@ -404,12 +408,96 @@ def build_evaluation_benchmark_scope(snapshot: Mapping[str, Any] | None) -> dict
         {"label_schema_digest": label_schema_digest, "items": ground_truth},
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")).hexdigest()
+    binding_level = "snapshot_truth"
+    evaluation_input_digest = ""
+    training_input_policy = ""
+    manifest = dict(dataset_manifest) if isinstance(dataset_manifest, Mapping) else {}
+    if manifest:
+        try:
+            manifest_schema = int(manifest.get("schema_version") or 0)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("benchmark dataset manifest schema is invalid") from error
+        if manifest_schema < 3:
+            raise ValueError("benchmark dataset manifest is too old for strict comparison")
+        snapshot_id = str(raw.get("snapshot_id") or "").strip()
+        manifest_snapshot_id = str(manifest.get("snapshot_id") or "").strip()
+        if snapshot_id and manifest_snapshot_id and snapshot_id != manifest_snapshot_id:
+            raise ValueError("benchmark dataset manifest belongs to a different snapshot")
+        raw_splits = manifest.get("splits")
+        test_members = raw_splits.get("test") if isinstance(raw_splits, Mapping) else None
+        if not isinstance(test_members, list):
+            raise ValueError("benchmark dataset manifest test split is missing")
+        manifest_policy = str(manifest.get("training_input_policy") or "").strip()
+        input_truth = []
+        seen_manifest_ids = set()
+        for raw_member in test_members:
+            if not isinstance(raw_member, Mapping):
+                raise ValueError("benchmark dataset manifest test member is invalid")
+            image_id = str(raw_member.get("image_id") or "").strip()
+            if not image_id or image_id in seen_manifest_ids:
+                raise ValueError("benchmark dataset manifest test IDs are invalid")
+            seen_manifest_ids.add(image_id)
+            if image_id not in records:
+                raise ValueError("benchmark dataset manifest contains an unknown test image")
+            source_sha = _sha256_identity(
+                raw_member.get("source_content_sha256"),
+                "benchmark manifest source_content_sha256",
+            )
+            if source_sha != _sha256_identity(
+                records[image_id].get("content_sha256"),
+                "benchmark snapshot content_sha256",
+            ):
+                raise ValueError("benchmark dataset manifest source image differs from snapshot truth")
+            training_sha = _sha256_identity(
+                raw_member.get("content_sha256"),
+                "benchmark manifest content_sha256",
+            )
+            label_sha = _sha256_identity(
+                raw_member.get("label_sha256"),
+                "benchmark manifest label_sha256",
+            )
+            member_policy = str(
+                raw_member.get("training_input_policy") or manifest_policy
+            ).strip()
+            if not training_sha or not label_sha or not member_policy:
+                raise ValueError("benchmark dataset manifest test identity is incomplete")
+            input_truth.append({
+                "image_id": image_id,
+                "content_sha256": training_sha,
+                "label_sha256": label_sha,
+                "training_input_policy": member_policy,
+            })
+        if seen_manifest_ids != set(test_ids):
+            raise ValueError("benchmark dataset manifest test cohort differs from snapshot truth")
+        policies = {row["training_input_policy"] for row in input_truth}
+        if len(policies) != 1:
+            raise ValueError("benchmark dataset manifest uses mixed training input policies")
+        training_input_policy = next(iter(policies))
+        if manifest_policy and training_input_policy != manifest_policy:
+            raise ValueError("benchmark dataset manifest input policy is inconsistent")
+        evaluation_input_digest = hashlib.sha256(json.dumps(
+            sorted(input_truth, key=lambda row: row["image_id"]),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        binding_level = "bundle_verified"
+
     identity = {
         "schema_version": EVALUATION_BENCHMARK_SCOPE_SCHEMA_VERSION,
         "test_image_count": len(test_ids),
         "content_digest": content_digest,
         "ground_truth_digest": ground_truth_digest,
         "label_schema_digest": label_schema_digest,
+        "binding_level": binding_level,
+        **(
+            {
+                "evaluation_input_digest": evaluation_input_digest,
+                "training_input_policy": training_input_policy,
+            }
+            if binding_level == "bundle_verified"
+            else {}
+        ),
     }
     scope_id = hashlib.sha256(json.dumps(
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -483,8 +571,16 @@ def build_evaluation_truth(
         "weak_label_threshold": round(_finite(protocol_raw.get("weak_label_threshold"), 0.75), 6),
         "iou_thresholds": [round(_finite(value), 6) for value in list(protocol_raw.get("iou_thresholds") or [])[:20]],
     }
+    evaluation_protocol_identity = {
+        "schema_version": EVALUATION_PROTOCOL_SCHEMA_VERSION,
+        "protocol": protocol,
+    }
     evaluation_protocol_id = hashlib.sha256(json.dumps(
-        protocol, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        evaluation_protocol_identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")).hexdigest()
     scope = {}
     if isinstance(benchmark_scope, Mapping) and benchmark_scope:
@@ -495,6 +591,9 @@ def build_evaluation_truth(
             raise ValueError("evaluation benchmark scope is invalid") from error
         if scope_schema != EVALUATION_BENCHMARK_SCOPE_SCHEMA_VERSION or test_image_count <= 0:
             raise ValueError("evaluation benchmark scope schema/count is invalid")
+        binding_level = str(benchmark_scope.get("binding_level") or "snapshot_truth").strip()
+        if binding_level not in {"snapshot_truth", "bundle_verified"}:
+            raise ValueError("evaluation benchmark binding level is invalid")
         scope = {
             "schema_version": scope_schema,
             "scope_id": _sha256_identity(benchmark_scope.get("scope_id"), "benchmark scope_id"),
@@ -502,9 +601,22 @@ def build_evaluation_truth(
             "content_digest": _sha256_identity(benchmark_scope.get("content_digest"), "benchmark content_digest"),
             "ground_truth_digest": _sha256_identity(benchmark_scope.get("ground_truth_digest"), "benchmark ground_truth_digest"),
             "label_schema_digest": _sha256_identity(benchmark_scope.get("label_schema_digest"), "benchmark label_schema_digest"),
+            "binding_level": binding_level,
         }
+        if binding_level == "bundle_verified":
+            scope["evaluation_input_digest"] = _sha256_identity(
+                benchmark_scope.get("evaluation_input_digest"),
+                "benchmark evaluation_input_digest",
+            )
+            scope["training_input_policy"] = str(
+                benchmark_scope.get("training_input_policy") or ""
+            ).strip()[:200]
         if not all(scope.get(key) for key in ("scope_id", "content_digest", "ground_truth_digest", "label_schema_digest")):
             raise ValueError("evaluation benchmark scope identity is incomplete")
+        if binding_level == "bundle_verified" and not all(
+            scope.get(key) for key in ("evaluation_input_digest", "training_input_policy")
+        ):
+            raise ValueError("evaluation benchmark bundle binding is incomplete")
         if status == "succeeded" and max(0, int(raw.get("image_count") or 0)) != test_image_count:
             raise ValueError("evaluation image_count does not match frozen benchmark scope")
     identity = {
@@ -522,6 +634,7 @@ def build_evaluation_truth(
         "ground_truth_box_count": max(0, int(raw.get("ground_truth_box_count") or 0)),
         "prediction_box_count": max(0, int(raw.get("prediction_box_count") or 0)),
         "protocol": protocol,
+        "evaluation_protocol_version": EVALUATION_PROTOCOL_SCHEMA_VERSION,
         "evaluation_protocol_id": evaluation_protocol_id,
         **({"benchmark_scope": scope} if scope else {}),
     }
@@ -706,6 +819,8 @@ def build_feedback_adoption_outcome(
     new_scope = new.get("benchmark_scope") if isinstance(new.get("benchmark_scope"), Mapping) else {}
     source_scope_id = _sha256_identity(source_scope.get("scope_id"), "source benchmark scope_id")
     new_scope_id = _sha256_identity(new_scope.get("scope_id"), "new benchmark scope_id")
+    source_binding_level = str(source_scope.get("binding_level") or "").strip()
+    new_binding_level = str(new_scope.get("binding_level") or "").strip()
     source_protocol_id = _sha256_identity(source.get("evaluation_protocol_id"), "source evaluation_protocol_id")
     new_protocol_id = _sha256_identity(new.get("evaluation_protocol_id"), "new evaluation_protocol_id")
     comparison_reasons: list[str] = []
@@ -714,6 +829,15 @@ def build_feedback_adoption_outcome(
             comparison_reasons.append("benchmark_scope_missing")
         elif source_scope_id != new_scope_id:
             comparison_reasons.append("benchmark_scope_mismatch")
+        if (
+            source_scope_id
+            and new_scope_id
+            and (
+                source_binding_level != "bundle_verified"
+                or new_binding_level != "bundle_verified"
+            )
+        ):
+            comparison_reasons.append("benchmark_input_binding_missing")
         if not source_protocol_id or not new_protocol_id:
             comparison_reasons.append("evaluation_protocol_missing")
         elif source_protocol_id != new_protocol_id:
@@ -824,6 +948,8 @@ def build_feedback_adoption_outcome(
         "comparison_reason_codes": list(dict.fromkeys(comparison_reasons)),
         "source_benchmark_scope_id": source_scope_id,
         "new_benchmark_scope_id": new_scope_id,
+        "source_benchmark_binding_level": source_binding_level,
+        "new_benchmark_binding_level": new_binding_level,
         "source_evaluation_protocol_id": source_protocol_id,
         "new_evaluation_protocol_id": new_protocol_id,
         "descriptive_only": True,

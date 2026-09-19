@@ -8947,8 +8947,17 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     )
     training_report = job.get("training_report")
     training_report = training_report if isinstance(training_report, dict) else {}
+    evaluation_task_id = str(job.get("task_id") or job.get("id") or "")
+    dataset_manifest = {}
+    dataset_manifest_ref = str(job.get("dataset_manifest_ref") or "").strip()
+    if evaluation_task_id and dataset_manifest_ref:
+        manifest_value = shared_task_artifacts().read_json(
+            evaluation_task_id, dataset_manifest_ref, default={}
+        )
+        dataset_manifest = manifest_value if isinstance(manifest_value, dict) else {}
     benchmark_scope = build_evaluation_benchmark_scope(
-        snapshot_truth if isinstance(snapshot_truth, dict) else None
+        snapshot_truth if isinstance(snapshot_truth, dict) else None,
+        dataset_manifest=dataset_manifest or None,
     )
     evaluation = build_evaluation_truth(
         training_report.get("test_result"),
