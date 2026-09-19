@@ -497,6 +497,7 @@ class DetectionDatasetScanner:
 
         names: dict[int, str] = {}
         name_to_id: dict[str, int] = {}
+        seen_image_sources: dict[str, str] = {}
         seen_hashes: set[str] = set()
         missing_images = 0
         total_boxes = 0
@@ -524,6 +525,13 @@ class DetectionDatasetScanner:
             if not key:
                 missing_images += 1
                 continue
+            previous_source = seen_image_sources.get(key)
+            if previous_source:
+                raise DetectionImportError(
+                    "VOC_IMAGE_AMBIGUOUS",
+                    "one image object is referenced by multiple Pascal VOC XML documents",
+                )
+            seen_image_sources[key] = annotation_key
             candidate = self._inspect(key, seen_hashes)
             candidate_batch.append(candidate)
             if len(candidate_batch) >= BATCH_SIZE:

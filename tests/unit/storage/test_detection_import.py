@@ -269,3 +269,29 @@ def test_coco_scan_rejects_duplicate_image_object_inside_one_document(tmp_path):
 
     with pytest.raises(Exception, match="referenced more than once"):
         scanner.scan("coco", prefix="dataset", recursive=True)
+
+
+def test_voc_scan_hashes_real_xml_bytes_and_rejects_ambiguous_image_sources(tmp_path):
+    import hashlib
+    import pytest
+
+    image = _jpg()
+    xml = b"""<annotation><filename>a.jpg</filename><object><name>fire</name><bndbox><xmin>5</xmin><ymin>6</ymin><xmax>55</xmax><ymax>46</ymax></bndbox></object></annotation>"""
+    payloads = {
+        "dataset/train/JPEGImages/a.jpg": image,
+        "dataset/train/Annotations/a.xml": xml,
+    }
+    scanner, store = _scanner(tmp_path / "identity", payloads)
+    scanner.scan("voc", prefix="dataset", recursive=True)
+    identity = store.inventory_for_keys(
+        ["dataset/train/Annotations/a.xml"]
+    )["dataset/train/Annotations/a.xml"]
+    assert identity["sha256"] == hashlib.sha256(xml).hexdigest()
+    assert identity["size_bytes"] == len(xml)
+    assert identity["etag"]
+
+    duplicate = dict(payloads)
+    duplicate["dataset/train/Annotations/duplicate.xml"] = xml
+    ambiguous, _store = _scanner(tmp_path / "ambiguous", duplicate)
+    with pytest.raises(Exception, match="multiple Pascal VOC XML documents"):
+        ambiguous.scan("voc", prefix="dataset", recursive=True)

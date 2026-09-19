@@ -568,10 +568,10 @@ class RemoteExecutionTransportService:
                 "unsupported portable material scan intent",
                 422,
             )
-        if normalized_intent == "storage_rescan" and normalized_format not in {"images", "yolo", "coco"}:
+        if normalized_intent == "storage_rescan" and normalized_format not in {"images", "yolo", "coco", "voc"}:
             raise RemoteExecutionTransportError(
                 "REMOTE_MATERIAL_RESCAN_FORMAT_UNSUPPORTED",
-                "Remote storage rescan Phase 2B supports image, YOLO or COCO reconciliation",
+                "Remote storage rescan Phase 2C supports image, YOLO, COCO or Pascal VOC reconciliation",
                 422,
             )
         raw_prefix = str(prefix or "").strip().replace("\\", "/").strip("/")
@@ -1617,11 +1617,11 @@ class RemoteExecutionTransportService:
             )
         target_prefix = str(target.get("target_prefix") or "").strip()
         if intent == "storage_rescan" and (
-            mode != "storage_scan" or import_format not in {"images", "yolo", "coco"}
+            mode != "storage_scan" or import_format not in {"images", "yolo", "coco", "voc"}
         ):
             raise RemoteExecutionTransportError(
                 "REMOTE_EXECUTION_CONTRACT_INVALID",
-                "storage_rescan intent requires an image, YOLO or COCO storage_scan contract",
+                "storage_rescan intent requires an image, YOLO, COCO or Pascal VOC storage_scan contract",
                 422,
             )
         if mode == "zip_scan" and not target_prefix:

@@ -564,7 +564,7 @@ class AgentMaterialImportRunner:
             or import_format not in allowed_formats
             or (
                 intent == "storage_rescan"
-                and (mode != "storage_scan" or import_format not in {"images", "yolo", "coco"})
+                and (mode != "storage_scan" or import_format not in {"images", "yolo", "coco", "voc"})
             )
         ):
             raise AgentMaterialImportRuntimeError(

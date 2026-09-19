@@ -722,3 +722,83 @@ def test_storage_rescan_coco_keeps_unreferenced_source_image_in_image_truth(tmp_
         ]
     assert {row["object_key"] for row in rows} == {"train/a.jpg", "extra.jpg"}
     assert {row["object_key"] for row in annotations} == {"train/a.jpg"}
+
+
+def test_storage_rescan_root_voc_carries_verified_xml_source_evidence(tmp_path):
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (100, 80), "orange").save(image_buffer, format="JPEG")
+    image = image_buffer.getvalue()
+    xml_key = "train/Annotations/a.xml"
+    xml = b"""<annotation><filename>a.jpg</filename><object><name>fire</name><bndbox><xmin>10</xmin><ymin>20</ymin><xmax>40</xmax><ymax>60</ymax></bndbox></object></annotation>"""
+    payloads = {
+        "train/JPEGImages/a.jpg": image,
+        xml_key: xml,
+    }
+    provider = _StorageScanReviewProvider(
+        [
+            ObjectMetadata(
+                key=key,
+                size_bytes=len(value),
+                etag=f'"etag-{index}"',
+                sha256=hashlib.sha256(value).hexdigest(),
+                content_type="image/jpeg" if key.endswith(".jpg") else "application/xml",
+            )
+            for index, (key, value) in enumerate(payloads.items(), 1)
+        ],
+        payloads,
+    )
+    archive = tmp_path / "voc-rescan.zip"
+    built = build_storage_scan_material_review_archive(
+        provider,
+        archive,
+        task_id="rescan-voc",
+        project_id="project-voc-rescan",
+        execution_generation=4,
+        storage_source_id="s3-source",
+        storage_type="s3",
+        prefix="",
+        recursive=True,
+        import_format="voc",
+        intent="storage_rescan",
+    )
+    expected_sha = hashlib.sha256(xml).hexdigest()
+    with zipfile.ZipFile(archive, "r") as review:
+        meta = json.loads(review.read("meta.json"))
+        annotation = json.loads(
+            review.read(REVIEW_DETECTION_ANNOTATIONS_MEMBER).decode("utf-8").strip()
+        )
+    assert meta["intent"] == "storage_rescan"
+    assert meta["import_format"] == "voc"
+    assert annotation["label_key"] == xml_key
+    assert annotation["dataset_key"] == xml_key
+    assert annotation["label_object"]["sha256"] == expected_sha
+    assert annotation["dataset_object"]["sha256"] == expected_sha
+
+    artifacts = ArtifactStore(tmp_path / "voc-rescan-artifacts")
+    committed = commit_material_review_archive(
+        artifacts=artifacts,
+        task_id="rescan-voc",
+        project_id="project-voc-rescan",
+        execution_generation=4,
+        archive_path=built["path"],
+        archive_sha256=built["sha256"],
+        archive_size_bytes=built["size_bytes"],
+        expected_source_id="s3-source",
+        expected_storage_type="s3",
+        expected_prefix="",
+        expected_mode="storage_scan",
+        expected_import_format="voc",
+        expected_intent="storage_rescan",
+        platform_labels=[],
+    )
+    assert committed["material_review_committed"] is True
+    store = ImportCandidateStore(
+        artifacts.artifact_path("rescan-voc", MANIFEST_REF)
+    )
+    identity = store.inventory_for_keys([xml_key])[xml_key]
+    assert identity["sha256"] == expected_sha
+    truth = store.annotations_for_keys(["train/JPEGImages/a.jpg"])[
+        "train/JPEGImages/a.jpg"
+    ]
+    assert truth["label_key"] == xml_key
+    assert truth["yaml_key"] == xml_key

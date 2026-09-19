@@ -1130,10 +1130,10 @@ def build_storage_scan_material_review_archive(
             "storage_scan review requires an explicit object prefix",
             422,
         )
-    if normalized_intent == "storage_rescan" and selected_format not in {"images", "yolo", "coco"}:
+    if normalized_intent == "storage_rescan" and selected_format not in {"images", "yolo", "coco", "voc"}:
         raise RemoteMaterialImportError(
             "REMOTE_MATERIAL_RESCAN_FORMAT_UNSUPPORTED",
-            "storage_rescan Phase 2B supports image, YOLO or COCO reconciliation",
+            "storage_rescan Phase 2C supports image, YOLO, COCO or Pascal VOC reconciliation",
             422,
         )
     target_prefix = safe_member_path(raw_prefix).as_posix() if raw_prefix else ""
@@ -1930,7 +1930,7 @@ def _commit_detection_review_annotations(
             if rescan_evidence_required:
                 raise RemoteMaterialImportError(
                     "REMOTE_DETECTION_SOURCE_EVIDENCE_MISSING",
-                    "COCO rescan review is missing annotation source identity evidence",
+                    "detection rescan review is missing annotation source identity evidence",
                     409,
                 )
             return None
@@ -2043,7 +2043,7 @@ def _commit_detection_review_annotations(
                 if not label_key or not dataset_key or label_key != dataset_key:
                     raise RemoteMaterialImportError(
                         "REMOTE_DETECTION_SOURCE_EVIDENCE_INVALID",
-                        "COCO rescan requires one exact annotation JSON source identity",
+                        "detection rescan requires one exact annotation source identity",
                         409,
                     )
                 label_object = verified_source_object(row.get("label_object"), label_key)
@@ -2051,14 +2051,14 @@ def _commit_detection_review_annotations(
                 if label_object != dataset_object:
                     raise RemoteMaterialImportError(
                         "REMOTE_DETECTION_SOURCE_EVIDENCE_INVALID",
-                        "COCO annotation source evidence does not reconcile",
+                        "detection annotation source evidence does not reconcile",
                         409,
                     )
                 previous = source_inventory.get(dataset_key)
                 if previous is not None and previous != dataset_object:
                     raise RemoteMaterialImportError(
                         "REMOTE_DETECTION_SOURCE_EVIDENCE_INVALID",
-                        "COCO review contains conflicting source object evidence",
+                        "detection review contains conflicting source object evidence",
                         409,
                     )
                 source_inventory[dataset_key] = dataset_object
@@ -2646,7 +2646,7 @@ def commit_material_review_archive(
         allow_root = (
             normalized_intent == "storage_rescan"
             and str(expected_mode or "") == "storage_scan"
-            and str(expected_import_format or "") in {"images", "yolo", "coco"}
+            and str(expected_import_format or "") in {"images", "yolo", "coco", "voc"}
             and not str(expected_prefix or "").strip()
         )
         if normalized_intent == "storage_rescan" and not allow_root:
