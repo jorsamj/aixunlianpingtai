@@ -374,6 +374,12 @@ class StorageRescanHandler(StorageImportHandler):
             by_ref = materials.get_by_storage_references(
                 (source.id, row['object_key']) for row in batch
             )
+            material_ids = [
+                str(material.get('id') or '')
+                for material in by_ref.values()
+                if str(material.get('id') or '')
+            ]
+            current_annotations = annotations.get_many(material_ids)
             annotation_rows = []
             apply_evidence = {}
             patches = {}
@@ -381,8 +387,61 @@ class StorageRescanHandler(StorageImportHandler):
                 material = by_ref.get((source.id, row['object_key']))
                 if material is None:
                     continue
+                material_id = str(material['id'])
                 category = row['category']
                 evidence = dict(row.get('source_evidence') or {})
+                current_annotation = current_annotations.get(material_id) or {}
+                current_hash = str(
+                    current_annotation.get('content_digest')
+                    or material.get('annotation_hash')
+                    or ''
+                )
+                current_state = str(
+                    current_annotation.get('annotation_state')
+                    or material.get('annotation_state')
+                    or 'unannotated'
+                )
+                review_image_id = str(row.get('image_id') or '')
+
+                # NEW images are indexed by the existing import pipeline before
+                # annotation reconciliation. Their YOLO annotation is therefore
+                # already committed with the same frozen mapping; record source
+                # provenance instead of treating annotation_changed as a second
+                # independent write decision.
+                if (
+                    not review_image_id
+                    and category == 'ANNOTATION_NEW'
+                    and policy['new'] == 'import'
+                ):
+                    source_status = str(evidence.get('annotation_status') or 'unannotated')
+                    expected_state = (
+                        'annotated' if source_status == 'annotated'
+                        else 'confirmed_empty' if source_status == 'confirmed_empty'
+                        else 'unannotated'
+                    )
+                    if current_state != expected_state:
+                        raise ValueError(
+                            'new material annotation does not match the confirmed YOLO review; '
+                            'create a new rescan'
+                        )
+                    patches[material_id] = {
+                        'external_annotation': {
+                            'schema_version': 1,
+                            'source_format': 'yolo',
+                            'source_digest': str(evidence.get('source_digest') or ''),
+                            'annotation_status': source_status,
+                            'split': str(evidence.get('split') or ''),
+                            'label_key': evidence.get('label_key'),
+                            'dataset_key': evidence.get('dataset_key'),
+                            'synced_annotation_hash': current_hash,
+                            'task_id': context.task.task_id,
+                        },
+                        'external_annotation_needs_review': False,
+                        'external_annotation_review_reason': '',
+                        'imported_split': str(evidence.get('split') or ''),
+                    }
+                    continue
+
                 should_write = (
                     category in {'ANNOTATION_NEW', 'ANNOTATION_CHANGED'}
                     and policy['annotation_changed'] == 'update'
@@ -394,6 +453,14 @@ class StorageRescanHandler(StorageImportHandler):
                     and policy['annotation_removed'] == 'clear'
                 )
                 if should_write:
+                    expected_hash = str(row.get('platform_annotation_hash') or '')
+                    expected_state = str(row.get('platform_annotation_state') or 'unannotated')
+                    if review_image_id and (
+                        current_hash != expected_hash or current_state != expected_state
+                    ):
+                        raise ValueError(
+                            'platform annotation changed after rescan review; create a new rescan'
+                        )
                     status = str(evidence.get('annotation_status') or 'unannotated')
                     boxes = []
                     if status == 'annotated':
@@ -423,14 +490,14 @@ class StorageRescanHandler(StorageImportHandler):
                         'boxes': boxes,
                         'annotation_state': state,
                     })
-                    apply_evidence[str(material['id'])] = evidence
+                    apply_evidence[material_id] = evidence
                 elif category not in {'ANNOTATION_UNCHANGED'}:
                     reason = {
                         'ANNOTATION_REMOVED': 'EXTERNAL_ANNOTATION_REMOVED',
                         'ANNOTATION_CONFLICT': 'EXTERNAL_ANNOTATION_CONFLICT',
                         'ANNOTATION_INVALID': 'EXTERNAL_ANNOTATION_INVALID',
                     }.get(category, 'EXTERNAL_ANNOTATION_UPDATE_AVAILABLE')
-                    patches[str(material['id'])] = {
+                    patches[material_id] = {
                         'external_annotation_needs_review': True,
                         'external_annotation_review_reason': reason,
                     }

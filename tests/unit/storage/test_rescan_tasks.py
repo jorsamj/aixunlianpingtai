@@ -320,3 +320,147 @@ def test_yolo_annotation_delta_distinguishes_new_change_conflict_and_removed(tmp
         summary["counts"].get("ANNOTATION_NEW", 0)
         + summary["counts"].get("ANNOTATION_CONFLICT", 0)
     ) >= 2
+
+
+def _yolo_evidence(*, source_digest="source-new", status="annotated"):
+    boxes = [] if status != "annotated" else [{
+        "line_number": 1, "class_id": 0,
+        "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.25, "clipped": False,
+    }]
+    return {
+        "schema_version": 1,
+        "source_format": "yolo",
+        "object_key": "images/train/a.jpg",
+        "split": "train",
+        "annotation_status": status,
+        "label_key": "labels/train/a.txt" if status != "unannotated" else None,
+        "dataset_key": "data.yaml",
+        "class_catalog_digest": "c" * 64,
+        "source_digest": source_digest,
+        "box_count": len(boxes),
+        "boxes": boxes,
+    }
+
+
+def test_yolo_rescan_rejects_platform_annotation_edit_after_review(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = "project-stale-annotation"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    materials.upsert(material("old-1", "images/train/a.jpg", "a" * 64))
+    annotations = AnnotationRepository(project_path)
+    reviewed = annotations.upsert(
+        "old-1",
+        [{
+            "id": "old-1-1", "label": "smoke", "class_id": 0,
+            "x1": 8, "y1": 8, "x2": 24, "y2": 24,
+        }],
+    )
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "stale-annotation-rescan"
+    store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    store.set_meta("annotation_confirmation", {
+        "label_mapping": {"0": "smoke"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    store.annotation_delta_batch([{
+        "object_key": "images/train/a.jpg",
+        "image_id": "old-1",
+        "category": "ANNOTATION_CHANGED",
+        "source_evidence": _yolo_evidence(),
+        "platform_annotation_hash": reviewed["content_digest"],
+        "platform_annotation_state": "annotated",
+    }])
+
+    annotations.upsert(
+        "old-1",
+        [{
+            "id": "old-1-1", "label": "smoke", "class_id": 0,
+            "x1": 10, "y1": 10, "x2": 30, "y2": 30,
+        }],
+    )
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    with pytest.raises(ValueError, match="platform annotation changed after rescan review"):
+        handler._apply_annotation_rescan(
+            context,
+            SimpleNamespace(id="s3-a"),
+            store,
+            materials,
+            {
+                "new": "ignore", "missing": "ignore", "changed": "ignore",
+                "annotation_changed": "update",
+                "annotation_removed": "keep",
+                "annotation_conflicts": "keep",
+            },
+            {"import_format": "yolo"},
+        )
+
+
+def test_yolo_rescan_new_material_records_imported_annotation_provenance(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = "project-new-provenance"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    new_material = material("new-1", "images/train/a.jpg", "a" * 64)
+    materials.upsert(new_material)
+    annotations = AnnotationRepository(project_path)
+    imported = annotations.upsert(
+        "new-1",
+        [{
+            "id": "new-1-1", "label": "smoke", "class_id": 0,
+            "x1": 24, "y1": 18, "x2": 40, "y2": 30,
+        }],
+    )
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "new-provenance-rescan"
+    store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    store.set_meta("annotation_confirmation", {
+        "label_mapping": {"0": "smoke"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    evidence = _yolo_evidence()
+    store.annotation_delta_batch([{
+        "object_key": "images/train/a.jpg",
+        "image_id": "",
+        "category": "ANNOTATION_NEW",
+        "source_evidence": evidence,
+        "platform_annotation_hash": "",
+        "platform_annotation_state": "unannotated",
+    }])
+
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    summary = handler._apply_annotation_rescan(
+        context,
+        SimpleNamespace(id="s3-a"),
+        store,
+        materials,
+        {
+            "new": "import", "missing": "ignore", "changed": "ignore",
+            "annotation_changed": "ignore",
+            "annotation_removed": "keep",
+            "annotation_conflicts": "keep",
+        },
+        {"import_format": "yolo"},
+    )
+    assert summary["applied"] == 1
+    saved = materials.get("new-1")
+    assert saved["external_annotation_needs_review"] is False
+    assert saved["external_annotation"]["source_digest"] == evidence["source_digest"]
+    assert saved["external_annotation"]["synced_annotation_hash"] == imported["content_digest"]
+    assert saved["imported_split"] == "train"

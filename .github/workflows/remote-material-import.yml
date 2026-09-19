@@ -199,6 +199,9 @@ jobs:
           grep -Fq 'YOLO_SOURCE_EVIDENCE_MISSING' platform_core/remote_material_import.py
           grep -Fq 'dataset_object' tests/unit/test_remote_material_import.py
           grep -Fq 'test_rescan_annotation_source_evidence_tracks_sidecar_yaml_split_and_boxes' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'platform annotation changed after rescan review' platform_core/storage/rescan_tasks.py
+          grep -Fq 'test_yolo_rescan_rejects_platform_annotation_edit_after_review' tests/unit/storage/test_rescan_tasks.py
+          grep -Fq 'test_yolo_rescan_new_material_records_imported_annotation_provenance' tests/unit/storage/test_rescan_tasks.py
           grep -Fq '_build_annotation_deltas' platform_core/storage/rescan_tasks.py
           grep -Fq 'test_yolo_annotation_delta_distinguishes_new_change_conflict_and_removed' tests/unit/storage/test_rescan_tasks.py
           grep -Fq '_verify_remote_review_object' platform_core/storage/rescan_tasks.py
