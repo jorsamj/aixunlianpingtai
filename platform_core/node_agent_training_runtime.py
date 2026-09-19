@@ -609,6 +609,7 @@ class AgentTrainingRunner:
                 "framework": "ultralytics",
                 "algorithm_id": str(payload.get("algorithm_id") or ""),
                 "snapshot_id": str(payload.get("snapshot_id") or ""),
+                "dataset_revision_id": str(payload.get("dataset_revision_id") or ""),
                 "execution_generation": int(lease.generation),
                 "requested_device": requested_device,
                 "assigned_device": selected_device,
@@ -880,6 +881,7 @@ class AgentTrainingRunner:
             raise AgentTrainingRuntimeError(
                 "portable training snapshot identity is missing"
             )
+        dataset_revision_id = str(payload.get("dataset_revision_id") or "").strip()
 
         workdir = self.workdirs.prepare(lease)
         monitor = ExecutionLeaseMonitor(
@@ -930,6 +932,13 @@ class AgentTrainingRunner:
             if verified_bundle.snapshot_id != snapshot_id:
                 raise AgentTrainingRuntimeError(
                     "portable training bundle snapshot changed"
+                )
+            if (
+                dataset_revision_id
+                and verified_bundle.dataset_revision_id != dataset_revision_id
+            ):
+                raise AgentTrainingRuntimeError(
+                    "portable training bundle dataset revision changed"
                 )
 
             self._heartbeat(

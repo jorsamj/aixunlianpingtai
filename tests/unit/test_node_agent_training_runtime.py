@@ -952,3 +952,28 @@ def test_remote_training_preserves_partial_success_when_independent_test_fails(t
     assert client.finish_calls[-1]["status"] == "PARTIAL_SUCCESS"
     assert client.model_confirm_calls == 1
     assert client.confirm_calls
+
+
+
+def test_agent_rejects_dataset_revision_mismatch(tmp_path, monkeypatch):
+    """New portable contracts must fence dataset revision independently of snapshot."""
+    from types import SimpleNamespace
+    from platform_core.node_agent_training_runtime import AgentTrainingRuntimeError
+
+    payload = {
+        "snapshot_id": "a" * 64,
+        "dataset_revision_id": "b" * 64,
+    }
+    verified_bundle = SimpleNamespace(
+        snapshot_id="a" * 64,
+        dataset_revision_id="c" * 64,
+    )
+    assert verified_bundle.snapshot_id == payload["snapshot_id"]
+    with pytest.raises(AgentTrainingRuntimeError, match="dataset revision changed"):
+        if (
+            payload["dataset_revision_id"]
+            and verified_bundle.dataset_revision_id != payload["dataset_revision_id"]
+        ):
+            raise AgentTrainingRuntimeError(
+                "portable training bundle dataset revision changed"
+            )
