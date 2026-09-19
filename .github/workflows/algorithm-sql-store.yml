@@ -11,6 +11,7 @@ on:
       - platform_core/algorithm_sql_store.py
       - platform_core/training_lineage.py
       - platform_core/training_evaluation.py
+      - platform_core/iteration_actions.py
       - platform_core/algorithms.py
       - platform_core/external_algorithm_platform.py
       - platform_core/external_algorithm_publish.py
@@ -19,6 +20,7 @@ on:
       - tests/unit/test_algorithm_sql_store.py
       - tests/unit/test_training_lineage.py
       - tests/unit/test_training_evaluation.py
+      - tests/unit/test_iteration_actions.py
       - tests/unit/test_algorithm_sql_app_contract.py
       - tests/unit/test_algorithms.py
       - tests/unit/test_external_algorithm_platform.py
@@ -48,11 +50,11 @@ jobs:
         run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring pillow
       - name: Syntax checks
         run: |
-          python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/training_lineage.py platform_core/training_evaluation.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
+          python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/training_lineage.py platform_core/training_evaluation.py platform_core/iteration_actions.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/external-algorithm-publish.js
       - name: SQL migration and row CRUD contracts
-        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
+        run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
       - name: External platform contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_external_algorithm_platform.py
       - name: External publish contracts
@@ -74,6 +76,8 @@ jobs:
           grep -Fq '"iteration_decision": iteration_decision' app.py
           grep -Fq 'def build_evaluation_truth' platform_core/training_evaluation.py
           grep -Fq 'def build_iteration_decision' platform_core/training_evaluation.py
+          grep -Fq 'def build_confirmed_iteration_action' platform_core/iteration_actions.py
+          grep -Fq 'confirmed_iteration_action' app.py
           grep -Fq 'def build_training_lineage' platform_core/training_lineage.py
           grep -q 'def patch_version' platform_core/algorithm_sql_store.py
           grep -q 'def rollback_version' platform_core/algorithm_sql_store.py

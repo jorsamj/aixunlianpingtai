@@ -5783,6 +5783,7 @@ class TrainReq(BaseModel):
     continue_threshold: float = 0.0
     stop_threshold: float = 0.0
     auto_supplement: bool = False
+    iteration_action: Optional[Dict[str, str]] = None
     supplement_count: int = 0
     # v42.7 AI mid-training intervention. The AI is advisory within constrained actions; Ground Truth metrics stay authoritative.
     ai_intervention_enabled: bool = False
@@ -7655,6 +7656,73 @@ def _v54_iteration_base(
         "latest_version_name": (latest[0] if latest else {}).get("version_name") or "",
     }
 
+class ConfirmIterationActionReq(BaseModel):
+    decision_id: str
+    action: Literal["supplement_data", "continue_training", "business_validation", "manual_review"]
+
+
+def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id: str):
+    get_project(project_id)
+    algorithm = next((row for row in list_algorithms_internal(project_id)
+                      if str(row.get("id")) == str(algorithm_id)), None)
+    if algorithm is None:
+        raise HTTPException(status_code=404, detail="算法不存在")
+    version = next((row for row in (algorithm.get("versions") or [])
+                    if str(row.get("id")) == str(version_id)), None)
+    if version is None:
+        raise HTTPException(status_code=404, detail="算法版本不存在")
+    return algorithm, version
+
+
+@app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/iteration-actions/confirm")
+def confirm_iteration_action(project_id: str, algorithm_id: str, version_id: str,
+                             payload: ConfirmIterationActionReq):
+    from platform_core.iteration_actions import build_confirmed_iteration_action
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    if str(algorithm.get("current_version_id") or "") != str(version_id):
+        raise HTTPException(status_code=409, detail="只能基于算法当前版本确认下一步动作，请刷新后重试")
+    try:
+        action = build_confirmed_iteration_action(
+            algorithm_id=algorithm_id, version=version,
+            requested_action=payload.action, decision_id=payload.decision_id,
+            confirmed_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    previous = version.get("confirmed_iteration_action")
+    if isinstance(previous, dict) and str(previous.get("action_id") or "") not in {"", action["action_id"]}:
+        raise HTTPException(status_code=409, detail="该版本已确认其他迭代动作，请刷新版本状态")
+    stored = update_algorithm_version(
+        algorithms_file(project_id), algorithm_id, version_id,
+        {"confirmed_iteration_action": action}, now=now_iso(),
+    )
+    return {"ok": True, "action": stored.get("confirmed_iteration_action") or action}
+
+
+def _validated_training_iteration_action(algorithm: Dict[str, Any], payload: TrainReq):
+    if not payload.iteration_action:
+        return None
+    from platform_core.iteration_actions import training_action_context
+    current_version_id = str(algorithm.get("current_version_id") or "")
+    version = next((row for row in (algorithm.get("versions") or [])
+                    if str(row.get("id")) == current_version_id), None)
+    if version is None:
+        raise HTTPException(status_code=409, detail="当前算法版本不存在，请刷新后重试")
+    stored = version.get("confirmed_iteration_action")
+    if not isinstance(stored, dict):
+        raise HTTPException(status_code=409, detail="当前版本没有已确认的继续训练动作")
+    try:
+        expected = training_action_context(stored)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    submitted = {str(k): str(v or "") for k, v in dict(payload.iteration_action).items()}
+    if submitted != expected:
+        raise HTTPException(status_code=409, detail="训练动作溯源已变化，请重新从独立评测确认继续训练")
+    if expected["version_id"] != current_version_id:
+        raise HTTPException(status_code=409, detail="继续训练动作不再指向当前版本")
+    return stored
+
+
 @app.post("/api/v12/projects/{project_id}/train/start")
 def v12_start_train(project_id: str, payload: TrainReq):
     get_project(project_id)
@@ -7667,6 +7735,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
         raise HTTPException(status_code=400, detail="请选择要迭代训练的算法")
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
+    confirmed_iteration_action = _validated_training_iteration_action(asset_algorithm, payload)
     if payload.split_mode:
         return _enqueue_explicit_training(project_id, payload)
     mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")
@@ -7792,6 +7861,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "priority_scheme": V56_PRIORITY_SCHEME,
         "auto_convert_targets": list(payload.auto_convert_targets or []),
         "train_request": payload.dict(),
+        "confirmed_iteration_action": confirmed_iteration_action,
         "run_name": run_name,
         "run_dir": str(p / "runs" / run_name),
         "created_at": now_iso(),
