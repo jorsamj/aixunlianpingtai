@@ -19,6 +19,7 @@ on:
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
       - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/browser/external-algorithm-platform.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
       - docs/PROJECT_HANDOFF_CURRENT.md
@@ -45,6 +46,7 @@ on:
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
       - tests/frontend/external-algorithm-platform.test.mjs
+      - tests/browser/external-algorithm-platform.spec.mjs
       - tests/frontend/model-artifact-runtime.test.mjs
       - tests/frontend/algorithm-list-runtime.test.mjs
       - docs/PROJECT_HANDOFF_CURRENT.md
@@ -127,3 +129,32 @@ jobs:
           test ! -e tools/_one_shot_secret_gc_docs.py
           test ! -e .github/workflows/_one_shot_secret_gc_docs.yml
           test "$(cat VERSION.txt)" = "42.24.0"
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install browser backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome ChangLian manual connectivity flow
+        run: npx playwright test tests/browser/external-algorithm-platform.spec.mjs
+      - name: Browser permanent guards
+        run: |
+          grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'data-external-automation-settings="1"' static/modules/external-algorithm-platform.js
+          grep -Fq "产品分析方式" static/modules/external-algorithm-platform.js
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
