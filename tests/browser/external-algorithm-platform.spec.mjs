@@ -2,6 +2,7 @@ import {test, expect} from '@playwright/test';
 
 test('changlian platform page tests draft credentials before manual sync', async ({page}) => {
   let testedPayload = null;
+  let analysisStatus = 'success';
 
   await page.route('**/api/v63/external-algorithm-platform/config', async route => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -112,7 +113,9 @@ test('changlian platform page tests draft credentials before manual sync', async
           {key: 'categories', name: '算法品目', status: 'success', count: 2},
           {key: 'products', name: '算法产品', status: 'success', count: 3},
           {key: 'compute_platforms', name: '算力环境', status: 'success', count: 2},
-          {key: 'analysis', name: '产品分析方式', status: 'success', count: 1},
+          analysisStatus === 'success'
+            ? {key: 'analysis', name: '产品分析方式', status: 'success', count: 1}
+            : {key: 'analysis', name: '产品分析方式', status: 'skipped', detail: '当前没有可用于连接测试的算法产品'},
         ],
       }),
     });
@@ -156,4 +159,11 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(connectionResult.getByRole('cell', {name: '算法产品'})).toBeVisible();
   await expect(connectionResult.getByRole('cell', {name: '算力环境'})).toBeVisible();
   await expect(connectionResult.getByRole('cell', {name: '产品分析方式'})).toBeVisible();
+
+  analysisStatus = 'skipped';
+  await page.getByRole('button', {name: '测试连接'}).click();
+  await expect(connectionResult.getByText('连接成功')).toBeVisible();
+  const analysisRow = connectionResult.getByRole('row', {name: /产品分析方式/});
+  await expect(analysisRow.getByText('跳过', {exact: true})).toBeVisible();
+  await expect(analysisRow).toContainText('当前没有可用于连接测试的算法产品');
 });
