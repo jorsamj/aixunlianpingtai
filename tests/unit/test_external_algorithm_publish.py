@@ -9,6 +9,7 @@ from platform_core.external_algorithm_publish import (
     TargetMapping,
     request_external_auto_publish_if_enabled,
 )
+from platform_core.model_artifacts import ModelArtifactConfigPayload
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
 from platform_core.storage.source_repository import StorageSourceRepository
 
@@ -259,6 +260,66 @@ def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path
     assert {row["chip_code"] for row in artifacts} == {"RK3568", "RK3576"}
     assert len({row["artifact_id"] for row in artifacts}) == 2
     assert len({row["source_sha256"] for row in artifacts}) == 1
+
+
+def test_publish_blocks_before_remote_version_when_public_base_url_missing(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+    service.repository.save_config(ExternalPublishConfigPayload(
+        storage_source_id="default_local",
+        public_base_url="",
+        target_mappings={
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
+        },
+    ))
+
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["transport_ready"] is False
+    assert status["public_base_url_configured"] is False
+    assert status["publish_ready"] is False
+    assert status["transport_issues"][0]["code"] == "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE"
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "missing public URL must fail before remote version creation"
+    except Exception as error:
+        assert getattr(error, "code", "") == "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE"
+
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+
+
+def test_publish_blocks_before_remote_version_when_model_asset_storage_missing(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+    service.model_assets.repository.save_config(ModelArtifactConfigPayload(
+        storage_source_id="",
+        object_prefix="model-assets",
+        auto_upload_enabled=True,
+    ))
+
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["transport_ready"] is False
+    assert status["model_asset_storage_source_id"] == ""
+    assert status["publish_ready"] is False
+    assert status["transport_issues"][0]["code"] == "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED"
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "missing model asset storage must fail before remote version creation"
+    except Exception as error:
+        assert getattr(error, "code", "") == "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED"
+
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
 
 
 def test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping(tmp_path: Path):
