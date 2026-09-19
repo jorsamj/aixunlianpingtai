@@ -121,6 +121,11 @@ jobs:
           grep -q "test_sync_rejects_concurrent_project_sync_without_mutating_state" tests/unit/test_external_algorithm_platform.py
           grep -q "EXTERNAL_PLATFORM_SYNC_BUSY" platform_core/external_algorithm_platform.py
           grep -q "def _sync_lock" platform_core/external_algorithm_platform.py
+          grep -q "def master_data_digest" platform_core/external_algorithm_platform.py
+          grep -q "external_master_data_digest" platform_core/external_algorithm_platform.py
+          grep -q "EXTERNAL_MASTER_DATA_STALE" platform_core/external_algorithm_platform.py
+          grep -q "test_sync_binds_algorithm_mirror_to_master_data_digest" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_readiness_and_training_guard_reject_stale_project_master_data" tests/unit/test_external_algorithm_platform.py
           grep -q "previous_cache = self.repository.cache()" platform_core/external_algorithm_platform.py
           grep -q "def flatten_category_tree" platform_core/external_algorithm_platform.py
           grep -q "test_connection_and_diagnostics_count_full_category_tree" tests/unit/test_external_algorithm_platform.py
