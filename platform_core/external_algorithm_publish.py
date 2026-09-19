@@ -681,7 +681,13 @@ class ExternalAlgorithmPublishService:
             ) from error
         version_id = _remote_id(response, ("algoVersionId", "algorithmVersionId", "versionId", "id"))
         if not version_id:
-            version_id = self._recover_external_version(client, product_id, version_name)
+            version_id = self._recover_external_version(
+                client,
+                product_id,
+                version_name,
+                analysis_id=analysis_id,
+                require_analysis_identity=require_analysis_identity,
+            )
         if not version_id:
             self.repository.patch_publication(str(publication["publication_key"]), status="UNKNOWN", last_error="新增版本接口未返回 algoVersionId，且版本列表无法反查")
             raise PlatformError(
