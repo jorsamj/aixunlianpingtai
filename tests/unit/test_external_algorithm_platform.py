@@ -501,6 +501,7 @@ def test_readiness_blocks_until_saved_synced_and_project_algorithm_exists(tmp_pa
     assert before["ready"] is False
     assert before["human_login_required"] is False
     assert before["auth_type"] == "application_credentials"
+    assert before["scope"] == "master_data_training"
     assert "external_mode" in before["blocking_keys"]
     assert "credentials" in before["blocking_keys"]
     assert "products" in before["blocking_keys"]
