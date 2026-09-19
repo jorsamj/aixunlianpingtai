@@ -6,6 +6,38 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Remote storage_rescan Phase 2A — YOLO annotation delta
+
+2026-09-19，`MATERIAL_IMPORT + mode=storage_rescan` 已在同一 durable owner 上增加 YOLO annotation delta，并完成前后端闭环。
+
+控制面 / Agent 边界：
+
+- request truth：`execution_mode=local|agent`、`import_format=images|yolo`、可选 `dataset_yaml`。
+- Agent 仍使用 `intent=storage_rescan` 才可 root-scope；普通 storage_scan prefix 约束不放宽。
+- Agent 扫描真实图片、`.txt`、`data.yaml`，并冻结 source object size/ETag/SHA256、split、class catalog、normalized bbox 和 issue evidence。
+- review archive 经 immutable upload + server-confirm 后，中央 task store 形成 per-image source digest；Agent 不写中央 Repository。
+- 中央将 source evidence 与冻结 Material baseline、当前 AnnotationRepository truth 比较，产生 `ANNOTATION_NEW/CHANGED/REMOVED/UNCHANGED/CONFLICT/INVALID`。
+- 用户确认后同一个 task 切回 `storage.rescan` central worker commit。
+- external source provenance 与正式平台 annotation truth 分离；应用成功后记录 source digest + synced platform annotation hash。
+- stale platform annotation fencing：review 后发生人工编辑则拒绝 stale overwrite。
+- 新增图片仍由原 MATERIAL_IMPORT indexer 负责图片+YOLO GT，之后只补 provenance；不复制 indexing owner。
+- durable confirmation 在 label creation 之前冻结，保证失败重试没有提前标签副作用。
+- UI 的执行位置、支持格式、图片计数、标注计数、mapping、quality、删除/冲突策略与后端字段一一对应。
+- Real Chrome 已覆盖 Agent YOLO rescan。
+
+最终代码 HEAD：`6505c51e1916a8aab5d506387b51d01e413b7775`。
+
+验收：
+
+- Remote Material Import push `35410155924`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35410158432`：API / Ubuntu / Windows / Real Chrome success。
+- 父层 UI/确认顺序回归：
+  - `9e8ada…` push Remote Material Import `35409879583` 全绿。
+  - `c6ee2ab…` push/PR Remote Material Import 全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**下一阶段：** Phase 2B COCO JSON delta → Phase 2C VOC XML delta → Canonical Annotation Schema versioning。不得新造并行 parser / annotation owner。
+
 ## 0. 最新关闭：Remote MATERIAL_IMPORT Phase 2 — Agent YOLO review + label mapping + AnnotationRepository
 
 2026-09-18，`MATERIAL_IMPORT` 的第二阶段已 CLOSED。Phase 1 的图片 ZIP 跨机器导入保持成立，Phase 2 在同一个 portable review/finalization 框架上新增真实 YOLO 数据集解析：

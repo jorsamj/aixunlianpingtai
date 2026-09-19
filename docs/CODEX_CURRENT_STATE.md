@@ -3,6 +3,58 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Remote storage_rescan Phase 2A YOLO Annotation Delta CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The existing `MATERIAL_IMPORT + mode=storage_rescan` owner now reconciles
+YOLO annotation changes in addition to Phase 1 image-object changes. Local and
+Agent execution consume the same request truth: `execution_mode`,
+`import_format=images|yolo` and optional `dataset_yaml`.
+
+For YOLO, the portable review freezes source-object evidence for label sidecars
+and `data.yaml` (object key, size, ETag and SHA256), split identity, external
+class catalog, normalized boxes and issues. The task-owned store derives a
+per-image source digest and compares it with the previously synchronized
+external provenance plus current AnnotationRepository truth.
+
+Delta categories are `ANNOTATION_NEW / CHANGED / REMOVED / UNCHANGED /
+CONFLICT / INVALID`. External provenance is not the platform annotation
+authority. User confirmation explicitly controls existing-image updates,
+external removals and manual-edit conflicts, plus external-class label mapping
+and quality acceptance.
+
+New images continue through the already-closed MATERIAL_IMPORT indexing owner,
+including their YOLO GT. After indexing, rescan records the matching external
+source provenance and synchronized annotation hash rather than flagging that GT
+as pending review.
+
+Two fail-closed concurrency rules are permanent:
+1. durable rescan intent is frozen before any new project label is created;
+2. before overwriting/clearing an existing platform annotation, the current
+   annotation hash/state must still match the review snapshot. A manual edit
+   after review forces a new rescan instead of being overwritten.
+
+Frontend Impact Review was completed in the same batch. The storage rescan modal
+shows one backend-backed execution/format truth, separate image/annotation delta
+counts, label mapping, quality acceptance, removal policy and conflict policy.
+The YOLO mapping rendering runtime error was fixed, and Real Chrome validates the
+Agent request/review/confirmation chain.
+
+Acceptance at code HEAD `6505c51e1916a8aab5d506387b51d01e413b7775`:
+- Remote Material Import push `35410155924`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35410158432`：API / Ubuntu / Windows / Real Chrome success。
+- 父层 UI/确认顺序回归：
+  - `9e8ada…` push Remote Material Import `35409879583` 全绿。
+  - `c6ee2ab…` push/PR Remote Material Import 全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**OPEN / next:** Phase 2B COCO annotation JSON delta, then Phase 2C Pascal VOC
+XML delta. After those, version the already-shared YOLO/COCO/VOC evidence as the
+Canonical Annotation Schema instead of creating new parser owners.
+
+Rockchip real-board acceptance remains independently OPEN.
+
 ## Current closure — Remote storage_rescan Phase 1 image objects CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.

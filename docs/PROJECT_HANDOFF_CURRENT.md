@@ -63,6 +63,69 @@ revert: keep external algorithm integration off main
 ---
 
 
+# 最新关闭：Remote storage_rescan Phase 2A — YOLO Annotation Delta
+
+2026-09-19，现有 `MATERIAL_IMPORT + mode=storage_rescan` 在 Phase 1 图片对象增量基础上完成 **YOLO 标注增量同步**，Phase 2A CLOSED。没有新增 TaskKind、Parser owner 或第二套 AnnotationRepository。
+
+已关闭范围：
+
+- 同一个“重新扫描 / 恢复”入口支持：
+  - 扫描内容：仅图片 / 图片 + YOLO 标注；
+  - 执行位置：中央 Worker / 远程 Agent；
+  - YOLO 可显式选择 `data.yaml`，也可按现有规则自动发现。
+- Local 与 Agent 使用同一请求 truth：`execution_mode + import_format + dataset_yaml`；Agent preflight 只暴露后端真实支持格式。
+- Agent 继续复用现有 broker / short-lived GET / execution lease / generation fencing / server-confirm；不访问中央 SQLite/NFS，不接收长期对象存储凭据。
+- YOLO review 不只保存归一化 bbox，还冻结外部来源身份：
+  - label `.txt` object key / size / ETag / SHA256；
+  - `data.yaml` object key / size / ETag / SHA256；
+  - split；
+  - external class catalog digest；
+  - normalized boxes / quality issues；
+  - per-image `source_digest`。
+- 因此可识别“图片没变，但 label sidecar / data.yaml / split / class / bbox 变化”的真实 annotation delta。
+- 统一分类：
+  - `ANNOTATION_NEW`
+  - `ANNOTATION_CHANGED`
+  - `ANNOTATION_REMOVED`
+  - `ANNOTATION_UNCHANGED`
+  - `ANNOTATION_CONFLICT`
+  - `ANNOTATION_INVALID`
+- 平台人工标注 truth 与外部 YOLO source evidence 分离；历史素材没有可信 external baseline 时不会假装“已同步”，而按冲突/新增规则进入用户确认。
+- 用户确认策略与后端完全一致：
+  - 已有图片：是否同步新增/变化标注；
+  - 外部标注删除：清空 / 保留；
+  - 人工修改冲突：覆盖 / 保留；
+  - external class → 平台标签 mapping/create_labels；
+  - quality report acceptance。
+- 新增图片仍走既有 MATERIAL_IMPORT indexing owner，并按冻结映射导入对应 YOLO 标注；UI 已明确写明这一语义。
+- 新增图片完成 indexing 后会补正式 `external_annotation` provenance 和 `synced_annotation_hash`，不会被误标为“待复核”。
+- 已有图片写入前增加 stale-annotation fencing：review 后如果平台标注又被人工修改，确认阶段 fail closed，要求重新扫描，不能覆盖用户的新修改。
+- 新平台标签创建顺序已修正为：**先冻结 durable rescan intent → 再幂等创建标签 → 再 resume task**，避免确认冲突失败却提前产生标签副作用。
+- Frontend Impact Review 同批完成：
+  - 图片增量与标注增量分别展示；
+  - 标注映射、质量、删除策略、冲突策略全部来自后端 task truth；
+  - 修复 YOLO review 渲染的 `key is not defined`；
+  - Phase 1 文案与 Phase 2A 正式 UI 文案统一；
+  - Real Chrome 覆盖 Agent YOLO 请求、review 计数、mapping、冲突策略和确认 body。
+
+最终代码 HEAD：`6505c51e1916a8aab5d506387b51d01e413b7775`。
+
+最终验收：
+
+- Remote Material Import push `35410155924`：API / Ubuntu / Windows / Real Chrome success。
+- Remote Material Import PR `35410158432`：API / Ubuntu / Windows / Real Chrome success。
+- 父层 UI/确认顺序回归：
+  - `9e8ada…` push Remote Material Import `35409879583` 全绿。
+  - `c6ee2ab…` push/PR Remote Material Import 全绿。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**仍然 OPEN：**
+
+1. `storage_rescan Phase 2B`：COCO annotation JSON delta。
+2. `storage_rescan Phase 2C`：Pascal VOC XML delta。
+3. Canonical Annotation Schema versioning：把当前 YOLO/COCO/VOC 已共享的 evidence 正式版本化，不重写 Parser。
+4. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance。
+
 # 最新关闭：Remote MATERIAL_IMPORT Phase 2
 
 2026-09-18，第四个真实跨机器 task kind 的第二阶段已 CLOSED。
