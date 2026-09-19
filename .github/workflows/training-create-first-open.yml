@@ -8,6 +8,7 @@ on:
     paths:
       - 'static/index.html'
       - 'static/main.mjs'
+      - 'static/app.js'
       - 'static/modules/training-create-hydration.js'
       - 'static/modules/training-submit.js'
       - 'tests/frontend/training-create-hydration.test.mjs'
@@ -49,6 +50,7 @@ jobs:
           grep -Fq "training-create-hydration-422532" static/modules/training-create-hydration.js
           grep -Fq 'supplementCandidateContext' static/modules/training-submit.js
           grep -Fq 'supplement_candidate_set_id' static/modules/training-submit.js
+          grep -Fq 'window.TrainingSubmitRuntime?.updateReadiness?.();' static/app.js
           grep -Fq '/api/training_options?project_id=' static/modules/training-create-hydration.js
           grep -Fq '/api/system/recommendation' static/modules/training-create-hydration.js
           grep -Fq "api('/api/v62/training-devices')" static/app.js
