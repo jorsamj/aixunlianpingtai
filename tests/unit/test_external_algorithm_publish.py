@@ -111,6 +111,17 @@ def _configure_external(root: Path, memory: MemorySecretStore, *, auto_publish=T
         "auto_publish_enabled": auto_publish,
         "endpoints": {},
     })
+    repository.save_cache({
+        "provider": "changlian",
+        "synced_at": "2026-09-19T12:00:00Z",
+        "categories": [],
+        "products": [],
+        "analyses_by_product": {},
+        "compute_platforms": [
+            {"computePlatformId": "cp-rk", "computePlatformName": "瑞芯微 RKNN"},
+            {"computePlatformId": "cp-onnx", "computePlatformName": "ONNX"},
+        ],
+    })
     ref = repository.config()["credential_ref"]
     SecretCredentialStore(memory).set(ref, {"access_key_id": "ak", "access_secret": "secret"})
 
@@ -398,3 +409,52 @@ def test_multi_analysis_timeout_does_not_recover_version_without_analysis_identi
     publication = service.repository.publication("p1", "a1", "v1")
     assert publication["status"] == "UNKNOWN"
     assert publication["external_algo_version_id"] == ""
+
+
+
+def test_publish_config_rejects_stale_compute_platform_mapping(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
+
+    try:
+        service.save_config(ExternalPublishConfigPayload(
+            storage_source_id="default_local",
+            public_base_url="https://platform.example",
+            target_mappings={
+                "rockchip": TargetMapping(compute_platform_id="cp-removed", chip_code="RK3568"),
+            },
+        ))
+        assert False, "stale computePlatformId must be rejected"
+    except Exception as error:
+        assert getattr(error, "code", "") == "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE"
+
+
+def test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_save(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+
+    service.external_repository.save_cache({
+        "provider": "changlian",
+        "synced_at": "2026-09-19T13:00:00Z",
+        "categories": [],
+        "products": [],
+        "analyses_by_product": {},
+        "compute_platforms": [
+            {"computePlatformId": "cp-new", "computePlatformName": "新的瑞芯微环境"},
+        ],
+    })
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "publish must fail closed when saved computePlatformId is stale"
+    except Exception as error:
+        assert getattr(error, "code", "") == "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE"
+
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
