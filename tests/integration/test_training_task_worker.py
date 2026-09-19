@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from platform_core.algorithms import list_algorithms
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.storage import StorageSourceRepository
 import platform_core.training_tasks as training_tasks_module
@@ -180,7 +181,7 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     }
     assert "image-1" in bundled_ids and "image-4" in bundled_ids
     assert not (project / "uploads" / "image-1.jpg").exists()
-    versions = json.loads((project / "algorithms.json").read_text(encoding="utf-8"))[0]["versions"]
+    versions = list_algorithms(project / "algorithms.json")[0]["versions"]
     assert len(versions) == 1
     assert versions[0]["training_status"] == "SUCCEEDED"
     assert versions[0]["snapshot_id"] == result["snapshot_id"]
