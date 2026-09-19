@@ -44,6 +44,8 @@ class FakePublishingClient:
             "versionName": payload["versionName"],
             "versionNo": payload["versionNo"],
         }
+        if payload.get("analysisId"):
+            row["analysisId"] = payload["analysisId"]
         type(self).versions.append(row)
         return {"code": 200, "data": {"algoVersionId": row["algoVersionId"]}}
 
@@ -66,6 +68,8 @@ class RecoveringPublishingClient(FakePublishingClient):
             "versionName": payload["versionName"],
             "versionNo": payload["versionNo"],
         }
+        if payload.get("analysisId"):
+            row["analysisId"] = payload["analysisId"]
         type(self).versions.append(row)
         raise RuntimeError("connection reset after server commit")
 
@@ -73,6 +77,17 @@ class RecoveringPublishingClient(FakePublishingClient):
         type(self).weight_creates += 1
         row = {"weightId": "recovered-weight", **dict(payload)}
         type(self).weights.append(row)
+        raise RuntimeError("connection reset after server commit")
+
+
+class AmbiguousAnalysisRecoveringClient(FakePublishingClient):
+    def create_algorithm_version(self, _path, payload):
+        type(self).version_creates += 1
+        type(self).versions.append({
+            "algoVersionId": "ambiguous-version",
+            "versionName": payload["versionName"],
+            "versionNo": payload["versionNo"],
+        })
         raise RuntimeError("connection reset after server commit")
 
 
@@ -289,3 +304,69 @@ def test_publication_persists_training_analysis_binding(tmp_path: Path):
     assert result["publication"]["external_analysis_id"] == "analysis-2"
     assert FakePublishingClient.last_version_payload["analysisId"] == "analysis-2"
     assert "productId" not in FakePublishingClient.last_version_payload
+
+
+def test_multi_analysis_version_recovery_matches_analysis_identity(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["external_analysis_ids"] = ["analysis-1", "analysis-2"]
+    algorithms[0]["external_analyses"] = [
+        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A"},
+        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B"},
+    ]
+    algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-2"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    _seed_conversion(tmp_path)
+    FakePublishingClient.versions = [
+        {
+            "algoVersionId": "wrong-analysis-version",
+            "versionName": "20260917120000",
+            "versionNo": "20260917120000",
+            "analysisId": "analysis-1",
+        },
+        {
+            "algoVersionId": "right-analysis-version",
+            "versionName": "20260917120000",
+            "versionNo": "20260917120000",
+            "analysisId": "analysis-2",
+        },
+    ]
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["external_algo_version_id"] == "right-analysis-version"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.last_weight_payload["algoVersionId"] == "right-analysis-version"
+
+
+def test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity(tmp_path: Path):
+    AmbiguousAnalysisRecoveringClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["external_analysis_ids"] = ["analysis-1", "analysis-2"]
+    algorithms[0]["external_analyses"] = [
+        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A"},
+        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B"},
+    ]
+    algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-2"
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory, client_factory=AmbiguousAnalysisRecoveringClient)
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "ambiguous multi-analysis recovery must fail closed"
+    except Exception as error:
+        assert getattr(error, "code", "") == "EXTERNAL_VERSION_CREATE_UNKNOWN"
+
+    assert AmbiguousAnalysisRecoveringClient.version_creates == 1
+    assert AmbiguousAnalysisRecoveringClient.weight_creates == 0
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "UNKNOWN"
+    assert publication["external_algo_version_id"] == ""
