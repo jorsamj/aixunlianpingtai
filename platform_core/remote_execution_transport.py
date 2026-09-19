@@ -2075,15 +2075,25 @@ class RemoteExecutionTransportService:
                 "portable remote training payload is missing",
                 422,
             )
+        training_schema = int(training.get("schema_version") or 0)
         if (
-            int(training.get("schema_version") or 0) != 1
+            training_schema not in {1, 2}
             or str(training.get("framework") or "") != "ultralytics"
             or not str(training.get("snapshot_id") or "").strip()
+            or (
+                training_schema >= 2
+                and not str(training.get("dataset_revision_id") or "").strip()
+            )
         ):
             raise RemoteExecutionTransportError(
                 "REMOTE_EXECUTION_CONTRACT_INVALID",
                 "portable remote training payload identity is invalid",
                 422,
+            )
+        if training_schema >= 2:
+            _normalized_sha256(
+                training.get("dataset_revision_id"),
+                "training.dataset_revision_id",
             )
         return remote, training
 
@@ -2215,6 +2225,7 @@ class RemoteExecutionTransportService:
             "framework": "ultralytics",
             "algorithm_id": str(payload.get("algorithm_asset_id") or ""),
             "snapshot_id": str(training.get("snapshot_id") or ""),
+            "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
             "requested_device": str(payload.get("requested_device") or payload.get("device") or "auto"),
             "selected_device": selected_device,
             "selected_gpu": dict(selected_gpu) if isinstance(selected_gpu, Mapping) else None,
@@ -2632,6 +2643,7 @@ class RemoteExecutionTransportService:
                             "sha256": expected_sha,
                             "size_bytes": expected_size,
                             "snapshot_id": str(training.get("snapshot_id") or ""),
+                            "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
                             "model_count": len(verified.models),
                         },
                         ensure_ascii=False,
@@ -2656,6 +2668,7 @@ class RemoteExecutionTransportService:
                 "transport": "object-storage-v1",
                 "framework": "ultralytics",
                 "snapshot_id": str(training.get("snapshot_id") or ""),
+                "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
                 "training_outcome": str(manifest.get("training_outcome") or ""),
                 "completion": dict(manifest.get("completion") or {}) if isinstance(manifest.get("completion"), Mapping) else {},
                 "training_report": dict(manifest.get("training_report") or {}) if isinstance(manifest.get("training_report"), Mapping) else {},
@@ -3095,6 +3108,7 @@ class RemoteExecutionTransportService:
                         "task_id": str(task.task_id),
                         "execution_generation": generation,
                         "snapshot_id": str(training.get("snapshot_id") or ""),
+                        "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
                         "role": role,
                     },
                 )
@@ -3155,6 +3169,7 @@ class RemoteExecutionTransportService:
             "trainable": True,
             "framework": "ultralytics",
             "snapshot_id": str(training.get("snapshot_id") or ""),
+            "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
             "result_ref": f"remote-results/{generation}/result.json",
             "task_id": str(task.task_id),
             "job_id": str(task.task_id),
@@ -3172,6 +3187,8 @@ class RemoteExecutionTransportService:
             "algorithm_id": algorithm_id,
             "version_id": version_id,
             "version_name": version_name,
+            "snapshot_id": str(training.get("snapshot_id") or ""),
+            "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
             "model_artifacts_committed": True,
             "model_artifact_summary": {
                 "discovered": len(artifact_rows),

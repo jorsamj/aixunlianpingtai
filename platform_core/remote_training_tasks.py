@@ -27,7 +27,11 @@ from .training_tasks import (
     _selected_project_images,
     materialize_portable_dataset,
 )
-from .snapshots import build_snapshot
+from .snapshots import (
+    build_snapshot,
+    dataset_revision_document,
+    persist_dataset_revision,
+)
 
 
 class RemoteTrainingPreparationError(RuntimeError):
@@ -294,10 +298,17 @@ class RemoteTrainingPrepareHandler:
                 "training snapshot preparation produced no durable snapshot",
                 target_status=TaskStatus.FAILED,
             )
+        revision = dataset_revision_document(snapshot)
+        persist_dataset_revision(project / "dataset_revisions", snapshot)
         context.artifacts.atomic_write_json(
             training_task.task_id,
             "snapshot.json",
             snapshot,
+        )
+        context.artifacts.atomic_write_json(
+            training_task.task_id,
+            "dataset-revision.json",
+            revision,
         )
         return bundle, snapshot, split_manifest, images
 
@@ -540,6 +551,11 @@ class RemoteTrainingPrepareHandler:
                         if isinstance(existing.get("training"), Mapping)
                         else ""
                     ),
+                    "dataset_revision_id": str(
+                        ((existing.get("training") or {}).get("dataset_revision_id"))
+                        if isinstance(existing.get("training"), Mapping)
+                        else ""
+                    ),
                 }
                 context.artifacts.atomic_write_json(
                     context.task.task_id,
@@ -585,9 +601,10 @@ class RemoteTrainingPrepareHandler:
                 "task_kind": "TRAINING",
                 "transport": "object-storage-v1",
                 "training": {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "framework": "ultralytics",
                     "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+                    "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
                     "bundle": bundle_ref,
                     "model": model_ref,
                     "result": {
@@ -619,6 +636,7 @@ class RemoteTrainingPrepareHandler:
                 "training_task_id": training_task_id,
                 "status": "ready",
                 "snapshot_id": remote_execution["training"]["snapshot_id"],
+                "dataset_revision_id": remote_execution["training"]["dataset_revision_id"],
                 "bundle": bundle_ref,
                 "model": model_ref,
             }

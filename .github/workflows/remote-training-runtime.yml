@@ -18,6 +18,8 @@ on:
       - 'platform_core/training_recovery_api.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/training_tasks.py'
+      - 'platform_core/snapshots.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
       - 'platform_core/task_runtime/repository.py'
@@ -56,6 +58,8 @@ on:
       - 'platform_core/training_recovery_api.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/training_tasks.py'
+      - 'platform_core/snapshots.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
       - 'platform_core/task_runtime/repository.py'
@@ -101,6 +105,8 @@ jobs:
           platform_core/remote_training_transport.py
           platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
+          platform_core/training_tasks.py
+          platform_core/snapshots.py
           platform_core/node_agent_training_runtime.py
           platform_core/node_agent_executor_runtime.py
           platform_core/node_agent_executor_loop.py
@@ -194,6 +200,8 @@ jobs:
           grep -Fq '"remote_input_state": "READY"' platform_core/remote_training_tasks.py
           grep -Fq '"task_kind": "TRAINING"' platform_core/remote_training_tasks.py
           grep -Fq '"transport": "object-storage-v1"' platform_core/remote_training_tasks.py
+          grep -Fq '"dataset_revision_id": str(snapshot.get("dataset_revision_id") or "")' platform_core/remote_training_tasks.py
+          grep -Fq 'training.dataset_revision_id' platform_core/remote_execution_transport.py
           grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
           grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py

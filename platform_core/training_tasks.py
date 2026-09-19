@@ -26,7 +26,11 @@ from .annotation_repository import AnnotationRepository
 from .algorithms import attach_version, choose_algorithm_iteration_base, list_algorithms
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
-from .snapshots import build_snapshot
+from .snapshots import (
+    build_snapshot,
+    dataset_revision_document,
+    persist_dataset_revision,
+)
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
@@ -571,12 +575,23 @@ def materialize_portable_dataset(
     )
     snapshot_path = root / "snapshot.json"
     atomic_write_json(snapshot_path, dict(snapshot))
+    revision_path = root / "dataset-revision.json"
+    atomic_write_json(revision_path, dataset_revision_document(snapshot))
     manifest = {
         "schema_version": 3,
         "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "dataset_revision_schema_version": int(
+            snapshot.get("dataset_revision_schema_version") or 0
+        ),
+        "canonical_annotation_schema_version": int(
+            snapshot.get("canonical_annotation_schema_version") or 0
+        ),
+        "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
         "training_input_policy": TRAINING_INPUT_POLICY,
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": _sha256(snapshot_path),
+        "dataset_revision_ref": "dataset-revision.json",
+        "dataset_revision_sha256": _sha256(revision_path),
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": training_total_size_bytes,
         "splits": splits,
@@ -626,6 +641,22 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
     expected_snapshot = str(manifest.get("snapshot_sha256") or "")
     if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:
         raise ValueError("portable training snapshot SHA256 mismatch")
+    snapshot_value = json.loads(snapshot.read_text(encoding="utf-8"))
+    revision = _resolve_relative(
+        path.parent,
+        str(manifest.get("dataset_revision_ref") or ""),
+    )
+    expected_revision_sha = str(manifest.get("dataset_revision_sha256") or "")
+    if not revision.is_file() or not expected_revision_sha or _sha256(revision) != expected_revision_sha:
+        raise ValueError("portable dataset revision SHA256 mismatch")
+    revision_value = json.loads(revision.read_text(encoding="utf-8"))
+    revision_id = str(manifest.get("dataset_revision_id") or "")
+    if (
+        not revision_id
+        or str(snapshot_value.get("dataset_revision_id") or "") != revision_id
+        or str(revision_value.get("dataset_revision_id") or "") != revision_id
+    ):
+        raise ValueError("portable dataset revision identity mismatch")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -643,6 +674,7 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
             verified += 1
     return {
         "snapshot_id": manifest.get("snapshot_id"),
+        "dataset_revision_id": manifest.get("dataset_revision_id"),
         "verified_files": verified,
         "verification_mode": "materialization_evidence",
     }
@@ -652,6 +684,23 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     path = Path(manifest_path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
     resolve_dataset_yaml(path)
+    snapshot_path = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
+    revision_path = _resolve_relative(
+        path.parent,
+        str(manifest.get("dataset_revision_ref") or ""),
+    )
+    if not snapshot_path.is_file() or not revision_path.is_file():
+        raise FileNotFoundError("portable snapshot/revision evidence is missing")
+    snapshot_value = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    revision_value = json.loads(revision_path.read_text(encoding="utf-8"))
+    revision_id = str(manifest.get("dataset_revision_id") or "")
+    if (
+        not revision_id
+        or str(snapshot_value.get("dataset_revision_id") or "") != revision_id
+        or str(revision_value.get("dataset_revision_id") or "") != revision_id
+        or str(manifest.get("dataset_revision_sha256") or "") != _sha256(revision_path)
+    ):
+        raise ValueError("portable dataset revision identity mismatch")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -671,7 +720,11 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
             if not label_path.is_file() or _sha256(label_path) != str(member.get("label_sha256") or ""):
                 raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
             verified += 1
-    return {"snapshot_id": manifest.get("snapshot_id"), "verified_files": verified}
+    return {
+        "snapshot_id": manifest.get("snapshot_id"),
+        "dataset_revision_id": revision_id,
+        "verified_files": verified,
+    }
 
 
 @dataclass(frozen=True)
@@ -680,7 +733,9 @@ class RemoteTrainingBundle:
     manifest: Path
     data_yaml: Path
     snapshot: Path
+    dataset_revision: Path
     snapshot_id: str
+    dataset_revision_id: str
     verified_files: int
 
 
@@ -705,12 +760,19 @@ def resolve_remote_training_bundle(manifest_path: str | Path) -> RemoteTrainingB
     snapshot_id = str(manifest.get("snapshot_id") or "")
     if not snapshot_id or str(snapshot_value.get("snapshot_id") or "") != snapshot_id:
         raise ValueError("portable training snapshot identity mismatch")
+    dataset_revision = _resolve_relative(
+        path.parent,
+        str(manifest.get("dataset_revision_ref") or ""),
+    )
+    dataset_revision_id = str(verification.get("dataset_revision_id") or "")
     return RemoteTrainingBundle(
         root=path.parent,
         manifest=path,
         data_yaml=resolve_dataset_yaml(path),
         snapshot=snapshot,
+        dataset_revision=dataset_revision,
         snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
         verified_files=int(verification["verified_files"]),
     )
 
@@ -760,6 +822,12 @@ def _selected_project_images(
         image_id = str(row.get("id") or "")
         annotation = annotations.get(image_id)
         row['annotation_state'] = annotation['annotation_state']
+        row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
+        row['annotation_hash'] = str(
+            annotation.get('content_digest')
+            or row.get('annotation_hash')
+            or ''
+        )
         row['annotated'] = annotation['annotation_state'] in {'annotated', 'confirmed_empty'}
         row["boxes"] = list(annotation.get("boxes") or [])
         result.append(row)
@@ -1115,6 +1183,9 @@ class TrainingHandler:
         if not isinstance(snapshot, dict) or not str(snapshot.get("snapshot_id") or ""):
             raise RuntimeError("completed training is missing its durable dataset snapshot")
         snapshot_id = str(snapshot["snapshot_id"])
+        dataset_revision_id = str(snapshot.get("dataset_revision_id") or "")
+        if not dataset_revision_id:
+            raise RuntimeError("completed training is missing its durable dataset revision")
         completion_error = _training_completion_error(
             job,
             expected_task_id=context.task.task_id,
@@ -1128,6 +1199,8 @@ class TrainingHandler:
         verification = verify_portable_dataset(manifest_path)
         if str(verification.get("snapshot_id") or "") != snapshot_id:
             raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
+        if str(verification.get("dataset_revision_id") or "") != dataset_revision_id:
+            raise RuntimeError("completed training dataset manifest does not match durable dataset revision")
 
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,
@@ -1204,7 +1277,9 @@ class TrainingHandler:
             "actual_train_params": job.get("actual_train_params"),
             **_training_completion_metadata(job, payload),
             "snapshot_id": snapshot_id,
+            "dataset_revision_id": dataset_revision_id,
             "snapshot_ref": "snapshot.json",
+            "dataset_revision_ref": "dataset-revision.json",
             "dataset_manifest_ref": manifest_ref,
             "counts": snapshot.get("counts") or {},
             "actual_ratios": snapshot.get("actual_ratios") or {},
@@ -1259,6 +1334,7 @@ class TrainingHandler:
                 "trainable": True,
                 "framework": "ultralytics",
                 "snapshot_id": snapshot_id,
+                "dataset_revision_id": dataset_revision_id,
                 "result_ref": "result.json",
                 "task_id": context.task.task_id,
                 "job_id": context.task.task_id,
@@ -1298,7 +1374,12 @@ class TrainingHandler:
         }
         result["bundle_cache"] = bundle_cache_evidence
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot_id, "result_ref": "result.json"})
+        context.save_checkpoint({
+            "stage": "committed",
+            "snapshot_id": snapshot_id,
+            "dataset_revision_id": dataset_revision_id,
+            "result_ref": "result.json",
+        })
         return final_status, "result.json"
 
     def run(self, context):
@@ -1416,8 +1497,19 @@ class TrainingHandler:
         if manifest is None or snapshot is None:
             raise RuntimeError("training snapshot preparation did not produce a manifest")
 
+        revision = dataset_revision_document(snapshot)
+        persist_dataset_revision(project / "dataset_revisions", snapshot)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
-        context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
+        context.artifacts.atomic_write_json(
+            context.task.task_id,
+            "dataset-revision.json",
+            revision,
+        )
+        context.save_checkpoint({
+            "stage": "snapshot_ready",
+            "snapshot_id": snapshot["snapshot_id"],
+            "dataset_revision_id": snapshot["dataset_revision_id"],
+        })
         if context.cancel_requested():
             raise InterruptedError("training cancelled before dataset materialization")
 
@@ -1548,6 +1640,7 @@ class TrainingHandler:
             "base_version_name": base.get("base_version_name"),
             "base_selection_reason": base.get("base_selection_reason"),
             "snapshot_id": snapshot["snapshot_id"],
+            "dataset_revision_id": snapshot["dataset_revision_id"],
             "dataset_counts": manifest.counts,
             "epochs": int(payload.get("epochs") or 50),
             "imgsz": int(payload.get("imgsz") or 640),
