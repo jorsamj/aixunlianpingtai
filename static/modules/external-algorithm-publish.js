@@ -64,6 +64,27 @@ export function publicationActionLabel(version = {}) {
 }
 
 export function publicationPreflight(status = {}) {
+  if (status.identity_ready === false) {
+    const issues = Array.isArray(status.identity_issues) ? status.identity_issues : [];
+    const issue = issues[0] || {};
+    const code = String(issue.code || '');
+    if (code === 'EXTERNAL_VERSION_ANALYSIS_STALE') {
+      return {
+        ready: false,
+        message: '该训练版本绑定的畅联云分析方式已失效。请先到“平台对接”执行“立即同步”并核对分析方式；平台不会自动改挂到其他分析方式。',
+      };
+    }
+    if (code === 'EXTERNAL_ALGORITHM_INACTIVE') {
+      return {
+        ready: false,
+        message: '该算法已在新畅联下架，不能发布新版本。请先在新畅联恢复后执行“立即同步”。',
+      };
+    }
+    return {
+      ready: false,
+      message: '当前算法的畅联云主数据不是最新状态，请先到“平台对接”执行“立即同步”后再发布。',
+    };
+  }
   if (status.conversion_active) {
     return {ready: false, message: '模型转换仍在进行，请等待转换完成后再同步到新畅联。'};
   }
