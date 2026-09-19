@@ -7696,8 +7696,12 @@ def confirm_iteration_action(project_id: str, algorithm_id: str, version_id: str
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     previous = version.get("confirmed_iteration_action")
-    if isinstance(previous, dict) and str(previous.get("action_id") or "") not in {"", action["action_id"]}:
-        raise HTTPException(status_code=409, detail="该版本已确认其他迭代动作，请刷新版本状态")
+    if isinstance(previous, dict):
+        previous_id = str(previous.get("action_id") or "")
+        if previous_id == action["action_id"]:
+            return {"ok": True, "action": previous, "idempotent": True}
+        if previous_id:
+            raise HTTPException(status_code=409, detail="该版本已确认其他迭代动作，请刷新版本状态")
     stored = update_algorithm_version(
         algorithms_file(project_id), algorithm_id, version_id,
         {"confirmed_iteration_action": action}, now=now_iso(),

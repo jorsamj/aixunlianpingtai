@@ -582,6 +582,10 @@ def test_iteration_action_confirmation_is_version_owned_and_fenced(client, seede
     assert action["automatic_execution"] is False
     assert action["requires_user_submit"] is True
     assert action["source"]["version_id"] == "v-action-1"
+    repeated = client.post(url, json={"decision_id": "c" * 64, "action": "continue_training"})
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["action"] == action
 
     persisted = next(
         row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
