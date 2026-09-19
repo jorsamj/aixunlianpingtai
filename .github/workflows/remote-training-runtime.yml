@@ -22,6 +22,7 @@ on:
       - 'platform_core/snapshots.py'
       - 'platform_core/training_lineage.py'
       - 'platform_core/training_evaluation.py'
+      - 'platform_core/iteration_actions.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
       - 'platform_core/task_runtime/repository.py'
@@ -67,6 +68,7 @@ on:
       - 'platform_core/snapshots.py'
       - 'platform_core/training_lineage.py'
       - 'platform_core/training_evaluation.py'
+      - 'platform_core/iteration_actions.py'
       - 'platform_core/task_node_assignments.py'
       - 'platform_core/task_runtime/models.py'
       - 'platform_core/task_runtime/repository.py'
@@ -119,6 +121,7 @@ jobs:
           platform_core/snapshots.py
           platform_core/training_lineage.py
           platform_core/training_evaluation.py
+          platform_core/iteration_actions.py
           platform_core/node_agent_training_runtime.py
           platform_core/node_agent_executor_runtime.py
           platform_core/node_agent_executor_loop.py
@@ -225,6 +228,8 @@ jobs:
           grep -Fq '"evaluation": evaluation' platform_core/training_tasks.py
           grep -Fq '"iteration_decision": iteration_decision' platform_core/training_tasks.py
           grep -Fq 'def build_evaluation_truth' platform_core/training_evaluation.py
+          grep -Fq 'def build_confirmed_iteration_action' platform_core/iteration_actions.py
+          grep -Fq 'confirmed_iteration_action' app.py
           grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py
           grep -Fq 'prepare_training_model_uploads' platform_core/node_agent_training_runtime.py
