@@ -7,6 +7,7 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'train_worker.py'
       - 'platform_core/remote_training_transport.py'
       - 'platform_core/remote_training_results.py'
       - 'platform_core/node_agent_training_runtime.py'
@@ -30,6 +31,7 @@ on:
       - 'platform_core/worker_supervisor.py'
       - 'tests/unit/test_remote_training_transport.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_training_early_stopping_reason.py'
       - 'tests/unit/test_remote_training_results.py'
       - 'tests/unit/test_training_lineage.py'
       - 'tests/unit/test_training_evaluation.py'
@@ -53,6 +55,7 @@ on:
       - refactor/frontend-runtime-stabilization
     paths:
       - 'app.py'
+      - 'train_worker.py'
       - 'platform_core/remote_training_transport.py'
       - 'platform_core/remote_training_results.py'
       - 'platform_core/node_agent_training_runtime.py'
@@ -76,6 +79,7 @@ on:
       - 'platform_core/worker_supervisor.py'
       - 'tests/unit/test_remote_training_transport.py'
       - 'tests/unit/test_node_agent_training_runtime.py'
+      - 'tests/unit/test_training_early_stopping_reason.py'
       - 'tests/unit/test_remote_training_results.py'
       - 'tests/unit/test_training_lineage.py'
       - 'tests/unit/test_training_evaluation.py'
@@ -130,6 +134,7 @@ jobs:
           platform_core/model_artifacts.py
           platform_core/training_recovery_api.py
           node_agent.py
+          train_worker.py
           platform_core/task_node_assignments.py
           platform_core/task_runtime/models.py
           platform_core/task_runtime/repository.py
@@ -137,6 +142,7 @@ jobs:
           platform_core/worker_supervisor.py
           tests/unit/test_remote_training_transport.py
           tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_training_early_stopping_reason.py
           tests/unit/test_remote_training_results.py
           tests/unit/test_training_lineage.py
           tests/unit/test_training_evaluation.py
@@ -160,6 +166,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_node_agent_training_runtime.py
+          tests/unit/test_training_early_stopping_reason.py
           tests/unit/test_node_agent_executor_runtime.py
           tests/unit/test_node_agent_executor_loop.py
           tests/unit/test_node_agent_entrypoint.py
@@ -217,6 +224,8 @@ jobs:
           grep -Fq '"training-prep",' platform_core/worker_supervisor.py
           grep -Fq 'class RemoteTrainingPrepareHandler' platform_core/remote_training_tasks.py
           grep -Fq '"remote_input_state": "PREPARING"' app.py
+          grep -Fq '"runtime_stop_policy": "target_only"' app.py
+          if grep -Fq 'params["chip"]="rk3588"' app.py; then echo 'training auto-conversion must not hardcode RK3588' >&2; exit 1; fi
           grep -Fq '"remote_input_state": "READY"' platform_core/remote_training_tasks.py
           grep -Fq '"task_kind": "TRAINING"' platform_core/remote_training_tasks.py
           grep -Fq '"transport": "object-storage-v1"' platform_core/remote_training_tasks.py
@@ -251,6 +260,10 @@ jobs:
           grep -Fq 'prepare_training_model_uploads' platform_core/remote_execution_transport.py
           grep -Fq 'confirm_training_model_uploads' platform_core/remote_execution_transport.py
           grep -Fq 'AgentTrainingRunner' node_agent.py
+          grep -Fq 'def effective_training_patience' train_worker.py
+          grep -Fq 'def decide_training_quality_gate' train_worker.py
+          grep -Fq '"decision": "continue_below_target"' train_worker.py
+          grep -Fq 'test_below_target_never_stops_training_even_below_reference_line' tests/unit/test_training_early_stopping_reason.py
           ! grep -Fq 'import sqlite3' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           grep -Fq 'return "agent"' platform_core/task_node_assignments.py
