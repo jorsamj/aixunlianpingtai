@@ -94,3 +94,16 @@ def test_material_lookup_reuses_content_identity(tmp_path: Path):
     })
     assert repo.get_by_content_sha256("C" * 64)["id"] == "material-1"
     assert repo.get_by_content_sha256("bad") is None
+
+
+def test_prediction_evidence_preserves_bounded_external_provenance():
+    value = evidence()
+    value.update({
+        "source_channel": "external_upload",
+        "external_source": "edge-gateway-01",
+        "external_sample_id": "camera-12-0001",
+    })
+    normalized = validate_prediction_evidence(value)
+    assert normalized["source_channel"] == "external_upload"
+    assert normalized["external_source"] == "edge-gateway-01"
+    assert normalized["external_sample_id"] == "camera-12-0001"

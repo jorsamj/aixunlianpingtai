@@ -106,7 +106,7 @@ def validate_prediction_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             "confidence": confidence,
             "x1": x1, "y1": y1, "x2": x2, "y2": y2,
         })
-    return {
+    result = {
         "schema_version": 1,
         "prediction_id": prediction_id,
         "algorithm_id": algorithm_id,
@@ -122,6 +122,16 @@ def validate_prediction_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         "detections": normalized,
         "created_at": _text(value.get("created_at"), 100),
     }
+    source_channel = _text(value.get("source_channel"), 100)
+    external_source = _text(value.get("external_source"), 200)
+    external_sample_id = _text(value.get("external_sample_id"), 200)
+    if source_channel:
+        result["source_channel"] = source_channel
+    if external_source:
+        result["external_source"] = external_source
+    if external_sample_id:
+        result["external_sample_id"] = external_sample_id
+    return result
 
 
 def public_feedback(value: Mapping[str, Any], *, compact: bool = False) -> dict[str, Any]:

@@ -72,6 +72,9 @@ jobs:
           grep -Fq '/online-feedback/{feedback_id}/dismiss' app.py
           grep -Fq '_legacy_iteration_write_disabled' app.py
           grep -Fq 'test_legacy_v42_feedback_and_auto_iteration_writes_are_gone' tests/api/test_online_feedback.py
+          grep -Fq '/online-feedback/external-intake' app.py
+          grep -Fq 'ONLINE_FEEDBACK_MAX_IMAGE_BYTES' app.py
+          grep -Fq 'test_external_feedback_intake_stages_review_without_material_or_training_side_effect' tests/api/test_online_feedback.py
 
   real-chrome:
     runs-on: ubuntu-24.04

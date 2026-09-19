@@ -9034,6 +9034,39 @@ def _online_feedback_repository(project_id: str):
     return OnlineFeedbackRepository(project_dir(project_id))
 
 
+ONLINE_FEEDBACK_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+ONLINE_FEEDBACK_MAX_DETECTIONS_JSON = 2 * 1024 * 1024
+
+
+def _online_feedback_version_model_sha256(version: Mapping[str, Any]) -> str:
+    candidates: List[str] = []
+    stored_path = Path(str(version.get("stored_path") or ""))
+    if stored_path.is_file() and stored_path.stat().st_size > 0:
+        candidates.append(sha256_file(stored_path).lower())
+    lineage = version.get("training_lineage")
+    if isinstance(lineage, Mapping):
+        for artifact in lineage.get("artifacts") or []:
+            if not isinstance(artifact, Mapping):
+                continue
+            if str(artifact.get("role") or "") != "primary" or not bool(artifact.get("verified")):
+                continue
+            digest = str(artifact.get("sha256") or "").strip().lower()
+            if len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest):
+                candidates.append(digest)
+    candidates = list(dict.fromkeys(candidates))
+    if not candidates:
+        raise HTTPException(
+            status_code=409,
+            detail="算法版本没有可验证的正式模型 SHA，请先恢复版本模型产物",
+        )
+    if len(candidates) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="算法版本模型文件与训练 lineage SHA 不一致，请先修复版本真值",
+        )
+    return candidates[0]
+
+
 def _online_prediction_evidence(project_id: str, prediction_id: str):
     from platform_core.online_feedback import validate_prediction_evidence
     prediction_id = str(prediction_id or "").strip()
@@ -9058,8 +9091,7 @@ def _online_prediction_evidence(project_id: str, prediction_id: str):
     algorithm, version = _algorithm_version_for_action(
         project_id, evidence["algorithm_id"], evidence["version_id"]
     )
-    stored_path = Path(str(version.get("stored_path") or ""))
-    if stored_path.is_file() and sha256_file(stored_path) != evidence["model_sha256"]:
+    if _online_feedback_version_model_sha256(version) != evidence["model_sha256"]:
         raise HTTPException(status_code=409, detail="算法版本模型已变化，请重新测试")
     return evidence, input_path, algorithm, version
 
@@ -9157,6 +9189,155 @@ def create_online_feedback(project_id: str, payload: OnlineFeedbackCreateReq):
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"ok": True, "idempotent": idempotent, "feedback": public_feedback(row)}
+
+
+@app.post("/api/v63/projects/{project_id}/online-feedback/external-intake", status_code=201)
+async def create_external_online_feedback(
+    project_id: str,
+    algorithm_id: str = Form(...),
+    version_id: str = Form(...),
+    model_sha256: str = Form(...),
+    external_source: str = Form(...),
+    external_sample_id: str = Form(...),
+    feedback_type: Literal["correct", "false_positive", "needs_correction"] = Form(...),
+    detections_json: str = Form("[]"),
+    confidence: float = Form(0.25),
+    note: str = Form(""),
+    file: UploadFile = File(...),
+):
+    from platform_core.online_feedback import public_feedback, validate_prediction_evidence
+
+    get_project(project_id)
+    source_name = str(external_source or "").strip()
+    sample_id = str(external_sample_id or "").strip()
+    if (
+        not source_name or len(source_name) > 200
+        or not sample_id or len(sample_id) > 200
+        or any(ord(ch) < 32 for ch in source_name + sample_id)
+    ):
+        raise HTTPException(status_code=400, detail="外部来源或样本编号无效")
+    if len(str(detections_json or "")) > ONLINE_FEEDBACK_MAX_DETECTIONS_JSON:
+        raise HTTPException(status_code=413, detail="detections_json 过大")
+    try:
+        detections = json.loads(detections_json or "[]")
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=400, detail="detections_json 不是有效 JSON") from error
+    if not isinstance(detections, list):
+        raise HTTPException(status_code=400, detail="detections_json 必须是数组")
+
+    _, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    expected_model_sha = _online_feedback_version_model_sha256(version)
+    submitted_model_sha = str(model_sha256 or "").strip().lower()
+    if (
+        len(submitted_model_sha) != 64
+        or any(ch not in "0123456789abcdef" for ch in submitted_model_sha)
+    ):
+        raise HTTPException(status_code=400, detail="model_sha256 无效")
+    if submitted_model_sha != expected_model_sha:
+        raise HTTPException(status_code=409, detail="外部样本声明的模型 SHA 与正式算法版本不一致")
+
+    filename = safe_filename(file.filename or "external.jpg")
+    extension = Path(filename).suffix.lower()
+    if extension not in IMAGE_EXTS:
+        raise HTTPException(status_code=400, detail="外部抽检仅支持图片文件")
+    raw = await file.read(ONLINE_FEEDBACK_MAX_IMAGE_BYTES + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="外部抽检图片为空")
+    if len(raw) > ONLINE_FEEDBACK_MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="外部抽检图片超过 20MB")
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            image.verify()
+        with Image.open(BytesIO(raw)) as image:
+            width, height = int(image.width), int(image.height)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="外部抽检图片无法解码") from error
+
+    input_sha = hashlib.sha256(raw).hexdigest()
+    identity = {
+        "external_source": source_name,
+        "external_sample_id": sample_id,
+        "algorithm_id": str(algorithm_id),
+        "version_id": str(version_id),
+    }
+    prediction_id = "ext_" + hashlib.sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()[:24]
+    root = project_dir(project_id) / "predictions"
+    root.mkdir(parents=True, exist_ok=True)
+    input_file = f"{prediction_id}_input{extension}"
+    input_path = root / input_file
+    evidence_path = root / f"{prediction_id}.evidence.json"
+
+    try:
+        incoming = validate_prediction_evidence({
+            "schema_version": 1,
+            "prediction_id": prediction_id,
+            "algorithm_id": str(algorithm_id),
+            "version_id": str(version_id),
+            "model_sha256": expected_model_sha,
+            "input_sha256": input_sha,
+            "original_filename": filename,
+            "input_file": input_file,
+            "width": width,
+            "height": height,
+            "confidence": float(confidence),
+            "engine": "external",
+            "detections": detections,
+            "created_at": now_iso(),
+            "source_channel": "external_upload",
+            "external_source": source_name,
+            "external_sample_id": sample_id,
+        })
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    evidence_reused = False
+    if evidence_path.is_file():
+        existing = validate_prediction_evidence(read_json(evidence_path, {}))
+        stable_keys = (
+            "prediction_id", "algorithm_id", "version_id", "model_sha256",
+            "input_sha256", "width", "height", "confidence", "engine",
+            "detections", "source_channel", "external_source", "external_sample_id",
+        )
+        if any(existing.get(key) != incoming.get(key) for key in stable_keys):
+            raise HTTPException(
+                status_code=409,
+                detail="同一外部样本编号已经绑定不同的图片或预测证据",
+            )
+        existing_input = root / str(existing.get("input_file") or "")
+        if (
+            not existing_input.is_file()
+            or sha256_file(existing_input) != existing["input_sha256"]
+        ):
+            raise HTTPException(status_code=409, detail="已存在的外部样本证据文件不完整")
+        incoming = existing
+        evidence_reused = True
+    else:
+        if input_path.exists():
+            raise HTTPException(status_code=409, detail="外部样本存在未完成的证据文件，请人工检查")
+        temporary = root / f".{prediction_id}.{uuid.uuid4().hex}.upload"
+        temporary.write_bytes(raw)
+        try:
+            os.replace(temporary, input_path)
+            write_json(evidence_path, incoming)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    try:
+        row, repository_reused = _online_feedback_repository(project_id).stage(
+            incoming,
+            feedback_type=feedback_type,
+            note=note,
+            created_at=now_iso(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {
+        "ok": True,
+        "idempotent": bool(evidence_reused or repository_reused),
+        "feedback": public_feedback(row),
+    }
 
 
 @app.post("/api/v63/projects/{project_id}/online-feedback/{feedback_id}/confirm")

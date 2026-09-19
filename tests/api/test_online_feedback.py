@@ -340,3 +340,85 @@ def test_legacy_v42_feedback_and_auto_iteration_writes_are_gone(client):
     )
     assert feedback.status_code == 410
     assert app_module._v42_list(project["id"], "online_feedback") == []
+
+
+def _image_bytes(color=(60, 70, 80)):
+    import io
+    stream = io.BytesIO()
+    Image.new("RGB", (96, 72), color).save(stream, format="JPEG")
+    return stream.getvalue()
+
+
+def test_external_feedback_intake_stages_review_without_material_or_training_side_effect(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    model_sha = app_module.sha256_file(Path(version["stored_path"]))
+    payload = {
+        "algorithm_id": algorithm_id,
+        "version_id": version["id"],
+        "model_sha256": model_sha,
+        "external_source": "edge-gateway-01",
+        "external_sample_id": "camera-12-0001",
+        "feedback_type": "needs_correction",
+        "detections_json": "[]",
+        "confidence": "0.25",
+        "note": "边缘端抽检漏检",
+    }
+    before = len(app_module.material_store(project["id"]).list())
+    response = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/external-intake",
+        data=payload,
+        files={"file": ("edge.jpg", _image_bytes(), "image/jpeg")},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    feedback = body["feedback"]
+    assert body["idempotent"] is False
+    assert feedback["status"] == "pending_review"
+    assert feedback["source"]["source_channel"] == "external_upload"
+    assert feedback["source"]["external_source"] == "edge-gateway-01"
+    assert feedback["source"]["external_sample_id"] == "camera-12-0001"
+    assert len(app_module.material_store(project["id"]).list()) == before
+
+    repeated = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/external-intake",
+        data=payload,
+        files={"file": ("edge.jpg", _image_bytes(), "image/jpeg")},
+    )
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["feedback"]["id"] == feedback["id"]
+
+
+def test_external_feedback_intake_rejects_wrong_model_sha_and_sample_identity_conflict(client):
+    project = _project(client)
+    algorithm_id, version = _algorithm_version(client, project["id"])
+    model_sha = app_module.sha256_file(Path(version["stored_path"]))
+    base = {
+        "algorithm_id": algorithm_id,
+        "version_id": version["id"],
+        "model_sha256": model_sha,
+        "external_source": "saas-audit",
+        "external_sample_id": "sample-77",
+        "feedback_type": "needs_correction",
+        "detections_json": "[]",
+    }
+    wrong = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/external-intake",
+        data={**base, "model_sha256": "f" * 64},
+        files={"file": ("one.jpg", _image_bytes(), "image/jpeg")},
+    )
+    assert wrong.status_code == 409
+    first = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/external-intake",
+        data=base,
+        files={"file": ("one.jpg", _image_bytes(), "image/jpeg")},
+    )
+    assert first.status_code == 201, first.text
+    conflict = client.post(
+        f"/api/v63/projects/{project['id']}/online-feedback/external-intake",
+        data=base,
+        files={"file": ("one.jpg", _image_bytes((10, 20, 30)), "image/jpeg")},
+    )
+    assert conflict.status_code == 409
+    assert "绑定不同" in conflict.text
