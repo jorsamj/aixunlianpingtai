@@ -7726,6 +7726,10 @@ def _validated_training_iteration_action(algorithm: Dict[str, Any], payload: Tra
         raise HTTPException(status_code=409, detail="训练动作溯源已变化，请重新从独立评测确认继续训练")
     if expected["version_id"] != current_version_id:
         raise HTTPException(status_code=409, detail="继续训练动作不再指向当前版本")
+    expected_task_id = str((stored.get("training_draft") or {}).get("task_id") or "")
+    submitted_task_id = str(payload.task_id or "")
+    if not expected_task_id or submitted_task_id != expected_task_id:
+        raise HTTPException(status_code=409, detail="继续训练动作必须使用已确认的固定任务 ID")
     return stored
 
 
@@ -7742,6 +7746,8 @@ def v12_start_train(project_id: str, payload: TrainReq):
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
     confirmed_iteration_action = _validated_training_iteration_action(asset_algorithm, payload)
+    if confirmed_iteration_action is not None and not payload.split_mode:
+        raise HTTPException(status_code=409, detail="已确认迭代动作只能通过 Durable Training 主路径创建任务")
     if payload.split_mode:
         return _enqueue_explicit_training(project_id, payload)
     mother_model = (payload.model or "").strip() or (alg or {}).get("base_model", "")

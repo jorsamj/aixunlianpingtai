@@ -193,6 +193,7 @@ export function installTrainingSubmitRuntime({
       lastStage = 'build-payload';
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
       const iterationAction = state.trainingIterationAction;
+      let iterationTaskId = '';
       if (
         iterationAction
         && String(iterationAction?.source?.algorithm_id || '') === String(asset.id || '')
@@ -206,11 +207,13 @@ export function installTrainingSubmitRuntime({
           dataset_revision_id: String(iterationAction.source?.dataset_revision_id || ''),
           snapshot_id: String(iterationAction.source?.snapshot_id || ''),
         };
+        iterationTaskId = String(iterationAction.training_draft?.task_id || '');
       }
       const externalAnalysisId = window.ExternalAlgorithmPlatformRuntime?.selectedAnalysisId?.(asset.id) || '';
       if (externalAnalysisId) payload.external_analysis_id = externalAnalysisId;
       const plannedTaskId = String(document.getElementById('tr429TaskId')?.value || '').trim();
-      if (plannedTaskId) payload.task_id = plannedTaskId;
+      if (iterationTaskId) payload.task_id = iterationTaskId;
+      else if (plannedTaskId) payload.task_id = plannedTaskId;
       const pid = projectId?.();
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 

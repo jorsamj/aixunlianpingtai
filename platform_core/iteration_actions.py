@@ -93,6 +93,7 @@ def build_confirmed_iteration_action(*, algorithm_id: str, version: Mapping[str,
         }
     elif action == "continue_training":
         result["training_draft"] = {
+            "task_id": f"train_{action_id[:24]}",
             "algorithm_id": source["algorithm_id"],
             "base_version_id": source["version_id"],
             "focus_labels": weak_labels,

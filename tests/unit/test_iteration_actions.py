@@ -20,6 +20,7 @@ def test_continue_training_action_is_deterministic_and_lineage_bound():
     assert first["action_id"]==second["action_id"]
     assert first["requires_user_submit"] is True
     assert first["automatic_execution"] is False
+    assert first["training_draft"]["task_id"] == f"train_{first['action_id'][:24]}"
     assert training_action_context(first)["version_id"]=="v1"
 
 def test_needs_data_action_carries_draft_without_mutation():

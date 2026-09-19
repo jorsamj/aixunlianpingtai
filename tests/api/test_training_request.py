@@ -646,13 +646,65 @@ def test_training_iteration_action_context_must_equal_persisted_confirmation(cli
         row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
     )
     accepted = app_module._validated_training_iteration_action(
-        current, app_module.TrainReq(algorithm_asset_id=algorithm["id"], iteration_action=context),
+        current,
+        app_module.TrainReq(
+            task_id=action["training_draft"]["task_id"],
+            algorithm_asset_id=algorithm["id"],
+            iteration_action=context,
+        ),
     )
     assert accepted["action_id"] == action["action_id"]
 
     tampered = dict(context, decision_id="7" * 64)
     with pytest.raises(app_module.HTTPException) as error:
         app_module._validated_training_iteration_action(
-            current, app_module.TrainReq(algorithm_asset_id=algorithm["id"], iteration_action=tampered),
+            current,
+            app_module.TrainReq(
+                task_id=action["training_draft"]["task_id"],
+                algorithm_asset_id=algorithm["id"],
+                iteration_action=tampered,
+            ),
         )
     assert error.value.status_code == 409
+
+
+def test_confirmed_continue_training_rejects_arbitrary_task_id(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, _ = seeded_project
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "动作任务幂等", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(
+        app_module.algorithms_file(project_id), algorithm["id"],
+        _iteration_version("v-current", decision_id="8" * 64, evaluation_id="9" * 64),
+    )
+    confirm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
+        json={"decision_id": "8" * 64, "action": "continue_training"},
+    )
+    action = confirm.json()["action"]
+    context = {
+        "action_id": action["action_id"],
+        "decision_id": action["source"]["decision_id"],
+        "evaluation_id": action["source"]["evaluation_id"],
+        "version_id": action["source"]["version_id"],
+        "dataset_revision_id": action["source"]["dataset_revision_id"],
+        "snapshot_id": action["source"]["snapshot_id"],
+    }
+    current = next(
+        row for row in app_module.list_algorithms_internal(project_id) if row["id"] == algorithm["id"]
+    )
+    with pytest.raises(app_module.HTTPException) as error:
+        app_module._validated_training_iteration_action(
+            current,
+            app_module.TrainReq(
+                task_id="train_" + "f" * 24,
+                algorithm_asset_id=algorithm["id"],
+                iteration_action=context,
+            ),
+        )
+    assert error.value.status_code == 409
+    assert "固定任务 ID" in str(error.value.detail)

@@ -299,6 +299,7 @@ test('confirmed iteration action lineage is injected only for matching current d
     action_id:'a'.repeat(64),action:'continue_training',
     source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
       evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
+    training_draft:{task_id:'train_'+'a'.repeat(24)},
   };
   const value=draft({baseVersionId:'v-current'});
   installDom();
@@ -316,6 +317,7 @@ test('confirmed iteration action lineage is injected only for matching current d
     action_id:'a'.repeat(64),decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64),
     version_id:'v-current',dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1',
   });
+  assert.equal(sent.task_id,'train_'+'a'.repeat(24));
   assert.equal(state.trainingIterationAction,null);
   cleanup(runtime);
 });
