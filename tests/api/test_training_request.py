@@ -712,3 +712,65 @@ def test_confirmed_continue_training_rejects_arbitrary_task_id(client, seeded_pr
         )
     assert error.value.status_code == 409
     assert "固定任务 ID" in str(error.value.detail)
+
+
+def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_project):
+    import app as app_module
+    from platform_core.algorithms import attach_version
+
+    project_id, train_image = seeded_project
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("second-action.jpg", _image_bytes("navy"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    algorithm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms",
+        json={"name": "确认动作幂等训练", "algorithm_type": "yolo_ultralytics"},
+    ).json()["algorithm"]
+    attach_version(
+        app_module.algorithms_file(project_id), algorithm["id"],
+        _iteration_version("v-current", decision_id="a" * 64, evaluation_id="b" * 64),
+    )
+    confirm = client.post(
+        f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
+        json={"decision_id": "a" * 64, "action": "continue_training"},
+    )
+    assert confirm.status_code == 200, confirm.text
+    action = confirm.json()["action"]
+    task_id = action["training_draft"]["task_id"]
+    context = {
+        "action_id": action["action_id"],
+        "decision_id": action["source"]["decision_id"],
+        "evaluation_id": action["source"]["evaluation_id"],
+        "version_id": action["source"]["version_id"],
+        "dataset_revision_id": action["source"]["dataset_revision_id"],
+        "snapshot_id": action["source"]["snapshot_id"],
+    }
+    payload = {
+        "task_id": task_id,
+        "framework": "ultralytics",
+        "algorithm": "yolo11n_det",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [train_image["id"], second["id"]],
+        "test_image_ids": [],
+        "experiment_percent": 20,
+        "validation_percent": 20,
+        "device": "cpu",
+        "iteration_action": context,
+    }
+    first = client.post(f"/api/v12/projects/{project_id}/train/start", json=payload)
+    assert first.status_code == 202, first.text
+    assert first.json()["task"]["task_id"] == task_id
+
+    repeated = client.post(f"/api/v12/projects/{project_id}/train/start", json=payload)
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["task"]["task_id"] == task_id
+
+    job = app_module.read_json(app_module.project_dir(project_id) / "jobs" / task_id / "job.json", {})
+    assert job["confirmed_iteration_action"]["action_id"] == action["action_id"]
+    request = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
+    assert request["iteration_action"] == context
