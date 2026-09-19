@@ -129,6 +129,7 @@ export function installExternalAlgorithmPlatformRuntime({
   let destroyed = false;
   let renderQueued = false;
   let diagnostics = null;
+  let readiness = null;
   let connectionTest = null;
   let selectedCategoryId = '';
   let unregisterAlgorithmDecorator = null;
@@ -167,6 +168,22 @@ export function installExternalAlgorithmPlatformRuntime({
       cacheData = body?.cache || {categories: [], products: [], analyses_by_product: {}, compute_platforms: []};
       return cacheData;
     } catch (error) {
+      if (!silent) notify?.(error?.message || error);
+      throw error;
+    }
+  }
+
+  async function loadReadiness({silent = false} = {}) {
+    const pid = currentProjectId();
+    if (!pid) {
+      readiness = null;
+      return null;
+    }
+    try {
+      readiness = await requestJson(`${API_ROOT}/readiness?project_id=${encodeURIComponent(pid)}`);
+      return readiness;
+    } catch (error) {
+      readiness = null;
       if (!silent) notify?.(error?.message || error);
       throw error;
     }
@@ -479,6 +496,8 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
       </section>
 
+      ${readinessHtml()}
+
       ${diagnosticsHtml()}
 
       ${masterDataPreviewHtml()}
@@ -527,6 +546,24 @@ export function installExternalAlgorithmPlatformRuntime({
   function paintConnectionTest() {
     const root = document.getElementById('externalConnectionResult');
     if (root) root.innerHTML = connectionTestHtml();
+  }
+
+  function readinessHtml() {
+    if (!readiness) return '';
+    const rows = Array.isArray(readiness.checks) ? readiness.checks : [];
+    const body = rows.map(row => {
+      const status = String(row.status || '');
+      const label = status === 'ready' ? '就绪' : status === 'not_required' ? '无需' : '待处理';
+      const pill = status === 'ready' ? 'ok' : status === 'not_required' ? 'warn' : 'err';
+      return `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${pill}">${label}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`;
+    }).join('');
+    return `<section class="panel" data-changlian-readiness="${readiness.ready ? 'ready' : 'blocked'}">
+      <div class="panel-head"><div><div class="panel-title">联调准备状态</div><div class="subline">检查当前项目是否已经具备“测试连接 → 手动同步 → 训练 → 转换 → 同步版本/权重”的基础条件。</div></div></div>
+      <div class="panel-body">
+        <div class="alert ${readiness.ready ? 'ok' : 'warn'}"><b>${readiness.ready ? '基础条件已就绪' : '还有前置条件未完成'}</b> · 系统对接使用 AccessKey / AccessSecret 应用鉴权，人员网页登录账号不参与机器接口调用。</div>
+        <table class="table"><thead><tr><th>检查项</th><th>状态</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无准备状态</td></tr>'}</tbody></table>
+      </div>
+    </section>`;
   }
 
   function diagnosticsHtml() {
@@ -667,7 +704,7 @@ export function installExternalAlgorithmPlatformRuntime({
     try {
       const body = await requestJson(`${API_ROOT}/sync?project_id=${encodeURIComponent(pid)}`, {method: 'POST'});
       const counts = body?.sync?.counts || {};
-      await Promise.all([loadConfig({silent: true}), loadHistory({silent: true}), loadCache({silent: true})]);
+      await Promise.all([loadConfig({silent: true}), loadHistory({silent: true}), loadCache({silent: true}), loadReadiness({silent: true})]);
       await algorithmListRuntime?.refresh?.({render: String(state().page || '') === '算法列表'});
       notify?.(`同步完成：算法新增 ${counts.added || 0}，更新 ${counts.updated || 0}`);
       if (String(state().page || '') === PAGE) await render({reload: false});
@@ -710,14 +747,16 @@ export function installExternalAlgorithmPlatformRuntime({
     if (!config) view.innerHTML = '<div class="empty">正在读取平台对接配置…</div>';
     try {
       if (reload || !config) {
-        const [nextConfig, nextHistory, nextCache] = await Promise.all([
+        const [nextConfig, nextHistory, nextCache, nextReadiness] = await Promise.all([
           loadConfig({silent: true}),
           loadHistory({silent: true}),
           loadCache({silent: true}),
+          loadReadiness({silent: true}),
         ]);
         config = nextConfig;
         history = nextHistory;
         cacheData = nextCache;
+        readiness = nextReadiness;
       }
       if (String(state().page || '') !== PAGE) return false;
       view.innerHTML = configFormHtml(config);
@@ -751,6 +790,7 @@ export function installExternalAlgorithmPlatformRuntime({
     loadConfig,
     loadHistory,
     loadCache,
+    loadReadiness,
     render,
     save,
     testConnection,
