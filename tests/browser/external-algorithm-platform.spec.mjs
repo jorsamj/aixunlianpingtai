@@ -76,6 +76,7 @@ test('changlian platform page tests draft credentials before manual sync', async
       body: JSON.stringify({
         ok: true,
         ready: true,
+        scope: 'master_data_training',
         provider: 'changlian',
         auth_type: 'application_credentials',
         human_login_required: false,
@@ -131,7 +132,8 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible({timeout: 10_000});
 
   const readiness = page.locator('[data-changlian-readiness="ready"]');
-  await expect(readiness.getByText('基础条件已就绪')).toBeVisible();
+  await expect(readiness.getByText('主数据与训练条件已就绪')).toBeVisible();
+  await expect(readiness).toContainText('转换与版本/权重发布由版本页同步前的发布预检单独判断');
   await expect(readiness.getByRole('cell', {name: '人员登录账号'})).toBeVisible();
   await expect(readiness.getByText('无需', {exact: true})).toBeVisible();
   await expect(readiness).toContainText('AccessKey / AccessSecret');
