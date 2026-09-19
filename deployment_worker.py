@@ -424,10 +424,10 @@ def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: 
             '当前 Python 未安装可用的 RKNN-Toolkit2。',
             solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并在部署资源中选择该 Python。',
         )
-    chip = str(params.get('chip') or 'rk3588').lower()
-    supported = {'rk3588','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118'}
+    chip = str(params.get('chip') or '').strip().lower()
+    supported = {'rk3568', 'rk3576'}
     if chip not in supported:
-        raise RuntimeError(f'当前平台未开放该瑞芯微 target_platform：{chip}')
+        raise RuntimeError('当前产品瑞芯微转换只支持 rk3568 或 rk3576，且必须明确选择目标芯片')
     precision = str(params.get('precision') or 'fp16').lower()
     quant = precision in {'int8','i8','u8'}
     dataset_txt = None
@@ -488,6 +488,7 @@ def main():
         append_log(log_file, f"转换目标：{job.get('target')} / 资源：{resource.get('name','')}")
         if not source.exists(): raise RuntimeError(f'源模型不存在：{source}')
         target = str(job.get('target') or '').lower()
+        target_contract = validate_target(target, params)
         preflight_vendor_tool(target, resource, params)
         outputs = []
         onnx_validation = {}
@@ -530,7 +531,6 @@ def main():
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(rknn, artifacts)])
         else:
             raise RuntimeError(f'不支持的转换目标：{target}')
-        target_contract = validate_target(target, params)
         onnx_output = next((p for p in outputs if p.is_file() and p.suffix.lower() == '.onnx'), None)
         output_records = [file_record(p, relative_to=artifacts) for p in outputs if p.is_file()]
         for directory in [p for p in outputs if p.is_dir()]:
