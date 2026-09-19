@@ -55,6 +55,9 @@ jobs:
           grep -Fq 'supplement_candidate_set_id' static/modules/training-submit.js
           grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
+          grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
+          grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
+          grep -Fq 'stale changlian master data disables submit and blocks network POST' tests/frontend/training-submit.test.mjs
           grep -Fq '/benchmark-reuse' static/app.js
           grep -Fq 'benchmarkReuseEnabled:Boolean(draft.benchmarkReuseEnabled)' static/app.js
           grep -Fq '固定评测素材由系统自动保留，不会混入训练' static/app.js
