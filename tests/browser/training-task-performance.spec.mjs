@@ -50,6 +50,8 @@ test('training task refresh and actions patch the final table without rebuilding
         queue_priority: 10,
         priority_scheme: 'lower_number_first',
         execution_resource: {name: 'A800'},
+        dataset_revision_id: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        snapshot_id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         created_at: '2026-09-11T14:00:00Z',
         started_at: '2026-09-11T14:00:10Z'
       }]),
@@ -58,6 +60,9 @@ test('training task refresh and actions patch the final table without rebuilding
   await page.route(`**/api/v48/projects/${encoded}/jobs/job-focused-1/pause`, async route => {
     jobStatus = 'paused';
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true})});
+  });
+  await page.route(`**/api/projects/${encoded}/jobs/job-focused-1/log`, async route => {
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify('mock log')});
   });
 
   apiRequests.length = 0;
@@ -74,6 +79,13 @@ test('training task refresh and actions patch the final table without rebuilding
   expect(apiRequests.some(row => row.includes('/algorithms'))).toBe(false);
   expect(apiRequests.some(row => row.includes('/datasets'))).toBe(false);
   expect(apiRequests.some(row => row.includes('/materials'))).toBe(false);
+
+  await page.evaluate(() => window.showTrainLog423('job-focused-1'));
+  await expect(page.locator('.trainlog428-resource')).toContainText('数据版本');
+  await expect(page.locator('.trainlog428-resource')).toContainText('bbbbbbbbbbbb');
+  await expect(page.locator('.trainlog428-resource')).toContainText('训练快照');
+  await expect(page.locator('.trainlog428-resource')).toContainText('aaaaaaaaaaaa');
+  await page.getByRole('button', {name: '关闭'}).click();
 
   apiRequests.length = 0;
   await page.locator('.train428-refresh').click();

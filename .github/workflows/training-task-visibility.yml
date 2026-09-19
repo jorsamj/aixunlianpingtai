@@ -20,6 +20,8 @@ on:
       - tests/frontend/training-task-runtime.test.mjs
       - tests/frontend/training-task-visibility-runtime.test.mjs
       - tests/frontend/poll-registry.test.mjs
+      - tests/api/test_training_unified_task_overlay.py
+      - tests/browser/training-task-performance.spec.mjs
       - .github/workflows/training-task-visibility.yml
   workflow_dispatch:
 
@@ -44,6 +46,12 @@ jobs:
           node --check static/modules/training-task-visibility-runtime.js &&
           node --check static/modules/poll-registry.js &&
           node --check static/modules/page-request-scope.js
+      - name: Install focused backend test dependency
+        run: python -m pip install --disable-pip-version-check pytest psutil
+      - name: Unified training job overlay truth
+        run: >-
+          python -m pytest -q
+          tests/api/test_training_unified_task_overlay.py
       - name: Training visibility and identity focused tests
         run: >-
           node --test
@@ -64,6 +72,9 @@ jobs:
           grep -Fq '<label>算法名称</label>' static/app.js
           grep -Fq 'payload.task_id = plannedTaskId' static/modules/training-submit.js
           grep -Fq 'task_id: Optional[str] = None' app.py
+          grep -Fq 'dataset_revision_id' app.py
+          grep -Fq '<span>数据版本</span>' static/app.js
+          grep -Fq '<span>训练快照</span>' static/app.js
           grep -Fq 'train_[0-9a-f]{16,32}' app.py
           if grep -Fq 'setInterval(' static/modules/training-task-visibility-runtime.js; then
             echo 'visibility runtime must not create a second polling owner' >&2
@@ -75,3 +86,26 @@ jobs:
           fi
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
+
+
+  real-chrome:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend browser-test dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          fastapi uvicorn python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
+          boto3 oss2 cryptography pydantic
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Real Chrome training revision truth
+        run: npx playwright test tests/browser/training-task-performance.spec.mjs
