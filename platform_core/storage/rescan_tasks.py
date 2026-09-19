@@ -14,6 +14,7 @@ from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.task_runtime import TaskStatus
 
+from .detection_import import DetectionDatasetScanner
 from .errors import StorageError
 from .import_candidates import RescanCandidateStore, _redact_error
 from .import_tasks import (
@@ -164,7 +165,7 @@ def _annotation_delta_category(evidence, old_material, current_annotation):
 def _build_annotation_deltas(store, project_path: Path, *, source_format: str):
     normalized = str(source_format or '').strip().lower()
     store.restart_annotation_deltas()
-    if normalized != 'yolo':
+    if normalized not in {'yolo', 'coco'}:
         return store.annotation_summary()
     annotations = AnnotationRepository(project_path)
     page = []
@@ -250,9 +251,10 @@ class StorageRescanHandler(StorageImportHandler):
             materials.snapshot_storage_references(store.path, source.id)
         request = self._request(context)
         import_format = str(request.get('import_format') or 'images').strip().lower()
-        if import_format not in {'images', 'yolo'}:
-            raise ValueError('storage_rescan supports images or YOLO in Phase 2A')
+        if import_format not in {'images', 'yolo', 'coco'}:
+            raise ValueError('storage_rescan supports images, YOLO or COCO in Phase 2B')
         scanner = None
+        detection_scanner = None
         quality = None
         if not store.meta('scan_complete'):
             store.restart_inventory()
@@ -273,9 +275,33 @@ class StorageRescanHandler(StorageImportHandler):
                 )
                 if resolved != 'yolo':
                     raise ValueError('YOLO dataset discovery failed')
-                objects = scanner.iter_images()
+                objects = (
+                    item
+                    for item in scanner.iter_inventory(dataset_only=False)
+                    if Path(str(item.key)).suffix.lower() in IMAGE_EXTENSIONS
+                )
+            elif import_format == 'coco':
+                store.restart_annotation_review()
+                detection_scanner = DetectionDatasetScanner(
+                    provider,
+                    store,
+                    iter_provider_objects,
+                    lambda current, item, **_kwargs: self._inspect_verified(
+                        context, current, source, item
+                    ),
+                    storage_source_id=source.id,
+                    storage_type=source.type,
+                    cancelled=context.cancel_requested,
+                    progress=lambda key: context.check(f'COCO：{key}'),
+                    deduplicate_images=False,
+                )
+                detected = detection_scanner.scan('coco', prefix='', recursive=True)
+                detection_scanner.ensure_all_image_candidates()
+                quality = detected.quality
+                objects = store.iter_candidates(batch_size=BATCH_SIZE)
             else:
                 objects = iter_provider_objects(provider, '', True)
+            preinspected = import_format == 'coco'
             batch = []
 
             def flush():
@@ -293,8 +319,15 @@ class StorageRescanHandler(StorageImportHandler):
                 batch.clear()
 
             for item in objects:
-                context.check(str(item.key))
-                batch.append(self._inspect_verified(context, provider, source, item))
+                current_key = str(
+                    item.get('object_key') if isinstance(item, dict) else item.key
+                )
+                context.check(current_key)
+                batch.append(
+                    dict(item)
+                    if preinspected
+                    else self._inspect_verified(context, provider, source, item)
+                )
                 if len(batch) >= BATCH_SIZE:
                     flush()
             flush()
@@ -302,7 +335,7 @@ class StorageRescanHandler(StorageImportHandler):
                 quality = scanner.scan_annotations()
             context.check(force=True)
             store.finish_inventory()
-        elif import_format == 'yolo':
+        elif import_format in {'yolo', 'coco'}:
             quality = store.quality_summary()
         annotation = _build_annotation_deltas(
             store,
@@ -317,9 +350,13 @@ class StorageRescanHandler(StorageImportHandler):
             'import_format': import_format,
             **store.summary(),
         }
-        if import_format == 'yolo':
+        if import_format in {'yolo', 'coco'}:
             result.update({
-                'dataset_yaml': str(request.get('dataset_yaml') or ''),
+                **(
+                    {'dataset_yaml': str(request.get('dataset_yaml') or '')}
+                    if import_format == 'yolo'
+                    else {}
+                ),
                 'quality': quality or store.quality_summary(),
                 'external_classes': store.external_classes(),
                 'annotation_counts': annotation['counts'],
@@ -348,7 +385,8 @@ class StorageRescanHandler(StorageImportHandler):
         return metadata
 
     def _apply_annotation_rescan(self, context, source, store, materials, policy, request):
-        if str(request.get('import_format') or 'images').strip().lower() != 'yolo':
+        source_format = str(request.get('import_format') or 'images').strip().lower()
+        if source_format not in {'yolo', 'coco'}:
             return store.annotation_summary()
         confirmation = store.meta('annotation_confirmation') or {}
         mapping = {
@@ -404,7 +442,7 @@ class StorageRescanHandler(StorageImportHandler):
                 review_image_id = str(row.get('image_id') or '')
 
                 # NEW images are indexed by the existing import pipeline before
-                # annotation reconciliation. Their YOLO annotation is therefore
+                # annotation reconciliation. Their external detection annotation is therefore
                 # already committed with the same frozen mapping; record source
                 # provenance instead of treating annotation_changed as a second
                 # independent write decision.
@@ -421,13 +459,13 @@ class StorageRescanHandler(StorageImportHandler):
                     )
                     if current_state != expected_state:
                         raise ValueError(
-                            'new material annotation does not match the confirmed YOLO review; '
+                            'new material annotation does not match the confirmed external review; '
                             'create a new rescan'
                         )
                     patches[material_id] = {
                         'external_annotation': {
                             'schema_version': 1,
-                            'source_format': 'yolo',
+                            'source_format': source_format,
                             'source_digest': str(evidence.get('source_digest') or ''),
                             'annotation_status': source_status,
                             'split': str(evidence.get('split') or ''),
@@ -512,7 +550,7 @@ class StorageRescanHandler(StorageImportHandler):
                     **patches.get(image_id, {}),
                     'external_annotation': {
                         'schema_version': 1,
-                        'source_format': 'yolo',
+                        'source_format': source_format,
                         'source_digest': str(evidence.get('source_digest') or ''),
                         'annotation_status': str(evidence.get('annotation_status') or ''),
                         'split': str(evidence.get('split') or ''),
@@ -735,9 +773,13 @@ def prepare_remote_rescan_review(
         'import_format': import_format,
         **store.summary(),
     }
-    if import_format == 'yolo':
+    if import_format in {'yolo', 'coco'}:
         result.update({
-            'dataset_yaml': str(scan_result.get('dataset_yaml') or ''),
+            **(
+                {'dataset_yaml': str(scan_result.get('dataset_yaml') or '')}
+                if import_format == 'yolo'
+                else {}
+            ),
             'quality': scan_result.get('quality') or store.quality_summary(),
             'external_classes': list(scan_result.get('external_classes') or []),
             'annotation_counts': annotation['counts'],
