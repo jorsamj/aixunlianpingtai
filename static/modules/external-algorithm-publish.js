@@ -112,7 +112,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       return `<tr data-publish-target="${escapeHtml(key)}">
         <td><label class="field check"><input data-publish-enabled type="checkbox" ${row.enabled !== false ? 'checked' : ''}> ${escapeHtml(label)}</label></td>
         <td><select class="select" data-publish-platform>${computeOptions(row.compute_platform_id || '')}</select></td>
-        <td><input class="input" data-publish-chip value="${escapeHtml(row.chip_code || '')}" placeholder="如 RK3588 / Ascend310B / BM1684X"></td>
+        <td><input class="input" data-publish-chip value="${escapeHtml(row.chip_code || '')}" placeholder="如 RK3568 / RK3576 / Ascend310B / BM1684X"></td>
       </tr>`;
     }).join('');
   }
