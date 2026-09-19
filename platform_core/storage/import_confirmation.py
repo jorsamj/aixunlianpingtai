@@ -20,13 +20,45 @@ def mapping_suggestions(classes, labels):
     return result
 
 
-def confirm_import(store, artifacts, task_id, *, object_keys=None, label_mapping=None,
-                   create_labels=None, accept_quality_report=False, labels, create_label):
+def resolve_external_label_mapping(classes, *, label_mapping=None, create_labels=None, labels):
     mapping = dict(label_mapping or {})
     create = sorted(set(create_labels or []))
     if any(not isinstance(code, str) or not code.strip() or code != code.strip() for code in create):
         raise ValueError('create_labels must contain nonempty platform label codes')
+    active = {str(label['code']): label for label in labels if label.get('status', 'active') == 'active'}
+    all_codes = {str(label['code']) for label in labels}
+    if any(code in all_codes and code not in active for code in create):
+        raise ValueError('cannot recreate an inactive platform label')
+    resolved = {}
+    for item in mapping_suggestions(classes, labels):
+        external_id, name = str(item['class_id']), item['name']
+        by_name, by_id = mapping.get(name), mapping.get(external_id)
+        if by_name and by_id and by_name != by_id:
+            raise ValueError(f'conflicting mapping for external class {external_id}')
+        code = by_name or by_id or item['target_label_code']
+        if not code or code not in active and code not in create:
+            raise ValueError(
+                f'unresolved external class {external_id}: choose an active label or explicitly create one'
+            )
+        if sum(
+            1 for label in labels
+            if label.get('code') == code and label.get('status', 'active') == 'active'
+        ) > 1:
+            raise ValueError(f'ambiguous platform label for external class {external_id}')
+        resolved[external_id] = code
+    return resolved, create
+
+
+def confirm_import(store, artifacts, task_id, *, object_keys=None, label_mapping=None,
+                   create_labels=None, accept_quality_report=False, labels, create_label):
+    mapping = dict(label_mapping or {})
     facts = store.selection_facts(object_keys)
+    resolved, create = resolve_external_label_mapping(
+        facts['classes'],
+        label_mapping=mapping,
+        create_labels=create_labels,
+        labels=labels,
+    )
     request_digest = _digest({'label_mapping': mapping, 'create_labels': create,
                               'accept_quality_report': accept_quality_report,
                               'content_digest': facts['content_digest']})
@@ -42,22 +74,6 @@ def confirm_import(store, artifacts, task_id, *, object_keys=None, label_mapping
     quality = store.quality_summary()
     if quality['issues'] and not accept_quality_report:
         raise ValueError('Please accept the data quality report before importing')
-    active = {str(label['code']): label for label in labels if label.get('status', 'active') == 'active'}
-    all_codes = {str(label['code']) for label in labels}
-    if any(code in all_codes and code not in active for code in create):
-        raise ValueError('cannot recreate an inactive platform label')
-    resolved = {}
-    for item in mapping_suggestions(facts['classes'], labels):
-        external_id, name = str(item['class_id']), item['name']
-        by_name, by_id = mapping.get(name), mapping.get(external_id)
-        if by_name and by_id and by_name != by_id:
-            raise ValueError(f'conflicting mapping for external class {external_id}')
-        code = by_name or by_id or item['target_label_code']
-        if not code or code not in active and code not in create:
-            raise ValueError(f'unresolved external class {external_id}: choose an active label or explicitly create one')
-        if sum(1 for label in labels if label.get('code') == code and label.get('status', 'active') == 'active') > 1:
-            raise ValueError(f'ambiguous platform label for external class {external_id}')
-        resolved[external_id] = code
     # Frozen in the manifest transaction together with selection. A crash before
     # JSON publication can retry label creation and publish the same decision.
     details = {'request_digest': request_digest, 'content_digest': facts['content_digest'],
@@ -65,8 +81,13 @@ def confirm_import(store, artifacts, task_id, *, object_keys=None, label_mapping
                'accept_quality_report': bool(accept_quality_report)}
     keys = object_keys if object_keys is not None else (r['object_key'] for r in store.iter_status('IMPORTABLE'))
     selection = store.confirm(keys, details=details)
+    active_codes = {
+        str(label['code'])
+        for label in labels
+        if label.get('status', 'active') == 'active'
+    }
     for code in create:
-        if code not in active:
+        if code not in active_codes:
             created = create_label(code)
             if created != code:
                 raise ValueError('created platform label differs from confirmed label code')
