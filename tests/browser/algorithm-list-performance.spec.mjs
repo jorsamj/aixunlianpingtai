@@ -477,6 +477,21 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(card).toHaveClass(/open/);
   await expect(card.getByRole('button',{name:'训练溯源'})).toBeVisible();
 
+  let confirmedActionBody=null;
+  await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-lineage-1/versions/version-lineage-1/iteration-actions/confirm`, async route=>{
+    confirmedActionBody=route.request().postDataJSON();
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({ok:true,action:{
+        schema_version:1,action_id:'f'.repeat(64),action:'supplement_data',status:'confirmed',
+        source:{decision_id:'e'.repeat(64),evaluation_id:'d'.repeat(64),algorithm_id:'algo-lineage-1',
+          version_id:'version-lineage-1',dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
+        weak_labels:['smoke'],automatic_execution:false,requires_user_submit:false,
+        data_draft:{weak_labels:['smoke'],problem_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3}],
+          dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
+      }}),
+    });
+  });
   const requests=[];
   page.on('request',request=>{
     const url=new URL(request.url());
@@ -499,6 +514,13 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#modalBody')).toContainText('需补充数据');
   await expect(page.locator('#modalBody')).toContainText('补充弱标签数据');
   await expect(page.locator('#modalBody')).toContainText('系统仅给出建议，不会自动发起下一次训练');
+  await expect(page.locator('#modalBody').getByRole('button',{name:'确认准备补数据'})).toBeVisible();
+  await page.locator('#modalBody').getByRole('button',{name:'确认准备补数据'}).click();
+  await expect.poll(()=>confirmedActionBody).toEqual({
+    decision_id:'e'.repeat(64),action:'supplement_data',
+  });
+  await expect.poll(async()=>page.evaluate(()=>state.iterationDataDraft?.weak_labels||[])).toEqual(['smoke']);
+  expect(requests.filter(path=>path.includes('/train/start'))).toEqual([]);
   expect(requests.filter(path=>path.includes('/jobs/'))).toEqual([]);
   expect(pageErrors).toEqual([]);
 });
