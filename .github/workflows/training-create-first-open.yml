@@ -16,6 +16,7 @@ on:
       - 'tests/frontend/training-modal-device-probe.test.mjs'
       - 'tests/frontend/training-submit.test.mjs'
       - 'tests/browser/training-create-first-open.spec.mjs'
+      - 'tests/browser/training-quality-reports.spec.mjs'
       - '.github/workflows/training-create-first-open.yml'
 
 jobs:
@@ -93,7 +94,16 @@ jobs:
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
       - name: Install frontend dependencies
         run: npm ci
-      - name: Real Chrome first-open regression
-        run: npx playwright test tests/browser/training-create-first-open.spec.mjs
+      - name: Real Chrome training create and completion report regression
+        run: >-
+          npx playwright test
+          tests/browser/training-create-first-open.spec.mjs
+          tests/browser/training-quality-reports.spec.mjs
       - name: Feedback provenance browser guard
-        run: grep -Fq 'frozen feedback candidates stay aligned with training submit provenance' tests/browser/training-create-first-open.spec.mjs
+        run: |
+          grep -Fq 'frozen feedback candidates stay aligned with training submit provenance' tests/browser/training-create-first-open.spec.mjs
+          grep -Fq 'training report shows requested epochs actual epochs stop reason and target status' tests/browser/training-quality-reports.spec.mjs
+          grep -Fq '最大轮次' static/app.js
+          grep -Fq '实际轮次' static/app.js
+          grep -Fq '停止原因' static/app.js
+          grep -Fq '目标状态' static/app.js
