@@ -155,7 +155,25 @@ class StorageRescanHandler(StorageImportHandler):
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
         return TaskStatus.AWAITING_CONFIRMATION, RESULT_REF
 
-    def _apply_rescan(self, context, source, provider, store, materials):
+    @staticmethod
+    def _verify_remote_review_object(provider, row):
+        """Revalidate Agent-reviewed object identity without re-reading its body."""
+        metadata = provider.stat(row['object_key'])
+        expected_size = int(row.get('size_bytes') or 0)
+        actual_size = int(metadata.size_bytes or 0)
+        expected_etag = str(row.get('etag') or '').strip().strip('"')
+        actual_etag = str(metadata.etag or '').strip().strip('"')
+        if actual_size != expected_size:
+            raise ValueError('source size changed after Agent review; create a new rescan')
+        if not expected_etag or not actual_etag or actual_etag != expected_etag:
+            raise ValueError('source identity changed after Agent review; create a new rescan')
+        expected_sha = str(row.get('content_sha256') or '').strip().lower()
+        actual_sha = str(metadata.sha256 or '').strip().lower()
+        if actual_sha and expected_sha and actual_sha != expected_sha:
+            raise ValueError('source hash changed after Agent review; create a new rescan')
+        return metadata
+
+    def _apply_rescan(self, context, source, provider, store, materials, request):
         policy = store.meta('policy')
         if not policy:
             raise ValueError('rescan confirmation is missing')
@@ -165,6 +183,7 @@ class StorageRescanHandler(StorageImportHandler):
         if policy['changed'] == 'update':
             categories.append('CHANGED')
         manager = StorageManager(data_dir=self.data_dir, project_id=context.task.project_id, materials=materials)
+        remote_review = str(request.get('execution_mode') or 'local').strip().lower() == 'agent'
         while batch := store.pending_objects(categories):
             for row in batch:
                 context.check(row['object_key'])
@@ -178,11 +197,16 @@ class StorageRescanHandler(StorageImportHandler):
                     else:
                         raise ValueError('missing object has reappeared; create a new rescan')
                 else:
-                    fresh = self._inspect_verified(context, provider, source, provider.stat(row['object_key']))
-                    if fresh['status'] != 'IMPORTABLE' or fresh['content_sha256'] != row['content_sha256']:
-                        raise ValueError('source changed after rescan; create a new rescan')
-                    for field in ('size_bytes', 'etag', 'width', 'height'):
-                        row[field] = fresh[field]
+                    if remote_review:
+                        metadata = self._verify_remote_review_object(provider, row)
+                        row['size_bytes'] = int(metadata.size_bytes or 0)
+                        row['etag'] = str(metadata.etag or '')
+                    else:
+                        fresh = self._inspect_verified(context, provider, source, provider.stat(row['object_key']))
+                        if fresh['status'] != 'IMPORTABLE' or fresh['content_sha256'] != row['content_sha256']:
+                            raise ValueError('source changed after rescan; create a new rescan')
+                        for field in ('size_bytes', 'etag', 'width', 'height'):
+                            row[field] = fresh[field]
                     if row['category'] == 'CHANGED':
                         # Purge the old hash entry before committing the new binding;
                         # retries repeat invalidation even if the metadata committed.
@@ -198,14 +222,17 @@ class StorageRescanHandler(StorageImportHandler):
                 if row.get('indexed'):
                     continue
                 context.check(row['object_key'])
-                fresh = self._inspect_verified(context, provider, source, provider.stat(row['object_key']))
-                if (
-                    fresh['status'] != 'IMPORTABLE'
-                    or fresh['content_sha256'] != row['content_sha256']
-                    or int(fresh['size_bytes']) != int(row['size_bytes'])
-                    or str(fresh.get('etag') or '') != str(row.get('etag') or '')
-                ):
-                    raise ValueError('new source object changed after rescan; create a new rescan')
+                if remote_review:
+                    self._verify_remote_review_object(provider, row)
+                else:
+                    fresh = self._inspect_verified(context, provider, source, provider.stat(row['object_key']))
+                    if (
+                        fresh['status'] != 'IMPORTABLE'
+                        or fresh['content_sha256'] != row['content_sha256']
+                        or int(fresh['size_bytes']) != int(row['size_bytes'])
+                        or str(fresh.get('etag') or '') != str(row.get('etag') or '')
+                    ):
+                        raise ValueError('new source object changed after rescan; create a new rescan')
             selection = store.confirm(store.iter_category_keys('NEW'))
             context.artifacts.atomic_write_json(context.task.task_id, 'scan/confirmation.json', {
                 'accepted': True, 'selected_count': selection.selected_count,
@@ -247,7 +274,7 @@ class StorageRescanHandler(StorageImportHandler):
                 store.set_meta('source_fingerprint', fingerprint)
                 materials = MaterialRepository(self.data_dir / 'projects' / context.task.project_id)
                 if context.task.accepted is True:
-                    return self._apply_rescan(checked, source, provider, store, materials)
+                    return self._apply_rescan(checked, source, provider, store, materials, request)
                 return self._scan_rescan(checked, source, provider, store, materials)
             except RescanCancelled:
                 return TaskStatus.CANCELLED, None
