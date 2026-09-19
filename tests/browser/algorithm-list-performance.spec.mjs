@@ -528,6 +528,7 @@ test('algorithm version exposes persisted training lineage without job refetch',
   // version truth without confirming the action a second time.
   await page.evaluate(async()=>{
     state.iterationDataDraft=null;
+    window.setPage('算法列表');
     await window.AlgorithmListRuntime.refresh({render:false});
     state.alg428Expanded={};
     window.renderAlgorithms423();
