@@ -483,3 +483,96 @@ def test_sync_fails_closed_when_compute_platform_id_is_missing(tmp_path: Path):
     assert list_algorithms(algorithms_path) == []
     assert service.repository.cache().get("provider") is None
     assert service.repository.history()[0]["status"] == "failed"
+
+
+
+def test_readiness_blocks_until_saved_synced_and_project_algorithm_exists(tmp_path: Path):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=FakeChangLianClient,
+    )
+    algorithms_path = tmp_path / "project-ready" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    before = service.readiness(algorithms_path=algorithms_path)
+    assert before["ready"] is False
+    assert before["human_login_required"] is False
+    assert before["auth_type"] == "application_credentials"
+    assert "external_mode" in before["blocking_keys"]
+    assert "credentials" in before["blocking_keys"]
+    assert "products" in before["blocking_keys"]
+    human = next(row for row in before["checks"] if row["key"] == "human_login")
+    assert human["status"] == "not_required"
+    assert "AccessKey / AccessSecret" in human["detail"]
+
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    service.sync(project_id="p-ready", algorithms_path=algorithms_path)
+
+    after = service.readiness(algorithms_path=algorithms_path)
+    assert after["ready"] is True
+    assert after["blocking_keys"] == []
+    assert next(row for row in after["checks"] if row["key"] == "categories")["count"] == 1
+    assert next(row for row in after["checks"] if row["key"] == "products")["count"] == 1
+    assert next(row for row in after["checks"] if row["key"] == "analyses")["count"] == 1
+    assert next(row for row in after["checks"] if row["key"] == "compute_platforms")["count"] == 1
+    project = next(row for row in after["checks"] if row["key"] == "project_algorithms")
+    assert project["status"] == "ready"
+    assert project["count"] == 1
+
+
+def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_path: Path):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=FakeChangLianClient,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    algorithms_path = tmp_path / "project-inactive" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [{
+        "id": "external-inactive",
+        "name": "已下架算法",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_product_id": "p-old",
+        "external_active": False,
+        "versions": [],
+    }])
+    service.repository.save_cache({
+        "provider": "changlian",
+        "synced_at": "2026-09-19T12:00:00Z",
+        "categories": [{"categoryId": "c1"}],
+        "products": [{"productId": "p1"}],
+        "analyses_by_product": {"p1": [{"analysisId": "a1"}]},
+        "compute_platforms": [{"computePlatformId": "cp1"}],
+    })
+    service.repository.append_history({
+        "id": "sync-ready",
+        "sync_type": "manual",
+        "status": "success",
+        "finished_at": "2026-09-19T12:00:00Z",
+    })
+
+    readiness = service.readiness(algorithms_path=algorithms_path)
+    project = next(row for row in readiness["checks"] if row["key"] == "project_algorithms")
+    assert project["status"] == "blocked"
+    assert project["count"] == 0
+    assert readiness["ready"] is False
