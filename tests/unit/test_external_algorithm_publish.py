@@ -322,6 +322,32 @@ def test_publish_blocks_before_remote_version_when_model_asset_storage_missing(t
     assert FakePublishingClient.weight_creates == 0
 
 
+def test_model_asset_upload_failure_happens_before_remote_version_creation(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+
+    service.model_assets.ensure_uploaded = lambda _discovered: {
+        "storage_status": "FAILED",
+        "storage_error": "simulated storage outage",
+    }
+
+    try:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+        assert False, "storage failure must stop before ChangLian version creation"
+    except Exception as error:
+        assert getattr(error, "code", "") == "MODEL_ARTIFACT_UPLOAD_FAILED"
+        assert "storage outage" in str(getattr(error, "detail", error))
+
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert publication["status"] == "FAILED"
+
+
 def test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
