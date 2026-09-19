@@ -43,6 +43,7 @@ on:
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
+      - 'tests/integration/test_training_task_worker.py'
       - 'tests/api/test_training_request.py'
       - '.github/workflows/remote-training-runtime.yml'
   pull_request:
@@ -87,6 +88,7 @@ on:
       - 'tests/unit/task_runtime/test_worker_registry.py'
       - 'tests/unit/task_runtime/test_repository.py'
       - 'tests/integration/test_remote_training_prepare_task.py'
+      - 'tests/integration/test_training_task_worker.py'
       - 'tests/api/test_training_request.py'
       - '.github/workflows/remote-training-runtime.yml'
 
@@ -145,6 +147,7 @@ jobs:
           tests/unit/task_runtime/test_worker_registry.py
           tests/unit/task_runtime/test_repository.py
           tests/integration/test_remote_training_prepare_task.py
+          tests/integration/test_training_task_worker.py
       - name: Portable bundle and scheduler contracts
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -174,6 +177,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/integration
           tests/integration/test_remote_training_prepare_task.py
+          tests/integration/test_training_task_worker.py
 
   api:
     runs-on: ubuntu-24.04
@@ -217,6 +221,9 @@ jobs:
           grep -Fq 'training.dataset_revision_id' platform_core/remote_execution_transport.py
           grep -Fq '"training_lineage": training_lineage' platform_core/remote_execution_transport.py
           grep -Fq '"evaluation": evaluation' platform_core/remote_execution_transport.py
+          grep -Fq '"training_lineage": training_lineage' platform_core/training_tasks.py
+          grep -Fq '"evaluation": evaluation' platform_core/training_tasks.py
+          grep -Fq '"iteration_decision": iteration_decision' platform_core/training_tasks.py
           grep -Fq 'def build_evaluation_truth' platform_core/training_evaluation.py
           grep -Fq 'def task_node_connection_mode' platform_core/task_node_assignments.py
           grep -Fq 'class AgentTrainingRunner' platform_core/node_agent_training_runtime.py

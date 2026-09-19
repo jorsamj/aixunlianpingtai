@@ -88,6 +88,9 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
         "imgsz": 64,
         "batch": 2,
         "device": "cpu",
+        "eval_metric": "map50",
+        "continue_threshold": 0.60,
+        "stop_threshold": 0.90,
     }
     artifacts.atomic_write_json("task-one", "payload.json", payload)
     repository.create(
@@ -114,7 +117,21 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
                 "best_path": str(model),
                 "training_outcome": "completed",
                 "finished_at": "2026-09-15T01:02:03+00:00",
-                "training_report": {"metrics": {"metrics/mAP50(B)": 0.75}},
+                "training_report": {
+                    "metrics": {"metrics/mAP50(B)": 0.75},
+                    "test_result": {
+                        "status": "succeeded",
+                        "metrics": {
+                            "metrics/precision(B)": 0.80,
+                            "metrics/recall(B)": 0.78,
+                            "metrics/mAP50(B)": 0.75,
+                            "metrics/mAP50-95(B)": 0.55,
+                        },
+                        "per_class": [],
+                        "weak_labels": [],
+                        "error_samples": [],
+                    },
+                },
             }
         )
         job_file.write_text(json.dumps(job), encoding="utf-8")
@@ -150,3 +167,15 @@ def test_training_handler_prepares_snapshot_runs_and_commits_verified_result(tmp
     assert len(versions) == 1
     assert versions[0]["training_status"] == "SUCCEEDED"
     assert versions[0]["snapshot_id"] == result["snapshot_id"]
+    assert versions[0]["dataset_revision_id"] == result["dataset_revision_id"]
+    assert versions[0]["training_lineage"]["task_id"] == "task-one"
+    assert versions[0]["training_lineage"]["snapshot_id"] == result["snapshot_id"]
+    assert versions[0]["training_lineage"]["dataset_revision_id"] == result["dataset_revision_id"]
+    assert versions[0]["evaluation"]["status"] == "succeeded"
+    assert versions[0]["evaluation"]["metrics"]["metrics/mAP50(B)"] == 0.75
+    assert versions[0]["iteration_decision"]["decision"] == "continue_training"
+    assert versions[0]["iteration_decision"]["quality_gate"]["continue_threshold"] == 0.6
+    assert versions[0]["iteration_decision"]["quality_gate"]["stop_threshold"] == 0.9
+    assert result["training_lineage"] == versions[0]["training_lineage"]
+    assert result["evaluation"] == versions[0]["evaluation"]
+    assert result["iteration_decision"] == versions[0]["iteration_decision"]
