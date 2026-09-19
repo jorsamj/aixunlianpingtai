@@ -875,6 +875,18 @@ def enrich_job_runtime(
             queue_priority=int(durable.priority),
             priority_scheme="lower_number_first",
         )
+        snapshot_truth = shared_task_artifacts().read_json(
+            durable.task_id,
+            "snapshot.json",
+            default={},
+        )
+        if isinstance(snapshot_truth, dict):
+            snapshot_id = str(snapshot_truth.get("snapshot_id") or "").strip()
+            revision_id = str(snapshot_truth.get("dataset_revision_id") or "").strip()
+            if snapshot_id:
+                job["snapshot_id"] = snapshot_id
+            if revision_id:
+                job["dataset_revision_id"] = revision_id
         if durable.error:
             job["error"] = durable.error
             job["message"] = durable.error
