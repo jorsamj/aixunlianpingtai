@@ -7,7 +7,7 @@
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`d11d0e16998e7630bbc5811a937ba3c21395548e`  
+本轮产品实现基线：`4076f8adb376c24e32db78cf3bd15f83182ebcb4`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
 
@@ -62,6 +62,68 @@ revert: keep external algorithm integration off main
 
 ---
 
+
+# 最新关闭：Iteration Decision → Confirmed Action v1
+
+2026-09-19，版本级 `iteration_decision` 已正式接入用户显式确认后的产品动作，**Confirmed Action v1 CLOSED**。仍然由算法版本持有唯一长期 truth；没有新增第二套训练 owner、数据 owner 或前端自行推算的动作状态。
+
+当前正式语义：
+
+- 仅算法**当前版本**可以确认下一步动作；请求必须携带当前 persisted `decision_id`，旧版本、旧 decision 或不匹配 action 一律 fail closed。
+- 版本持久化 `confirmed_iteration_action.schema_version=1`，同一 action 的重复确认幂等；同一版本已经确认其他 action 时拒绝覆盖。
+- 四种 decision 与产品动作一一绑定：
+  - `needs_data → supplement_data`
+    - 冻结 weak labels、FP/FN problem samples、dataset revision、snapshot；
+    - 生成补数据草稿/入口；
+    - **不会自动修改 Dataset Revision，也不会自动导入或删除素材**，最终素材范围仍由用户确认。
+  - `continue_training → continue_training`
+    - 生成确定性的固定 Durable TRAINING task ID；
+    - 必须携带 action / decision / evaluation / version / dataset revision / snapshot identity；
+    - 只复用既有 Durable TRAINING / Central Scheduler / lease / generation / server-confirm owner；
+    - 用户真正点击“开始训练”后才创建任务；重复提交同一固定 task ID 幂等。
+  - `ready_for_business_validation → business_validation`
+    - 生成 version-owned validation entry；
+    - 冻结 decision/evaluation/version/revision/snapshot/model SHA identity；
+    - 只进入现有业务验证/测试发布入口，不偷偷改变转换或部署 owner。
+  - `review_required → manual_review`
+    - 生成正式 `review_entry`；
+    - 冻结 reason codes、recommended actions、weak labels 与完整来源 identity；
+    - 保持人工处理，不自动执行任何数据或训练动作。
+- 后续训练完成后的 `training_lineage` 会携带已确认 action identity，因此下一版本可追溯到“哪一次评测、哪一个决策、哪一次人工确认”。
+- confirmed action 明确 `automatic_execution=false`；continue-training 仍要求 user submit，系统不会因为 decision 自动开启下一轮训练。
+
+Frontend Impact Review 已完成：
+
+- “独立评测”弹窗只读取版本持久化 `evaluation / iteration_decision / confirmed_iteration_action`；
+- 已确认动作显示“已确认”，而不是刷新后重新出现“确认”按钮；
+- 页面刷新、重新进入算法版本后，可直接从 persisted version truth 恢复：
+  - “继续补数据”
+  - “继续创建训练”
+  - “继续业务验证”
+  - “查看人工处理记录”
+- 补数据 / 业务验证 / 人工处理不再依赖仅存在于当前浏览器生命周期的临时 draft truth；
+- continue-training 恢复后仍只打开训练草稿，只有用户点击“开始训练”才真正 POST Durable TRAINING；
+- Real Chrome 验证了：确认补数据 → 页面跳转 → 清除临时 state / 重新刷新算法版本 → 显示 persisted “已确认：补数据” → 无需第二次 confirm 即可继续补数据；过程中没有误调用 `/train/start` 或历史 `/jobs`。
+
+最终验收：
+
+- Product code HEAD `d422fc21b3394edd71567a81bc34316d1172c652` shared regressions: 0 pending / 0 shared failure.
+- Latest acceptance HEAD `4076f8adb376c24e32db78cf3bd15f83182ebcb4`: Algorithm SQL Store run `35424317881` contracts + Real Chrome success.
+- Remote Training Runtime PR `35424280734`: API / Ubuntu / Windows success.
+- Node Agent Executor PR `35424280790`: API / Ubuntu / Windows success.
+- Remote Material Import PR `35424280896`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Cleaning Runtime PR `35424280779`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Conversion Runtime PR `35424280823`: control-plane / Ubuntu / Windows / Real Chrome success.
+- Portable Deployment `35424280766`, Central Node Assignment `35424280780`, Task Runtime Truth `35424280794`, Training Input Integrity `35424280757`, Remote RKNN Board Runtime Protocol `35424280702`, Storage Cache Governance `35424280744` all success.
+- `VERSION.txt = 42.24.0` remains unchanged.
+
+**下一软件主线：Online Algorithm Sampling / Feedback v1。**
+
+线上算法抽检、SaaS/边缘端回流、人工判定的 FP/FN/漏检/误检证据，应作为**可审核的反馈入口**接入现有链：
+
+`线上样本/反馈 → review/confirm → 现有 MaterialRepository / AnnotationRepository → Dataset Revision → Snapshot → Durable TRAINING → Evaluation → Iteration Decision → Confirmed Action`
+
+不得另建“自动回炉训练”owner，也不得让线上反馈直接改 Dataset Revision 或自动训练。每条反馈必须绑定 source algorithm/version/model SHA、样本/判定证据和确认人机动作。Rockchip 真实 RK3568/RK3576 物理板卡 acceptance 继续独立 OPEN。
 
 # 最新关闭：Training Evaluation / Iteration Decision v1
 

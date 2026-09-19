@@ -6,6 +6,35 @@
 
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
+## 0. 最新关闭：Iteration Decision → Confirmed Action v1
+
+2026-09-19，版本级迭代决策已接到显式用户确认后的正式产品动作，CLOSED。
+
+- `confirmed_iteration_action v1` 继续由 Algorithm Version 长期持有；没有新增 scheduler/task/database owner。
+- 只有 current version + exact persisted decision ID 可以确认动作；同 action 重试幂等，冲突 action fail closed。
+- `needs_data` 只生成弱标签/问题样本补数据 draft，不直接改 Dataset Revision。
+- `continue_training` 生成确定性的 Durable TRAINING task ID，并将 action/decision/evaluation/version/revision/snapshot identity 传入既有训练链；Central Scheduler / lease / generation / server-confirm 语义不变。
+- `ready_for_business_validation` 生成带 model/revision/snapshot identity 的 validation entry，不旁路现有测试发布/部署 owner。
+- `review_required` 生成 version-owned manual review entry，记录 reason codes / recommended actions，不自动执行。
+- 新训练 lineage 携带 confirmed action identity，下一版本可追溯到确认来源。
+- `automatic_execution=false` 保持不变；确认继续训练后，只有用户真正提交训练表单才创建/恢复固定 Durable TRAINING task。
+- Frontend 使用版本 persisted truth。刷新后“已确认动作”仍可恢复继续处理，不依赖瞬时 JS state；Real Chrome 已覆盖 confirm → refresh → resume。
+
+验收：
+
+- Product code HEAD `d422fc21b3394edd71567a81bc34316d1172c652` shared regressions: 0 pending / 0 shared failure.
+- Latest acceptance HEAD `4076f8adb376c24e32db78cf3bd15f83182ebcb4`: Algorithm SQL Store run `35424317881` contracts + Real Chrome success.
+- Remote Training Runtime PR `35424280734`: API / Ubuntu / Windows success.
+- Node Agent Executor PR `35424280790`: API / Ubuntu / Windows success.
+- Remote Material Import PR `35424280896`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Cleaning Runtime PR `35424280779`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Conversion Runtime PR `35424280823`: control-plane / Ubuntu / Windows / Real Chrome success.
+- Portable Deployment `35424280766`, Central Node Assignment `35424280780`, Task Runtime Truth `35424280794`, Training Input Integrity `35424280757`, Remote RKNN Board Runtime Protocol `35424280702`, Storage Cache Governance `35424280744` all success.
+- `VERSION.txt = 42.24.0` remains unchanged.
+
+**下一主线：Online Algorithm Sampling / Feedback v1。**
+生产端抽检/人工反馈只作为 reviewable intake，确认后复用现有 Material/Annotation → Dataset Revision → TRAINING → Evaluation → Decision → Confirmed Action 控制面；禁止另建自动回炉 owner。Rockchip 真实板卡 acceptance 独立 OPEN。
+
 ## 0. 最新关闭：Training Evaluation / Iteration Decision v1
 
 2026-09-19，现有 Durable TRAINING → Algorithm Version 控制面已补齐正式独立评测后的迭代决策，CLOSED。

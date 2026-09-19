@@ -3,6 +3,62 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Iteration Decision → Confirmed Action v1 CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The version-owned `iteration_decision` now drives one explicit, user-confirmed
+`confirmed_iteration_action` contract. The algorithm version remains the
+long-term owner. No second training/data owner and no frontend-derived action
+state was introduced.
+
+Confirmation is fenced to the current algorithm version and exact persisted
+decision identity. Repeating the same confirmation is idempotent; attempting a
+different action after confirmation fails closed.
+
+The four formal actions are:
+
+- `needs_data -> supplement_data`: freezes weak-label and FP/FN problem-sample
+  evidence into a data draft. It does not mutate Dataset Revision or import/delete
+  material automatically.
+- `continue_training -> continue_training`: freezes a deterministic Durable
+  TRAINING task ID and exact action/decision/evaluation/version/revision/snapshot
+  lineage. The existing Scheduler, lease, generation and server-confirm owners
+  remain authoritative. A real task starts only after user submit.
+- `ready_for_business_validation -> business_validation`: persists a validation
+  entry bound to decision/evaluation/version/revision/snapshot/model identities.
+- `review_required -> manual_review`: persists a review entry with reason codes,
+  recommendations and source lineage, without automatic execution.
+
+New training lineage carries the confirmed action identity. Frontend Impact
+Review is complete: the evaluation modal reads persisted
+`evaluation + iteration_decision + confirmed_iteration_action`; after refresh
+it shows the already-confirmed action and can resume supplement-data,
+continue-training, business-validation or manual-review flows from version truth.
+Real Chrome verifies confirm -> navigation -> transient-state reset -> version
+refresh -> resume without a second confirm call, accidental `/train/start`, or
+historical `/jobs` refetch.
+
+Acceptance:
+
+- Product code HEAD `d422fc21b3394edd71567a81bc34316d1172c652` shared regressions: 0 pending / 0 shared failure.
+- Latest acceptance HEAD `4076f8adb376c24e32db78cf3bd15f83182ebcb4`: Algorithm SQL Store run `35424317881` contracts + Real Chrome success.
+- Remote Training Runtime PR `35424280734`: API / Ubuntu / Windows success.
+- Node Agent Executor PR `35424280790`: API / Ubuntu / Windows success.
+- Remote Material Import PR `35424280896`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Cleaning Runtime PR `35424280779`: API / Ubuntu / Windows / Real Chrome success.
+- Remote Conversion Runtime PR `35424280823`: control-plane / Ubuntu / Windows / Real Chrome success.
+- Portable Deployment `35424280766`, Central Node Assignment `35424280780`, Task Runtime Truth `35424280794`, Training Input Integrity `35424280757`, Remote RKNN Board Runtime Protocol `35424280702`, Storage Cache Governance `35424280744` all success.
+- `VERSION.txt = 42.24.0` remains unchanged.
+
+**OPEN / next:** Online Algorithm Sampling / Feedback v1. Production inference
+sampling, FP/FN review and user feedback should enter as reviewable evidence bound
+to source algorithm/version/model identity, then reuse the existing
+Material/Annotation -> Dataset Revision -> Snapshot -> Durable TRAINING ->
+Evaluation -> Iteration Decision -> Confirmed Action chain. Do not create an
+automatic retraining owner or mutate dataset truth directly from online feedback.
+Rockchip physical RK3568/RK3576 acceptance remains independently OPEN.
+
 ## Current closure — Training Evaluation / Iteration Decision v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
