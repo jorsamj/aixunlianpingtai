@@ -372,7 +372,7 @@ def test_cache_restore_preserves_dataset_revision_evidence(tmp_path):
     (source / "labels").mkdir()
     (source / "images" / "a.jpg").write_bytes(b"jpeg")
     (source / "labels" / "a.txt").write_text("", encoding="utf-8")
-    import hashlib, json
+    import hashlib
     def sha(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
     manifest = {
