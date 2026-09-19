@@ -203,6 +203,50 @@ class FakeChangLianClient:
         return {"data": [{"computePlatformId": "cp1", "computePlatformName": "ONNX"}]}
 
 
+class NestedCategoryChangLianClient(FakeChangLianClient):
+    def category_tree(self):
+        return {
+            "data": [{
+                "categoryId": "root",
+                "categoryName": "安全",
+                "children": [{
+                    "categoryId": "child",
+                    "categoryName": "行为安全",
+                    "children": [{
+                        "categoryId": "leaf",
+                        "categoryName": "抽烟",
+                    }],
+                }],
+            }],
+        }
+
+
+def test_connection_and_diagnostics_count_full_category_tree(tmp_path: Path):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=NestedCategoryChangLianClient,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+
+    tested = service.test_connection()
+    diagnosed = service.diagnose()
+
+    tested_categories = next(row for row in tested["steps"] if row["key"] == "categories")
+    diagnosed_categories = next(row for row in diagnosed["steps"] if row["key"] == "categories")
+    assert tested_categories["count"] == 3
+    assert diagnosed_categories["count"] == 3
+    assert diagnosed["category_sample_available"] is True
+
+
 def test_service_sync_saves_redacted_config_cache_history_and_mirror(tmp_path: Path):
     memory = MemorySecretStore()
     service = ExternalAlgorithmPlatformService(
