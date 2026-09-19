@@ -207,6 +207,7 @@ jobs:
           grep -Fq 'test_coco_scan_hashes_real_annotation_json_bytes' tests/unit/storage/test_detection_import.py
           grep -Fq 'COCO_IMAGE_AMBIGUOUS' platform_core/storage/detection_import.py
           grep -Fq 'test_coco_scan_rejects_same_image_from_multiple_annotation_documents' tests/unit/storage/test_detection_import.py
+          grep -Fq 'test_coco_scan_rejects_duplicate_image_object_inside_one_document' tests/unit/storage/test_detection_import.py
           grep -Fq 'test_storage_rescan_root_coco_carries_verified_json_source_evidence' tests/unit/test_remote_material_import.py
           grep -Fq 'test_agent_coco_storage_rescan_uses_same_durable_owner_and_format_contract' tests/api/test_server_material_import.py
           grep -Fq 'test_coco_annotation_delta_and_apply_share_generic_external_provenance' tests/unit/storage/test_rescan_tasks.py

@@ -248,3 +248,24 @@ def test_coco_scan_rejects_same_image_from_multiple_annotation_documents(tmp_pat
 
     with pytest.raises(Exception, match="multiple COCO annotation documents"):
         scanner.scan("coco", prefix="dataset", recursive=True)
+
+
+def test_coco_scan_rejects_duplicate_image_object_inside_one_document(tmp_path):
+    import pytest
+
+    image = _jpg()
+    coco = json.dumps({
+        "images": [
+            {"id": 1, "file_name": "a.jpg", "width": 100, "height": 80},
+            {"id": 2, "file_name": "a.jpg", "width": 100, "height": 80},
+        ],
+        "annotations": [],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }).encode()
+    scanner, _store = _scanner(tmp_path, {
+        "dataset/train/a.jpg": image,
+        "dataset/train/_annotations.coco.json": coco,
+    })
+
+    with pytest.raises(Exception, match="referenced more than once"):
+        scanner.scan("coco", prefix="dataset", recursive=True)
