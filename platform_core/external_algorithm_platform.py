@@ -741,6 +741,118 @@ class ExternalAlgorithmPlatformService:
             },
         }
 
+    def readiness(self, *, algorithms_path: Optional[Path] = None) -> Dict[str, Any]:
+        public = self.public_config()
+        cache = self.repository.cache()
+        history = self.repository.history()
+        last_sync = history[0] if history else {}
+        credentials = public.get("credentials") if isinstance(public.get("credentials"), dict) else {}
+        categories = list(cache.get("categories") or [])
+        products = list(cache.get("products") or [])
+        analyses_by_product = cache.get("analyses_by_product") or {}
+        compute_platforms = list(cache.get("compute_platforms") or [])
+        analysis_count = sum(
+            len(rows) for rows in analyses_by_product.values()
+            if isinstance(rows, list)
+        )
+        external_rows: list[Dict[str, Any]] = []
+        if algorithms_path is not None:
+            try:
+                external_rows = [
+                    dict(row)
+                    for row in list_algorithms(Path(algorithms_path))
+                    if str(row.get("provider_type") or "").upper() == PROVIDER_CHANGLIAN
+                    and str(row.get("source_type") or "").upper() == SOURCE_EXTERNAL
+                ]
+            except Exception:
+                external_rows = []
+        active_external = [row for row in external_rows if row.get("external_active") is not False]
+
+        checks = [
+            {
+                "key": "human_login",
+                "name": "人员登录账号",
+                "status": "not_required",
+                "detail": "系统对接不使用人员用户名/密码；内部 API 使用 AccessKey / AccessSecret 应用鉴权。",
+            },
+            {
+                "key": "external_mode",
+                "name": "外部平台模式",
+                "status": "ready" if public.get("mode") == "external" else "blocked",
+                "detail": "已启用新畅联" if public.get("mode") == "external" else "当前仍是本地主数据模式",
+            },
+            {
+                "key": "base_url",
+                "name": "API 服务地址",
+                "status": "ready" if str(public.get("base_url") or "").strip() else "blocked",
+                "detail": str(public.get("base_url") or "") or "尚未配置",
+            },
+            {
+                "key": "credentials",
+                "name": "应用凭据",
+                "status": "ready" if bool(credentials.get("configured")) else "blocked",
+                "detail": (
+                    f"已配置 · {credentials.get('backend') or 'secure-store'}"
+                    if credentials.get("configured")
+                    else ("安全存储不可用" if credentials.get("available") is False else "尚未配置 AccessKey / AccessSecret")
+                ),
+            },
+            {
+                "key": "last_sync",
+                "name": "最近主数据同步",
+                "status": "ready" if last_sync.get("status") == "success" else "blocked",
+                "detail": (
+                    str(last_sync.get("finished_at") or last_sync.get("started_at") or "")
+                    if last_sync.get("status") == "success"
+                    else str(last_sync.get("error") or "尚无成功同步记录")
+                ),
+            },
+            {
+                "key": "categories",
+                "name": "算法品目",
+                "status": "ready" if categories else "blocked",
+                "count": len(categories),
+            },
+            {
+                "key": "products",
+                "name": "算法产品",
+                "status": "ready" if products else "blocked",
+                "count": len(products),
+            },
+            {
+                "key": "analyses",
+                "name": "产品分析方式",
+                "status": "ready" if analysis_count else "blocked",
+                "count": analysis_count,
+            },
+            {
+                "key": "compute_platforms",
+                "name": "算力环境",
+                "status": "ready" if compute_platforms else "blocked",
+                "count": len(compute_platforms),
+            },
+        ]
+        if algorithms_path is not None:
+            checks.append({
+                "key": "project_algorithms",
+                "name": "当前项目畅联云算法",
+                "status": "ready" if active_external else "blocked",
+                "count": len(active_external),
+                "detail": f"同步算法 {len(external_rows)} 个，当前可训练 {len(active_external)} 个",
+            })
+
+        blocking = [row for row in checks if row.get("status") == "blocked"]
+        return {
+            "ok": True,
+            "ready": not blocking,
+            "provider": "changlian",
+            "auth_type": "application_credentials",
+            "human_login_required": False,
+            "checked_at": utc_now(),
+            "checks": checks,
+            "blocking_keys": [str(row.get("key") or "") for row in blocking],
+        }
+
     def save(self, payload: ExternalPlatformConfigPayload) -> Dict[str, Any]:
         current = self.repository.config()
         ref = str(current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"])
@@ -1177,6 +1289,11 @@ def external_algorithm_platform_router(
     @router.post("/diagnostics")
     def diagnostics(payload: Optional[ExternalPlatformConfigPayload] = None):
         return service.diagnose(payload)
+
+    @router.get("/readiness")
+    def readiness(project_id: str = Query(..., min_length=1)):
+        get_project(project_id)
+        return service.readiness(algorithms_path=algorithms_file(project_id))
 
     @router.post("/sync")
     def sync(project_id: str = Query(..., min_length=1)):
