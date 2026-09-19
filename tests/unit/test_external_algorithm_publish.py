@@ -18,6 +18,8 @@ class FakePublishingClient:
     weights = []
     version_creates = 0
     weight_creates = 0
+    last_version_payload = None
+    last_weight_payload = None
 
     def __init__(self, **_kwargs):
         pass
@@ -28,12 +30,15 @@ class FakePublishingClient:
         cls.weights = []
         cls.version_creates = 0
         cls.weight_creates = 0
+        cls.last_version_payload = None
+        cls.last_weight_payload = None
 
     def list_product_versions(self, _path):
         return {"code": 200, "data": list(self.versions)}
 
     def create_algorithm_version(self, _path, payload):
         type(self).version_creates += 1
+        type(self).last_version_payload = dict(payload)
         row = {
             "algoVersionId": f"av-{type(self).version_creates}",
             "versionName": payload["versionName"],
@@ -47,6 +52,7 @@ class FakePublishingClient:
 
     def create_weight(self, _path, payload):
         type(self).weight_creates += 1
+        type(self).last_weight_payload = dict(payload)
         row = {"weightId": f"w-{type(self).weight_creates}", **dict(payload)}
         type(self).weights.append(row)
         return {"code": 200, "data": {"weightId": row["weightId"]}}
@@ -130,7 +136,7 @@ def _seed_conversion(root: Path, *, project_id="p1", version_id="v1", target="ro
         "target": target,
         "source_id": f"version::a1::{version_id}",
         "source_meta": {"algorithm_id": "a1", "version_id": version_id},
-        "params": {"chip": "rk3588"},
+        "params": {"chip": "rk3568"},
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
     return output
@@ -152,7 +158,7 @@ def _service(root: Path, memory: MemorySecretStore, client_factory=FakePublishin
         storage_source_id="default_local",
         public_base_url="https://platform.example",
         target_mappings={
-            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3588"),
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
         },
     ))
     return service
@@ -173,11 +179,23 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     assert result["external_algo_version_id"] == "av-1"
     assert FakePublishingClient.version_creates == 1
     assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.last_version_payload == {
+        "versionName": "20260917120000",
+        "versionNo": "20260917120000",
+        "analysisId": "analysis-1",
+    }
+    assert FakePublishingClient.last_weight_payload["algoVersionId"] == "av-1"
+    assert FakePublishingClient.last_weight_payload["computePlatformId"] == "cp-rk"
+    assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3568"
+    assert FakePublishingClient.last_weight_payload["fileName"] == "model.rknn"
+    assert FakePublishingClient.last_weight_payload["filePath"].startswith(
+        "https://platform.example/api/v64/model-artifacts/"
+    )
     artifact = result["artifacts"][0]
     assert artifact["upload_status"] == "UPLOADED"
     assert artifact["sync_status"] == "SYNCED"
     assert artifact["compute_platform_id"] == "cp-rk"
-    assert artifact["chip_code"] == "RK3588"
+    assert artifact["chip_code"] == "RK3568"
     assert artifact["public_url"].startswith("https://platform.example/api/v64/model-artifacts/")
     uploaded = _project_dir(tmp_path, "p1") / artifact["object_key"]
     assert uploaded.read_bytes() == b"converted-rknn"
@@ -269,3 +287,5 @@ def test_publication_persists_training_analysis_binding(tmp_path: Path):
     result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
 
     assert result["publication"]["external_analysis_id"] == "analysis-2"
+    assert FakePublishingClient.last_version_payload["analysisId"] == "analysis-2"
+    assert "productId" not in FakePublishingClient.last_version_payload
