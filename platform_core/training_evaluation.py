@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import hashlib
+import json
+import math
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -8,6 +11,36 @@ from PIL import Image
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 _DEFAULT_IOUS = tuple(round(0.5 + index * 0.05, 2) for index in range(10))
+EVALUATION_SCHEMA_VERSION = 1
+_EVALUATION_METRICS = (
+    "metrics/precision(B)",
+    "metrics/recall(B)",
+    "metrics/mAP50(B)",
+    "metrics/mAP50-95(B)",
+)
+
+
+def _sha256_identity(value: Any, field: str) -> str:
+    text = str(value or "").strip().lower()
+    if text and (len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text)):
+        raise ValueError(f"{field} must be a SHA256 hex digest")
+    return text
+
+
+def _finite(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _label_name(names: Mapping[int | str, str] | Sequence[str] | None, class_id: int) -> str:
+    if isinstance(names, Mapping):
+        return str(names.get(class_id, names.get(str(class_id), str(class_id))))
+    if isinstance(names, Sequence) and not isinstance(names, (str, bytes)) and class_id < len(names):
+        return str(names[class_id])
+    return str(class_id)
 
 
 def _iou(a: Sequence[float], b: Sequence[float]) -> float:
@@ -132,6 +165,9 @@ def evaluate_blind_detection(
             "status": "not_requested",
             "metrics": {},
             "per_class": [],
+            "weak_labels": [],
+            "error_samples": [],
+            "error_sample_count": 0,
             "protocol": {"mode": "blind_image_only_inference_then_hidden_ground_truth_scoring"},
             "image_count": 0,
         }
@@ -171,24 +207,24 @@ def evaluate_blind_detection(
         operating = [row for row in class_predictions if float(row["confidence"]) >= float(operating_conf)]
         operating_flags = _match_flags(operating, class_targets, 0.5)
         true_positive = sum(1 for value in operating_flags if value)
+        false_positive = max(0, len(operating) - true_positive)
+        false_negative = max(0, len(class_targets) - true_positive)
         precision = true_positive / len(operating) if operating else 0.0
         recall = true_positive / len(class_targets) if class_targets else 0.0
-        if isinstance(names, Mapping):
-            label = names.get(class_id, names.get(str(class_id), str(class_id)))
-        elif isinstance(names, Sequence) and not isinstance(names, (str, bytes)) and class_id < len(names):
-            label = names[class_id]
-        else:
-            label = str(class_id)
         per_class.append(
             {
                 "class_id": class_id,
-                "label": str(label),
+                "label": _label_name(names, class_id),
                 "precision": round(precision, 6),
                 "recall": round(recall, 6),
                 "map50": round(aps[0] if aps else 0.0, 6),
                 "map50_95": round(_mean(aps), 6),
+                "true_positive": true_positive,
+                "false_positive": false_positive,
+                "false_negative": false_negative,
                 "ground_truth_count": len(class_targets),
                 "prediction_count": len(class_predictions),
+                "operating_prediction_count": len(operating),
             }
         )
 
@@ -199,10 +235,62 @@ def evaluate_blind_detection(
         "metrics/mAP50(B)": round(_mean([float(row["map50"]) for row in scored]), 6),
         "metrics/mAP50-95(B)": round(_mean([float(row["map50_95"]) for row in scored]), 6),
     }
+    error_samples: list[dict[str, Any]] = []
+    operating_predictions = [
+        row for row in predictions if float(row["confidence"]) >= float(operating_conf)
+    ]
+    predictions_by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    targets_by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in operating_predictions:
+        predictions_by_image[str(row["image"])].append(row)
+    for row in targets:
+        targets_by_image[str(row["image"])].append(row)
+    for image_path in images:
+        image_name = image_path.name
+        image_predictions = predictions_by_image.get(image_name, [])
+        image_targets = targets_by_image.get(image_name, [])
+        pairs = []
+        for prediction_index, prediction in enumerate(image_predictions):
+            for target_index, target in enumerate(image_targets):
+                if int(prediction["class_id"]) != int(target["class_id"]):
+                    continue
+                overlap = _iou(prediction["box"], target["box"])
+                if overlap >= 0.5:
+                    pairs.append((overlap, prediction_index, target_index))
+        matched_predictions: set[int] = set()
+        matched_targets: set[int] = set()
+        for _overlap, prediction_index, target_index in sorted(pairs, reverse=True):
+            if prediction_index in matched_predictions or target_index in matched_targets:
+                continue
+            matched_predictions.add(prediction_index)
+            matched_targets.add(target_index)
+        fp = [row for index, row in enumerate(image_predictions) if index not in matched_predictions]
+        fn = [row for index, row in enumerate(image_targets) if index not in matched_targets]
+        if fp or fn:
+            error_samples.append({
+                "image": image_name,
+                "fp_count": len(fp),
+                "fn_count": len(fn),
+                "fp_labels": sorted({_label_name(names, int(row["class_id"])) for row in fp}),
+                "fn_labels": sorted({_label_name(names, int(row["class_id"])) for row in fn}),
+            })
+        if len(error_samples) >= 200:
+            break
+
+    weak_label_threshold = 0.75
+    weak_labels = [
+        str(row["label"])
+        for row in sorted(per_class, key=lambda row: (float(row["recall"]), float(row["map50"])))
+        if int(row["ground_truth_count"]) > 0
+        and (float(row["recall"]) < weak_label_threshold or float(row["map50"]) < weak_label_threshold)
+    ]
     return {
         "status": "succeeded",
         "metrics": metrics,
         "per_class": per_class,
+        "weak_labels": weak_labels[:100],
+        "error_samples": error_samples,
+        "error_sample_count": len(error_samples),
         "image_count": len(images),
         "ground_truth_box_count": len(targets),
         "prediction_box_count": len(predictions),
@@ -210,5 +298,95 @@ def evaluate_blind_detection(
             "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
             "operating_conf": float(operating_conf),
             "iou_thresholds": list(thresholds),
+            "matching_iou": 0.5,
+            "weak_label_threshold": weak_label_threshold,
         },
+    }
+
+
+def build_evaluation_truth(
+    result: Mapping[str, Any] | None,
+    *,
+    task_id: Any,
+    snapshot_id: Any = "",
+    dataset_revision_id: Any = "",
+    model_sha256: Any = "",
+    finished_at: Any = "",
+) -> dict[str, Any]:
+    """Normalize one post-training blind-test result into version-owned truth."""
+    raw = dict(result) if isinstance(result, Mapping) else {}
+    status = str(raw.get("status") or "not_requested").strip().lower()
+    if status not in {"succeeded", "not_requested", "failed"}:
+        raise ValueError("evaluation status is invalid")
+    task = str(task_id or "").strip()
+    if not task:
+        raise ValueError("evaluation requires task_id")
+    revision = _sha256_identity(dataset_revision_id, "dataset_revision_id")
+    model_digest = _sha256_identity(model_sha256, "model_sha256")
+    raw_metrics = raw.get("metrics") if isinstance(raw.get("metrics"), Mapping) else {}
+    metrics = {
+        key: round(_finite(raw_metrics.get(key)), 6)
+        for key in _EVALUATION_METRICS if raw_metrics.get(key) is not None
+    }
+    per_class = []
+    for row in list(raw.get("per_class") or [])[:10000]:
+        if not isinstance(row, Mapping):
+            continue
+        per_class.append({
+            "class_id": int(row.get("class_id") or 0),
+            "label": str(row.get("label") or "")[:1000],
+            "precision": round(_finite(row.get("precision")), 6),
+            "recall": round(_finite(row.get("recall")), 6),
+            "map50": round(_finite(row.get("map50")), 6),
+            "map50_95": round(_finite(row.get("map50_95")), 6),
+            "true_positive": max(0, int(row.get("true_positive") or 0)),
+            "false_positive": max(0, int(row.get("false_positive") or 0)),
+            "false_negative": max(0, int(row.get("false_negative") or 0)),
+            "ground_truth_count": max(0, int(row.get("ground_truth_count") or 0)),
+            "prediction_count": max(0, int(row.get("prediction_count") or 0)),
+        })
+    weak_labels = [str(value)[:1000] for value in list(raw.get("weak_labels") or [])[:100] if str(value or "").strip()]
+    error_samples = []
+    for row in list(raw.get("error_samples") or [])[:200]:
+        if not isinstance(row, Mapping):
+            continue
+        error_samples.append({
+            "image": Path(str(row.get("image") or "")).name[:240],
+            "fp_count": max(0, int(row.get("fp_count") or 0)),
+            "fn_count": max(0, int(row.get("fn_count") or 0)),
+            "fp_labels": [str(value)[:1000] for value in list(row.get("fp_labels") or [])[:100]],
+            "fn_labels": [str(value)[:1000] for value in list(row.get("fn_labels") or [])[:100]],
+        })
+    protocol_raw = raw.get("protocol") if isinstance(raw.get("protocol"), Mapping) else {}
+    protocol = {
+        "mode": str(protocol_raw.get("mode") or "")[:200],
+        "operating_conf": round(_finite(protocol_raw.get("operating_conf")), 6),
+        "matching_iou": round(_finite(protocol_raw.get("matching_iou"), 0.5), 6),
+        "weak_label_threshold": round(_finite(protocol_raw.get("weak_label_threshold"), 0.75), 6),
+        "iou_thresholds": [round(_finite(value), 6) for value in list(protocol_raw.get("iou_thresholds") or [])[:20]],
+    }
+    identity = {
+        "schema_version": EVALUATION_SCHEMA_VERSION,
+        "status": status,
+        "task_id": task,
+        "snapshot_id": str(snapshot_id or "").strip(),
+        "dataset_revision_id": revision,
+        "model_sha256": model_digest,
+        "metrics": metrics,
+        "per_class": per_class,
+        "weak_labels": weak_labels,
+        "error_samples": error_samples,
+        "image_count": max(0, int(raw.get("image_count") or 0)),
+        "ground_truth_box_count": max(0, int(raw.get("ground_truth_box_count") or 0)),
+        "prediction_box_count": max(0, int(raw.get("prediction_box_count") or 0)),
+        "protocol": protocol,
+    }
+    evaluation_id = hashlib.sha256(json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    return {
+        **identity,
+        "evaluation_id": evaluation_id,
+        "finished_at": str(finished_at or "").strip(),
+        "failure_reason": "evaluation_failed" if status == "failed" else "",
     }
