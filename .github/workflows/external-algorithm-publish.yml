@@ -105,6 +105,9 @@ jobs:
           grep -q "test_multi_analysis_version_recovery_matches_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multi_analysis_timeout_does_not_recover_version_without_analysis_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs" tests/unit/test_external_algorithm_publish.py
+          grep -q "_DELIVERABLE_SUFFIXES" platform_core/external_algorithm_publish.py
+          grep -q "candidate.name.lower() == \"manifest.json\"" platform_core/external_algorithm_publish.py
           grep -q "test_synced_changlian_identity_survives_training_choice_conversion_and_publish" tests/unit/test_external_algorithm_publish.py
           grep -q "test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage" tests/unit/test_external_algorithm_publish.py
           grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
