@@ -291,3 +291,55 @@ test('refresh failure after successful POST does not invite a duplicate training
   assert.match(notices.at(-1), /列表刷新失败/);
   cleanup(runtime);
 });
+
+
+test('confirmed iteration action lineage is injected only for matching current draft', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
+  };
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return{task:{id:'task-action'}}}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.deepEqual(sent.iteration_action,{
+    action_id:'a'.repeat(64),decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64),
+    version_id:'v-current',dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1',
+  });
+  assert.equal(state.trainingIterationAction,null);
+  cleanup(runtime);
+});
+
+test('confirmed iteration action is not injected into unrelated version draft', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'other',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'',snapshot_id:''},
+  };
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return{task:{id:'task-normal'}}}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,inheritance:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.iteration_action,undefined);
+  assert.ok(state.trainingIterationAction);
+  cleanup(runtime);
+});

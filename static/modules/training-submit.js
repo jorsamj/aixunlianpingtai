@@ -192,6 +192,21 @@ export function installTrainingSubmitRuntime({
       validateTrainingDevice(draft, state.trainingDevicesV3?.options || []);
       lastStage = 'build-payload';
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
+      const iterationAction = state.trainingIterationAction;
+      if (
+        iterationAction
+        && String(iterationAction?.source?.algorithm_id || '') === String(asset.id || '')
+        && String(iterationAction?.source?.version_id || '') === String(draft.baseVersionId || inheritance.versionId || '')
+      ) {
+        payload.iteration_action = {
+          action_id: String(iterationAction.action_id || ''),
+          decision_id: String(iterationAction.source?.decision_id || ''),
+          evaluation_id: String(iterationAction.source?.evaluation_id || ''),
+          version_id: String(iterationAction.source?.version_id || ''),
+          dataset_revision_id: String(iterationAction.source?.dataset_revision_id || ''),
+          snapshot_id: String(iterationAction.source?.snapshot_id || ''),
+        };
+      }
       const externalAnalysisId = window.ExternalAlgorithmPlatformRuntime?.selectedAnalysisId?.(asset.id) || '';
       if (externalAnalysisId) payload.external_analysis_id = externalAnalysisId;
       const plannedTaskId = String(document.getElementById('tr429TaskId')?.value || '').trim();
@@ -215,6 +230,9 @@ export function installTrainingSubmitRuntime({
       }
       const body = await response.json();
       lastStage = 'created';
+      if (payload.iteration_action && state.trainingIterationAction) {
+        state.trainingIterationAction = null;
+      }
 
       closeModal?.();
       state.alg428Expanded = state.alg428Expanded || {};

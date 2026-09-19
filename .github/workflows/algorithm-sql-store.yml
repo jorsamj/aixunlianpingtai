@@ -16,6 +16,7 @@ on:
       - platform_core/external_algorithm_platform.py
       - platform_core/external_algorithm_publish.py
       - static/app.js
+      - static/modules/training-submit.js
       - tests/browser/algorithm-list-performance.spec.mjs
       - tests/unit/test_algorithm_sql_store.py
       - tests/unit/test_training_lineage.py
@@ -28,6 +29,7 @@ on:
       - tests/frontend/external-algorithm-platform.test.mjs
       - tests/frontend/external-algorithm-publish.test.mjs
       - tests/frontend/algorithm-lineage-stable-renderer.test.mjs
+      - tests/frontend/training-submit.test.mjs
       - .github/workflows/algorithm-sql-store.yml
   workflow_dispatch:
 
@@ -53,6 +55,7 @@ jobs:
           python -m py_compile app.py platform_core/algorithm_sql_store.py platform_core/training_lineage.py platform_core/training_evaluation.py platform_core/iteration_actions.py platform_core/algorithms.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_publish.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/external-algorithm-publish.js
+          node --check static/modules/training-submit.js
       - name: SQL migration and row CRUD contracts
         run: PYTHONPATH=. pytest -q --confcutdir=tests/unit tests/unit/test_algorithm_sql_store.py tests/unit/test_training_lineage.py tests/unit/test_training_evaluation.py tests/unit/test_iteration_actions.py tests/unit/test_algorithm_sql_app_contract.py tests/unit/test_algorithms.py
       - name: External platform contracts
@@ -64,6 +67,7 @@ jobs:
           node --test tests/frontend/external-algorithm-platform.test.mjs
           node --test tests/frontend/external-algorithm-publish.test.mjs
           node --test tests/frontend/algorithm-lineage-stable-renderer.test.mjs
+          node --test tests/frontend/training-submit.test.mjs
       - name: Permanent invariants
         run: |
           test "$(cat VERSION.txt)" = "42.24.0"
@@ -130,6 +134,8 @@ jobs:
           grep -Fq '独立评测' static/app.js
           grep -Fq '迭代决策' static/app.js
           grep -Fq '系统仅给出建议，不会自动发起下一次训练' static/app.js
+          grep -Fq 'confirmIterationAction429' static/app.js
+          grep -Fq 'payload.iteration_action' static/modules/training-submit.js
           grep -Fq 'stable algorithm version renderer exposes persisted training lineage action' tests/frontend/algorithm-lineage-stable-renderer.test.mjs
           grep -Fq 'algorithm version exposes persisted training lineage without job refetch' tests/browser/algorithm-list-performance.spec.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
