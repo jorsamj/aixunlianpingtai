@@ -116,6 +116,9 @@ jobs:
           grep -q "test_sync_fails_closed_when_product_id_is_missing" tests/unit/test_external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_analysis_id_is_missing" tests/unit/test_external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_compute_platform_id_is_missing" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_cache_write_failure_does_not_mutate_algorithm_mirror" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_sync_mirror_failure_restores_previous_master_data_cache" tests/unit/test_external_algorithm_platform.py
+          grep -q "previous_cache = self.repository.cache()" platform_core/external_algorithm_platform.py
           grep -q "def flatten_category_tree" platform_core/external_algorithm_platform.py
           grep -q "test_connection_and_diagnostics_count_full_category_tree" tests/unit/test_external_algorithm_platform.py
           grep -q '"access_key": self.access_key' platform_core/external_algorithm_platform.py
