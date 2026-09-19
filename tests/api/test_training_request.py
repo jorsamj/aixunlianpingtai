@@ -896,7 +896,12 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
         files=[("files", ("benchmark-train.jpg", _image_bytes("blue"), "image/jpeg"))],
         data={"dataset_id": "default"},
     ).json()["uploaded"][0]
-    for image in (benchmark_image, train_image):
+    train_image_2 = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("benchmark-train-2.jpg", _image_bytes("green"), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    ).json()["uploaded"][0]
+    for image in (benchmark_image, train_image, train_image_2):
         assert client.post(
             f"/api/projects/{project_id}/annotations/{image['id']}",
             json={"boxes": [{
@@ -976,7 +981,7 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
             "algorithm_asset_id": algorithm["id"],
             "model": "yolo11n.pt",
             "split_mode": "random_test_from_training_pool",
-            "train_image_ids": [train_image["id"]],
+            "train_image_ids": [benchmark_image["id"], train_image["id"], train_image_2["id"]],
             "validation_percent": 20,
             "experiment_percent": 20,
             "benchmark_source_version_id": "benchmark-v1",
@@ -987,10 +992,14 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
     task_id = response.json()["task"]["id"]
     payload = app_module.shared_task_artifacts().read_json(task_id, "payload.json")
     assert payload["split_mode"] == "independent_test_set"
+    assert payload["train_image_ids"] == [train_image["id"], train_image_2["id"]]
     assert payload["test_image_ids"] == [benchmark_image["id"]]
     assert payload["benchmark_reuse"]["source_version_id"] == "benchmark-v1"
     assert payload["benchmark_reuse"]["scope_id"] == scope_id
     assert payload["benchmark_reuse"]["test_image_count"] == 1
+    assert payload["benchmark_reuse"]["selected_training_candidate_count"] == 3
+    assert payload["benchmark_reuse"]["reserved_training_candidate_count"] == 1
+    assert payload["benchmark_reuse"]["effective_training_candidate_count"] == 2
 
 
 def test_reusable_benchmark_rejects_stale_observed_scope(client, seeded_project, monkeypatch):

@@ -118,7 +118,7 @@ from platform_core.task_runtime import (
     task_to_public,
     training_queue_truth,
 )
-from platform_core.training_splits import SplitMode, SplitRequest
+from platform_core.training_splits import SplitMode, SplitRequest, exclude_reserved_test_components
 from platform_core.training_devices import discover_training_devices, normalize_training_device, training_python
 from platform_core.gpu_resources import GPUResourceManager, read_gpu_runtime_truth
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
@@ -6172,13 +6172,29 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         str(payload.benchmark_source_version_id or ""),
         str(payload.benchmark_scope_id or ""),
     )
+    benchmark_selected_training_count = 0
+    benchmark_reserved_training_count = 0
     try:
         if benchmark_reuse:
             if payload.test_image_ids:
                 raise ValueError("复用固定评测基准时不能同时提交前端试验素材清单")
-            train_ids = tuple(payload.train_image_ids or ())
-            if set(train_ids).intersection(benchmark_reuse["test_image_ids"]):
-                raise ValueError("本次训练素材包含固定评测基准图片，请从训练素材中移除后重试")
+            train_ids = tuple(dict.fromkeys(
+                str(value).strip()
+                for value in (payload.train_image_ids or ())
+                if str(value).strip()
+            ))
+            benchmark_selected_training_count = len(train_ids)
+            reservation_rows = MaterialRepository(project_dir(project_id)).get_many(
+                (*train_ids, *benchmark_reuse["test_image_ids"])
+            )
+            train_ids, reserved_training_ids = exclude_reserved_test_components(
+                reservation_rows,
+                train_ids,
+                benchmark_reuse["test_image_ids"],
+            )
+            benchmark_reserved_training_count = len(reserved_training_ids)
+            if not train_ids:
+                raise ValueError("所选训练候选全部属于固定评测保留范围，请补充其他训练素材")
             split = SplitRequest(
                 mode=SplitMode.INDEPENDENT_TEST_SET,
                 train_image_ids=train_ids,
@@ -6234,6 +6250,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "snapshot_id": benchmark_reuse["snapshot_id"],
             "test_image_count": benchmark_reuse["test_image_count"],
             "binding_level": benchmark_reuse["binding_level"],
+            "selected_training_candidate_count": benchmark_selected_training_count,
+            "reserved_training_candidate_count": benchmark_reserved_training_count,
+            "effective_training_candidate_count": len(split.train_image_ids),
         }
     prepare_task_id = f"trainprep_{task_id}"
     request_payload.update(
@@ -6328,6 +6347,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
                     "scope_id": benchmark_reuse["scope_id"],
                     "snapshot_id": benchmark_reuse["snapshot_id"],
                     "test_image_count": benchmark_reuse["test_image_count"],
+                    "selected_training_candidate_count": benchmark_selected_training_count,
+                    "reserved_training_candidate_count": benchmark_reserved_training_count,
+                    "effective_training_candidate_count": len(split.train_image_ids),
                 }
                 if benchmark_reuse else None
             ),
