@@ -236,3 +236,86 @@ def test_rescan_annotation_source_evidence_tracks_sidecar_yaml_split_and_boxes(t
         "source_evidence": second,
     }])
     assert store.annotation_summary()["counts"] == {"ANNOTATION_CHANGED": 1}
+
+
+def test_yolo_annotation_delta_distinguishes_new_change_conflict_and_removed(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = "project-yolo-delta"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    annotations = AnnotationRepository(project_path)
+    rows = [
+        material("old-1", "images/train/new-source.jpg", "a" * 64),
+        material("old-2", "images/train/changed.jpg", "b" * 64),
+        material("old-3", "images/train/conflict.jpg", "c" * 64),
+        material("old-4", "images/train/removed.jpg", "d" * 64),
+    ]
+    rows[1]["external_annotation"] = {
+        "source_format": "yolo", "source_digest": "old-source",
+        "synced_annotation_hash": "",
+        "annotation_status": "annotated",
+    }
+    rows[2]["external_annotation"] = {
+        "source_format": "yolo", "source_digest": "old-conflict",
+        "synced_annotation_hash": "previous-platform-hash",
+        "annotation_status": "annotated",
+    }
+    rows[3]["external_annotation"] = {
+        "source_format": "yolo", "source_digest": "old-removed",
+        "synced_annotation_hash": "",
+        "annotation_status": "annotated",
+    }
+    materials.upsert_many(rows)
+    annotations.upsert("old-3", [{
+        "id": "old-3-1", "label": "smoke", "class_id": 0,
+        "x1": 5, "y1": 5, "x2": 20, "y2": 20,
+    }])
+    conflict = annotations.get("old-3")
+    rows[2]["external_annotation"]["synced_annotation_hash"] = "different-from-" + conflict["content_digest"][:8]
+    materials.patch({"old-3": {"external_annotation": rows[2]["external_annotation"]}})
+
+    store = RescanCandidateStore(tmp_path / "manifest.sqlite3")
+    materials.snapshot_storage_references(store.path, "s3-a")
+    candidates = [
+        candidate(row["object_key"], row["content_sha256"], etag=row["etag"])
+        for row in rows
+    ]
+    store.upsert_many(candidates)
+    store.inventory_many([
+        {"object_key": "data.yaml", "size_bytes": 10, "etag": "yaml", "sha256": "1" * 64},
+        {"object_key": "labels/train/new-source.txt", "size_bytes": 10, "etag": "n", "sha256": "2" * 64},
+        {"object_key": "labels/train/changed.txt", "size_bytes": 10, "etag": "c", "sha256": "3" * 64},
+        {"object_key": "labels/train/conflict.txt", "size_bytes": 10, "etag": "x", "sha256": "4" * 64},
+    ])
+    store.set_label_mapping({0: "smoke"})
+    for key, label_key, status in [
+        ("images/train/new-source.jpg", "labels/train/new-source.txt", "annotated"),
+        ("images/train/changed.jpg", "labels/train/changed.txt", "annotated"),
+        ("images/train/conflict.jpg", "labels/train/conflict.txt", "annotated"),
+        ("images/train/removed.jpg", None, "unannotated"),
+    ]:
+        store.manifest_many([{"object_key": key, "split": "train", "yaml_key": "data.yaml"}])
+        boxes = [] if status == "unannotated" else [{
+            "object_key": key, "line_number": 1, "class_id": 0,
+            "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.2, "clipped": False,
+        }]
+        store.annotation_batch([{
+            "object_key": key, "label_key": label_key,
+            "annotation_status": status, "box_count": len(boxes),
+        }], boxes, [])
+
+    from platform_core.storage.rescan_tasks import _build_annotation_deltas
+    summary = _build_annotation_deltas(
+        store, project_path, source_format="yolo",
+    )
+    assert summary["counts"]["ANNOTATION_CONFLICT"] >= 1
+    assert summary["counts"]["ANNOTATION_REMOVED"] == 1
+    assert (
+        summary["counts"].get("ANNOTATION_NEW", 0)
+        + summary["counts"].get("ANNOTATION_CONFLICT", 0)
+    ) >= 2

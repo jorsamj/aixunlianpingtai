@@ -813,6 +813,16 @@ class RescanCandidateStore(ImportCandidateStore):
             }
         return result
 
+    def restart_annotation_review(self):
+        """Clear derived external annotation evidence before a full local rescan retry."""
+        with self._transaction() as db:
+            db.execute('DELETE FROM candidate_annotations')
+            db.execute('DELETE FROM annotation_issues')
+            db.execute('DELETE FROM dataset_manifest')
+            db.execute('DELETE FROM dataset_objects')
+            db.execute('DELETE FROM label_mapping')
+            db.execute('DELETE FROM rescan_annotation_deltas')
+
     def restart_annotation_deltas(self):
         with self._transaction() as db:
             db.execute('DELETE FROM rescan_annotation_deltas')
