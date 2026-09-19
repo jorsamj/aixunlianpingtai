@@ -8965,7 +8965,12 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     )
     feedback_adoption_outcome = {}
     if isinstance(supplement_provenance, dict) and supplement_provenance:
-        source_version_id = str(supplement_provenance.get("version_id") or "").strip()
+        lineage_base = (
+            training_lineage.get("base")
+            if isinstance(training_lineage.get("base"), dict)
+            else {}
+        )
+        source_version_id = str(lineage_base.get("version_id") or "").strip()
         source_version = next(
             (
                 row for row in (algo.get("versions") or [])

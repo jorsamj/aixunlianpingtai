@@ -312,3 +312,22 @@ def test_feedback_adoption_outcome_rejects_source_version_mismatch():
             source_version_id="other-version",
             new_version_id="new-v2",
         )
+
+
+def test_feedback_adoption_outcome_requires_training_base_to_match_provenance():
+    provenance = {
+        "schema_version": 1,
+        "candidate_set_id": "a" * 64,
+        "adoption_id": "b" * 64,
+        "action_id": "c" * 64,
+        "version_id": "candidate-source-v1",
+    }
+    import pytest
+    with pytest.raises(ValueError, match="source version"):
+        evaluation.build_feedback_adoption_outcome(
+            {"status": "succeeded", "evaluation_id": "1" * 64},
+            {"status": "succeeded", "evaluation_id": "2" * 64},
+            provenance,
+            source_version_id="actual-training-base-v2",
+            new_version_id="new-v3",
+        )
