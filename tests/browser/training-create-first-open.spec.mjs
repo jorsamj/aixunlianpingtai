@@ -114,6 +114,70 @@ test('hard refresh first training open hydrates configuration before showing the
 });
 
 
+test('training target is the only automatic early-stop control', async ({page, request}) => {
+  const {project} = await seedProject(request);
+
+  await page.route('**/api/training_options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({targets: [{
+      id: 'target-stop-training',
+      name: '目标停止训练',
+      type: 'local',
+      framework: 'ultralytics',
+      status: 'ready',
+      algorithms: [{
+        key: 'yolo_detect',
+        name: 'Ultralytics Detect',
+        base_model: 'yolo11n.pt',
+        default_epochs: 100,
+        default_imgsz: 640,
+        default_batch: 4,
+      }],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+    }]})
+  }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 4, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
+  }));
+
+  await page.addInitScript(projectId => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
+  }, project.id);
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  const card = page.locator('.alg428-card', {hasText: '首次打开配置回归'});
+  await card.getByRole('button', {name: '训练'}).click();
+  const dialog = page.getByRole('dialog', {name: '训练 · 首次打开配置回归'});
+  await expect(dialog).toBeVisible({timeout: 10_000});
+
+  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
+  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  await expect(settings).toBeVisible();
+  await expect(settings.getByText('阶段试验与目标')).toBeVisible();
+  await expect(settings.getByText('未达继续 / 达标提前完成')).toBeVisible();
+  await expect(settings.getByLabel('目标指标')).toBeVisible();
+  await expect(settings.getByLabel('目标正确率')).toHaveValue('90');
+  await expect(settings.locator('#ts428Low')).toHaveCount(0);
+  await expect(settings.locator('#ts428Patience')).toHaveCount(0);
+  await expect(settings.getByText('低于此正确率停止')).toHaveCount(0);
+
+  await settings.getByRole('button', {name: '应用配置'}).click();
+  await expect(dialog.locator('#tr429Gate')).toContainText('≥ 90.0%');
+  const config = await page.evaluate(() => window.trainingConfigCanonical428?.());
+  expect(config.stop_threshold).toBe(0.9);
+  expect(config.continue_threshold).toBe(0);
+});
+
+
 test('frozen feedback candidates stay aligned with training submit provenance', async ({page, request}) => {
   const {project, algorithmId} = await seedProject(request);
   let submitted = null;
