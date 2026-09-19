@@ -925,6 +925,7 @@ def _build_detection_storage_scan_review_archive(
         progress=lambda key: (
             progress(0, 0, str(key)) if progress is not None else None
         ),
+        deduplicate_images=normalized_intent != "storage_rescan",
     )
     try:
         try:
@@ -942,6 +943,8 @@ def _build_detection_storage_scan_review_archive(
                 422,
             ) from error
 
+        if normalized_intent == "storage_rescan":
+            scanner.ensure_all_image_candidates()
         counts = store.counts()
         total = sum(counts.values())
         if total <= 0:
@@ -991,6 +994,7 @@ def _build_detection_storage_scan_review_archive(
                         target_prefix,
                         include_payloads=False,
                         preserve_object_keys=True,
+                        skip_unmanifested_annotations=normalized_intent == "storage_rescan",
                     )
                     completed += len(page)
                     if progress is not None:
@@ -1010,6 +1014,7 @@ def _build_detection_storage_scan_review_archive(
                         target_prefix,
                         include_payloads=False,
                         preserve_object_keys=True,
+                        skip_unmanifested_annotations=normalized_intent == "storage_rescan",
                     )
                     completed += len(page)
                     if progress is not None:
@@ -1325,7 +1330,14 @@ def build_storage_scan_material_review_archive(
         seen_hashes: set[str] = set()
         batch: list[dict[str, Any]] = []
         inspected = 0
-        for item in scanner.iter_images():
+        yolo_objects = scanner.iter_images()
+        if normalized_intent == "storage_rescan":
+            yolo_objects = (
+                item
+                for item in scanner.iter_inventory(dataset_only=False)
+                if Path(str(item.key)).suffix.lower() in IMAGE_EXTENSIONS
+            )
+        for item in yolo_objects:
             if cancelled is not None and cancelled():
                 raise InterruptedError("storage_scan YOLO review cancelled")
             batch.append(_inspect_storage_scan_image(
@@ -1387,6 +1399,7 @@ def build_storage_scan_material_review_archive(
                         target_prefix,
                         include_payloads=False,
                         preserve_object_keys=True,
+                        skip_unmanifested_annotations=normalized_intent == "storage_rescan",
                     )
                     completed += len(page)
                     if progress is not None:
@@ -1406,6 +1419,7 @@ def build_storage_scan_material_review_archive(
                         target_prefix,
                         include_payloads=False,
                         preserve_object_keys=True,
+                        skip_unmanifested_annotations=normalized_intent == "storage_rescan",
                     )
                     completed += len(page)
                     if progress is not None:
@@ -1489,6 +1503,7 @@ def _write_yolo_review_page(
     *,
     include_payloads: bool = True,
     preserve_object_keys: bool = False,
+    skip_unmanifested_annotations: bool = False,
 ) -> None:
     source_keys = [str(row["object_key"]) for row in page]
     annotations = store.annotations_for_keys(source_keys)
@@ -1547,6 +1562,8 @@ def _write_yolo_review_page(
         )
         counts[status] = counts.get(status, 0) + 1
 
+        if skip_unmanifested_annotations and source_key not in annotations:
+            continue
         annotation = annotations.get(source_key) or {
             "object_key": source_key,
             "split": "",
@@ -2183,7 +2200,7 @@ def _commit_detection_review_annotations(
             if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
                 flush()
     flush()
-    if seen != candidate_keys:
+    if not rescan_evidence_required and seen != candidate_keys:
         raise RemoteMaterialImportError(
             "REMOTE_DETECTION_REVIEW_INVALID",
             "detection annotation stream does not cover every candidate image",
@@ -2548,7 +2565,7 @@ def _commit_yolo_review_annotations(
             if len(states) >= 500 or len(boxes) + len(issues) >= 5000:
                 flush()
     flush()
-    if seen != candidate_keys:
+    if not rescan_evidence_required and seen != candidate_keys:
         raise RemoteMaterialImportError(
             "REMOTE_YOLO_REVIEW_INVALID",
             "YOLO annotation stream does not cover every candidate image",

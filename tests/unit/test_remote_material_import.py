@@ -674,3 +674,51 @@ def test_storage_rescan_root_coco_carries_verified_json_source_evidence(tmp_path
     annotation_truth = store.annotations_for_keys(["train/a.jpg"])["train/a.jpg"]
     assert annotation_truth["label_key"] == json_key
     assert annotation_truth["yaml_key"] == json_key
+
+
+def test_storage_rescan_coco_keeps_unreferenced_source_image_in_image_truth(tmp_path):
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (100, 80), "orange").save(image_buffer, format="JPEG")
+    image = image_buffer.getvalue()
+    extra_buffer = io.BytesIO()
+    Image.new("RGB", (120, 90), "blue").save(extra_buffer, format="JPEG")
+    extra = extra_buffer.getvalue()
+    coco = json.dumps({
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 100, "height": 80}],
+        "annotations": [],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }).encode()
+    payloads = {
+        "train/a.jpg": image,
+        "extra.jpg": extra,
+        "train/_annotations.coco.json": coco,
+    }
+    provider = _StorageScanReviewProvider(
+        [
+            ObjectMetadata(
+                key=key, size_bytes=len(value), etag=f'"etag-{index}"',
+                sha256=hashlib.sha256(value).hexdigest(),
+                content_type="image/jpeg" if key.endswith(".jpg") else "application/json",
+            )
+            for index, (key, value) in enumerate(payloads.items(), 1)
+        ],
+        payloads,
+    )
+    archive = tmp_path / "coco-full-source-rescan.zip"
+    build_storage_scan_material_review_archive(
+        provider, archive,
+        task_id="coco-full-source", project_id="p-coco-full",
+        execution_generation=1, storage_source_id="s3-source", storage_type="s3",
+        prefix="", recursive=True, import_format="coco", intent="storage_rescan",
+    )
+    with zipfile.ZipFile(archive, "r") as review:
+        rows = [
+            json.loads(line)
+            for line in review.read("review.jsonl").decode("utf-8").splitlines()
+        ]
+        annotations = [
+            json.loads(line)
+            for line in review.read(REVIEW_DETECTION_ANNOTATIONS_MEMBER).decode("utf-8").splitlines()
+        ]
+    assert {row["object_key"] for row in rows} == {"train/a.jpg", "extra.jpg"}
+    assert {row["object_key"] for row in annotations} == {"train/a.jpg"}
