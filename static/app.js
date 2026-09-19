@@ -2285,7 +2285,7 @@ window.installUsability417=function(){
     const d=dashboardData42(), maxDay=Math.max(1,...d.days.map(x=>x.count));
     const categoryHtml=d.catRows.length?d.catRows.slice(0,6).map(([k,v])=>`<div class="dash-rank-row"><span>${esc(k)}</span><i><b style="width:${Math.max(8,v/Math.max(1,d.algs.length)*100)}%"></b></i><strong>${v}</strong></div>`).join(''):'<div class="dash-empty">暂无分类数据</div>';
     const datasetHtml=Object.entries(d.dsKinds).map(([k,v])=>`<div class="dash-ds-chip"><span>${k}</span><b>${v}</b></div>`).join('');
-    const recent=d.jobs.slice(0,6).map(j=>`<tr><td><b>${esc(j.run_name||j.algorithm_name||j.name||j.id)}</b><small>${esc(j.framework||'')}</small></td><td><span class="pill ${['done','finished','completed'].includes(j.status)?'ok':j.status==='failed'?'err':'warn'}">${esc(statusName(j.status))}</span></td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td>${fmtHours422(jobDuration422(j))}</td><td>${j.progress_percent!=null?Math.round(j.progress_percent)+'%':'-'}</td></tr>`).join('')||'<tr><td colspan="5">暂无训练记录</td></tr>';
+    const recent=d.jobs.slice(0,6).map(j=>`<tr><td><b>${esc(j.run_name||j.algorithm_name||j.name||j.id)}</b><small>${esc(j.framework||'')}</small></td><td><span class="pill ${['done','finished','completed'].includes(j.status)?'ok':j.status==='failed'?'err':'warn'}">${esc(statusName(j.status))}</span></td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td>${fmtHours42(jobDuration42(j))}</td><td>${j.progress_percent!=null?Math.round(j.progress_percent)+'%':'-'}</td></tr>`).join('')||'<tr><td colspan="5">暂无训练记录</td></tr>';
     document.getElementById('view').innerHTML=`<div class="dash421">
       <section class="dash421-hero"><div class="dash421-brand"><span>ALGORITHM OPS</span><b>畅联云算法训练</b></div><div class="dash421-actions"><button class="btn dash-dark-btn" onclick="setPage('新建算法')">新建算法</button><button class="btn dash-dark-btn" onclick="setPage('训练任务')">训练任务</button></div></section>
       <section class="dash421-kpis">
@@ -2293,8 +2293,8 @@ window.installUsability417=function(){
         <div class="dash421-kpi"><span>算法总数</span><b>${fmtNum42(d.algs.length)}</b><em>已训练 ${d.trained} · 版本 ${d.versions}</em></div>
         <div class="dash421-kpi hot"><span>正在训练</span><b>${d.running}</b><em>排队 ${d.queued}</em></div>
         <div class="dash421-kpi"><span>数据集</span><b>${fmtNum42(d.dss.length)}</b><em>${fmtNum42(d.totalImages)} 张素材</em></div>
-        <div class="dash421-kpi"><span>训练总时长</span><b>${fmtHours422(d.totalSeconds)}</b><em>累计 ${d.jobs.length} 次</em></div>
-        <div class="dash421-kpi"><span>平均训练时长</span><b>${fmtHours422(d.avgSeconds)}</b><em>成功率 ${(d.successRate*100).toFixed(1)}%</em></div>
+        <div class="dash421-kpi"><span>训练总时长</span><b>${fmtHours42(d.totalSeconds)}</b><em>累计 ${d.jobs.length} 次</em></div>
+        <div class="dash421-kpi"><span>平均训练时长</span><b>${fmtHours42(d.avgSeconds)}</b><em>成功率 ${(d.successRate*100).toFixed(1)}%</em></div>
       </section>
       <section class="dash421-grid top-grid">
         <div class="dash421-card trend-card"><div class="dash421-card-head"><b>近 7 天训练趋势</b><span>${d.done} 已完成 · ${d.failed} 失败</span></div><div class="dash421-bars">${d.days.map(x=>`<div class="dash421-bar"><i style="height:${Math.max(4,x.count/maxDay*100)}%"></i><b>${x.count}</b><span>${x.label}</span></div>`).join('')}</div></div>
