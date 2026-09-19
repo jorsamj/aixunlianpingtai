@@ -9105,7 +9105,21 @@ def get_online_feedback(project_id: str, feedback_id: str):
     row = _online_feedback_repository(project_id).get(feedback_id)
     if row is None:
         raise HTTPException(status_code=404, detail="抽检反馈不存在")
-    return {"ok": True, "feedback": public_feedback(row)}
+    public = public_feedback(row)
+    try:
+        evidence, _, _, _ = _online_prediction_evidence(project_id, row["prediction_id"])
+        public["input_image_url"] = (
+            f"/data/projects/{project_id}/predictions/{evidence['input_file']}"
+        )
+        result_image = project_dir(project_id) / "predictions" / f"{row['prediction_id']}_result.jpg"
+        public["result_image_url"] = (
+            f"/data/projects/{project_id}/predictions/{result_image.name}"
+            if result_image.is_file() else ""
+        )
+    except (HTTPException, ValueError):
+        public["input_image_url"] = ""
+        public["result_image_url"] = ""
+    return {"ok": True, "feedback": public}
 
 
 @app.post("/api/v63/projects/{project_id}/online-feedback", status_code=201)

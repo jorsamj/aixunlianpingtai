@@ -1079,7 +1079,13 @@ window.installUsability417=function(){
       modelPayload(fd, m);
       if(out) out.innerHTML='<div class="loading">检测中...</div>';
       const r=await api(`/api/v12/projects/${pid()}/predict`,{method:'POST',body:fd});
-      if(out) out.innerHTML=renderDetectionResult(r,m.label||m.model_name||m.path||'模型测试');
+      state.lastOnlinePrediction63=r;
+      if(out){
+        out.innerHTML=renderDetectionResult(r,m.label||m.model_name||m.path||'模型测试');
+        if(r.feedback_eligible){
+          out.insertAdjacentHTML('beforeend',`<div class="alert soft online-feedback-prompt63"><b>正式算法版本可提交抽检反馈</b><span>反馈会先进入待复核，不会自动修改数据集或启动训练。</span><div class="row end"><button class="btn primary" onclick="openPredictionFeedback63()">提交抽检反馈</button></div></div>`);
+        }
+      }
     }catch(e){
       toast(friendlyError(e));
       if(out) out.innerHTML=errorBox(e);
@@ -4512,4 +4518,136 @@ window.installUsability417?.();
   if(window.__storageDoUploadImages61)window.doUploadImages426=window.__storageDoUploadImages61;
   const finalRender=render;
   render=function(){if(state.page==='素材存储配置'){renderNav();renderTop();renderSummary();renderStorageSources61()}else finalRender();window.PostRenderNormalizationRuntime?.apply(document.getElementById('view'))};
+})();
+
+
+/* v63: reviewable online inference sampling/feedback. */
+(()=>{
+  state.onlineFeedback63=state.onlineFeedback63||[];
+  state.lastOnlinePrediction63=state.lastOnlinePrediction63||null;
+  const typeName=value=>({
+    correct:'检测正确',
+    false_positive:'误检 / 画面无目标',
+    needs_correction:'漏检 / 框不对',
+  }[value]||value||'-');
+  const statusName63=value=>({
+    pending_review:'待复核',
+    confirmed:'已确认',
+    dismissed:'已忽略',
+  }[value]||value||'-');
+
+  function feedbackRows63(){
+    const rows=state.onlineFeedback63||[];
+    return rows.map(item=>{
+      const source=item.source||{},result=item.result||{};
+      const resultText=item.status==='confirmed'
+        ?(result.needs_manual_annotation?'已入素材库 · 待人工标注':result.annotation_action==='confirmed_empty'?'已确认负样本':'已写入正式真值')
+        :'';
+      return `<tr data-feedback-id="${esc(item.id)}"><td><b>${esc(typeName(item.feedback_type))}</b><div class="muted-line">${esc(item.note||'')}</div></td><td><span class="pill ${item.status==='confirmed'?'ok':'warn'}">${esc(statusName63(item.status))}</span>${resultText?`<div class="muted-line">${esc(resultText)}</div>`:''}</td><td><div>${esc(item.algorithm_id||'-')}</div><div class="muted-line">${esc(item.version_id||'-')}</div></td><td>${Number(source.detection_count||0)} 个</td><td>${esc(item.created_at||'-')}</td><td><div class="row">${item.status==='pending_review'?`<button class="btn mini primary" onclick="openOnlineFeedbackReview63('${esc(item.id)}')">复核</button>`:item.material_id?`<button class="btn mini" onclick="openFeedbackMaterial63('${esc(item.material_id)}')">查看素材</button>`:''}</div></td></tr>`;
+    }).join('')||'<tr><td colspan="6">暂无线上抽检反馈</td></tr>';
+  }
+
+  function renderFeedbackRows63(){
+    const body=document.getElementById('onlineFeedbackRows63');
+    if(body)body.innerHTML=feedbackRows63();
+    const summary=document.getElementById('onlineFeedbackSummary63');
+    if(summary){
+      const rows=state.onlineFeedback63||[],pending=rows.filter(item=>item.status==='pending_review').length;
+      summary.textContent=`${rows.length} 条 · 待复核 ${pending} 条`;
+    }
+  }
+
+  window.loadOnlineFeedback63=async function(){
+    if(!pid())return [];
+    try{
+      const result=await api(`/api/v63/projects/${pid()}/online-feedback?limit=100`);
+      state.onlineFeedback63=result.items||[];
+      renderFeedbackRows63();
+      return state.onlineFeedback63;
+    }catch(error){
+      const body=document.getElementById('onlineFeedbackRows63');
+      if(body)body.innerHTML=`<tr><td colspan="6"><div class="alert err">${esc(error.message||error)}</div></td></tr>`;
+      return [];
+    }
+  };
+
+  const previousRenderTest63=renderTest;
+  renderTest=window.renderTest=function(){
+    previousRenderTest63();
+    const root=document.getElementById('view');
+    if(root&&!document.getElementById('onlineFeedback63')){
+      root.insertAdjacentHTML('beforeend',`<section id="onlineFeedback63" class="panel"><div class="panel-head"><div><div class="panel-title">线上抽检 / 反馈</div><div class="subline">正式算法版本的测试结果可进入人工复核；确认后才允许提升为素材/标注真值。</div></div><div class="row"><span id="onlineFeedbackSummary63" class="item-sub">正在读取…</span><button class="btn small" onclick="loadOnlineFeedback63()">刷新</button></div></div><div class="panel-body"><table class="table"><thead><tr><th>反馈</th><th>状态</th><th>来源算法 / 版本</th><th>预测框</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="onlineFeedbackRows63"><tr><td colspan="6">正在读取…</td></tr></tbody></table></div></section>`);
+    }
+    loadOnlineFeedback63();
+  };
+
+  window.openPredictionFeedback63=function(){
+    const prediction=state.lastOnlinePrediction63;
+    if(!prediction?.feedback_eligible)return toast('当前结果不是可追溯的正式算法版本测试');
+    modal('提交线上抽检反馈',`<div class="form online-feedback-create63"><div class="alert soft"><b>只提交审核证据</b><span>算法 ${esc(prediction.algorithm_id||'-')} · 版本 ${esc(prediction.version_id||'-')} · ${Number((prediction.detections||[]).length)} 个预测框。提交后不会自动修改素材、数据集或训练任务。</span></div><div class="field"><label>人工判断</label><select id="feedbackType63" class="select"><option value="correct">检测正确 — 确认后可把预测框作为真值</option><option value="false_positive">误检 / 画面无目标 — 确认后可作为负样本</option><option value="needs_correction">漏检 / 框不对 — 只进入素材库待人工标注</option></select></div><div class="field"><label>备注</label><textarea id="feedbackNote63" placeholder="可填写现场情况、误检原因、需要补充的数据类型"></textarea></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitPredictionFeedback63()">提交到待复核</button></div></div>`,true);
+  };
+
+  window.submitPredictionFeedback63=async function(){
+    const prediction=state.lastOnlinePrediction63;
+    if(!prediction?.prediction_id)return toast('预测证据已失效，请重新测试');
+    const button=document.querySelector('.online-feedback-create63 .btn.primary');
+    if(button)button.disabled=true;
+    try{
+      const result=await api(`/api/v63/projects/${pid()}/online-feedback`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          prediction_id:prediction.prediction_id,
+          feedback_type:document.getElementById('feedbackType63')?.value||'needs_correction',
+          note:String(document.getElementById('feedbackNote63')?.value||'').trim(),
+        }),
+      });
+      closeModal();
+      await loadOnlineFeedback63();
+      await openOnlineFeedbackReview63(result.feedback.id);
+    }catch(error){toast(error.message||error);if(button)button.disabled=false}
+  };
+
+  window.openOnlineFeedbackReview63=async function(id){
+    try{
+      const result=await api(`/api/v63/projects/${pid()}/online-feedback/${encodeURIComponent(id)}`),item=result.feedback||{},source=item.source||{},detections=source.detections||[];
+      const datasetOptions=(state.datasets||[]).map(row=>`<option value="${esc(row.id)}" ${row.id===state.datasetId?'selected':''}>${esc(row.name||row.id)}</option>`).join('');
+      const actionNote=item.feedback_type==='correct'
+        ?'确认后，只有在素材尚无正式标注时，当前预测框才会写入 AnnotationRepository。'
+        :item.feedback_type==='false_positive'
+          ?'确认前必须明确画面中不存在当前项目所有启用标签目标，系统才会写入 confirmed_empty 负样本。'
+          :'确认后只把原图提升到素材库并标记待人工标注；错误预测框不会写成真值。';
+      const rows=detections.map(row=>`<tr><td>${esc(row.label)}</td><td>${Number(row.confidence||0).toFixed(4)}</td><td>${Number(row.x1).toFixed(1)}, ${Number(row.y1).toFixed(1)}, ${Number(row.x2).toFixed(1)}, ${Number(row.y2).toFixed(1)}</td></tr>`).join('')||'<tr><td colspan="3">无预测框</td></tr>';
+      modal('复核线上抽检反馈',`<div class="online-feedback-review63"><div class="alert soft"><b>${esc(typeName(item.feedback_type))}</b><span>${esc(actionNote)}</span></div><div class="grid2"><div><img class="result-img" src="${esc(item.result_image_url||item.input_image_url||'')}"></div><div><dl class="report429-dl"><dt>算法</dt><dd>${esc(item.algorithm_id||'-')}</dd><dt>版本</dt><dd>${esc(item.version_id||'-')}</dd><dt>Model SHA</dt><dd title="${esc(item.model_sha256||'')}">${esc((item.model_sha256||'').slice(0,16))}…</dd><dt>Input SHA</dt><dd title="${esc(item.input_sha256||'')}">${esc((item.input_sha256||'').slice(0,16))}…</dd></dl></div></div><div class="field"><label>目标数据集</label><select id="feedbackDataset63" class="select">${datasetOptions}</select></div>${item.feedback_type==='false_positive'?'<label class="field check"><input id="feedbackAllAbsent63" type="checkbox"> 已人工确认：画面中不存在当前项目所有启用标签目标</label>':''}<table class="table mini-table"><thead><tr><th>预测标签</th><th>置信度</th><th>坐标</th></tr></thead><tbody>${rows}</tbody></table><div class="row end"><button class="btn" onclick="closeModal()">暂不处理</button><button class="btn primary" onclick="confirmOnlineFeedback63('${esc(item.id)}','${esc(item.feedback_type)}')">确认反馈</button></div></div>`,true);
+    }catch(error){toast(error.message||error)}
+  };
+
+  window.confirmOnlineFeedback63=async function(id,feedbackType){
+    const button=document.querySelector('.online-feedback-review63 .btn.primary');
+    if(button)button.disabled=true;
+    try{
+      const result=await api(`/api/v63/projects/${pid()}/online-feedback/${encodeURIComponent(id)}/confirm`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          expected_feedback_type:feedbackType,
+          dataset_id:document.getElementById('feedbackDataset63')?.value||state.datasetId||'default',
+          confirm_all_labels_absent:!!document.getElementById('feedbackAllAbsent63')?.checked,
+        }),
+      });
+      const feedback=result.feedback||{};
+      closeModal();
+      await loadOnlineFeedback63();
+      if(feedback.result?.needs_manual_annotation){
+        toast('反馈样本已进入素材库，请完成人工标注');
+        setPage('数据集');
+      }else{
+        toast(feedback.result?.annotation_action==='confirmed_empty'?'已确认负样本并写入正式标注':'抽检反馈已确认');
+      }
+    }catch(error){toast(error.message||error);if(button)button.disabled=false}
+  };
+
+  window.openFeedbackMaterial63=function(materialId){
+    state.onlineFeedbackMaterial63=String(materialId||'');
+    setPage('数据集');
+    toast('已进入素材库；反馈样本 ID：'+String(materialId||''));
+  };
 })();
