@@ -90,7 +90,13 @@ jobs:
           grep -q "test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
           grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
-          grep -q 'len({row["source_sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'len({row["source_sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'chip_code TEXT NOT NULL DEFAULT' platform_core/model_artifacts.py
+          grep -Fq 'ON model_artifacts(' platform_core/model_artifacts.py
+          grep -Fq 'project_id, algorithm_id, version_id, target, chip_code, sha256' platform_core/model_artifacts.py
+          grep -Fq 'identity = (target, chip_code, digest)' platform_core/model_artifacts.py
+          grep -Fq 'test_same_sha_rockchip_artifacts_remain_distinct_by_chip' tests/unit/test_model_artifacts.py
+          grep -Fq 'test_repository_migrates_legacy_identity_index_to_chip_scope' tests/unit/test_model_artifacts.py
           grep -q "芯片编码（转换产物优先）" static/modules/external-algorithm-publish.js
           grep -q "model_artifacts" platform_core/model_artifacts.py
           grep -q "storage-test" platform_core/external_algorithm_publish.py
