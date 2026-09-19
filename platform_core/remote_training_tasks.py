@@ -221,7 +221,12 @@ class RemoteTrainingPrepareHandler:
         self._heartbeat(context, 5, "locking_snapshot", "锁定远程训练数据快照")
         if _indexed_content_identity_ready(images):
             split_manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, split_manifest, schema)
+            snapshot = build_snapshot(
+                images,
+                split_manifest,
+                schema,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
             cache_entry = cache.resolve(str(snapshot["snapshot_id"]))
 
         target_work = context.artifacts.artifact_path(training_task.task_id, "work")
@@ -264,7 +269,12 @@ class RemoteTrainingPrepareHandler:
                         f"校验训练素材 {index}/{total}",
                     )
             split_manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, split_manifest, schema)
+            snapshot = build_snapshot(
+                images,
+                split_manifest,
+                schema,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
             self._heartbeat(context, 42, "materializing_bundle", "生成 portable 训练数据")
             bundle = materialize_portable_dataset(
                 target_work,
@@ -605,6 +615,7 @@ class RemoteTrainingPrepareHandler:
                     "framework": "ultralytics",
                     "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                     "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
+                    "supplement_provenance": snapshot.get("supplement_provenance"),
                     "bundle": bundle_ref,
                     "model": model_ref,
                     "result": {
@@ -625,6 +636,7 @@ class RemoteTrainingPrepareHandler:
                 **payload,
                 "remote_input_state": "READY",
                 "remote_prepare_task_id": context.task.task_id,
+                "supplement_provenance": snapshot.get("supplement_provenance"),
                 "remote_execution": remote_execution,
             }
             context.artifacts.atomic_write_json(

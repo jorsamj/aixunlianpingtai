@@ -5784,6 +5784,7 @@ class TrainReq(BaseModel):
     stop_threshold: float = 0.0
     auto_supplement: bool = False
     iteration_action: Optional[Dict[str, str]] = None
+    supplement_candidate_set_id: Optional[str] = ""
     supplement_count: int = 0
     # v42.7 AI mid-training intervention. The AI is advisory within constrained actions; Ground Truth metrics stay authoritative.
     ai_intervention_enabled: bool = False
@@ -5876,12 +5877,99 @@ def _explicit_training_split(payload: TrainReq) -> SplitRequest:
     )
 
 
+def _training_supplement_candidate_set(
+    project_id: str,
+    asset_algorithm: Optional[Dict[str, Any]],
+    payload: TrainReq,
+    split: SplitRequest,
+) -> Optional[Dict[str, Any]]:
+    requested_id = str(payload.supplement_candidate_set_id or "").strip().lower()
+    if not isinstance(asset_algorithm, dict):
+        if requested_id:
+            raise HTTPException(status_code=409, detail="补数据 Candidate Set 所属算法不存在")
+        return None
+
+    current_version_id = str(asset_algorithm.get("current_version_id") or "").strip()
+    current_version = next(
+        (
+            row for row in list(asset_algorithm.get("versions") or [])
+            if str(row.get("id") or row.get("version_id") or "").strip() == current_version_id
+        ),
+        None,
+    )
+    candidate_set = (
+        current_version.get("supplement_data_candidate_set")
+        if isinstance(current_version, dict)
+        else None
+    )
+    if not isinstance(candidate_set, dict) or not str(candidate_set.get("candidate_set_id") or ""):
+        if requested_id:
+            raise HTTPException(status_code=409, detail="当前算法版本没有可用的补数据 Candidate Set")
+        return None
+
+    selected_ids = {
+        str(value)
+        for value in (*split.train_image_ids, *split.test_image_ids)
+        if str(value)
+    }
+    candidate_material_ids = {
+        str(value)
+        for value in list(candidate_set.get("material_ids") or [])
+        if str(value)
+    }
+    adopted_ids = sorted(selected_ids.intersection(candidate_material_ids))
+    if not adopted_ids:
+        if requested_id:
+            raise HTTPException(status_code=409, detail="本次训练未实际选择 Candidate Set 中的素材")
+        return None
+
+    candidate_set_id = str(candidate_set.get("candidate_set_id") or "").strip().lower()
+    if requested_id != candidate_set_id:
+        raise HTTPException(
+            status_code=409,
+            detail="训练请求缺少或使用了过期的 Candidate Set，请刷新训练配置后重试",
+        )
+
+    materials = MaterialRepository(project_dir(project_id))
+    annotations = AnnotationRepository(project_dir(project_id)).get_many(adopted_ids)
+    truth_rows = []
+    for material_id in adopted_ids:
+        material = materials.get(material_id)
+        if material is None:
+            raise HTTPException(status_code=409, detail=f"补数据素材 {material_id} 已不存在")
+        annotation = annotations.get(material_id) or {}
+        truth_rows.append({
+            "id": material_id,
+            "content_sha256": str(material.get("content_sha256") or ""),
+            "annotation_hash": str(
+                annotation.get("content_digest")
+                or material.get("annotation_hash")
+                or ""
+            ),
+            "annotation_state": str(
+                annotation.get("annotation_state")
+                or material.get("annotation_state")
+                or "unannotated"
+            ),
+        })
+
+    from platform_core.online_feedback import build_supplement_training_provenance
+    try:
+        build_supplement_training_provenance(candidate_set, selected_ids, truth_rows)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return dict(candidate_set)
+
+
 def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
     try:
         split = _explicit_training_split(payload)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    supplement_candidate_set = _training_supplement_candidate_set(
+        project_id, asset_algorithm, payload, split,
+    )
     confirmed_iteration_action = (
         _validated_training_iteration_action(asset_algorithm, payload)
         if asset_algorithm is not None and payload.iteration_action
@@ -5913,6 +6001,8 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
                 return JSONResponse(status_code=202, content={"ok": True, "task": _public_task(existing_task), "idempotent": True})
             raise HTTPException(status_code=409, detail="训练任务 ID 已被占用")
     request_payload = payload.model_dump(mode="json", exclude_none=True)
+    if supplement_candidate_set:
+        request_payload["supplement_candidate_set"] = supplement_candidate_set
     prepare_task_id = f"trainprep_{task_id}"
     request_payload.update(
         {
@@ -5996,6 +6086,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
             "external_analysis_id": external_analysis_id,
             "external_category_id": (asset_algorithm or {}).get("external_category_id", ""),
             "confirmed_iteration_action": confirmed_iteration_action,
+            "supplement_candidate_set_id": (
+                str(supplement_candidate_set.get("candidate_set_id") or "")
+                if supplement_candidate_set else ""
+            ),
             "algorithm": payload.algorithm,
             "model": payload.model,
             "queue_priority": int(payload.queue_priority),
@@ -8828,6 +8922,11 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
         },
         requested_params=job.get("requested_train_params"),
         actual_params=job.get("actual_train_params"),
+        supplement_provenance=(
+            snapshot_truth.get("supplement_provenance")
+            if isinstance(snapshot_truth, dict)
+            else job.get("supplement_provenance")
+        ),
         artifacts=[{
             "role": "primary",
             "file_name": model_name,

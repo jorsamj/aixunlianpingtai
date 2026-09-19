@@ -1349,6 +1349,7 @@ class TrainingHandler:
             requested_params=payload,
             actual_params=job.get("actual_train_params"),
             iteration_action=job.get("confirmed_iteration_action") or payload.get("iteration_action"),
+            supplement_provenance=job.get("supplement_provenance"),
             artifacts=[{
                 "role": "primary",
                 "file_name": primary.name,
@@ -1531,7 +1532,12 @@ class TrainingHandler:
         # to rediscover the same content hashes.
         if _indexed_content_identity_ready(images):
             manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, manifest, label_schema)
+            snapshot = build_snapshot(
+                images,
+                manifest,
+                label_schema,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
             cache_entry = bundle_cache.resolve(str(snapshot["snapshot_id"]))
 
         materialized_paths: dict[str, Path] = {}
@@ -1562,7 +1568,12 @@ class TrainingHandler:
                         current_item=f"校验训练素材 {index}/{total_materials}",
                     )
             manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, manifest, label_schema)
+            snapshot = build_snapshot(
+                images,
+                manifest,
+                label_schema,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
 
         if manifest is None or snapshot is None:
             raise RuntimeError("training snapshot preparation did not produce a manifest")
@@ -1711,6 +1722,7 @@ class TrainingHandler:
             "base_selection_reason": base.get("base_selection_reason"),
             "snapshot_id": snapshot["snapshot_id"],
             "dataset_revision_id": snapshot["dataset_revision_id"],
+            "supplement_provenance": snapshot.get("supplement_provenance"),
             "dataset_counts": manifest.counts,
             "epochs": int(payload.get("epochs") or 50),
             "imgsz": int(payload.get("imgsz") or 640),
