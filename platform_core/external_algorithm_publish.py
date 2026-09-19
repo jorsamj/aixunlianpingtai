@@ -549,20 +549,90 @@ class ExternalAlgorithmPublishService:
             return None
         return dict(row)
 
-    def _remote_version_match(self, rows: Iterable[Mapping[str, Any]], version_name: str) -> str:
-        for row in rows:
-            if str(row.get("versionName") or row.get("versionNo") or row.get("name") or "") == str(version_name):
-                for key in ("algoVersionId", "algorithmVersionId", "versionId", "id"):
-                    if row.get(key) not in (None, ""):
-                        return str(row[key])
+    @staticmethod
+    def _remote_version_id(row: Mapping[str, Any]) -> str:
+        for key in ("algoVersionId", "algorithmVersionId", "versionId", "id"):
+            if row.get(key) not in (None, ""):
+                return str(row[key])
         return ""
 
-    def _recover_external_version(self, client: PublishingChangLianClient, product_id: str, version_name: str) -> str:
+    @staticmethod
+    def _remote_version_analysis_id(row: Mapping[str, Any]) -> str:
+        for key in ("analysisId", "algoProductAnalysisId", "productAnalysisId", "analysis_id"):
+            if row.get(key) not in (None, ""):
+                return str(row[key])
+        return ""
+
+    def _remote_version_match(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        version_name: str,
+        *,
+        analysis_id: str = "",
+        require_analysis_identity: bool = False,
+    ) -> str:
+        matches = [
+            dict(row)
+            for row in rows
+            if str(row.get("versionName") or row.get("versionNo") or row.get("name") or "") == str(version_name)
+        ]
+        if not matches:
+            return ""
+        expected_analysis = str(analysis_id or "").strip()
+        if expected_analysis:
+            identified = [
+                row for row in matches
+                if self._remote_version_analysis_id(row)
+            ]
+            exact = [
+                row for row in identified
+                if self._remote_version_analysis_id(row) == expected_analysis
+            ]
+            if len(exact) == 1:
+                return self._remote_version_id(exact[0])
+            if exact or identified or require_analysis_identity:
+                return ""
+        if len(matches) != 1:
+            return ""
+        return self._remote_version_id(matches[0])
+
+    @staticmethod
+    def _algorithm_analysis_ids(algorithm: Mapping[str, Any]) -> set[str]:
+        values = {
+            str(value).strip()
+            for value in (algorithm.get("external_analysis_ids") or [])
+            if str(value or "").strip()
+        }
+        for row in (algorithm.get("external_analyses") or []):
+            if not isinstance(row, Mapping):
+                continue
+            value = str(row.get("analysis_id") or row.get("analysisId") or "").strip()
+            if value:
+                values.add(value)
+        default_id = str(algorithm.get("external_analysis_id") or "").strip()
+        if default_id:
+            values.add(default_id)
+        return values
+
+    def _recover_external_version(
+        self,
+        client: PublishingChangLianClient,
+        product_id: str,
+        version_name: str,
+        *,
+        analysis_id: str = "",
+        require_analysis_identity: bool = False,
+    ) -> str:
         path = str(self.repository.config().get("version_list_by_product") or "").replace("{productId}", product_id)
         if not path:
             return ""
         try:
-            return self._remote_version_match(extract_items(client.list_product_versions(path)), version_name)
+            return self._remote_version_match(
+                extract_items(client.list_product_versions(path)),
+                version_name,
+                analysis_id=analysis_id,
+                require_analysis_identity=require_analysis_identity,
+            )
         except Exception:
             return ""
 
@@ -572,12 +642,19 @@ class ExternalAlgorithmPublishService:
             return existing
         product_id = str(algorithm.get("external_product_id") or "")
         version_name = str(version.get("version_name") or version.get("id") or "")
-        recovered = self._recover_external_version(client, product_id, version_name)
+        analysis_id = str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or "")
+        require_analysis_identity = bool(analysis_id and len(self._algorithm_analysis_ids(algorithm)) > 1)
+        recovered = self._recover_external_version(
+            client,
+            product_id,
+            version_name,
+            analysis_id=analysis_id,
+            require_analysis_identity=require_analysis_identity,
+        )
         if recovered:
             self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
             return recovered
         payload: Dict[str, Any] = {"versionName": version_name, "versionNo": version_name}
-        analysis_id = str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or "")
         if analysis_id:
             payload["analysisId"] = analysis_id
         else:
@@ -587,7 +664,13 @@ class ExternalAlgorithmPublishService:
         try:
             response = client.create_algorithm_version(path, payload)
         except Exception as error:
-            recovered = self._recover_external_version(client, product_id, version_name)
+            recovered = self._recover_external_version(
+                client,
+                product_id,
+                version_name,
+                analysis_id=analysis_id,
+                require_analysis_identity=require_analysis_identity,
+            )
             if recovered:
                 self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
                 return recovered
