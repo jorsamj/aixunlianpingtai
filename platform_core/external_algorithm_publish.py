@@ -111,6 +111,29 @@ def _canonical_chip_code(value: Any) -> str:
     return text
 
 
+_DELIVERABLE_SUFFIXES: Dict[str, frozenset[str]] = {
+    "onnx": frozenset({".onnx"}),
+    "rockchip": frozenset({".rknn"}),
+    "tensorrt": frozenset({".engine"}),
+    "sophon": frozenset({".bmodel"}),
+    "ascend": frozenset({".om"}),
+}
+
+
+def _is_publishable_conversion_output(target: Any, path: Path) -> bool:
+    """Exclude conversion intermediates/metadata from ChangLian weight registration."""
+    normalized = str(target or "").strip().lower()
+    candidate = Path(path)
+    if candidate.name.lower() == "manifest.json":
+        return False
+    suffixes = _DELIVERABLE_SUFFIXES.get(normalized)
+    if suffixes is None:
+        # Preserve legacy multi-file targets (for example Paddle inference)
+        # while still excluding the platform manifest metadata.
+        return True
+    return candidate.suffix.lower() in suffixes
+
+
 class TargetMapping(BaseModel):
     compute_platform_id: str = ""
     chip_code: str = ""
@@ -567,7 +590,9 @@ class ExternalAlgorithmPublishService:
                     continue
                 raw = str(output.get("path") or "").strip()
                 if raw:
-                    candidates.append((target, Path(raw).expanduser(), chip))
+                    output_path = Path(raw).expanduser()
+                    if _is_publishable_conversion_output(target, output_path):
+                        candidates.append((target, output_path, chip))
         dedupe: set[tuple[str, str, str]] = set()
         result: list[Dict[str, Any]] = []
         for target, path, chip in candidates:
