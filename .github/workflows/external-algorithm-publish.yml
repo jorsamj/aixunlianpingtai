@@ -78,6 +78,13 @@ jobs:
           grep -q "external_version_publications" platform_core/external_algorithm_publish.py
           grep -q "_remote_version_analysis_id" platform_core/external_algorithm_publish.py
           grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
+          grep -q "def _mapping_state" platform_core/external_algorithm_publish.py
+          grep -q "MODEL_ARTIFACT_MAPPING_INCOMPLETE" platform_core/external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored" tests/unit/test_external_algorithm_publish.py
+          grep -q "export function publicationPreflight" static/modules/external-algorithm-publish.js
+          grep -q "publicationPreflight(status)" static/modules/external-algorithm-publish.js
+          grep -q "manual publish fetches read-only status before write request" tests/frontend/external-algorithm-publish.test.mjs
           grep -q "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE" platform_core/external_algorithm_publish.py
           grep -q "test_publish_config_rejects_stale_compute_platform_mapping" tests/unit/test_external_algorithm_publish.py
           grep -q "test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_save" tests/unit/test_external_algorithm_publish.py
