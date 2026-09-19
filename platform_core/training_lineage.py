@@ -55,6 +55,25 @@ def _safe_model_name(value: Any) -> str:
     return Path(text).name if text else ""
 
 
+def _iteration_action(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    source = value.get("source")
+    source = source if isinstance(source, Mapping) else value
+    result: dict[str, Any] = {}
+    if action := _text(value.get("action")):
+        result["action"] = action
+    if action_id := _sha256(value.get("action_id"), "iteration_action.action_id"):
+        result["action_id"] = action_id
+    for key in ("decision_id", "evaluation_id", "dataset_revision_id"):
+        if digest := _sha256(source.get(key), f"iteration_action.{key}"):
+            result[key] = digest
+    for key in ("version_id", "snapshot_id"):
+        if item := _text(source.get(key)):
+            result[key] = item
+    return result
+
+
 def _artifact_rows(values: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
     rows = []
     for raw in values or []:
@@ -86,6 +105,7 @@ def build_training_lineage(
     execution: Mapping[str, Any] | None = None,
     requested_params: Mapping[str, Any] | None = None,
     actual_params: Mapping[str, Any] | None = None,
+    iteration_action: Mapping[str, Any] | None = None,
     artifacts: Iterable[Mapping[str, Any]] | None = None,
     training_status: Any = "",
     training_outcome: Any = "",
@@ -132,6 +152,10 @@ def build_training_lineage(
         parameters["actual"] = actual
     if parameters:
         lineage["parameters"] = parameters
+
+    action = _iteration_action(iteration_action)
+    if action:
+        lineage["iteration_action"] = action
 
     artifact_rows = _artifact_rows(artifacts)
     if artifact_rows:

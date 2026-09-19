@@ -47,3 +47,33 @@ def test_training_lineage_is_public_safe_and_derives_agent_node():
 def test_training_lineage_rejects_invalid_dataset_revision():
     with pytest.raises(ValueError, match="dataset_revision_id"):
         build_training_lineage(task_id="train-2", dataset_revision_id="not-a-sha")
+
+
+def test_training_lineage_carries_public_confirmed_iteration_action():
+    lineage = build_training_lineage(
+        task_id="train-action-lineage",
+        dataset_revision_id="a" * 64,
+        iteration_action={
+            "action_id": "b" * 64,
+            "action": "continue_training",
+            "source": {
+                "decision_id": "c" * 64,
+                "evaluation_id": "d" * 64,
+                "version_id": "version-prev",
+                "dataset_revision_id": "a" * 64,
+                "snapshot_id": "snapshot-prev",
+                "private_note": "must-not-leak",
+            },
+            "data_draft": {"problem_samples": ["private.jpg"]},
+        },
+    )
+    assert lineage["iteration_action"] == {
+        "action": "continue_training",
+        "action_id": "b" * 64,
+        "decision_id": "c" * 64,
+        "evaluation_id": "d" * 64,
+        "dataset_revision_id": "a" * 64,
+        "version_id": "version-prev",
+        "snapshot_id": "snapshot-prev",
+    }
+    assert "private" not in str(lineage)

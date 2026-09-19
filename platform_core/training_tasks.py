@@ -1348,6 +1348,7 @@ class TrainingHandler:
             },
             requested_params=payload,
             actual_params=job.get("actual_train_params"),
+            iteration_action=job.get("confirmed_iteration_action") or payload.get("iteration_action"),
             artifacts=[{
                 "role": "primary",
                 "file_name": primary.name,
