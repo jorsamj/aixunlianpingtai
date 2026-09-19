@@ -4,6 +4,7 @@ from train_worker import (
     decide_training_quality_gate,
     derive_training_completion_metadata,
     effective_training_patience,
+    stage_gate_random_eval,
 )
 
 
@@ -84,3 +85,36 @@ def test_target_reached_is_the_only_quality_gate_early_stop():
     assert result["decision"] == "target_reached"
     assert result["should_stop"] is True
     assert "达到提前完成阈值" in result["reason"]
+
+
+
+def test_stage_gate_uses_validation_split_not_final_test_split(tmp_path):
+    from types import SimpleNamespace
+
+    val_dir = tmp_path / "images" / "val"
+    test_dir = tmp_path / "images" / "test"
+    val_dir.mkdir(parents=True)
+    test_dir.mkdir(parents=True)
+    (val_dir / "trial-a.jpg").write_bytes(b"trial")
+    (test_dir / "benchmark-hidden.jpg").write_bytes(b"benchmark")
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("path: .\ntrain: images/train\nval: images/val\ntest: images/test\n", encoding="utf-8")
+
+    trainer = SimpleNamespace(metrics={"metrics/mAP50(B)": 0.5})
+    args = SimpleNamespace(
+        data=str(data_yaml),
+        val_max_samples=0,
+        seed=7,
+        project_dir=str(tmp_path),
+        job_id="gate-test",
+        imgsz=640,
+        device="cpu",
+    )
+
+    metrics, sampled, mode, note = stage_gate_random_eval(trainer, args, epoch=10)
+
+    assert metrics == trainer.metrics
+    assert sampled == ["trial-a.jpg"]
+    assert mode == "all"
+    assert note == ""
+    assert "benchmark-hidden.jpg" not in sampled
