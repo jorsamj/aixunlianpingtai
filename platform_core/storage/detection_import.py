@@ -138,6 +138,7 @@ class DetectionDatasetScanner:
         storage_type: str,
         cancelled: Callable[[], bool] = lambda: False,
         progress: Callable[[str], object] = lambda _key: None,
+        deduplicate_images: bool = True,
     ) -> None:
         self.provider = provider
         self.store = store
@@ -147,6 +148,7 @@ class DetectionDatasetScanner:
         self.storage_type = str(storage_type)
         self.cancelled = cancelled
         self.progress = progress
+        self.deduplicate_images = bool(deduplicate_images)
         self._metadata: dict[str, ObjectMetadata] = {}
         self._basename: dict[str, str | None] = {}
         self._stem: dict[str, str | None] = {}
@@ -269,8 +271,27 @@ class DetectionDatasetScanner:
             metadata,
             storage_source_id=self.storage_source_id,
             storage_type=self.storage_type,
-            seen_hashes=seen_hashes,
+            seen_hashes=seen_hashes if self.deduplicate_images else set(),
         )
+
+    def ensure_all_image_candidates(self) -> int:
+        """Ensure every inventoried image has candidate truth without re-reading existing candidates."""
+        added = 0
+        items = sorted(self._metadata.values(), key=lambda item: str(item.key))
+        for offset in range(0, len(items), BATCH_SIZE):
+            chunk = items[offset:offset + BATCH_SIZE]
+            existing = self.store.existing_candidate_keys(str(item.key) for item in chunk)
+            rows = [
+                self._inspect(item, set())
+                for item in chunk
+                if str(item.key) not in existing
+            ]
+            if rows:
+                added += self.store.upsert_many(rows)
+            if chunk:
+                self.progress(str(chunk[-1].key))
+            _cancelled(self.cancelled)
+        return added
 
     def scan(
         self,

@@ -200,3 +200,26 @@ def test_coco_scan_hashes_real_annotation_json_bytes(tmp_path):
     assert identity["sha256"] == hashlib.sha256(coco_bytes).hexdigest()
     assert identity["size_bytes"] == len(coco_bytes)
     assert identity["etag"]
+
+
+def test_coco_rescan_can_add_unreferenced_images_without_rereading_existing_candidates(tmp_path):
+    image = _jpg()
+    extra = _jpg(120, 90)
+    coco = json.dumps({
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 100, "height": 80}],
+        "annotations": [],
+        "categories": [{"id": 7, "name": "smoke"}],
+    }).encode()
+    payloads = {
+        "dataset/train/a.jpg": image,
+        "dataset/extra.jpg": extra,
+        "dataset/train/_annotations.coco.json": coco,
+    }
+    scanner, store = _scanner(tmp_path, payloads)
+    scanner.deduplicate_images = False
+    scanner.scan("coco", prefix="dataset", recursive=True)
+    assert {row["object_key"] for row in store.iter_candidates()} == {"dataset/train/a.jpg"}
+    scanner.ensure_all_image_candidates()
+    assert {row["object_key"] for row in store.iter_candidates()} == {
+        "dataset/train/a.jpg", "dataset/extra.jpg",
+    }

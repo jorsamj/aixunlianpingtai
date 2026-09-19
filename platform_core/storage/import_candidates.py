@@ -249,6 +249,23 @@ class ImportCandidateStore:
                 "SELECT status, COUNT(*) FROM candidates GROUP BY status"
             )}
 
+    def existing_candidate_keys(self, keys: Iterable[str]) -> set[str]:
+        """Return the caller-bounded subset that already has candidate truth."""
+        keys = list(dict.fromkeys(_key(key) for key in keys))
+        if len(keys) > 500:
+            raise ValueError("candidate existence lookup is limited to 500 keys")
+        if not keys:
+            return set()
+        placeholders = ",".join("?" for _ in keys)
+        with closing(self._connect()) as connection:
+            return {
+                str(row[0])
+                for row in connection.execute(
+                    f"SELECT object_key FROM candidates WHERE object_key IN ({placeholders})",
+                    keys,
+                )
+            }
+
     def inventory_many(self, rows: Iterable[Mapping[str, object]]) -> None:
         with self._transaction() as connection:
             connection.executemany(
