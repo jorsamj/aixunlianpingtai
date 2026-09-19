@@ -64,6 +64,7 @@ test('changlian manual publish preflight blocks stale version analysis before PO
     .toBe('function');
 
   await page.evaluate(async ({algorithmId, versionId}) => {
+    await window.setPage?.('算法列表');
     await window.AlgorithmListRuntime?.refresh?.({render: false});
     const asset = (state.algorithms || []).find(row => String(row.id) === String(algorithmId));
     if (!asset) throw new Error('algorithm missing');

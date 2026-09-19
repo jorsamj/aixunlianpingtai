@@ -55,6 +55,43 @@ async function seedTrainingProject(request, {withVersion = false} = {}) {
   return {project, algorithm: listed.items.find(item => item.id === algorithm.algorithm.id)};
 }
 
+async function routeReadyTrainingRuntime(page) {
+  await page.route('**/api/training_options**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({targets: [{
+      id: 'browser-ultralytics',
+      name: 'Browser Ultralytics',
+      type: 'local',
+      framework: 'ultralytics',
+      status: 'ready',
+      algorithms: [{
+        key: 'yolo_detect',
+        name: 'Ultralytics Detect',
+        base_model: 'yolo11n.pt',
+        default_epochs: 100,
+        default_imgsz: 640,
+        default_batch: 8,
+      }],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n 目标检测'}],
+    }]}),
+  }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({device: 'cpu', batch: 8, workers: 0}),
+  }));
+  await page.route('**/api/v62/training-devices', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      recommended: 'cpu',
+      options: [{id: 'cpu', label: 'CPU', available: true}],
+    }),
+  }));
+}
+
+
 async function selectAllTrainingMaterials(page, trainingDialog) {
   await trainingDialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -64,6 +101,7 @@ async function selectAllTrainingMaterials(page, trainingDialog) {
 
 test('training dialog exposes iteration base, stacked quality charts, and report levels', async ({page, request}) => {
   const {project} = await seedTrainingProject(request);
+  await routeReadyTrainingRuntime(page);
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
   }, project.id);
@@ -111,6 +149,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 
 test('training submit sends the selected candidate pool and configured experiment percentage', async ({page, request}) => {
   const {project} = await seedTrainingProject(request);
+  await routeReadyTrainingRuntime(page);
   let submitted;
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
@@ -151,6 +190,7 @@ test('training submit sends the selected candidate pool and configured experimen
 
 test('training material selection does not depend on dataset groups and supports exact batch selection', async ({page, request}) => {
   const {project, algorithm} = await seedTrainingProject(request);
+  await routeReadyTrainingRuntime(page);
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
   }, project.id);
@@ -196,6 +236,7 @@ test('training material selection does not depend on dataset groups and supports
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
   const {project, algorithm} = await seedTrainingProject(request, {withVersion: true});
+  await routeReadyTrainingRuntime(page);
   await page.route(`**/api/v54/projects/${project.id}/algorithms/${algorithm.id}/iteration-base?framework=ultralytics`, async route => {
     await new Promise(resolve => setTimeout(resolve, 1200));
     await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, base: {
@@ -238,6 +279,11 @@ test('training queue displays numeric priorities and orders each resource by pri
     const body = await response.json();
     await route.fulfill({response, json: {...body, jobs: queuedJobs}});
   });
+  await page.route(`**/api/projects/${project.id}/jobs`, route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(queuedJobs),
+  }));
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '训练任务'}));
   }, project.id);
@@ -310,12 +356,9 @@ test('training report shows requested epochs actual epochs stop reason and targe
   await page.evaluate(() => window.trainingReport425('target-stop-job'));
   const report = page.getByRole('dialog', {name: '训练报告'});
   await expect(report).toBeVisible();
-  await expect(report.getByText('最大轮次', {exact: true})).toBeVisible();
-  await expect(report.getByText('100', {exact: true})).toBeVisible();
-  await expect(report.getByText('实际轮次', {exact: true})).toBeVisible();
-  await expect(report.getByText('46', {exact: true})).toBeVisible();
-  await expect(report.getByText('停止原因', {exact: true})).toBeVisible();
-  await expect(report.getByText('达到目标指标，提前完成', {exact: true})).toBeVisible();
-  await expect(report.getByText('目标状态', {exact: true})).toBeVisible();
-  await expect(report.getByText('已达标', {exact: true})).toBeVisible();
+  const facts = report.locator('.report425-facts');
+  await expect(facts.locator('div', {hasText: '最大轮次'}).locator('b')).toHaveText('100');
+  await expect(facts.locator('div', {hasText: '实际轮次'}).locator('b')).toHaveText('46');
+  await expect(facts.locator('div', {hasText: '停止原因'}).locator('b')).toHaveText('达到目标指标，提前完成');
+  await expect(facts.locator('div', {hasText: '目标状态'}).locator('b')).toHaveText('已达标');
 });
