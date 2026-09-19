@@ -248,6 +248,52 @@ Phase 5 当时 CLOSED 的范围为 **对象存储目录的 Agent storage_scan**�
 - Task Runtime Truth `35344315903`、Portable Deployment `35344315907`：全绿。
 - Remote Training `35344315916`、Remote Material Import `35344315983`、Remote Cleaning `35344315908`：全绿。
 
+# 最新关闭：Remote storage_rescan Phase 1 — 图片对象增量同步
+
+2026-09-19，现有 `MATERIAL_IMPORT + mode=storage_rescan` owner 已扩展为真实 Remote Agent portable flow，**Phase 1（图片对象增量同步）CLOSED**。没有新增 TaskKind，也没有复制 storage_scan / import owner。
+
+当前 CLOSED 边界：
+
+- 前端“重新扫描 / 恢复”支持 **中央 Worker / 远程 Agent** 执行位置；远程选项只来自后端 preflight 的真实在线 effective `material-import` 节点。
+- Agent rescan 使用显式 `intent=storage_rescan`。只有这个 intent 才允许扫描对象存储根范围；普通 `storage_scan` 仍要求显式 prefix，不能借 rescan 放宽目录边界。
+- 控制面在 durable task 创建前冻结当前 MaterialRepository 的 source baseline 到 task-owned artifact；Agent 不访问中央 SQLite/NFS。
+- 长期 OSS/S3/MinIO 凭据仍只在控制面。Agent 通过 execution-lease-fenced broker 分页列举对象，并按需拿短期 GET contract 做真实图片 decode / size / SHA256 / ETag 核验。
+- rescan 是“对象身份核对”而不是素材去重：两个不同 object key 即使内容 SHA256 相同，也必须作为两个独立对象进入增量比较，不能被普通导入 dedup 逻辑吞掉。
+- Agent review 经 immutable upload + size/SHA256 + server-confirm 后，中央端把当前清单与冻结 baseline 分类为：
+  - `NEW`
+  - `MISSING`
+  - `CHANGED`
+  - `UNCHANGED`
+  - 以及 `INVALID / SKIPPED` 质量证据。
+- `CHANGED` 同时比较 content SHA256、size 和 ETag；仅 ETag 变化也不会被误报为 UNCHANGED。
+- 用户仍必须确认恢复策略：新增建索引、缺失标记 unavailable、变化更新；不会自动删除源对象或素材记录。
+- 用户确认后 durable task 释放回现有中央 `storage.rescan` Worker owner 做正式 Repository commit；Agent 不直接写 MaterialRepository / AnnotationRepository。
+- 对 Agent review 的二次防变更检查只做对象 `stat` identity（size + ETag + 可用 SHA 元数据），**不会在中央端重新下载整批图片再 decode/hash**；图片重 I/O 留在 Agent。
+- 变化素材保留原有标注 truth，并设置需要复核；缺失素材只标记源不可用。
+- UI 使用真实 task status / worker / resource_wait_reason / counts，刷新后继续恢复同一 durable task；Real Chrome 已覆盖 Remote Agent preflight → 创建 → review → 待确认链路。
+
+Phase 1 最终代码 HEAD：`64dc87c6e295429f79adfc813093bff33ce61587`。
+
+最终验收：
+
+- Remote Material Import `35408027919`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor `35408027776`：API / Ubuntu / Windows success。
+- Central Node Assignment `35408027804`：success。
+- Task Runtime Truth `35408027769`：success。
+- Portable Deployment `35408027802`：success。
+- Remote Training Runtime `35408027815`：success。
+- Remote Conversion Runtime `35408027785`：success。
+- Remote Cleaning Runtime `35408027775`：API / Ubuntu / Windows / Real Chrome success。
+- Remote RKNN Board Runtime Protocol `35408027782`：API / Ubuntu / Windows / Real Chrome success。
+- Storage Cache Governance `35408027828`：success。
+- `VERSION.txt = 42.24.0` 未修改。
+
+**仍然 OPEN：**
+
+1. `storage_rescan Phase 2`：YOLO `.txt / data.yaml`、COCO annotation JSON、Pascal VOC XML 的新增/删除/替换和增量 AnnotationRepository 更新。
+2. Canonical Annotation Schema：把现有 YOLO / COCO / VOC review evidence 正式版本化，而不是重写已有 Parser。
+3. Rockchip 真实 RK3568 / RK3576 物理板卡 acceptance 仍未发生；软件 CI 不能替代现场 NPU 验收。
+
 # 最新关闭：Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN
 
 2026-09-18，远程 Rockchip RKNN 转换已完成真实 Agent 闭环并 CLOSED。

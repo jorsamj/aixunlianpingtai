@@ -3,6 +3,61 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+## Current closure — Remote storage_rescan Phase 1 image objects CLOSED
+
+Formal `VERSION.txt` remains `42.24.0`.
+
+The existing `MATERIAL_IMPORT + mode=storage_rescan` durable owner now supports a
+real portable Agent execution path for **image-object reconciliation**. No new
+TaskKind, database owner, or parallel storage importer was introduced.
+
+The control plane freezes the current MaterialRepository source baseline into a
+task-owned artifact before remote execution. An Agent can scan the complete
+OSS/S3/MinIO source only under explicit `intent=storage_rescan`; ordinary
+`storage_scan` still requires an explicit prefix. The Agent receives no
+long-lived storage credentials and never opens central SQLite/NFS. It uses the
+existing execution-fenced broker and short-lived GET contracts to inspect real
+image bytes, dimensions, SHA256, size and ETag.
+
+Server-confirmed review evidence is compared with the frozen baseline to produce
+`NEW / MISSING / CHANGED / UNCHANGED` plus quality evidence. Rescan preserves
+object identity: equal content hashes under different object keys are not
+collapsed as duplicates. CHANGED classification includes SHA256, size and ETag.
+
+The user must confirm the reconciliation policy. After confirmation, the same
+task returns to the existing central `storage.rescan` worker for formal
+MaterialRepository updates. The control plane revalidates Agent-reviewed objects
+with provider stat identity (size/ETag/available SHA metadata) rather than
+downloading and hashing all bodies again, so heavy image I/O remains remote.
+Missing records are marked unavailable instead of deleted; changed records keep
+their existing annotation truth but are marked for review.
+
+Frontend Impact Review was completed in the same batch. The storage-source UI
+shows Central Worker / Remote Agent, consumes real preflight node truth, displays
+durable status/worker/wait reason and incremental counts, and restores the same
+task after refresh. Real Chrome covers the remote rescan flow.
+
+Acceptance at code HEAD `64dc87c6e295429f79adfc813093bff33ce61587`:
+- Remote Material Import `35408027919`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor `35408027776`：API / Ubuntu / Windows success。
+- Central Node Assignment `35408027804`：success。
+- Task Runtime Truth `35408027769`：success。
+- Portable Deployment `35408027802`：success。
+- Remote Training Runtime `35408027815`：success。
+- Remote Conversion Runtime `35408027785`：success。
+- Remote Cleaning Runtime `35408027775`：API / Ubuntu / Windows / Real Chrome success。
+- Remote RKNN Board Runtime Protocol `35408027782`：API / Ubuntu / Windows / Real Chrome success。
+- Storage Cache Governance `35408027828`：success。
+
+**OPEN / next code phase:** storage_rescan Phase 2 for YOLO `.txt/data.yaml`,
+COCO annotation JSON and Pascal VOC XML deltas, followed by formal versioning of
+the existing shared evidence as the Canonical Annotation Schema. These are
+extensions of the closed import/review chain, not permission to create parallel
+parsers or owners.
+
+Rockchip physical-board acceptance remains independently OPEN. No CI result
+proves that a user-owned RK3568/RK3576 board has passed hardware acceptance.
+
 
 ## Current closure — Remote MATERIAL_IMPORT Phase 6 COCO / Pascal VOC Agent server_zip CLOSED
 

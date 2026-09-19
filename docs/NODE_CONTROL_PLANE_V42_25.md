@@ -211,6 +211,45 @@ Phase 1 历史验收保持：
 - Remote Training `35324895079`、Remote Conversion `35324894962`：success。
 - `VERSION.txt` 仍为 `42.24.0`。
 
+## 0. 最新关闭：Remote storage_rescan Phase 1 — image-object reconciliation
+
+2026-09-19，现有 `MATERIAL_IMPORT + mode=storage_rescan` 已完成 Remote Agent Phase 1，仍复用 Central Scheduler / assignment lease / execution lease / generation fencing / server-confirm，没有第二套 rescan owner。
+
+控制面与 Agent 边界：
+
+- durable request 显式携带 `execution_mode=agent` 与 `intent=storage_rescan`。
+- 根范围扫描只对 `storage_rescan` intent 开放；普通 remote `storage_scan` 继续强制 prefix。
+- 创建任务时控制面冻结 MaterialRepository baseline 到 task artifact；Agent 永远不打开中央 SQLite/NFS。
+- Agent 只通过 broker list + 短期 GET 做全源图片读取、decode、SHA256、size、ETag 证据；长期对象存储凭据不下发。
+- server-confirm 后中央端基于 frozen baseline 分类 `NEW/MISSING/CHANGED/UNCHANGED`，并保留 `INVALID/SKIPPED`。
+- 同 SHA 不同 object key 在 rescan 中保持独立对象身份，不套用普通素材导入的内容去重语义。
+- 用户确认后任务切回现有 `storage.rescan` local worker 做 Repository commit；Central Scheduler 不会再次把 accepted MATERIAL_IMPORT 分配给 Agent。
+- Agent review 后的中央防变更复核使用 provider `stat` 的 size/ETag/可用 SHA，不重新下载图片正文，因此 heavy I/O 仍在 Agent。
+- 前端执行位置、可用节点、任务状态、等待原因、增量计数全部来自后端 truth；Real Chrome 已覆盖。
+
+Phase 1 最终代码 HEAD：`64dc87c6e295429f79adfc813093bff33ce61587`。
+
+验收：
+
+- Remote Material Import `35408027919`：API / Ubuntu / Windows / Real Chrome success。
+- Node Agent Executor `35408027776`：API / Ubuntu / Windows success。
+- Central Node Assignment `35408027804`：success。
+- Task Runtime Truth `35408027769`：success。
+- Portable Deployment `35408027802`：success。
+- Remote Training Runtime `35408027815`：success。
+- Remote Conversion Runtime `35408027785`：success。
+- Remote Cleaning Runtime `35408027775`：API / Ubuntu / Windows / Real Chrome success。
+- Remote RKNN Board Runtime Protocol `35408027782`：API / Ubuntu / Windows / Real Chrome success。
+- Storage Cache Governance `35408027828`：success。
+- `VERSION.txt` 仍为 `42.24.0`。
+
+**OPEN：**
+
+1. storage_rescan Phase 2 annotation delta：YOLO sidecar/data.yaml、COCO JSON、VOC XML。
+2. Canonical Annotation Schema versioning / adapter convergence。
+3. 用户真实 RK3568 / RK3576 板卡 hardware acceptance。
+4. TensorRT / Sophon / Ascend 继续暂缓。
+
 ## 0. 最新关闭：Remote MODEL_CONVERSION Phase 2 — Rockchip RKNN
 
 2026-09-18，Rockchip RKNN Agent conversion 已 CLOSED。
