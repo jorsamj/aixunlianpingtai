@@ -200,6 +200,37 @@ def _service(root: Path, memory: MemorySecretStore, client_factory=FakePublishin
     return service
 
 
+def test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
+    sources = service.storage_sources_factory()
+    sources.create({
+        "id": "archive_local",
+        "name": "模型归档存储",
+        "type": "local",
+        "config": {},
+        "enabled": True,
+    })
+    service.model_assets.save_config(ModelArtifactConfigPayload(
+        storage_source_id="archive_local",
+        object_prefix="model-assets",
+        auto_upload_enabled=True,
+    ))
+
+    service.save_config(ExternalPublishConfigPayload(
+        storage_source_id="default_local",
+        public_base_url="https://platform.example",
+        target_mappings={
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
+        },
+    ))
+
+    canonical = service.model_assets.repository.config()
+    assert canonical["storage_source_id"] == "archive_local"
+
+
 def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
