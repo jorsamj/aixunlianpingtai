@@ -464,3 +464,101 @@ def test_yolo_rescan_new_material_records_imported_annotation_provenance(tmp_pat
     assert saved["external_annotation"]["source_digest"] == evidence["source_digest"]
     assert saved["external_annotation"]["synced_annotation_hash"] == imported["content_digest"]
     assert saved["imported_split"] == "train"
+
+
+def test_coco_annotation_delta_and_apply_share_generic_external_provenance(tmp_path):
+    from platform_core.storage.rescan_tasks import _build_annotation_deltas
+
+    data_dir = tmp_path / "data"
+    project_id = "project-coco-delta"
+    project_path = data_dir / "projects" / project_id
+    project_path.mkdir(parents=True)
+    (project_path / "meta.json").write_text(
+        '{"labels":["smoke"],"label_meta":[{"status":"active"}]}',
+        encoding="utf-8",
+    )
+    materials = MaterialRepository(project_path)
+    row = material("old-coco", "images/train/a.jpg", "a" * 64)
+    row["external_annotation"] = {
+        "schema_version": 1,
+        "source_format": "coco",
+        "source_digest": "old-coco-source",
+        "annotation_status": "annotated",
+        "synced_annotation_hash": "",
+    }
+    materials.upsert(row)
+
+    store = RescanCandidateStore(tmp_path / "coco-rescan.sqlite3")
+    materials.snapshot_storage_references(store.path, "s3-a")
+    store.upsert_many([candidate(
+        "images/train/a.jpg", "a" * 64, etag=row["etag"],
+    )])
+    json_key = "annotations/instances_train.json"
+    store.inventory_many([{
+        "object_key": json_key,
+        "size_bytes": 128,
+        "etag": "coco-json-etag",
+        "sha256": "9" * 64,
+    }])
+    store.set_label_mapping({7: "smoke"})
+    store.manifest_many([{
+        "object_key": "images/train/a.jpg",
+        "split": "train",
+        "yaml_key": json_key,
+    }])
+    store.annotation_batch(
+        [{
+            "object_key": "images/train/a.jpg",
+            "label_key": json_key,
+            "annotation_status": "annotated",
+            "box_count": 1,
+        }],
+        [{
+            "object_key": "images/train/a.jpg",
+            "line_number": 1,
+            "class_id": 7,
+            "cx": 0.5,
+            "cy": 0.5,
+            "w": 0.25,
+            "h": 0.25,
+            "clipped": False,
+        }],
+        [],
+    )
+    delta = _build_annotation_deltas(store, project_path, source_format="coco")
+    assert delta["counts"] == {"ANNOTATION_CHANGED": 1}
+
+    pending = store.pending_annotation_deltas(["ANNOTATION_CHANGED"])
+    assert pending[0]["source_evidence"]["source_format"] == "coco"
+    assert pending[0]["source_evidence"]["dataset_object"]["sha256"] == "9" * 64
+
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    task_id = "coco-apply"
+    apply_store = RescanCandidateStore(artifacts.artifact_path(task_id, MANIFEST_REF))
+    apply_store.set_meta("annotation_confirmation", {
+        "label_mapping": {"7": "smoke"},
+        "create_labels": [],
+        "accept_quality_report": False,
+    })
+    apply_store.annotation_delta_batch(pending)
+    handler = StorageRescanHandler(data_dir)
+    context = _ApplyContext(artifacts, task_id, project_id)
+    applied = handler._apply_annotation_rescan(
+        context,
+        SimpleNamespace(id="s3-a"),
+        apply_store,
+        materials,
+        {
+            "new": "ignore",
+            "missing": "ignore",
+            "changed": "ignore",
+            "annotation_changed": "update",
+            "annotation_removed": "keep",
+            "annotation_conflicts": "keep",
+        },
+        {"import_format": "coco"},
+    )
+    assert applied["applied"] == 1
+    saved = materials.get("old-coco")
+    assert saved["external_annotation"]["source_format"] == "coco"
+    assert saved["external_annotation"]["source_digest"] == pending[0]["source_evidence"]["source_digest"]
