@@ -141,7 +141,7 @@ def test_iteration_decision_reuses_training_gate_and_prioritizes_weak_label_data
                 "class_id": 0, "label": "smoke", "precision": 0.8, "recall": 0.6,
                 "map50": 0.7, "false_positive": 2, "false_negative": 3,
             }],
-            "weak_labels": ["smoke"],
+            "weak_labels": ["smoke", "fire", "smoke"],
             "error_samples": [{"image": "a.jpg", "fp_count": 2, "fn_count": 3}],
         },
         task_id="train-decision-1",
@@ -153,7 +153,7 @@ def test_iteration_decision_reuses_training_gate_and_prioritizes_weak_label_data
     assert decision["decision"] == "needs_data"
     assert decision["quality_gate"]["metric_key"] == "metrics/mAP50(B)"
     assert decision["quality_gate"]["metric_value"] == 0.78
-    assert decision["weak_labels"] == ["smoke"]
+    assert decision["weak_labels"] == ["smoke", "fire"]
     assert decision["signals"]["false_positive"] == 2
     assert decision["signals"]["false_negative"] == 3
     assert "supplement_weak_label_data" in decision["recommended_actions"]

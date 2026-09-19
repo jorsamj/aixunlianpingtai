@@ -428,11 +428,11 @@ def build_iteration_decision(
 
     continue_threshold = max(0.0, _finite(gate.get("continue_threshold")))
     stop_threshold = max(0.0, _finite(gate.get("stop_threshold")))
-    weak_labels = sorted({
+    weak_labels = list(dict.fromkeys(
         str(label)[:1000]
         for label in list(value.get("weak_labels") or [])
         if str(label or "").strip()
-    })
+    ))
     per_class = [row for row in list(value.get("per_class") or []) if isinstance(row, Mapping)]
     total_fp = sum(max(0, int(row.get("false_positive") or 0)) for row in per_class)
     total_fn = sum(max(0, int(row.get("false_negative") or 0)) for row in per_class)
