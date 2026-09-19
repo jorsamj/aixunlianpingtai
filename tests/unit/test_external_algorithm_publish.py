@@ -140,18 +140,27 @@ def _seed_external_algorithm(root: Path, *, project_id="p1", version_id="v1"):
     return model
 
 
-def _seed_conversion(root: Path, *, project_id="p1", version_id="v1", target="rockchip"):
-    job_root = _project_dir(root, project_id) / "deployment" / "jobs" / "convert-1"
+def _seed_conversion(
+    root: Path,
+    *,
+    project_id="p1",
+    version_id="v1",
+    target="rockchip",
+    job_id="convert-1",
+    chip="rk3568",
+    content=b"converted-rknn",
+):
+    job_root = _project_dir(root, project_id) / "deployment" / "jobs" / job_id
     output = job_root / "outputs" / "model.rknn"
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(b"converted-rknn")
+    output.write_bytes(content)
     (job_root / "job.json").write_text(json.dumps({
-        "id": "convert-1",
+        "id": job_id,
         "status": "done",
         "target": target,
         "source_id": f"version::a1::{version_id}",
         "source_meta": {"algorithm_id": "a1", "version_id": version_id},
-        "params": {"chip": "rk3568"},
+        "params": {"chip": chip},
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
     return output
@@ -217,6 +226,25 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_status"] == "published"
     assert version["external_algo_version_id"] == "av-1"
+
+
+def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path, job_id="convert-rk3568", chip="rk3568", content=b"rk3568-model")
+    _seed_conversion(tmp_path, job_id="convert-rk3576", chip="rk3576", content=b"rk3576-model")
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.weight_creates == 2
+    assert {row["chipCode"] for row in FakePublishingClient.weights} == {"RK3568", "RK3576"}
+    assert {row["computePlatformId"] for row in FakePublishingClient.weights} == {"cp-rk"}
+    artifacts = result["artifacts"]
+    assert {row["chip_code"] for row in artifacts} == {"RK3568", "RK3576"}
 
 
 def test_republish_is_idempotent(tmp_path: Path):
