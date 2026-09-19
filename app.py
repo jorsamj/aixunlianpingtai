@@ -31,7 +31,11 @@ from PIL import Image, ImageDraw
 
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
 from platform_core.annotation_repository import AnnotationRepository
-from platform_core.storage.import_confirmation import confirm_import, public_quality
+from platform_core.storage.import_confirmation import (
+    confirm_import,
+    public_quality,
+    resolve_external_label_mapping,
+)
 from platform_core.algorithms import (
     attach_version as attach_algorithm_version,
     choose_algorithm_iteration_base,
@@ -1427,12 +1431,27 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
 
 class StorageRescanCreateReq(BaseModel):
     execution_mode: Literal["local", "agent"] = "local"
+    import_format: Literal["images", "yolo"] = "images"
+    dataset_yaml: str = ""
+
+    @model_validator(mode="after")
+    def validate_rescan_format(self):
+        self.dataset_yaml = str(self.dataset_yaml or "").strip().replace("\\", "/")
+        if self.import_format != "yolo" and self.dataset_yaml:
+            raise ValueError("dataset_yaml 仅适用于 YOLO 重新扫描")
+        return self
 
 
 class StorageRescanConfirmReq(BaseModel):
     new: Literal['import', 'ignore'] = 'import'
     missing: Literal['mark_unavailable', 'ignore'] = 'mark_unavailable'
     changed: Literal['update', 'ignore'] = 'update'
+    annotation_changed: Literal['update', 'ignore'] = 'update'
+    annotation_removed: Literal['clear', 'keep'] = 'keep'
+    annotation_conflicts: Literal['overwrite', 'keep'] = 'keep'
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
+    create_labels: List[str] = Field(default_factory=list)
+    accept_quality_report: bool = False
 
 
 def _storage_rescan_task(project_id: str, task_id: str):
@@ -1453,6 +1472,19 @@ def _public_storage_rescan(task):
     checkpoint = artifacts.read_json(task.task_id, 'checkpoints/worker.json', default={})
     summary = result if 'counts' in result else checkpoint
     public_error = _public_storage_import_mapping(result).get('error') if result else None
+    annotation_counts = {
+        key: max(0, int(value))
+        for key, value in (summary.get('annotation_counts') or {}).items()
+        if key in {
+            'ANNOTATION_NEW', 'ANNOTATION_CHANGED', 'ANNOTATION_REMOVED',
+            'ANNOTATION_UNCHANGED', 'ANNOTATION_CONFLICT', 'ANNOTATION_INVALID',
+        }
+    }
+    annotation_examples = {
+        key: [_public_storage_import_text(value) for value in values[:20]]
+        for key, values in (summary.get('annotation_examples') or {}).items()
+    }
+    quality_view = public_quality(summary, _public_storage_import_text)
     return {
         'task_id': task.task_id,
         'project_id': task.project_id,
@@ -1460,6 +1492,8 @@ def _public_storage_rescan(task):
         'stage': task.stage,
         'accepted': task.accepted,
         'execution_mode': str(request.get('execution_mode') or 'local'),
+        'import_format': str(request.get('import_format') or summary.get('import_format') or 'images'),
+        'dataset_yaml': str(summary.get('dataset_yaml') or request.get('dataset_yaml') or ''),
         'worker_id': str(task.worker_id or ''),
         'resource_wait_reason': _public_storage_import_text(task.resource_wait_reason or ''),
         'current_item': _public_storage_import_text(task.current_item or ''),
@@ -1473,6 +1507,11 @@ def _public_storage_rescan(task):
             key: [_public_storage_import_text(value) for value in values[:20]]
             for key, values in summary.get('examples', {}).items()
         },
+        'annotation_counts': annotation_counts,
+        'annotation_examples': annotation_examples,
+        'annotation_applied': max(0, int(summary.get('annotation_applied') or 0)),
+        'quality': quality_view.get('quality'),
+        'external_classes': quality_view.get('external_classes', []),
         'applied': max(0, int(summary.get('applied') or 0)),
     }
 
@@ -1522,6 +1561,8 @@ def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str
     return {
         'agent_available': True,
         'reason': '',
+        'agent_supported_formats': ['images', 'yolo'],
+        'local_supported_formats': ['images', 'yolo'],
         'eligible_nodes': [
             {
                 'node_id': str(node.get('node_id') or ''),
@@ -1535,10 +1576,13 @@ def _storage_rescan_agent_preflight(project_id: str, source_id: str) -> Dict[str
 
 @app.get('/api/v61/projects/{project_id}/storage-sources/{source_id}/rescans/preflight')
 def storage_rescan_preflight(project_id: str, source_id: str):
+    result = _storage_rescan_agent_preflight(project_id, source_id)
+    result.setdefault('agent_supported_formats', [])
+    result.setdefault('local_supported_formats', ['images', 'yolo'])
     return {
         'local_available': True,
         'default_execution_mode': 'local',
-        **_storage_rescan_agent_preflight(project_id, source_id),
+        **result,
     }
 
 
@@ -1557,11 +1601,13 @@ def create_storage_rescan(
     request = payload or StorageRescanCreateReq()
     execution_mode = str(request.execution_mode or 'local')
     task_id = uuid.uuid4().hex[:12]
+    import_format = str(request.import_format or 'images')
     request_payload: Dict[str, Any] = {
         'mode': 'storage_rescan',
         'execution_mode': execution_mode,
         'storage_source_id': source_id,
-        'import_format': 'images',
+        'import_format': import_format,
+        'dataset_yaml': str(request.dataset_yaml or ''),
     }
     capabilities = ('storage.rescan',)
     resource_key = f'storage:{source_id}'
@@ -1580,7 +1626,8 @@ def create_storage_rescan(
                     storage_source_id=source_id,
                     prefix='',
                     recursive=True,
-                    import_format='images',
+                    import_format=import_format,
+                    dataset_yaml=str(request.dataset_yaml or ''),
                     allow_root=True,
                     intent='storage_rescan',
                 )
@@ -1629,8 +1676,49 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
     task = _storage_rescan_task(project_id, task_id)
     if task.status is not TaskStatus.AWAITING_CONFIRMATION and task.accepted is not True:
         raise HTTPException(status_code=409, detail='重扫描尚未进入待确认状态')
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task_id, task.payload_ref, default={})
+    import_format = str(request.get('import_format') or 'images')
+    policy = {
+        'new': payload.new,
+        'missing': payload.missing,
+        'changed': payload.changed,
+        'annotation_changed': payload.annotation_changed,
+        'annotation_removed': payload.annotation_removed,
+        'annotation_conflicts': payload.annotation_conflicts,
+    }
+    annotation_confirmation = None
     try:
-        confirm_rescan(shared_task_artifacts(), task_id, payload.model_dump())
+        if import_format == 'yolo':
+            manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
+            store = RescanCandidateStore(manifest)
+            quality = store.quality_summary()
+            if quality.get('issues') and not payload.accept_quality_report:
+                raise ValueError('请先确认并接受标注数据质量报告')
+            if any(normalize_label(code) != code for code in payload.create_labels):
+                raise ValueError('新建标签必须使用规范的平台标签编码')
+            project = get_project(project_id)
+            resolved, create = resolve_external_label_mapping(
+                store.external_classes(),
+                label_mapping=payload.label_mapping,
+                create_labels=payload.create_labels,
+                labels=project_label_items(project),
+            )
+            for code in create:
+                ensure_label(get_project(project_id), code)
+            annotation_confirmation = {
+                'label_mapping': resolved,
+                'create_labels': create,
+                'accept_quality_report': payload.accept_quality_report,
+            }
+        elif payload.label_mapping or payload.create_labels:
+            raise ValueError('仅 YOLO 重新扫描允许提交外部类别映射')
+        confirm_rescan(
+            artifacts,
+            task_id,
+            policy,
+            annotation_confirmation=annotation_confirmation,
+        )
         task = shared_task_repository().resume_after_confirmation(
             task_id,
             required_capabilities=('storage.rescan',),
