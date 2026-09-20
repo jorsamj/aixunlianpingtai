@@ -2478,6 +2478,8 @@ VERSION.txt 仍为 42.24.0
 - Model Artifact 只把真正部署产物归档为模型资产；`manifest.json` 等任务证据不作为新畅联权重文件。
 - 存储测试现在不仅验证 OSS 凭据写/查/删，还用最终长期 URL 读取临时对象。长期 URL 403/404/网络不可达时返回 `MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE`，避免“OSS 能写但畅联云 filePath 不能读”的假成功。
 - 算法产物自动归档为后端强制规则；前端不存在关闭开关。新畅联主数据外部模式固定 60 秒拉取，前端不存在间隔选择器。
+- 正式环境“算法与转换结果存储”选择器仅展示已启用 OSS；旧开发环境若已保存非 OSS，仅保留“开发兼容”项用于迁移。素材存储仍支持现有本地 / OSS / S3 / 服务器等来源。
+- Real Chrome `tests/browser/storage-source.spec.mjs` 已补统一存储页验收：必须同时看到“素材存储”和“算法与转换结果存储”，以及自动归档、长期 URL、从 OSS 生成入口。
 - 自动成果发布 Worker 当前每 30 秒扫描一次。该扫描涉及模型发现/校验，暂不降到 5 秒；主数据同步 thread 每 5 秒仅检查 due，Provider 请求仍严格 60 秒限流。
 - `VERSION.txt` 仍必须保持 `42.24.0`；当前 CI 结论以最新 HEAD 实际 Actions 为准，queued 不等于通过。
 
