@@ -452,3 +452,70 @@ def test_direct_delete_historical_version_keeps_current_and_records_audit(tmp_pa
     assert stored["current_version_id"] == "v5"
     assert [row["id"] for row in stored["versions"]] == ["v5"]
     assert stored["version_operations"][-1]["action"] == "delete_version"
+
+
+def test_rollback_remote_delete_failure_keeps_local_versions_unchanged(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    original = [{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    def fail_remote(_algorithm, _version):
+        raise PlatformError(
+            "EXTERNAL_VERSION_DELETE_FAILED",
+            "远端删除失败",
+            "provider rejected deletion",
+            "请修复远端状态后重试。",
+            502,
+        )
+
+    with pytest.raises(PlatformError) as error:
+        rollback_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            delete_current_version=True,
+            expected_current_version_id="v5",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=fail_remote,
+        )
+
+    assert error.value.code == "EXTERNAL_VERSION_DELETE_FAILED"
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+    assert not stored.get("version_operations")
+
+
+def test_historical_version_remote_delete_failure_keeps_local_version(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    def fail_remote(_algorithm, _version):
+        raise RuntimeError("remote remove timeout")
+
+    with pytest.raises(RuntimeError, match="remote remove timeout"):
+        delete_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=fail_remote,
+        )
+
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+    assert not stored.get("version_operations")
