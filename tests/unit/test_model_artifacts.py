@@ -315,3 +315,17 @@ def test_public_url_includes_storage_source_prefix_and_is_persisted(tmp_path: Pa
     row = next(item for item in service.repository.list(project_id="p1") if item["target"] == "original")
     assert row["public_url"] == service.public_url(row)
     assert row["public_url"].startswith("https://models.example.com/models-central/")
+
+
+def test_model_storage_always_keeps_auto_upload_enabled(tmp_path: Path):
+    service = _service(tmp_path)
+
+    saved = service.save_config(ModelArtifactConfigPayload(
+        storage_source_id="default_local",
+        object_prefix="model-assets",
+        public_base_url="https://models.example.com",
+        auto_upload_enabled=False,
+    ))
+
+    assert saved["auto_upload_enabled"] is True
+    assert service.repository.config()["auto_upload_enabled"] is True
