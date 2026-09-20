@@ -511,6 +511,78 @@ def test_external_training_analysis_requires_choice_for_multiple_methods():
     assert resolve_external_training_analysis(algorithm, "a2") == "a2"
 
 
+
+
+def test_external_sync_only_exposes_enabled_visual_analyses_for_training(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    save_algorithms(path, [])
+    mirror_products_to_algorithms(
+        algorithms_path=path,
+        products=[{"productId": "p1", "productName": "抽烟检测", "categoryId": "c1"}],
+        categories=[{"categoryId": "c1", "categoryName": "行为分析"}],
+        analyses_by_product={
+            "p1": [
+                {"analysisId": "vision-on", "analysisType": 1, "status": 1, "analysisName": "视觉智能分析"},
+                {"analysisId": "llm-on", "analysisType": 3, "status": 1, "analysisName": "大模型智能分析"},
+                {"analysisId": "vision-off", "analysisType": 1, "status": 0, "analysisName": "停用视觉分析"},
+            ],
+        },
+    )
+
+    algorithm = list_algorithms(path)[0]
+    assert algorithm["external_analysis_id"] == "vision-on"
+    assert algorithm["external_analysis_ids"] == ["vision-on"]
+    assert {row["analysis_id"] for row in algorithm["external_analyses"]} == {
+        "vision-on", "llm-on", "vision-off",
+    }
+
+
+def test_external_training_rejects_non_visual_or_disabled_analysis():
+    algorithm = {
+        "id": "external-1",
+        "name": "抽烟检测",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_active": True,
+        "external_analysis_id": "vision-on",
+        "external_analysis_ids": ["vision-on"],
+        "external_analyses": [
+            {"analysis_id": "vision-on", "analysis_type": "1", "status": "1"},
+            {"analysis_id": "llm-on", "analysis_type": "3", "status": "1"},
+            {"analysis_id": "vision-off", "analysis_type": "1", "status": "0"},
+        ],
+    }
+
+    with pytest.raises(Exception) as llm:
+        resolve_external_training_analysis(algorithm, "llm-on")
+    assert getattr(llm.value, "code", "") == "EXTERNAL_ANALYSIS_NOT_VISUAL"
+
+    with pytest.raises(Exception) as disabled:
+        resolve_external_training_analysis(algorithm, "vision-off")
+    assert getattr(disabled.value, "code", "") == "EXTERNAL_ANALYSIS_NOT_VISUAL"
+
+    assert resolve_external_training_analysis(algorithm, "vision-on") == "vision-on"
+
+
+def test_external_training_fails_closed_when_product_has_no_enabled_visual_analysis():
+    algorithm = {
+        "id": "external-1",
+        "name": "大模型分析产品",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_active": True,
+        "external_analysis_id": "",
+        "external_analysis_ids": [],
+        "external_analyses": [
+            {"analysis_id": "llm-on", "analysis_type": "3", "status": "1"},
+        ],
+    }
+
+    with pytest.raises(Exception) as missing:
+        resolve_external_training_analysis(algorithm, "")
+    assert getattr(missing.value, "code", "") == "EXTERNAL_VISUAL_ANALYSIS_MISSING"
+
+
 def test_external_training_rejects_inactive_product():
     import pytest
 
