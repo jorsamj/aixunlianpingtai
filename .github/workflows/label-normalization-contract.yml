@@ -15,6 +15,9 @@ on:
       - 'static/app.js'
       - 'static/modules/annotation-task-view.js'
       - 'static/modules/zip-import-runtime.js'
+      - 'static/index.html'
+      - 'static/main.mjs'
+      - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
@@ -30,6 +33,9 @@ on:
       - 'static/app.js'
       - 'static/modules/annotation-task-view.js'
       - 'static/modules/zip-import-runtime.js'
+      - 'static/index.html'
+      - 'static/main.mjs'
+      - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
@@ -65,6 +71,8 @@ jobs:
           node --check static/app.js
           node --check static/modules/annotation-task-view.js
           node --check static/modules/zip-import-runtime.js
+          node --check static/main.mjs
+          node --check static/zip-import-bootstrap.mjs
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
           git diff --check
       - name: Backend label-normalization contracts
@@ -89,6 +97,9 @@ jobs:
           repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
           zip_runtime = Path('static/modules/zip-import-runtime.js').read_text(encoding='utf-8')
           annotation_view = Path('static/modules/annotation-task-view.js').read_text(encoding='utf-8')
+          index_html = Path('static/index.html').read_text(encoding='utf-8')
+          main_mjs = Path('static/main.mjs').read_text(encoding='utf-8')
+          zip_bootstrap = Path('static/zip-import-bootstrap.mjs').read_text(encoding='utf-8')
 
           required = {
               'app.py': (
@@ -120,6 +131,17 @@ jobs:
                   '等待标注入库',
                   '统一标签并入库',
               ),
+              'static/index.html': (
+                  '/static/app.js?v=42.25.114',
+                  '/static/main.mjs?v=42.25.111',
+                  '/static/zip-import-bootstrap.mjs?v=422531',
+              ),
+              'static/main.mjs': (
+                  'annotation-task-view.js?v=422002',
+              ),
+              'static/zip-import-bootstrap.mjs': (
+                  'zip-import-runtime.js?v=422531',
+              ),
           }
           bodies = {
               'app.py': app,
@@ -128,6 +150,9 @@ jobs:
               'platform_core/task_runtime/repository.py': repository,
               'static/modules/zip-import-runtime.js': zip_runtime,
               'static/modules/annotation-task-view.js': annotation_view,
+              'static/index.html': index_html,
+              'static/main.mjs': main_mjs,
+              'static/zip-import-bootstrap.mjs': zip_bootstrap,
           }
           missing = {
               name: [token for token in tokens if token not in bodies[name]]

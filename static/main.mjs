@@ -24,7 +24,7 @@ import {installTrainingCreateHydrationRuntime} from './modules/training-create-h
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422501';
 import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
 import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
-import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422001';
+import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
 import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422518';
 import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
