@@ -92,6 +92,12 @@ jobs:
           grep -q 'def patch_version' platform_core/algorithm_sql_store.py
           grep -q 'def rollback_version' platform_core/algorithm_sql_store.py
           grep -q 'def sync_external_algorithms' platform_core/algorithm_sql_store.py
+          grep -Fq 'item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)' platform_core/algorithm_sql_store.py
+          grep -Fq 'if "external_analysis_ids" in item:' platform_core/algorithm_sql_store.py
+          grep -Fq 'def _analysis_is_active' platform_core/algorithm_sql_store.py
+          if grep -Fq 'payload.pop("external_analysis_ids", None)' platform_core/algorithm_sql_store.py; then echo "trainable analysis subset must survive payload_json round-trip" >&2; exit 1; fi
+          grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
+          grep -Fq 'test_legacy_sql_rows_without_trainable_subset_infer_only_active_visual_ids' tests/unit/test_algorithm_sql_store.py
           grep -q 'AlgorithmSqlStore(Path(path)).attach_version' platform_core/algorithms.py
           grep -q 'algs=list_algorithm_assets(algorithms_file(pid))' app.py
           ! grep -Fq 'read_json(project_dir(pid)/"algorithms.json",[])' app.py
