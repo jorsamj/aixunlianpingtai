@@ -329,3 +329,30 @@ def test_model_storage_always_keeps_auto_upload_enabled(tmp_path: Path):
 
     assert saved["auto_upload_enabled"] is True
     assert service.repository.config()["auto_upload_enabled"] is True
+
+
+def test_auto_upload_discovers_durable_remote_conversion_root(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    project = _project_dir(tmp_path, "p1")
+    remote_job = project / "deploy" / "jobs" / "remote-convert-1"
+    output = remote_job / "artifacts" / "model_rk3576.rknn"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"durable-remote-rknn")
+    (remote_job / "job.json").write_text(json.dumps({
+        "id": "remote-convert-1",
+        "status": "done",
+        "target": "rockchip",
+        "source_trace": {"algorithm_id": "local-a1", "version_id": "v1"},
+        "params": {"chip": "rk3576"},
+        "outputs": [{"path": str(output), "available": True}],
+    }), encoding="utf-8")
+
+    result = service.run_auto_upload_once()
+
+    assert result["failed"] == 0
+    rows = service.repository.list(project_id="p1", algorithm_id="local-a1", version_id="v1")
+    durable = next(row for row in rows if row["conversion_job_id"] == "remote-convert-1")
+    assert durable["target"] == "rockchip"
+    assert durable["chip_code"] == "rk3576"
+    assert durable["storage_status"] == "UPLOADED"
