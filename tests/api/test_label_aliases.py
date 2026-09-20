@@ -176,3 +176,33 @@ def test_storage_rescan_review_uses_confirmed_alias_suggestions(
     assert public["accepted"] is False
     assert public["external_classes"][0]["name"] == "toukui1"
     assert public["external_classes"][0]["target_label_code"] == "helmet"
+
+
+def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project):
+    project_id, image = seeded_project
+    updated = client.put(
+        f"/api/v12/projects/{project_id}/labels/0",
+        json={
+            "code": "fire",
+            "display_name": "明火",
+            "aliases": ["huomiao1"],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+
+    created = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks",
+        json={
+            "image_ids": [image["id"]],
+            "labels_text": "huomiao1",
+            "provider_id": "alias-test-provider",
+            "task_name": "alias input test",
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["id"]
+    request = app_module.shared_task_artifacts().read_json(
+        task_id, "request.json", default={}
+    )
+    assert request["labels"] == ["fire"]
+    assert request["labels_text"] == "huomiao1"
