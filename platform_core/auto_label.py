@@ -118,7 +118,7 @@ def parse_candidate_response(
                 if code not in label_ids:
                     continue
                 values = [str(alias or "").strip() for alias in aliases]
-                if any(alias and (label == alias or label in alias or alias in label) for alias in values):
+                if any(alias and label == alias for alias in values):
                     matches.append(code)
             if len(matches) == 1:
                 label = matches[0]
