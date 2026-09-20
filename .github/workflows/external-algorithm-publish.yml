@@ -93,6 +93,12 @@ jobs:
           grep -Fq '"/internal/algorithm/algorithm-version/listByProduct/{productId}"' platform_core/external_algorithm_publish.py
           grep -Fq '"/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"' platform_core/external_algorithm_publish.py
           grep -q "test_publish_blocks_when_historical_version_analysis_is_no_longer_current" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_version_has_no_persisted_analysis_identity" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_blocks_when_version_analysis_is_not_current_trainable_visual" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_remote_version_creation_never_falls_back_to_product_id" tests/unit/test_external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_ANALYSIS_MISSING" platform_core/external_algorithm_publish.py
+          grep -q "def _trainable_analysis_ids" platform_core/external_algorithm_publish.py
+          ! grep -Fq 'version.get("external_analysis_id") or algorithm.get("external_analysis_id")' platform_core/external_algorithm_publish.py
           grep -q "identity_ready === false" static/modules/external-algorithm-publish.js
           grep -q "manual publish preflight blocks stale product and analysis identity before artifacts" tests/frontend/external-algorithm-publish.test.mjs
           grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
