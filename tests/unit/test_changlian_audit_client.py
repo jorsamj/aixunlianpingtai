@@ -73,8 +73,9 @@ def test_changlian_http_client_records_every_remote_step_and_redacts_credentials
 
 class BusinessFailureSession(FakeSession):
     def request(self, method, url, **kwargs):
-        if url.endswith("/internal/algorithm/algorithm-product/listAll"):
-            assert kwargs["headers"]["Access-Token"] == "token-1"
+        if url.endswith("/internal/algorithm/product-ai/listAll"):
+            assert kwargs["headers"]["Authorization"] == "Bearer token-1"
+            assert "Access-Token" not in kwargs["headers"]
             return FakeResponse({"code": 99999, "msg": "系统内部错误，请联系管理员", "data": None})
         return super().request(method, url, **kwargs)
 
