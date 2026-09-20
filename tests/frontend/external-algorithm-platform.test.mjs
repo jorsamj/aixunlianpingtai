@@ -4,9 +4,11 @@ import {readFileSync} from 'node:fs';
 
 import {
   algorithmSourceLabel,
+  externalAlgorithmListFilterMatch,
   externalAlgorithmMapping,
   externalAlgorithmTrainingReadiness,
   externalAnalysisOptions,
+  externalCategoryMatches,
   isExternalAlgorithm,
   normalizeExternalPlatformConfig,
 } from '../../static/modules/external-algorithm-platform.js';
@@ -83,6 +85,42 @@ test('external analysis options exclude LLM and disabled visual modes', () => {
   assert.equal(blocked.ready, false);
   assert.equal(blocked.status, 'no-visual-analysis');
   assert.equal(blocked.reason, 'external-visual-analysis-missing');
+});
+
+test('algorithm list supports multi-category source and training-status filters', () => {
+  const categories = [
+    {categoryId: 'root-a', parentId: '', categoryName: 'A'},
+    {categoryId: 'child-a', parentId: 'root-a', categoryName: 'A-1'},
+    {categoryId: 'root-b', parentId: '', categoryName: 'B'},
+  ];
+  assert.equal(externalCategoryMatches('child-a', ['root-a'], categories), true);
+  assert.equal(externalCategoryMatches('root-b', ['root-a', 'root-b'], categories), true);
+  assert.equal(externalCategoryMatches('child-a', ['root-b'], categories), false);
+
+  const internal = {id: 'internal-1', source_type: 'LOCAL', versions: []};
+  const external = {
+    id: 'external-1',
+    source_type: 'EXTERNAL',
+    external_category_id: 'child-a',
+    versions: [{id: 'v1'}],
+  };
+  assert.equal(externalAlgorithmListFilterMatch(internal, {source: 'internal'}), true);
+  assert.equal(externalAlgorithmListFilterMatch(internal, {source: 'external'}), false);
+  assert.equal(externalAlgorithmListFilterMatch(external, {
+    source: 'external',
+    selectedCategoryIds: ['root-a'],
+    categories,
+    trainingStatus: 'trained',
+    readiness: {ready: true},
+  }), true);
+  assert.equal(externalAlgorithmListFilterMatch(external, {
+    trainingStatus: 'blocked',
+    readiness: {ready: false},
+  }), true);
+  assert.equal(externalAlgorithmListFilterMatch(external, {
+    trainingStatus: 'training',
+    jobs: [{asset_algorithm_id: 'external-1', status: 'running'}],
+  }), true);
 });
 
 test('external training readiness mirrors backend master-data fencing', () => {
@@ -198,11 +236,17 @@ test('external algorithm decorator is DOM-idempotent under mutation observers', 
   assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end);
 
-  assert.match(block, /externalCategorySignature/);
-  assert.match(block, /if \(select\.dataset\.externalCategorySignature !== optionSignature\)/);
-  assert.match(block, /if \(create\.textContent !== '↻ 同步新畅联'\) create\.textContent = '↻ 同步新畅联'/);
-  assert.doesNotMatch(block, /select\.innerHTML = options\.join\(''\)/);
-  assert.doesNotMatch(block, /title\?\.querySelector\('\[data-external-stale\]'\)\?\.remove\(\);/);
+  assert.match(block, /data-algorithm-source-filter/);
+  assert.match(block, /内部算法/);
+  assert.match(block, /外部算法/);
+  assert.match(block, /data-algorithm-training-status-filter/);
+  assert.match(block, /全部训练状态/);
+  assert.match(block, /selectedCategoryIds\.has\(row\.id\)/);
+  assert.match(block, /data-category-id/);
+  assert.match(block, /data-external-list-sync/);
+  assert.match(block, /同步畅联云/);
+  assert.doesNotMatch(block, /removeAttribute\('data-action'\)/);
+  assert.doesNotMatch(block, /legacyIndustry\.hidden = true/);
   assert.match(block, /else if \(trainingState\.status === 'stale'\)/);
   assert.match(block, /if \(!staleBadge\)/);
 });
@@ -232,4 +276,23 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   assert.match(source, /id="externalPlatformTest"/);
   assert.match(source, /id="externalPlatformSave"/);
   assert.match(source, /id="externalPlatformSync"/);
+});
+
+
+test('algorithm list keeps search and base filters while adding source filters', () => {
+  const appSource = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const externalSource = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  assert.match(appSource, /id="alg412Q" class="input" placeholder="搜索算法"/);
+  assert.match(appSource, /id="alg412Industry"/);
+  assert.match(appSource, /id="alg412Type"/);
+  assert.match(externalSource, /dataAlgorithmSourceFilter/);
+  assert.match(externalSource, /dataAlgorithmTrainingStatusFilter/);
+});
+
+test('sync settings expose quasi-realtime pull without claiming webhook support', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  assert.match(source, /id="externalAutoSyncInterval"/);
+  assert.match(source, /60 秒为准实时主动轮询/);
+  assert.match(source, /没有 Webhook、订阅或推送接口/);
+  assert.match(source, /auto_sync_interval_seconds: Number\(document\.getElementById\('externalAutoSyncInterval'\)/);
 });
