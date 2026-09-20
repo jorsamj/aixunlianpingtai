@@ -57,7 +57,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /algorithm-weight/add
 ```
 
-`Authorization: Bearer <accessToken>` 语义保持不变。
+`Access-Token: <accessToken>` 是当前新畅联内部业务接口鉴权 Header；不得改回 `Authorization: Bearer ...`。
 
 ### Current execution priority
 
@@ -94,6 +94,19 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 
 
+<!-- CODEX_CHANGLIAN_BUSINESS_CODE_AUTH_2026_09_20 -->
+## Current fix — ChangLian code=0 / Access-Token / full API catalog
+
+2026-09-20 live integration corrected three contract defects:
+
+- Numeric `code=0` must remain `"0"` and audit as SUCCESS; the old `body.get("code") or ""` path incorrectly converted 0 to empty string and marked successful token calls FAILED.
+- New ChangLian internal business calls now send `Access-Token: <accessToken>`. Do not restore `Authorization: Bearer ...`.
+- HTTP 2xx with a non-success business code (for example `99999`) now raises at the HTTP-client boundary while preserving the remote business code and message.
+- The 31 user-supplied official Apifox documents are registered in `docs/CHANGLIAN_APIFOX_API_CATALOG.md` and surfaced in the platform UI. Only verified Method/Path bindings are marked wired; remaining CRUD/page/detail documents must not be guessed.
+- Connection tests remain non-destructive: auth + read-only master-data queries only.
+
+Permanent guards: `tests/unit/test_changlian_audit_client.py`, `tests/frontend/external-algorithm-platform.test.mjs`, `tests/browser/external-algorithm-platform.spec.mjs`, `.github/workflows/external-algorithm-platform.yml`.
+
 ## Current fix — ChangLian internal API namespace
 
 On 2026-09-20 real integration exposed that the previously stored bare business
@@ -107,7 +120,7 @@ publication/recovery calls:
 
 Known legacy bare paths are migrated only on exact match; unrelated custom paths
 are preserved. The platform UI no longer exposes Provider endpoint editing.
-Bearer token semantics remain unchanged. Formal `VERSION.txt` remains
+Business calls use the `Access-Token` header from the application token response. Formal `VERSION.txt` remains
 `42.24.0`.
 
 ## Current closure — Reusable Fixed Benchmark Training v1 CLOSED
