@@ -75,13 +75,13 @@ data.tokenType
 data.expiresIn
 ```
 
-后续业务接口的鉴权 Header **不能再统一假设**，必须逐接口按对应官方 OpenAPI 绑定。
+用户提供的完整 OpenAPI 汇编已经覆盖全部内部算法相关接口。正式合同为：
 
-已确认：
-- `GET /internal/algorithm/product-ai/listAll`（Apifox 515837723e0）使用 `Authorization: Bearer <accessToken>`。
-- “内部应用登出”文档提到 `Access-Token`，只代表该接口自己的合同，不能推广到全部算法业务接口。
+```text
+Authorization: Bearer <accessToken>
+```
 
-因此当前客户端采用 endpoint-specific auth contract；未知接口在读取其官方 OpenAPI 前不得猜测 Header。
+该 Header 用于品目、产品、分析方式、算力环境、算法版本、算法权重以及内部应用登出。登出描述中的“Access-Token”是令牌语义，不是 HTTP Header 名。Token 获取仍使用 Access-Key / Timestamp / Nonce / Signature。
 
 平台允许在“配置中心 → 平台对接”手工填写 Base URL、AccessKey、AccessSecret。测试连接使用当前页面草稿，不要求先保存；保存后的 AccessSecret 不回传浏览器明文。
 
@@ -93,7 +93,7 @@ data.expiresIn
 docs/CHANGLIAN_APIFOX_API_CATALOG.md
 ```
 
-只有已经确认并进入当前代码的接口才绑定 Method / Path；其余算法版本、权重、产品、分析方式、算力环境、品目等 CRUD / 分页 / 详情接口先登记官方文档来源，必须逐项按原文实现，**禁止按名称猜路径或参数**。
+完整汇编中的 31 个接口已经逐项读取；除人员网页登录 `POST /login` 仅作参考外，其余 30 个内部接口均已进入 Provider contract。版本/权重的新增、修改、删除、分页、按产品/分析方式/版本查询和详情接口全部有正式 Method / Path。
 
 “测试连接”只执行鉴权和只读查询，不会用测试动作去新增、修改或删除畅联云数据。
 
@@ -101,9 +101,9 @@ docs/CHANGLIAN_APIFOX_API_CATALOG.md
 
 | 能力 | Method | Path | 本平台用途 |
 |---|---|---|---|
-| 算法品目树 | GET | `/internal/base/algorithm-category/tree` | 品目同步、算法筛选 |
+| 算法品目树 | GET | `/internal/base/category/tree` | 品目同步、算法筛选 |
 | 算法产品列表 | GET | `/internal/algorithm/product-ai/listAll` | 算法主数据同步 |
-| 产品分析方式 | GET | `/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}` | 冻结训练对应 analysisId |
+| 产品分析方式 | GET | `/internal/algorithm/algorithm-analysis/listByProduct/{productId}` | 冻结训练对应 analysisId |
 | 算力环境列表 | GET | `/internal/base/compute-platform/listAll` | 转换产物发布映射 |
 
 同步后的核心身份必须长期保存：
@@ -197,6 +197,33 @@ chipCode
 
 避免网络超时后重复登记。
 
+### 5.3 完整版本 / 权重管理接口
+
+除发布主链使用的“新增 + 幂等反查”外，Provider 已完整实现：
+
+```text
+版本：
+POST /internal/algorithm/algorithm-version/edit
+POST /internal/algorithm/algorithm-version/add
+GET  /internal/algorithm/algorithm-version/remove/{algoVersionIds}
+GET  /internal/algorithm/algorithm-version/list
+GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
+GET  /internal/algorithm/algorithm-version/listByAnalysis/{analysisId}
+GET  /internal/algorithm/algorithm-version/listAll
+GET  /internal/algorithm/algorithm-version/getInfo/{algoVersionId}
+
+权重：
+POST /internal/algorithm/algorithm-weight/edit
+POST /internal/algorithm/algorithm-weight/add
+GET  /internal/algorithm/algorithm-weight/remove/{weightIds}
+GET  /internal/algorithm/algorithm-weight/list
+GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
+GET  /internal/algorithm/algorithm-weight/listByProduct/{productId}
+GET  /internal/algorithm/algorithm-weight/getInfo/{weightId}
+```
+
+删除版本会按新畅联合同同时删除该版本下全部权重，因此删除只允许显式管理调用，不参与测试连接、主数据同步或自动诊断。
+
 ## 6. 模型文件与转换结果
 
 畅联云只登记模型文件的业务信息和可访问地址，不接受本机路径作为正式交付。
@@ -248,7 +275,7 @@ RK3576
 - Secret 安全存储与不回显；
 - draft 凭据测试不先保存；
 - test-sign query contract；
-- Token + endpoint-specific auth Header 调用链；
+- Token + `Authorization: Bearer <accessToken>` 业务调用链；
 - 品目 / 产品 / 分析方式 / 算力环境同步；
 - external product / analysis 训练绑定；
 - Algorithm Version 创建；
@@ -305,10 +332,10 @@ GPU 正式服务器当前仍运行上午部署：
 ```text
 POST /internal/auth/test-sign
 POST /internal/auth/token
-GET  /internal/base/algorithm-category/tree
+GET  /internal/base/category/tree
 GET  /internal/base/compute-platform/listAll
 GET  /internal/algorithm/product-ai/listAll
-GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
+GET  /internal/algorithm/algorithm-analysis/listByProduct/{productId}
 POST /internal/algorithm/algorithm-version/add
 GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
 POST /internal/algorithm/algorithm-weight/add
