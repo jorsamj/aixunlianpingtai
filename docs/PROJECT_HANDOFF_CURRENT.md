@@ -16,17 +16,17 @@
 
 > 本节是当前运行现场快照。它优先于本文后面的历史验收 SHA、历史 NEXT、历史 Current Priority。接手者仍必须第一步重新读取 GitHub 远端，因为本文这次文档提交本身会让 branch HEAD 再前进一位。
 
-本次 Live Handoff 记录的代码 HEAD（文档提交前）：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+本次 Live Handoff 记录的代码 HEAD（文档提交前）：`1e796d0dbe97da05e85beba65d2934aeda3560cd`
 
 当前正式版本：`VERSION.txt = 42.24.0`
 
-上述代码 HEAD 的 Actions 快照（2026-09-20 14:41 +08:00 核对）：
+上述代码 HEAD 的 Actions 快照（2026-09-20 本轮重新核对）：
 - total: 18
 - queued: 18
 - in_progress: 0
 - completed success: 0
 - completed non-success: 0
-- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”。**
+- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”，不得部署或切换 `/data/platform/current`。**
 
 GPU 正式服务器当前仍运行上午部署：
 - full SHA：`ea1b6f198f81556c05d963f4c3f70d2865f316ff`
@@ -169,6 +169,17 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 <!-- ALGORITHM_LIST_FILTERS_AND_SYNC_CADENCE_2026_09_20 -->
 # 算法列表筛选 + 新畅联同步时效
+
+## 本轮 owner 收口（2026-09-20）
+
+算法列表筛选状态已经从 `external-algorithm-platform.js` 的局部状态迁移到 `AlgorithmListRuntime`：
+
+- canonical filter state：`query / selectedCategoryIds[] / source / status`；
+- 外部平台模块只负责外部算法元数据、品目数据、readiness 与 UI decorator，不再保存第二套来源/状态/品目筛选 truth；
+- 搜索范围补齐真实算法编码、`productCode` / `Product ID` / `external_product_id`，同时保留名称、描述、行业、算法类型；
+- 多品目继续 OR 命中，父品目继续包含子品目；
+- 新增永久前端测试与 workflow guard，禁止 `selectedSource / selectedTrainingStatus / selectedCategoryIds` 重新回到外部模块成为独立 owner；
+- 本轮代码级 V8 语法与关键 helper smoke 已通过；GitHub Actions 当前仍 queued，因此尚未形成部署资格。
 
 算法列表当前新增：
 
