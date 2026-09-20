@@ -52,6 +52,7 @@ class FakePublishingClient:
     weights = []
     version_creates = 0
     weight_creates = 0
+    weight_edits = 0
     version_removes = 0
     removed_version_ids = []
     last_version_payload = None
@@ -60,6 +61,8 @@ class FakePublishingClient:
     last_version_create_path = None
     last_weight_list_path = None
     last_weight_create_path = None
+    last_weight_edit_path = None
+    last_weight_edit_payload = None
 
     def __init__(self, **_kwargs):
         pass
@@ -70,6 +73,7 @@ class FakePublishingClient:
         cls.weights = []
         cls.version_creates = 0
         cls.weight_creates = 0
+        cls.weight_edits = 0
         cls.version_removes = 0
         cls.removed_version_ids = []
         cls.last_version_payload = None
@@ -78,6 +82,8 @@ class FakePublishingClient:
         cls.last_version_create_path = None
         cls.last_weight_list_path = None
         cls.last_weight_create_path = None
+        cls.last_weight_edit_path = None
+        cls.last_weight_edit_payload = None
 
     def list_product_versions(self, product_id):
         type(self).last_version_list_path = f"/internal/algorithm/algorithm-version/listByProduct/{product_id}"
@@ -115,6 +121,18 @@ class FakePublishingClient:
         row = {"weightId": f"w-{type(self).weight_creates}", **dict(payload)}
         type(self).weights.append(row)
         return {"code": 200, "data": {"weightId": row["weightId"]}}
+
+    def edit_weight(self, payload):
+        type(self).last_weight_edit_path = "/internal/algorithm/algorithm-weight/edit"
+        type(self).last_weight_edit_payload = dict(payload)
+        weight_id = str(payload.get("weightId") or "")
+        for row in type(self).weights:
+            if str(row.get("weightId") or "") != weight_id:
+                continue
+            type(self).weight_edits += 1
+            row.update({key: value for key, value in dict(payload).items() if key != "weightId"})
+            return {"code": 200, "data": 1}
+        raise RuntimeError(f"weight not found: {weight_id}")
 
 
 class TimeoutAfterDeletePublishingClient(FakePublishingClient):
@@ -513,6 +531,78 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_status"] == "published"
     assert version["external_algo_version_id"] == "av-1"
+
+
+def test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    publication = first["publication"]
+    assert FakePublishingClient.weight_creates == 2
+    assert FakePublishingClient.weight_edits == 0
+
+    service.save_config(ExternalPublishConfigPayload(
+        storage_source_id="default_local",
+        public_base_url="https://platform.example",
+        target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
+            "rockchip": TargetMapping(compute_platform_id="cp-onnx", chip_code="RK3568"),
+        },
+    ))
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    assert service.publication_requires_sync("p1", algorithm, version, publication) is True
+
+    second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert second["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+    assert FakePublishingClient.weight_edits == 1
+    assert FakePublishingClient.last_weight_edit_path == "/internal/algorithm/algorithm-weight/edit"
+    remote = next(row for row in FakePublishingClient.weights if row["fileName"] == "model.rknn")
+    assert remote["computePlatformId"] == "cp-onnx"
+    artifact = next(row for row in second["artifacts"] if row["target"] == "rockchip")
+    assert artifact["external_weight_id"] == remote["weightId"]
+    assert artifact["sync_status"] == "SYNCED"
+
+
+def test_published_weight_public_url_change_edits_existing_file_path_without_duplicate_create(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service = _service(tmp_path, memory)
+
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    publication = first["publication"]
+    assert FakePublishingClient.weight_creates == 2
+
+    model_config = service.model_assets.repository.config()
+    service.model_assets.save_config(ModelArtifactConfigPayload(
+        storage_source_id=str(model_config["storage_source_id"]),
+        object_prefix=str(model_config["object_prefix"]),
+        public_base_url="https://cdn.example",
+        auto_upload_enabled=True,
+    ))
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    assert service.publication_requires_sync("p1", algorithm, version, publication) is True
+
+    second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert second["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+    assert FakePublishingClient.weight_edits == 2
+    assert all(str(row["filePath"]).startswith("https://cdn.example/") for row in FakePublishingClient.weights)
+    assert all(row["sync_status"] == "SYNCED" for row in second["artifacts"])
 
 
 def test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs(tmp_path: Path):
