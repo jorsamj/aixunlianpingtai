@@ -407,3 +407,14 @@ test('visible training jobs match durable priority rank and FIFO order', async (
     ['highest', 'promoted', 'fifo-old', 'fifo-new'],
   );
 });
+
+
+test('visible training jobs prefer backend-proven queue positions within one resource', async () => {
+  const {visibleTrainingJobs} = await import('../../static/modules/training-task-runtime.js');
+  const jobs = [
+    {id: 'later-array', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 3, resource_queue_position_exact: true, queued_at: '2026-08-30T10:01:00Z'},
+    {id: 'highest', status: 'queued', resource_key: 'local:cpu', queue_priority: 1, priority_scheme: 'lower_number_first', resource_queue_position: 1, resource_queue_position_exact: true, queued_at: '2026-08-30T10:03:00Z'},
+    {id: 'middle', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 2, resource_queue_position_exact: true, queued_at: '2026-08-30T10:02:00Z'},
+  ];
+  assert.deepEqual(visibleTrainingJobs(jobs, 'active').map(job => job.id), ['highest', 'middle', 'later-array']);
+});

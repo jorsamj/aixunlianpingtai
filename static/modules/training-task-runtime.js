@@ -312,6 +312,14 @@ export function visibleTrainingJobs(jobs, tab = 'active') {
     const ar = rank(aStatus), br = rank(bStatus);
     if (ar !== br) return ar - br;
     if (['queued', 'waiting'].includes(aStatus)) {
+      const sameResource = String(a?.resource_key || '') === String(b?.resource_key || '');
+      const aPosition = Number(a?.resource_queue_position), bPosition = Number(b?.resource_queue_position);
+      const hasExactPosition = sameResource
+        && a?.resource_queue_position_exact === true
+        && b?.resource_queue_position_exact === true
+        && Number.isFinite(aPosition) && aPosition > 0
+        && Number.isFinite(bPosition) && bPosition > 0;
+      if (hasExactPosition && aPosition !== bPosition) return aPosition - bPosition;
       const priority = priorityValue(a) - priorityValue(b);
       if (priority) return priority;
       const aRank = Number(a?.queue_rank), bRank = Number(b?.queue_rank);
