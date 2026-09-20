@@ -385,7 +385,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
         ? `网络可达（${result?.network_target || node.agent_url || 'Agent 地址'}）`
         : result?.network_reachable === false
           ? `网络不可达（${result?.network_target || node.agent_url || 'Agent 地址'}）`
-          : (result?.message || '未配置 Agent 地址，无法测试网络可达性');
+          : (result?.network_error || '未配置 Agent 地址，无法测试网络可达性');
       notify?.(`${networkText} · ${heartbeatText}`);
       await refresh({paint: true, silent: true});
       return result;
