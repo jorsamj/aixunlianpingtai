@@ -18,15 +18,19 @@ on:
       - 'static/modules/zip-import-runtime.js'
       - 'static/modules/upload-task-center.js'
       - 'static/modules/storage-import-progress.js'
+      - 'static/app.js'
+      - 'static/styles.css'
       - 'tests/unit/test_secrets.py'
       - 'tests/unit/test_zip_multipart.py'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - 'tests/frontend/zip-multipart-upload.test.mjs'
       - 'tests/frontend/upload-task-center.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
+      - 'tests/frontend/import-dock-style.test.mjs'
       - 'tests/browser/zip-import-refresh-recovery.spec.mjs'
       - 'tests/api/test_v19_job_atomic_persistence.py'
       - 'tests/api/test_v19_import_scalability.py'
+      - 'tests/api/test_v19_import_report_externalization.py'
       - 'docs/PROJECT_HANDOFF_CURRENT.md'
       - 'docs/BUG_AUDIT_2026-09-17.md'
       - '.github/workflows/zip-import-durable-runtime.yml'
@@ -49,6 +53,7 @@ jobs:
           node --check static/modules/zip-import-runtime.js &&
           node --check static/modules/upload-task-center.js &&
           node --check static/modules/storage-import-progress.js &&
+          node --check static/app.js &&
           node --check static/zip-import-bootstrap.mjs &&
           node --check tests/browser/zip-import-refresh-recovery.spec.mjs
       - name: Upload, refresh, queue and progress contracts
@@ -58,6 +63,7 @@ jobs:
           tests/frontend/zip-multipart-upload.test.mjs
           tests/frontend/upload-task-center.test.mjs
           tests/frontend/storage-import-progress.test.mjs
+          tests/frontend/import-dock-style.test.mjs
       - name: Permanent ZIP import guards
         shell: bash
         run: |
@@ -78,6 +84,9 @@ jobs:
           grep -Fq 'DEFAULT_TTL_SECONDS = 24 * 60 * 60' platform_core/zip_multipart.py
           grep -Fq 'cleanup_expired_if_due' platform_core/zip_multipart.py
           grep -Fq 'cleanup_expired_if_due(interval_seconds=60)' app.py
+          grep -Fq '@app.delete("/api/v19/projects/{project_id}/import/jobs")' app.py
+          grep -Fq 'window.clearFinishedImportJobs=async' static/app.js
+          grep -Fq '>清空已结束</button>' static/app.js
           grep -Fq 'released_bytes' platform_core/zip_multipart.py
           grep -Fq 'MC_SECRET_MASTER_KEY' platform_core/secrets.py
           grep -Fq 'EncryptedFileSecretStore' platform_core/secrets.py
@@ -121,6 +130,7 @@ jobs:
           python -m pytest -q
           tests/api/test_v19_job_atomic_persistence.py
           tests/api/test_v19_import_scalability.py
+          tests/api/test_v19_import_report_externalization.py
       - name: Backend syntax and wiring guards
         shell: bash
         run: |
