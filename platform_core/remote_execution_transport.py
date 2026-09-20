@@ -3460,6 +3460,9 @@ class RemoteExecutionTransportService:
                 "id": str(task.task_id),
                 "project_id": str(task.project_id),
                 "target": target,
+                "source_trace": dict(conversion.get("source_trace") or {})
+                if isinstance(conversion.get("source_trace"), Mapping)
+                else {},
                 "status": "done",
                 "progress": 100,
                 "stage": "转换完成",
