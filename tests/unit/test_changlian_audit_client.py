@@ -112,7 +112,7 @@ class ProductListSuccessSession(FakeSession):
             assert method.upper() == "GET"
             assert kwargs["headers"]["Authorization"] == "Bearer token-1"
             assert "Access-Token" not in kwargs["headers"]
-            assert kwargs.get("params") == {"productType": "3"}
+            assert kwargs.get("params") == {"productType": "3", "status": "1"}
             return FakeResponse({
                 "code": 0,
                 "msg": "操作成功",
