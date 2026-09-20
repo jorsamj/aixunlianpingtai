@@ -33,7 +33,7 @@ test('changlian platform page tests draft credentials before manual sync', async
           auto_publish_enabled: false,
           auth_mode: 'test_sign_bridge',
           business_auth_mode: 'authorization_bearer',
-          api_document_summary: {total: 31, wired: 10, documented: 20, reference: 1},
+          api_document_summary: {total: 31, wired: 30, documented: 0, reference: 1},
           api_documents: [
             {
               key: 'auth_token',
