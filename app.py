@@ -33,6 +33,7 @@ from platform_core.annotations import annotation_summary, atomic_write_json, nor
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.storage.import_confirmation import (
     confirm_import,
+    mapping_suggestions,
     public_quality,
     resolve_external_label_mapping,
 )
@@ -10277,7 +10278,36 @@ def _v18_image_lookup(root: Path):
     return imgs, by_name, by_stem, by_rel
 
 
-def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any], progress_cb=None) -> bool:
+def _v18_resolve_import_label_id(
+    project: Dict[str, Any],
+    source_key: str,
+    source_name: str,
+    label_mapping: Optional[Dict[str, str]],
+) -> int:
+    normalized_name = normalize_label(source_name)
+    if label_mapping is None:
+        return ensure_label(project, normalized_name)
+    target = str(
+        label_mapping.get(str(source_key))
+        or label_mapping.get(normalized_name)
+        or ""
+    ).strip()
+    if not target:
+        raise ValueError(f"外部标签 {source_name or source_key} 尚未映射到平台标签")
+    labels = project.get("labels") or []
+    if target not in labels:
+        raise ValueError(f"已确认的平台标签已失效：{target}")
+    return labels.index(target)
+
+
+def _v18_import_coco(
+    project_id: str,
+    root: Path,
+    dataset_id: str,
+    report: Dict[str, Any],
+    progress_cb=None,
+    label_mapping: Optional[Dict[str, str]] = None,
+) -> bool:
     json_files = []
     for jp in root.rglob('*.json'):
         try:
@@ -10299,7 +10329,9 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
         for c in cats:
             label = normalize_label(c.get('name') or f'class_{c.get("id")}')
             cid = int(c.get('id'))
-            cat_to_class[cid] = ensure_label(project, label)
+            cat_to_class[cid] = _v18_resolve_import_label_id(
+                project, str(cid), label, label_mapping,
+            )
         anns_by_img: Dict[int, List[Dict[str, Any]]] = {}
         for a in coco.get('annotations', []):
             try:
@@ -10349,12 +10381,23 @@ def _v18_import_coco(project_id: str, root: Path, dataset_id: str, report: Dict[
             report['boxes'] += len(boxes)
             if boxes: report['annotated_images'] += 1
             progress_done += 1
-            if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 COCO 图片 {progress_done}/{total_expected}')
+            if progress_cb:
+                progress_cb(
+                    progress_done, total_expected,
+                    f'正在转换 COCO 标签并写入标注 {progress_done}/{total_expected}',
+                )
     report['detected_format'] = 'COCO'
     return True
 
 
-def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any], progress_cb=None) -> bool:
+def _v18_import_voc(
+    project_id: str,
+    root: Path,
+    dataset_id: str,
+    report: Dict[str, Any],
+    progress_cb=None,
+    label_mapping: Optional[Dict[str, str]] = None,
+) -> bool:
     import xml.etree.ElementTree as ET
     xml_files = list(root.rglob('*.xml'))
     if not xml_files:
@@ -10381,7 +10424,9 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
             for obj in objects:
                 label = normalize_label(obj.findtext('name') or 'object')
                 if not label: continue
-                cls = ensure_label(project, label)
+                cls = _v18_resolve_import_label_id(
+                    project, label, label, label_mapping,
+                )
                 bb = obj.find('bndbox')
                 if bb is None: continue
                 try:
@@ -10411,25 +10456,37 @@ def _v18_import_voc(project_id: str, root: Path, dataset_id: str, report: Dict[s
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 VOC 图片 {progress_done}/{total_expected}')
+        if progress_cb:
+            progress_cb(
+                progress_done, total_expected,
+                f'正在转换 VOC 标签并写入标注 {progress_done}/{total_expected}',
+            )
     if any_imported:
         report['detected_format'] = 'Pascal VOC'
     return any_imported
 
 
-def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any], progress_cb=None) -> bool:
+def _v18_import_yolo(
+    project_id: str,
+    root: Path,
+    dataset_id: str,
+    report: Dict[str, Any],
+    progress_cb=None,
+    label_mapping: Optional[Dict[str, str]] = None,
+) -> bool:
     label_files = [x for x in root.rglob('*.txt') if x.name.lower() not in {'classes.txt','obj.names','_darknet.labels','train.txt','val.txt','test.txt'}]
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
     if not image_files:
         return False
     names = _v18_collect_class_names(root, label_files)
     project = get_project(project_id)
-    if names:
-        for n in names:
-            ensure_label(project, n)
-    elif not project.get('labels'):
-        ensure_label(project, 'object')
-        names = ['object']
+    if label_mapping is None:
+        if names:
+            for n in names:
+                ensure_label(project, n)
+        elif not project.get('labels'):
+            ensure_label(project, 'object')
+            names = ['object']
     imported_names = names or project.get('labels', [])
     label_by_stem: Dict[str, List[Path]] = {}
     for lf in label_files:
@@ -10457,9 +10514,21 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
                     if old_cls < 0:
                         report['invalid_boxes'] += 1
                         continue
-                    if old_cls < len(imported_names):
-                        label = normalize_label(imported_names[old_cls])
-                        new_cls = get_label_id(project, label)
+                    source_label = (
+                        normalize_label(imported_names[old_cls])
+                        if old_cls < len(imported_names)
+                        else f'class_{old_cls}'
+                    )
+                    if label_mapping is not None:
+                        try:
+                            new_cls = _v18_resolve_import_label_id(
+                                project, str(old_cls), source_label, label_mapping,
+                            )
+                        except ValueError:
+                            report['skipped_labels'] += 1
+                            raise
+                    elif old_cls < len(imported_names):
+                        new_cls = get_label_id(project, source_label)
                     elif old_cls < len(project.get('labels', [])):
                         new_cls = old_cls
                     else:
@@ -10489,7 +10558,11 @@ def _v18_import_yolo(project_id: str, root: Path, dataset_id: str, report: Dict[
         if boxes: report['annotated_images'] += 1
         any_imported = True
         progress_done += 1
-        if progress_cb: progress_cb(progress_done,total_expected,f'正在导入 YOLO 图片 {progress_done}/{total_expected}')
+        if progress_cb:
+            progress_cb(
+                progress_done, total_expected,
+                f'正在转换 YOLO 标签并写入标注 {progress_done}/{total_expected}',
+            )
     if any_imported:
         report['detected_format'] = 'YOLO'
     return any_imported
@@ -10556,6 +10629,8 @@ async def v18_import_dataset_auto(project_id: str, dataset_id: str, file: Upload
 # -----------------------------
 class V19ImportStartReq(BaseModel):
     selected_paths: Optional[List[str]] = None
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
+    create_labels: List[str] = Field(default_factory=list)
 
 
 def v19_import_jobs_dir(project_id: str) -> Path:
@@ -10666,15 +10741,22 @@ def v19_update_job(project_id: str, job_id: str, **kwargs):
 
 
 def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
+    import xml.etree.ElementTree as ET
+
     images: List[Dict[str, Any]] = []
     hints = set()
     file_count = 0
     total_size = 0
+    external_classes: List[Dict[str, Any]] = []
+    detected_format = "images"
+    annotation_box_count = 0
     with zipfile.ZipFile(zip_path, "r") as zf:
+        members = []
         for info in zf.infolist():
             name = v19_normalize_zip_path(info.filename)
             if not name or name.endswith("/"):
                 continue
+            members.append((name, info))
             file_count += 1
             total_size += max(0, int(getattr(info, "file_size", 0) or 0))
             low = name.lower()
@@ -10692,13 +10774,165 @@ def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
                 hints.add("COCO")
             if low.endswith(".xml"):
                 hints.add("VOC")
+
+        # Match the worker's import priority: COCO -> VOC -> YOLO.
+        for name, info in members:
+            if Path(name).suffix.lower() != ".json":
+                continue
+            try:
+                data = json.loads(zf.read(info).decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
+            if not (
+                isinstance(data, dict)
+                and isinstance(data.get("images"), list)
+                and isinstance(data.get("annotations"), list)
+                and isinstance(data.get("categories"), list)
+            ):
+                continue
+            counts: Dict[str, int] = {}
+            image_sets: Dict[str, set] = {}
+            for ann in data.get("annotations") or []:
+                key = str(ann.get("category_id"))
+                counts[key] = counts.get(key, 0) + 1
+                image_sets.setdefault(key, set()).add(str(ann.get("image_id")))
+            rows = []
+            for category in sorted(data.get("categories") or [], key=lambda row: int(row.get("id", 0))):
+                key = str(int(category.get("id", 0)))
+                label = normalize_label(category.get("name") or f"class_{key}")
+                if label:
+                    rows.append({
+                        "class_id": key,
+                        "name": label,
+                        "box_count": counts.get(key, 0),
+                        "image_count": len(image_sets.get(key, set())),
+                    })
+            if rows:
+                external_classes = rows
+                annotation_box_count = sum(int(row["box_count"]) for row in rows)
+                detected_format = "COCO"
+                break
+
+        if not external_classes:
+            stats: Dict[str, Dict[str, Any]] = {}
+            for name, info in members:
+                if Path(name).suffix.lower() != ".xml":
+                    continue
+                try:
+                    root = ET.fromstring(zf.read(info))
+                except Exception:
+                    continue
+                seen = set()
+                for obj in root.findall("object"):
+                    label = normalize_label(obj.findtext("name") or "")
+                    if not label:
+                        continue
+                    row = stats.setdefault(label, {"class_id": label, "name": label, "box_count": 0, "image_count": 0})
+                    row["box_count"] += 1
+                    if label not in seen:
+                        row["image_count"] += 1
+                        seen.add(label)
+            if stats:
+                external_classes = sorted(stats.values(), key=lambda row: str(row["name"]))
+                annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
+                detected_format = "Pascal VOC"
+
+        if not external_classes:
+            names: List[str] = []
+            for name, info in members:
+                low = name.lower()
+                base = Path(low).name
+                if base in {"data.yaml", "data.yml"} or low.endswith(".yaml") or low.endswith(".yml"):
+                    try:
+                        parsed = yaml.safe_load(zf.read(info).decode("utf-8", errors="ignore")) or {}
+                        raw_names = parsed.get("names", [])
+                        if isinstance(raw_names, dict):
+                            names = [
+                                normalize_label(raw_names[key])
+                                for key in sorted(raw_names, key=lambda value: int(value) if str(value).isdigit() else str(value))
+                            ]
+                        elif isinstance(raw_names, list):
+                            names = [normalize_label(value) for value in raw_names]
+                    except Exception:
+                        names = []
+                    if names:
+                        break
+            if not names:
+                for name, info in members:
+                    if Path(name).name.lower() not in {"classes.txt", "obj.names", "_darknet.labels"}:
+                        continue
+                    try:
+                        names = [
+                            normalize_label(value)
+                            for value in zf.read(info).decode("utf-8", errors="ignore").splitlines()
+                            if normalize_label(value)
+                        ]
+                    except Exception:
+                        names = []
+                    if names:
+                        break
+
+            counts: Dict[int, int] = {}
+            image_sets: Dict[int, set] = {}
+            for name, info in members:
+                low = name.lower()
+                if Path(low).suffix != ".txt":
+                    continue
+                if Path(low).name in {"classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"}:
+                    continue
+                if "/labels/" not in "/" + low:
+                    continue
+                try:
+                    lines = zf.read(info).decode("utf-8", errors="ignore").splitlines()
+                except Exception:
+                    continue
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) < 5:
+                        continue
+                    try:
+                        class_id = int(float(parts[0]))
+                    except Exception:
+                        continue
+                    if class_id < 0:
+                        continue
+                    counts[class_id] = counts.get(class_id, 0) + 1
+                    image_sets.setdefault(class_id, set()).add(Path(name).stem)
+            if names or counts:
+                max_class = max([len(names) - 1, *counts.keys()], default=-1)
+                external_classes = [{
+                    "class_id": str(index),
+                    "name": names[index] if index < len(names) and names[index] else f"class_{index}",
+                    "box_count": counts.get(index, 0),
+                    "image_count": len(image_sets.get(index, set())),
+                } for index in range(max_class + 1)]
+                annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
+                detected_format = "YOLO"
+
     return {
         "file_count": file_count,
         "image_count": len(images),
         "images": images,
         "format_hints": sorted(hints) or ["未知"],
+        "detected_format": detected_format,
+        "external_classes": external_classes,
+        "annotation_box_count": annotation_box_count,
         "uncompressed_size_mb": round(total_size / 1024 / 1024, 2),
     }
+
+
+def _v19_prepare_scan(project_id: str, scan: Dict[str, Any]) -> Dict[str, Any]:
+    prepared = dict(scan or {})
+    classes = list(prepared.get("external_classes") or [])
+    if classes:
+        prepared["external_classes"] = mapping_suggestions(
+            classes, project_label_items(get_project(project_id)),
+        )
+        prepared["label_confirmation_required"] = True
+    else:
+        prepared["external_classes"] = []
+        prepared["label_confirmation_required"] = False
+    return prepared
 
 
 def v19_copy_selected_tree(extracted: Path, selected_root: Path, selected_paths: List[str]):
@@ -10794,13 +11028,23 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
                     v19_update_job(project_id, job_id, stage=msg, progress=round(prog,1), processed=done, total_selected=total, message=msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
                 v19_update_job(project_id, job_id, stage="正在解析 COCO / VOC / YOLO 标注", progress=44, processed=0)
-                imported = _v18_import_coco(project_id, parse_root, dataset_id, report, import_progress)
+                frozen_mapping = dict(job.get("label_mapping") or {}) or None
+                imported = _v18_import_coco(
+                    project_id, parse_root, dataset_id, report, import_progress,
+                    label_mapping=frozen_mapping,
+                )
                 if not imported:
                     v19_update_job(project_id, job_id, stage="正在解析 VOC 标注", progress=44, processed=0)
-                    imported = _v18_import_voc(project_id, parse_root, dataset_id, report, import_progress)
+                    imported = _v18_import_voc(
+                        project_id, parse_root, dataset_id, report, import_progress,
+                        label_mapping=frozen_mapping,
+                    )
                 if not imported:
                     v19_update_job(project_id, job_id, stage="正在解析 YOLO / 原始图片", progress=44, processed=0)
-                    imported = _v18_import_yolo(project_id, parse_root, dataset_id, report, import_progress)
+                    imported = _v18_import_yolo(
+                        project_id, parse_root, dataset_id, report, import_progress,
+                        label_mapping=frozen_mapping,
+                    )
                 if not imported or report.get("imported_images", 0) == 0:
                     raise RuntimeError("没有识别到可导入的数据。请确认 ZIP 内包含图片，并检查目录结构是否正确。")
                 if report.get("boxes", 0) == 0:
@@ -10816,6 +11060,8 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 if report.get("skipped_images", 0):
                     report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
                 report["labels"] = get_project(project_id).get("labels", [])
+                report["label_mapping"] = dict(job.get("label_mapping") or {})
+                report["label_confirmed_at"] = str(job.get("label_confirmed_at") or "")
             except BaseException:
                 # Importers persist image bytes and annotation truth before the
                 # buffered material projection is committed. A failed import must
@@ -10950,7 +11196,7 @@ def v19_complete_multipart_upload(project_id: str, upload_id: str):
                        upload_progress=100, uploaded_bytes=zip_path.stat().st_size,
                        message="分片合并完成，正在检查 ZIP 目录结构")
         scan_started = time.time()
-        scan = v19_scan_zip(zip_path)
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path))
         scan_seconds = round(max(0.0, time.time() - scan_started), 2)
         if scan.get("image_count", 0) == 0:
             raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
@@ -11010,7 +11256,7 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         raise HTTPException(status_code=400, detail="上传失败：ZIP 文件为空。")
     scan_started = time.time()
     try:
-        scan = v19_scan_zip(zip_path)
+        scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path))
     except zipfile.BadZipFile:
         shutil.rmtree(jd, ignore_errors=True)
         raise HTTPException(status_code=400, detail="ZIP 校验失败：压缩包已损坏、格式不正确或不是有效 ZIP。")
@@ -11041,9 +11287,48 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
 def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartReq):
     job = v19_read_job(project_id, job_id)
     if job.get("status") == "running":
-        return job
+        return v19_public_job(project_id, job)
     if job.get("status") not in {"selecting", "failed"}:
         raise HTTPException(status_code=400, detail="当前导入任务状态不允许重新开始")
+
+    classes = list(job.get("external_classes") or [])
+    if classes:
+        create_labels = [normalize_label(code) for code in payload.create_labels]
+        if any(not code or normalize_label(code) != code for code in create_labels):
+            raise HTTPException(status_code=422, detail="新建标签必须使用规范的平台标签编码")
+        project = get_project(project_id)
+        try:
+            resolved, create = resolve_external_label_mapping(
+                classes,
+                label_mapping=payload.label_mapping,
+                create_labels=create_labels,
+                labels=project_label_items(project),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        for code in create:
+            ensure_label(project, code)
+        confirmation = {
+            "label_mapping": resolved,
+            "create_labels": create,
+            "external_classes": [
+                {"class_id": str(row.get("class_id")), "name": str(row.get("name") or "")}
+                for row in classes
+            ],
+        }
+        job.update({
+            "label_mapping": resolved,
+            "create_labels": create,
+            "label_confirmation_required": False,
+            "label_confirmed_at": now_iso(),
+            "label_confirmation_digest": hashlib.sha256(json.dumps(
+                confirmation, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest(),
+        })
+        v19_write_job(project_id, job)
+    elif payload.label_mapping or payload.create_labels:
+        raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
+
     selected_paths = payload.selected_paths or []
     if selected_paths:
         allowed = {x.get("path") for x in v19_read_scan_images(project_id, job_id)}
@@ -11051,8 +11336,19 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
         if not selected_paths:
             raise HTTPException(status_code=400, detail="没有选择有效图片")
     import threading
-    v19_update_job(project_id, job_id, status="running", stage="准备后台解析", progress=3, selected_count=len(selected_paths) or job.get("image_count", 0), message="已缩放到后台解析")
-    th = threading.Thread(target=v19_import_worker, args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths), daemon=True)
+    v19_update_job(
+        project_id, job_id,
+        status="running",
+        stage="准备后台解析",
+        progress=3,
+        selected_count=len(selected_paths) or job.get("image_count", 0),
+        message="标签确认已冻结，正在进入后台解析",
+    )
+    th = threading.Thread(
+        target=v19_import_worker,
+        args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths),
+        daemon=True,
+    )
     th.start()
     return v19_public_job(project_id, v19_read_job(project_id, job_id))
 
