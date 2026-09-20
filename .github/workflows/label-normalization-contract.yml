@@ -142,6 +142,7 @@ jobs:
                   'def _v36_detect_annotated_formats(',
                   'legacy_annotated_import_blocked',
                   'def remember_project_label_aliases(',
+                  'def _prune_canonical_label_alias_conflicts(',
                   '"aliases": normalize_label_aliases(',
               ),
               'platform_core/auto_label.py': (
