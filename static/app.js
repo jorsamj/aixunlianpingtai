@@ -4054,8 +4054,10 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     try{await api(`/api/v62/projects/${pid()}/material-batches/${id}/cancel`,{method:'POST'});await pollImportRemap414(id,state.import412RemapSource||'',state.import412RemapTarget||'')}catch(e){toast(e.message||e)}
   };
   window.remapImport414=async function(source,selectId){
+    if(state.import412RemapSubmitting)return;
     const target=document.getElementById(selectId)?.value||'';if(!target)return toast('请选择标签库中的标准标签');
     const ids=[...state.import412Selected];if(!ids.length)return toast('请选择本次导入素材');
+    state.import412RemapSubmitting=true;
     try{
       const task=await api(`/api/v52/projects/${pid()}/labels/remap`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids,source_label:source,target_label:target})});
       if(!task?.task_id){toast(`无需变更：${source} → ${target}`);return}
@@ -4063,6 +4065,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       modal('批量统一标签',importRemapProgress414(task,source,target),false);
       await pollImportRemap414(task.task_id,source,target);
     }catch(e){toast(e.message||e)}
+    finally{state.import412RemapSubmitting=false}
   };
   window.importNoClean414=async()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择素材');await markReady412(ids);closeModal();state.data412Tab='processed';if(state.page==='数据集')renderDatasets424()};
   window.importClean414=()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择素材');closeModal();createClean427({image_ids:ids})};
