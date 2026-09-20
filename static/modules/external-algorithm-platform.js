@@ -511,20 +511,20 @@ export function installExternalAlgorithmPlatformRuntime({
         : 'AccessSecret 仅提交给后端安全存储，页面不会读取已保存的明文 Secret。';
     const savedConnectionReady = external && Boolean(c.baseUrl) && credential.configured === true;
     const syncSucceeded = last?.status === 'success';
-    const trainingReady = external ? readiness?.ready === true : true;
+    const configSaved = Boolean(c.updatedAt);
     const sourceStatus = external ? '新畅联管理' : '本平台管理';
     const connectionStatus = connectionTest?.ok === true
       ? '连接正常'
       : connectionTest ? '连接异常' : savedConnectionReady ? '待测试' : '待配置';
     const syncStatus = syncSucceeded ? '主数据已同步' : last?.status === 'failed' ? '同步异常' : '尚未同步';
-    const trainingStatus = external ? (trainingReady ? '训练已就绪' : '训练待准备') : '本地模式';
+    const savedStatus = configSaved ? `已保存 · ${timeText(c.updatedAt)}` : '尚未保存';
     return `<section class="label414-shell external-platform-shell" data-external-platform-page="1">
       <section class="external-platform-hero">
         <div class="external-platform-hero-main">
           <div>
             <div class="external-platform-eyebrow">算法主数据对接</div>
             <h2>平台对接</h2>
-            <p>配置新畅联应用鉴权并同步算法主数据。训练、版本和转换结果继续由本平台统一管理。</p>
+            <p>配置并保存后，平台会持续使用这套连接信息；需要切换地址或凭据时再修改并保存。</p>
           </div>
           <div class="external-platform-actions">
             <button class="btn" id="externalPlatformTest">测试连接</button>
@@ -533,18 +533,17 @@ export function installExternalAlgorithmPlatformRuntime({
           </div>
         </div>
         <div class="external-platform-status">
+          <span><i class="external-status-dot ${configSaved ? 'ok' : 'warn'}"></i><b>配置状态</b><em>${escapeHtml(savedStatus)}</em></span>
           <span><i class="external-status-dot ${external ? 'ok' : ''}"></i><b>数据来源</b><em>${sourceStatus}</em></span>
           <span><i class="external-status-dot ${connectionTest?.ok === true ? 'ok' : connectionTest ? 'err' : savedConnectionReady ? 'warn' : ''}"></i><b>应用连接</b><em>${connectionStatus}</em></span>
           <span><i class="external-status-dot ${syncSucceeded ? 'ok' : last?.status === 'failed' ? 'err' : ''}"></i><b>主数据</b><em>${syncStatus}</em></span>
-          <span><i class="external-status-dot ${trainingReady ? 'ok' : 'warn'}"></i><b>训练准备</b><em>${trainingStatus}</em></span>
         </div>
       </section>
 
       <div class="external-platform-steps" aria-label="新畅联对接流程">
-        <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>配置应用</b><span>API 地址、AccessKey、AccessSecret</span></div></div>
-        <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>测试连接</b><span>只测试当前填写内容，不自动保存</span></div></div>
+        <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>保存配置</b><span>API 地址、AccessKey、AccessSecret</span></div></div>
+        <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>测试连接</b><span>验证当前连接是否可用</span></div></div>
         <div class="external-step ${syncSucceeded ? 'done' : external && savedConnectionReady ? 'current' : ''}"><i>3</i><div><b>同步主数据</b><span>品目、算法产品、分析方式、算力环境</span></div></div>
-        <div class="external-step ${trainingReady ? 'done' : syncSucceeded ? 'current' : ''}"><i>4</i><div><b>训练与发布</b><span>训练后按版本手动同步成果</span></div></div>
       </div>
 
       <section class="panel external-platform-config">
@@ -564,11 +563,10 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" ${credentialManaged ? 'disabled' : ''} placeholder="${credentialManaged ? '由环境变量管理' : (credential.configured ? '已配置，留空表示继续使用原 Secret' : '请输入 AccessSecret')}"><button type="button" class="btn" id="externalSecretToggle" ${credentialManaged ? 'disabled' : ''}>显示</button></div></div>
             <div class="field full"><div class="subline">凭据状态：${credentialStatusText} · 存储后端：${escapeHtml(credentialBackendText)}。${credentialHelpText}</div>${credential.available === false ? '<div class="alert warn" style="margin-top:10px">当前只能查看公开配置，保存 AccessKey / AccessSecret 会失败关闭（fail-closed），不会降级成明文 JSON。</div>' : ''}</div>
             <div class="field full">
-              <details data-external-automation-settings="1">
-                <summary>高级设置 · 自动化</summary>
-                <div class="form two" style="margin-top:12px">
-                  <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步（后台每 ${Math.round(c.autoSyncIntervalSeconds / 60)} 分钟检查）</label>
-                  <label class="field check"><input id="externalAutoPublish" type="checkbox" ${c.autoPublishEnabled ? 'checked' : ''}> 训练成果自动发布</label>
+              <details data-external-sync-settings="1">
+                <summary>同步设置</summary>
+                <div style="margin-top:12px">
+                  <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步主数据</label>
                 </div>
               </details>
             </div>
@@ -735,7 +733,7 @@ export function installExternalAlgorithmPlatformRuntime({
       base_url: document.getElementById('externalBaseUrl')?.value.trim() || '',
       auto_sync_enabled: Boolean(document.getElementById('externalAutoSync')?.checked),
       auto_sync_interval_seconds: config?.autoSyncIntervalSeconds || 600,
-      auto_publish_enabled: Boolean(document.getElementById('externalAutoPublish')?.checked),
+      auto_publish_enabled: false,
       access_key: document.getElementById('externalAccessKey')?.value.trim() || null,
       access_secret: document.getElementById('externalAccessSecret')?.value || null,
       endpoints: endpointValues,
@@ -751,7 +749,7 @@ export function installExternalAlgorithmPlatformRuntime({
     });
     config = normalizeExternalPlatformConfig(body);
     state().externalAlgorithmPlatformConfig = config;
-    if (!quiet) notify?.('平台对接配置已保存');
+    if (!quiet) notify?.('平台对接配置已保存，后续将持续使用此配置');
     return config;
   }
 
@@ -857,7 +855,7 @@ export function installExternalAlgorithmPlatformRuntime({
       if (saveButton) saveButton.dataset.dirty = '1';
     };
     for (const input of document.querySelectorAll(
-      'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, #externalAutoSync, #externalAutoPublish, [data-external-endpoint]'
+      'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, #externalAutoSync, [data-external-endpoint]'
     )) {
       input.addEventListener('input', markConfigDirty);
       input.addEventListener('change', markConfigDirty);
@@ -910,7 +908,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63003',
+    build: 'external-algorithm-platform-63004',
     page: PAGE,
     loadConfig,
     loadHistory,
