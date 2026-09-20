@@ -152,6 +152,25 @@ class FakeChangLianSyncClient:
             ],
         }
 
+    def analysis_info(self, analysis_id):
+        details = {
+            "analysis-day": {
+                "analysisId": "analysis-day",
+                "productId": "product-live-1",
+                "analysisName": "白天视觉分析",
+                "analysisType": 1,
+                "status": 1,
+            },
+            "analysis-night": {
+                "analysisId": "analysis-night",
+                "productId": "product-live-1",
+                "analysisName": "夜间视觉分析",
+                "analysisType": 1,
+                "status": 1,
+            },
+        }
+        return {"code": 200, "data": details[str(analysis_id)]}
+
     def compute_platforms(self):
         return {
             "code": 200,
