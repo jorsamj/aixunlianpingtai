@@ -202,7 +202,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 当前修复：
 
 - `_analysis_is_enabled()` 显式区分 `None` 与 `0`；
-- `1 / "1"` 为启用，`0 / "0" / False / "false"` 为停用，缺失 status 保持旧数据兼容默认启用；
+- 当前最终合同进一步收紧为：**只有 `status=1` 才算启用**；`0`、缺失、空值、布尔值及其他未知值全部按不可训练处理；
 - `_analysis_summary()` 对 `status=0` 持久化为字符串 `"0"`，不再变成空字符串；
 - 新增参数化永久测试和 numeric-zero summary 测试；
 - CI 永久禁止重新出现 `str(_value_from(row, "status") or "")`；
