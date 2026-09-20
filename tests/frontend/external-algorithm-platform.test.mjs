@@ -47,7 +47,7 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(external.credentials.writable, true);
   assert.equal(external.cache.product_count, 5);
   assert.equal(external.endpoints.product_list, '/custom/products');
-  assert.equal(external.endpoints.category_tree, '/algorithm-category/tree');
+  assert.equal(external.endpoints.category_tree, '/internal/base/algorithm-category/tree');
 });
 
 test('external analysis options preserve all synced analysis methods', () => {
@@ -136,6 +136,14 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.doesNotMatch(source, /训练成果自动发布/);
   assert.doesNotMatch(source, /<b>训练与发布<\/b>/);
   assert.match(source, /auto_publish_enabled: false/);
+  assert.match(source, /\/internal\/base\/algorithm-category\/tree/);
+  assert.match(source, /\/internal\/base\/compute-platform\/listAll/);
+  assert.match(source, /\/internal\/algorithm\/algorithm-product\/listAll/);
+  assert.match(source, /\/internal\/algorithm\/algorithm-product-analysis\/listByProduct\/\{productId\}/);
+  assert.match(source, /\/internal\/algorithm\/algorithm-version\/add/);
+  assert.match(source, /\/internal\/algorithm\/algorithm-weight\/add/);
+  assert.doesNotMatch(source, /data-external-endpoint=/);
+  assert.doesNotMatch(source, /高级接口路径/);
   assert.match(source, /后续将持续使用此配置/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
   assert.doesNotMatch(source, /联调准备状态 · 主数据 \/ 训练准备状态/);
