@@ -42,9 +42,9 @@ class FakeSession:
             assert kwargs["headers"]["Access-Key"] == "ak"
             assert kwargs["headers"]["Timestamp"] == "100"
             return FakeResponse({"code": 200, "data": {"accessToken": "token-1", "tokenType": "Bearer", "expiresIn": 3600}})
-        if url.endswith("/internal/base/algorithm-category/tree"):
-            assert kwargs["headers"]["Access-Token"] == "token-1"
-            assert "Authorization" not in kwargs["headers"]
+        if url.endswith("/internal/base/category/tree"):
+            assert kwargs["headers"]["Authorization"] == "Bearer token-1"
+            assert "Access-Token" not in kwargs["headers"]
             return FakeResponse({"code": 200, "data": [{"categoryId": "c1", "categoryName": "园区安全"}]})
         raise AssertionError(url)
 
@@ -65,7 +65,7 @@ def test_changlian_auth_chain_uses_test_sign_then_token_then_access_token():
     assert [call[1].split("changlian.example")[-1] for call in session.calls] == [
         "/internal/auth/test-sign",
         "/internal/auth/token",
-        "/internal/base/algorithm-category/tree",
+        "/internal/base/category/tree",
     ]
 
 
@@ -73,12 +73,34 @@ def test_changlian_default_endpoints_match_documented_core_contract():
     endpoints = ChangLianEndpoints()
     assert endpoints.test_sign == "/internal/auth/test-sign"
     assert endpoints.token == "/internal/auth/token"
-    assert endpoints.category_tree == "/internal/base/algorithm-category/tree"
+    assert endpoints.category_tree == "/internal/base/category/tree"
     assert endpoints.product_list == "/internal/algorithm/product-ai/listAll"
-    assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
+    assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-analysis/listByProduct/{productId}"
     assert endpoints.compute_platform_list == "/internal/base/compute-platform/listAll"
     assert endpoints.version_create == "/internal/algorithm/algorithm-version/add"
     assert endpoints.weight_create == "/internal/algorithm/algorithm-weight/add"
+    assert endpoints.logout == "/internal/auth/logout"
+    assert endpoints.category_list == "/internal/base/category/list"
+    assert endpoints.category_list_all == "/internal/base/category/listAll"
+    assert endpoints.product_list_page == "/internal/algorithm/product-ai/list"
+    assert endpoints.product_detail == "/internal/algorithm/product-ai/getInfo/{productId}"
+    assert endpoints.analysis_list_page == "/internal/algorithm/algorithm-analysis/list"
+    assert endpoints.analysis_list_all == "/internal/algorithm/algorithm-analysis/listAll"
+    assert endpoints.analysis_detail == "/internal/algorithm/algorithm-analysis/getInfo/{analysisId}"
+    assert endpoints.compute_platform_list_page == "/internal/base/compute-platform/list"
+    assert endpoints.version_edit == "/internal/algorithm/algorithm-version/edit"
+    assert endpoints.version_remove == "/internal/algorithm/algorithm-version/remove/{algoVersionIds}"
+    assert endpoints.version_list_page == "/internal/algorithm/algorithm-version/list"
+    assert endpoints.version_list_by_product == "/internal/algorithm/algorithm-version/listByProduct/{productId}"
+    assert endpoints.version_list_by_analysis == "/internal/algorithm/algorithm-version/listByAnalysis/{analysisId}"
+    assert endpoints.version_list_all == "/internal/algorithm/algorithm-version/listAll"
+    assert endpoints.version_detail == "/internal/algorithm/algorithm-version/getInfo/{algoVersionId}"
+    assert endpoints.weight_edit == "/internal/algorithm/algorithm-weight/edit"
+    assert endpoints.weight_remove == "/internal/algorithm/algorithm-weight/remove/{weightIds}"
+    assert endpoints.weight_list_page == "/internal/algorithm/algorithm-weight/list"
+    assert endpoints.weight_list_by_version == "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
+    assert endpoints.weight_list_by_product == "/internal/algorithm/algorithm-weight/listByProduct/{productId}"
+    assert endpoints.weight_detail == "/internal/algorithm/algorithm-weight/getInfo/{weightId}"
 
 
 def test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces():
@@ -91,9 +113,9 @@ def test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces():
         "weight_create": "/algorithm-weight/add",
     })
 
-    assert endpoints.category_tree == "/internal/base/algorithm-category/tree"
+    assert endpoints.category_tree == "/internal/base/category/tree"
     assert endpoints.product_list == "/internal/algorithm/product-ai/listAll"
-    assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
+    assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-analysis/listByProduct/{productId}"
     assert endpoints.compute_platform_list == "/internal/base/compute-platform/listAll"
     assert endpoints.version_create == "/internal/algorithm/algorithm-version/add"
     assert endpoints.weight_create == "/internal/algorithm/algorithm-weight/add"
@@ -119,8 +141,8 @@ def test_changlian_auth_audit_redacts_credentials_before_callback():
     assert token["request"]["headers"]["Access-Key"] == "***"
     assert token["request"]["headers"]["Signature"] == "***"
     category = next(event for event in events if event.get("operation") == "category_list")
-    assert category["request"]["headers"]["Access-Token"] == "***"
-    assert "Authorization" not in category["request"]["headers"]
+    assert category["request"]["headers"]["Authorization"] == "***"
+    assert "Access-Token" not in category["request"]["headers"]
 
 
 def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
