@@ -688,6 +688,7 @@ class MaterialBatchHandler:
                         "source_digest": current_digest,
                         "result_digest": preview["content_digest"],
                         "changed_boxes": int(preview["changed_boxes"]),
+                        "target_class_id": int(current_target_id),
                         "planned_at": utc_now(),
                     }
                     manifest.database.execute(
@@ -703,6 +704,29 @@ class MaterialBatchHandler:
                     continue
                 source_digest = str(plan.get("source_digest") or "")
                 result_digest = str(plan.get("result_digest") or "")
+                planned_target_id = plan.get("target_class_id")
+                if (
+                    current_digest == source_digest
+                    and planned_target_id is not None
+                    and int(planned_target_id) != int(current_target_id)
+                ):
+                    preview = annotations.plan_label_remap(
+                        current,
+                        source_label=source,
+                        target_label=target,
+                        target_class_id=current_target_id,
+                    )
+                    plan.update({
+                        "result_digest": preview["content_digest"],
+                        "changed_boxes": int(preview["changed_boxes"]),
+                        "target_class_id": int(current_target_id),
+                        "replanned_at": utc_now(),
+                    })
+                    result_digest = str(plan["result_digest"])
+                    manifest.database.execute(
+                        "UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                        (json.dumps(plan, ensure_ascii=False), image_id),
+                    )
                 if current_digest not in {source_digest, result_digest}:
                     failed.append((
                         image_id,
