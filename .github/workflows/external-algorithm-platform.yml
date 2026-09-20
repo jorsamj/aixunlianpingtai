@@ -181,7 +181,7 @@ jobs:
           grep -Fq 'test_interaction_audit_repairs_only_legacy_http_200_code_zero_false_failures' tests/unit/test_integration_audit.py
           grep -Fq 'CHANG_LIAN_API_DOCUMENTS' platform_core/external_algorithm_platform.py
           grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
-          grep -Fq '31 个官方 Apifox 文档条目' docs/CHANGLIAN_APIFOX_API_CATALOG.md
+          grep -Fq '31 个接口条目全部登记' docs/CHANGLIAN_APIFOX_API_CATALOG.md
           grep -q "test_readiness_blocks_until_saved_synced_and_project_algorithm_exists" tests/unit/test_external_algorithm_platform.py
           grep -q '"scope": "master_data_training"' platform_core/external_algorithm_platform.py
           grep -q "人员网页登录账号不参与机器接口调用" static/modules/external-algorithm-platform.js
@@ -240,7 +240,7 @@ jobs:
         run: |
           grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
-          grep -Fq '已纳入 31 个官方 Apifox 文档条目' tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq '已核对 31 个官方 OpenAPI 接口' tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq 'data-external-stale' static/modules/external-algorithm-platform.js
           grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
