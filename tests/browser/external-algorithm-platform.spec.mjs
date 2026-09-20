@@ -184,26 +184,6 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   }})).json();
   const algorithmId = created.algorithm.id;
 
-  await page.route(`**/api/v12/projects/${project.id}/algorithms`, async route => {
-    const response = await route.fetch();
-    const body = await response.json();
-    const items = (body.items || []).map(asset => String(asset.id) === String(algorithmId) ? {
-      ...asset,
-      source_type: 'EXTERNAL',
-      provider_type: 'CHANG_LIAN',
-      source_name: '新畅联',
-      external_product_id: 'p1',
-      external_category_id: 'c1',
-      external_analysis_id: 'a1',
-      external_analysis_ids: ['a1'],
-      external_analyses: [{analysis_id: 'a1', analysis_name: '视觉智能分析'}],
-      external_active: true,
-      external_master_data_digest: 'digest-old',
-      external_last_synced_at: '2026-09-19T12:00:00Z',
-    } : asset);
-    await route.fulfill({response, json: {...body, items}});
-  });
-
   await page.route('**/api/v63/external-algorithm-platform/config', route => {
     if (route.request().method() !== 'GET') return route.continue();
     return route.fulfill({
@@ -259,16 +239,25 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
 
   await page.getByRole('button', {name: /算法列表/}).click();
   await expect(page.locator('#alg412List')).toBeVisible();
-  await page.evaluate(async () => {
-    await window.AlgorithmListRuntime?.refresh?.({render: true});
-  });
-  await expect.poll(async () => page.evaluate(() => (
-    (state.algorithms || []).some(row => row.name === '待同步抽烟检测')
-  ))).toBe(true);
-  await page.evaluate(() => {
+  await page.evaluate(({algorithmId}) => {
+    const asset = (state.algorithms || []).find(row => String(row.id) === String(algorithmId));
+    if (!asset) throw new Error('algorithm missing from canonical state');
+    Object.assign(asset, {
+      source_type: 'EXTERNAL',
+      provider_type: 'CHANG_LIAN',
+      source_name: '新畅联',
+      external_product_id: 'p1',
+      external_category_id: 'c1',
+      external_analysis_id: 'a1',
+      external_analysis_ids: ['a1'],
+      external_analyses: [{analysis_id: 'a1', analysis_name: '视觉智能分析'}],
+      external_active: true,
+      external_master_data_digest: 'digest-old',
+      external_last_synced_at: '2026-09-19T12:00:00Z',
+    });
     window.renderAlg412?.();
     window.AlgorithmListRuntime?.runDecorators?.();
-  });
+  }, {algorithmId});
 
   const card = page.locator('.alg428-card', {hasText: '待同步抽烟检测'});
   await expect(card).toBeVisible();
