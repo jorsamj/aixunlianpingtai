@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from platform_core.algorithms import list_algorithms, save_algorithms
+from platform_core.errors import PlatformError
 from platform_core.external_algorithm_platform import (
     EndpointPayload,
     ExternalAlgorithmPlatformService,

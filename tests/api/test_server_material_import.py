@@ -737,7 +737,7 @@ def test_agent_yolo_storage_rescan_uses_same_durable_owner_and_format_contract(
     assert "credentials" not in str(request).lower()
 
 
-def test_yolo_rescan_confirmation_freezes_intent_before_label_creation(
+def test_yolo_rescan_confirmation_freezes_intent_after_explicit_label_creation(
     client, monkeypatch,
 ):
     project = _project(client)
@@ -773,13 +773,20 @@ def test_yolo_rescan_confirmation_freezes_intent_before_label_creation(
         None,
     )
 
+    created_label = client.post(
+        f"/api/projects/{project['id']}/labels",
+        json={"label": "smoke", "display_name": "烟雾"},
+    )
+    assert created_label.status_code == 200, created_label.text
+
     events = []
     import platform_core.storage.rescan_tasks as rescan_tasks
 
     def fake_confirm(_artifacts, _task_id, _policy, annotation_confirmation=None):
         assert annotation_confirmation == {
             "label_mapping": {"0": "smoke"},
-            "create_labels": ["smoke"],
+            "create_labels": [],
+            "external_classes": [],
             "accept_quality_report": False,
         }
         events.append("freeze")
@@ -787,14 +794,12 @@ def test_yolo_rescan_confirmation_freezes_intent_before_label_creation(
 
     def fake_resolve(_classes, *, label_mapping=None, create_labels=None, labels):
         assert label_mapping == {"0": "smoke"}
-        assert create_labels == ["smoke"]
-        return {"0": "smoke"}, ["smoke"]
+        assert create_labels == []
+        assert any(str(item.get("code")) == "smoke" for item in labels)
+        return {"0": "smoke"}, []
 
-    def fake_ensure_label(_project, code):
-        assert code == "smoke"
-        assert events == ["freeze"]
-        events.append("label")
-        return code
+    def fake_ensure_label(*_args, **_kwargs):
+        raise AssertionError("rescan confirmation must never create platform labels implicitly")
 
     monkeypatch.setattr(rescan_tasks, "confirm_rescan", fake_confirm)
     monkeypatch.setattr(app_module, "resolve_external_label_mapping", fake_resolve)
@@ -810,12 +815,12 @@ def test_yolo_rescan_confirmation_freezes_intent_before_label_creation(
             "annotation_removed": "keep",
             "annotation_conflicts": "keep",
             "label_mapping": {"0": "smoke"},
-            "create_labels": ["smoke"],
+            "create_labels": [],
             "accept_quality_report": False,
         },
     )
     assert response.status_code == 202, response.text
-    assert events == ["freeze", "label"]
+    assert events == ["freeze"]
 
 
 def test_agent_coco_storage_rescan_uses_same_durable_owner_and_format_contract(

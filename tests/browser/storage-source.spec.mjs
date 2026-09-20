@@ -10,6 +10,18 @@ async function openStoragePage(page) {
   await expect(page.getByRole('heading', {name: '存储配置', level: 2})).toBeVisible({timeout: 10_000});
 }
 
+async function seedPlatformLabels(page, codes) {
+  await page.evaluate(values => {
+    state.labels = values.map((code, index) => ({
+      class_id: index,
+      code,
+      display_name: code,
+      display_name_zh: code,
+      status: 'active',
+    }));
+  }, codes);
+}
+
 
 
 test('storage configuration creates, health-checks, and removes a real local source', async ({page}) => {
@@ -26,7 +38,7 @@ test('storage configuration creates, health-checks, and removes a real local sou
   await page.getByRole('button', {name: /新增存储源/}).click();
   await page.locator('#ss61Name').fill(name);
   await page.locator('#ss61Type').selectOption('local');
-  await page.getByRole('button', {name: '保存'}).click();
+  await page.getByRole('button', {name: '保存', exact: true}).click();
 
   const row = page.locator('.storage61-row').filter({hasText: name});
   await expect(row).toBeVisible();
@@ -345,6 +357,7 @@ test('YOLO rescan keeps frontend request, review truth, mapping and conflict pol
   });
 
   await openStoragePage(page);
+  await seedPlatformLabels(page, ["smoke"]);
   const row=page.locator('.storage61-row').filter({hasText:'YOLO 长期素材库'});
   await row.getByRole('button',{name:'重新扫描 / 恢复'}).click();
   await page.locator('#sr61Execution').selectOption('agent');
@@ -425,6 +438,7 @@ test('COCO rescan uses the same frontend delta, mapping and confirmation truth',
   });
 
   await openStoragePage(page);
+  await seedPlatformLabels(page, ["smoke"]);
   const row=page.locator('.storage61-row').filter({hasText:'COCO 长期素材库'});
   await row.getByRole('button',{name:'重新扫描 / 恢复'}).click();
   await page.locator('#sr61Execution').selectOption('agent');
@@ -503,6 +517,7 @@ test('Pascal VOC rescan shares the same frontend delta, mapping and confirmation
   });
 
   await openStoragePage(page);
+  await seedPlatformLabels(page, ["fire"]);
   const row=page.locator('.storage61-row').filter({hasText:'VOC 长期素材库'});
   await row.getByRole('button',{name:'重新扫描 / 恢复'}).click();
   await page.locator('#sr61Execution').selectOption('agent');
