@@ -344,3 +344,35 @@ def test_changlian_trainable_analysis_subset_survives_sql_round_trip(tmp_path: P
         "vision-on", "llm-on", "vision-off",
     ]
     assert next(row for row in round_tripped["external_analyses"] if row["analysis_id"] == "vision-off")["active"] is False
+
+
+
+def test_legacy_sql_rows_without_trainable_subset_infer_only_active_visual_ids(tmp_path: Path):
+    project = tmp_path / "projects" / "p-analysis-legacy"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    # Simulate an older persisted object that predates external_analysis_ids.
+    save_algorithms(json_path, [{
+        "id": "external-legacy-analysis",
+        "name": "旧分析合同",
+        "source_type": "EXTERNAL",
+        "provider_type": "CHANG_LIAN",
+        "external_product_id": "product-legacy",
+        "external_analysis_id": "vision-on",
+        "external_analyses": [
+            {"analysis_id": "vision-on", "analysis_name": "视觉智能分析", "analysis_type": "1", "status": "1"},
+            {"analysis_id": "llm-on", "analysis_name": "大模型智能分析", "analysis_type": "3", "status": "1"},
+            {"analysis_id": "vision-off", "analysis_name": "停用视觉分析", "analysis_type": "1", "status": "0"},
+        ],
+        "versions": [],
+        "current_version_id": None,
+    }])
+
+    persisted = list_algorithms(json_path)[0]
+    assert persisted["external_analysis_id"] == "vision-on"
+    assert persisted["external_analysis_ids"] == ["vision-on"]
+    assert {row["analysis_id"] for row in persisted["external_analyses"]} == {
+        "vision-on", "llm-on", "vision-off",
+    }
