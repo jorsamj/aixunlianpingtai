@@ -9246,6 +9246,14 @@ def v12_update_version(project_id: str, algorithm_id: str, version_id: str, payl
 @app.delete("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
 def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
     get_project(project_id)
+    publish_service = ExternalAlgorithmPublishService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        external_secret_store_factory=_v35_secret_store,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
     result = delete_algorithm_version(
         algorithms_file(project_id),
         algorithm_id,
@@ -9253,6 +9261,11 @@ def v12_delete_version(project_id: str, algorithm_id: str, version_id: str):
         now=now_iso(),
         operator="local_user",
         dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
+            project_id=project_id,
+            algorithm=algorithm,
+            version=version,
+        ),
         cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
     )
     return {
