@@ -7128,7 +7128,8 @@ class VersionPatchReq(BaseModel):
 
 
 class AlgorithmVersionRollbackReq(BaseModel):
-    delete_current_version: bool = False
+    # Product contract: rollback means deleting the current version.
+    delete_current_version: Literal[True] = True
     expected_current_version_id: Optional[str] = None
 
 
@@ -9278,15 +9279,28 @@ def v12_rollback_version(
             "回退请求必须携带页面确认时看到的 current_version_id。",
             "请刷新算法版本列表后重新确认回退。", 409,
         )
+    publish_service = ExternalAlgorithmPublishService(
+        data_dir=DATA_DIR,
+        project_dir=project_dir,
+        algorithms_file=algorithms_file,
+        external_secret_store_factory=_v35_secret_store,
+        storage_sources_factory=storage_source_repository,
+        storage_credentials_factory=storage_credentials,
+    )
     result = rollback_algorithm_version(
         algorithms_file(project_id),
         algorithm_id,
         version_id,
         now=now_iso(),
-        delete_current_version=bool(payload.delete_current_version),
+        delete_current_version=True,
         operator="local_user",
         expected_current_version_id=payload.expected_current_version_id,
         dependency_check=lambda algorithm, version: _algorithm_version_active_references(project_id, algorithm, version),
+        remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback(
+            project_id=project_id,
+            algorithm=algorithm,
+            version=version,
+        ),
         cleanup=lambda algorithm, version: _cleanup_algorithm_version_artifacts(project_id, algorithm, version),
     )
     return {
@@ -18262,6 +18276,7 @@ from platform_core.external_algorithm_platform import (
     external_algorithm_platform_router,
 )
 from platform_core.external_algorithm_publish import (
+    ExternalAlgorithmPublishService,
     external_algorithm_publish_router,
     request_external_auto_publish_if_enabled,
 )
