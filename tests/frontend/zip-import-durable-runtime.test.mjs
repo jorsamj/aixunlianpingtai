@@ -8,6 +8,7 @@ import {
   overallZipProgress,
   pickZipJob,
   zipQueueInfo,
+  zipNeedsLabelConfirmation,
   zipStartDisposition,
   zipView,
 } from '../../static/modules/zip-import-runtime.js';
@@ -32,3 +33,15 @@ test('new deferred upload waits behind running job then becomes startable',()=>{
 test('legacy selecting job gets grace window before recovery start',()=>{assert.equal(zipStartDisposition(selecting,[selecting],{eligibleForMs:LEGACY_START_GRACE_MS-1}),'confirm');assert.equal(zipStartDisposition(selecting,[selecting],{eligibleForMs:LEGACY_START_GRACE_MS}),'start-legacy-recovery')});
 test('submitted start is observed rather than posted twice',()=>assert.equal(zipStartDisposition(selecting,[selecting],{intent:'submitted',eligibleForMs:99999}),'observe'));
 test('terminal jobs are not active',()=>{const done={id:'d',status:'done'};assert.deepEqual(activeZipJobs([done]),[]);assert.equal(ACTIVE_ZIP_STATUSES.has('done'),false)});
+
+test('annotated ZIP blocks auto-start until label mapping is explicitly confirmed',()=>{
+  const job={...selecting,label_confirmation_required:true,external_classes:[
+    {class_id:'0',name:'toukui1',box_count:12,image_count:8},
+    {class_id:'1',name:'toukui2',box_count:9,image_count:6},
+  ]};
+  assert.equal(zipNeedsLabelConfirmation(job),true);
+  assert.equal(zipStartDisposition(job,[job],{intent:'deferred'}),'confirm-labels');
+  const view=zipView(job,[job]);
+  assert.equal(view.stage,'等待确认标注');
+  assert.match(view.message,/2 个外部标签/);
+});
