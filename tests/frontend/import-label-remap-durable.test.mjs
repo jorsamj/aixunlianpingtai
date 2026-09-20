@@ -23,5 +23,6 @@ test('remap UI does not claim synchronous completion after task creation',()=>{
   const tail=source.slice(start,start+1800);
   assert.match(tail,/task\.task_id/);
   assert.match(tail,/pollImportRemap414/);
+  assert.match(tail,/import412RemapSubmitting/);
   assert.doesNotMatch(tail,/已同步 .* 个框/);
 });
