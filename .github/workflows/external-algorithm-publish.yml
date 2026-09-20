@@ -144,8 +144,10 @@ jobs:
           grep -q "_is_conversion_deliverable" platform_core/model_artifacts.py
           grep -Fq 'candidate.name.lower() == "manifest.json"' platform_core/model_artifacts.py
           grep -Fq 'assert len(durable_rows) == 1' tests/unit/test_model_artifacts.py
-          grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/external_algorithm_publish.py
-          grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/model_artifacts.py
+          grep -Fq 'project / "deploy" / "jobs", project / "deployment" / "jobs"' platform_core/external_algorithm_publish.py
+          grep -Fq 'project / "deploy" / "jobs", project / "deployment" / "jobs"' platform_core/model_artifacts.py
+          grep -q "test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_auto_upload_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots" tests/unit/test_model_artifacts.py
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
           grep -q "test_remote_delete_recovers_when_timeout_happens_after_remote_commit" tests/unit/test_external_algorithm_publish.py
           grep -q "test_remote_delete_timeout_fails_closed_when_version_still_exists" tests/unit/test_external_algorithm_publish.py
