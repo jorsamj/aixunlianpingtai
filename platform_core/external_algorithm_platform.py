@@ -930,7 +930,8 @@ def _analysis_summary(row: Mapping[str, Any]) -> Dict[str, Any]:
 def _analysis_is_enabled(row: Mapping[str, Any]) -> bool:
     # Official ChangLian contract is exact: status=1 means enabled.
     # Missing, unknown, false-like, or any other value must fail closed.
-    return str(_value_from(row, "status") or "").strip() == "1"
+    status_value = _value_from(row, "status")
+    return status_value is not None and str(status_value).strip() == "1"
 
 
 def _analysis_is_visual(row: Mapping[str, Any]) -> bool:
