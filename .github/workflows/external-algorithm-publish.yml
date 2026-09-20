@@ -177,6 +177,8 @@ jobs:
           grep -Fq 'public_base_url: publicBaseUrl' static/modules/model-artifact-runtime.js
           grep -Fq 'result["auto_upload_enabled"] = True' platform_core/model_artifacts.py
           grep -Fq '自动归档已启用' static/modules/model-artifact-runtime.js
+          grep -Fq "toLowerCase() === 'oss'" static/modules/model-artifact-runtime.js
+          grep -Fq '请选择阿里云 OSS' static/modules/model-artifact-runtime.js
           ! grep -Fq 'id="modelArtifactAutoUpload"' static/modules/model-artifact-runtime.js
           grep -q "test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage" tests/unit/test_external_algorithm_publish.py
           grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
