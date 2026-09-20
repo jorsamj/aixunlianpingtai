@@ -33,7 +33,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused backend test dependencies
-        run: python -m pip install --disable-pip-version-check pytest pydantic psutil filelock pillow
+        run: python -m pip install --disable-pip-version-check pytest pydantic psutil filelock
       - name: Syntax check
         run: >-
           node --check static/modules/service-node-runtime.js &&
@@ -42,7 +42,7 @@ jobs:
           node --check tests/browser/service-node-management.spec.mjs &&
           python -m py_compile platform_core/service_nodes.py tests/unit/test_service_node_connectivity.py
       - name: Service node backend reachability contract
-        run: python -m pytest -q tests/unit/test_service_node_connectivity.py
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_service_node_connectivity.py
       - name: Service node UI contracts
         run: node --test tests/frontend/service-node-runtime.test.mjs
       - name: Permanent service-node UI guards

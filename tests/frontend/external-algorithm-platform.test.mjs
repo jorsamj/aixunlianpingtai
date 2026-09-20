@@ -241,7 +241,7 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /if \(reload\) configEditing = false/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
   assert.doesNotMatch(source, /联调准备状态 · 主数据 \/ 训练准备状态/);
-  assert.match(source, /人员网页登录账号不参与机器接口调用/);
+  assert.match(source, /除人员登录参考外，内部算法接口均已进入 Provider contract/);
   assert.match(source, /\/readiness\?project_id=/);
   assert.match(source, /loadReadiness/);
   assert.match(source, /data-external-stale/);
