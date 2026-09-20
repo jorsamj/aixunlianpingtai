@@ -62,3 +62,51 @@ def test_legacy_annotated_import_guard_preserves_project_not_found(client):
         data={"dataset_id": "default"},
     )
     assert response.status_code == 404
+
+
+def test_legacy_direct_prelabel_endpoints_require_human_review(client, seeded_project):
+    project_id, image = seeded_project
+    before_labels = client.get(
+        f"/api/v12/projects/{project_id}/labels"
+    ).json()["items"]
+    before_boxes = client.get(
+        f"/api/projects/{project_id}/annotations/{image['id']}"
+    ).json()["boxes"]
+    before_tasks = client.get(
+        f"/api/v33/projects/{project_id}/prelabel-tasks"
+    ).json()["items"]
+
+    endpoints = [
+        f"/api/projects/{project_id}/prelabel/run",
+        f"/api/v33/projects/{project_id}/prelabel-tasks",
+        f"/api/v35/projects/{project_id}/prelabel-tasks",
+    ]
+    for endpoint in endpoints:
+        response = client.post(endpoint, json={})
+        assert response.status_code == 409, response.text
+        assert "旧版自动标注直写接口已关闭" in response.text
+        assert "人工二次确认" in response.text
+
+    after_labels = client.get(
+        f"/api/v12/projects/{project_id}/labels"
+    ).json()["items"]
+    after_boxes = client.get(
+        f"/api/projects/{project_id}/annotations/{image['id']}"
+    ).json()["boxes"]
+    after_tasks = client.get(
+        f"/api/v33/projects/{project_id}/prelabel-tasks"
+    ).json()["items"]
+
+    assert [row["code"] for row in after_labels] == [
+        row["code"] for row in before_labels
+    ]
+    assert after_boxes == before_boxes
+    assert after_tasks == before_tasks
+
+
+def test_legacy_direct_prelabel_guard_preserves_project_not_found(client):
+    response = client.post(
+        "/api/v35/projects/missing-project/prelabel-tasks",
+        json={},
+    )
+    assert response.status_code == 404
