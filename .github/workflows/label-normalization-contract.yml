@@ -155,6 +155,8 @@ jobs:
                   "目标标签必须来自当前有效标签库",
                   'LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL',
                   'def _reject_legacy_annotated_import(project_id: str)',
+                  'LEGACY_DIRECT_PRELABEL_BLOCKED_DETAIL',
+                  'def _reject_legacy_direct_prelabel(project_id: str)',
               ),
               'platform_core/auto_label.py': (
                   'if any(alias and label == alias for alias in values):',
@@ -232,6 +234,18 @@ jobs:
               '/api/projects/{project_id}/import/labels',
               '/api/projects/{project_id}/import/coco_zip',
               '/api/projects/{project_id}/import/voc_zip',
+          ):
+              if route not in app:
+                  missing.setdefault('app.py', []).append(route)
+
+          if app.count('_reject_legacy_direct_prelabel(project_id)') != 3:
+              missing.setdefault('app.py', []).append(
+                  'exactly three legacy direct prelabel guards'
+              )
+          for route in (
+              '/api/projects/{project_id}/prelabel/run',
+              '/api/v33/projects/{project_id}/prelabel-tasks',
+              '/api/v35/projects/{project_id}/prelabel-tasks',
           ):
               if route not in app:
                   missing.setdefault('app.py', []).append(route)
