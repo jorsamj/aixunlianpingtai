@@ -1448,13 +1448,31 @@ class ExternalAlgorithmPublishService:
         try:
             client.version_remove([external_version_id])
         except Exception as error:
-            raise PlatformError(
-                "EXTERNAL_VERSION_DELETE_FAILED",
-                "新畅联算法版本删除失败，已停止回退",
-                str(error),
-                "平台不会只删除本地版本。请检查新畅联删除接口和版本状态后重试。",
-                502,
-            ) from error
+            product_id = str(algorithm.get("external_product_id") or "")
+            recovered_deleted = False
+            try:
+                rows = extract_items(client.list_product_versions(product_id))
+                recovered_deleted = all(
+                    str(
+                        row.get("algoVersionId")
+                        or row.get("algorithmVersionId")
+                        or row.get("versionId")
+                        or row.get("id")
+                        or ""
+                    ) != external_version_id
+                    for row in rows
+                    if isinstance(row, Mapping)
+                )
+            except Exception:
+                recovered_deleted = False
+            if not recovered_deleted:
+                raise PlatformError(
+                    "EXTERNAL_VERSION_DELETE_FAILED",
+                    "新畅联算法版本删除结果无法确认，已停止本地删除",
+                    str(error),
+                    "平台不会只删除本地版本。请检查新畅联删除接口和版本列表后重试。",
+                    502,
+                ) from error
 
         if publication:
             try:
