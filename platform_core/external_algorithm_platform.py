@@ -917,17 +917,21 @@ def _analysis_name(row: Mapping[str, Any]) -> str:
 
 
 def _analysis_summary(row: Mapping[str, Any]) -> Dict[str, Any]:
+    status_value = _value_from(row, "status")
     return {
         "analysis_id": _analysis_id(row),
         "analysis_name": _analysis_name(row),
         "analysis_type": str(_value_from(row, "analysisType", "analysisTypeName", "type") or "").strip(),
-        "status": str(_value_from(row, "status") or "").strip(),
+        "status": "" if status_value is None else str(status_value).strip(),
         "compute_platform_ids": list(row.get("computePlatformIds") or row.get("compute_platform_ids") or []),
     }
 
 
 def _analysis_is_enabled(row: Mapping[str, Any]) -> bool:
-    status = str(_value_from(row, "status") or "").strip().lower()
+    status_value = _value_from(row, "status")
+    if status_value is None:
+        return True
+    status = str(status_value).strip().lower()
     return status not in {"0", "false", "disabled"}
 
 
