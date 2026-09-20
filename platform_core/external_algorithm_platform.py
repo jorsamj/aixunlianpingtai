@@ -30,7 +30,7 @@ SOURCE_EXTERNAL = "EXTERNAL"
 CONFIG_SCHEMA_VERSION = 2
 CACHE_SCHEMA_VERSION = 1
 MAX_SYNC_HISTORY = 100
-DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 600
+DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 60
 
 CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
     {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"POST","path":"/login","auth":"human_login"},
@@ -221,9 +221,9 @@ class ExternalPlatformConfigPayload(BaseModel):
     mode: Literal["local", "external"] = "local"
     provider: Literal["changlian"] = "changlian"
     base_url: str = ""
-    auto_sync_enabled: bool = False
-    auto_sync_interval_seconds: int = Field(default=DEFAULT_AUTO_SYNC_INTERVAL_SECONDS, ge=60, le=86400)
-    auto_publish_enabled: bool = False
+    auto_sync_enabled: bool = True
+    auto_sync_interval_seconds: int = Field(default=DEFAULT_AUTO_SYNC_INTERVAL_SECONDS, ge=60, le=60)
+    auto_publish_enabled: bool = True
     access_key: Optional[str] = None
     access_secret: Optional[str] = None
     endpoints: EndpointPayload = Field(default_factory=EndpointPayload)
@@ -263,19 +263,27 @@ class ExternalPlatformRepository:
             result = json.loads(json.dumps(DEFAULT_CONFIG))
             result.update(body)
             result["endpoints"] = asdict(ChangLianEndpoints.from_mapping(body.get("endpoints")))
+            if str(result.get("mode") or "local") == "external":
+                # Provider has no webhook/subscription contract. Keep master data
+                # quasi-realtime by polling every 60 seconds and automatically
+                # publish completed training/conversion results.
+                result["auto_sync_enabled"] = True
+                result["auto_sync_interval_seconds"] = 60
+                result["auto_publish_enabled"] = True
             return result
 
     def save_config(self, value: Mapping[str, Any]) -> Dict[str, Any]:
         current = self.config()
         result = dict(current)
+        mode = str(value.get("mode") or "local")
         result.update({
             "schema_version": CONFIG_SCHEMA_VERSION,
-            "mode": str(value.get("mode") or "local"),
+            "mode": mode,
             "provider": str(value.get("provider") or "changlian"),
             "base_url": normalize_base_url(value.get("base_url")),
-            "auto_sync_enabled": bool(value.get("auto_sync_enabled", False)),
-            "auto_sync_interval_seconds": max(60, min(86400, int(value.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS))),
-            "auto_publish_enabled": bool(value.get("auto_publish_enabled", False)),
+            "auto_sync_enabled": mode == "external",
+            "auto_sync_interval_seconds": 60,
+            "auto_publish_enabled": mode == "external",
             "credential_ref": current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"],
             "endpoints": asdict(ChangLianEndpoints.from_mapping(value.get("endpoints"))),
             "updated_at": utc_now(),
