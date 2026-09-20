@@ -126,13 +126,18 @@ jobs:
           grep -q "_DELIVERABLE_SUFFIXES" platform_core/external_algorithm_publish.py
           grep -q "candidate.name.lower() == \"manifest.json\"" platform_core/external_algorithm_publish.py
           grep -q "test_synced_changlian_identity_survives_training_choice_conversion_and_publish" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_conversion_in_progress_does_not_block_training_version_and_original_weight" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
+          grep -q "delete_version_for_rollback" platform_core/external_algorithm_publish.py
+          grep -q "client.version_remove" platform_core/external_algorithm_publish.py
           grep -q "test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage" tests/unit/test_external_algorithm_publish.py
           grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
           grep -Fq "storage_source_id: ''" static/modules/external-algorithm-publish.js
-          grep -Fq '平台对接 → 模型资产存储' static/modules/external-algorithm-publish.js
-          grep -Fq '平台对接 → 畅联云版本发布' static/modules/external-algorithm-publish.js
-          grep -Fq '官方发布接口' static/modules/external-algorithm-publish.js
-          grep -Fq '接口路径来自新畅联官方 OpenAPI，平台固定使用，不允许手工修改' static/modules/external-algorithm-publish.js
+          grep -Fq '存储配置 → 算法与转换结果存储' static/modules/external-algorithm-publish.js
+          grep -Fq '原始训练模型（必传）' static/modules/external-algorithm-publish.js
+          grep -Fq '官方同步接口' static/modules/external-algorithm-publish.js
+          grep -Fq '创建、查询和删除均使用新畅联官方 OpenAPI 固定路径' static/modules/external-algorithm-publish.js
           if grep -Fq 'id="externalPublishVersionList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian version endpoint must not be user-editable" >&2; exit 1; fi
           if grep -Fq 'id="externalPublishWeightList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian weight endpoint must not be user-editable" >&2; exit 1; fi
           grep -q "publish UI locks recovery endpoints to official OpenAPI" tests/frontend/external-algorithm-publish.test.mjs
@@ -151,7 +156,10 @@ jobs:
           grep -q "storage-test" platform_core/external_algorithm_publish.py
           grep -q "run-auto" platform_core/external_algorithm_publish.py
           grep -q "registerDecorator('external-algorithm-publish'" static/modules/external-algorithm-publish.js
-          grep -q "模型资产存储" static/modules/model-artifact-runtime.js
+          grep -q "算法与转换结果存储" static/modules/model-artifact-runtime.js
+          grep -q "modelArtifactPublicBaseUrl" static/modules/model-artifact-runtime.js
+          grep -q "public_url TEXT NOT NULL DEFAULT" platform_core/model_artifacts.py
+          grep -q "def public_url" platform_core/model_artifacts.py
           grep -q "畅联云交互日志" static/modules/model-artifact-runtime.js
           if grep -q "window.renderAlg412 =" static/modules/external-algorithm-publish.js; then echo "external publish must not wrap renderAlg412" >&2; exit 1; fi
           test ! -e tools/_one_shot_model_asset_integration.py
