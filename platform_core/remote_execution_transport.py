@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
-from .algorithms import attach_version, list_algorithms, resolve_current_version_id
+from .algorithms import attach_version, list_algorithms, resolve_current_version_id, update_algorithm_version
 from filelock import FileLock, Timeout
 
 from .material_repository import MaterialRepository
@@ -2968,6 +2968,15 @@ class RemoteExecutionTransportService:
             None,
         )
         if existing_version is not None:
+            durable_analysis_id = str(payload.get("external_analysis_id") or "").strip()
+            if durable_analysis_id and not str(existing_version.get("external_analysis_id") or "").strip():
+                existing_version = update_algorithm_version(
+                    self.algorithms_file(str(task.project_id)),
+                    algorithm_id,
+                    version_id,
+                    {"external_analysis_id": durable_analysis_id},
+                    now=str(getattr(task, "updated_at", "") or datetime.now(timezone.utc).isoformat()),
+                )
             return {
                 "algorithm_id": algorithm_id,
                 "version_id": version_id,
@@ -3252,6 +3261,7 @@ class RemoteExecutionTransportService:
             "artifact_verified": True,
             "trainable": True,
             "framework": "ultralytics",
+            "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
             "snapshot_id": str(training.get("snapshot_id") or ""),
             "dataset_revision_id": str(training.get("dataset_revision_id") or ""),
             "training_lineage": training_lineage,
