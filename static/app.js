@@ -202,8 +202,8 @@ window.openImportDock=async()=>{
   modal('后台导入任务', renderImportJobsPanel(), true);
 };
 function renderImportJobsPanel(){
-  const jobs=state.importJobs||[];
-  return `<div class="import-jobs">${jobs.map(j=>renderImportJobCard(j)).join('')||'<div class="empty">暂无导入任务</div>'}</div><div class="row end"><button class="btn soft" onclick="closeModal()">关闭</button><button class="btn" onclick="loadImportJobs().then(()=>window.ModalContentRuntime.replace(document.getElementById('modalBody'),renderImportJobsPanel()))">刷新</button></div>`;
+  const jobs=state.importJobs||[],terminal=jobs.filter(j=>['done','failed','cancelled','canceled'].includes(String(j.status||'').toLowerCase()));
+  return `<div class="import-jobs">${jobs.map(j=>renderImportJobCard(j)).join('')||'<div class="empty">暂无导入任务</div>'}</div><div class="row end"><button class="btn soft" onclick="closeModal()">关闭</button><button class="btn" onclick="loadImportJobs().then(()=>window.ModalContentRuntime.replace(document.getElementById('modalBody'),renderImportJobsPanel()))">刷新</button><button class="btn danger" ${terminal.length?'':'disabled'} onclick="clearFinishedImportJobs()">清空已结束</button></div>`;
 }
 function renderImportJobCard(j){
   const r=j.report||{};
@@ -218,6 +218,7 @@ function renderImportJobCard(j){
   </div>`;
 }
 window.deleteImportJob=async(id)=>{if(!confirm('确认删除这个导入任务记录？'))return;await safe(api(`/api/v19/projects/${pid()}/import/jobs/${id}`,{method:'DELETE'}));await loadImportJobs();if(!$('#modal').classList.contains('hidden'))window.ModalContentRuntime.replace($('#modalBody'),renderImportJobsPanel());};
+window.clearFinishedImportJobs=async()=>{const terminal=(state.importJobs||[]).filter(j=>['done','failed','cancelled','canceled'].includes(String(j.status||'').toLowerCase()));if(!terminal.length)return toast('没有已结束的导入记录');if(!confirm(`确认清空已结束的 ${terminal.length} 条导入记录？正在运行和待确认任务会保留。`))return;const result=await safe(api(`/api/v19/projects/${pid()}/import/jobs`,{method:'DELETE'}));if(!result)return;await loadImportJobs();if(!$('#modal').classList.contains('hidden'))window.ModalContentRuntime.replace($('#modalBody'),renderImportJobsPanel());toast(`已清空 ${Number(result.deleted||0)} 条导入记录`);};
 
 // 覆盖 v18 导入弹窗
 window.importData=()=>modal('导入已标注数据',`<div class="form"><div class="import-box"><div class="item-title">先上传压缩包，再选择要解析的图片</div><div class="item-sub">适合网上下载的大数据集。上传后不会立即全部解析，可勾选部分图片先试导入；解析任务可缩放到后台，右下角查看进度。</div></div><div class="field"><label>选择压缩包</label><input id="importFile" type="file" class="file" accept=".zip"></div><div id="importProgressWrap" class="progress-wrap hidden"><div class="progress-line"><span id="importProgressText">准备上传</span><b id="importProgressPercent">0%</b></div><div class="progress-bar"><i id="importProgressBar" style="width:0%"></i></div></div><div id="importResult"></div><div class="row end"><button class="btn soft" onclick="closeModal()">取消</button><button class="btn primary" onclick="doImportUploadV19()">上传并扫描</button></div></div>`,true);
