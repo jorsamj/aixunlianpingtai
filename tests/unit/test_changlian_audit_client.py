@@ -26,9 +26,9 @@ class FakeSession:
                 {"code": 0, "msg": "操作成功", "data": {"accessToken": "token-1", "tokenType": "Bearer", "expiresIn": 3600}},
                 headers={"X-Request-Id": "req-token"},
             )
-        if url.endswith("/algorithm-category/tree"):
-            assert kwargs["headers"]["Access-Token"] == "token-1"
-            assert "Authorization" not in kwargs["headers"]
+        if url.endswith("/internal/base/category/tree"):
+            assert kwargs["headers"]["Authorization"] == "Bearer token-1"
+            assert "Access-Token" not in kwargs["headers"]
             return FakeResponse(
                 {"code": 0, "msg": "操作成功", "data": [{"categoryId": "c1", "categoryName": "安全"}]},
                 headers={"X-Request-Id": "req-category"},
@@ -64,8 +64,8 @@ def test_changlian_http_client_records_every_remote_step_and_redacts_credentials
     assert token["status"] == "SUCCESS"
     assert token["error_message"] == ""
     assert token["request"]["headers"]["Access-Key"] == "***"
-    assert category["request"]["headers"]["Access-Token"] == "***"
-    assert "Authorization" not in category["request"]["headers"]
+    assert category["request"]["headers"]["Authorization"] == "***"
+    assert "Access-Token" not in category["request"]["headers"]
     signature = next(row for row in rows if row["operation"] == "auth_signature")
     assert signature["request"]["params"]["access_secret"] == "***"
     assert signature["request"]["params"]["access_key"] == "***"
@@ -112,7 +112,7 @@ class ProductListSuccessSession(FakeSession):
             assert method.upper() == "GET"
             assert kwargs["headers"]["Authorization"] == "Bearer token-1"
             assert "Access-Token" not in kwargs["headers"]
-            assert kwargs.get("params") in (None, {})
+            assert kwargs.get("params") == {"productType": "3"}
             return FakeResponse({
                 "code": 0,
                 "msg": "操作成功",
@@ -148,3 +148,70 @@ def test_changlian_product_list_uses_official_path_and_bearer_header(tmp_path: P
     assert row["endpoint"] == "/internal/algorithm/product-ai/listAll"
     assert row["request"]["headers"]["Authorization"] == "***"
     assert "Access-Token" not in row["request"]["headers"]
+
+
+class FullAlgorithmContractSession(FakeSession):
+    def request(self, method, url, **kwargs):
+        if "/internal/algorithm/" in url or "/internal/base/" in url:
+            assert kwargs["headers"]["Authorization"] == "Bearer token-1"
+            assert "Access-Token" not in kwargs["headers"]
+        if url.endswith("/internal/algorithm/algorithm-version/add"):
+            assert method.upper() == "POST"
+            assert kwargs["json"] == {"productId": 101, "versionName": "V1", "versionNo": "1.0.0"}
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": 501})
+        if url.endswith("/internal/algorithm/algorithm-version/edit"):
+            assert kwargs["json"]["algoVersionId"] == 501
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": 1})
+        if url.endswith("/internal/algorithm/algorithm-version/listByProduct/101"):
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"algoVersionId": 501, "productId": 101, "weightCount": 1}]})
+        if url.endswith("/internal/algorithm/algorithm-version/getInfo/501"):
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": {"algoVersionId": 501}})
+        if url.endswith("/internal/algorithm/algorithm-version/remove/501"):
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": 1})
+        if url.endswith("/internal/algorithm/algorithm-weight/add"):
+            assert kwargs["json"] == {
+                "algoVersionId": 501,
+                "computePlatformId": 9,
+                "chipCode": "RK3568",
+                "fileName": "model.rknn",
+                "filePath": "https://example/model.rknn",
+            }
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": 701})
+        if url.endswith("/internal/algorithm/algorithm-weight/edit"):
+            assert kwargs["json"]["weightId"] == 701
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": 1})
+        if url.endswith("/internal/algorithm/algorithm-weight/listByVersion/501"):
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"weightId": 701, "algoVersionId": 501}]})
+        if url.endswith("/internal/algorithm/algorithm-weight/getInfo/701"):
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": {"weightId": 701}})
+        if url.endswith("/internal/algorithm/algorithm-weight/remove/701"):
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": 1})
+        return super().request(method, url, **kwargs)
+
+
+def test_changlian_full_version_and_weight_contract_uses_bearer_and_official_paths(tmp_path: Path):
+    client = ChangLianClient(
+        base_url="https://changlian.example",
+        access_key="ak-sensitive",
+        access_secret="secret-sensitive",
+        endpoints=ChangLianEndpoints(),
+        session=FullAlgorithmContractSession(),
+    )
+
+    assert client.version_create({"productId": "101", "versionName": "V1", "versionNo": "1.0.0"})["data"] == 501
+    assert client.version_edit({"algoVersionId": "501", "versionName": "V1-edit"})["data"] == 1
+    assert client.version_list_by_product("101")["data"][0]["algoVersionId"] == 501
+    assert client.version_info("501")["data"]["algoVersionId"] == 501
+    assert client.version_remove(["501"])["data"] == 1
+
+    assert client.weight_create({
+        "algoVersionId": "501",
+        "computePlatformId": "9",
+        "chipCode": "RK3568",
+        "fileName": "model.rknn",
+        "filePath": "https://example/model.rknn",
+    })["data"] == 701
+    assert client.weight_edit({"weightId": "701", "fileName": "model-v2.rknn"})["data"] == 1
+    assert client.weight_list_by_version("501")["data"][0]["weightId"] == 701
+    assert client.weight_info("701")["data"]["weightId"] == 701
+    assert client.weight_remove(["701"])["data"] == 1
