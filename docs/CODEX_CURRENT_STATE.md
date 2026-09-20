@@ -7,11 +7,11 @@
 
 > **Codex resume point.** This section overrides older “NEXT”, “Current priority”, acceptance-HEAD and implementation-baseline text below when those historical notes conflict with current GitHub reality. Always re-read the remote branch first because this documentation commit will advance HEAD.
 
-当前远端 HEAD：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+本次 Live Handoff 记录的代码 HEAD（文档提交前）：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
 
 当前正式版本：`VERSION.txt = 42.24.0`
 
-当前 HEAD Actions（2026-09-20 14:41 +08:00 核对）：
+上述代码 HEAD 的 Actions 快照（2026-09-20 14:41 +08:00 核对）：
 - total: 18
 - queued: 18
 - in_progress: 0
@@ -31,7 +31,7 @@ GPU 正式服务器当前仍运行上午部署：
 - secret env：`/etc/changlian/secret.env`
 - encrypted credential store：`/data/platform-data/secure/secrets.enc.json`
 
-**重要：GPU 正式服务器尚未部署当前 GitHub HEAD。**
+**重要：GPU 正式服务器尚未部署上述代码 HEAD；接手时仍必须先重读远端 HEAD，因为后续文档提交也会推进分支。**
 
 ### Current ChangLian contract
 

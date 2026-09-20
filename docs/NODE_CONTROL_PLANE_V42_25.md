@@ -9,11 +9,11 @@
 
 > 本节只补“当前生产部署在哪里”，**不改变**本文已经 CLOSED 的 Node / Scheduler / Agent 架构契约。历史章节里的“下一主线”是当时阶段记录，不应覆盖当前 PROJECT/CODEX live handoff。
 
-当前远端 HEAD：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+本次 Live Handoff 记录的代码 HEAD（文档提交前）：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
 
 当前正式版本：`VERSION.txt = 42.24.0`
 
-当前 HEAD Actions（2026-09-20 14:41 +08:00 核对）：
+上述代码 HEAD 的 Actions 快照（2026-09-20 14:41 +08:00 核对）：
 - total: 18
 - queued: 18
 - in_progress: 0
@@ -33,7 +33,7 @@ GPU 正式服务器当前仍运行上午部署：
 - secret env：`/etc/changlian/secret.env`
 - encrypted credential store：`/data/platform-data/secure/secrets.enc.json`
 
-**重要：GPU 正式服务器尚未部署当前 GitHub HEAD。**
+**重要：GPU 正式服务器尚未部署上述代码 HEAD；接手时仍必须先重读远端 HEAD，因为后续文档提交也会推进分支。**
 
 当前部署动作继续沿用 release/symlink 模式：
 ```text
