@@ -139,10 +139,10 @@ source_type = EXTERNAL
 
 ```text
 analysisType = 1
-status != 0
+status = 1
 ```
 
-同步仍保留产品下全部分析方式作为远端事实，但 `external_analysis_ids`、默认 `external_analysis_id` 和训练弹窗只暴露可训练的启用视觉分析。仅有大模型分析或视觉分析已停用时，训练 fail closed。
+同步仍保留产品下全部分析方式作为远端事实，但训练资格必须由分析明细同时证明 `analysisType=1` 且 `status=1`。字段缺失、空值、预留类型、大模型类型、禁用状态，以及仅有旧 `external_analysis_ids` 无明细佐证时全部 fail closed。
 
 ## 4. 训练身份
 
