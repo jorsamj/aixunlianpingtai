@@ -61,6 +61,9 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /modelArtifactPublicBaseUrl/);
   assert.match(source, /suggestedOssPublicBaseUrl/);
   assert.match(source, /modelArtifactSuggestPublicUrl/);
+  assert.match(source, /toLowerCase\(\) === 'oss'/);
+  assert.match(source, /请选择阿里云 OSS/);
+  assert.match(source, /开发兼容/);
   assert.match(source, /OSS 内网 Endpoint/);
   assert.match(source, /自动归档已启用/);
   assert.doesNotMatch(source, /id="modelArtifactAutoUpload"/);
