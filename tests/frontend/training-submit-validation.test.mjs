@@ -98,3 +98,15 @@ test('algorithm detail modal exposes summary facts without stale failure reason'
   assert.match(detail, /当前 mAP50/);
   assert.doesNotMatch(detail, /失败原因/);
 });
+
+
+test('algorithm card keeps training transition states active and empty confirmation appears immediately', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /'starting','running','pausing','paused','resuming','stopping','cancel_requested'/);
+  assert.match(source, /pausing:'暂停中'/);
+  assert.match(source, /resuming:'恢复中'/);
+  assert.match(source, /stopping:'停止中'/);
+  const deleteOwner = source.match(/window\.deleteActiveBox=\(\)=>\{[^\n]+/s)?.[0] || '';
+  assert.match(deleteOwner, /ann420ConfirmEmpty/);
+  assert.match(deleteOwner, /confirmEmpty\.hidden=/);
+});
