@@ -521,9 +521,9 @@ window.__resourceDiscoveryDependencies={
       annotationPolicy.hidden=false;
       const quality=task.quality||{},issues=quality.issues||{},issueCount=Object.values(issues).reduce((sum,value)=>sum+Number(value||0),0);
       qualityBox.innerHTML=`<p><b>标注数据质量</b> · 有效框 ${Number(quality.boxes||0)} · 异常 ${issueCount}</p>${Object.keys(issues).length?`<p>${Object.entries(issues).map(([code,count])=>`${esc(code)}：${Number(count||0)}`).join(' · ')}</p><label><input id="sr61AcceptQuality" type="checkbox"> 已确认标注质量报告</label>`:''}`;
-      const labels=(state.project?.labels||state.currentProject?.labels||[]);
+      const labels=window.mappingLabelItems414?.()||[];
       const classes=Array.isArray(task.external_classes)?task.external_classes:[];
-      mappingBox.innerHTML=classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签</b>${classes.map(row=>`<div class="storage61-mapping-row" data-rescan-class="${esc(row.class_id)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(code=>`<option value="${esc(code)}" ${String(code)===String(row.target_label_code||'')?'selected':''}>${esc(code)}</option>`).join('')}</select></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
+      mappingBox.innerHTML=classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签</b>${classes.map(row=>`<div class="storage61-mapping-row" data-rescan-class="${esc(row.class_id)}" data-source-name="${esc(row.name)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><div class="row"><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(row.target_label_code||'')?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('rescan','${encodeURIComponent(String(row.class_id))}')">＋ 新建平台标签</button></div></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
     }
     async function loadPreflight(){
       try{
@@ -644,7 +644,7 @@ window.__resourceDiscoveryDependencies={
       const summary=(view.canConfirm||view.terminal)?`<div class="storage61-import-summary"><span>已扫描 <b>${scanned}</b></span><span>可导入 <b>${importable}</b></span><span>重复 <b>${duplicates}</b></span><span>失败 <b>${failed}</b></span></div>`:'';
       const quality=result.quality,classes=result.external_classes||[];
       const qualityHtml=quality?`<div class="storage61-import-quality"><b>标注数据质量</b><p>有效框 ${safeCount(quality.boxes)} · 已标注 ${safeCount(quality.annotation_status?.annotated)} · 确认空标注 ${safeCount(quality.annotation_status?.confirmed_empty)} · 缺失标注 ${safeCount(quality.annotation_status?.unannotated)} · 无效标注 ${safeCount(quality.annotation_status?.invalid)}</p><p>${Object.entries(quality.issues||{}).map(([code,n])=>`${esc(code)}：${safeCount(n)}`).join(' · ')||'未发现质量问题'}</p>${(quality.examples||[]).length?`<details><summary>查看问题示例</summary>${quality.examples.map(row=>`<p>${esc(row.object_key)} · 第 ${safeCount(row.line_number)} 行 · ${esc(row.code)}</p>`).join('')}</details>`:''}</div>`:'';
-      const labels=(state.project?.labels||state.currentProject?.labels||[]),mappingHtml=view.canConfirm&&classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签编码</b>${classes.map(row=>`<div class="storage61-mapping-row" data-import-class="${esc(row.class_id)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(code=>`<option value="${esc(code)}" ${String(code)===String(row.target_label_code||'')?'selected':''}>${esc(code)}</option>`).join('')}</select></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
+      const labels=window.mappingLabelItems414?.()||[],mappingHtml=view.canConfirm&&classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签编码</b>${classes.map(row=>`<div class="storage61-mapping-row" data-import-class="${esc(row.class_id)}" data-source-name="${esc(row.name)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><div class="row"><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(row.target_label_code||'')?'selected':''}>${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('storage-import','${encodeURIComponent(String(row.class_id))}')">＋ 新建平台标签</button></div></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
       const acceptance=view.canConfirm&&quality?'<label class="field check"><input id="si61AcceptQuality" type="checkbox"> 已查看并接受质量报告（无效标注行将跳过）</label>':'';
       const confirm=view.canConfirm?`<button id="si61Confirm" class="btn mini primary" onclick="confirmStorageImport61('${taskId}')">确认建立索引</button>`:'';
       const error=(view.status==='FAILED'||view.status==='CANCELLED'||view.status==='BLOCKED_BY_ENVIRONMENT')?`<div class="alert err">${esc(task?.error||result?.error?.message||view.text||'导入失败')}</div>`:'';
@@ -4594,8 +4594,9 @@ window.installUsability417?.();
     const review=state.ai60Review,box=document.getElementById('ai60LabelMapping');if(!review||!box)return;
     const rows=review.labelSummary||[],labels=(state.labels||[]).filter(item=>item?.code);
     if(!rows.length){box.innerHTML='';return}
-    box.innerHTML=`<div class="storage61-import-mapping"><div class="row between"><b>批量统一标注名</b><span class="item-sub">统一后再写入正式标注</span></div>${rows.map(row=>{const source=String(row.label||''),target=review.labelMapping.get(source)||source;return `<div class="storage61-mapping-row"><span><b>${esc(typeof displayLabel412==='function'?displayLabel412(source):source)}</b><small>${Number(row.images||0)} 张 · ${Number(row.boxes||0)} 框</small></span><select class="select" onchange="updateAiLabelMapping60('${esc(source)}',this.value)">${labels.map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(target)?'selected':''}>${esc(label.display_name||label.display_name_zh||label.code)} · ${esc(label.code)}</option>`).join('')}</select></div>`}).join('')}</div>`;
+    box.innerHTML=`<div class="storage61-import-mapping"><div class="row between"><b>批量统一标注名</b><span class="item-sub">统一后再写入正式标注</span></div>${rows.map(row=>{const source=String(row.label||''),target=review.labelMapping.get(source)||source;return `<div class="storage61-mapping-row" data-ai-label-source="${esc(source)}"><span><b>${esc(typeof displayLabel412==='function'?displayLabel412(source):source)}</b><small>${Number(row.images||0)} 张 · ${Number(row.boxes||0)} 框</small></span><div class="row"><select class="select" onchange="updateAiLabelMapping60('${esc(source)}',this.value)">${labels.map(label=>`<option value="${esc(label.code)}" ${String(label.code)===String(target)?'selected':''}>${esc(label.display_name||label.display_name_zh||label.code)} · ${esc(label.code)}</option>`).join('')}</select><button type="button" class="btn mini" onclick="openInlineLabelCreate414('ai','${encodeURIComponent(source)}')">＋ 新建平台标签</button></div></div>`}).join('')}</div>`;
   }
+  window.renderAiLabelMapping60=renderAiLabelMapping60;
   window.updateAiLabelMapping60=(source,target)=>{const review=state.ai60Review;if(!review)return;review.labelMapping.set(String(source),String(target));};
   function renderReviewPage(){
     const review=state.ai60Review;if(!review)return;ensureReviewShell();
@@ -4629,6 +4630,66 @@ window.installUsability417?.();
     try{const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(action&&!action.isCurrent())return;applyTaskResult(result);closeModal();toast(mode==='reject'?'本次AI结果已拒绝，正式标注未被修改':result.queued_for_commit?'已确认，正在批量统一标签并写入正式标注':`已采用 ${result.applied_images||0} 张，写入 ${result.boxes_added||0} 个框`);if(state.page==='自动标注及清洗')renderOps427()}catch(error){if(action&&!action.isCurrent())return;toast(error.message||error)}
   };
   window.confirmAiLabel427=id=>completeAiReview60('partial');
+})();
+
+/* Explicit canonical-label creation used by import/rescan/ZIP/AI confirmation.
+ * Creation is a separate metadata action; formal annotations are still written only
+ * after the user confirms the surrounding review flow. */
+(()=>{
+  window.mappingLabelItems414=function(){
+    const rows=(state.labels||[]).filter(item=>item?.code);
+    if(rows.length)return rows;
+    return (state.project?.labels||state.currentProject?.labels||[]).map(code=>({code:String(code),display_name:String(code)}));
+  };
+  function mappingRow414(kind,key){
+    const selectors={zip:'[data-zip-class]',rescan:'[data-rescan-class]','storage-import':'[data-import-class]'};
+    const selector=selectors[kind];if(!selector)return null;
+    return [...document.querySelectorAll(selector)].find(row=>{
+      const value=kind==='zip'?row.dataset.zipClass:kind==='rescan'?row.dataset.rescanClass:row.dataset.importClass;
+      return String(value||'')===String(key||'');
+    })||null;
+  }
+  function selectCreatedLabel414(kind,key,code){
+    if(kind==='ai'){
+      state.ai60Review?.labelMapping?.set(String(key),String(code));
+      window.renderAiLabelMapping60?.();
+      return true;
+    }
+    const row=mappingRow414(kind,key),select=row?.querySelector(kind==='zip'?'[data-zip-target]':'[data-label-code]');
+    if(!select)return false;
+    const label=(state.labels||[]).find(item=>String(item.code)===String(code));
+    if(![...select.options].some(option=>String(option.value)===String(code))){
+      const option=document.createElement('option');option.value=code;option.textContent=`${label?.display_name||code} · ${code}`;select.appendChild(option);
+    }
+    select.value=code;
+    select.dispatchEvent(new Event('input',{bubbles:true}));
+    select.dispatchEvent(new Event('change',{bubbles:true}));
+    return true;
+  }
+  function sourceName414(kind,key){
+    if(kind==='ai')return String(key||'');
+    return String(mappingRow414(kind,key)?.dataset?.sourceName||'');
+  }
+  window.openInlineLabelCreate414=function(kind,encodedKey){
+    const key=decodeURIComponent(String(encodedKey||'')),source=sourceName414(kind,key);
+    state.inlineLabelCreate414={kind:String(kind||''),key};
+    modal('新建平台标签',`<div class="label414-form import-label-create414"><div class="field"><label>英文标签 <em>*</em></label><input id="inlineLabel414Code" class="input" placeholder="例如 helmet / safety_helmet"><small>正式训练类别编码。不会自动使用外部标签名。</small></div><div class="field"><label>中文名称</label><input id="inlineLabel414Name" class="input" value="${esc(source&&!/^[A-Za-z][A-Za-z0-9_-]*$/.test(source)?source:'')}" placeholder="例如 安全头盔"></div><div class="field"><label>显示颜色</label><input id="inlineLabel414Color" class="input color414" type="color" value="#ef4444"></div><div class="alert soft">创建后只会加入平台标签库并自动选中；仍需返回当前确认流程点击“确认”后才会正式写入标注。确认成功后，外部名称会按映射规则记为该正式标签的别名。</div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitInlineLabelCreate414()">创建并使用</button></div>`,false);
+  };
+  window.submitInlineLabelCreate414=async function(){
+    const context=state.inlineLabelCreate414||{},code=String(document.getElementById('inlineLabel414Code')?.value||'').trim(),display=String(document.getElementById('inlineLabel414Name')?.value||'').trim(),color=String(document.getElementById('inlineLabel414Color')?.value||'').trim();
+    if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(code))return toast('英文标签格式不正确，例如 helmet、safety_helmet');
+    try{
+      let existing=(state.labels||[]).find(item=>String(item.code)===code);
+      if(!existing){
+        await api(`/api/projects/${pid()}/labels`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:code,display_name:display||code,color})});
+        await window.refreshLabels414?.(false);
+        existing=(state.labels||[]).find(item=>String(item.code)===code);
+      }
+      closeModal();
+      if(!selectCreatedLabel414(String(context.kind||''),String(context.key||''),code))return toast('标签已创建，请在当前确认列表中重新选择');
+      toast(existing?'平台标签已选中；仍需确认后才会正式入库':'平台标签已创建并选中；仍需确认后才会正式入库');
+    }catch(error){toast(error.message||error)}
+  };
 })();
 
 /* Persistent deployment tests: upload returns immediately and a Worker performs real Runtime inference. */
