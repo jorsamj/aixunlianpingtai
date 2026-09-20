@@ -48,7 +48,7 @@ jobs:
       - name: Permanent service-node UI guards
         shell: bash
         run: |
-          grep -Fq 'service-node-bootstrap.mjs?v=422534' static/index.html
+          grep -Fq 'service-node-bootstrap.mjs?v=422535' static/index.html
           grep -Fq 'service-nodes.css?v=422533' static/index.html
           grep -Fq "const PAGE = '服务节点'" static/modules/service-node-runtime.js
           grep -Fq "POLL_KEY = 'service-node-runtime'" static/modules/service-node-runtime.js
