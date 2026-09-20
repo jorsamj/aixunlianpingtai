@@ -160,7 +160,7 @@ def _canonical_publish_endpoint(value: Any, fallback: str) -> str:
 class ExternalPublishConfigPayload(BaseModel):
     storage_source_id: str = ""
     public_base_url: str = ""
-    publish_original_model: bool = False
+    publish_original_model: bool = True
     target_mappings: Dict[str, TargetMapping] = Field(default_factory=dict)
     version_list_by_product: str = "/internal/algorithm/algorithm-version/listByProduct/{productId}"
     weight_list_by_version: str = "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
@@ -170,7 +170,7 @@ DEFAULT_PUBLISH_CONFIG: Dict[str, Any] = {
     "schema_version": PUBLICATION_SCHEMA_VERSION,
     "storage_source_id": "",
     "public_base_url": "",
-    "publish_original_model": False,
+    "publish_original_model": True,
     "target_mappings": {key: {"compute_platform_id": "", "chip_code": "", "enabled": True} for key in TARGET_KEYS},
     "version_list_by_product": "/internal/algorithm/algorithm-version/listByProduct/{productId}",
     "weight_list_by_version": "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}",
@@ -259,6 +259,10 @@ class ExternalPublicationRepository:
             for key, value in (stored.get("target_mappings") or {}).items():
                 if isinstance(value, dict):
                     mappings[str(key)] = {**mappings.get(str(key), {}), **value}
+        # Training output delivery is mandatory: the original trained model is
+        # always included in the ChangLian delivery chain.
+        result["publish_original_model"] = True
+        result.setdefault("target_mappings", {}).setdefault("original", {})["enabled"] = True
         return result
 
     def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
@@ -266,6 +270,11 @@ class ExternalPublicationRepository:
         body["schema_version"] = PUBLICATION_SCHEMA_VERSION
         body["public_base_url"] = str(body.get("public_base_url") or "").strip().rstrip("/")
         body["storage_source_id"] = str(body.get("storage_source_id") or "").strip()
+        body["publish_original_model"] = True
+        mappings = body.setdefault("target_mappings", {})
+        original = dict(mappings.get("original") or {})
+        original["enabled"] = True
+        mappings["original"] = original
         body["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
         body["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
         body["updated_at"] = utc_now()
@@ -434,10 +443,17 @@ class ExternalAlgorithmPublishService:
         )
         legacy_publish = self.repository.config()
         asset_config = self.model_assets.repository.config()
-        if not str(asset_config.get("storage_source_id") or "") and str(legacy_publish.get("storage_source_id") or ""):
+        legacy_source = str(legacy_publish.get("storage_source_id") or "")
+        legacy_public_url = str(legacy_publish.get("public_base_url") or "")
+        if (
+            (not str(asset_config.get("storage_source_id") or "") and legacy_source)
+            or (not str(asset_config.get("public_base_url") or "") and legacy_public_url)
+        ):
             self.model_assets.save_config(ModelArtifactConfigPayload(
-                storage_source_id=str(legacy_publish.get("storage_source_id") or ""),
-                object_prefix="model-assets", auto_upload_enabled=True,
+                storage_source_id=str(asset_config.get("storage_source_id") or legacy_source),
+                object_prefix=str(asset_config.get("object_prefix") or "model-assets"),
+                public_base_url=str(asset_config.get("public_base_url") or legacy_public_url),
+                auto_upload_enabled=bool(asset_config.get("auto_upload_enabled", True)),
             ))
 
     def public_config(self) -> Dict[str, Any]:
@@ -517,10 +533,13 @@ class ExternalAlgorithmPublishService:
         # stale external-publish storage_source_id.
         current = self.model_assets.repository.config()
         current_source_id = str(current.get("storage_source_id") or "").strip()
-        if source_id and not current_source_id:
+        current_public_url = str(current.get("public_base_url") or "").strip()
+        legacy_public_url = str(payload.public_base_url or "").strip()
+        if (source_id and not current_source_id) or (legacy_public_url and not current_public_url):
             self.model_assets.save_config(ModelArtifactConfigPayload(
-                storage_source_id=source_id,
+                storage_source_id=current_source_id or source_id,
                 object_prefix=str(current.get("object_prefix") or "model-assets"),
+                public_base_url=current_public_url or legacy_public_url,
                 auto_upload_enabled=bool(current.get("auto_upload_enabled", True)),
             ))
         return saved
@@ -894,12 +913,6 @@ class ExternalAlgorithmPublishService:
         return version_id
 
     def _upload_artifact(self, artifact: Mapping[str, Any], algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> Dict[str, Any]:
-        base_url = str(self.repository.config().get("public_base_url") or "").rstrip("/")
-        if not base_url:
-            raise PlatformError(
-                "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE", "模型发布配置不完整", "缺少本平台外部访问地址。",
-                "请在“平台对接 → 畅联云版本发布”填写外部访问地址。", 422,
-            )
         discovered = {
             "artifact_id": str(artifact["artifact_id"]),
             "project_id": str(artifact["project_id"]),
@@ -917,7 +930,20 @@ class ExternalAlgorithmPublishService:
         stored = self.model_assets.ensure_uploaded(discovered)
         if str(stored.get("storage_status") or "").upper() != "UPLOADED":
             raise RuntimeError(str(stored.get("storage_error") or "模型资产上传失败"))
-        public_url = f"{base_url}/api/v64/model-artifacts/{artifact['artifact_id']}/download"
+        public_url = self.model_assets.public_url(stored)
+        if not public_url:
+            # Backward-compatible delivery gateway for existing installations.
+            base_url = str(self.repository.config().get("public_base_url") or "").rstrip("/")
+            if base_url:
+                public_url = f"{base_url}/api/v64/model-artifacts/{artifact['artifact_id']}/download"
+        if not public_url:
+            raise PlatformError(
+                "MODEL_ARTIFACT_PUBLIC_URL_REQUIRED",
+                "算法产物缺少长期访问地址",
+                str(stored.get("object_key") or ""),
+                "请到“存储配置 → 算法与转换结果存储”填写 OSS Bucket 域名或 CDN 域名。",
+                409,
+            )
         return self.repository.patch_artifact(
             str(artifact["artifact_id"]),
             storage_source_id=str(stored.get("storage_source_id") or ""),
@@ -979,13 +1005,17 @@ class ExternalAlgorithmPublishService:
     def _publish_transport_state(self) -> Dict[str, Any]:
         issues: list[Dict[str, str]] = []
         publish_config = self.repository.config()
-        public_base_url = str(publish_config.get("public_base_url") or "").strip().rstrip("/")
+        model_asset_config = self.model_assets.repository.config()
+        public_base_url = str(
+            model_asset_config.get("public_base_url")
+            or publish_config.get("public_base_url")
+            or ""
+        ).strip().rstrip("/")
         if not public_base_url:
             issues.append({
                 "code": "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE",
-                "message": "尚未配置本平台外部访问地址",
+                "message": "尚未配置算法产物长期访问域名（OSS Bucket 域名或 CDN 域名）",
             })
-        model_asset_config = self.model_assets.repository.config()
         storage_source_id = str(model_asset_config.get("storage_source_id") or "").strip()
         if not storage_source_id:
             issues.append({
@@ -1079,7 +1109,7 @@ class ExternalAlgorithmPublishService:
             "model_asset_storage_source_id": str(transport["storage_source_id"] or ""),
             "identity_ready": bool(identity["ready"]),
             "identity_issues": list(identity["issues"]),
-            "publish_ready": bool(mapped) and not blocked and not conversion_active and bool(transport["ready"]) and bool(identity["ready"]),
+            "publish_ready": bool(mapped) and not blocked and bool(transport["ready"]) and bool(identity["ready"]),
             "conversion_active": conversion_active,
         }
 
@@ -1091,16 +1121,15 @@ class ExternalAlgorithmPublishService:
                 "ALGORITHM_VERSION_NOT_PUBLISHABLE", "算法版本尚不可发布", str(version.get("version_name") or version_id),
                 "仅训练成功且模型产物已通过完整性校验的版本可以发布。", 409,
             )
-        if self.conversion_active(project_id, algorithm_id, version_id):
-            raise PlatformError(
-                "MODEL_CONVERSION_STILL_RUNNING", "模型转换仍在进行", str(version.get("version_name") or version_id),
-                "请等待该版本转换任务结束后再同步；自动发布会在转换结束后继续。", 409,
-            )
         # Fail before any remote ChangLian write. Missing local delivery configuration
         # must never create an empty remote Algorithm Version.
         self._assert_publish_transport_ready()
         publication = self.repository.ensure_publication(project_id=project_id, algorithm=algorithm, version=version)
-        if automatic and not self.repository.auto_retry_due(publication):
+        if (
+            automatic
+            and str(publication.get("status") or "").upper() != "PUBLISHED"
+            and not self.repository.auto_retry_due(publication)
+        ):
             return {"ok": True, "skipped": True, "reason": "retry_not_due", "publication": publication}
         attempts = int(publication.get("attempts") or 0) + 1
         publication = self.repository.patch_publication(str(publication["publication_key"]), status="PREPARING", attempts=attempts, last_error="")
