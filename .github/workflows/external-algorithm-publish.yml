@@ -59,7 +59,8 @@ jobs:
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
             tests/unit/test_external_algorithm_publish.py \
             tests/unit/test_model_artifacts.py \
-            tests/unit/test_integration_audit.py
+            tests/unit/test_integration_audit.py \
+            tests/unit/test_algorithms.py
       - name: Frontend external-publish contracts
         run: |
           node --test \
@@ -136,6 +137,8 @@ jobs:
           grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/external_algorithm_publish.py
           grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/model_artifacts.py
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_rollback_remote_delete_failure_keeps_local_versions_unchanged" tests/unit/test_algorithms.py
+          grep -q "test_historical_version_remote_delete_failure_keeps_local_version" tests/unit/test_algorithms.py
           grep -q "delete_version_for_rollback" platform_core/external_algorithm_publish.py
           grep -q "client.version_remove" platform_core/external_algorithm_publish.py
           grep -Fq 'delete_current_version: Literal[True] = True' app.py
