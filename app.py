@@ -17219,7 +17219,14 @@ def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any
                     height=int(img['height']),
                     label_ids=label_ids,
                     label_aliases={
-                        str(item['code']): [str(item.get('display_name_zh') or '')]
+                        str(item['code']): list(dict.fromkeys(
+                            value
+                            for value in [
+                                str(item.get('display_name_zh') or '').strip(),
+                                *[str(alias).strip() for alias in item.get('aliases') or []],
+                            ]
+                            if value
+                        ))
                         for item in selected_catalog
                     },
                 )
