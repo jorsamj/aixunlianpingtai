@@ -168,6 +168,7 @@ jobs:
                   'label_confirmation_required',
                   'resolve_external_label_mapping(',
                   'label_mapping: Dict[str, str] = Field(default_factory=dict)',
+                  're.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized_code)',
                   'resume_after_review_confirmation',
                   'V36_ANNOTATED_IMPORT_BLOCKED_DETAIL',
                   'def _v36_detect_annotated_formats(',
