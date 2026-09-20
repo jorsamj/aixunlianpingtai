@@ -1175,7 +1175,7 @@ class ExternalAlgorithmPlatformService:
             "auto_sync_interval_seconds": int(config.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
             "auto_publish_enabled": bool(config.get("auto_publish_enabled")),
             "auth_mode": "test_sign_bridge",
-            "business_auth_mode": "endpoint_contract",
+            "business_auth_mode": "authorization_bearer",
             "credentials": state,
             "api_documents": changlian_api_documents(),
             "api_document_summary": {
@@ -1381,6 +1381,70 @@ class ExternalAlgorithmPlatformService:
     def _client(self) -> ChangLianClient:
         return self._client_for_payload()
 
+    def _append_algorithm_readonly_diagnostics(
+        self,
+        *,
+        client: ChangLianClient,
+        steps: list[Dict[str, Any]],
+        record: Callable[..., Any],
+        products: Any,
+        empty_detail: str,
+    ) -> None:
+        product_rows = products if isinstance(products, list) else []
+        if not product_rows:
+            for key, name in (
+                ("analysis", "产品分析方式"),
+                ("versions", "算法版本"),
+                ("weights", "算法权重"),
+            ):
+                steps.append({"key": key, "name": name, "status": "skipped", "detail": empty_detail})
+            return
+
+        product_id = _product_id(product_rows[0])
+        record(
+            "analysis",
+            "产品分析方式",
+            lambda: _validated_external_items(
+                client.analyses(product_id),
+                id_resolver=_analysis_id,
+                error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                entity_name="产品分析方式",
+            ),
+            count_items=True,
+        )
+        versions = record(
+            "versions",
+            "算法版本",
+            lambda: _validated_external_items(
+                client.version_list_by_product(product_id),
+                id_resolver=_algo_version_id,
+                error_code="EXTERNAL_ALGO_VERSION_ID_MISSING",
+                entity_name="算法版本",
+            ),
+            count_items=True,
+        )
+        version_rows = versions if isinstance(versions, list) else []
+        if not version_rows:
+            steps.append({
+                "key": "weights",
+                "name": "算法权重",
+                "status": "skipped",
+                "detail": "当前抽查算法产品下没有算法版本",
+            })
+            return
+        algo_version_id = _algo_version_id(version_rows[0])
+        record(
+            "weights",
+            "算法权重",
+            lambda: _validated_external_items(
+                client.weight_list_by_version(algo_version_id),
+                id_resolver=_weight_id,
+                error_code="EXTERNAL_WEIGHT_ID_MISSING",
+                entity_name="算法权重文件",
+            ),
+            count_items=True,
+        )
+
     def test_connection(self, payload: Optional[ExternalPlatformConfigPayload] = None) -> Dict[str, Any]:
         client = self._client_for_payload(payload)
         steps: list[Dict[str, Any]] = []
@@ -1427,27 +1491,13 @@ class ExternalAlgorithmPlatformService:
                 ),
                 count_items=True,
             )
-            product_rows = products if isinstance(products, list) else []
-            if product_rows:
-                product_id = _product_id(product_rows[0])
-                record(
-                    "analysis",
-                    "产品分析方式",
-                    lambda: _validated_external_items(
-                        client.analyses(product_id),
-                        id_resolver=_analysis_id,
-                        error_code="EXTERNAL_ANALYSIS_ID_MISSING",
-                        entity_name="产品分析方式",
-                    ),
-                    count_items=True,
-                )
-            else:
-                steps.append({
-                    "key": "analysis",
-                    "name": "产品分析方式",
-                    "status": "skipped",
-                    "detail": "当前没有可用于连接测试的算法产品",
-                })
+            self._append_algorithm_readonly_diagnostics(
+                client=client,
+                steps=steps,
+                record=record,
+                products=products,
+                empty_detail="当前没有可用于连接测试的算法产品",
+            )
         return {
             "ok": bool(steps) and all(row.get("status") in {"success", "skipped"} for row in steps),
             "provider": "changlian",
@@ -1505,22 +1555,13 @@ class ExternalAlgorithmPlatformService:
             ),
             count_items=True,
         )
-        product_rows = products if isinstance(products, list) else []
-        if product_rows:
-            product_id = _product_id(product_rows[0])
-            record(
-                "analysis",
-                "产品分析方式",
-                lambda: _validated_external_items(
-                    client.analyses(product_id),
-                    id_resolver=_analysis_id,
-                    error_code="EXTERNAL_ANALYSIS_ID_MISSING",
-                    entity_name="产品分析方式",
-                ),
-                count_items=True,
-            )
-        else:
-            steps.append({"key": "analysis", "name": "产品分析方式", "status": "skipped", "detail": "当前没有可用于抽查的算法产品"})
+        self._append_algorithm_readonly_diagnostics(
+            client=client,
+            steps=steps,
+            record=record,
+            products=products,
+            empty_detail="当前没有可用于抽查的算法产品",
+        )
         return {
             "ok": all(row.get("status") in {"success", "skipped"} for row in steps),
             "provider": "changlian",
