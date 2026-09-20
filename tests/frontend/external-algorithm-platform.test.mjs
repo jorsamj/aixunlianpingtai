@@ -138,7 +138,7 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /auto_publish_enabled: false/);
   assert.match(source, /后续将持续使用此配置/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
-  assert.match(source, /联调准备状态/);
+  assert.doesNotMatch(source, /联调准备状态 · 主数据 \/ 训练准备状态/);
   assert.match(source, /人员网页登录账号不参与机器接口调用/);
   assert.match(source, /\/readiness\?project_id=/);
   assert.match(source, /loadReadiness/);
@@ -172,6 +172,11 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   assert.match(source, /<b>测试连接<\/b>/);
   assert.match(source, /<b>同步主数据<\/b>/);
   assert.match(source, /配置状态/);
+  const formStart = source.indexOf('function configFormHtml');
+  const collectStart = source.indexOf('function collectForm', formStart);
+  const formBlock = source.slice(formStart, collectStart);
+  assert.doesNotMatch(formBlock, /readinessHtml\(\)/);
+  assert.doesNotMatch(formBlock, /训练准备|版本\/权重发布/);
   assert.match(source, /测试连接不保存|只测试当前填写内容，不自动保存/);
   assert.match(source, /当前配置有未保存修改，请先保存配置/);
   const syncStart = source.indexOf('async function syncNow()');
