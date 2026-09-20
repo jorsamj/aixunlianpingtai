@@ -246,6 +246,16 @@ class FakeChangLianClient:
         assert product_id == "p1"
         return {"data": [{"analysisId": "a1", "analysisName": "视觉智能分析", "analysisType": 1, "status": 1}]}
 
+    def analysis_info(self, analysis_id):
+        assert analysis_id == "a1"
+        return {"data": {
+            "analysisId": "a1",
+            "productId": "p1",
+            "analysisName": "视觉智能分析",
+            "analysisType": 1,
+            "status": 1,
+        }}
+
     def compute_platforms(self):
         return {"data": [{"computePlatformId": "cp1", "computePlatformName": "ONNX"}]}
 
@@ -967,3 +977,79 @@ def test_legacy_v12_training_entry_enforces_external_analysis_gate():
     assert "resolve_external_training_analysis(" in block
     assert block.index("resolve_external_training_analysis(") < block.index("if payload.split_mode:")
     assert '"external_analysis_id": external_analysis_id' in block
+
+
+class DetailOverridesSummaryClient(FakeChangLianClient):
+    def analyses(self, product_id):
+        assert product_id == "p1"
+        return {"data": [{"analysisId": "a1", "analysisName": "视觉智能分析", "analysisType": 1, "status": 1}]}
+
+    def analysis_info(self, analysis_id):
+        assert analysis_id == "a1"
+        return {"data": {
+            "analysisId": "a1", "productId": "p1",
+            "analysisName": "视觉智能分析", "analysisType": 1, "status": 0,
+        }}
+
+
+class DetailCompletesSummaryClient(FakeChangLianClient):
+    def analyses(self, product_id):
+        assert product_id == "p1"
+        return {"data": [{"analysisId": "a1", "analysisName": "视觉智能分析"}]}
+
+    def analysis_info(self, analysis_id):
+        assert analysis_id == "a1"
+        return {"data": {
+            "analysisId": "a1", "productId": "p1",
+            "analysisName": "视觉智能分析", "analysisType": 1, "status": 1,
+        }}
+
+
+class IncompleteAnalysisDetailClient(FakeChangLianClient):
+    def analysis_info(self, analysis_id):
+        assert analysis_id == "a1"
+        return {"data": {
+            "analysisId": "a1", "productId": "p1",
+            "analysisName": "视觉智能分析", "analysisType": 1,
+        }}
+
+
+def test_sync_uses_analysis_get_info_as_authoritative_training_truth(tmp_path: Path):
+    service = _configured_external_service(tmp_path, DetailOverridesSummaryClient)
+    algorithms_path = tmp_path / "detail-truth" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(project_id="p-detail-off", algorithms_path=algorithms_path)
+
+    assert result["ok"] is True
+    algorithm = list_algorithms(algorithms_path)[0]
+    assert algorithm["external_analysis_ids"] == []
+    assert algorithm["external_analyses"][0]["status"] == "0"
+
+
+def test_sync_can_train_when_get_info_proves_enabled_visual_analysis(tmp_path: Path):
+    service = _configured_external_service(tmp_path, DetailCompletesSummaryClient)
+    algorithms_path = tmp_path / "detail-complete" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    result = service.sync(project_id="p-detail-on", algorithms_path=algorithms_path)
+
+    assert result["ok"] is True
+    algorithm = list_algorithms(algorithms_path)[0]
+    assert algorithm["external_analysis_ids"] == ["a1"]
+    assert algorithm["external_analyses"][0]["analysis_type"] == "1"
+    assert algorithm["external_analyses"][0]["status"] == "1"
+
+
+def test_sync_fails_closed_when_analysis_get_info_omits_status(tmp_path: Path):
+    service = _configured_external_service(tmp_path, IncompleteAnalysisDetailClient)
+    algorithms_path = tmp_path / "detail-incomplete" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+
+    with pytest.raises(PlatformError) as error:
+        service.sync(project_id="p-detail-incomplete", algorithms_path=algorithms_path)
+
+    assert error.value.code == "EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE"
