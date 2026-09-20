@@ -991,7 +991,7 @@ def enrich_job_runtime(
     eta = None
     if status == "running" and total and cur and elapsed > 0:
         eta = int(max(0, elapsed * (total - cur) / max(1, cur)))
-    elif status in {"done", "finished", "completed", "failed", "stopped"}:
+    elif status in {"done", "finished", "completed", "succeeded", "success", "failed", "stopped"}:
         eta = 0
     elif status == "paused":
         eta = None
@@ -1002,8 +1002,8 @@ def enrich_job_runtime(
     job["elapsed_text"] = _human_seconds(elapsed) if elapsed else "-"
     job["eta_seconds"] = eta
     job["eta_text"] = _human_seconds(eta) if eta is not None else "估算中"
-    job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "failed":"失败", "stopped":"已停止"}.get(status, status)
-    if job.get("status") in {"done","finished","completed","failed","stopped"} and job.get("asset_algorithm_id"):
+    job["status_text"] = {"queued":"排队中", "running":"训练中", "paused":"已暂停", "done":"已完成", "finished":"已完成", "completed":"已完成", "succeeded":"已完成", "success":"已完成", "failed":"失败", "stopped":"已停止"}.get(status, status)
+    if str(job.get("status") or "").lower() in {"done","finished","completed","succeeded","success","failed","stopped"} and job.get("asset_algorithm_id"):
         try:
             _v48_archive_training_version(project_id, job)
         except Exception as archive_error:
@@ -9535,7 +9535,7 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
     if not job or job.get("auto_version_id") or job.get("never_started"):
         return None
     normalized_status = str(job.get("status") or "").strip().upper()
-    successful_statuses = {"DONE", "FINISHED", "COMPLETED", "SUCCEEDED", "PARTIAL_SUCCESS"}
+    successful_statuses = {"DONE", "FINISHED", "COMPLETED", "SUCCEEDED", "SUCCESS", "PARTIAL_SUCCESS"}
     if normalized_status not in successful_statuses:
         return None
     algorithm_id=str(job.get("asset_algorithm_id") or "")

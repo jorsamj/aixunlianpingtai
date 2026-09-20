@@ -22,6 +22,7 @@ on:
       - tests/frontend/poll-registry.test.mjs
       - tests/api/test_training_unified_task_overlay.py
       - tests/api/test_durable_training_controls.py
+      - tests/api/test_training_terminal_runtime.py
       - tests/browser/training-task-performance.spec.mjs
       - .github/workflows/training-task-visibility.yml
   workflow_dispatch:
@@ -58,6 +59,7 @@ jobs:
           python -m pytest -q
           tests/api/test_training_unified_task_overlay.py
           tests/api/test_durable_training_controls.py
+          tests/api/test_training_terminal_runtime.py
       - name: Training visibility and identity focused tests
         run: >-
           node --test
@@ -92,6 +94,8 @@ jobs:
           grep -Fq '远程训练停止失败，本地状态保持不变' app.py
           grep -Fq 'test_legacy_remote_training_stop_fails_closed_when_remote_rejects' tests/api/test_durable_training_controls.py
           grep -Fq 'test_legacy_remote_training_stop_commits_local_state_only_after_remote_ack' tests/api/test_durable_training_controls.py
+          grep -Fq 'test_success_aliases_are_terminal_and_attempt_version_archive' tests/api/test_training_terminal_runtime.py
+          grep -Fq '"SUCCESS", "PARTIAL_SUCCESS"' app.py
           grep -Fq 'task_id: Optional[str] = None' app.py
           grep -Fq 'dataset_revision_id' app.py
           grep -Fq "const rows=[['所属算法',job.asset_algorithm_name||job.algorithm_name||job.asset_algorithm_id||'-'],['训练任务',job.id],['数据版本',job.dataset_revision_id" static/app.js
