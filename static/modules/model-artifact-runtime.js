@@ -142,6 +142,26 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     }).join('');
   }
 
+  function suggestedOssPublicBaseUrl(sourceId) {
+    const source = (config?.storageSources || []).find(row => String(row.id || '') === String(sourceId || ''));
+    if (!source || String(source.type || '').toLowerCase() !== 'oss') return {url: '', warning: '请选择阿里云 OSS 存储源'};
+    const endpoint = String(source.config?.endpoint || '').trim();
+    const bucket = String(source.config?.bucket || '').trim();
+    if (!endpoint || !bucket) return {url: '', warning: '该 OSS 存储源缺少 Endpoint 或 Bucket'};
+    try {
+      const parsed = new URL(endpoint.includes('://') ? endpoint : `https://${endpoint}`);
+      const host = parsed.hostname;
+      const bucketHost = host.startsWith(`${bucket}.`) ? host : `${bucket}.${host}`;
+      const port = parsed.port ? `:${parsed.port}` : '';
+      return {
+        url: `${parsed.protocol}//${bucketHost}${port}`,
+        warning: /-internal\./i.test(host) ? '当前是 OSS 内网 Endpoint，请确认畅联云与该 OSS 在可互通网络内；否则请改用公网 Bucket 域名或 CDN 域名。' : '',
+      };
+    } catch (_) {
+      return {url: '', warning: 'OSS Endpoint 格式无法识别，请手动填写长期访问域名'};
+    }
+  }
+
   function storagePanel() {
     const c = config || normalizeModelArtifactConfig({});
     return `<section class="panel" data-model-artifact-panel="1">
@@ -156,7 +176,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
         <div class="form two">
           <div class="field"><label>算法产物存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择存储源</option>${storageOptions(c.storageSourceId)}</select><div class="subline">建议选择上方已配置并测试通过的阿里云 OSS。</div></div>
           <div class="field"><label>对象目录前缀</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.objectPrefix)}" placeholder="model-assets"></div>
-          <div class="field full"><label>OSS / CDN 长期访问域名</label><input id="modelArtifactPublicBaseUrl" class="input" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://your-bucket.oss-cn-hangzhou.aliyuncs.com"><div class="subline">用于写入畅联云权重 filePath。请填写长期可访问域名，不保存会过期的临时签名链接。</div></div>
+          <div class="field full"><label>OSS / CDN 长期访问域名</label><div class="row"><input id="modelArtifactPublicBaseUrl" class="input" style="flex:1" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://your-bucket.oss-cn-hangzhou.aliyuncs.com"><button type="button" class="btn" id="modelArtifactSuggestPublicUrl">从 OSS 生成</button></div><div class="subline" id="modelArtifactPublicUrlHint">用于写入畅联云权重 filePath。请使用长期可访问域名，不保存会过期的临时签名链接。</div></div>
           <label class="field check"><input id="modelArtifactAutoUpload" type="checkbox" ${c.autoUploadEnabled ? 'checked' : ''}> 训练/转换完成后自动上传</label>
         </div>
         <div class="ma-actions"><button class="btn" id="modelArtifactTestStorage">测试存储</button><button class="btn" id="modelArtifactRunNow">立即扫描上传</button><button class="btn primary" id="modelArtifactSave">保存算法产物存储配置</button></div>
@@ -276,6 +296,15 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     document.getElementById('modelArtifactSave')?.addEventListener('click', () => void saveModelConfig().catch(error => notify?.(error?.message || error)));
     document.getElementById('modelArtifactTestStorage')?.addEventListener('click', () => void testStorage().catch(error => notify?.(error?.message || error)));
     document.getElementById('modelArtifactRunNow')?.addEventListener('click', () => void runNow().catch(error => notify?.(error?.message || error)));
+    document.getElementById('modelArtifactSuggestPublicUrl')?.addEventListener('click', () => {
+      const sourceId = document.getElementById('modelArtifactStorageSource')?.value || '';
+      const suggestion = suggestedOssPublicBaseUrl(sourceId);
+      const input = document.getElementById('modelArtifactPublicBaseUrl');
+      const hint = document.getElementById('modelArtifactPublicUrlHint');
+      if (suggestion.url && input) input.value = suggestion.url;
+      if (hint) hint.textContent = suggestion.warning || (suggestion.url ? '已根据 OSS Bucket 与 Endpoint 生成；保存前请确认畅联云可访问该地址。' : '用于写入畅联云权重 filePath。');
+      if (!suggestion.url) notify?.(suggestion.warning || '无法从当前存储源生成访问域名');
+    });
     document.getElementById('changlianAuditRefresh')?.addEventListener('click', () => void refreshLogsOnly().catch(error => notify?.(error?.message || error)));
     document.getElementById('changlianAuditStatus')?.addEventListener('change', () => void refreshLogsOnly());
     document.getElementById('changlianAuditOperation')?.addEventListener('change', () => void refreshLogsOnly());
