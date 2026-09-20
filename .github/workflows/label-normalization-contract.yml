@@ -11,6 +11,7 @@ on:
       - 'platform_core/labels.py'
       - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
+      - 'platform_core/annotation_repository.py'
       - 'platform_core/auto_label.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
@@ -23,6 +24,7 @@ on:
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/api/test_label_aliases.py'
+      - 'tests/api/test_durable_label_remap.py'
       - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
@@ -30,6 +32,7 @@ on:
       - 'tests/frontend/annotation-task-view.test.mjs'
       - 'tests/frontend/ai-annotation-owner.test.mjs'
       - 'tests/frontend/label-management-owner.test.mjs'
+      - 'tests/frontend/import-label-remap-durable.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - '.github/workflows/label-normalization-contract.yml'
   pull_request:
@@ -38,6 +41,7 @@ on:
       - 'platform_core/labels.py'
       - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
+      - 'platform_core/annotation_repository.py'
       - 'platform_core/auto_label.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
@@ -50,6 +54,7 @@ on:
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/api/test_label_aliases.py'
+      - 'tests/api/test_durable_label_remap.py'
       - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
@@ -57,6 +62,7 @@ on:
       - 'tests/frontend/annotation-task-view.test.mjs'
       - 'tests/frontend/ai-annotation-owner.test.mjs'
       - 'tests/frontend/label-management-owner.test.mjs'
+      - 'tests/frontend/import-label-remap-durable.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - '.github/workflows/label-normalization-contract.yml'
 
@@ -86,6 +92,7 @@ jobs:
             platform_core/storage/import_confirmation.py \
             platform_core/auto_label.py \
             platform_core/annotation_candidates.py \
+            platform_core/annotation_repository.py \
             platform_core/annotation_task_service.py \
             platform_core/material_batches.py \
             platform_core/task_runtime/repository.py
@@ -101,6 +108,7 @@ jobs:
           python -m pytest -q
           tests/api/test_v19_label_mapping.py
           tests/api/test_label_aliases.py
+          tests/api/test_durable_label_remap.py
           tests/api/test_legacy_annotated_import_guard.py
           tests/api/test_v36_source_import_guard.py
           tests/integration/test_persistent_ai_annotation_e2e.py
@@ -112,6 +120,7 @@ jobs:
           tests/frontend/annotation-task-view.test.mjs
           tests/frontend/ai-annotation-owner.test.mjs
           tests/frontend/label-management-owner.test.mjs
+          tests/frontend/import-label-remap-durable.test.mjs
           tests/frontend/zip-import-durable-runtime.test.mjs
       - name: Permanent source guards
         shell: python
@@ -123,7 +132,9 @@ jobs:
           import_confirmation = Path('platform_core/storage/import_confirmation.py').read_text(encoding='utf-8')
           auto_label = Path('platform_core/auto_label.py').read_text(encoding='utf-8')
           candidates = Path('platform_core/annotation_candidates.py').read_text(encoding='utf-8')
+          annotation_repository = Path('platform_core/annotation_repository.py').read_text(encoding='utf-8')
           service = Path('platform_core/annotation_task_service.py').read_text(encoding='utf-8')
+          material_batches = Path('platform_core/material_batches.py').read_text(encoding='utf-8')
           repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
           zip_runtime = Path('static/modules/zip-import-runtime.js').read_text(encoding='utf-8')
           annotation_view = Path('static/modules/annotation-task-view.js').read_text(encoding='utf-8')
@@ -172,6 +183,18 @@ jobs:
                   'def remap_labels(',
                   'def label_summary(',
               ),
+              'platform_core/annotation_repository.py': (
+                  'def plan_label_remap(',
+                  'def remap_labels_if_digests(',
+                  "'status': 'stale'",
+              ),
+              'platform_core/material_batches.py': (
+                  'REMAP_ANNOTATION_LABELS = "REMAP_ANNOTATION_LABELS"',
+                  'def create_annotation_remap_batch(',
+                  'def _run_annotation_remap(',
+                  'REMAPPING_ANNOTATION_LABELS',
+                  'ANNOTATION_CHANGED_DURING_REMAP',
+              ),
               'platform_core/annotation_task_service.py': (
                   'def commit_confirmed_review(',
                   'stage="APPLYING_REVIEW"',
@@ -204,9 +227,13 @@ jobs:
                   '候选结果不会自动写入正式标注',
                   "window.manageLabels=()=>{closeModal();setPage('标签管理')};",
                   'window.ZipImportRuntime?.upload',
+                  '正在批量统一标签',
+                  'progress_percent',
+                  "PollRegistryRuntime?.startTimeout",
+                  '/material-batches/${taskId}',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.120',
+                  '/static/app.js?v=42.25.121',
                   '/static/main.mjs?v=42.25.111',
                   '/static/zip-import-bootstrap.mjs?v=422531',
               ),
@@ -223,7 +250,9 @@ jobs:
               'app.py': app,
               'platform_core/auto_label.py': auto_label,
               'platform_core/annotation_candidates.py': candidates,
+              'platform_core/annotation_repository.py': annotation_repository,
               'platform_core/annotation_task_service.py': service,
+              'platform_core/material_batches.py': material_batches,
               'platform_core/task_runtime/repository.py': repository,
               'static/modules/zip-import-runtime.js': zip_runtime,
               'static/modules/annotation-task-view.js': annotation_view,
