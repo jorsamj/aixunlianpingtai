@@ -8545,6 +8545,14 @@ def v12_start_train(project_id: str, payload: TrainReq):
         raise HTTPException(status_code=400, detail="请选择要迭代训练的算法")
     if asset_algorithm is None:
         raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
+    # Every training entry point must enforce the ChangLian analysis contract.
+    # Only status=1 AND analysisType=1 is trainable; legacy v12 calls may not
+    # bypass the durable-training preflight.
+    assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
+    external_analysis_id = resolve_external_training_analysis(
+        asset_algorithm,
+        payload.external_analysis_id,
+    )
     confirmed_iteration_action = _validated_training_iteration_action(asset_algorithm, payload)
     if confirmed_iteration_action is not None and not payload.split_mode:
         raise HTTPException(status_code=409, detail="已确认迭代动作只能通过 Durable Training 主路径创建任务")
@@ -8612,6 +8620,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
         "target": payload.target,
         "asset_algorithm_id": (asset_algorithm or {}).get("id", ""),
         "asset_algorithm_name": (asset_algorithm or {}).get("name", ""),
+        "external_analysis_id": external_analysis_id,
         "framework": "ultralytics",
         "algorithm": payload.algorithm or "",
         "algorithm_name": (alg or {}).get("name") or "YOLO 目标检测",
