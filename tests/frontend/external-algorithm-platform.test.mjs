@@ -47,7 +47,7 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(external.credentials.writable, true);
   assert.equal(external.cache.product_count, 5);
   assert.equal(external.endpoints.product_list, '/custom/products');
-  assert.equal(external.endpoints.category_tree, '/internal/base/algorithm-category/tree');
+  assert.equal(external.endpoints.category_tree, '/internal/base/category/tree');
 });
 
 test('external analysis options preserve all synced analysis methods', () => {
@@ -142,7 +142,7 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /\/internal\/algorithm\/algorithm-product-analysis\/listByProduct\/\{productId\}/);
   assert.match(source, /\/internal\/algorithm\/algorithm-version\/add/);
   assert.match(source, /\/internal\/algorithm\/algorithm-weight\/add/);
-  assert.match(source, /businessAuthMode: config\.business_auth_mode \|\| 'endpoint_contract'/);
+  assert.match(source, /businessAuthMode: config\.business_auth_mode \|\| 'authorization_bearer'/);
   assert.match(source, /product_list: endpoints\.product_list \|\| '\/internal\/algorithm\/product-ai\/listAll'/);
   assert.match(source, /data-changlian-api-contract="1"/);
   assert.match(source, /连接测试只调用鉴权和只读查询接口，不会自动执行新增、修改或删除/);
