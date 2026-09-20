@@ -131,7 +131,7 @@ test('manual publish preflight blocks missing model delivery configuration', () 
     transport_ready: false,
     transport_issues: [
       {code: 'EXTERNAL_PUBLISH_CONFIG_INCOMPLETE', message: '尚未配置本平台外部访问地址'},
-      {code: 'MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED', message: '尚未配置模型资产存储源'},
+      {code: 'MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED', message: '尚未配置算法与转换结果存储源'},
     ],
     discovered: [{target: 'rockchip', publish_mapping_status: 'mapped'}],
     mapped_artifact_count: 1,
