@@ -148,6 +148,10 @@ jobs:
           grep -q "def _reuse_uploaded_model_asset" platform_core/external_algorithm_publish.py
           grep -q "test_auto_publish_worker_recovers_successful_external_version_without_request_marker" tests/unit/test_external_algorithm_publish.py
           grep -q "test_model_storage_always_keeps_auto_upload_enabled" tests/unit/test_model_artifacts.py
+          grep -q "test_storage_test_verifies_long_term_delivery_url" tests/unit/test_model_artifacts.py
+          grep -q "test_storage_test_rejects_unreadable_delivery_url" tests/unit/test_model_artifacts.py
+          grep -q "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE" platform_core/model_artifacts.py
+          grep -Fq 'public_base_url: publicBaseUrl' static/modules/model-artifact-runtime.js
           grep -Fq 'result["auto_upload_enabled"] = True' platform_core/model_artifacts.py
           grep -Fq '自动归档已启用' static/modules/model-artifact-runtime.js
           ! grep -Fq 'id="modelArtifactAutoUpload"' static/modules/model-artifact-runtime.js
