@@ -114,6 +114,13 @@ test('dashboard training task success rate distinguishes no-data and successful 
   assert.match(renderDashboard, /其他已结束/);
   assert.doesNotMatch(dashboard, /successRate=.*:0/);
 
+  const legacyDashboardStart = source.indexOf('function dashboardData42()');
+  const legacyDashboardEnd = source.indexOf('function dashPct42', legacyDashboardStart);
+  const legacyDashboard = source.slice(legacyDashboardStart, legacyDashboardEnd);
+  assert.match(legacyDashboard, /endedStatuses42=new Set\(\[\.\.\.successStatuses42,'failed','stopped','cancelled','canceled'\]\)/);
+  assert.match(legacyDashboard, /successRate=endedJobs\.length\?doneJobs\.length\/endedJobs\.length:null/);
+  assert.match(legacyDashboard, /ended:endedJobs\.length/);
+
   const qualityStart = source.indexOf('window.renderQualityCenter424=async function()');
   const qualityEnd = source.indexOf('// ---------- single data pool ----------', qualityStart);
   const quality = source.slice(qualityStart, qualityEnd);

@@ -266,7 +266,7 @@ jobs:
                   '平台标签已创建并选中；仍需确认后才会正式入库',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.126',
+                  '/static/app.js?v=42.25.127',
                   '/static/main.mjs?v=42.25.124',
                   '/static/zip-import-bootstrap.mjs?v=422533',
               ),

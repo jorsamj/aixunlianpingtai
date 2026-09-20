@@ -2265,10 +2265,11 @@ window.installUsability417=function(){
     const algs=state.algorithms||[], jobs=state.jobs||[], dss=state.datasets||[], blue=state.v42?.blueprints||[];
     const versions=algs.reduce((n,a)=>n+(a.versions||[]).length,0);
     const trained=algs.filter(a=>(a.versions||[]).length>0).length;
+    const successStatuses42=new Set(['done','finished','completed','succeeded','success']), endedStatuses42=new Set([...successStatuses42,'failed','stopped','cancelled','canceled']);
     const running=jobs.filter(j=>j.status==='running').length, queued=jobs.filter(j=>j.status==='queued').length;
-    const doneJobs=jobs.filter(j=>['done','finished','completed','succeeded','success'].includes(String(j.status||'').toLowerCase())), failed=jobs.filter(j=>String(j.status||'').toLowerCase()==='failed').length;
+    const doneJobs=jobs.filter(j=>successStatuses42.has(String(j.status||'').toLowerCase())), endedJobs=jobs.filter(j=>endedStatuses42.has(String(j.status||'').toLowerCase())), failed=jobs.filter(j=>String(j.status||'').toLowerCase()==='failed').length;
     const totalSeconds=jobs.reduce((n,j)=>n+jobDuration42(j),0), avgSeconds=doneJobs.length?doneJobs.reduce((n,j)=>n+jobDuration42(j),0)/doneJobs.length:0;
-    const successRate=(doneJobs.length+failed)>0?doneJobs.length/(doneJobs.length+failed):null;
+    const successRate=endedJobs.length?doneJobs.length/endedJobs.length:null;
     const totalImages=dss.reduce((n,d)=>n+Number(d.images||0),0), annotated=dss.reduce((n,d)=>n+Number(d.annotated_images||0),0), boxes=dss.reduce((n,d)=>n+Number(d.boxes||0),0);
     const dsKinds={全标注:0,混合:0,未标注:0,空数据集:0};
     dss.forEach(d=>{const im=Number(d.images||0),an=Number(d.annotated_images||0);if(!im)dsKinds['空数据集']++;else if(an===im)dsKinds['全标注']++;else if(an>0)dsKinds['混合']++;else dsKinds['未标注']++});
@@ -2438,7 +2439,7 @@ window.installUsability417=function(){
     const dsKinds={全标注:0,混合:0,未标注:0,空数据集:0};dss.forEach(d=>{const im=Number(d.images||0),an=Number(d.annotated_images||0);if(!im)dsKinds['空数据集']++;else if(an===im)dsKinds['全标注']++;else if(an>0)dsKinds['混合']++;else dsKinds['未标注']++});
     const measured=(state.v42?.quality?.algorithms||[]).map(a=>a.metrics||{}).filter(m=>m.map50!=null||m.precision!=null||m.recall!=null);const mean=k=>{const vals=measured.map(m=>Number(m[k])).filter(Number.isFinite);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null};const maps=measured.map(m=>Number(m.map50)).filter(Number.isFinite);
     const ready=(state.targets||[]).filter(x=>x.status==='ready').length;const days=[];for(let i=6;i>=0;i--){const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-i);const key=d.toISOString().slice(0,10);const rows=jobs.filter(j=>String(j.created_at||'').slice(0,10)===key);days.push({label:(d.getMonth()+1)+'/'+d.getDate(),count:rows.length})}
-    return {algs,jobs,dss,versions,trained,running,queued,done:doneJobs.length,failed,totalSeconds,avgSeconds,successRate,totalImages,annotated,boxes,dsKinds,meanP:mean('precision'),meanR:mean('recall'),meanM:mean('map50'),bestMap:maps.length?Math.max(...maps):null,measured:measured.length,ready,days};
+    return {algs,jobs,dss,versions,trained,running,queued,done:doneJobs.length,ended:endedJobs.length,failed,totalSeconds,avgSeconds,successRate,totalImages,annotated,boxes,dsKinds,meanP:mean('precision'),meanR:mean('recall'),meanM:mean('map50'),bestMap:maps.length?Math.max(...maps):null,measured:measured.length,ready,days};
   }
 
   // -------- Dashboard --------
