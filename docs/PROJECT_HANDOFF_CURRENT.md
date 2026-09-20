@@ -2459,3 +2459,25 @@ VERSION.txt 仍为 42.24.0
 - 远程 TRAINING 已上传并校验到当前统一模型存储的同 SHA 主模型，在畅联云发布时直接复用已有对象与 `public_url`，禁止为了 `original` 语义重复占一份 OSS 对象。
 - “算法与转换结果存储”只把真正可部署模型当算法产物：ONNX=`.onnx`、Rockchip=`.rknn` 等；`manifest.json` 保留为任务证据，不计作模型权重资产。
 - “测试存储”同时验证凭据读写和最终长期 `filePath` 的实际可读性。OSS 能写但长期 URL 返回 403/404/网络不可达时必须阻止误判为“配置可用”；不要把会过期的临时签名 URL 写入新畅联。
+
+
+---
+
+<!-- CHANGLIAN_DELIVERY_HARDENING_2026_09_20 -->
+## 2026-09-20 — 新畅联自动交付链可靠性加固
+
+在“训练成果自动交付 + 删除式回退 + 统一存储配置”基础上，继续关闭以下一致性缺口：
+
+- `rollback_algorithm_version()` 服务层已强制 **rollback = delete current version**。保留旧参数仅为调用兼容，即使旧内部调用显式传 `delete_current_version=False`，也不能恢复 pointer-only rollback。API 继续使用 `Literal[True]`。
+- 外部算法回退/历史版本删除都先调用新畅联官方 version remove；远端失败时本地不动。若远端已经返回删除成功，但本地 SQLite 原子事务随后失败，分别返回：
+  - `ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE`
+  - `ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE`
+  明确标记“远端已删、本地未落库”，不得再次盲删或重建远端。
+- MODEL_CONVERSION 发现器必须同时扫描 `deployment/jobs` 与 `deploy/jobs`，按 job id 去重；Agent 提交必须持久化 `source_trace.algorithm_id/version_id`。
+- 远程 TRAINING 已经上传并校验到 canonical Model Artifact Storage 的同 SHA 模型，发布到新畅联时复用原对象和 `public_url`，不重复上传一份 `original`。
+- Model Artifact 只把真正部署产物归档为模型资产；`manifest.json` 等任务证据不作为新畅联权重文件。
+- 存储测试现在不仅验证 OSS 凭据写/查/删，还用最终长期 URL 读取临时对象。长期 URL 403/404/网络不可达时返回 `MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE`，避免“OSS 能写但畅联云 filePath 不能读”的假成功。
+- 算法产物自动归档为后端强制规则；前端不存在关闭开关。新畅联主数据外部模式固定 60 秒拉取，前端不存在间隔选择器。
+- 自动成果发布 Worker 当前每 30 秒扫描一次。该扫描涉及模型发现/校验，暂不降到 5 秒；主数据同步 thread 每 5 秒仅检查 due，Provider 请求仍严格 60 秒限流。
+- `VERSION.txt` 仍必须保持 `42.24.0`；当前 CI 结论以最新 HEAD 实际 Actions 为准，queued 不等于通过。
+
