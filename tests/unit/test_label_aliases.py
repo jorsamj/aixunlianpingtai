@@ -100,7 +100,7 @@ def test_import_mapping_rejects_implicit_platform_label_creation():
     ]
     classes = [{"class_id": "0", "name": "toukui1"}]
 
-    with pytest.raises(ValueError, match="导入确认不能创建平台标签"):
+    with pytest.raises(ValueError, match="不能根据外部标签名隐式创建平台标签"):
         resolve_external_label_mapping(
             classes,
             label_mapping={"0": "helmet_new"},
