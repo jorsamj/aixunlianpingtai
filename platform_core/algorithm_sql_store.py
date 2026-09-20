@@ -722,15 +722,35 @@ class AlgorithmSqlStore:
 
     @staticmethod
     def _analysis_is_active(analysis: Mapping[str, Any]) -> bool:
-        status = analysis.get("status")
-        if status not in (None, ""):
-            return str(status).strip().lower() not in {"0", "false", "disabled"}
-        return analysis.get("active") is not False
+        # ChangLian contract is exact: only status=1 is enabled.
+        # Missing/unknown status must fail closed.
+        return str(analysis.get("status") or "").strip() == "1"
 
     @staticmethod
     def _trainable_analysis_ids(item: Mapping[str, Any], analyses: Sequence[sqlite3.Row]) -> list[str]:
-        # external_analysis_ids is the canonical trainable subset. Preserve it
-        # exactly when payload_json contains it, including an intentional [].
+        # A trainable analysis must be provable from persisted detail:
+        # status=1 AND analysisType=1. Never trust a legacy ID list by itself.
+        eligible: list[str] = []
+        eligible_set: set[str] = set()
+        for row in analyses:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            status = str(payload.get("status") or "").strip()
+            analysis_type = str(
+                payload.get("analysis_type")
+                or payload.get("analysisType")
+                or row["analysis_type"]
+                or ""
+            ).strip()
+            analysis_id = str(row["external_analysis_id"] or "").strip()
+            if status == "1" and analysis_type == "1" and analysis_id and analysis_id not in eligible_set:
+                eligible_set.add(analysis_id)
+                eligible.append(analysis_id)
+
         if "external_analysis_ids" in item:
             values = item.get("external_analysis_ids")
             if not isinstance(values, (list, tuple, set)):
@@ -739,26 +759,14 @@ class AlgorithmSqlStore:
             seen: set[str] = set()
             for value in values:
                 analysis_id = str(value or "").strip()
-                if analysis_id and analysis_id not in seen:
+                if analysis_id in eligible_set and analysis_id not in seen:
                     seen.add(analysis_id)
                     result.append(analysis_id)
             return result
 
-        # Legacy rows predate the canonical subset in payload_json. Infer only
-        # for compatibility; new writes must always preserve the explicit list.
-        result: list[str] = []
-        seen: set[str] = set()
-        for row in analyses:
-            if not bool(row["active"]):
-                continue
-            analysis_type = str(row["analysis_type"] or "").strip().lower()
-            if analysis_type and analysis_type not in {"1", "vision", "visual", "video", "视觉"}:
-                continue
-            analysis_id = str(row["external_analysis_id"] or "").strip()
-            if analysis_id and analysis_id not in seen:
-                seen.add(analysis_id)
-                result.append(analysis_id)
-        return result
+        # Legacy objects without the canonical subset may still be recovered,
+        # but only from strict persisted detail satisfying both official fields.
+        return eligible
 
     def _analysis_from_row(self, row: sqlite3.Row) -> dict:
         value = self._json_object(row["payload_json"])
