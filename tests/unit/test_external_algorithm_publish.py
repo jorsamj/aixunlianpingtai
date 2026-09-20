@@ -135,8 +135,8 @@ class FakeChangLianSyncClient:
         return {
             "code": 200,
             "data": [
-                {"analysisId": "analysis-day", "analysisName": "白天视觉分析"},
-                {"analysisId": "analysis-night", "analysisName": "夜间视觉分析"},
+                {"analysisId": "analysis-day", "analysisName": "白天视觉分析", "analysisType": 1, "status": 1},
+                {"analysisId": "analysis-night", "analysisName": "夜间视觉分析", "analysisType": 1, "status": 1},
             ],
         }
 
@@ -207,7 +207,7 @@ def _configure_external(root: Path, memory: MemorySecretStore, *, auto_publish=T
         "master_data_digest": "digest-current",
         "categories": [],
         "products": [{"productId": "product-1", "productName": "抽烟检测"}],
-        "analyses_by_product": {"product-1": [{"analysisId": "analysis-1", "analysisName": "视觉智能分析"}]},
+        "analyses_by_product": {"product-1": [{"analysisId": "analysis-1", "analysisName": "视觉智能分析", "analysisType": 1, "status": 1}]},
         "compute_platforms": [
             {"computePlatformId": "cp-rk", "computePlatformName": "瑞芯微 RKNN"},
             {"computePlatformId": "cp-onnx", "computePlatformName": "ONNX"},
@@ -229,7 +229,7 @@ def _seed_external_algorithm(root: Path, *, project_id="p1", version_id="v1"):
         "external_product_id": "product-1",
         "external_analysis_id": "analysis-1",
         "external_analysis_ids": ["analysis-1"],
-        "external_analyses": [{"analysis_id": "analysis-1", "analysis_name": "视觉智能分析"}],
+        "external_analyses": [{"analysis_id": "analysis-1", "analysis_name": "视觉智能分析", "analysis_type": "1", "status": "1"}],
         "external_active": True,
         "external_master_data_digest": "digest-current",
         "versions": [{
@@ -565,7 +565,7 @@ def test_publish_blocks_when_historical_version_analysis_is_no_longer_current(tm
     algorithms[0]["external_analysis_id"] = "analysis-2"
     algorithms[0]["external_analysis_ids"] = ["analysis-2"]
     algorithms[0]["external_analyses"] = [
-        {"analysis_id": "analysis-2", "analysis_name": "新版视觉智能分析"},
+        {"analysis_id": "analysis-2", "analysis_name": "新版视觉智能分析", "analysis_type": "1", "status": "1"},
     ]
     algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-1"
     save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
@@ -806,8 +806,8 @@ def test_publication_persists_training_analysis_binding(tmp_path: Path):
     algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
     algorithms[0]["external_analysis_ids"] = ["analysis-1", "analysis-2"]
     algorithms[0]["external_analyses"] = [
-        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A"},
-        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B"},
+        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A", "analysis_type": "1", "status": "1"},
+        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B", "analysis_type": "1", "status": "1"},
     ]
     algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-2"
     save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
@@ -829,8 +829,8 @@ def test_multi_analysis_version_recovery_matches_analysis_identity(tmp_path: Pat
     algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
     algorithms[0]["external_analysis_ids"] = ["analysis-1", "analysis-2"]
     algorithms[0]["external_analyses"] = [
-        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A"},
-        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B"},
+        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A", "analysis_type": "1", "status": "1"},
+        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B", "analysis_type": "1", "status": "1"},
     ]
     algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-2"
     save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
@@ -866,8 +866,8 @@ def test_multi_analysis_timeout_does_not_recover_version_without_analysis_identi
     algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
     algorithms[0]["external_analysis_ids"] = ["analysis-1", "analysis-2"]
     algorithms[0]["external_analyses"] = [
-        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A"},
-        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B"},
+        {"analysis_id": "analysis-1", "analysis_name": "视觉智能分析 A", "analysis_type": "1", "status": "1"},
+        {"analysis_id": "analysis-2", "analysis_name": "视觉智能分析 B", "analysis_type": "1", "status": "1"},
     ]
     algorithms[0]["versions"][0]["external_analysis_id"] = "analysis-2"
     save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
@@ -921,7 +921,7 @@ def test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_sa
         "master_data_digest": "digest-current",
         "categories": [],
         "products": [{"productId": "product-1", "productName": "抽烟检测"}],
-        "analyses_by_product": {"product-1": [{"analysisId": "analysis-1", "analysisName": "视觉智能分析"}]},
+        "analyses_by_product": {"product-1": [{"analysisId": "analysis-1", "analysisName": "视觉智能分析", "analysisType": 1, "status": 1}]},
         "compute_platforms": [
             {"computePlatformId": "cp-new", "computePlatformName": "新的瑞芯微环境"},
         ],
