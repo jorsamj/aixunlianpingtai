@@ -207,6 +207,7 @@ SSE / WebSocket 推送
 
 ```text
 analysisType=1  视觉智能分析
+analysisType=2  空置（预留）
 analysisType=3  大模型智能分析
 status=1        启用
 status=0        禁用
