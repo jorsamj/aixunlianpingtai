@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 import app as app_module
+from platform_core.task_runtime import ArtifactStore, TaskStatus
 
 def test_label_aliases_are_editable_and_canonical_conflicts_fail_closed(client):
     project = client.post("/api/projects", json={
@@ -113,3 +116,63 @@ def test_project_initialization_preserves_aliases_and_prunes_canonical_conflicts
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
     helmet = next(row for row in labels if row["code"] == "helmet")
     assert helmet["aliases"] == ["toukui1"]
+
+
+def test_storage_rescan_review_uses_confirmed_alias_suggestions(
+    client, tmp_path, monkeypatch
+):
+    project = client.post("/api/projects", json={
+        "name": "label-alias-storage-rescan",
+        "labels": [{
+            "code": "helmet",
+            "display_name": "安全头盔",
+            "aliases": ["toukui1"],
+        }],
+    }).json()
+
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    task_id = "rescan-alias-review"
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "mode": "storage_rescan",
+        "import_format": "yolo",
+        "execution_mode": "local",
+    })
+    artifacts.atomic_write_json(task_id, "result.json", {
+        "mode": "storage_rescan",
+        "stage": "awaiting_confirmation",
+        "import_format": "yolo",
+        "counts": {"NEW": 1},
+        "quality": {
+            "images": 1,
+            "boxes": 2,
+            "classes": 1,
+            "annotation_status": {},
+            "issues": {},
+            "examples": [],
+        },
+        "external_classes": [{
+            "class_id": "0",
+            "name": "toukui1",
+            "image_count": 1,
+            "box_count": 2,
+        }],
+    })
+    task = SimpleNamespace(
+        task_id=task_id,
+        project_id=project["id"],
+        status=TaskStatus.AWAITING_CONFIRMATION,
+        stage="awaiting_confirmation",
+        accepted=False,
+        worker_id=None,
+        resource_wait_reason="",
+        current_item="",
+        result_ref="result.json",
+        payload_ref="request.json",
+    )
+
+    public = app_module._public_storage_rescan(task)
+    assert public["status"] == "AWAITING_CONFIRMATION"
+    assert public["accepted"] is False
+    assert public["external_classes"][0]["name"] == "toukui1"
+    assert public["external_classes"][0]["target_label_code"] == "helmet"
