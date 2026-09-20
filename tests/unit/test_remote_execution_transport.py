@@ -719,6 +719,8 @@ def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_
     assert job["runtime_verified"] is True
     assert job["validation_status"] == "runtime_verified"
     assert job["result_ref"] == "remote-results/3/result.json"
+    assert job["source_trace"]["algorithm_id"] == "a1"
+    assert job["source_trace"]["version_id"] == "v1"
     assert {row["rel"] for row in job["outputs"]} == {
         "artifacts/model.onnx",
         "artifacts/manifest.json",
