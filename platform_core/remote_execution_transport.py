@@ -1257,6 +1257,17 @@ class RemoteExecutionTransportService:
                 "portable conversion schema version is invalid",
                 422,
             )
+        source_trace = conversion.get("source_trace")
+        if (
+            not isinstance(source_trace, Mapping)
+            or not str(source_trace.get("algorithm_id") or "").strip()
+            or not str(source_trace.get("version_id") or "").strip()
+        ):
+            raise RemoteExecutionTransportError(
+                "REMOTE_CONVERSION_SOURCE_TRACE_MISSING",
+                "portable conversion source lineage requires algorithm_id and version_id",
+                422,
+            )
         target = str(conversion.get("target") or "").strip().lower()
         # Re-normalize instead of trusting task-supplied nested parameters.
         params = RemoteExecutionTransportService._portable_conversion_params(
