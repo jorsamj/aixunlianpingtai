@@ -141,6 +141,9 @@ jobs:
           grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py
           grep -Fq '自动同步 daemon thread 每 5 秒仅检查一次是否到期' docs/CHANGLIAN_APIFOX_API_CATALOG.md
           if grep -Fq '每 30 秒检查一次是否到期' docs/CHANGLIAN_APIFOX_API_CATALOG.md; then echo "ChangLian auto-sync cadence documentation drifted back to 30 seconds" >&2; exit 1; fi
+          grep -Fq '外部模式下自动同步和自动发布由服务端强制启用' docs/CHANGLIAN_CORE_INTEGRATION.md
+          if grep -Fq '自动同步 / 自动发布放在高级设置' docs/CHANGLIAN_CORE_INTEGRATION.md; then echo "ChangLian core handoff drifted back to optional auto sync/publish" >&2; exit 1; fi
+          grep -Fq '复用同一 algoVersionId 追加转换权重' docs/CHANGLIAN_CORE_INTEGRATION.md
           ! grep -Fq 'externalAutoSyncInterval' static/modules/external-algorithm-platform.js
           grep -Fq 'algorithm list supports multi-category source and training-status filters' tests/frontend/external-algorithm-platform.test.mjs
           grep -Fq 'algorithmListSearchMatch' static/modules/algorithm-list-runtime.js
