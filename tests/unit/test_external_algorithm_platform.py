@@ -49,7 +49,7 @@ class FakeSession:
         raise AssertionError(url)
 
 
-def test_changlian_auth_chain_uses_test_sign_then_token_then_access_token():
+def test_changlian_auth_chain_uses_test_sign_then_token_then_bearer():
     session = FakeSession()
     client = ChangLianClient(
         base_url="https://changlian.example",
