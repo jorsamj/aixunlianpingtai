@@ -198,8 +198,9 @@ test('changlian platform page tests draft credentials before manual sync', async
 
   await expect(page.locator('[data-external-sync-settings="1"]')).not.toHaveAttribute('open', '');
   await page.locator('[data-external-sync-settings="1"] summary').click();
-  await expect(page.locator('#externalAutoSyncInterval')).toBeVisible();
-  await page.locator('#externalAutoSyncInterval').selectOption('60');
+  await expect(page.locator('#externalAutoSyncInterval')).toHaveCount(0);
+  await expect(page.locator('.external-sync-policy')).toContainText('自动同步已启用');
+  await expect(page.locator('.external-sync-policy')).toContainText('固定每 60 秒主动拉取一次主数据');
   const syncButton = page.getByRole('button', {name: '↻ 立即同步'});
   await expect(syncButton).toBeDisabled();
   await expect(syncButton).toHaveAttribute('title', /未保存修改/);
