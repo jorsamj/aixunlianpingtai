@@ -1142,6 +1142,38 @@ def test_published_version_detects_and_appends_late_conversion_weight(tmp_path: 
     assert service.publication_requires_sync("p1", algorithm, algorithm["versions"][0], publication) is False
 
 
+def test_published_version_resyncs_when_canonical_model_artifact_is_not_uploaded(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert first["publication"]["status"] == "PUBLISHED"
+
+    model_rows = service.model_assets.repository.list(
+        project_id="p1",
+        algorithm_id="a1",
+        version_id="v1",
+    )
+    original = next(row for row in model_rows if row["target"] == "original")
+    service.model_assets.repository.patch(
+        original["artifact_id"],
+        storage_status="FAILED",
+        storage_error="simulated canonical artifact loss",
+    )
+
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert service.publication_requires_sync(
+        "p1",
+        algorithm,
+        algorithm["versions"][0],
+        publication,
+    ) is True
+
+
 def test_auto_publish_readiness_uses_canonical_model_storage_url(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
