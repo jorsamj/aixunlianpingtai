@@ -139,3 +139,82 @@ def test_direct_delete_cancels_durable_training_before_hiding_job(client, seeded
             controller.terminate_tree(launched.identity)
         except Exception:
             pass
+
+def test_legacy_remote_training_stop_fails_closed_when_remote_rejects(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    job_id = f"legacy-remote-stop-{uuid.uuid4().hex[:8]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": job_id,
+            "status": "running",
+            "target": "remote",
+            "remote": {
+                "base_url": "http://remote-agent.invalid:9000",
+                "job_id": "remote-job-1",
+                "api_key": "test-key",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    class FailedResponse:
+        ok = False
+        status_code = 409
+        text = "remote process still running"
+
+    calls = []
+    monkeypatch.setattr(
+        app_module.requests,
+        "post",
+        lambda url, **kwargs: calls.append((url, kwargs)) or FailedResponse(),
+    )
+
+    stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+    assert stopped.status_code == 502, stopped.text
+    assert "本地状态保持不变" in stopped.text
+    persisted = json.loads(job_file.read_text(encoding="utf-8"))
+    assert persisted["status"] == "running"
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/api/remote/jobs/remote-job-1/stop")
+
+
+def test_legacy_remote_training_stop_commits_local_state_only_after_remote_ack(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    job_id = f"legacy-remote-stop-ok-{uuid.uuid4().hex[:8]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": job_id,
+            "status": "running",
+            "target": "remote",
+            "remote": {
+                "base_url": "http://remote-agent.invalid:9000",
+                "job_id": "remote-job-2",
+                "api_key": "test-key",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    class OkResponse:
+        ok = True
+        status_code = 200
+        text = ""
+
+    monkeypatch.setattr(app_module.requests, "post", lambda *args, **kwargs: OkResponse())
+
+    stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+    assert stopped.status_code == 200, stopped.text
+    persisted = json.loads(job_file.read_text(encoding="utf-8"))
+    assert persisted["status"] == "stopped"
+    assert persisted["message"] == "用户手动停止"
+

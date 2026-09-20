@@ -9126,8 +9126,24 @@ def v48_stop_job(project_id: str, job_id: str):
     elif job.get("status") in {"running","paused"}:
         if job.get("target")=="remote":
             remote=job.get("remote") or {}
-            try: requests.post(f"{str(remote.get('base_url') or '').rstrip('/')}/api/remote/jobs/{remote.get('job_id')}/stop",headers={"X-API-Key":remote.get("api_key","")},timeout=10)
-            except Exception: pass
+            base=str(remote.get("base_url") or "").rstrip("/")
+            remote_job_id=str(remote.get("job_id") or "").strip()
+            if not base or not remote_job_id:
+                raise HTTPException(status_code=409,detail="远程训练缺少可校验的停止地址或任务 ID，未修改本地状态")
+            try:
+                response=requests.post(
+                    f"{base}/api/remote/jobs/{remote_job_id}/stop",
+                    headers={"X-API-Key":remote.get("api_key","")},
+                    timeout=10,
+                )
+            except requests.RequestException as error:
+                raise HTTPException(status_code=502,detail=f"远程训练停止请求失败，本地状态保持不变：{error}") from error
+            if not response.ok:
+                detail=(response.text or "").strip()[:300]
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"远程训练停止失败，本地状态保持不变：HTTP {response.status_code}{' · '+detail if detail else ''}",
+                )
         else:
             _terminate_pid_tree(job.get("pid")); PROCESS_REGISTRY.pop(job_id,None)
         job.update(status="stopped",message="用户手动停止",finished_at=now_iso(),updated_at=now_iso()); write_json(jf,job)
