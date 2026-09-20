@@ -701,7 +701,7 @@ def test_publish_blocks_when_any_enabled_conversion_artifact_lacks_mapping(tmp_p
     service = _service(tmp_path, memory)
 
     status = service.publication_status("p1", "a1", "v1")
-    assert status["mapped_artifact_count"] == 1
+    assert status["mapped_artifact_count"] == 2
     assert status["blocked_artifact_count"] == 1
     assert status["ignored_artifact_count"] == 0
     assert status["publish_ready"] is False
@@ -737,7 +737,7 @@ def test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored(tmp_
     ))
 
     status = service.publication_status("p1", "a1", "v1")
-    assert status["mapped_artifact_count"] == 1
+    assert status["mapped_artifact_count"] == 2
     assert status["blocked_artifact_count"] == 0
     assert status["ignored_artifact_count"] == 1
     assert status["publish_ready"] is True
@@ -1006,3 +1006,28 @@ def test_published_version_detects_and_appends_late_conversion_weight(tmp_path: 
     publication = service.repository.publication("p1", "a1", "v1")
     algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
     assert service.publication_requires_sync("p1", algorithm, algorithm["versions"][0], publication) is False
+
+
+def test_auto_publish_readiness_uses_canonical_model_storage_url(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    service.repository.save_config(ExternalPublishConfigPayload(
+        storage_source_id="",
+        public_base_url="",
+        target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk"),
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
+        },
+    ))
+    service.model_assets.save_config(ModelArtifactConfigPayload(
+        storage_source_id="default_local",
+        object_prefix="model-assets",
+        public_base_url="https://oss.example.com",
+        auto_upload_enabled=True,
+    ))
+
+    assert service.auto_publish_ready() is True
