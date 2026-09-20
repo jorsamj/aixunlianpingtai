@@ -52,6 +52,8 @@ test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
   const appSource=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
   assert.match(source,/window\.doUploadZip426=input=>upload\(input\)/);
   assert.match(source,/window\.doImportData=\(\)=>/);
+  assert.match(source,/function forgetTerminal\(\)/);
+  assert.match(source,/knownJobs\.delete\(id\)/);
   assert.match(source,/检测到外部标签后，必须先统一到平台标签再正式入库/);
   assert.doesNotMatch(source,/\/api\/v18\/projects/);
   assert.match(appSource,/window\.ZipImportRuntime\?\.upload/);
