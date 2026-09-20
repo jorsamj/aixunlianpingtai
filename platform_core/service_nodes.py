@@ -303,6 +303,29 @@ class ServiceNodeRepository:
             durable_tasks=tasks.get(key, []),
         )
 
+    def connectivity_snapshot(self, node_id: str, *, now: datetime | None = None) -> dict[str, Any]:
+        """Return connectivity truth from the authenticated Agent heartbeat channel."""
+        node = self.get_public(node_id, now=now)
+        status = str(node.get("status") or "")
+        connected = bool(node.get("enabled") and node.get("reachable") and node.get("online"))
+        if connected:
+            message = "服务节点连通正常"
+        elif status == "DISABLED":
+            message = "服务节点已停用"
+        elif status == "NEVER_CONNECTED":
+            message = "服务节点尚未建立过心跳连接"
+        else:
+            message = "服务节点心跳已超时"
+        return {
+            "node_id": str(node.get("node_id") or ""),
+            "connected": connected,
+            "status": status,
+            "heartbeat_age_seconds": node.get("heartbeat_age_seconds"),
+            "heartbeat_ttl_seconds": node.get("heartbeat_ttl_seconds"),
+            "checked_at": utc_now(),
+            "message": message,
+        }
+
     def create(self, payload: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
         body = dict(payload or {})
         node_id = _node_id(body.get("node_id"))
@@ -504,6 +527,11 @@ def service_node_router(task_repository):
     @router.patch("/{node_id}")
     def update_node(node_id: str, payload: dict = Body(...)):
         return invoke(registry().update, node_id, payload)
+
+    @router.post("/{node_id}/connectivity-test")
+    def test_node_connectivity(node_id: str):
+        return {"ok": True, **invoke(registry().connectivity_snapshot, node_id)}
+
 
     @router.delete("/{node_id}")
     def delete_node(node_id: str):
