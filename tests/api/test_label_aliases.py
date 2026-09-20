@@ -61,3 +61,33 @@ def test_confirmed_alias_learning_skips_only_canonical_conflicts(client):
     helmet = next(row for row in labels if row["code"] == "helmet")
     assert helmet["aliases"] == ["toukui1", "toukui2"]
     assert "person" not in helmet["aliases"]
+
+
+def test_new_canonical_label_retires_matching_alias_from_other_label(client):
+    project = client.post("/api/projects", json={
+        "name": "label-alias-canonical-promotion",
+        "labels": [{"code": "helmet", "display_name": "安全头盔"}],
+    }).json()
+
+    seeded = client.put(
+        f"/api/v12/projects/{project['id']}/labels/0",
+        json={
+            "code": "helmet",
+            "display_name": "安全头盔",
+            "aliases": ["toukui1"],
+        },
+    )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["items"][0]["aliases"] == ["toukui1"]
+
+    promoted = client.post(
+        f"/api/projects/{project['id']}/labels",
+        json={"label": "toukui1", "display_name": "头盔旧类"},
+    )
+    assert promoted.status_code == 200, promoted.text
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    helmet = next(row for row in labels if row["code"] == "helmet")
+    canonical = next(row for row in labels if row["code"] == "toukui1")
+    assert helmet["aliases"] == []
+    assert canonical["code"] == "toukui1"
