@@ -42,8 +42,8 @@ export function normalizePublishConfig(body = {}) {
     storageSourceId: config.storage_source_id || '',
     publicBaseUrl: config.public_base_url || '',
     publishOriginalModel: Boolean(config.publish_original_model),
-    versionListByProduct: config.version_list_by_product || '/algorithm-version/listByProduct/{productId}',
-    weightListByVersion: config.weight_list_by_version || '/algorithm-weight/listByVersion/{algoVersionId}',
+    versionListByProduct: config.version_list_by_product || '/internal/algorithm/algorithm-version/listByProduct/{productId}',
+    weightListByVersion: config.weight_list_by_version || '/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}',
     targetMappings: Object.fromEntries(TARGETS.map(([key]) => [key, {
       compute_platform_id: mappings[key]?.compute_platform_id || '',
       chip_code: mappings[key]?.chip_code || '',
@@ -197,10 +197,10 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
         <div class="panel-title" style="margin:18px 0 6px">转换目标 → 新畅联算力环境映射</div>
         <div class="subline" style="margin-bottom:10px">算力环境来自最近一次新畅联主数据同步；失效的 computePlatformId 会在保存和发布时被后端拒绝。</div>
         <table class="table"><thead><tr><th>转换目标</th><th>算力环境</th><th>芯片编码（转换产物优先）</th></tr></thead><tbody>${mappingRows()}</tbody></table>
-        <details style="margin-top:16px"><summary>幂等恢复接口</summary><div class="form two" style="margin-top:12px">
-          <div class="field"><label>按产品查询版本</label><input id="externalPublishVersionList" class="input" value="${escapeHtml(c.versionListByProduct)}"></div>
-          <div class="field"><label>按版本查询权重</label><input id="externalPublishWeightList" class="input" value="${escapeHtml(c.weightListByVersion)}"></div>
-        </div></details>
+        <details style="margin-top:16px"><summary>官方发布接口</summary><div class="form two" style="margin-top:12px">
+          <div class="field"><label>按产品查询版本</label><code>${escapeHtml(c.versionListByProduct)}</code></div>
+          <div class="field"><label>按版本查询权重</label><code>${escapeHtml(c.weightListByVersion)}</code></div>
+        </div><div class="subline" style="margin-top:8px">接口路径来自新畅联官方 OpenAPI，平台固定使用，不允许手工修改。</div></details>
         <details data-external-publish-automation="1" style="margin-top:16px"><summary>高级设置 · 自动发布</summary><div class="row" style="margin-top:12px"><button class="btn" id="externalPublishAutoRun">执行一次待发布任务</button></div></details>
         <div class="row end"><button class="btn primary" id="externalPublishSave">保存发布配置</button></div>
       </div>
@@ -225,8 +225,8 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       public_base_url: document.getElementById('externalPublishBaseUrl')?.value.trim() || '',
       publish_original_model: Boolean(document.getElementById('externalPublishOriginal')?.checked),
       target_mappings: mappings,
-      version_list_by_product: document.getElementById('externalPublishVersionList')?.value.trim() || '/algorithm-version/listByProduct/{productId}',
-      weight_list_by_version: document.getElementById('externalPublishWeightList')?.value.trim() || '/algorithm-weight/listByVersion/{algoVersionId}',
+      version_list_by_product: '/internal/algorithm/algorithm-version/listByProduct/{productId}',
+      weight_list_by_version: '/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}',
     };
   }
 
@@ -358,7 +358,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   scheduleDecorate();
 
   const runtime = {
-    build: 'external-algorithm-publish-64002',
+    build: 'external-algorithm-publish-64003',
     loadConfig,
     saveConfig,
     runAutoOnce,
