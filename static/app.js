@@ -4435,7 +4435,6 @@ window.installUsability417?.();
     if(cacheFresh){applyDevices(cachedDevices)}else{api('/api/v62/training-devices').then(applyDevices).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}})}
     const result=await resultPromise;window.TrainingDraftRuntime?.update?.({algorithmId:String(aid||'')});loadTrainingBenchmarkReuseV1(aid);[40,140,340,650].forEach(delay=>setTimeout(renderSplit,delay));return result
   };
-    const historicalLog=window.showTrainLog423;
   const successfulTrainStatus429=status=>['done','finished','completed','succeeded','success'].includes(String(status||'').toLowerCase());
   function trainRunCenter429(job,log){
     const e=job.device_evidence||{},r=job.resolved_resources||{},m=job.runtime_metrics||{},args=job.actual_train_params||{},diagnosis=m.diagnostic||{};
@@ -4447,12 +4446,23 @@ window.installUsability417?.();
     return `<div class="trainlog428 trainlog429" data-train-run-center="${esc(job.id)}"><div class="trainlog429-head"><div><span>训练任务</span><h2>${esc(title)}</h2><p>Epoch ${esc(String(job.current_epoch||0))} / ${esc(String(job.total_epochs||job.epochs||'—'))}</p></div><span class="pill ${success?'ok':failed?'err':'warn'}">${esc(status429(job.status))}</span></div><table class="table"><tbody>${rows.map(([label,value])=>`<tr><th>${esc(label)}</th><td>${esc(value==null?'尚未产生':String(value))}</td></tr>`).join('')}</tbody></table>${note?`<div class="trainlog429-note ${failed?'err':''}">${esc(note)}</div>`:''}<details><summary>工程师技术日志</summary><pre class="log" data-train-tech-log>${esc(log||'暂无技术日志')}</pre></details><div class="row end"><button class="btn" data-train-log-refresh onclick="refreshTrainRunCenter429('${esc(job.id)}')">刷新</button><button class="btn" onclick="closeModal()">关闭</button></div></div>`;
   }
   async function readTrainRunCenter429(id){const [job,log]=await Promise.all([api(`/api/projects/${pid()}/jobs/${id}`),safe(api(`/api/projects/${pid()}/jobs/${id}/log`))]);return{job,log:log||''}}
+  function replaceTrainRunCenter429(id,job,log){
+    const selector=`[data-train-run-center="${CSS.escape(String(id))}"]`,root=document.querySelector(selector);
+    if(!root){modal('训练运行中心',trainRunCenter429(job,log),true);return}
+    const shell=document.createElement('div');shell.innerHTML=trainRunCenter429(job,log);const next=shell.firstElementChild;if(next)root.replaceWith(next);
+  }
   window.showTrainLog423=async function(id){
+    const cached=(state.jobs||[]).find(job=>String(job.id)===String(id));
+    if(cached)modal('训练运行中心',trainRunCenter429(cached,''),true);
     try{
       const value=await readTrainRunCenter429(id);
-      if(!value.job?.task_id)return historicalLog?.(id);
-      modal('训练运行中心',trainRunCenter429(value.job,value.log),true);
-    }catch(error){toast(error.message||error)}
+      replaceTrainRunCenter429(id,value.job,value.log);
+      return true;
+    }catch(error){
+      if(!cached){toast(error.message||error);return false}
+      toast(`训练日志详情刷新失败，已显示当前任务状态：${error.message||error}`);
+      return true;
+    }
   };
   window.refreshTrainRunCenter429=async function(id){
     const root=document.querySelector(`[data-train-run-center="${CSS.escape(String(id))}"]`);if(!root)return window.showTrainLog423(id);
