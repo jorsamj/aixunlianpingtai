@@ -167,6 +167,13 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 ---
 
+<!-- CHANGLIAN_VISUAL_ANALYSIS_FENCE_2026_09_20 -->
+# 最新收口：仅启用视觉分析可进入 YOLO 训练
+
+完整 OpenAPI 定义 `analysisType=1` 为视觉智能分析、`3` 为大模型智能分析，并提供 `status` 启用状态。当前同步会保留全部分析方式详情，但训练候选只包含 `analysisType=1` 且未停用的分析方式。前端与后端一致过滤；若产品没有可训练视觉分析，训练直接阻断。
+
+---
+
 <!-- PLATFORM_CONFIG_EDIT_LOCK_2026_09_20 -->
 # 最新产品规则：平台对接保存后锁定
 
