@@ -32,6 +32,28 @@ test('changlian platform page tests draft credentials before manual sync', async
           auto_sync_interval_seconds: 600,
           auto_publish_enabled: false,
           auth_mode: 'test_sign_bridge',
+          business_auth_header: 'Access-Token',
+          api_document_summary: {total: 31, wired: 10, documented: 20, reference: 1},
+          api_documents: [
+            {
+              key: 'auth_token',
+              group: '应用鉴权',
+              title: '内部应用鉴权获取Token',
+              doc_url: 'https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307570e0.md',
+              status: 'wired',
+              method: 'POST',
+              path: '/internal/auth/token',
+            },
+            {
+              key: 'version_update',
+              group: '算法版本管理',
+              title: '修改算法版本',
+              doc_url: 'https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837714e0.md',
+              status: 'documented',
+              method: '',
+              path: '',
+            },
+          ],
           credentials: {
             configured: configSaved,
             masked: configSaved ? 'AK-****1234' : '',
@@ -157,6 +179,12 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible({timeout: 10_000});
 
   await expect(page.locator('[data-changlian-readiness]')).toHaveCount(0);
+  const apiContract = page.locator('[data-changlian-api-contract="1"]');
+  await expect(apiContract).toBeVisible();
+  await expect(apiContract).toContainText('已纳入 31 个官方 Apifox 文档条目');
+  await expect(apiContract).toContainText('POST /internal/auth/token');
+  await expect(apiContract).toContainText('修改算法版本');
+  await expect(apiContract).toContainText('未绑定，禁止猜测 Method / Path');
 
   await page.locator('#externalBaseUrl').fill('https://draft.example.test');
   await page.locator('#externalAccessKey').fill('draft-ak');
