@@ -131,6 +131,12 @@ jobs:
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
           grep -q "delete_version_for_rollback" platform_core/external_algorithm_publish.py
           grep -q "client.version_remove" platform_core/external_algorithm_publish.py
+          grep -Fq 'delete_current_version: Literal[True] = True' app.py
+          grep -Fq 'remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback' app.py
+          grep -Fq 'delete_current_version:true' static/app.js
+          ! grep -Fq 'id="rollbackDeleteCurrent"' static/app.js
+          grep -Fq 'version rollback is destructive and external deletion is explained in the UI' tests/frontend/external-algorithm-publish.test.mjs
+          grep -q "test_auto_publish_readiness_uses_canonical_model_storage_url" tests/unit/test_external_algorithm_publish.py
           grep -q "test_legacy_publish_storage_cannot_overwrite_canonical_model_asset_storage" tests/unit/test_external_algorithm_publish.py
           grep -Fq "ModelArtifactRuntime is the single owner of model asset storage" static/modules/external-algorithm-publish.js
           grep -Fq "storage_source_id: ''" static/modules/external-algorithm-publish.js
