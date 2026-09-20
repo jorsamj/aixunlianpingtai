@@ -102,4 +102,7 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     assert formal[0]["source_task_id"] == task_id
     assert formal[0]["label"] == "smoke"
     assert formal[0]["class_id"] == 1
+    labels = client.get(f"/api/v12/projects/{project_id}/labels").json()["items"]
+    smoke = next(row for row in labels if row["code"] == "smoke")
+    assert "fire" not in smoke["aliases"]
     assert not source_path.exists()
