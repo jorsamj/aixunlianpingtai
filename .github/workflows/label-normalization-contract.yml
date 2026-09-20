@@ -1,0 +1,135 @@
+name: Label Normalization Contract
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
+    paths:
+      - 'app.py'
+      - 'platform_core/annotation_candidates.py'
+      - 'platform_core/annotation_task_service.py'
+      - 'platform_core/material_batches.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'static/app.js'
+      - 'static/modules/annotation-task-view.js'
+      - 'static/modules/zip-import-runtime.js'
+      - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/integration/test_persistent_ai_annotation_e2e.py'
+      - 'tests/frontend/annotation-task-view.test.mjs'
+      - 'tests/frontend/zip-import-durable-runtime.test.mjs'
+      - '.github/workflows/label-normalization-contract.yml'
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'platform_core/annotation_candidates.py'
+      - 'platform_core/annotation_task_service.py'
+      - 'platform_core/material_batches.py'
+      - 'platform_core/task_runtime/repository.py'
+      - 'static/app.js'
+      - 'static/modules/annotation-task-view.js'
+      - 'static/modules/zip-import-runtime.js'
+      - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/integration/test_persistent_ai_annotation_e2e.py'
+      - 'tests/frontend/annotation-task-view.test.mjs'
+      - 'tests/frontend/zip-import-durable-runtime.test.mjs'
+      - '.github/workflows/label-normalization-contract.yml'
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install focused backend dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          pytest fastapi uvicorn httpx python-multipart pillow pyyaml requests
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring cryptography
+          filelock boto3 oss2
+      - name: Syntax and release boundary
+        run: |
+          python -m py_compile \
+            app.py \
+            platform_core/annotation_candidates.py \
+            platform_core/annotation_task_service.py \
+            platform_core/material_batches.py \
+            platform_core/task_runtime/repository.py
+          node --check static/app.js
+          node --check static/modules/annotation-task-view.js
+          node --check static/modules/zip-import-runtime.js
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
+      - name: Backend label-normalization contracts
+        run: >-
+          python -m pytest -q
+          tests/api/test_v19_label_mapping.py
+          tests/integration/test_persistent_ai_annotation_e2e.py
+      - name: Frontend label-normalization contracts
+        run: >-
+          node --test
+          tests/frontend/annotation-task-view.test.mjs
+          tests/frontend/zip-import-durable-runtime.test.mjs
+      - name: Permanent source guards
+        shell: python
+        run: |
+          from pathlib import Path
+
+          app = Path('app.py').read_text(encoding='utf-8')
+          candidates = Path('platform_core/annotation_candidates.py').read_text(encoding='utf-8')
+          service = Path('platform_core/annotation_task_service.py').read_text(encoding='utf-8')
+          repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
+          zip_runtime = Path('static/modules/zip-import-runtime.js').read_text(encoding='utf-8')
+          annotation_view = Path('static/modules/annotation-task-view.js').read_text(encoding='utf-8')
+
+          required = {
+              'app.py': (
+                  'label_confirmation_required',
+                  'resolve_external_label_mapping(',
+                  'label_mapping: Dict[str, str] = Field(default_factory=dict)',
+                  'resume_after_review_confirmation',
+              ),
+              'platform_core/annotation_candidates.py': (
+                  'def remap_labels(',
+                  'def label_summary(',
+              ),
+              'platform_core/annotation_task_service.py': (
+                  'def commit_confirmed_review(',
+                  'stage="APPLYING_REVIEW"',
+              ),
+              'platform_core/task_runtime/repository.py': (
+                  'def resume_after_review_confirmation(',
+                  "stage='review_queued'",
+              ),
+              'static/modules/zip-import-runtime.js': (
+                  'zipNeedsLabelConfirmation',
+                  '标注入库确认',
+                  'confirmLabels',
+              ),
+              'static/modules/annotation-task-view.js': (
+                  '等待标注入库',
+                  '统一标签并入库',
+              ),
+          }
+          bodies = {
+              'app.py': app,
+              'platform_core/annotation_candidates.py': candidates,
+              'platform_core/annotation_task_service.py': service,
+              'platform_core/task_runtime/repository.py': repository,
+              'static/modules/zip-import-runtime.js': zip_runtime,
+              'static/modules/annotation-task-view.js': annotation_view,
+          }
+          missing = {
+              name: [token for token in tokens if token not in bodies[name]]
+              for name, tokens in required.items()
+              if any(token not in bodies[name] for token in tokens)
+          }
+          if missing:
+              raise SystemExit(f'missing label-normalization contracts: {missing}')
