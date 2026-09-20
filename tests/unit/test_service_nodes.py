@@ -67,6 +67,32 @@ def test_heartbeat_is_authenticated_and_projects_effective_capabilities(tmp_path
     assert node["reported_active_tasks"] == ["train_abc"]
 
 
+def test_connectivity_snapshot_uses_authenticated_heartbeat_truth(tmp_path):
+    _repository, nodes = registry(tmp_path)
+    _node, token = nodes.create({
+        "node_id": "node-connect",
+        "display_name": "Connectivity Node",
+        "allowed_capabilities": ["training"],
+    })
+
+    never = nodes.connectivity_snapshot("node-connect")
+    assert never["connected"] is False
+    assert never["status"] == "NEVER_CONNECTED"
+    assert "尚未建立过心跳连接" in never["message"]
+
+    nodes.heartbeat("node-connect", token, {"reported_capabilities": ["training"]})
+    online = nodes.connectivity_snapshot("node-connect")
+    assert online["connected"] is True
+    assert online["status"] == "ONLINE"
+    assert online["heartbeat_age_seconds"] is not None
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    stale = nodes.connectivity_snapshot("node-connect", now=future)
+    assert stale["connected"] is False
+    assert stale["status"] == "OFFLINE"
+    assert "心跳已超时" in stale["message"]
+
+
 def test_stale_heartbeat_and_disabled_state_are_distinct(tmp_path):
     _repository, nodes = registry(tmp_path)
     _node, token = nodes.create({
