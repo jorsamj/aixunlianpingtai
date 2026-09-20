@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -1116,3 +1117,46 @@ def test_durable_remote_conversion_root_is_discovered_and_appended(tmp_path: Pat
     assert FakePublishingClient.weight_creates == 2
     remote_weight = next(row for row in FakePublishingClient.weights if row["fileName"] == "model_rk3576.rknn")
     assert remote_weight["chipCode"] == "RK3576"
+
+
+def test_publish_reuses_existing_verified_remote_training_object(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    model_path = _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    object_key = "model-assets/remote-training/a1/v1/best.pt"
+    stored = _project_dir(tmp_path, "p1") / object_key
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_bytes(model_path.read_bytes())
+    digest = hashlib.sha256(stored.read_bytes()).hexdigest()
+    existing = service.model_assets.register_verified_remote_artifact(
+        project_id="p1",
+        algorithm_id="a1",
+        version_id="v1",
+        target="best",
+        file_name="best.pt",
+        sha256=digest,
+        size_bytes=stored.stat().st_size,
+        storage_source_id="default_local",
+        object_key=object_key,
+        source_path=str(model_path),
+        artifact_kind="original",
+        metadata={"remote_training": True, "role": "best"},
+    )
+    before = service.model_assets.repository.list(
+        project_id="p1", algorithm_id="a1", version_id="v1"
+    )
+    assert len(before) == 1
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["publication"]["status"] == "PUBLISHED"
+    after = service.model_assets.repository.list(
+        project_id="p1", algorithm_id="a1", version_id="v1"
+    )
+    assert len(after) == 1
+    assert after[0]["artifact_id"] == existing["artifact_id"]
+    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weights[0]["filePath"] == existing["public_url"]
