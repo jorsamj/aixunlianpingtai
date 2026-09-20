@@ -3524,13 +3524,19 @@ def create_project(payload: ProjectCreate):
             code = normalize_label(x.get("code") or x.get("name") or x.get("label") or "")
             display_name = str(x.get("display_name") or x.get("zh") or x.get("name") or code)
             color = str(x.get("color") or "")
-            aliases = normalize_label_aliases(x.get("aliases") or [])
+            try:
+                aliases = normalize_label_aliases(x.get("aliases") or [])
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=f"标签别名无效：{error}") from error
         else:
             code = normalize_label(x)
             if idx < len(raw_label_meta) and isinstance(raw_label_meta[idx], dict):
                 display_name = str(raw_label_meta[idx].get("display_name") or raw_label_meta[idx].get("name") or code)
                 color = str(raw_label_meta[idx].get("color") or "")
-                aliases = normalize_label_aliases(raw_label_meta[idx].get("aliases") or [])
+                try:
+                    aliases = normalize_label_aliases(raw_label_meta[idx].get("aliases") or [])
+                except ValueError as error:
+                    raise HTTPException(status_code=400, detail=f"标签别名无效：{error}") from error
             else:
                 display_name = code
         if code and code not in labels:
