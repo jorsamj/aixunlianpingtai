@@ -111,6 +111,35 @@ def test_label_remap_fails_closed_if_target_is_disabled_before_worker(
     assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["label"] == "fire"
 
 
+def test_label_remap_does_not_write_orphan_annotation_if_material_is_removed(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    app_module.write_annotation(project_id, image["id"], [_box()])
+    _repository, _artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+
+    created = client.post(
+        f"/api/v52/projects/{project_id}/labels/remap",
+        json={
+            "image_ids": [image["id"]],
+            "source_label": "fire",
+            "target_label": "smoke",
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+
+    app_module.material_store(project_id).remove_many([image["id"]])
+    assert scheduler.run_once() is True
+    task = client.get(
+        f"/api/v62/projects/{project_id}/material-batches/{task_id}"
+    ).json()
+    assert task["status"] == "FAILED"
+    assert task["failed"] == 1
+    assert task["error_examples"][0]["error"] == "MATERIAL_NOT_FOUND"
+    assert app_module.read_annotation(project_id, image["id"])["boxes"][0]["label"] == "fire"
+
+
 def test_label_remap_does_not_overwrite_concurrent_human_annotation(
     client, seeded_project, tmp_path, monkeypatch
 ):
