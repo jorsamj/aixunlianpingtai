@@ -94,7 +94,9 @@ jobs:
           grep -Fq "if (status === 'STOPPING') return 'stopping';" static/modules/task-runtime-truth.js
           grep -Fq "if (status === 'CANCEL_REQUESTED') return 'cancel_requested';" static/modules/task-runtime-truth.js
           grep -Fq 'function replaceTrainRunCenter429' static/app.js
-          grep -Fq 'train_success_rate=(round(len(done)/terminal_training_count*100,1) if terminal_training_count else None)' app.py
+          grep -Fq 'training_stats=_training_success_rate_stats(jobs)' app.py
+          grep -Fq 'ended_statuses = success_statuses | {"failed", "stopped", "cancelled", "canceled"}' app.py
+          grep -Fq 'test_training_success_rate_uses_all_ended_jobs_without_calling_cancellations_failures' tests/api/test_training_terminal_runtime.py
           grep -Fq '暂无已结束训练可统计' static/app.js
           grep -Fq 'payload.task_id = plannedTaskId' static/modules/training-submit.js
           grep -Fq 'durable_active = durable is not None and durable.status in {' app.py

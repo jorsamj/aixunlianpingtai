@@ -2281,7 +2281,7 @@ window.installUsability417=function(){
     const ready=(state.targets||[]).filter(x=>x.status==='ready').length;
     const iruns=state.v42?.runs||[], iterRunning=iruns.filter(x=>['queued','running'].includes(x.status)).length;
     const days=[];for(let i=6;i>=0;i--){const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-i);const key=d.toISOString().slice(0,10);const rows=jobs.filter(j=>String(j.created_at||'').slice(0,10)===key);days.push({key,label:(d.getMonth()+1)+'/'+d.getDate(),count:rows.length,hours:rows.reduce((n,j)=>n+jobDuration42(j),0)/3600})}
-    return {algs,versions,trained,running,queued,done:doneJobs.length,failed,totalSeconds,avgSeconds,successRate,dss,totalImages,annotated,boxes,dsKinds,catRows,meanP:mean('precision'),meanR:mean('recall'),meanM:mean('map50'),bestMap,measured:measured.length,ready,iterRunning,days,jobs};
+    return {algs,versions,trained,running,queued,done:doneJobs.length,ended:endedJobs.length,failed,totalSeconds,avgSeconds,successRate,dss,totalImages,annotated,boxes,dsKinds,catRows,meanP:mean('precision'),meanR:mean('recall'),meanM:mean('map50'),bestMap,measured:measured.length,ready,iterRunning,days,jobs};
   }
   function dashPct42(v){return v==null?'-':(Number(v)*100).toFixed(1)+'%'}
   function renderDashboardBody42(){
@@ -2431,8 +2431,9 @@ window.installUsability417=function(){
   function dashboardData422(){
     const algs=state.algorithms||[],jobs=state.jobs||[],dss=state.datasets||[],blue=state.v42?.blueprints||[];
     const versions=algs.reduce((n,a)=>n+(a.versions||[]).length,0),trained=algs.filter(a=>(a.versions||[]).length>0).length;
-    const running=jobs.filter(j=>j.status==='running').length,queued=jobs.filter(j=>j.status==='queued').length,doneJobs=jobs.filter(j=>['done','finished','completed','succeeded','success'].includes(String(j.status||'').toLowerCase())),failed=jobs.filter(j=>String(j.status||'').toLowerCase()==='failed').length;
-    const totalSeconds=jobs.reduce((n,j)=>n+jobDuration422(j),0),avgSeconds=doneJobs.length?doneJobs.reduce((n,j)=>n+jobDuration422(j),0)/doneJobs.length:0,successRate=(doneJobs.length+failed)?doneJobs.length/(doneJobs.length+failed):null;
+    const successStatuses422=new Set(['done','finished','completed','succeeded','success']),endedStatuses422=new Set([...successStatuses422,'failed','stopped','cancelled','canceled']);
+    const running=jobs.filter(j=>j.status==='running').length,queued=jobs.filter(j=>j.status==='queued').length,doneJobs=jobs.filter(j=>successStatuses422.has(String(j.status||'').toLowerCase())),endedJobs=jobs.filter(j=>endedStatuses422.has(String(j.status||'').toLowerCase())),failed=jobs.filter(j=>String(j.status||'').toLowerCase()==='failed').length;
+    const totalSeconds=jobs.reduce((n,j)=>n+jobDuration422(j),0),avgSeconds=doneJobs.length?doneJobs.reduce((n,j)=>n+jobDuration422(j),0)/doneJobs.length:0,successRate=endedJobs.length?doneJobs.length/endedJobs.length:null;
     const totalImages=dss.reduce((n,d)=>n+Number(d.images||0),0),annotated=dss.reduce((n,d)=>n+Number(d.annotated_images||0),0),boxes=dss.reduce((n,d)=>n+Number(d.boxes||0),0);
     const dsKinds={全标注:0,混合:0,未标注:0,空数据集:0};dss.forEach(d=>{const im=Number(d.images||0),an=Number(d.annotated_images||0);if(!im)dsKinds['空数据集']++;else if(an===im)dsKinds['全标注']++;else if(an>0)dsKinds['混合']++;else dsKinds['未标注']++});
     const measured=(state.v42?.quality?.algorithms||[]).map(a=>a.metrics||{}).filter(m=>m.map50!=null||m.precision!=null||m.recall!=null);const mean=k=>{const vals=measured.map(m=>Number(m[k])).filter(Number.isFinite);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null};const maps=measured.map(m=>Number(m.map50)).filter(Number.isFinite);
@@ -2454,7 +2455,7 @@ window.installUsability417=function(){
         <div class="ops422-kpi"><span>正在训练</span><b>${d.running}</b><small>${d.queued} 个排队任务</small></div>
         <div class="ops422-kpi"><span>数据集</span><b>${fmt422(d.dss.length)}</b><small>${fmt422(d.totalImages)} 张素材</small></div>
         <div class="ops422-kpi"><span>训练总时长</span><b>${fmtHours422(d.totalSeconds)}</b><small>平均 ${fmtHours422(d.avgSeconds)}</small></div>
-        <div class="ops422-kpi"><span>训练任务成功率</span><b>${d.successRate==null?'—':(d.successRate*100).toFixed(1)+'%'}</b><small>${d.done+d.failed?d.done+' 成功 · '+d.failed+' 失败':'暂无已结束训练可统计'}</small></div>
+        <div class="ops422-kpi"><span>训练任务成功率</span><b>${d.successRate==null?'—':(d.successRate*100).toFixed(1)+'%'}</b><small>${d.ended?d.done+' 成功 · '+(d.ended-d.done)+' 其他已结束':'暂无已结束训练可统计'}</small></div>
         <div class="ops422-kpi"><span>自动标注中</span><b>${preRun}</b><small>${sourceCount} 个素材源 · ${autoSource} 个自动</small></div>
       </section>
       <section class="ops422-main-grid">

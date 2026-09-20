@@ -107,7 +107,9 @@ test('dashboard training task success rate distinguishes no-data and successful 
   const dashboard = source.slice(dashboardStart, dashboardEnd);
   assert.match(dashboard, /'done','finished','completed','succeeded','success'/);
   assert.match(dashboard, /String\(j\.status\|\|''\)\.toLowerCase\(\)/);
-  assert.match(dashboard, /successRate=\(doneJobs\.length\+failed\)\?doneJobs\.length\/\(doneJobs\.length\+failed\):null/);
+  assert.match(dashboard, /endedStatuses422=new Set\(\[\.\.\.successStatuses422,'failed','stopped','cancelled','canceled'\]\)/);
+  assert.match(dashboard, /successRate=endedJobs\.length\?doneJobs\.length\/endedJobs\.length:null/);
+  assert.match(dashboard, /其他已结束/);
   assert.doesNotMatch(dashboard, /successRate=.*:0/);
 
   const qualityStart = source.indexOf('window.renderQualityCenter424=async function()');

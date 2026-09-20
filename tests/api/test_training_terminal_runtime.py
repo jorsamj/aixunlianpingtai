@@ -97,6 +97,28 @@ def test_success_aliases_are_terminal_and_attempt_version_archive(tmp_path, monk
     assert [row[1]["status"] for row in archived] == ["succeeded", "success"]
 
 
+def test_training_success_rate_uses_all_ended_jobs_without_calling_cancellations_failures():
+    import app as app_module
+
+    stats = app_module._training_success_rate_stats([
+        {"status": "done"},
+        {"status": "success"},
+        {"status": "failed"},
+        {"status": "stopped"},
+        {"status": "cancelled"},
+        {"status": "canceled"},
+        {"status": "running"},
+    ])
+
+    assert stats == {
+        "success_count": 2,
+        "failure_count": 1,
+        "ended_count": 6,
+        "success_rate": 33.3,
+    }
+    assert app_module._training_success_rate_stats([{"status": "queued"}])["success_rate"] is None
+
+
 def test_version_archive_accepts_success_alias_source_contract():
     from pathlib import Path
 

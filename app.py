@@ -16103,6 +16103,21 @@ def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> 
     return quality
 
 @app.get('/api/v44/projects/{project_id}/quality-center')
+def _training_success_rate_stats(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    success_statuses = {"done", "finished", "completed", "succeeded", "success"}
+    ended_statuses = success_statuses | {"failed", "stopped", "cancelled", "canceled"}
+    normalized = [str((job or {}).get("status") or "").strip().lower() for job in jobs]
+    success_count = sum(1 for status in normalized if status in success_statuses)
+    failure_count = sum(1 for status in normalized if status == "failed")
+    ended_count = sum(1 for status in normalized if status in ended_statuses)
+    return {
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "ended_count": ended_count,
+        "success_rate": round(success_count / ended_count * 100, 1) if ended_count else None,
+    }
+
+
 def v44_quality_center(project_id: str):
     dq=_v44_dataset_quality(project_id)
     algs=list_algorithms_internal(project_id);alg_rows=[]
@@ -16119,10 +16134,9 @@ def v44_quality_center(project_id: str):
         score=round(sum(vals)/len(vals),1) if vals else None
         alg_rows.append({"id":a.get("id"),"name":a.get("name"),"version":v.get("version_name") or "", "precision":p,"recall":r,"map50":m,"score":score})
     jobs=list_jobs(project_id)
-    done=[j for j in jobs if str(j.get('status') or '').lower() in {'done','finished','completed','succeeded','success'}]
-    failed=[j for j in jobs if str(j.get('status') or '').lower()=='failed']
-    terminal_training_count=len(done)+len(failed)
-    train_success_rate=(round(len(done)/terminal_training_count*100,1) if terminal_training_count else None)
+    training_stats=_training_success_rate_stats(jobs)
+    terminal_training_count=training_stats["ended_count"]
+    train_success_rate=training_stats["success_rate"]
     trained_count=sum(1 for x in alg_rows if x['score'] is not None)
     def avg_metric(k):
         vals=[]
@@ -16131,7 +16145,7 @@ def v44_quality_center(project_id: str):
             if v is not None: vals.append(v*100 if v<=1 else v)
         return round(sum(vals)/max(1,len(vals)),1)
     version_coverage=round(sum(1 for a in algs if a.get('versions'))/max(1,len(algs))*100,1)
-    alg_quality={"algorithms":alg_rows,"trained_count":trained_count,"avg_score":round(sum(x['score'] for x in alg_rows if x['score'] is not None)/max(1,trained_count),1),"avg_precision":avg_metric('precision'),"avg_recall":avg_metric('recall'),"avg_map50":avg_metric('map50'),"train_success_rate":train_success_rate,"train_success_count":len(done),"train_failure_count":len(failed),"train_completed_count":terminal_training_count,"version_coverage":version_coverage}
+    alg_quality={"algorithms":alg_rows,"trained_count":trained_count,"avg_score":round(sum(x['score'] for x in alg_rows if x['score'] is not None)/max(1,trained_count),1),"avg_precision":avg_metric('precision'),"avg_recall":avg_metric('recall'),"avg_map50":avg_metric('map50'),"train_success_rate":train_success_rate,"train_success_count":training_stats["success_count"],"train_failure_count":training_stats["failure_count"],"train_completed_count":terminal_training_count,"version_coverage":version_coverage}
     return {"ok":True,"dataset":dq,"algorithm":alg_quality,"time":now_iso()}
 
 @app.post('/api/v44/projects/{project_id}/data-quality')
