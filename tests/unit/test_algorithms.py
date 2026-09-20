@@ -517,3 +517,78 @@ def test_historical_version_remote_delete_failure_keeps_local_version(tmp_path: 
     assert stored["current_version_id"] == "v5"
     assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
     assert not stored.get("version_operations")
+
+
+def test_rollback_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails(tmp_path: Path, monkeypatch):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        algorithms_module.AlgorithmSqlStore,
+        "rollback_version",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database commit failed")),
+    )
+
+    with pytest.raises(PlatformError) as error:
+        rollback_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            expected_current_version_id="v5",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=lambda _algorithm, _version: {
+                "required": True,
+                "status": "deleted",
+                "external_algo_version_id": "remote-v5",
+            },
+        )
+
+    assert error.value.code == "ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE"
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+
+
+def test_direct_delete_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails(tmp_path: Path, monkeypatch):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        algorithms_module.AlgorithmSqlStore,
+        "delete_version_with_operation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database commit failed")),
+    )
+
+    with pytest.raises(PlatformError) as error:
+        delete_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=lambda _algorithm, _version: {
+                "required": True,
+                "status": "deleted",
+                "external_algo_version_id": "remote-v3",
+            },
+        )
+
+    assert error.value.code == "ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE"
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
