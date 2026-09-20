@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import app as app_module
-from platform_core.task_runtime import ArtifactStore, TaskStatus
+from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
 
 def test_label_aliases_are_editable_and_canonical_conflicts_fail_closed(client):
     project = client.post("/api/projects", json={
@@ -206,3 +206,59 @@ def test_v60_ai_task_accepts_learned_alias_in_label_input(client, seeded_project
     )
     assert request["labels"] == ["fire"]
     assert request["labels_text"] == "huomiao1"
+
+
+def test_pending_storage_import_refreshes_alias_suggestions(
+    client, tmp_path, monkeypatch
+):
+    project = client.post("/api/projects", json={
+        "name": "label-alias-storage-import",
+        "labels": [{
+            "code": "helmet",
+            "display_name": "安全头盔",
+            "aliases": ["toukui1"],
+        }],
+    }).json()
+
+    artifacts = ArtifactStore(tmp_path / "import-artifacts")
+    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    task_id = "storage-import-alias-review"
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "mode": "storage_scan",
+        "execution_mode": "local",
+        "import_format": "yolo",
+        "storage_source_id": "source-1",
+    })
+    artifacts.atomic_write_json(task_id, "scan/result.json", {
+        "stage": "awaiting_confirmation",
+        "import_format": "yolo",
+        "external_classes": [{
+            "class_id": "0",
+            "name": "toukui1",
+            "target_label_code": None,
+        }],
+    })
+    task = SimpleNamespace(
+        task_id=task_id,
+        project_id=project["id"],
+        kind=TaskKind.MATERIAL_IMPORT,
+        status=TaskStatus.AWAITING_CONFIRMATION,
+        accepted=False,
+        progress=50,
+        stage="awaiting_confirmation",
+        current_item="",
+        error="",
+        created_at="2026-09-20T00:00:00+00:00",
+        updated_at="2026-09-20T00:00:00+00:00",
+        finished_at=None,
+        result_ref="scan/result.json",
+        payload_ref="request.json",
+    )
+
+    public = app_module._public_storage_import_task(task)
+    assert public["status"] == "AWAITING_CONFIRMATION"
+    assert public["result"]["external_classes"][0]["target_label_code"] == "helmet"
+
+    task.accepted = True
+    frozen = app_module._public_storage_import_task(task)
+    assert frozen["result"]["external_classes"][0]["target_label_code"] is None
