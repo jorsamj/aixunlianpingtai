@@ -53,7 +53,7 @@ CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
     {"key":"version_list_all","group":"算法版本管理","title":"查询算法版本列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837720e0.md","status":"documented","method":"","path":""},
     {"key":"version_detail","group":"算法版本管理","title":"查询算法版本详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837721e0.md","status":"documented","method":"","path":""},
     {"key":"product_page","group":"算法产品管理","title":"查询算法产品列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837722e0.md","status":"documented","method":"","path":""},
-    {"key":"product_list_all","group":"算法产品管理","title":"查询算法产品列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837723e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-product/listAll"},
+    {"key":"product_list_all","group":"算法产品管理","title":"查询算法产品列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837723e0.md","status":"wired","method":"GET","path":"/internal/algorithm/product-ai/listAll"},
     {"key":"product_detail","group":"算法产品管理","title":"查询算法产品详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837724e0.md","status":"documented","method":"","path":""},
     {"key":"analysis_page","group":"算法产品分析方式管理","title":"查询分析方式列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837725e0.md","status":"documented","method":"","path":""},
     {"key":"analysis_list_by_product","group":"算法产品分析方式管理","title":"查询某算法产品下全部分析方式(含关联明细)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837726e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"},
@@ -84,7 +84,8 @@ def _clean_path(value: Any, fallback: str = "") -> str:
 
 LEGACY_CHANGLIAN_ENDPOINTS: Dict[str, str] = {
     "/algorithm-category/tree": "/internal/base/algorithm-category/tree",
-    "/algorithm-product/listAll": "/internal/algorithm/algorithm-product/listAll",
+    "/algorithm-product/listAll": "/internal/algorithm/product-ai/listAll",
+    "/internal/algorithm/algorithm-product/listAll": "/internal/algorithm/product-ai/listAll",
     "/algorithm-product-analysis/listByProduct/{productId}": "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}",
     "/compute-platform/listAll": "/internal/base/compute-platform/listAll",
     "/algorithm-version/add": "/internal/algorithm/algorithm-version/add",
@@ -104,7 +105,7 @@ class ChangLianEndpoints:
     test_sign: str = "/internal/auth/test-sign"
     token: str = "/internal/auth/token"
     category_tree: str = "/internal/base/algorithm-category/tree"
-    product_list: str = "/internal/algorithm/algorithm-product/listAll"
+    product_list: str = "/internal/algorithm/product-ai/listAll"
     analysis_by_product: str = "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
     compute_platform_list: str = "/internal/base/compute-platform/listAll"
     version_create: str = "/internal/algorithm/algorithm-version/add"
@@ -442,12 +443,23 @@ class ChangLianClient:
             # Audit persistence must never change remote-call semantics.
             pass
 
-    def _request(self, method: str, path: str, *, auth: bool = False, **kwargs: Any) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        auth: bool = False,
+        auth_header: str = "access-token",
+        **kwargs: Any,
+    ) -> Any:
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Accept", "application/json")
         if auth:
-            _, token = self.token()
-            headers["Access-Token"] = token
+            token_type, token = self.token()
+            if auth_header == "authorization-bearer":
+                headers["Authorization"] = f"{token_type} {token}".strip()
+            else:
+                headers["Access-Token"] = token
         started = time.perf_counter()
         correlation_id = hashlib.sha256(f"{time.time_ns()}:{method}:{path}".encode()).hexdigest()[:24]
         request_snapshot = {
@@ -557,7 +569,13 @@ class ChangLianClient:
         return self._request("GET", self.endpoints.category_tree, auth=True)
 
     def products(self) -> Any:
-        return self._request("GET", self.endpoints.product_list, auth=True)
+        # Official OpenAPI 515837723e0 requires Authorization: Bearer <access_token>.
+        return self._request(
+            "GET",
+            self.endpoints.product_list,
+            auth=True,
+            auth_header="authorization-bearer",
+        )
 
     def analyses(self, product_id: str) -> Any:
         path = self.endpoints.analysis_by_product.replace("{productId}", str(product_id))
@@ -877,7 +895,7 @@ class ExternalAlgorithmPlatformService:
             "auto_sync_interval_seconds": int(config.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
             "auto_publish_enabled": bool(config.get("auto_publish_enabled")),
             "auth_mode": "test_sign_bridge",
-            "business_auth_header": "Access-Token",
+            "business_auth_mode": "endpoint_contract",
             "credentials": state,
             "api_documents": changlian_api_documents(),
             "api_document_summary": {
