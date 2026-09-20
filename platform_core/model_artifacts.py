@@ -394,15 +394,15 @@ class ModelArtifactService:
         if source_id:
             source = self.storage_sources_factory().get(source_id)
             if source is None:
-                raise PlatformError("MODEL_STORAGE_SOURCE_NOT_FOUND", "模型资产存储源不存在", source_id, "请先在存储配置中创建该存储源。", 404)
+                raise PlatformError("MODEL_STORAGE_SOURCE_NOT_FOUND", "算法与转换结果存储源不存在", source_id, "请先在存储配置中创建该存储源。", 404)
             if not source.enabled:
-                raise PlatformError("MODEL_STORAGE_SOURCE_DISABLED", "模型资产存储源已停用", source_id, "请启用存储源后再保存。", 409)
+                raise PlatformError("MODEL_STORAGE_SOURCE_DISABLED", "算法与转换结果存储源已停用", source_id, "请启用存储源后再保存。", 409)
         return self.repository.save_config(payload)
 
     def _provider(self, project_id: str, source_id: str):
         source = self.storage_sources_factory().get(source_id)
         if source is None:
-            raise PlatformError("MODEL_STORAGE_SOURCE_NOT_FOUND", "模型资产存储源不存在", source_id, "请重新选择模型资产存储源。", 404)
+            raise PlatformError("MODEL_STORAGE_SOURCE_NOT_FOUND", "算法与转换结果存储源不存在", source_id, "请到“存储配置 → 算法与转换结果存储”重新选择存储源。", 404)
         secret: Mapping[str, str] = {}
         if source.secret_ref:
             secret = self.storage_credentials_factory().get(source.secret_ref) or {}
@@ -433,7 +433,7 @@ class ModelArtifactService:
         source_id = str(source_id or "").strip()
         public_base_url = str(public_base_url or "").strip().rstrip("/")
         if not source_id:
-            raise PlatformError("MODEL_STORAGE_SOURCE_REQUIRED", "请选择模型资产存储源", "storage_source_id 为空", "请选择 OSS / MinIO / S3 / 本地存储源后测试。", 422)
+            raise PlatformError("MODEL_STORAGE_SOURCE_REQUIRED", "请选择算法与转换结果存储源", "storage_source_id 为空", "请选择 OSS / MinIO / S3 / 本地存储源后测试。", 422)
         probe_project = "_model_artifact_probe"
         self.project_dir(probe_project).mkdir(parents=True, exist_ok=True)
         provider = self._provider(probe_project, source_id)
@@ -596,7 +596,7 @@ class ModelArtifactService:
         config = self.repository.config()
         source_id = str(config.get("storage_source_id") or "").strip()
         if not source_id:
-            return self.repository.patch(str(row["artifact_id"]), storage_status="PENDING", storage_error="尚未配置模型资产存储源")
+            return self.repository.patch(str(row["artifact_id"]), storage_status="PENDING", storage_error="尚未配置算法与转换结果存储源")
         provider = self._provider(str(row["project_id"]), source_id)
         source_path = Path(str(row["source_path"])).resolve()
         if not source_path.is_file() or source_path.stat().st_size <= 0:
@@ -731,7 +731,7 @@ class ModelArtifactService:
                 "MODEL_REMOTE_ARTIFACT_STORAGE_MISMATCH",
                 "远程模型资产未写入当前统一模型存储",
                 f"expected={configured_source or '<missing>'}, actual={source_id}",
-                "请确认模型资产存储配置后重新执行远程训练。",
+                "请确认“存储配置 → 算法与转换结果存储”后重新执行远程训练。",
                 409,
             )
         provider = self._provider(str(project_id), source_id)
