@@ -251,14 +251,10 @@ class ExternalPublicationRepository:
         result = json.loads(json.dumps(DEFAULT_PUBLISH_CONFIG))
         if isinstance(stored, dict):
             result.update({key: value for key, value in stored.items() if key != "target_mappings"})
-            result["version_list_by_product"] = _canonical_publish_endpoint(
-                result.get("version_list_by_product"),
-                DEFAULT_PUBLISH_CONFIG["version_list_by_product"],
-            )
-            result["weight_list_by_version"] = _canonical_publish_endpoint(
-                result.get("weight_list_by_version"),
-                DEFAULT_PUBLISH_CONFIG["weight_list_by_version"],
-            )
+            # Provider paths are official contract, not user configuration.
+            # Ignore both legacy and arbitrary stored overrides on read.
+            result["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
+            result["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
             mappings = result["target_mappings"]
             for key, value in (stored.get("target_mappings") or {}).items():
                 if isinstance(value, dict):
