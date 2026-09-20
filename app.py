@@ -1521,6 +1521,13 @@ def _public_storage_rescan(task):
         for key, values in (summary.get('annotation_examples') or {}).items()
     }
     quality_view = public_quality(summary, _public_storage_import_text)
+    external_classes = quality_view.get('external_classes', [])
+    import_format = str(request.get('import_format') or summary.get('import_format') or 'images')
+    if import_format in {'yolo', 'coco', 'voc'} and external_classes:
+        external_classes = mapping_suggestions(
+            external_classes,
+            project_label_items(get_project(task.project_id)),
+        )
     return {
         'task_id': task.task_id,
         'project_id': task.project_id,
@@ -1528,7 +1535,7 @@ def _public_storage_rescan(task):
         'stage': task.stage,
         'accepted': task.accepted,
         'execution_mode': str(request.get('execution_mode') or 'local'),
-        'import_format': str(request.get('import_format') or summary.get('import_format') or 'images'),
+        'import_format': import_format,
         'dataset_yaml': str(summary.get('dataset_yaml') or request.get('dataset_yaml') or ''),
         'worker_id': str(task.worker_id or ''),
         'resource_wait_reason': _public_storage_import_text(task.resource_wait_reason or ''),
@@ -1547,7 +1554,7 @@ def _public_storage_rescan(task):
         'annotation_examples': annotation_examples,
         'annotation_applied': max(0, int(summary.get('annotation_applied') or 0)),
         'quality': quality_view.get('quality'),
-        'external_classes': quality_view.get('external_classes', []),
+        'external_classes': external_classes,
         'applied': max(0, int(summary.get('applied') or 0)),
     }
 
