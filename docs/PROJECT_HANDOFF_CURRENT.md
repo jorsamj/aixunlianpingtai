@@ -167,6 +167,26 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 ---
 
+<!-- CHANGLIAN_SQL_ANALYSIS_SUBSET_FIX_2026_09_20 -->
+# 部署阻断修复：ChangLian 可训练分析 ID SQL round-trip
+
+`017ad42b5c4e59ed86ac98366a54b6f481964410` 不可部署。预检暴露两个问题：
+
+1. `test_external_mirror_preserves_local_and_existing_versions` 的旧预期漏了新增 `status` 字段；正式代码保留 `status`，测试已同步。
+2. `AlgorithmSqlStore` 将 `external_analyses` 全量关系表重新投影成 `external_analysis_ids`，破坏“全部分析方式”和“可训练视觉分析 ID 子集”的边界。
+
+当前修复：
+
+- `external_analyses` 继续保存新畅联全部分析方式；
+- `external_analysis_ids` 作为 canonical 可训练子集写入 `payload_json`，不再被 `_algorithm_payload()` / `_replace_all()` 丢弃；
+- `read_all()` / `_read_one_conn()` 优先恢复 payload 中的可训练 ID；仅旧数据缺字段时才按 SQL `active + analysis_type` 兼容推导；
+- `status=0` 会写成 `algorithm_external_analyses.active=0`；
+- 新增永久 round-trip 测试覆盖 `vision-on / llm-on / vision-off`，并覆盖 `mirror → SQLite write → read → replace_all → read`；
+- SQL workflow 和 External Algorithm Platform workflow 都加入永久 guard。
+
+部署仍需等新 HEAD 的 compile/unit CI 通过后再继续，不能回到 `017ad42...`。
+
+---
 <!-- CHANGLIAN_VISUAL_ANALYSIS_FENCE_2026_09_20 -->
 # 最新收口：仅启用视觉分析可进入 YOLO 训练
 
