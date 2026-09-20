@@ -287,6 +287,13 @@ test('algorithm list keeps search and base filters while adding source filters',
   assert.match(appSource, /id="alg412Type"/);
   assert.match(externalSource, /dataset\.algorithmSourceFilter/);
   assert.match(externalSource, /dataset\.algorithmTrainingStatusFilter/);
+  assert.match(externalSource, /algorithmListRuntime\?\.filterState\?\.\(\)/);
+  assert.match(externalSource, /algorithmListRuntime\?\.setFilters\?\.\(patch, options\)/);
+  assert.doesNotMatch(externalSource, /let selectedSource = 'all'/);
+  assert.doesNotMatch(externalSource, /let selectedTrainingStatus = 'all'/);
+  assert.doesNotMatch(externalSource, /const selectedCategoryIds = new Set\(\);/);
+  assert.match(appSource, /external_product_id/);
+  assert.match(appSource, /product_code/);
 });
 
 test('sync settings expose quasi-realtime pull without claiming webhook support', () => {
