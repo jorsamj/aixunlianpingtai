@@ -4517,6 +4517,17 @@ class PrelabelRunReq(BaseModel):
     overwrite: bool = False
 
 
+LEGACY_DIRECT_PRELABEL_BLOCKED_DETAIL = (
+    "旧版自动标注直写接口已关闭；请使用当前 AI 自动标注任务，"
+    "模型结果先进入候选区，经人工二次确认后才能写入正式标注"
+)
+
+
+def _reject_legacy_direct_prelabel(project_id: str) -> None:
+    get_project(project_id)
+    raise HTTPException(status_code=409, detail=LEGACY_DIRECT_PRELABEL_BLOCKED_DETAIL)
+
+
 def list_prelabel_services_internal() -> List[Dict[str, Any]]:
     return read_json(PRELABEL_SERVICES_FILE, [])
 
@@ -4660,6 +4671,7 @@ def call_prelabel_service(cfg: Dict[str, Any], image_path: Path) -> Dict[str, An
 
 @app.post("/api/projects/{project_id}/prelabel/run")
 def run_prelabel(project_id: str, payload: PrelabelRunReq):
+    _reject_legacy_direct_prelabel(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     cfg = resolve_prelabel_config(payload)
@@ -12545,6 +12557,7 @@ def v33_stop_prelabel_task(project_id: str, task_id: str):
 
 @app.post("/api/v33/projects/{project_id}/prelabel-tasks")
 def v33_create_prelabel_task(project_id: str, payload: V33PrelabelTaskReq):
+    _reject_legacy_direct_prelabel(project_id)
     get_project(project_id)
     data = payload.dict()
     # 先解析一次，尽早发现服务不存在或地址为空。
@@ -13082,6 +13095,7 @@ def _v35_run_prelabel_task(project_id: str, task_id: str, payload: Dict[str, Any
 
 @app.post("/api/v35/projects/{project_id}/prelabel-tasks")
 def v35_create_prelabel_task(project_id: str, payload: V35PrelabelTaskReq):
+    _reject_legacy_direct_prelabel(project_id)
     get_project(project_id)
     data = payload.dict()
     cfg, tpl = _v35_resolve_model_and_prompt(data)
