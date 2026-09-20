@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - app.py
       - platform_core/task_runtime/**
@@ -113,3 +114,10 @@ jobs:
           tests/frontend/video-tasks.test.mjs
           tests/frontend/deployment-task-view.test.mjs
           tests/frontend/resource-discovery-runtime-truth.test.mjs
+      - name: Permanent success-alias truth guard
+        shell: bash
+        run: |
+          grep -Fq "SUCCESS: 'SUCCEEDED'" static/modules/task-runtime-truth.js
+          grep -Fq "all historical training success aliases canonicalize to terminal SUCCEEDED truth" tests/frontend/task-runtime-truth.test.mjs
+          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          git diff --check
