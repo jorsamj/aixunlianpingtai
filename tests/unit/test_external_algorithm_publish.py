@@ -117,6 +117,26 @@ class FakePublishingClient:
         return {"code": 200, "data": {"weightId": row["weightId"]}}
 
 
+class TimeoutAfterDeletePublishingClient(FakePublishingClient):
+    def version_remove(self, algo_version_ids):
+        ids = [str(value) for value in algo_version_ids]
+        type(self).version_removes += 1
+        type(self).removed_version_ids.extend(ids)
+        type(self).versions = [
+            row for row in self.versions
+            if str(row.get("algoVersionId") or "") not in set(ids)
+        ]
+        raise RuntimeError("timeout after remote commit")
+
+
+class TimeoutBeforeDeletePublishingClient(FakePublishingClient):
+    def version_remove(self, algo_version_ids):
+        ids = [str(value) for value in algo_version_ids]
+        type(self).version_removes += 1
+        type(self).removed_version_ids.extend(ids)
+        raise RuntimeError("timeout before remote commit")
+
+
 class FakeChangLianSyncClient:
     def __init__(self, **_kwargs):
         pass
@@ -1254,3 +1274,54 @@ def test_remote_version_creation_never_falls_back_to_product_id(tmp_path: Path):
     assert result["publication"]["status"] == "PUBLISHED"
     assert FakePublishingClient.last_version_payload["analysisId"] == "analysis-1"
     assert "productId" not in FakePublishingClient.last_version_payload
+
+
+def test_remote_delete_recovers_when_timeout_happens_after_remote_commit(tmp_path: Path):
+    TimeoutAfterDeletePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory, client_factory=TimeoutAfterDeletePublishingClient)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    version["external_algo_version_id"] = "remote-version-timeout"
+    TimeoutAfterDeletePublishingClient.versions = [{
+        "algoVersionId": "remote-version-timeout",
+        "versionName": version["version_name"],
+    }]
+
+    result = service.delete_version_for_rollback(
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+
+    assert result["status"] == "deleted"
+    assert TimeoutAfterDeletePublishingClient.version_removes == 1
+    assert TimeoutAfterDeletePublishingClient.versions == []
+
+
+def test_remote_delete_timeout_fails_closed_when_version_still_exists(tmp_path: Path):
+    TimeoutBeforeDeletePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory, client_factory=TimeoutBeforeDeletePublishingClient)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    version["external_algo_version_id"] = "remote-version-still-there"
+    TimeoutBeforeDeletePublishingClient.versions = [{
+        "algoVersionId": "remote-version-still-there",
+        "versionName": version["version_name"],
+    }]
+
+    with pytest.raises(PlatformError) as blocked:
+        service.delete_version_for_rollback(
+            project_id="p1",
+            algorithm=algorithm,
+            version=version,
+        )
+
+    assert blocked.value.code == "EXTERNAL_VERSION_DELETE_FAILED"
+    assert TimeoutBeforeDeletePublishingClient.version_removes == 1
+    assert TimeoutBeforeDeletePublishingClient.versions[0]["algoVersionId"] == "remote-version-still-there"
