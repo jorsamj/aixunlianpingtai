@@ -598,8 +598,6 @@ export function installExternalAlgorithmPlatformRuntime({
         </div>
       </section>
 
-      ${readinessHtml()}
-
       ${diagnosticsHtml()}
 
       ${masterDataPreviewHtml()}
@@ -653,24 +651,6 @@ export function installExternalAlgorithmPlatformRuntime({
   function paintConnectionTest() {
     const root = document.getElementById('externalConnectionResult');
     if (root) root.innerHTML = connectionTestHtml();
-  }
-
-  function readinessHtml() {
-    if (!readiness) return '';
-    const rows = Array.isArray(readiness.checks) ? readiness.checks : [];
-    const body = rows.map(row => {
-      const status = String(row.status || '');
-      const label = status === 'ready' ? '就绪' : status === 'not_required' ? '无需' : '待处理';
-      const pill = status === 'ready' ? 'ok' : status === 'not_required' ? 'warn' : 'err';
-      return `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${pill}">${label}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`;
-    }).join('');
-    return `<section class="panel" data-changlian-readiness="${readiness.ready ? 'ready' : 'blocked'}">
-      <div class="panel-head"><div><div class="panel-title">联调准备状态 · 主数据 / 训练准备状态</div><div class="subline">这里只检查应用鉴权、主数据同步和当前项目畅联云算法是否可进入训练；转换与版本/权重发布由版本页同步前的发布预检单独判断。</div></div></div>
-      <div class="panel-body">
-        <div class="alert ${readiness.ready ? 'ok' : 'warn'}"><b>${readiness.ready ? '主数据与训练条件已就绪' : '还有主数据/训练前置条件未完成'}</b> · 系统对接使用 AccessKey / AccessSecret 应用鉴权，人员网页登录账号不参与机器接口调用。</div>
-        <table class="table"><thead><tr><th>检查项</th><th>状态</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无准备状态</td></tr>'}</tbody></table>
-      </div>
-    </section>`;
   }
 
   function diagnosticsHtml() {
