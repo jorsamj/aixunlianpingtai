@@ -88,7 +88,7 @@ test('server-persisted ZIP job is restored in upload task center after browser r
   await page.getByRole('button', {name: /数据集/}).click();
   const taskCenter = page.locator('#uploadTaskCenter');
   await expect(taskCenter).toBeVisible({timeout: 10_000});
-  await expect(taskCenter).toContainText('上传任务');
+  await expect(taskCenter).toContainText('数据导入 / 上传');
 
   await taskCenter.locator('[data-utc-toggle]').click();
   await expect(taskCenter).toContainText('refresh-recovery.zip');
