@@ -141,6 +141,8 @@ jobs:
           grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_weight_public_url_change_edits_existing_file_path_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_published_version_resyncs_when_canonical_model_artifact_is_not_uploaded" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'if not model_asset or str(model_asset.get("storage_status") or "").upper() != "UPLOADED"' platform_core/external_algorithm_publish.py
           grep -Fq 'return self.weight_edit(payload)' platform_core/external_algorithm_publish.py
           grep -Fq 'EXTERNAL_WEIGHT_EDIT_UNKNOWN' platform_core/external_algorithm_publish.py
           grep -q "test_durable_remote_conversion_root_is_discovered_and_appended" tests/unit/test_external_algorithm_publish.py
