@@ -84,6 +84,11 @@ jobs:
           grep -q '"identity_ready": bool(identity\["ready"\])' platform_core/external_algorithm_publish.py
           grep -q "test_publication_status_blocks_stale_changlian_master_data" tests/unit/test_external_algorithm_publish.py
           grep -q "test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_namespace" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_remote_id_accepts_official_scalar_data_ids" tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'return self.version_create(payload)' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.version_list_by_product(product_id)' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.weight_create(payload)' platform_core/external_algorithm_publish.py
+          grep -Fq 'return self.weight_list_by_version(algo_version_id)' platform_core/external_algorithm_publish.py
           grep -Fq '"/internal/algorithm/algorithm-version/listByProduct/{productId}"' platform_core/external_algorithm_publish.py
           grep -Fq '"/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"' platform_core/external_algorithm_publish.py
           grep -q "test_publish_blocks_when_historical_version_analysis_is_no_longer_current" tests/unit/test_external_algorithm_publish.py
@@ -126,6 +131,11 @@ jobs:
           grep -Fq "storage_source_id: ''" static/modules/external-algorithm-publish.js
           grep -Fq '平台对接 → 模型资产存储' static/modules/external-algorithm-publish.js
           grep -Fq '平台对接 → 畅联云版本发布' static/modules/external-algorithm-publish.js
+          grep -Fq '官方发布接口' static/modules/external-algorithm-publish.js
+          grep -Fq '接口路径来自新畅联官方 OpenAPI，平台固定使用，不允许手工修改' static/modules/external-algorithm-publish.js
+          if grep -Fq 'id="externalPublishVersionList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian version endpoint must not be user-editable" >&2; exit 1; fi
+          if grep -Fq 'id="externalPublishWeightList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian weight endpoint must not be user-editable" >&2; exit 1; fi
+          grep -q "publish UI locks recovery endpoints to official OpenAPI" tests/frontend/external-algorithm-publish.test.mjs
           grep -Fq '测试存储' tests/frontend/external-algorithm-publish.test.mjs
           grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
           grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
