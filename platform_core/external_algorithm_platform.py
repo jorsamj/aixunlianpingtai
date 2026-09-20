@@ -514,22 +514,39 @@ class ChangLianClient:
 
     def _operation_for_path(self, path: str) -> str:
         current = str(path or "").split("?", 1)[0]
-        exact = {
-            self.endpoints.test_sign: "auth_signature",
-            self.endpoints.token: "auth_token",
-            self.endpoints.category_tree: "category_list",
-            self.endpoints.product_list: "product_list",
-            self.endpoints.compute_platform_list: "compute_platform_list",
-            self.endpoints.version_create: "version_create",
-            self.endpoints.weight_create: "weight_create",
-        }
-        if current in exact:
-            return exact[current]
-        if "algorithm-product-analysis" in current:
-            return "analysis_list"
-        if "algorithm-version" in current:
+        if current == self.endpoints.test_sign:
+            return "auth_signature"
+        if current == self.endpoints.token:
+            return "auth_token"
+        if current == self.endpoints.logout:
+            return "auth_logout"
+        if "/internal/base/category/" in current:
+            return "category_list"
+        if "/internal/base/compute-platform/" in current:
+            return "compute_platform_list"
+        if "/internal/algorithm/product-ai/" in current:
+            return "product_detail" if "/getInfo/" in current else "product_list"
+        if "/internal/algorithm/algorithm-analysis/" in current:
+            return "analysis_detail" if "/getInfo/" in current else "analysis_list"
+        if "/internal/algorithm/algorithm-version/" in current:
+            if current.endswith("/add"):
+                return "version_create"
+            if current.endswith("/edit"):
+                return "version_edit"
+            if "/remove/" in current:
+                return "version_remove"
+            if "/getInfo/" in current:
+                return "version_detail"
             return "version_list"
-        if "algorithm-weight" in current:
+        if "/internal/algorithm/algorithm-weight/" in current:
+            if current.endswith("/add"):
+                return "weight_create"
+            if current.endswith("/edit"):
+                return "weight_edit"
+            if "/remove/" in current:
+                return "weight_remove"
+            if "/getInfo/" in current:
+                return "weight_detail"
             return "weight_list"
         return "http_request"
 
@@ -548,17 +565,17 @@ class ChangLianClient:
         path: str,
         *,
         auth: bool = False,
-        auth_header: str = "access-token",
         **kwargs: Any,
     ) -> Any:
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Accept", "application/json")
         if auth:
             token_type, token = self.token()
-            if auth_header == "authorization-bearer":
-                headers["Authorization"] = f"{token_type} {token}".strip()
-            else:
-                headers["Access-Token"] = token
+            # The official OpenAPI compilation declares Authorization: Bearer
+            # for all internal business APIs. "Access-Token" in logout prose
+            # names the token value; it is not the HTTP header name.
+            headers.pop("Access-Token", None)
+            headers["Authorization"] = f"{token_type} {token}".strip()
         started = time.perf_counter()
         correlation_id = hashlib.sha256(f"{time.time_ns()}:{method}:{path}".encode()).hexdigest()[:24]
         request_snapshot = {
@@ -664,24 +681,180 @@ class ChangLianClient:
             "token_type": token_type,
         }
 
+    def logout(self) -> Any:
+        try:
+            return self._request("POST", self.endpoints.logout, auth=True)
+        finally:
+            self._token = ""
+            self._token_expires_at = 0.0
+
     def category_tree(self) -> Any:
         return self._request("GET", self.endpoints.category_tree, auth=True)
 
-    def products(self) -> Any:
-        # Official OpenAPI 515837723e0 requires Authorization: Bearer <access_token>.
+    def category_page(
+        self,
+        *,
+        page_num: int,
+        page_size: int,
+        parent_id: Any = None,
+        category_type: Any = None,
+        category_code: Any = None,
+        category_name: Any = None,
+    ) -> Any:
         return self._request(
             "GET",
-            self.endpoints.product_list,
+            self.endpoints.category_list,
             auth=True,
-            auth_header="authorization-bearer",
+            params=_compact_params({
+                "pageNum": page_num,
+                "pageSize": page_size,
+                "parentId": parent_id,
+                "categoryType": category_type,
+                "categoryCode": category_code,
+                "categoryName": category_name,
+            }),
         )
 
-    def analyses(self, product_id: str) -> Any:
+    def category_list_all(
+        self,
+        *,
+        category_type: Any = None,
+        category_code: Any = None,
+        category_name: Any = None,
+        parent_id: Any = None,
+    ) -> Any:
+        return self._request(
+            "GET",
+            self.endpoints.category_list_all,
+            auth=True,
+            params=_compact_params({
+                "categoryType": category_type,
+                "categoryCode": category_code,
+                "categoryName": category_name,
+                "parentId": parent_id,
+            }),
+        )
+
+    def product_page(self, *, page_num: int, page_size: int, **filters: Any) -> Any:
+        params = {"pageNum": page_num, "pageSize": page_size, **filters}
+        params.setdefault("productType", "3")
+        return self._request("GET", self.endpoints.product_list_page, auth=True, params=_compact_params(params))
+
+    def products(self, **filters: Any) -> Any:
+        params = dict(filters)
+        params.setdefault("productType", "3")
+        return self._request("GET", self.endpoints.product_list, auth=True, params=_compact_params(params))
+
+    def product_info(self, product_id: Any) -> Any:
+        path = self.endpoints.product_detail.replace("{productId}", str(product_id))
+        return self._request("GET", path, auth=True)
+
+    def analysis_page(self, *, page_num: int, page_size: int, **filters: Any) -> Any:
+        params = {"pageNum": page_num, "pageSize": page_size, **filters}
+        return self._request("GET", self.endpoints.analysis_list_page, auth=True, params=_compact_params(params))
+
+    def analyses(self, product_id: Any) -> Any:
         path = self.endpoints.analysis_by_product.replace("{productId}", str(product_id))
         return self._request("GET", path, auth=True)
 
-    def compute_platforms(self) -> Any:
-        return self._request("GET", self.endpoints.compute_platform_list, auth=True)
+    def analysis_list_all(self, **filters: Any) -> Any:
+        return self._request("GET", self.endpoints.analysis_list_all, auth=True, params=_compact_params(filters))
+
+    def analysis_info(self, analysis_id: Any) -> Any:
+        path = self.endpoints.analysis_detail.replace("{analysisId}", str(analysis_id))
+        return self._request("GET", path, auth=True)
+
+    def compute_platform_page(self, *, page_num: int, page_size: int, **filters: Any) -> Any:
+        params = {"pageNum": page_num, "pageSize": page_size, **filters}
+        return self._request("GET", self.endpoints.compute_platform_list_page, auth=True, params=_compact_params(params))
+
+    def compute_platforms(self, **filters: Any) -> Any:
+        return self._request("GET", self.endpoints.compute_platform_list, auth=True, params=_compact_params(filters))
+
+    def version_create(self, payload: Mapping[str, Any]) -> Any:
+        body = _dump_version_payload(payload)
+        has_analysis = body.get("analysisId") not in (None, "")
+        has_product = body.get("productId") not in (None, "")
+        if has_analysis == has_product:
+            raise ValueError("新增算法版本时 analysisId 与 productId 必须二选一")
+        return self._request("POST", self.endpoints.version_create, auth=True, json=body)
+
+    def version_edit(self, payload: Mapping[str, Any]) -> Any:
+        body = _dump_version_payload(payload)
+        if body.get("algoVersionId") in (None, ""):
+            raise ValueError("修改算法版本必须提供 algoVersionId")
+        return self._request("POST", self.endpoints.version_edit, auth=True, json=body)
+
+    def version_remove(self, algo_version_ids: Iterable[Any]) -> Any:
+        path = self.endpoints.version_remove.replace("{algoVersionIds}", _remote_path_ids(algo_version_ids))
+        return self._request("GET", path, auth=True)
+
+    def version_page(self, *, page_num: int, page_size: int, **filters: Any) -> Any:
+        params = {"pageNum": page_num, "pageSize": page_size, **filters}
+        return self._request("GET", self.endpoints.version_list_page, auth=True, params=_compact_params(params))
+
+    def version_list_by_product(self, product_id: Any) -> Any:
+        path = self.endpoints.version_list_by_product.replace("{productId}", str(product_id))
+        return self._request("GET", path, auth=True)
+
+    def version_list_by_analysis(self, analysis_id: Any) -> Any:
+        path = self.endpoints.version_list_by_analysis.replace("{analysisId}", str(analysis_id))
+        return self._request("GET", path, auth=True)
+
+    def version_list_all(self, **filters: Any) -> Any:
+        return self._request("GET", self.endpoints.version_list_all, auth=True, params=_compact_params(filters))
+
+    def version_info(self, algo_version_id: Any) -> Any:
+        path = self.endpoints.version_detail.replace("{algoVersionId}", str(algo_version_id))
+        return self._request("GET", path, auth=True)
+
+    def weight_create(self, payload: Mapping[str, Any]) -> Any:
+        body = _dump_weight_payload(payload)
+        if body.get("algoVersionId") in (None, ""):
+            raise ValueError("新增算法权重文件必须提供 algoVersionId")
+        return self._request("POST", self.endpoints.weight_create, auth=True, json=body)
+
+    def weight_edit(self, payload: Mapping[str, Any]) -> Any:
+        body = _dump_weight_payload(payload)
+        if body.get("weightId") in (None, ""):
+            raise ValueError("修改算法权重文件必须提供 weightId")
+        return self._request("POST", self.endpoints.weight_edit, auth=True, json=body)
+
+    def weight_remove(self, weight_ids: Iterable[Any]) -> Any:
+        path = self.endpoints.weight_remove.replace("{weightIds}", _remote_path_ids(weight_ids))
+        return self._request("GET", path, auth=True)
+
+    def weight_page(self, *, page_num: int, page_size: int, **filters: Any) -> Any:
+        params = {"pageNum": page_num, "pageSize": page_size, **filters}
+        return self._request("GET", self.endpoints.weight_list_page, auth=True, params=_compact_params(params))
+
+    def weight_list_by_version(self, algo_version_id: Any) -> Any:
+        path = self.endpoints.weight_list_by_version.replace("{algoVersionId}", str(algo_version_id))
+        return self._request("GET", path, auth=True)
+
+    def weight_list_by_product(
+        self,
+        product_id: Any,
+        *,
+        algo_version_id: Any = None,
+        compute_platform_id: Any = None,
+        compute_platform_code: Any = None,
+    ) -> Any:
+        path = self.endpoints.weight_list_by_product.replace("{productId}", str(product_id))
+        return self._request(
+            "GET",
+            path,
+            auth=True,
+            params=_compact_params({
+                "algoVersionId": algo_version_id,
+                "computePlatformId": compute_platform_id,
+                "computePlatformCode": compute_platform_code,
+            }),
+        )
+
+    def weight_info(self, weight_id: Any) -> Any:
+        path = self.endpoints.weight_detail.replace("{weightId}", str(weight_id))
+        return self._request("GET", path, auth=True)
 
 
 def _category_id(row: Mapping[str, Any]) -> str:
@@ -705,6 +878,14 @@ def _analysis_id(row: Mapping[str, Any]) -> str:
 
 def _compute_platform_id(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "computePlatformId", "compute_platform_id", "id") or "").strip()
+
+
+def _algo_version_id(row: Mapping[str, Any]) -> str:
+    return str(_value_from(row, "algoVersionId", "algorithmVersionId", "versionId", "id") or "").strip()
+
+
+def _weight_id(row: Mapping[str, Any]) -> str:
+    return str(_value_from(row, "weightId", "algorithmWeightId", "id") or "").strip()
 
 
 def _validated_external_items(
