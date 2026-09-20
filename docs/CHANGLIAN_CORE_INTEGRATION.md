@@ -131,6 +131,19 @@ source_type = EXTERNAL
 
 平台不再把这些 Provider endpoint 暴露给普通用户编辑。历史版本曾保存的旧裸路径（例如 `/compute-platform/listAll`）仅在与平台已知旧值完全匹配时自动迁移到正式 internal 路径；其他自定义路径不强制覆盖。
 
+## 3.2 视觉分析训练边界
+
+完整 OpenAPI 明确：`analysisType=1` 为视觉智能分析，`analysisType=3` 为大模型智能分析，且 `status=1/0` 表示启用/禁用。
+
+本训练平台的 YOLO 训练只允许绑定：
+
+```text
+analysisType = 1
+status != 0
+```
+
+同步仍保留产品下全部分析方式作为远端事实，但 `external_analysis_ids`、默认 `external_analysis_id` 和训练弹窗只暴露可训练的启用视觉分析。仅有大模型分析或视觉分析已停用时，训练 fail closed。
+
 ## 4. 训练身份
 
 若一个算法产品只有一个分析方式，可以使用其默认 analysisId。
