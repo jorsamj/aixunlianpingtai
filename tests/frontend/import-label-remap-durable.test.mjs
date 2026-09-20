@@ -26,3 +26,9 @@ test('remap UI does not claim synchronous completion after task creation',()=>{
   assert.match(tail,/import412RemapSubmitting/);
   assert.doesNotMatch(tail,/已同步 .* 个框/);
 });
+
+
+test('legacy remap entry delegates to the single durable remap owner',()=>{
+  assert.match(source,/window\.remapImport412=\(source,inputId\)=>window\.remapImport414\(source,inputId\)/);
+  assert.doesNotMatch(source,/window\.remapImport412=async/);
+});
