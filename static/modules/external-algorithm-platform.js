@@ -44,6 +44,15 @@ export function externalAlgorithmTrainingReadiness(algorithm = {}, currentMaster
       message: '该算法已在新畅联下架，不能新建训练任务',
     };
   }
+  const syncedAnalyses = Array.isArray(algorithm.external_analyses) ? algorithm.external_analyses : [];
+  if (syncedAnalyses.length && externalAnalysisOptions(algorithm).length === 0) {
+    return {
+      ready: false,
+      status: 'no-visual-analysis',
+      reason: 'external-visual-analysis-missing',
+      message: '当前算法没有已启用的视觉智能分析（analysisType=1），不能创建 YOLO 训练任务',
+    };
+  }
   const expected = String(currentMasterDigest || '').trim();
   const actual = String(algorithm.external_master_data_digest || '').trim();
   if (!expected || !actual || expected !== actual) {
@@ -70,9 +79,16 @@ export function externalAnalysisOptions(algorithm = {}) {
     id: String(row?.analysis_id || row?.analysisId || ''),
     name: String(row?.analysis_name || row?.analysisName || row?.analysis_type || row?.analysisType || ''),
     type: String(row?.analysis_type || row?.analysisType || ''),
-  })).filter(row => row.id);
-  if (normalized.length) return normalized;
-  return (algorithm.external_analysis_ids || []).map(id => ({id: String(id), name: String(id), type: ''}));
+    status: String(row?.status ?? ''),
+  })).filter(row => {
+    if (!row.id) return false;
+    if (['0', 'false', 'disabled'].includes(row.status.toLowerCase())) return false;
+    if (row.type) return row.type === '1';
+    const text = row.name.toLowerCase();
+    return text.includes('视觉') || text.includes('vision') || text.includes('video');
+  });
+  if (rows.length) return normalized;
+  return (algorithm.external_analysis_ids || []).map(id => ({id: String(id), name: String(id), type: '', status: ''}));
 }
 
 export function externalAlgorithmMapping(algorithm = {}) {
@@ -932,7 +948,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63010',
+    build: 'external-algorithm-platform-63011',
     page: PAGE,
     loadConfig,
     loadHistory,
