@@ -36,6 +36,7 @@ def _service(root: Path):
     service.save_config(ModelArtifactConfigPayload(
         storage_source_id="default_local",
         object_prefix="models-central",
+        public_base_url="https://models.example.com",
         auto_upload_enabled=True,
     ))
     return service
@@ -96,6 +97,7 @@ def test_auto_upload_archives_original_and_conversion_for_local_algorithm(tmp_pa
         expected = model.read_bytes() if row["target"] == "original" else output.read_bytes()
         assert stored.read_bytes() == expected
         assert row["object_key"].startswith("models-central/p1/local-a1/v1/")
+        assert row["public_url"].startswith("https://models.example.com/models-central/p1/local-a1/v1/")
 
 
 def test_same_sha_rockchip_artifacts_remain_distinct_by_chip(tmp_path: Path):
@@ -188,6 +190,7 @@ def test_repository_migrates_legacy_identity_index_to_chip_scope(tmp_path: Path)
 
     legacy = repository.get("legacy-rk3568")
     assert legacy["chip_code"] == "rk3568"
+    assert legacy["public_url"] == ""
     inserted = repository.upsert({
         "artifact_id": "new-rk3576",
         "project_id": "p1",
@@ -227,7 +230,7 @@ def test_auto_upload_is_idempotent_and_keeps_one_index_per_content(tmp_path: Pat
 def test_missing_storage_config_keeps_artifact_pending_instead_of_failing_training_truth(tmp_path: Path):
     _seed(tmp_path)
     service = _service(tmp_path)
-    service.save_config(ModelArtifactConfigPayload(storage_source_id="", object_prefix="model-assets", auto_upload_enabled=True))
+    service.save_config(ModelArtifactConfigPayload(storage_source_id="", object_prefix="model-assets", public_base_url="", auto_upload_enabled=True))
     algorithm = __import__("platform_core.algorithms", fromlist=["list_algorithms"]).list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
 
     summary = service.ingest_version("p1", algorithm, algorithm["versions"][0])
@@ -297,3 +300,18 @@ def test_register_verified_remote_artifact_rejects_object_content_mismatch(tmp_p
         algorithm_id="local-a1",
         version_id="remote-v2",
     ) == []
+
+
+def test_public_url_includes_storage_source_prefix_and_is_persisted(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    sources = service.storage_sources_factory()
+    source = sources.get("default_local")
+    assert source is not None
+
+    # Local source has no provider prefix, so the configured delivery domain is
+    # joined directly with the immutable object key.
+    service.run_auto_upload_once()
+    row = next(item for item in service.repository.list(project_id="p1") if item["target"] == "original")
+    assert row["public_url"] == service.public_url(row)
+    assert row["public_url"].startswith("https://models.example.com/models-central/")
