@@ -441,21 +441,26 @@ class ModelArtifactService:
         }
 
     def _conversion_jobs(self, project_id: str, algorithm_id: str, version_id: str) -> list[dict[str, Any]]:
-        root = self.project_dir(project_id) / "deployment" / "jobs"
+        project = self.project_dir(project_id)
+        roots = (project / "deployment" / "jobs", project / "deploy" / "jobs")
         rows: list[dict[str, Any]] = []
-        for job_file in root.glob("*/job.json") if root.exists() else ():
-            job = _json_load(job_file, {})
-            if not isinstance(job, dict):
-                continue
-            source = job.get("source_meta") or {}
-            trace = job.get("source_trace") or {}
-            exact = (
-                (str(source.get("algorithm_id") or "") == str(algorithm_id) and str(source.get("version_id") or "") == str(version_id))
-                or (str(trace.get("algorithm_id") or "") == str(algorithm_id) and str(trace.get("version_id") or "") == str(version_id))
-                or str(job.get("source_id") or "") == f"version::{algorithm_id}::{version_id}"
-            )
-            if exact:
-                rows.append(job)
+        seen: set[str] = set()
+        for root in roots:
+            for job_file in root.glob("*/job.json") if root.exists() else ():
+                job = _json_load(job_file, {})
+                if not isinstance(job, dict):
+                    continue
+                source = job.get("source_meta") or {}
+                trace = job.get("source_trace") or {}
+                exact = (
+                    (str(source.get("algorithm_id") or "") == str(algorithm_id) and str(source.get("version_id") or "") == str(version_id))
+                    or (str(trace.get("algorithm_id") or "") == str(algorithm_id) and str(trace.get("version_id") or "") == str(version_id))
+                    or str(job.get("source_id") or "") == f"version::{algorithm_id}::{version_id}"
+                )
+                identity = str(job.get("id") or job_file.resolve())
+                if exact and identity not in seen:
+                    seen.add(identity)
+                    rows.append(job)
         return rows
 
     def discover_version_artifacts(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> list[dict[str, Any]]:
