@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
   workflow_dispatch:
 
 jobs:
@@ -269,6 +270,12 @@ jobs:
           if named_apply not in main:
               raise SystemExit('named actual page mutation/render owner is missing from final navigation runtime')
           PY
+      - name: Dataset cache-first navigation guard
+        run: |
+          grep -Fq 'function rememberDatasetPage61()' static/modules/material-pagination-runtime.js
+          grep -Fq 'function restoreDatasetPage61()' static/modules/material-pagination-runtime.js
+          grep -Fq 'cachedEntryPending' static/modules/material-pagination-runtime.js
+          grep -Fq 'dataset return paints the cached page before a background refresh replaces it' tests/browser/material-pagination-performance.spec.mjs
       - name: Frontend unit tests
         run: node --test tests/frontend/*.test.mjs
 

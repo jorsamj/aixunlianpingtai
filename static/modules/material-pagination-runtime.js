@@ -65,6 +65,7 @@ export function installMaterialPaginationRuntime() {
   let searchTimer = null;
   let suppressCardReload = false;
   let refreshBusy = false;
+  let cachedEntryPending = false;
 
   state.materialQuery61 = state.materialQuery61 || '';
   state.materialAnnotated61 = state.materialAnnotated61 || 'all';
@@ -110,6 +111,47 @@ export function installMaterialPaginationRuntime() {
       && document.getElementById('data412Grid')
       && document.getElementById('data412Pager')
     );
+  }
+
+  function rememberDatasetPage61() {
+    if (state.page !== '数据集' || transport.mode !== 'paged') return false;
+    const info = state.materialPage61 || {};
+    state.materialPageCache61 = {
+      projectId: projectId(),
+      signature: filterSignature61(),
+      items: Array.isArray(state.images) ? state.images.slice() : [],
+      page: {
+        cursor: info.cursor || '',
+        nextCursor: info.nextCursor || '',
+        cursorStack: Array.isArray(info.cursorStack) ? info.cursorStack.slice() : [],
+        page: Math.max(1, Number(info.page) || 1),
+        total: Number(info.total || 0),
+        unprocessedTotal: Number(info.unprocessedTotal || 0),
+        processedTotal: Number(info.processedTotal || 0),
+      },
+    };
+    return true;
+  }
+
+  function restoreDatasetPage61() {
+    const cache = state.materialPageCache61;
+    const signature = filterSignature61();
+    if (!cache
+        || String(cache.projectId || '') !== projectId()
+        || String(cache.signature || '') !== signature
+        || !Array.isArray(cache.items)) {
+      cachedEntryPending = false;
+      return false;
+    }
+    state.images = cache.items.slice();
+    state.materialPage61 = {
+      ...(state.materialPage61 || {}),
+      ...(cache.page || {}),
+      cursorStack: Array.isArray(cache.page?.cursorStack) ? cache.page.cursorStack.slice() : [],
+    };
+    state.materialFilterSignature61 = signature;
+    cachedEntryPending = true;
+    return true;
   }
 
   async function fetchMaterialPage61(cursor = '') {
@@ -313,6 +355,7 @@ export function installMaterialPaginationRuntime() {
       if (page !== undefined) info.page = Math.max(1, Number(page) || 1);
       transport.lastPage = materialPage;
       state.materialFilterSignature61 = filterSignature61();
+      rememberDatasetPage61();
       const mode = renderPagedDataset61();
       return {stale: false, mode, items: state.images, total: info.total};
     } catch (error) {
@@ -444,19 +487,28 @@ export function installMaterialPaginationRuntime() {
   window.renderDatasets424 = function serverPagedDatasets() {
     if (!isPagedDataset()) return baseRenderDatasets?.();
     const signature = filterSignature61();
+    const useCachedEntry = cachedEntryPending && signature === state.materialFilterSignature61;
     const needsLoad = !hasDatasetShell61() || signature !== state.materialFilterSignature61;
     const mode = renderPagedDataset61();
-    if (needsLoad) void loadMaterialPage61({reset: true});
+    if (needsLoad) {
+      cachedEntryPending = false;
+      const info = state.materialPage61 || {};
+      if (useCachedEntry) void loadMaterialPage61({cursor: info.cursor || '', page: info.page || 1});
+      else void loadMaterialPage61({reset: true});
+    }
     return mode;
   };
 
   if (typeof baseSetPage === 'function') {
     window.setPage = function materialAwareSetPage(page) {
       const target = page === '自动标注' ? '自动标注及清洗' : String(page || '');
+      const leavingDataset = state.page === '数据集' && target !== '数据集' && transport.mode === 'paged';
+      if (leavingDataset) rememberDatasetPage61();
       const full = requiresFullMaterialPool(target);
       transport.mode = full ? 'full' : 'paged';
       if (target === '数据集') {
-        state.materialFilterSignature61 = '';
+        const restored = restoreDatasetPage61();
+        if (!restored) state.materialFilterSignature61 = '';
         state.materialShellSignature61 = '';
       }
       const result = baseSetPage(page);
@@ -509,6 +561,8 @@ export function installMaterialPaginationRuntime() {
         refreshBusy,
         filterSignature: state.materialFilterSignature61 || '',
         shellSignature: state.materialShellSignature61 || '',
+        cachedItems: Array.isArray(state.materialPageCache61?.items) ? state.materialPageCache61.items.length : 0,
+        cachedEntryPending,
       };
     },
   };

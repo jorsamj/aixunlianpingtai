@@ -132,6 +132,71 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 });
 
 
+test('dataset return paints the cached page before a background refresh replaces it', async ({page}) => {
+  const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+  let mainReads = 0;
+  let slowReturn = false;
+
+  await page.route('**/api/v61/projects/*/materials**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/materials/ids')) return route.fallback();
+    const limit = Number(url.searchParams.get('limit') || 48);
+    if (limit === 1) {
+      await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: [], total: 1, next_cursor: null})});
+      return;
+    }
+    mainReads += 1;
+    if (slowReturn && mainReads >= 2) await new Promise(resolve => setTimeout(resolve, 650));
+    const name = mainReads >= 2 ? 'fresh-after-return.jpg' : 'cached-before-return.jpg';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [{
+          id: `cache-${mainReads}`, filename: name, url: pixel, size_bytes: 1024,
+          width: 640, height: 480, processing_status: 'processed', clean_status: 'ready',
+          ready: true, annotated: true, annotation_status: 'annotated', box_count: 1,
+          labels: ['smoke'], annotation_preview: [], storage_type: 'local', storage_source_id: 'default_local',
+        }],
+        total: 1, next_cursor: null,
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.build || null))
+    .toBe('material-pagination-runtime-422205');
+  await page.evaluate(() => {
+    state.data412Tab = 'processed';
+    state.materialQuery61 = '';
+    state.materialAnnotated61 = 'all';
+    state.materialSourceFilter61 = 'all';
+    window.setPage('数据集');
+  });
+  await expect(page.locator('#data412Grid')).toContainText('cached-before-return.jpg', {timeout: 10_000});
+  await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61.state().cachedItems)).toBe(1);
+
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('#title')).toContainText('训练任务');
+  await page.evaluate(() => {
+    state.images = [{
+      id: 'full-pool-placeholder',
+      filename: 'full-pool-should-not-flash.jpg',
+      url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+      processing_status: 'processed',
+    }];
+  });
+  slowReturn = true;
+
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toContainText('数据集');
+  await expect(page.locator('#data412Grid')).toContainText('cached-before-return.jpg', {timeout: 250});
+  await expect(page.locator('#data412Grid')).not.toContainText('full-pool-should-not-flash.jpg');
+  await expect(page.locator('#data412Grid')).toContainText('fresh-after-return.jpg', {timeout: 5_000});
+  expect(mainReads).toBeGreaterThanOrEqual(2);
+});
+
+
 test('v19 background import completion uses scoped labels and material refresh without broad reload', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
