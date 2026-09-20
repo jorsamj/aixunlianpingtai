@@ -101,16 +101,16 @@ export function normalizeExternalPlatformConfig(body = {}) {
     autoSyncIntervalSeconds: Number(config.auto_sync_interval_seconds || 600),
     autoPublishEnabled: Boolean(config.auto_publish_enabled),
     authMode: config.auth_mode || 'test_sign_bridge',
-    businessAuthMode: config.business_auth_mode || 'endpoint_contract',
+    businessAuthMode: config.business_auth_mode || 'authorization_bearer',
     credentials: config.credentials || {configured: false, masked: ''},
     apiDocuments: Array.isArray(config.api_documents) ? config.api_documents : [],
     apiDocumentSummary: config.api_document_summary || {},
     endpoints: {
       test_sign: endpoints.test_sign || '/internal/auth/test-sign',
       token: endpoints.token || '/internal/auth/token',
-      category_tree: endpoints.category_tree || '/internal/base/algorithm-category/tree',
+      category_tree: endpoints.category_tree || '/internal/base/category/tree',
       product_list: endpoints.product_list || '/internal/algorithm/product-ai/listAll',
-      analysis_by_product: endpoints.analysis_by_product || '/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}',
+      analysis_by_product: endpoints.analysis_by_product || '/internal/algorithm/algorithm-analysis/listByProduct/{productId}',
       compute_platform_list: endpoints.compute_platform_list || '/internal/base/compute-platform/listAll',
       version_create: endpoints.version_create || '/internal/algorithm/algorithm-version/add',
       weight_create: endpoints.weight_create || '/internal/algorithm/algorithm-weight/add',
@@ -653,7 +653,7 @@ export function installExternalAlgorithmPlatformRuntime({
     if (!diagnostics) return '';
     const rows = Array.isArray(diagnostics.steps) ? diagnostics.steps : [];
     const body = rows.map(row => `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${row.status === 'success' ? 'ok' : row.status === 'skipped' ? 'warn' : 'err'}">${row.status === 'success' ? '成功' : row.status === 'skipped' ? '跳过' : '失败'}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`).join('');
-    return `<section class="panel"><div class="panel-head"><div><div class="panel-title">联调诊断</div><div class="subline">只读检查鉴权、品目、算法产品、分析方式和算力环境，不创建或修改新畅联数据。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无诊断结果</td></tr>'}</tbody></table></div></section>`;
+    return `<section class="panel"><div class="panel-head"><div><div class="panel-title">联调诊断</div><div class="subline">只读检查鉴权、品目、算法产品、分析方式、算力环境、算法版本和算法权重，不创建、修改或删除新畅联数据。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无诊断结果</td></tr>'}</tbody></table></div></section>`;
   }
 
 
@@ -932,7 +932,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63008',
+    build: 'external-algorithm-platform-63009',
     page: PAGE,
     loadConfig,
     loadHistory,
