@@ -81,7 +81,7 @@ export function buildImportConfirmation(rows = [], acceptQualityReport = false) 
   for (const row of rows) {
     const code = String(row.code || '').trim();
     if (!code) throw new Error(`请选择外部类别 ${row.name || row.classId} 对应的平台标签`);
-    if (row.create) throw new Error('导入确认不能创建平台标签，请先到配置中心 → 标签管理创建并启用');
+    if (row.create) throw new Error('标签创建必须先通过显式平台标签创建操作完成，再提交外部类别映射');
     label_mapping[String(row.classId)] = code;
   }
   return {label_mapping, accept_quality_report: Boolean(acceptQualityReport)};
