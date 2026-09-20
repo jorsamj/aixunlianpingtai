@@ -3898,13 +3898,14 @@ LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL = (
 )
 
 
-def _reject_legacy_annotated_import() -> None:
+def _reject_legacy_annotated_import(project_id: str) -> None:
+    get_project(project_id)
     raise HTTPException(status_code=409, detail=LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL)
 
 
 @app.post("/api/projects/{project_id}/import/yolo_zip")
 async def import_yolo_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
-    _reject_legacy_annotated_import()
+    _reject_legacy_annotated_import(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     name = safe_filename(file.filename or "dataset.zip")
@@ -3993,7 +3994,7 @@ async def import_yolo_zip(project_id: str, file: UploadFile = File(...), dataset
 
 @app.post("/api/projects/{project_id}/import/labels")
 async def import_label_files(project_id: str, files: List[UploadFile] = File(...)):
-    _reject_legacy_annotated_import()
+    _reject_legacy_annotated_import(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     images = load_images(project_id)
@@ -4054,7 +4055,7 @@ async def import_label_files(project_id: str, files: List[UploadFile] = File(...
 # -----------------------------
 @app.post("/api/projects/{project_id}/import/coco_zip")
 async def import_coco_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
-    _reject_legacy_annotated_import()
+    _reject_legacy_annotated_import(project_id)
     project = get_project(project_id)
     p = project_dir(project_id)
     name = safe_filename(file.filename or "coco_dataset.zip")
@@ -4145,7 +4146,7 @@ async def import_coco_zip(project_id: str, file: UploadFile = File(...), dataset
 
 @app.post("/api/projects/{project_id}/import/voc_zip")
 async def import_voc_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
-    _reject_legacy_annotated_import()
+    _reject_legacy_annotated_import(project_id)
     import xml.etree.ElementTree as ET
     project = get_project(project_id)
     p = project_dir(project_id)
