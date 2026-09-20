@@ -914,6 +914,7 @@ def test_readiness_blocks_until_saved_synced_and_project_algorithm_exists(tmp_pa
     assert next(row for row in after["checks"] if row["key"] == "categories")["count"] == 1
     assert next(row for row in after["checks"] if row["key"] == "products")["count"] == 1
     assert next(row for row in after["checks"] if row["key"] == "analyses")["count"] == 1
+    assert next(row for row in after["checks"] if row["key"] == "trainable_analyses")["count"] == 1
     assert next(row for row in after["checks"] if row["key"] == "compute_platforms")["count"] == 1
     project = next(row for row in after["checks"] if row["key"] == "project_algorithms")
     assert project["status"] == "ready"
@@ -1065,3 +1066,65 @@ def test_connection_fails_when_analysis_detail_contract_is_incomplete(tmp_path: 
     detail = next(row for row in result["steps"] if row["key"] == "analysis_detail")
     assert detail["status"] == "failed"
     assert "status" in detail["detail"]
+
+
+def test_readiness_blocks_training_when_all_synced_analyses_are_non_trainable(tmp_path: Path):
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: memory,
+        client_factory=FakeChangLianClient,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
+    algorithms_path = tmp_path / "project-non-trainable" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [{
+        "id": "external-non-trainable",
+        "name": "大模型分析算法",
+        "source_type": SOURCE_EXTERNAL,
+        "provider_type": PROVIDER_CHANGLIAN,
+        "external_product_id": "p1",
+        "external_active": True,
+        "external_master_data_digest": "digest-current",
+        "external_analyses": [{
+            "analysis_id": "a1",
+            "analysis_type": "3",
+            "status": "1",
+        }],
+        "versions": [],
+    }])
+    service.repository.save_cache({
+        "provider": "changlian",
+        "synced_at": "2026-09-20T12:00:00Z",
+        "master_data_digest": "digest-current",
+        "categories": [{"categoryId": "c1"}],
+        "products": [{"productId": "p1"}],
+        "analyses_by_product": {
+            "p1": [{"analysisId": "a1", "analysisType": 3, "status": 1}],
+        },
+        "compute_platforms": [{"computePlatformId": "cp1"}],
+    })
+    service.repository.append_history({
+        "id": "sync-ready-non-trainable",
+        "sync_type": "manual",
+        "status": "success",
+        "finished_at": "2026-09-20T12:00:00Z",
+    })
+
+    readiness = service.readiness(algorithms_path=algorithms_path)
+
+    trainable = next(row for row in readiness["checks"] if row["key"] == "trainable_analyses")
+    project = next(row for row in readiness["checks"] if row["key"] == "project_algorithms")
+    assert trainable["status"] == "blocked"
+    assert trainable["count"] == 0
+    assert project["status"] == "blocked"
+    assert project["count"] == 0
+    assert "trainable_analyses" in readiness["blocking_keys"]
+    assert readiness["ready"] is False
