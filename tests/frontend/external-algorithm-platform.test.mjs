@@ -61,6 +61,30 @@ test('external analysis options preserve all synced analysis methods', () => {
   assert.deepEqual(options.map(row => row.name), ['视觉分析 A', '视觉分析 B']);
 });
 
+test('external analysis options exclude LLM and disabled visual modes', () => {
+  const algorithm = {
+    external_analyses: [
+      {analysis_id: 'vision-on', analysis_name: '视觉智能分析', analysis_type: '1', status: '1'},
+      {analysis_id: 'llm-on', analysis_name: '大模型智能分析', analysis_type: '3', status: '1'},
+      {analysis_id: 'vision-off', analysis_name: '停用视觉分析', analysis_type: '1', status: '0'},
+    ],
+  };
+  assert.deepEqual(externalAnalysisOptions(algorithm).map(row => row.id), ['vision-on']);
+
+  const blocked = externalAlgorithmTrainingReadiness({
+    source_type: 'EXTERNAL',
+    provider_type: 'CHANG_LIAN',
+    external_active: true,
+    external_master_data_digest: 'digest-current',
+    external_analyses: [
+      {analysis_id: 'llm-on', analysis_name: '大模型智能分析', analysis_type: '3', status: '1'},
+    ],
+  }, 'digest-current');
+  assert.equal(blocked.ready, false);
+  assert.equal(blocked.status, 'no-visual-analysis');
+  assert.equal(blocked.reason, 'external-visual-analysis-missing');
+});
+
 test('external training readiness mirrors backend master-data fencing', () => {
   const current = {
     source_type: 'EXTERNAL',
