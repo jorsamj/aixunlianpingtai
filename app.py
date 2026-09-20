@@ -3892,8 +3892,19 @@ def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
     }
 
 
+LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL = (
+    "旧版带标注导入接口已关闭；请使用“上传并检查标注”统一入口，"
+    "先确认外部标签到平台标签的映射后再正式入库"
+)
+
+
+def _reject_legacy_annotated_import() -> None:
+    raise HTTPException(status_code=409, detail=LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL)
+
+
 @app.post("/api/projects/{project_id}/import/yolo_zip")
 async def import_yolo_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
+    _reject_legacy_annotated_import()
     project = get_project(project_id)
     p = project_dir(project_id)
     name = safe_filename(file.filename or "dataset.zip")
@@ -3982,6 +3993,7 @@ async def import_yolo_zip(project_id: str, file: UploadFile = File(...), dataset
 
 @app.post("/api/projects/{project_id}/import/labels")
 async def import_label_files(project_id: str, files: List[UploadFile] = File(...)):
+    _reject_legacy_annotated_import()
     project = get_project(project_id)
     p = project_dir(project_id)
     images = load_images(project_id)
@@ -4042,6 +4054,7 @@ async def import_label_files(project_id: str, files: List[UploadFile] = File(...
 # -----------------------------
 @app.post("/api/projects/{project_id}/import/coco_zip")
 async def import_coco_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
+    _reject_legacy_annotated_import()
     project = get_project(project_id)
     p = project_dir(project_id)
     name = safe_filename(file.filename or "coco_dataset.zip")
@@ -4132,6 +4145,7 @@ async def import_coco_zip(project_id: str, file: UploadFile = File(...), dataset
 
 @app.post("/api/projects/{project_id}/import/voc_zip")
 async def import_voc_zip(project_id: str, file: UploadFile = File(...), dataset_id: str = Form("default")):
+    _reject_legacy_annotated_import()
     import xml.etree.ElementTree as ET
     project = get_project(project_id)
     p = project_dir(project_id)
