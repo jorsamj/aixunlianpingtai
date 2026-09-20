@@ -116,12 +116,12 @@ jobs:
           grep -q "external-master-data-stale" static/modules/external-algorithm-platform.js
           grep -q "trainingReadiness" static/modules/external-algorithm-platform.js
           grep -Fq "externalCategorySignature" static/modules/external-algorithm-platform.js
-          grep -Fq 'dataAlgorithmSourceFilter' static/modules/external-algorithm-platform.js
+          grep -Fq 'dataset.algorithmSourceFilter' static/modules/external-algorithm-platform.js
           grep -Fq '内部算法' static/modules/external-algorithm-platform.js
           grep -Fq '外部算法' static/modules/external-algorithm-platform.js
-          grep -Fq 'dataAlgorithmTrainingStatusFilter' static/modules/external-algorithm-platform.js
+          grep -Fq 'dataset.algorithmTrainingStatusFilter' static/modules/external-algorithm-platform.js
           grep -Fq 'selectedCategoryIds.has(row.id)' static/modules/external-algorithm-platform.js
-          grep -Fq 'dataExternalListSync' static/modules/external-algorithm-platform.js
+          grep -Fq 'dataset.externalListSync' static/modules/external-algorithm-platform.js
           grep -Fq 'externalAutoSyncInterval' static/modules/external-algorithm-platform.js
           grep -Fq '60 秒为准实时主动轮询' static/modules/external-algorithm-platform.js
           grep -Fq 'algorithm list supports multi-category source and training-status filters' tests/frontend/external-algorithm-platform.test.mjs
