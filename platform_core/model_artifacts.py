@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS model_artifacts (
     size_bytes INTEGER NOT NULL,
     storage_source_id TEXT NOT NULL DEFAULT '',
     object_key TEXT NOT NULL DEFAULT '',
+    public_url TEXT NOT NULL DEFAULT '',
     storage_status TEXT NOT NULL DEFAULT 'PENDING',
     storage_error TEXT NOT NULL DEFAULT '',
     uploaded_at TEXT,
@@ -124,6 +125,10 @@ class ModelArtifactRepository:
         if "chip_code" not in columns:
             database.execute(
                 "ALTER TABLE model_artifacts ADD COLUMN chip_code TEXT NOT NULL DEFAULT ''"
+            )
+        if "public_url" not in columns:
+            database.execute(
+                "ALTER TABLE model_artifacts ADD COLUMN public_url TEXT NOT NULL DEFAULT ''"
             )
         rows = database.execute(
             "SELECT artifact_id, chip_code, metadata_json FROM model_artifacts"
@@ -270,7 +275,7 @@ class ModelArtifactRepository:
         return self.get(artifact_id) or {}
 
     def patch(self, artifact_id: str, **changes: Any) -> dict[str, Any]:
-        allowed = {"storage_source_id", "object_key", "storage_status", "storage_error", "uploaded_at", "updated_at"}
+        allowed = {"storage_source_id", "object_key", "public_url", "storage_status", "storage_error", "uploaded_at", "updated_at"}
         values = {key: value for key, value in changes.items() if key in allowed}
         values.setdefault("updated_at", utc_now())
         if not values:
@@ -538,6 +543,9 @@ class ModelArtifactService:
             try:
                 meta = provider.stat(object_key)
                 if int(meta.size_bytes) == int(row["size_bytes"]) and (not meta.sha256 or str(meta.sha256) == str(row["sha256"])):
+                    public_url = self.public_url(row)
+                    if public_url != str(row.get("public_url") or ""):
+                        return self.repository.patch(str(row["artifact_id"]), public_url=public_url)
                     return row
             except Exception:
                 pass
@@ -569,10 +577,14 @@ class ModelArtifactService:
                 str(row["artifact_id"]), storage_source_id=source_id, object_key=object_key,
                 storage_status="FAILED", storage_error=str(error)[:2000],
             )
-        return self.repository.patch(
+        uploaded = self.repository.patch(
             str(row["artifact_id"]), storage_source_id=source_id, object_key=object_key,
             storage_status="UPLOADED", storage_error="", uploaded_at=utc_now(),
         )
+        public_url = self.public_url(uploaded)
+        if public_url:
+            uploaded = self.repository.patch(str(row["artifact_id"]), public_url=public_url)
+        return uploaded
 
     def register_verified_remote_artifact(
         self,
