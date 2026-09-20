@@ -114,7 +114,7 @@ export function publicationPreflight(status = {}) {
       .filter(Boolean))];
     return {
       ready: false,
-      message: `还有 ${blocked} 个已启用转换产物缺少畅联云算力环境映射${targets.length ? `（${targets.join('、')}）` : ''}，请先到“平台对接 → 畅联云版本发布”补齐；不需要发布的目标请明确关闭。`,
+      message: `还有 ${blocked} 个已启用转换产物缺少畅联云算力环境映射${targets.length ? `（${targets.join('、')}）` : ''}，请先到“平台对接 → 畅联云版本与权重同步”补齐；不需要发布的目标请明确关闭。`,
     };
   }
   const mapped = Number(status.mapped_artifact_count || 0);
