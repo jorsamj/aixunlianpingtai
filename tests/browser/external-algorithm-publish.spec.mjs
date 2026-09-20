@@ -91,7 +91,9 @@ test('changlian manual publish preflight blocks stale version analysis before PO
     });
     state.alg428Expanded = state.alg428Expanded || {};
     state.alg428Expanded[algorithmId] = true;
-    window.renderAlgorithms423?.();
+    state.page = '算法列表';
+    const canonicalRender = window.renderAlgorithms423?.__navigationOwnerOriginal || window.renderAlgorithms423;
+    canonicalRender?.();
     window.AlgorithmListRuntime?.runDecorators?.();
   }, {algorithmId, versionId});
 
