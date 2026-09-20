@@ -932,7 +932,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63009',
+    build: 'external-algorithm-platform-63010',
     page: PAGE,
     loadConfig,
     loadHistory,
