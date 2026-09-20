@@ -362,7 +362,7 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
       external_category_id: 'c1',
       external_analysis_id: 'a1',
       external_analysis_ids: ['a1'],
-      external_analyses: [{analysis_id: 'a1', analysis_name: '视觉智能分析'}],
+      external_analyses: [{analysis_id: 'a1', analysis_name: '视觉智能分析', analysis_type: '1', status: '1'}],
       external_active: true,
       external_master_data_digest: 'digest-old',
       external_last_synced_at: '2026-09-19T12:00:00Z',
