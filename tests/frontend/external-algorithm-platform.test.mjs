@@ -158,3 +158,20 @@ test('external algorithm decorator is DOM-idempotent under mutation observers', 
   assert.match(block, /else if \(trainingState\.status === 'stale'\)/);
   assert.match(block, /if \(!staleBadge\)/);
 });
+
+
+test('platform page keeps explicit save-test-sync semantics and productized flow', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
+  assert.match(source, /external-platform-steps/);
+  assert.match(source, /测试连接不保存|只测试当前填写内容，不自动保存/);
+  assert.match(source, /当前配置有未保存修改，请先保存配置/);
+  const syncStart = source.indexOf('async function syncNow()');
+  const syncEnd = source.indexOf('function bindPage()', syncStart);
+  assert.ok(syncStart >= 0 && syncEnd > syncStart);
+  const syncBlock = source.slice(syncStart, syncEnd);
+  assert.doesNotMatch(syncBlock, /await save\(/);
+  assert.match(syncBlock, /credentials\?\.configured !== true/);
+  assert.match(source, /id="externalPlatformTest"/);
+  assert.match(source, /id="externalPlatformSave"/);
+  assert.match(source, /id="externalPlatformSync"/);
+});

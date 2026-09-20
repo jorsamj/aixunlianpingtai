@@ -509,20 +509,45 @@ export function installExternalAlgorithmPlatformRuntime({
       : credentialManaged
         ? `当前凭据由 ${escapeHtml(credential.environment_name || '环境变量')} 管理，只读；页面不会覆盖。`
         : 'AccessSecret 仅提交给后端安全存储，页面不会读取已保存的明文 Secret。';
-    return `<section class="label414-shell" data-external-platform-page="1">
-      <div class="label414-head">
-        <div>
-          <h2>平台对接</h2>
-          <p>算法主数据可使用本平台，也可切换为外部平台。切换不会删除已有算法、训练记录或版本。</p>
+    const savedConnectionReady = external && Boolean(c.baseUrl) && credential.configured === true;
+    const syncSucceeded = last?.status === 'success';
+    const trainingReady = external ? readiness?.ready === true : true;
+    const sourceStatus = external ? '新畅联管理' : '本平台管理';
+    const connectionStatus = connectionTest?.ok === true
+      ? '连接正常'
+      : connectionTest ? '连接异常' : savedConnectionReady ? '待测试' : '待配置';
+    const syncStatus = syncSucceeded ? '主数据已同步' : last?.status === 'failed' ? '同步异常' : '尚未同步';
+    const trainingStatus = external ? (trainingReady ? '训练已就绪' : '训练待准备') : '本地模式';
+    return `<section class="label414-shell external-platform-shell" data-external-platform-page="1">
+      <section class="external-platform-hero">
+        <div class="external-platform-hero-main">
+          <div>
+            <div class="external-platform-eyebrow">算法主数据对接</div>
+            <h2>平台对接</h2>
+            <p>配置新畅联应用鉴权并同步算法主数据。训练、版本和转换结果继续由本平台统一管理。</p>
+          </div>
+          <div class="external-platform-actions">
+            <button class="btn" id="externalPlatformTest">测试连接</button>
+            <button class="btn primary" id="externalPlatformSave">保存配置</button>
+            <button class="btn green" id="externalPlatformSync" ${savedConnectionReady ? '' : 'disabled'} title="${savedConnectionReady ? '使用已保存配置同步新畅联主数据' : '请先保存 API 地址与应用凭据'}">↻ 立即同步</button>
+          </div>
         </div>
-        <div class="row">
-          <button class="btn" id="externalPlatformTest">测试连接</button>
-          <button class="btn" id="externalPlatformDiagnostics">联调诊断</button>
-          <button class="btn primary" id="externalPlatformSync" ${external ? '' : 'disabled'}>↻ 立即同步</button>
+        <div class="external-platform-status">
+          <span><i class="external-status-dot ${external ? 'ok' : ''}"></i><b>数据来源</b><em>${sourceStatus}</em></span>
+          <span><i class="external-status-dot ${connectionTest?.ok === true ? 'ok' : connectionTest ? 'err' : savedConnectionReady ? 'warn' : ''}"></i><b>应用连接</b><em>${connectionStatus}</em></span>
+          <span><i class="external-status-dot ${syncSucceeded ? 'ok' : last?.status === 'failed' ? 'err' : ''}"></i><b>主数据</b><em>${syncStatus}</em></span>
+          <span><i class="external-status-dot ${trainingReady ? 'ok' : 'warn'}"></i><b>训练准备</b><em>${trainingStatus}</em></span>
         </div>
+      </section>
+
+      <div class="external-platform-steps" aria-label="新畅联对接流程">
+        <div class="external-step ${savedConnectionReady ? 'done' : 'current'}"><i>1</i><div><b>配置应用</b><span>API 地址、AccessKey、AccessSecret</span></div></div>
+        <div class="external-step ${connectionTest?.ok === true ? 'done' : savedConnectionReady ? 'current' : ''}"><i>2</i><div><b>测试连接</b><span>只测试当前填写内容，不自动保存</span></div></div>
+        <div class="external-step ${syncSucceeded ? 'done' : external && savedConnectionReady ? 'current' : ''}"><i>3</i><div><b>同步主数据</b><span>品目、算法产品、分析方式、算力环境</span></div></div>
+        <div class="external-step ${trainingReady ? 'done' : syncSucceeded ? 'current' : ''}"><i>4</i><div><b>训练与发布</b><span>训练后按版本手动同步成果</span></div></div>
       </div>
 
-      <section class="panel">
+      <section class="panel external-platform-config">
         <div class="panel-head"><div><div class="panel-title">算法主数据来源</div><div class="subline">先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境。</div></div></div>
         <div class="panel-body">
           <div class="form two">
@@ -548,12 +573,14 @@ export function installExternalAlgorithmPlatformRuntime({
               </details>
             </div>
           </div>
-          <div class="row end"><button class="btn primary" id="externalPlatformSave">保存配置</button></div>
         </div>
       </section>
 
       <section class="panel">
-        <div class="panel-head"><div><div class="panel-title">连接测试</div><div class="subline">使用当前页面填写的 API 地址和凭据临时测试，不会自动保存或覆盖已保存凭据。</div></div></div>
+        <div class="panel-head">
+          <div><div class="panel-title">连接测试</div><div class="subline">使用当前页面填写的 API 地址和凭据临时测试，不会自动保存或覆盖已保存凭据。</div></div>
+          <details class="external-platform-tools"><summary>高级联调</summary><button class="btn small" id="externalPlatformDiagnostics">运行联调诊断</button></details>
+        </div>
         <div class="panel-body" id="externalConnectionResult">${connectionTestHtml()}</div>
       </section>
 
@@ -670,13 +697,15 @@ export function installExternalAlgorithmPlatformRuntime({
       <td>${escapeHtml(row.categoryName || row.category?.categoryName || row.categoryId || '-')}</td>
     </tr>`).join('') : '<tr><td colspan="4">尚未同步算法产品</td></tr>';
     return `<section class="panel">
-      <div class="panel-head"><div><div class="panel-title">已同步主数据</div><div class="subline">这里只读展示新畅联缓存；名称、品目和产品基础信息仍以新畅联为准。</div></div></div>
-      <div class="panel-body">
-        <div class="panel-title" style="margin-bottom:10px">算法品目</div>
-        <table class="table"><thead><tr><th>品目名称</th><th>品目 ID</th><th>父级 ID</th></tr></thead><tbody>${categoryRows}</tbody></table>
-        <div class="panel-title" style="margin:18px 0 10px">算法产品</div>
-        <table class="table"><thead><tr><th>算法名称</th><th>产品编码</th><th>Product ID</th><th>品目</th></tr></thead><tbody>${productRows}</tbody></table>
-      </div>
+      <details class="external-master-data">
+        <summary><div><b>已同步主数据</b><span>只读查看新畅联缓存，名称与归属仍以新畅联为准</span></div><em>查看详情</em></summary>
+        <div class="panel-body">
+          <div class="panel-title" style="margin-bottom:10px">算法品目</div>
+          <table class="table"><thead><tr><th>品目名称</th><th>品目 ID</th><th>父级 ID</th></tr></thead><tbody>${categoryRows}</tbody></table>
+          <div class="panel-title" style="margin:18px 0 10px">算法产品</div>
+          <table class="table"><thead><tr><th>算法名称</th><th>产品编码</th><th>Product ID</th><th>品目</th></tr></thead><tbody>${productRows}</tbody></table>
+        </div>
+      </details>
     </section>`;
   }
 
@@ -777,9 +806,11 @@ export function installExternalAlgorithmPlatformRuntime({
   async function syncNow() {
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
-    if (String(state().page || '') === PAGE) await save({quiet: true});
-    else if (!config) await loadConfig({silent: true});
-    if (!externalMode()) return notify?.('请先在“平台对接”切换为外部平台并保存');
+    if (!config) await loadConfig({silent: true});
+    if (!externalMode()) return notify?.('请先切换为外部平台并保存配置');
+    if (!config?.baseUrl || config?.credentials?.configured !== true) {
+      return notify?.('请先保存 API 地址、AccessKey 和 AccessSecret，再执行同步');
+    }
 
     const button = document.getElementById('externalPlatformSync');
     if (button) { button.disabled = true; button.textContent = '正在同步…'; }
@@ -813,11 +844,23 @@ export function installExternalAlgorithmPlatformRuntime({
       secretToggle.textContent = show ? '隐藏' : '显示';
     };
 
-    for (const radio of document.querySelectorAll('input[name="externalMode"]')) {
-      radio.addEventListener('change', () => {
-        const enabled = document.querySelector('input[name="externalMode"]:checked')?.value === 'external';
-        if (syncButton) syncButton.disabled = !enabled;
-      });
+    const markConfigDirty = () => {
+      const savedExternalReady = externalMode()
+        && Boolean(config?.baseUrl)
+        && config?.credentials?.configured === true;
+      if (syncButton) {
+        syncButton.disabled = true;
+        syncButton.title = savedExternalReady
+          ? '当前配置有未保存修改，请先保存配置'
+          : '请先保存 API 地址与应用凭据';
+      }
+      if (saveButton) saveButton.dataset.dirty = '1';
+    };
+    for (const input of document.querySelectorAll(
+      'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, #externalAutoSync, #externalAutoPublish, [data-external-endpoint]'
+    )) {
+      input.addEventListener('input', markConfigDirty);
+      input.addEventListener('change', markConfigDirty);
     }
   }
 
