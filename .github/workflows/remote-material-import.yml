@@ -194,6 +194,8 @@ jobs:
           grep -Fq 'id="sr61Execution"' static/app.js
           grep -Fq 'test_storage_rescan_agent_creation_freezes_baseline_and_uses_portable_contract' tests/api/test_storage_sources.py
           grep -Fq "storage rescan uses backend preflight" tests/browser/storage-source.spec.mjs
+          grep -Fq "算法与转换结果存储" tests/browser/storage-source.spec.mjs
+          grep -Fq "modelArtifactPublicBaseUrl" tests/browser/storage-source.spec.mjs
           grep -Fq 'material_scan_page_provider' platform_core/agent_execution.py
           grep -Fq 'build_storage_scan_material_review_archive' platform_core/node_agent_material_runtime.py
           grep -Fq 'intent=intent' platform_core/node_agent_material_runtime.py
