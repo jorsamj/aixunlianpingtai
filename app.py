@@ -60,7 +60,12 @@ from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
 from platform_core.conversion import sha256_file, validate_target
 from platform_core.errors import PlatformError, error_body
-from platform_core.labels import active_label_options
+from platform_core.labels import (
+    active_label_options,
+    confirmed_alias_updates,
+    label_identity_values,
+    normalize_label_aliases,
+)
 from platform_core.material_store import MaterialStore
 from platform_core.material_repository import MaterialRepository
 from platform_core.materials import initial_processing_status, mark_ready
@@ -3533,12 +3538,24 @@ class AddLabelReq(BaseModel):
     label: str
     display_name: Optional[str] = ""
     color: Optional[str] = ""
+    aliases: Optional[List[str]] = None
 
 
 @app.post("/api/projects/{project_id}/labels")
 def add_label(project_id: str, payload: AddLabelReq):
     project = get_project(project_id)
-    idx = ensure_label(project, payload.label)
+    normalized_code = normalize_label(payload.label)
+    try:
+        aliases = _validate_label_aliases(
+            project,
+            payload.aliases or [],
+            target_class_id=None,
+            target_code=normalized_code,
+            target_display_name=payload.display_name or normalized_code,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    idx = ensure_label(project, normalized_code)
     project = get_project(project_id)
     meta = project.setdefault("label_meta", [])
     while len(meta) < len(project.get("labels", [])):
@@ -3549,6 +3566,9 @@ def add_label(project_id: str, payload: AddLabelReq):
             meta[idx]["display_name"] = payload.display_name
         if payload.color:
             meta[idx]["color"] = payload.color
+        _set_project_label_aliases(
+            project, project["labels"][idx], aliases, replace=True,
+        )
     save_project(project)
     return {"ok": True, "class_id": idx, "labels": project["labels"], "label_meta": project.get("label_meta", [])}
 
@@ -6993,6 +7013,7 @@ class LabelUpdateReq(BaseModel):
     display_name: Optional[str] = None
     color: Optional[str] = None
     hotkey: Optional[str] = None
+    aliases: Optional[List[str]] = None
 
 class AlgorithmReq(BaseModel):
     name: str
@@ -7347,8 +7368,123 @@ def project_label_items(project: Dict[str, Any]) -> List[Dict[str, Any]]:
             "type": m.get("type") or "bbox",
             "hotkey": m.get("hotkey") or (str(i+1) if i < 9 else ""),
             "status": m.get("status") or "active",
+            "aliases": normalize_label_aliases(m.get("aliases") or []),
         })
     return items
+
+
+def _ensure_project_label_meta(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+    labels = project.setdefault("labels", [])
+    meta = project.setdefault("label_meta", [])
+    while len(meta) < len(labels):
+        idx = len(meta)
+        code = labels[idx]
+        meta.append({
+            "code": code,
+            "display_name": code,
+            "color": default_label_color(idx),
+            "type": "bbox",
+            "hotkey": str(idx + 1) if idx < 9 else "",
+            "aliases": [],
+        })
+    for idx, code in enumerate(labels):
+        if not isinstance(meta[idx], dict):
+            meta[idx] = {}
+        meta[idx]["code"] = code
+        meta[idx]["aliases"] = normalize_label_aliases(meta[idx].get("aliases") or [])
+    return meta
+
+
+def _validate_label_aliases(
+    project: Dict[str, Any],
+    aliases,
+    *,
+    target_class_id: Optional[int],
+    target_code: str,
+    target_display_name: str,
+) -> List[str]:
+    normalized = normalize_label_aliases(aliases)
+    target_identity = {str(target_code or "").strip(), str(target_display_name or "").strip()}
+    target_identity.discard("")
+    canonical_owners: Dict[str, set] = {}
+    for item in project_label_items(project):
+        if target_class_id is not None and int(item.get("class_id", -1)) == int(target_class_id):
+            continue
+        for value in label_identity_values(item):
+            canonical_owners.setdefault(value, set()).add(str(item.get("code")))
+    result = []
+    for alias in normalized:
+        if alias in target_identity:
+            continue
+        owners = canonical_owners.get(alias, set())
+        if owners:
+            raise ValueError(
+                f"标签别名 {alias} 与正式标签身份冲突：{'、'.join(sorted(owners))}"
+            )
+        result.append(alias)
+    return result
+
+
+def _set_project_label_aliases(
+    project: Dict[str, Any],
+    target_code: str,
+    aliases,
+    *,
+    replace: bool,
+) -> List[str]:
+    labels = project.get("labels", [])
+    if target_code not in labels:
+        raise ValueError(f"平台标签不存在：{target_code}")
+    meta = _ensure_project_label_meta(project)
+    target_idx = labels.index(target_code)
+    incoming = normalize_label_aliases(aliases)
+    incoming_set = set(incoming)
+    for idx, row in enumerate(meta):
+        existing = normalize_label_aliases(row.get("aliases") or [])
+        if idx == target_idx:
+            continue
+        row["aliases"] = [alias for alias in existing if alias not in incoming_set]
+    base = [] if replace else normalize_label_aliases(meta[target_idx].get("aliases") or [])
+    meta[target_idx]["aliases"] = normalize_label_aliases([*base, *incoming])
+    return meta[target_idx]["aliases"]
+
+
+def remember_project_label_aliases(
+    project_id: str,
+    external_classes,
+    label_mapping,
+) -> Dict[str, List[str]]:
+    project = get_project(project_id)
+    updates = confirmed_alias_updates(
+        external_classes or [],
+        label_mapping or {},
+        project_label_items(project),
+    )
+    remembered: Dict[str, List[str]] = {}
+    for target, aliases in updates.items():
+        target_idx = project.get("labels", []).index(target)
+        target_item = project_label_items(project)[target_idx]
+        try:
+            safe_aliases = _validate_label_aliases(
+                project,
+                aliases,
+                target_class_id=target_idx,
+                target_code=target,
+                target_display_name=str(target_item.get("display_name") or target),
+            )
+        except ValueError:
+            # A canonical label identity always wins over reusable aliases.
+            # The current confirmed mapping remains valid for this task, but
+            # conflicting names are not learned globally.
+            continue
+        if not safe_aliases:
+            continue
+        remembered[target] = _set_project_label_aliases(
+            project, target, safe_aliases, replace=False,
+        )
+    if remembered:
+        save_project(project)
+    return remembered
 
 
 def normalize_box_for_project(project_id: str, img: Dict[str, Any], box: Dict[str, Any], create_label: bool = True) -> Optional[Dict[str, Any]]:
@@ -7464,6 +7600,27 @@ def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
     labels = project.get("labels", [])
     if class_id < 0 or class_id >= len(labels):
         raise HTTPException(status_code=404, detail="标签不存在")
+    pending_code = normalize_label(payload.code) if payload.code else labels[class_id]
+    current_meta = project.get("label_meta", [])
+    current_display = (
+        current_meta[class_id].get("display_name")
+        if class_id < len(current_meta) and isinstance(current_meta[class_id], dict)
+        else labels[class_id]
+    )
+    pending_display = payload.display_name if payload.display_name is not None else current_display
+    try:
+        validated_aliases = (
+            _validate_label_aliases(
+                project,
+                payload.aliases,
+                target_class_id=class_id,
+                target_code=pending_code,
+                target_display_name=pending_display or pending_code,
+            )
+            if payload.aliases is not None else None
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if payload.code:
         code = normalize_label(payload.code)
         if not code:
@@ -7492,6 +7649,10 @@ def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
         m["color"] = payload.color
     if payload.hotkey is not None:
         m["hotkey"] = payload.hotkey
+    if validated_aliases is not None:
+        _set_project_label_aliases(
+            project, labels[class_id], validated_aliases, replace=True,
+        )
     save_project(project)
     return {"ok": True, "items": project_label_items(project)}
 
@@ -16910,6 +17071,7 @@ def _v47_label_catalog(project: Dict[str, Any]) -> List[Dict[str, Any]]:
             'code': code,
             'class_id': index,
             'display_name_zh': str(meta.get('display_name_zh') or meta.get('display_name') or code),
+            'aliases': normalize_label_aliases(meta.get('aliases') or []),
         })
     return result
 
