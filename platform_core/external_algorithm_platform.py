@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Iterable, Literal, Mapping, Optional
 from urllib.parse import urljoin
 
 import requests
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
@@ -1833,6 +1833,192 @@ def external_algorithm_platform_router(
     @router.post("/diagnostics")
     def diagnostics(payload: Optional[ExternalPlatformConfigPayload] = None):
         return service.diagnose(payload)
+
+    @router.post("/provider/logout")
+    def provider_logout():
+        return {"ok": True, "response": service._client().logout()}
+
+    @router.get("/provider/categories/tree")
+    def provider_category_tree():
+        return {"ok": True, "response": service._client().category_tree()}
+
+    @router.get("/provider/categories/page")
+    def provider_category_page(
+        pageNum: int = Query(..., ge=1),
+        pageSize: int = Query(..., ge=1, le=500),
+        parentId: str = Query(default=""),
+        categoryType: str = Query(default=""),
+        categoryCode: str = Query(default=""),
+        categoryName: str = Query(default=""),
+    ):
+        return {
+            "ok": True,
+            "response": service._client().category_page(
+                page_num=pageNum,
+                page_size=pageSize,
+                parent_id=parentId,
+                category_type=categoryType,
+                category_code=categoryCode,
+                category_name=categoryName,
+            ),
+        }
+
+    @router.get("/provider/categories")
+    def provider_category_list_all(
+        categoryType: str = Query(default=""),
+        categoryCode: str = Query(default=""),
+        categoryName: str = Query(default=""),
+        parentId: str = Query(default=""),
+    ):
+        return {
+            "ok": True,
+            "response": service._client().category_list_all(
+                category_type=categoryType,
+                category_code=categoryCode,
+                category_name=categoryName,
+                parent_id=parentId,
+            ),
+        }
+
+    @router.get("/provider/products/page")
+    def provider_product_page(
+        request: Request,
+        pageNum: int = Query(..., ge=1),
+        pageSize: int = Query(..., ge=1, le=500),
+    ):
+        filters = {key: value for key, value in request.query_params.items() if key not in {"pageNum", "pageSize"}}
+        return {"ok": True, "response": service._client().product_page(page_num=pageNum, page_size=pageSize, **filters)}
+
+    @router.get("/provider/products")
+    def provider_products(request: Request):
+        return {"ok": True, "response": service._client().products(**dict(request.query_params))}
+
+    @router.get("/provider/products/{product_id}")
+    def provider_product_info(product_id: str):
+        return {"ok": True, "response": service._client().product_info(product_id)}
+
+    @router.get("/provider/analyses/page")
+    def provider_analysis_page(
+        request: Request,
+        pageNum: int = Query(..., ge=1),
+        pageSize: int = Query(..., ge=1, le=500),
+    ):
+        filters = {key: value for key, value in request.query_params.items() if key not in {"pageNum", "pageSize"}}
+        return {"ok": True, "response": service._client().analysis_page(page_num=pageNum, page_size=pageSize, **filters)}
+
+    @router.get("/provider/analyses/by-product/{product_id}")
+    def provider_analyses_by_product(product_id: str):
+        return {"ok": True, "response": service._client().analyses(product_id)}
+
+    @router.get("/provider/analyses")
+    def provider_analysis_list_all(request: Request):
+        return {"ok": True, "response": service._client().analysis_list_all(**dict(request.query_params))}
+
+    @router.get("/provider/analyses/{analysis_id}")
+    def provider_analysis_info(analysis_id: str):
+        return {"ok": True, "response": service._client().analysis_info(analysis_id)}
+
+    @router.get("/provider/compute-platforms/page")
+    def provider_compute_platform_page(
+        request: Request,
+        pageNum: int = Query(..., ge=1),
+        pageSize: int = Query(..., ge=1, le=500),
+    ):
+        filters = {key: value for key, value in request.query_params.items() if key not in {"pageNum", "pageSize"}}
+        return {"ok": True, "response": service._client().compute_platform_page(page_num=pageNum, page_size=pageSize, **filters)}
+
+    @router.get("/provider/compute-platforms")
+    def provider_compute_platforms(request: Request):
+        return {"ok": True, "response": service._client().compute_platforms(**dict(request.query_params))}
+
+    @router.get("/provider/versions/page")
+    def provider_version_page(
+        request: Request,
+        pageNum: int = Query(..., ge=1),
+        pageSize: int = Query(..., ge=1, le=500),
+    ):
+        filters = {key: value for key, value in request.query_params.items() if key not in {"pageNum", "pageSize"}}
+        return {"ok": True, "response": service._client().version_page(page_num=pageNum, page_size=pageSize, **filters)}
+
+    @router.get("/provider/versions/by-product/{product_id}")
+    def provider_versions_by_product(product_id: str):
+        return {"ok": True, "response": service._client().version_list_by_product(product_id)}
+
+    @router.get("/provider/versions/by-analysis/{analysis_id}")
+    def provider_versions_by_analysis(analysis_id: str):
+        return {"ok": True, "response": service._client().version_list_by_analysis(analysis_id)}
+
+    @router.get("/provider/versions")
+    def provider_version_list_all(request: Request):
+        return {"ok": True, "response": service._client().version_list_all(**dict(request.query_params))}
+
+    @router.post("/provider/versions")
+    def provider_version_create(payload: ChangLianVersionMutationPayload):
+        return {"ok": True, "response": service._client().version_create(payload.model_dump(exclude_none=True))}
+
+    @router.put("/provider/versions/{algo_version_id}")
+    def provider_version_edit(algo_version_id: str, payload: ChangLianVersionMutationPayload):
+        body = payload.model_dump(exclude_none=True)
+        body["algoVersionId"] = algo_version_id
+        return {"ok": True, "response": service._client().version_edit(body)}
+
+    @router.delete("/provider/versions/{algo_version_ids}")
+    def provider_version_remove(algo_version_ids: str):
+        ids = [value.strip() for value in algo_version_ids.split(",") if value.strip()]
+        return {"ok": True, "response": service._client().version_remove(ids)}
+
+    @router.get("/provider/versions/{algo_version_id}")
+    def provider_version_info(algo_version_id: str):
+        return {"ok": True, "response": service._client().version_info(algo_version_id)}
+
+    @router.get("/provider/weights/page")
+    def provider_weight_page(
+        request: Request,
+        pageNum: int = Query(..., ge=1),
+        pageSize: int = Query(..., ge=1, le=500),
+    ):
+        filters = {key: value for key, value in request.query_params.items() if key not in {"pageNum", "pageSize"}}
+        return {"ok": True, "response": service._client().weight_page(page_num=pageNum, page_size=pageSize, **filters)}
+
+    @router.get("/provider/weights/by-version/{algo_version_id}")
+    def provider_weights_by_version(algo_version_id: str):
+        return {"ok": True, "response": service._client().weight_list_by_version(algo_version_id)}
+
+    @router.get("/provider/weights/by-product/{product_id}")
+    def provider_weights_by_product(
+        product_id: str,
+        algoVersionId: str = Query(default=""),
+        computePlatformId: str = Query(default=""),
+        computePlatformCode: str = Query(default=""),
+    ):
+        return {
+            "ok": True,
+            "response": service._client().weight_list_by_product(
+                product_id,
+                algo_version_id=algoVersionId,
+                compute_platform_id=computePlatformId,
+                compute_platform_code=computePlatformCode,
+            ),
+        }
+
+    @router.post("/provider/weights")
+    def provider_weight_create(payload: ChangLianWeightMutationPayload):
+        return {"ok": True, "response": service._client().weight_create(payload.model_dump(exclude_none=True))}
+
+    @router.put("/provider/weights/{weight_id}")
+    def provider_weight_edit(weight_id: str, payload: ChangLianWeightMutationPayload):
+        body = payload.model_dump(exclude_none=True)
+        body["weightId"] = weight_id
+        return {"ok": True, "response": service._client().weight_edit(body)}
+
+    @router.delete("/provider/weights/{weight_ids}")
+    def provider_weight_remove(weight_ids: str):
+        ids = [value.strip() for value in weight_ids.split(",") if value.strip()]
+        return {"ok": True, "response": service._client().weight_remove(ids)}
+
+    @router.get("/provider/weights/{weight_id}")
+    def provider_weight_info(weight_id: str):
+        return {"ok": True, "response": service._client().weight_info(weight_id)}
 
     @router.get("/readiness")
     def readiness(project_id: str = Query(..., min_length=1)):
