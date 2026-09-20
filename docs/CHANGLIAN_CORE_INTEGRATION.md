@@ -279,7 +279,7 @@ RK3576
 产品分析方式（存在可测试产品时）
 ```
 
-自动同步 / 自动发布放在高级设置，不作为第一阶段主操作。
+外部模式下自动同步和自动发布由服务端强制启用：主数据固定每 60 秒最多拉取一轮，训练成功后的原始模型及后续转换产物自动进入交付链。页面只展示自动同步/自动发布状态，不提供关闭开关或同步间隔选择；“立即同步”保留为用户主动提前触发一次主数据对账的操作。
 
 ## 8. 当前验收状态
 
@@ -299,11 +299,23 @@ RK3576
 
 **仍未 CLOSED：真实畅联云生产/联调环境 E2E。**
 
-最终必须使用真实 Base URL、AccessKey、AccessSecret 和真实畅联云 Product/Analysis/ComputePlatform 跑通：
+最终必须使用真实 Base URL、AccessKey、AccessSecret、真实畅联云 Product/Analysis/ComputePlatform 和真实算法产物存储跑通：
 
 ```text
-连接 → 手动同步 → 畅联云算法训练 → 评测 → 转换 → 手动发布 → 畅联云核验版本与权重
+保存配置 / 测试连接
+→ 立即同步并观察 60 秒自动同步
+→ 绑定真实 Product / Analysis 创建训练
+→ 训练成功
+→ 原始模型自动归档 OSS，并保存稳定 public_url
+→ 自动创建/恢复畅联云 Algorithm Version
+→ 自动创建/恢复原始模型 Algorithm Weight
+→ ONNX / RKNN 转换完成
+→ 转换产物自动归档 OSS
+→ 复用同一 algoVersionId 追加转换权重
+→ 畅联云侧核验版本、权重与 filePath
 ```
+
+破坏性删除需在可控测试数据上单独验证 `algorithm-version/remove` 的真实副作用；远端删除结果不确定时本地必须保持 fail-closed。
 
 在这条链实际完成前，不得把“畅联云对接可用”标记为 CLOSED。
 
