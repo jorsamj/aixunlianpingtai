@@ -2259,3 +2259,55 @@ Technical-debt cleanup remains paused by user request. Product productionization
 
 本批主要实现提交从 `ecb466a` 起，包含四入口 UI、canonical API 复用、API/前端测试、缓存版本和 Label Normalization Contract 永久守卫。最终 GitHub Actions 结论必须以最新 HEAD 的实际 run 为准；queued 不等于通过。
 
+
+
+---
+
+<!-- CHANGLIAN_AUTOMATIC_DELIVERY_CURRENT_2026_09_20 -->
+## 2026-09-20 — 当前新畅联自动交付合同
+
+本节为当前 live contract，后续接手不要恢复旧兼容行为。
+
+```text
+TRAINING SUCCESS
+  -> 本地算法版本 truth
+  -> Model Artifact truth
+  -> 自动上传算法产物存储（OSS/S3 等）
+  -> stable public_url
+  -> 新畅联 algorithm-version/add
+  -> 新畅联 algorithm-weight/add (original model)
+
+CONVERSION SUCCESS
+  -> Model Artifact truth
+  -> 自动上传同一算法产物存储
+  -> 同一 remote algoVersionId 下追加 weight
+  -> 不重复创建版本
+  -> 不重复创建已同步权重
+```
+
+关键规则：
+
+- 回退不是“切 current 指针”；**回退就是删除当前版本**。外部算法先删新畅联远端版本，成功后再执行本地原子删除/切换。
+- `rollback_algorithm_version()` 服务层也强制删除，旧 `delete_current_version=False` 不能绕过。
+- 新畅联删除成功但本地事务失败必须显式报 divergence error，不能伪装成普通失败。
+- 外部模式主数据固定每 60 秒主动同步；当前官方 OpenAPI 无 webhook/subscription。
+- 训练和转换结果自动归档不能关闭。
+- 远程 conversion 的 `deploy/jobs` 与历史/local `deployment/jobs` 都是正式发现来源；必须有 algorithm/version source lineage。
+- 远程训练已经存在于 canonical model storage 的同 SHA 对象直接复用，避免重复占 OSS。
+- 畅联云 weight `filePath` 使用长期 `public_url`；临时签名 URL 禁止入库。
+- “测试存储”必须同时证明凭据读写和最终长期 URL 实际可读。
+- 新畅联训练资格仍严格为 `status=1 AND analysisType=1`；缺失、禁用、预留、大模型均 fail closed。
+- 新畅联业务接口鉴权以当前 31 项 OpenAPI 汇编为准：`Authorization: Bearer <accessToken>`。
+- `VERSION.txt = 42.24.0`，不 merge main、不 tag、不 release。
+
+当前生产前仍需 live E2E：
+
+```text
+真实 OSS 长期 filePath 可读取
+algorithm-version/add 返回/反查
+algorithm-weight/add 返回/反查
+version remove 实际副作用
+超时后的幂等反查恢复
+最新 HEAD Actions 全部 completed success
+```
+
