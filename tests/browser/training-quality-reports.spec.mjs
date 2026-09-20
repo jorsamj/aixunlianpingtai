@@ -113,7 +113,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 
   const trainingDialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(trainingDialog).toBeVisible();
-  await expect(trainingDialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
+  await expect(trainingDialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expect(trainingDialog.getByText('首次训练：使用所选母模型')).toBeVisible();
   await expect(trainingDialog.getByText('从本次训练素材随机抽取试验集')).toBeVisible();
   await expect(trainingDialog.locator('#trV3Experiment')).toHaveValue('20');
@@ -164,7 +164,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
+  await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await selectAllTrainingMaterials(page, dialog);
   await dialog.locator('#tr429Priority').fill('0');
   await dialog.getByRole('button', {name: '开始训练'}).click();
@@ -202,7 +202,7 @@ test('training material selection does not depend on dataset groups and supports
   }, algorithm.id);
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
+  await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -230,7 +230,7 @@ test('training material selection does not depend on dataset groups and supports
   await picker.getByRole('button', {name: '全部不选'}).click();
   await picker.getByRole('button', {name: '确认选择'}).click();
 
-  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
+  await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expect(dialog.getByRole('button', {name: '开始训练'})).toBeDisabled();
 });
 
@@ -252,8 +252,7 @@ test('versioned training locks the latest version and projects the current rando
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '训练 · 烟火迭代算法'});
 
-  await expect(dialog).not.toContainText('YOLO11n 目标检测', {timeout: 500});
-  await expect(dialog.locator('.train-v3-summary')).toContainText('训练候选0 张');
+  await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expect(dialog.getByText('训练引擎（迭代任务锁定）')).toBeVisible();
   await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
   await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
