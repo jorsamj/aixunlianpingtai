@@ -41,7 +41,7 @@ POST /internal/auth/test-sign
 POST /internal/auth/token
 GET  /internal/base/algorithm-category/tree
 GET  /internal/base/compute-platform/listAll
-GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/product-ai/listAll
 GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
 POST /internal/algorithm/algorithm-version/add
 GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
@@ -57,7 +57,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /algorithm-weight/add
 ```
 
-`Access-Token: <accessToken>` 是当前新畅联内部业务接口鉴权 Header；不得改回 `Authorization: Bearer ...`。
+业务接口鉴权 Header 必须逐接口遵循对应官方 OpenAPI。已确认算法产品 `GET /internal/algorithm/product-ai/listAll` 使用 `Authorization: Bearer <accessToken>`；不得再把登出接口的 `Access-Token` 规则推广到全部业务接口。
 
 ### Current execution priority
 
@@ -95,12 +95,12 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 
 <!-- CODEX_CHANGLIAN_BUSINESS_CODE_AUTH_2026_09_20 -->
-## Current fix — ChangLian code=0 / Access-Token / full API catalog
+## Current fix — ChangLian code=0 / endpoint auth / full API catalog
 
 2026-09-20 live integration corrected three contract defects:
 
 - Numeric `code=0` must remain `"0"` and audit as SUCCESS; the old `body.get("code") or ""` path incorrectly converted 0 to empty string and marked successful token calls FAILED.
-- New ChangLian internal business calls now send `Access-Token: <accessToken>`. Do not restore `Authorization: Bearer ...`.
+- Authentication is endpoint-specific. Official OpenAPI 515837723e0 requires `GET /internal/algorithm/product-ai/listAll` with `Authorization: Bearer <accessToken>`. The earlier global `Access-Token` rule was an overgeneralization from the logout document and is superseded.
 - HTTP 2xx with a non-success business code (for example `99999`) now raises at the HTTP-client boundary while preserving the remote business code and message.
 - The 31 user-supplied official Apifox documents are registered in `docs/CHANGLIAN_APIFOX_API_CATALOG.md` and surfaced in the platform UI. Only verified Method/Path bindings are marked wired; remaining CRUD/page/detail documents must not be guessed.
 - Connection tests remain non-destructive: auth + read-only master-data queries only.
@@ -120,7 +120,7 @@ publication/recovery calls:
 
 Known legacy bare paths are migrated only on exact match; unrelated custom paths
 are preserved. The platform UI no longer exposes Provider endpoint editing.
-Business calls use the `Access-Token` header from the application token response. Formal `VERSION.txt` remains
+Business calls follow each endpoint's official OpenAPI auth contract; the product list uses `Authorization: Bearer <accessToken>`. Formal `VERSION.txt` remains
 `42.24.0`.
 
 ## Current closure — Reusable Fixed Benchmark Training v1 CLOSED
