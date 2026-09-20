@@ -252,3 +252,106 @@ RK3576
 ```
 
 在这条链实际完成前，不得把“畅联云对接可用”标记为 CLOSED。
+
+
+---
+
+<!-- CHANGLIAN_LIVE_DEPLOYMENT_2026_09_20 -->
+## 9. 2026-09-20 Live Deployment / Codex Handoff
+
+本节记录**当前运行现场**，用于新会话 / Codex 直接接手；接口业务契约仍以前文为准。
+
+当前远端 HEAD：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+
+当前正式版本：`VERSION.txt = 42.24.0`
+
+当前 HEAD Actions（2026-09-20 14:41 +08:00 核对）：
+- total: 18
+- queued: 18
+- in_progress: 0
+- completed success: 0
+- completed non-success: 0
+- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”。**
+
+GPU 正式服务器当前仍运行上午部署：
+- full SHA：`ea1b6f198f81556c05d963f4c3f70d2865f316ff`
+- release：`/data/platform/releases/ea1b6f198f81`
+- current symlink：`/data/platform/current`
+- Web service：`changlian-web.service`
+- Worker service：`changlian-worker.service`
+- Web listen：`127.0.0.1:8010`
+- Windows SSH tunnel：`http://127.0.0.1:18010`
+- business DATA_DIR：`/data/platform-data`
+- secret env：`/etc/changlian/secret.env`
+- encrypted credential store：`/data/platform-data/secure/secrets.enc.json`
+
+**重要：GPU 正式服务器尚未部署当前 GitHub HEAD。**
+
+新畅联当前 canonical Provider contract：
+```text
+POST /internal/auth/test-sign
+POST /internal/auth/token
+GET  /internal/base/algorithm-category/tree
+GET  /internal/base/compute-platform/listAll
+GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
+POST /internal/algorithm/algorithm-version/add
+GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
+POST /internal/algorithm/algorithm-weight/add
+GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
+```
+
+不得把接口改回旧裸路径：
+```text
+/compute-platform/listAll
+/algorithm-product/listAll
+/algorithm-version/add
+/algorithm-weight/add
+```
+
+`Authorization: Bearer <accessToken>` 语义保持不变。
+
+### 当前真实验收门槛
+
+当前第一主线不是继续堆新功能，而是：
+```text
+重新读取远端 HEAD / VERSION / Actions
+→ 为当前 HEAD 创建新的 /data/platform/releases/<sha-short>
+→ 不覆盖 ea1b6f198f81 回滚版本
+→ 原子切换 /data/platform/current
+→ restart changlian-web.service + changlian-worker.service
+→ GET http://127.0.0.1:8010/api/health
+→ 真实畅联测试：
+   test-sign
+   → token
+   → category
+   → product
+   → analysis
+   → compute-platform
+→ 查看真实交互日志和业务码
+```
+
+如果 canonical `/internal/base/*` / `/internal/algorithm/*` 已正确但仍出现 HTTP 200 / 业务码 401，下一步检查畅联云侧 AccessKey 应用权限、租户/组织权限、接口授权范围；**不要先把 endpoint 改回旧裸路径。**
+
+真实畅联云生产/联调 E2E 在完成前继续保持 **OPEN / NOT CLOSED**。
+
+### 部署回滚边界
+
+现有 `/data/platform/releases/ea1b6f198f81` 是当前可回滚版本。部署当前代码时必须新建 release 目录，再原子切换 `/data/platform/current`；不得覆盖旧 release。健康检查使用真实生产接口：
+
+```text
+GET /api/health
+```
+
+只有真实环境完成以下链路后，才能把本文件第 8 节的 live E2E 标为 CLOSED：
+
+```text
+保存配置
+→ 测试连接
+→ 手动同步
+→ 训练绑定真实 Product / Analysis
+→ Evaluation
+→ Conversion
+→ 手动发布 Algorithm Version / Weight
+→ 畅联云侧核验
+```

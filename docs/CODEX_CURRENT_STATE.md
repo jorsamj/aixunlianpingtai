@@ -2,6 +2,96 @@
 
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
+<!-- CODEX_LIVE_HANDOFF_2026_09_20 -->
+## LIVE CURRENT STATE — 2026-09-20
+
+> **Codex resume point.** This section overrides older “NEXT”, “Current priority”, acceptance-HEAD and implementation-baseline text below when those historical notes conflict with current GitHub reality. Always re-read the remote branch first because this documentation commit will advance HEAD.
+
+当前远端 HEAD：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+
+当前正式版本：`VERSION.txt = 42.24.0`
+
+当前 HEAD Actions（2026-09-20 14:41 +08:00 核对）：
+- total: 18
+- queued: 18
+- in_progress: 0
+- completed success: 0
+- completed non-success: 0
+- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”。**
+
+GPU 正式服务器当前仍运行上午部署：
+- full SHA：`ea1b6f198f81556c05d963f4c3f70d2865f316ff`
+- release：`/data/platform/releases/ea1b6f198f81`
+- current symlink：`/data/platform/current`
+- Web service：`changlian-web.service`
+- Worker service：`changlian-worker.service`
+- Web listen：`127.0.0.1:8010`
+- Windows SSH tunnel：`http://127.0.0.1:18010`
+- business DATA_DIR：`/data/platform-data`
+- secret env：`/etc/changlian/secret.env`
+- encrypted credential store：`/data/platform-data/secure/secrets.enc.json`
+
+**重要：GPU 正式服务器尚未部署当前 GitHub HEAD。**
+
+### Current ChangLian contract
+
+新畅联当前 canonical Provider contract：
+```text
+POST /internal/auth/test-sign
+POST /internal/auth/token
+GET  /internal/base/algorithm-category/tree
+GET  /internal/base/compute-platform/listAll
+GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
+POST /internal/algorithm/algorithm-version/add
+GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
+POST /internal/algorithm/algorithm-weight/add
+GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
+```
+
+不得把接口改回旧裸路径：
+```text
+/compute-platform/listAll
+/algorithm-product/listAll
+/algorithm-version/add
+/algorithm-weight/add
+```
+
+`Authorization: Bearer <accessToken>` 语义保持不变。
+
+### Current execution priority
+
+当前第一主线不是继续堆新功能，而是：
+```text
+重新读取远端 HEAD / VERSION / Actions
+→ 为当前 HEAD 创建新的 /data/platform/releases/<sha-short>
+→ 不覆盖 ea1b6f198f81 回滚版本
+→ 原子切换 /data/platform/current
+→ restart changlian-web.service + changlian-worker.service
+→ GET http://127.0.0.1:8010/api/health
+→ 真实畅联测试：
+   test-sign
+   → token
+   → category
+   → product
+   → analysis
+   → compute-platform
+→ 查看真实交互日志和业务码
+```
+
+如果 canonical `/internal/base/*` / `/internal/algorithm/*` 已正确但仍出现 HTTP 200 / 业务码 401，下一步检查畅联云侧 AccessKey 应用权限、租户/组织权限、接口授权范围；**不要先把 endpoint 改回旧裸路径。**
+
+真实畅联云生产/联调 E2E 在完成前继续保持 **OPEN / NOT CLOSED**。
+
+### Codex do-not-repeat rules
+
+- Do not redo label normalization / human confirmation / alias-memory / durable annotation commit; that flow already exists.
+- Do not re-open CLOSED central scheduler / Agent lease / portable training / conversion work unless there is a reproducible regression.
+- Do not invent a second frontend polling owner or a second task state machine.
+- Do not treat an older successful workflow count as evidence for the newest HEAD.
+- Do not change `VERSION.txt`, merge `main`, tag or release.
+
+
 
 
 ## Current fix — ChangLian internal API namespace
@@ -2060,6 +2150,8 @@ formal VERSION.txt:        42.24.0 unchanged
 No merge to `main`, tag, release, A800 RC, or genuine 10k ZIP acceptance was performed.
 
 ## 2. Current priority
+
+> **LIVE OVERRIDE:** 当前优先级以本文顶部 `LIVE CURRENT STATE — 2026-09-20` 为准。下面旧 priority block 仅保留历史演进背景，不得据此跳过当前 GPU 部署 + 畅联真实 E2E。
 
 ```text
 TECH-DEBT CLEANUP PAUSED BY USER REQUEST

@@ -3,13 +3,116 @@
 > **新 AI / 新开发人员先读本文件。**  
 > 目标：10 分钟内知道“当前在哪个分支、什么已经做完、什么绝对不能重做、下一步该做什么”。
 
-更新时间：2026-09-19  
+更新时间：2026-09-20  
 仓库：`jorsamj/aixunlianpingtai`  
 正式版本：`VERSION.txt = 42.24.0`  
 当前持续开发分支：`feature/external-algorithm-publishing`  
-本轮产品实现基线：`b22fcf66b8e598fa83cfa2fef47c2ce7c555318b`  
+历史产品实现基线（不要当作当前 HEAD）：`b22fcf66b8e598fa83cfa2fef47c2ce7c555318b`  
 
 > 本文提交本身可能继续推进分支 HEAD，所以 **不要把上面的实现 SHA 当成 checkout 目标**。接手时必须先读取远端最新 HEAD，从远端真实最新状态继续。
+
+<!-- LIVE_HANDOFF_2026_09_20 -->
+# LIVE HANDOFF — 2026-09-20（接手时优先读本节）
+
+> 本节是当前运行现场快照。它优先于本文后面的历史验收 SHA、历史 NEXT、历史 Current Priority。接手者仍必须第一步重新读取 GitHub 远端，因为本文这次文档提交本身会让 branch HEAD 再前进一位。
+
+当前远端 HEAD：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+
+当前正式版本：`VERSION.txt = 42.24.0`
+
+当前 HEAD Actions（2026-09-20 14:41 +08:00 核对）：
+- total: 18
+- queued: 18
+- in_progress: 0
+- completed success: 0
+- completed non-success: 0
+- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”。**
+
+GPU 正式服务器当前仍运行上午部署：
+- full SHA：`ea1b6f198f81556c05d963f4c3f70d2865f316ff`
+- release：`/data/platform/releases/ea1b6f198f81`
+- current symlink：`/data/platform/current`
+- Web service：`changlian-web.service`
+- Worker service：`changlian-worker.service`
+- Web listen：`127.0.0.1:8010`
+- Windows SSH tunnel：`http://127.0.0.1:18010`
+- business DATA_DIR：`/data/platform-data`
+- secret env：`/etc/changlian/secret.env`
+- encrypted credential store：`/data/platform-data/secure/secrets.enc.json`
+
+**重要：GPU 正式服务器尚未部署当前 GitHub HEAD。**
+
+## 文档权威顺序
+
+Codex / 新 AI 无旧会话上下文时按下面顺序：
+1. GitHub 真实远端 branch HEAD、`VERSION.txt`、当前 Actions。
+2. 本文件的 **LIVE HANDOFF**。
+3. `docs/CODEX_CURRENT_STATE.md`。
+4. 按任务读取 `CHANGLIAN_CORE_INTEGRATION.md`、`NODE_CONTROL_PLANE_V42_25.md`、`BUG_AUDIT_2026-09-17.md`。
+5. 历史文档只作证据；若历史“下一主线/Current priority”与 LIVE HANDOFF 冲突，以实时 GitHub + LIVE HANDOFF 为准。
+
+## 绝对约束
+
+- 不 merge `main`。
+- `VERSION.txt` 必须保持 `42.24.0`。
+- 不 tag。
+- 不 release。
+- Windows 开发 + NVIDIA Linux 生产同时兼容。
+- 不删除测试、不放宽断言、不降阈值来过 CI。
+- 前后端必须使用一致的数据结构/状态枚举。
+- 正式页面必须使用真实后端接口，不能用假数据冒充生产 truth。
+- Durable Task / Ground Truth / Agent execution 继续按现有 fail-closed owner 执行，不建立第二套 truth。
+
+## 新畅联当前事实
+
+新畅联当前 canonical Provider contract：
+```text
+POST /internal/auth/test-sign
+POST /internal/auth/token
+GET  /internal/base/algorithm-category/tree
+GET  /internal/base/compute-platform/listAll
+GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
+POST /internal/algorithm/algorithm-version/add
+GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
+POST /internal/algorithm/algorithm-weight/add
+GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
+```
+
+不得把接口改回旧裸路径：
+```text
+/compute-platform/listAll
+/algorithm-product/listAll
+/algorithm-version/add
+/algorithm-weight/add
+```
+
+`Authorization: Bearer <accessToken>` 语义保持不变。
+
+## 当前唯一优先动作
+
+当前第一主线不是继续堆新功能，而是：
+```text
+重新读取远端 HEAD / VERSION / Actions
+→ 为当前 HEAD 创建新的 /data/platform/releases/<sha-short>
+→ 不覆盖 ea1b6f198f81 回滚版本
+→ 原子切换 /data/platform/current
+→ restart changlian-web.service + changlian-worker.service
+→ GET http://127.0.0.1:8010/api/health
+→ 真实畅联测试：
+   test-sign
+   → token
+   → category
+   → product
+   → analysis
+   → compute-platform
+→ 查看真实交互日志和业务码
+```
+
+如果 canonical `/internal/base/*` / `/internal/algorithm/*` 已正确但仍出现 HTTP 200 / 业务码 401，下一步检查畅联云侧 AccessKey 应用权限、租户/组织权限、接口授权范围；**不要先把 endpoint 改回旧裸路径。**
+
+真实畅联云生产/联调 E2E 在完成前继续保持 **OPEN / NOT CLOSED**。
+
 
 ---
 

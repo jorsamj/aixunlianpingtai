@@ -4,6 +4,51 @@
 分支：`feature/external-algorithm-publishing`  
 正式版本：`VERSION.txt = 42.24.0`
 
+<!-- NODE_CONTROL_LIVE_DEPLOYMENT_2026_09_20 -->
+## 2026-09-20 Production Deployment Snapshot
+
+> 本节只补“当前生产部署在哪里”，**不改变**本文已经 CLOSED 的 Node / Scheduler / Agent 架构契约。历史章节里的“下一主线”是当时阶段记录，不应覆盖当前 PROJECT/CODEX live handoff。
+
+当前远端 HEAD：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+
+当前正式版本：`VERSION.txt = 42.24.0`
+
+当前 HEAD Actions（2026-09-20 14:41 +08:00 核对）：
+- total: 18
+- queued: 18
+- in_progress: 0
+- completed success: 0
+- completed non-success: 0
+- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”。**
+
+GPU 正式服务器当前仍运行上午部署：
+- full SHA：`ea1b6f198f81556c05d963f4c3f70d2865f316ff`
+- release：`/data/platform/releases/ea1b6f198f81`
+- current symlink：`/data/platform/current`
+- Web service：`changlian-web.service`
+- Worker service：`changlian-worker.service`
+- Web listen：`127.0.0.1:8010`
+- Windows SSH tunnel：`http://127.0.0.1:18010`
+- business DATA_DIR：`/data/platform-data`
+- secret env：`/etc/changlian/secret.env`
+- encrypted credential store：`/data/platform-data/secure/secrets.enc.json`
+
+**重要：GPU 正式服务器尚未部署当前 GitHub HEAD。**
+
+当前部署动作继续沿用 release/symlink 模式：
+```text
+/data/platform/releases/<sha-short>
+→ /data/platform/current
+→ changlian-web.service
+→ changlian-worker.service
+→ /api/health
+```
+
+不得让远端 Agent 因这次部署重新访问中央 SQLite/NFS；Node Token、Assignment Lease、Execution Lease、generation fencing、portable object transport、server-confirmed result/model truth 都保持现有 CLOSED 契约。
+
+当前跨模块优先级是先部署最新代码并完成新畅联真实 E2E；不是重新设计 Node Control Plane。
+
+
 > 本文记录服务节点控制面与中央任务→节点分配的当前真实边界。接手时仍必须先读取远端最新 HEAD，不能把本文中的 SHA 当作固定 checkout 目标。
 
 ## 0. 最新关闭：Reusable Fixed Benchmark Training v1
