@@ -87,10 +87,10 @@ Authorization: Bearer <accessToken>
 
 | 能力 | Method | Path | 本平台用途 |
 |---|---|---|---|
-| 算法品目树 | GET | `/algorithm-category/tree` | 品目同步、算法筛选 |
-| 算法产品列表 | GET | `/algorithm-product/listAll` | 算法主数据同步 |
-| 产品分析方式 | GET | `/algorithm-product-analysis/listByProduct/{productId}` | 冻结训练对应 analysisId |
-| 算力环境列表 | GET | `/compute-platform/listAll` | 转换产物发布映射 |
+| 算法品目树 | GET | `/internal/base/algorithm-category/tree` | 品目同步、算法筛选 |
+| 算法产品列表 | GET | `/internal/algorithm/algorithm-product/listAll` | 算法主数据同步 |
+| 产品分析方式 | GET | `/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}` | 冻结训练对应 analysisId |
+| 算力环境列表 | GET | `/internal/base/compute-platform/listAll` | 转换产物发布映射 |
 
 同步后的核心身份必须长期保存：
 
@@ -105,6 +105,18 @@ source_type = EXTERNAL
 
 畅联云主数据在训练平台中只读；畅联云不再返回的算法只标记 inactive，不删除历史训练版本。
 
+### 3.1 Internal API 命名空间与旧配置迁移
+
+当前正式内部接口按模块命名空间固定：
+
+```text
+/internal/auth/*       应用鉴权
+/internal/base/*       基础信息（算法品目、算力环境）
+/internal/algorithm/*  算法产品、分析方式、版本、权重
+```
+
+平台不再把这些 Provider endpoint 暴露给普通用户编辑。历史版本曾保存的旧裸路径（例如 `/compute-platform/listAll`）仅在与平台已知旧值完全匹配时自动迁移到正式 internal 路径；其他自定义路径不强制覆盖。
+
 ## 4. 训练身份
 
 若一个算法产品只有一个分析方式，可以使用其默认 analysisId。
@@ -118,7 +130,7 @@ source_type = EXTERNAL
 ### 5.1 新增算法版本
 
 ```text
-POST /algorithm-version/add
+POST /internal/algorithm/algorithm-version/add
 ```
 
 当前核心 payload：
@@ -134,7 +146,7 @@ analysisId 或 productId（二选一）
 幂等恢复：
 
 ```text
-GET /algorithm-version/listByProduct/{productId}
+GET /internal/algorithm/algorithm-version/listByProduct/{productId}
 ```
 
 请求超时后必须先反查已存在版本，不能盲目重复创建。
@@ -142,7 +154,7 @@ GET /algorithm-version/listByProduct/{productId}
 ### 5.2 新增算法权重
 
 ```text
-POST /algorithm-weight/add
+POST /internal/algorithm/algorithm-weight/add
 ```
 
 当前核心 payload：
@@ -158,7 +170,7 @@ filePath
 幂等恢复：
 
 ```text
-GET /algorithm-weight/listByVersion/{algoVersionId}
+GET /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 ```
 
 权重反查至少使用：
