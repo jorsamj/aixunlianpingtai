@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   clearCompletedUploadTasks,
+  hasTerminalZipUploadTasks,
   isUploadTaskActive,
   mergeUploadTask,
   normalizeDurableUploadTask,
@@ -63,3 +64,15 @@ test('clear completed import history never removes active tasks', () => {
     ['running', 'waiting'],
   );
 });
+
+test('terminal ZIP history requires durable backend cleanup before local removal', () => {
+  assert.equal(hasTerminalZipUploadTasks([
+    {id:'zip:done', kind:'zip', status:'DONE'},
+    {id:'storage:done', kind:'storage-import', status:'SUCCEEDED'},
+  ]), true);
+  assert.equal(hasTerminalZipUploadTasks([
+    {id:'zip:running', kind:'zip', status:'RUNNING'},
+    {id:'storage:done', kind:'storage-import', status:'SUCCEEDED'},
+  ]), false);
+});
+
