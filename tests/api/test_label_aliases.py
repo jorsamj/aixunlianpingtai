@@ -296,3 +296,32 @@ def test_legacy_batch_remap_cannot_create_implicit_target_label(client):
 
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
     assert [row["code"] for row in labels] == ["helmet"]
+
+
+def test_ensure_label_retires_alias_for_any_canonical_creation_path(client):
+    project = client.post("/api/projects", json={
+        "name": "ensure-label-alias-retirement",
+        "labels": [{"code": "helmet", "display_name": "安全头盔"}],
+    }).json()
+
+    seeded = client.put(
+        f"/api/v12/projects/{project['id']}/labels/0",
+        json={
+            "code": "helmet",
+            "display_name": "安全头盔",
+            "aliases": ["blueprint_hat"],
+        },
+    )
+    assert seeded.status_code == 200, seeded.text
+    assert seeded.json()["items"][0]["aliases"] == ["blueprint_hat"]
+
+    mutable_project = app_module.get_project(project["id"])
+    class_id = app_module.ensure_label(mutable_project, "blueprint_hat")
+    assert class_id == 1
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    helmet = next(row for row in labels if row["code"] == "helmet")
+    promoted = next(row for row in labels if row["code"] == "blueprint_hat")
+    assert helmet["aliases"] == []
+    assert promoted["class_id"] == 1
+    assert promoted["aliases"] == []
