@@ -1398,8 +1398,27 @@ class ExternalAlgorithmPublishService:
                 if str(algorithm.get("source_type") or "").upper() != SOURCE_EXTERNAL or str(algorithm.get("provider_type") or "").upper() != PROVIDER_CHANGLIAN:
                     continue
                 for version in algorithm.get("versions") or []:
-                    if not version.get("external_publish_requested_at"):
+                    if (
+                        str(version.get("training_status") or "").upper() not in SUCCESSFUL_VERSION_STATUSES
+                        or version.get("artifact_verified") is not True
+                    ):
                         continue
+                    if not version.get("external_publish_requested_at"):
+                        try:
+                            version = update_algorithm_version(
+                                self.algorithms_file(project_id),
+                                str(algorithm.get("id") or ""),
+                                str(version.get("id") or ""),
+                                {
+                                    "external_publish_requested_at": utc_now(),
+                                    "external_publish_status": str(version.get("external_publish_status") or "pending"),
+                                },
+                                now=utc_now(),
+                            )
+                        except Exception:
+                            # The worker still attempts the durable publication below;
+                            # the marker is observability, not the sole queue owner.
+                            pass
                     summary["checked"] += 1
                     publication = self.repository.publication(project_id, str(algorithm.get("id") or ""), str(version.get("id") or ""))
                     if not self.publication_requires_sync(project_id, algorithm, version, publication):
