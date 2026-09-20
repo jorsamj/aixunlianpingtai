@@ -402,6 +402,7 @@ def delete_algorithm_version(
     now: str,
     operator: str = "local_user",
     dependency_check: Callable[[Mapping[str, Any], Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None = None,
+    remote_delete: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
     cleanup: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict:
     operation_id = uuid.uuid4().hex[:12]
@@ -420,6 +421,9 @@ def delete_algorithm_version(
     if dependencies:
         reasons = [str(item.get("reason") or item.get("id") or "存在活动引用") for item in dependencies]
         raise PlatformError("ALGORITHM_VERSION_IN_USE", "算法版本仍被活动业务引用，不能删除", "；".join(reasons), "请先结束相关任务或停止对应业务，再重新删除。", 409)
+    remote_result: Mapping[str, Any] = {}
+    if remote_delete is not None:
+        remote_result = dict(remote_delete(dict(algorithm), dict(target)) or {})
     operation = {
         "id": operation_id,
         "algorithm_id": str(algorithm_id),
@@ -456,5 +460,6 @@ def delete_algorithm_version(
         "cleanup_status": status,
         "cleanup_targets": [str(item) for item in cleanup_result.get("targets") or []],
         "cleanup_errors": [str(item) for item in cleanup_result.get("errors") or []],
+        "remote_delete": dict(remote_result),
     }
 
