@@ -285,8 +285,8 @@ test('algorithm list keeps search and base filters while adding source filters',
   assert.match(appSource, /id="alg412Q" class="input" placeholder="搜索算法"/);
   assert.match(appSource, /id="alg412Industry"/);
   assert.match(appSource, /id="alg412Type"/);
-  assert.match(externalSource, /dataAlgorithmSourceFilter/);
-  assert.match(externalSource, /dataAlgorithmTrainingStatusFilter/);
+  assert.match(externalSource, /dataset\.algorithmSourceFilter/);
+  assert.match(externalSource, /dataset\.algorithmTrainingStatusFilter/);
 });
 
 test('sync settings expose quasi-realtime pull without claiming webhook support', () => {
