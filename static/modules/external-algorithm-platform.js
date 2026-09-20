@@ -327,19 +327,33 @@ export function installExternalAlgorithmPlatformRuntime({
         detailButton.dataset.externalDetailBound = '1';
         detailButton.addEventListener('click', () => setTimeout(() => decorateAlgorithmDetail(algorithm), 0));
       }
-      title?.querySelector('[data-external-stale]')?.remove();
-      if (algorithm.external_active === false && title && !title.querySelector('[data-external-inactive]')) {
-        const inactive = document.createElement('em');
-        inactive.dataset.externalInactive = '1';
-        inactive.textContent = '已下架';
-        inactive.title = '新畅联已不再返回该算法；历史版本保留，但不能新建训练';
-        title.appendChild(inactive);
-      } else if (trainingState.status === 'stale' && title && !title.querySelector('[data-external-stale]')) {
-        const stale = document.createElement('em');
-        stale.dataset.externalStale = '1';
-        stale.textContent = '待同步';
-        stale.title = trainingState.message;
-        title.appendChild(stale);
+      if (title) {
+        const inactiveBadge = title.querySelector('[data-external-inactive]');
+        const staleBadge = title.querySelector('[data-external-stale]');
+        if (algorithm.external_active === false) {
+          staleBadge?.remove();
+          if (!inactiveBadge) {
+            const inactive = document.createElement('em');
+            inactive.dataset.externalInactive = '1';
+            inactive.textContent = '已下架';
+            inactive.title = '新畅联已不再返回该算法；历史版本保留，但不能新建训练';
+            title.appendChild(inactive);
+          }
+        } else if (trainingState.status === 'stale') {
+          inactiveBadge?.remove();
+          if (!staleBadge) {
+            const stale = document.createElement('em');
+            stale.dataset.externalStale = '1';
+            stale.textContent = '待同步';
+            stale.title = trainingState.message;
+            title.appendChild(stale);
+          } else if (staleBadge.title !== trainingState.message) {
+            staleBadge.title = trainingState.message;
+          }
+        } else {
+          inactiveBadge?.remove();
+          staleBadge?.remove();
+        }
       }
       for (const button of card.querySelectorAll('button')) {
         const onclick = String(button.getAttribute('onclick') || '');

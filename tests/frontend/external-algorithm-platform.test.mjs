@@ -154,4 +154,7 @@ test('external algorithm decorator is DOM-idempotent under mutation observers', 
   assert.match(block, /if \(select\.dataset\.externalCategorySignature !== optionSignature\)/);
   assert.match(block, /if \(create\.textContent !== '↻ 同步新畅联'\) create\.textContent = '↻ 同步新畅联'/);
   assert.doesNotMatch(block, /select\.innerHTML = options\.join\(''\)/);
+  assert.doesNotMatch(block, /title\?\.querySelector\('\[data-external-stale\]'\)\?\.remove\(\);/);
+  assert.match(block, /else if \(trainingState\.status === 'stale'\)/);
+  assert.match(block, /if \(!staleBadge\)/);
 });

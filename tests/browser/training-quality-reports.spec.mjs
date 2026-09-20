@@ -279,9 +279,9 @@ test('training queue displays numeric priorities and orders each resource by pri
     name: `优先级队列-${Date.now()}`, labels: [{code: 'target', display_name: '目标'}]
   }})).json();
   const queuedJobs = [
-    {id: 'fifo-new', asset_algorithm_name: '同级后到', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:02:00Z'},
-    {id: 'highest', asset_algorithm_name: '最高优先', status: 'queued', resource_key: 'local:cpu', queue_priority: 1, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:03:00Z'},
-    {id: 'fifo-old', asset_algorithm_name: '同级先到', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:01:00Z'}
+    {id: 'fifo-new', asset_algorithm_name: '同级后到', status: 'queued', resource_key: 'local:cpu', resource_pool_label: 'CPU', resource_queue_position: 3, resource_queue_position_exact: true, queue_priority: 7, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:02:00Z'},
+    {id: 'highest', asset_algorithm_name: '最高优先', status: 'queued', resource_key: 'local:cpu', resource_pool_label: 'CPU', resource_queue_position: 1, resource_queue_position_exact: true, queue_priority: 1, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:03:00Z'},
+    {id: 'fifo-old', asset_algorithm_name: '同级先到', status: 'queued', resource_key: 'local:cpu', resource_pool_label: 'CPU', resource_queue_position: 2, resource_queue_position_exact: true, queue_priority: 7, priority_scheme: 'lower_number_first', queued_at: '2026-08-30T10:01:00Z'}
   ];
   await page.route(`**/api/projects/${project.id}`, async route => {
     const response = await route.fetch();
@@ -298,6 +298,7 @@ test('training queue displays numeric priorities and orders each resource by pri
   }, project.id);
   await page.goto('/');
   await expect(page.locator('.nav-project-v')).toHaveText(project.name);
+  await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.patch)).toBe('function');
   await page.evaluate(jobs => {
     state.jobs = jobs;
     state.page = '训练任务';
@@ -312,8 +313,8 @@ test('training queue displays numeric priorities and orders each resource by pri
   expect(await rows.locator('.train428-taskname b').allTextContents()).toEqual(['最高优先', '同级先到', '同级后到']);
   await expect(rows.nth(0).locator('.queuepriority428')).toHaveText('优先级 1');
   await expect(rows.nth(1).locator('.queuepriority428')).toHaveText('优先级 7');
-  await expect(rows.nth(0).locator('.queuepos428')).toHaveText('队列第 1 位');
-  await expect(rows.nth(2).locator('.queuepos428')).toHaveText('队列第 3 位');
+  await expect(rows.nth(0)).toContainText('CPU · 队列第 1 位');
+  await expect(rows.nth(2)).toContainText('CPU · 队列第 3 位');
 });
 
 
