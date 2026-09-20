@@ -101,7 +101,7 @@ export function normalizeExternalPlatformConfig(body = {}) {
     autoSyncIntervalSeconds: Number(config.auto_sync_interval_seconds || 600),
     autoPublishEnabled: Boolean(config.auto_publish_enabled),
     authMode: config.auth_mode || 'test_sign_bridge',
-    businessAuthHeader: config.business_auth_header || 'Access-Token',
+    businessAuthMode: config.business_auth_mode || 'endpoint_contract',
     credentials: config.credentials || {configured: false, masked: ''},
     apiDocuments: Array.isArray(config.api_documents) ? config.api_documents : [],
     apiDocumentSummary: config.api_document_summary || {},
@@ -109,7 +109,7 @@ export function normalizeExternalPlatformConfig(body = {}) {
       test_sign: endpoints.test_sign || '/internal/auth/test-sign',
       token: endpoints.token || '/internal/auth/token',
       category_tree: endpoints.category_tree || '/internal/base/algorithm-category/tree',
-      product_list: endpoints.product_list || '/internal/algorithm/algorithm-product/listAll',
+      product_list: endpoints.product_list || '/internal/algorithm/product-ai/listAll',
       analysis_by_product: endpoints.analysis_by_product || '/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}',
       compute_platform_list: endpoints.compute_platform_list || '/internal/base/compute-platform/listAll',
       version_create: endpoints.version_create || '/internal/algorithm/algorithm-version/add',
@@ -932,7 +932,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63007',
+    build: 'external-algorithm-platform-63008',
     page: PAGE,
     loadConfig,
     loadHistory,
