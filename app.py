@@ -875,6 +875,7 @@ def enrich_job_runtime(
         job.update(
             result_ref=durable.result_ref or job.get("result_ref"),
             queue_priority=int(durable.priority),
+            queue_rank=int(durable.queue_rank),
             priority_scheme="lower_number_first",
         )
         snapshot_truth = shared_task_artifacts().read_json(

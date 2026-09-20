@@ -45,6 +45,7 @@ def test_training_job_overlay_uses_unified_resource_waiting_truth(tmp_path, monk
     assert job["status"] == "waiting"
     assert job["task_status"] == "WAITING_RESOURCE"
     assert job["queue_priority"] == 7
+    assert job["queue_rank"] == 0
     assert job["priority_scheme"] == "lower_number_first"
     assert job["resource_queue_position"] == 1
     assert job["resource_wait_reason"] == "GPU_MEMORY_BUSY"
