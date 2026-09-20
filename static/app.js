@@ -4484,7 +4484,15 @@ window.installUsability417?.();
 
   function normalizedLabelText(value){
     const parts=String(value||'').split(/[、,，;；\n\t]+/).map(item=>item.trim()).filter(Boolean);
-    return [...new Set(parts.map(value=>{const match=(state.labels||[]).find(label=>[label.code,label.display_name,label.display_name_zh].some(item=>String(item||'').trim()===value));return match?.code||value}))].join('、');
+    return [...new Set(parts.map(value=>{
+      const match=(state.labels||[]).find(label=>[
+        label.code,
+        label.display_name,
+        label.display_name_zh,
+        ...(Array.isArray(label.aliases)?label.aliases:[]),
+      ].some(item=>String(item||'').trim()===value));
+      return match?.code||value;
+    }))].join('、');
   }
   window.submitAiLabel429=async function(ids=[]){
     if(!ids.length)return toast('没有需要标注的图片');
