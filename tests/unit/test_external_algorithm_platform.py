@@ -583,6 +583,7 @@ def test_external_sync_only_exposes_enabled_visual_analyses_for_training(tmp_pat
         analyses_by_product={
             "p1": [
                 {"analysisId": "vision-on", "analysisType": 1, "status": 1, "analysisName": "视觉智能分析"},
+                {"analysisId": "reserved-on", "analysisType": 2, "status": 1, "analysisName": "预留分析"},
                 {"analysisId": "llm-on", "analysisType": 3, "status": 1, "analysisName": "大模型智能分析"},
                 {"analysisId": "vision-off", "analysisType": 1, "status": 0, "analysisName": "停用视觉分析"},
             ],
@@ -593,7 +594,7 @@ def test_external_sync_only_exposes_enabled_visual_analyses_for_training(tmp_pat
     assert algorithm["external_analysis_id"] == "vision-on"
     assert algorithm["external_analysis_ids"] == ["vision-on"]
     assert {row["analysis_id"] for row in algorithm["external_analyses"]} == {
-        "vision-on", "llm-on", "vision-off",
+        "vision-on", "reserved-on", "llm-on", "vision-off",
     }
 
 
