@@ -6,6 +6,7 @@ from platform_core.labels import (
     normalize_label_aliases,
     suggest_label_code,
 )
+from platform_core.storage.import_confirmation import resolve_external_label_mapping
 
 
 def test_alias_suggestion_uses_unique_alias_but_canonical_identity_wins():
@@ -92,3 +93,26 @@ def test_confirmed_alias_updates_do_not_learn_one_name_with_two_targets():
         labels,
     )
     assert updates == {"helmet": ["toukui1"]}
+
+def test_import_mapping_rejects_implicit_platform_label_creation():
+    labels = [
+        {"code": "helmet", "display_name": "安全头盔", "status": "active", "aliases": []},
+    ]
+    classes = [{"class_id": "0", "name": "toukui1"}]
+
+    with pytest.raises(ValueError, match="导入确认不能创建平台标签"):
+        resolve_external_label_mapping(
+            classes,
+            label_mapping={"0": "helmet_new"},
+            create_labels=["helmet_new"],
+            labels=labels,
+        )
+
+    with pytest.raises(ValueError, match="目标标签必须来自当前有效标签库"):
+        resolve_external_label_mapping(
+            classes,
+            label_mapping={"0": "helmet_new"},
+            create_labels=[],
+            labels=labels,
+        )
+
