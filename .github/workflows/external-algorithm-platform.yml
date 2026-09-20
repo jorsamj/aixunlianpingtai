@@ -116,6 +116,15 @@ jobs:
           grep -q "external-master-data-stale" static/modules/external-algorithm-platform.js
           grep -q "trainingReadiness" static/modules/external-algorithm-platform.js
           grep -Fq "externalCategorySignature" static/modules/external-algorithm-platform.js
+          grep -Fq 'dataAlgorithmSourceFilter' static/modules/external-algorithm-platform.js
+          grep -Fq '内部算法' static/modules/external-algorithm-platform.js
+          grep -Fq '外部算法' static/modules/external-algorithm-platform.js
+          grep -Fq 'dataAlgorithmTrainingStatusFilter' static/modules/external-algorithm-platform.js
+          grep -Fq 'selectedCategoryIds.has(row.id)' static/modules/external-algorithm-platform.js
+          grep -Fq 'dataExternalListSync' static/modules/external-algorithm-platform.js
+          grep -Fq 'externalAutoSyncInterval' static/modules/external-algorithm-platform.js
+          grep -Fq '60 秒为准实时主动轮询' static/modules/external-algorithm-platform.js
+          grep -Fq 'algorithm list supports multi-category source and training-status filters' tests/frontend/external-algorithm-platform.test.mjs
           grep -Fq "v42 dashboard renderer only calls helpers from its own scope" tests/frontend/startup-render-owner.test.mjs
           grep -Fq 'database.execute("PRAGMA busy_timeout=5000")' platform_core/storage/source_repository.py
           grep -Fq 'if current_mode != "wal":' platform_core/storage/source_repository.py
