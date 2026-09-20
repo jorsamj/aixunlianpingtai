@@ -49,9 +49,9 @@ test('changlian platform page tests draft credentials before manual sync', async
               group: '算法版本管理',
               title: '修改算法版本',
               doc_url: 'https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837714e0.md',
-              status: 'documented',
-              method: '',
-              path: '',
+              status: 'wired',
+              method: 'POST',
+              path: '/internal/algorithm/algorithm-version/edit',
             },
           ],
           credentials: {
@@ -190,7 +190,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(apiContract).toContainText('已纳入 31 个官方 Apifox 文档条目');
   await expect(apiContract).toContainText('POST /internal/auth/token');
   await expect(apiContract).toContainText('修改算法版本');
-  await expect(apiContract).toContainText('未绑定，禁止猜测 Method / Path');
+  await expect(apiContract).toContainText('POST /internal/algorithm/algorithm-version/edit');
 
   await page.locator('#externalBaseUrl').fill('https://draft.example.test');
   await page.locator('#externalAccessKey').fill('draft-ak');
