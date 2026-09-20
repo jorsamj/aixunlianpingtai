@@ -187,7 +187,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(page.locator('[data-changlian-readiness]')).toHaveCount(0);
   const apiContract = page.locator('[data-changlian-api-contract="1"]');
   await expect(apiContract).toBeVisible();
-  await expect(apiContract).toContainText('已纳入 31 个官方 Apifox 文档条目');
+  await expect(apiContract).toContainText('已核对 31 个官方 OpenAPI 接口');
   await expect(apiContract).toContainText('POST /internal/auth/token');
   await expect(apiContract).toContainText('修改算法版本');
   await expect(apiContract).toContainText('POST /internal/algorithm/algorithm-version/edit');
