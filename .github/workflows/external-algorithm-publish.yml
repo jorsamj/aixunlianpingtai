@@ -128,6 +128,10 @@ jobs:
           grep -q "test_synced_changlian_identity_survives_training_choice_conversion_and_publish" tests/unit/test_external_algorithm_publish.py
           grep -q "test_conversion_in_progress_does_not_block_training_version_and_original_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_durable_remote_conversion_root_is_discovered_and_appended" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_auto_upload_discovers_durable_remote_conversion_root" tests/unit/test_model_artifacts.py
+          grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/external_algorithm_publish.py
+          grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/model_artifacts.py
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
           grep -q "delete_version_for_rollback" platform_core/external_algorithm_publish.py
           grep -q "client.version_remove" platform_core/external_algorithm_publish.py
