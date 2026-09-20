@@ -136,10 +136,10 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.doesNotMatch(source, /训练成果自动发布/);
   assert.doesNotMatch(source, /<b>训练与发布<\/b>/);
   assert.match(source, /auto_publish_enabled: false/);
-  assert.match(source, /\/internal\/base\/algorithm-category\/tree/);
+  assert.match(source, /\/internal\/base\/category\/tree/);
   assert.match(source, /\/internal\/base\/compute-platform\/listAll/);
   assert.match(source, /\/internal\/algorithm\/algorithm-product\/listAll/);
-  assert.match(source, /\/internal\/algorithm\/algorithm-product-analysis\/listByProduct\/\{productId\}/);
+  assert.match(source, /\/internal\/algorithm\/algorithm-analysis\/listByProduct\/\{productId\}/);
   assert.match(source, /\/internal\/algorithm\/algorithm-version\/add/);
   assert.match(source, /\/internal\/algorithm\/algorithm-weight\/add/);
   assert.match(source, /businessAuthMode: config\.business_auth_mode \|\| 'authorization_bearer'/);
