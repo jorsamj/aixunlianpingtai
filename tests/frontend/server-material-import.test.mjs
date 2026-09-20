@@ -145,7 +145,7 @@ test('server import canonical task status wins and candidate queue rank is not p
   assert.doesNotMatch(waiting.text, /队列第 9 位/);
 });
 
-test('server import confirmation emits mappings only for existing labels', () => {
+test('server import confirmation stays mapping-only after explicit canonical label creation', () => {
   assert.deepEqual(buildImportConfirmation([
     {classId: '0', code: 'helmet'},
     {classId: '1', code: 'person'},
@@ -155,6 +155,6 @@ test('server import confirmation emits mappings only for existing labels', () =>
   });
   assert.throws(() => buildImportConfirmation([
     {classId: '0', code: 'helmet_new', create: true},
-  ]), /不能创建平台标签/);
+  ]), /显式平台标签创建操作/);
 });
 
