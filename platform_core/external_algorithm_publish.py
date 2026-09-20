@@ -1468,10 +1468,11 @@ class ExternalAlgorithmPublishService:
             ):
                 return True
             model_asset = self.model_assets.repository.get(artifact_id)
-            if model_asset and str(model_asset.get("storage_status") or "").upper() == "UPLOADED":
-                expected_public_url = self.model_assets.public_url(model_asset)
-                if expected_public_url and str(current.get("public_url") or "") != expected_public_url:
-                    return True
+            if not model_asset or str(model_asset.get("storage_status") or "").upper() != "UPLOADED":
+                return True
+            expected_public_url = self.model_assets.public_url(model_asset)
+            if not expected_public_url or str(current.get("public_url") or "") != expected_public_url:
+                return True
         return False
 
     def delete_version_for_rollback(
