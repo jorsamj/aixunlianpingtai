@@ -573,6 +573,29 @@ def test_stage_model_conversion_keeps_only_verified_object_and_portable_params(t
     assert "url" not in serialized.lower()
 
 
+@pytest.mark.parametrize("missing_field", ["algorithm_id", "version_id"])
+def test_model_conversion_rejects_missing_source_lineage(tmp_path, monkeypatch, missing_field):
+    transport, _provider, _model, _digest, contract = _portable_conversion_contract(
+        tmp_path, monkeypatch
+    )
+    contract["conversion"]["source_trace"][missing_field] = ""
+    task = SimpleNamespace(
+        task_id="convert-1",
+        kind=TaskKind.MODEL_CONVERSION,
+        project_id="p1",
+        log_ref="logs/conversion.log",
+    )
+
+    with pytest.raises(RemoteExecutionTransportError) as error:
+        transport.resolve_execution_payload(
+            task,
+            {"remote_execution": contract},
+            {"resolved_execution_config": {"node_id": "conversion-agent"}},
+        )
+
+    assert error.value.code == "REMOTE_CONVERSION_SOURCE_TRACE_MISSING"
+
+
 def test_resolve_model_conversion_mints_source_url_without_control_plane_paths(tmp_path, monkeypatch):
     transport, provider, _model, digest, contract = _portable_conversion_contract(
         tmp_path, monkeypatch
