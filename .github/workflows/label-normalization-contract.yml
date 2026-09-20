@@ -150,6 +150,7 @@ jobs:
                   'legacy_annotated_import_blocked',
                   'def remember_project_label_aliases(',
                   'def _prune_canonical_label_alias_conflicts(',
+                  'if _prune_canonical_label_alias_conflicts(project):',
                   '"aliases": normalize_label_aliases(',
                   "*[str(alias).strip() for alias in item.get('aliases') or []]",
                   "external_classes = mapping_suggestions(",
