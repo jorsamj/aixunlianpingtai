@@ -257,9 +257,17 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect.poll(async () => page.evaluate(() => window.ExternalAlgorithmPlatformRuntime?.config?.()?.mode || ''))
     .toBe('external');
 
+  await page.getByRole('button', {name: /算法列表/}).click();
+  await expect(page.locator('#alg412List')).toBeVisible();
   await page.evaluate(async () => {
-    await window.setPage?.('算法列表');
     await window.AlgorithmListRuntime?.refresh?.({render: true});
+  });
+  await expect.poll(async () => page.evaluate(() => (
+    (state.algorithms || []).some(row => row.name === '待同步抽烟检测')
+  ))).toBe(true);
+  await page.evaluate(() => {
+    window.renderAlg412?.();
+    window.AlgorithmListRuntime?.runDecorators?.();
   });
 
   const card = page.locator('.alg428-card', {hasText: '待同步抽烟检测'});

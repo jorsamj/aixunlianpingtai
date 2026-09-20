@@ -91,9 +91,17 @@ test('changlian manual publish preflight blocks stale version analysis before PO
   await expect.poll(async () => page.evaluate(() => typeof window.ExternalAlgorithmPublishRuntime?.publishVersion))
     .toBe('function');
 
+  await page.getByRole('button', {name: /算法列表/}).click();
+  await expect(page.locator('#alg412List')).toBeVisible();
   await page.evaluate(async () => {
-    await window.setPage?.('算法列表');
     await window.AlgorithmListRuntime?.refresh?.({render: true});
+  });
+  await expect.poll(async () => page.evaluate(() => (
+    (state.algorithms || []).some(row => row.name === '抽烟检测')
+  ))).toBe(true);
+  await page.evaluate(() => {
+    window.renderAlg412?.();
+    window.AlgorithmListRuntime?.runDecorators?.();
   });
 
   const card = page.locator('.alg428-card', {hasText: '抽烟检测'});
