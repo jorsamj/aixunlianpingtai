@@ -367,14 +367,25 @@ def rollback_algorithm_version(
         "cleanup_targets": [],
         "cleanup_errors": [],
     }
-    removed_version = store.rollback_version(
-        str(algorithm_id),
-        str(target_version_id),
-        expected_current_version_id=current_id,
-        operation=operation,
-        now=now,
-        delete_current_version=True,
-    )
+    try:
+        removed_version = store.rollback_version(
+            str(algorithm_id),
+            str(target_version_id),
+            expected_current_version_id=current_id,
+            operation=operation,
+            now=now,
+            delete_current_version=True,
+        )
+    except Exception as error:
+        if str(remote_result.get("status") or "") == "deleted":
+            raise PlatformError(
+                "ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE",
+                "新畅联版本已删除，但本地回退事务未完成",
+                str(error),
+                "请保留当前页面并联系运维执行本地版本一致性修复；不要重新创建或再次删除该远端版本。",
+                500,
+            ) from error
+        raise
     cleanup_result: Mapping[str, Any] = {}
     cleanup_status = "cleanup_pending"
     if removed_version is not None:
@@ -447,7 +458,24 @@ def delete_algorithm_version(
         "cleanup_targets": [],
         "cleanup_errors": [],
     }
-    removed = store.delete_version_with_operation(str(algorithm_id), str(version_id), expected_current_version_id=current_id, operation=operation, now=now)
+    try:
+        removed = store.delete_version_with_operation(
+            str(algorithm_id),
+            str(version_id),
+            expected_current_version_id=current_id,
+            operation=operation,
+            now=now,
+        )
+    except Exception as error:
+        if str(remote_result.get("status") or "") == "deleted":
+            raise PlatformError(
+                "ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE",
+                "新畅联版本已删除，但本地删除事务未完成",
+                str(error),
+                "请联系运维执行本地版本一致性修复；不要重新创建或再次删除该远端版本。",
+                500,
+            ) from error
+        raise
     try:
         cleanup_result = dict((cleanup or (lambda _algorithm, _version: {"status": "cleanup_pending"}))(dict(algorithm), dict(removed)) or {})
     except Exception as error:
