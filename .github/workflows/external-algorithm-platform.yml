@@ -257,7 +257,7 @@ jobs:
           grep -Fq '31 个接口条目全部登记' docs/CHANGLIAN_APIFOX_API_CATALOG.md
           grep -q "test_readiness_blocks_until_saved_synced_and_project_algorithm_exists" tests/unit/test_external_algorithm_platform.py
           grep -q '"scope": "master_data_training"' platform_core/external_algorithm_platform.py
-          grep -q "人员网页登录账号不参与机器接口调用" static/modules/external-algorithm-platform.js
+          grep -Fq "除人员登录参考外，内部算法接口均已进入 Provider contract" static/modules/external-algorithm-platform.js
           grep -q "def test_connection(payload: Optional\[ExternalPlatformConfigPayload\] = None)" platform_core/external_algorithm_platform.py
           grep -q "interaction-logs" platform_core/external_algorithm_platform.py
           grep -q "IntegrationAuditRepository" platform_core/external_algorithm_platform.py

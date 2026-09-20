@@ -82,7 +82,7 @@ jobs:
           grep -Fq 'UploadTaskCenterRuntime' static/modules/storage-import-progress.js
           grep -Fq 'resumeRequired' static/modules/upload-task-center.js
           grep -Fq "upload-task-center.js?v=66002" static/main.mjs
-          grep -Fq "main.mjs?v=42.25.123" static/index.html
+          grep -Fq "main.mjs?v=42.25.124" static/index.html
           grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
           grep -Fq 'window.ZipImportRuntime?.forgetTerminal?.()' static/modules/upload-task-center.js
           grep -Fq 'function forgetTerminal()' static/modules/zip-import-runtime.js
