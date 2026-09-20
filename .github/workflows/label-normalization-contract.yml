@@ -203,9 +203,10 @@ jobs:
                   'const task=await api(taskApi(),',
                   '候选结果不会自动写入正式标注',
                   "window.manageLabels=()=>{closeModal();setPage('标签管理')};",
+                  'window.ZipImportRuntime?.upload',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.119',
+                  '/static/app.js?v=42.25.120',
                   '/static/main.mjs?v=42.25.111',
                   '/static/zip-import-bootstrap.mjs?v=422531',
               ),
@@ -236,18 +237,24 @@ jobs:
               for name, tokens in required.items()
               if any(token not in bodies[name] for token in tokens)
           }
-          if app.count('_reject_legacy_annotated_import(project_id)') != 4:
+          if app.count('_reject_legacy_annotated_import(project_id)') != 5:
               missing.setdefault('app.py', []).append(
-                  'exactly four legacy annotated import guards'
+                  'exactly five legacy annotated import guards'
               )
           for route in (
               '/api/projects/{project_id}/import/yolo_zip',
               '/api/projects/{project_id}/import/labels',
               '/api/projects/{project_id}/import/coco_zip',
               '/api/projects/{project_id}/import/voc_zip',
+              '/api/v18/projects/{project_id}/datasets/{dataset_id}/import',
           ):
               if route not in app:
                   missing.setdefault('app.py', []).append(route)
+
+          if '/api/v18/projects/' in static_app:
+              missing.setdefault('static/app.js', []).append(
+                  'retired v18 ZIP import path must not exist in browser code'
+              )
 
           if app.count('_reject_legacy_direct_prelabel(project_id)') != 3:
               missing.setdefault('app.py', []).append(

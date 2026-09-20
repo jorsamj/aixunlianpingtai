@@ -25,6 +25,10 @@ def test_legacy_annotated_import_endpoints_fail_closed_without_mutation(
             f"/api/projects/{project_id}/import/voc_zip",
             {"file": ("legacy-voc.zip", b"legacy", "application/zip")},
         ),
+        (
+            f"/api/v18/projects/{project_id}/datasets/default/import",
+            {"file": ("legacy-v18.zip", b"legacy", "application/zip")},
+        ),
     ]
     for endpoint, files in requests:
         response = client.post(endpoint, files=files, data={"dataset_id": "default"})

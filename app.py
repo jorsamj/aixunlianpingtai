@@ -10844,6 +10844,7 @@ def _v18_import_yolo(
 
 @app.post('/api/v18/projects/{project_id}/datasets/{dataset_id}/import')
 async def v18_import_dataset_auto(project_id: str, dataset_id: str, file: UploadFile = File(...)):
+    _reject_legacy_annotated_import(project_id)
     get_project(project_id)
     p = project_dir(project_id)
     filename = safe_filename(file.filename or 'dataset.zip')
