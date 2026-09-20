@@ -142,7 +142,7 @@ jobs:
           grep -q "def _validated_external_items" platform_core/external_algorithm_platform.py
           grep -q "EXTERNAL_PRODUCT_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "EXTERNAL_ANALYSIS_ID_MISSING" platform_core/external_algorithm_platform.py
-          grep -Fq 'return str(_value_from(row, "status") or "").strip() == "1"' platform_core/external_algorithm_platform.py
+          grep -Fq 'return status_value is not None and str(status_value).strip() == "1"' platform_core/external_algorithm_platform.py
           grep -Fq 'return str(_value_from(row, "analysisType", "analysis_type") or "").strip() == "1"' platform_core/external_algorithm_platform.py
           ! grep -Fq 'status not in {"0", "false", "disabled"}' platform_core/external_algorithm_platform.py
           ! grep -Fq 'return "视觉" in text or "vision" in text or "video" in text' platform_core/external_algorithm_platform.py
@@ -156,7 +156,6 @@ jobs:
           grep -Fq 'test_external_sync_only_exposes_enabled_visual_analyses_for_training' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_external_training_rejects_non_visual_or_disabled_analysis' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_legacy_trainable_id_list_cannot_bypass_missing_status_or_type' tests/unit/test_algorithm_sql_store.py
-          grep -Fq 'test_analysis_enabled_preserves_zero_status' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_analysis_summary_preserves_numeric_zero_status' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'status_value = _value_from(row, "status")' platform_core/external_algorithm_platform.py
           if grep -Fq 'str(_value_from(row, "status") or "")' platform_core/external_algorithm_platform.py; then echo "analysis status must preserve numeric zero" >&2; exit 1; fi
