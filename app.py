@@ -65,6 +65,7 @@ from platform_core.labels import (
     confirmed_alias_updates,
     label_identity_values,
     normalize_label_aliases,
+    suggest_label_code,
 )
 from platform_core.material_store import MaterialStore
 from platform_core.material_repository import MaterialRepository
@@ -17098,10 +17099,23 @@ class AnnotationDecisionReq(BaseModel):
     label_mapping: Dict[str, str] = Field(default_factory=dict)
 
 
-def _v47_parse_label_text(text: str) -> List[str]:
+def _v47_parse_label_text(
+    text: str,
+    catalog: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
     import re
-    vals = [normalize_label(x) for x in re.split(r'[、,，;；\n\t]+', text or '') if x.strip()]
-    return list(dict.fromkeys(x for x in vals if x))
+    values = [
+        str(x or '').strip()
+        for x in re.split(r'[、,，;；\n\t]+', text or '')
+        if str(x or '').strip()
+    ]
+    resolved = []
+    for value in values:
+        suggested = suggest_label_code(value, catalog or [])
+        normalized = suggested or normalize_label(value)
+        if normalized and normalized not in resolved:
+            resolved.append(normalized)
+    return resolved
 
 
 def _v47_default_annotation_model() -> Dict[str, Any]:
@@ -17288,7 +17302,10 @@ def _v47_run_ai_label_task(project_id: str, task_id: str, payload: Dict[str, Any
 @app.post('/api/v47/projects/{project_id}/ai-label-tasks')
 def v47_create_ai_label_task(project_id: str, payload: V47AutoLabelReq):
     project = get_project(project_id)
-    labels = _v47_parse_label_text(payload.labels_text or '')
+    labels = _v47_parse_label_text(
+        payload.labels_text or '',
+        _v47_label_catalog(project),
+    )
     ref_ids = set(payload.reference_image_ids or [])
     if ref_ids:
         for iid in ref_ids:
@@ -17441,7 +17458,10 @@ def _annotation_summary(task: TaskRecord) -> dict:
 
 def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq) -> tuple[dict, str]:
     project = get_project(project_id)
-    labels = _v47_parse_label_text(payload.labels_text)
+    labels = _v47_parse_label_text(
+        payload.labels_text,
+        _v47_label_catalog(project),
+    )
     for image_id in payload.reference_image_ids or []:
         for box in read_annotation(project_id, image_id).get("boxes", []):
             label = normalize_label(str(box.get("label") or ""))
