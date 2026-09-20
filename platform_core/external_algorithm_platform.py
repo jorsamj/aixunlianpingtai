@@ -33,37 +33,37 @@ MAX_SYNC_HISTORY = 100
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 600
 
 CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
-    {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"","path":""},
-    {"key":"auth_token","group":"应用鉴权","title":"内部应用鉴权获取Token","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307570e0.md","status":"wired","method":"POST","path":"/internal/auth/token"},
-    {"key":"auth_test_sign","group":"应用鉴权","title":"内部应用签名测试","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307571e0.md","status":"wired","method":"POST","path":"/internal/auth/test-sign"},
-    {"key":"auth_logout","group":"应用鉴权","title":"内部应用登出","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307572e0.md","status":"documented","method":"","path":""},
-    {"key":"weight_update","group":"算法权重文件管理","title":"修改算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837707e0.md","status":"documented","method":"","path":""},
-    {"key":"weight_add","group":"算法权重文件管理","title":"新增算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837708e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-weight/add"},
-    {"key":"weight_delete","group":"算法权重文件管理","title":"删除算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837709e0.md","status":"documented","method":"","path":""},
-    {"key":"weight_page","group":"算法权重文件管理","title":"查询算法权重文件列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837710e0.md","status":"documented","method":"","path":""},
-    {"key":"weight_list_by_version","group":"算法权重文件管理","title":"查询某算法版本下全部算法权重文件(含算力环境名称/编号)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837711e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"},
-    {"key":"weight_list_by_product","group":"算法权重文件管理","title":"按算法产品查询算法权重文件(算法调度用)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837712e0.md","status":"documented","method":"","path":""},
-    {"key":"weight_detail","group":"算法权重文件管理","title":"查询算法权重文件详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837713e0.md","status":"documented","method":"","path":""},
-    {"key":"version_update","group":"算法版本管理","title":"修改算法版本","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837714e0.md","status":"documented","method":"","path":""},
-    {"key":"version_add","group":"算法版本管理","title":"新增算法版本(analysisId 与 productId 二选一；传 productId 时自动定位该算法产品下的视觉智能分析方式)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837715e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-version/add"},
-    {"key":"version_delete","group":"算法版本管理","title":"删除算法版本(同时删除其下全部算法权重文件)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837716e0.md","status":"documented","method":"","path":""},
-    {"key":"version_page","group":"算法版本管理","title":"查询算法版本列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837717e0.md","status":"documented","method":"","path":""},
-    {"key":"version_list_by_product","group":"算法版本管理","title":"查询某算法产品下全部算法版本(含权重文件数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837718e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/listByProduct/{productId}"},
-    {"key":"version_list_by_analysis","group":"算法版本管理","title":"查询某分析方式下全部算法版本(含权重文件数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837719e0.md","status":"documented","method":"","path":""},
-    {"key":"version_list_all","group":"算法版本管理","title":"查询算法版本列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837720e0.md","status":"documented","method":"","path":""},
-    {"key":"version_detail","group":"算法版本管理","title":"查询算法版本详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837721e0.md","status":"documented","method":"","path":""},
-    {"key":"product_page","group":"算法产品管理","title":"查询算法产品列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837722e0.md","status":"documented","method":"","path":""},
-    {"key":"product_list_all","group":"算法产品管理","title":"查询算法产品列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837723e0.md","status":"wired","method":"GET","path":"/internal/algorithm/product-ai/listAll"},
-    {"key":"product_detail","group":"算法产品管理","title":"查询算法产品详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837724e0.md","status":"documented","method":"","path":""},
-    {"key":"analysis_page","group":"算法产品分析方式管理","title":"查询分析方式列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837725e0.md","status":"documented","method":"","path":""},
-    {"key":"analysis_list_by_product","group":"算法产品分析方式管理","title":"查询某算法产品下全部分析方式(含关联明细)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837726e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"},
-    {"key":"analysis_list_all","group":"算法产品分析方式管理","title":"查询分析方式列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837727e0.md","status":"documented","method":"","path":""},
-    {"key":"analysis_detail","group":"算法产品分析方式管理","title":"查询分析方式详细信息(含关联明细)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837728e0.md","status":"documented","method":"","path":""},
-    {"key":"compute_page","group":"算力环境管理","title":"查询算力环境列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837729e0.md","status":"documented","method":"","path":""},
-    {"key":"compute_list_all","group":"算力环境管理","title":"查询算力环境列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837730e0.md","status":"wired","method":"GET","path":"/internal/base/compute-platform/listAll"},
-    {"key":"category_tree","group":"算法品目管理","title":"查询算法品目树(父节点含所有子节点数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837731e0.md","status":"wired","method":"GET","path":"/internal/base/algorithm-category/tree"},
-    {"key":"category_page","group":"算法品目管理","title":"查询算法品目列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837732e0.md","status":"documented","method":"","path":""},
-    {"key":"category_list_all","group":"算法品目管理","title":"查询算法品目列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837733e0.md","status":"documented","method":"","path":""},
+    {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"POST","path":"/login","auth":"bearer"},
+    {"key":"auth_token","group":"应用鉴权","title":"内部应用鉴权获取Token","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307570e0.md","status":"wired","method":"POST","path":"/internal/auth/token","auth":"application"},
+    {"key":"auth_test_sign","group":"应用鉴权","title":"内部应用签名测试","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307571e0.md","status":"wired","method":"POST","path":"/internal/auth/test-sign","auth":"application"},
+    {"key":"auth_logout","group":"应用鉴权","title":"内部应用登出","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307572e0.md","status":"wired","method":"POST","path":"/internal/auth/logout","auth":"application"},
+    {"key":"weight_edit","group":"算法权重文件管理","title":"修改算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837707e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-weight/edit","auth":"bearer"},
+    {"key":"weight_add","group":"算法权重文件管理","title":"新增算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837708e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-weight/add","auth":"bearer"},
+    {"key":"weight_remove","group":"算法权重文件管理","title":"删除算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837709e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/remove/{weightIds}","auth":"bearer"},
+    {"key":"weight_list","group":"算法权重文件管理","title":"查询算法权重文件列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837710e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/list","auth":"bearer"},
+    {"key":"weight_list_by_version","group":"算法权重文件管理","title":"查询某算法版本下全部算法权重文件(含算力环境名称/编号)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837711e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}","auth":"bearer"},
+    {"key":"weight_list_by_product","group":"算法权重文件管理","title":"按算法产品查询算法权重文件(算法调度用)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837712e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/listByProduct/{productId}","auth":"bearer"},
+    {"key":"weight_detail","group":"算法权重文件管理","title":"查询算法权重文件详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837713e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/getInfo/{weightId}","auth":"bearer"},
+    {"key":"version_edit","group":"算法版本管理","title":"修改算法版本","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837714e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-version/edit","auth":"bearer"},
+    {"key":"version_add","group":"算法版本管理","title":"新增算法版本","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837715e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-version/add","auth":"bearer"},
+    {"key":"version_remove","group":"算法版本管理","title":"删除算法版本(同时删除其下全部算法权重文件)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837716e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/remove/{algoVersionIds}","auth":"bearer"},
+    {"key":"version_list","group":"算法版本管理","title":"查询算法版本列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837717e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/list","auth":"bearer"},
+    {"key":"version_list_by_product","group":"算法版本管理","title":"查询某算法产品下全部算法版本(含权重文件数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837718e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/listByProduct/{productId}","auth":"bearer"},
+    {"key":"version_list_by_analysis","group":"算法版本管理","title":"查询某分析方式下全部算法版本(含权重文件数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837719e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/listByAnalysis/{analysisId}","auth":"bearer"},
+    {"key":"version_list_all","group":"算法版本管理","title":"查询算法版本列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837720e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/listAll","auth":"bearer"},
+    {"key":"version_detail","group":"算法版本管理","title":"查询算法版本详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837721e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/getInfo/{algoVersionId}","auth":"bearer"},
+    {"key":"product_list","group":"算法产品管理","title":"查询算法产品列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837722e0.md","status":"wired","method":"GET","path":"/internal/algorithm/product-ai/list","auth":"bearer"},
+    {"key":"product_list_all","group":"算法产品管理","title":"查询算法产品列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837723e0.md","status":"wired","method":"GET","path":"/internal/algorithm/product-ai/listAll","auth":"bearer"},
+    {"key":"product_detail","group":"算法产品管理","title":"查询算法产品详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837724e0.md","status":"wired","method":"GET","path":"/internal/algorithm/product-ai/getInfo/{productId}","auth":"bearer"},
+    {"key":"analysis_list","group":"算法产品分析方式管理","title":"查询分析方式列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837725e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-analysis/list","auth":"bearer"},
+    {"key":"analysis_list_by_product","group":"算法产品分析方式管理","title":"查询某算法产品下全部分析方式(含关联明细)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837726e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-analysis/listByProduct/{productId}","auth":"bearer"},
+    {"key":"analysis_list_all","group":"算法产品分析方式管理","title":"查询分析方式列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837727e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-analysis/listAll","auth":"bearer"},
+    {"key":"analysis_detail","group":"算法产品分析方式管理","title":"查询分析方式详细信息(含关联明细)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837728e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-analysis/getInfo/{analysisId}","auth":"bearer"},
+    {"key":"compute_list","group":"算力环境管理","title":"查询算力环境列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837729e0.md","status":"wired","method":"GET","path":"/internal/base/compute-platform/list","auth":"bearer"},
+    {"key":"compute_list_all","group":"算力环境管理","title":"查询算力环境列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837730e0.md","status":"wired","method":"GET","path":"/internal/base/compute-platform/listAll","auth":"bearer"},
+    {"key":"category_tree","group":"算法品目管理","title":"查询算法品目树(父节点含所有子节点数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837731e0.md","status":"wired","method":"GET","path":"/internal/base/category/tree","auth":"bearer"},
+    {"key":"category_list","group":"算法品目管理","title":"查询算法品目列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837732e0.md","status":"wired","method":"GET","path":"/internal/base/category/list","auth":"bearer"},
+    {"key":"category_list_all","group":"算法品目管理","title":"查询算法品目列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837733e0.md","status":"wired","method":"GET","path":"/internal/base/category/listAll","auth":"bearer"},
 )
 
 
@@ -83,13 +83,17 @@ def _clean_path(value: Any, fallback: str = "") -> str:
 
 
 LEGACY_CHANGLIAN_ENDPOINTS: Dict[str, str] = {
-    "/algorithm-category/tree": "/internal/base/algorithm-category/tree",
+    "/algorithm-category/tree": "/internal/base/category/tree",
+    "/internal/base/algorithm-category/tree": "/internal/base/category/tree",
     "/algorithm-product/listAll": "/internal/algorithm/product-ai/listAll",
     "/internal/algorithm/algorithm-product/listAll": "/internal/algorithm/product-ai/listAll",
-    "/algorithm-product-analysis/listByProduct/{productId}": "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}",
+    "/algorithm-product-analysis/listByProduct/{productId}": "/internal/algorithm/algorithm-analysis/listByProduct/{productId}",
+    "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}": "/internal/algorithm/algorithm-analysis/listByProduct/{productId}",
     "/compute-platform/listAll": "/internal/base/compute-platform/listAll",
     "/algorithm-version/add": "/internal/algorithm/algorithm-version/add",
+    "/algorithm-version/listByProduct/{productId}": "/internal/algorithm/algorithm-version/listByProduct/{productId}",
     "/algorithm-weight/add": "/internal/algorithm/algorithm-weight/add",
+    "/algorithm-weight/listByVersion/{algoVersionId}": "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}",
 }
 
 
@@ -100,31 +104,53 @@ def _canonical_endpoint_path(value: Any, fallback: str) -> str:
 
 @dataclass(frozen=True)
 class ChangLianEndpoints:
-    """Canonical 新畅联 internal API endpoint contract."""
+    """Canonical 新畅联 internal API contract extracted from the official OpenAPI compilation."""
 
     test_sign: str = "/internal/auth/test-sign"
     token: str = "/internal/auth/token"
-    category_tree: str = "/internal/base/algorithm-category/tree"
+    logout: str = "/internal/auth/logout"
+
+    category_tree: str = "/internal/base/category/tree"
+    category_list: str = "/internal/base/category/list"
+    category_list_all: str = "/internal/base/category/listAll"
+
+    product_list_page: str = "/internal/algorithm/product-ai/list"
     product_list: str = "/internal/algorithm/product-ai/listAll"
-    analysis_by_product: str = "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
+    product_detail: str = "/internal/algorithm/product-ai/getInfo/{productId}"
+
+    analysis_list_page: str = "/internal/algorithm/algorithm-analysis/list"
+    analysis_by_product: str = "/internal/algorithm/algorithm-analysis/listByProduct/{productId}"
+    analysis_list_all: str = "/internal/algorithm/algorithm-analysis/listAll"
+    analysis_detail: str = "/internal/algorithm/algorithm-analysis/getInfo/{analysisId}"
+
+    compute_platform_list_page: str = "/internal/base/compute-platform/list"
     compute_platform_list: str = "/internal/base/compute-platform/listAll"
+
+    version_edit: str = "/internal/algorithm/algorithm-version/edit"
     version_create: str = "/internal/algorithm/algorithm-version/add"
+    version_remove: str = "/internal/algorithm/algorithm-version/remove/{algoVersionIds}"
+    version_list_page: str = "/internal/algorithm/algorithm-version/list"
+    version_list_by_product: str = "/internal/algorithm/algorithm-version/listByProduct/{productId}"
+    version_list_by_analysis: str = "/internal/algorithm/algorithm-version/listByAnalysis/{analysisId}"
+    version_list_all: str = "/internal/algorithm/algorithm-version/listAll"
+    version_detail: str = "/internal/algorithm/algorithm-version/getInfo/{algoVersionId}"
+
+    weight_edit: str = "/internal/algorithm/algorithm-weight/edit"
     weight_create: str = "/internal/algorithm/algorithm-weight/add"
+    weight_remove: str = "/internal/algorithm/algorithm-weight/remove/{weightIds}"
+    weight_list_page: str = "/internal/algorithm/algorithm-weight/list"
+    weight_list_by_version: str = "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
+    weight_list_by_product: str = "/internal/algorithm/algorithm-weight/listByProduct/{productId}"
+    weight_detail: str = "/internal/algorithm/algorithm-weight/getInfo/{weightId}"
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "ChangLianEndpoints":
         data = dict(value or {})
         defaults = cls()
-        return cls(
-            test_sign=_canonical_endpoint_path(data.get("test_sign"), defaults.test_sign),
-            token=_canonical_endpoint_path(data.get("token"), defaults.token),
-            category_tree=_canonical_endpoint_path(data.get("category_tree"), defaults.category_tree),
-            product_list=_canonical_endpoint_path(data.get("product_list"), defaults.product_list),
-            analysis_by_product=_canonical_endpoint_path(data.get("analysis_by_product"), defaults.analysis_by_product),
-            compute_platform_list=_canonical_endpoint_path(data.get("compute_platform_list"), defaults.compute_platform_list),
-            version_create=_canonical_endpoint_path(data.get("version_create"), defaults.version_create),
-            weight_create=_canonical_endpoint_path(data.get("weight_create"), defaults.weight_create),
-        )
+        return cls(**{
+            field_name: _canonical_endpoint_path(data.get(field_name), getattr(defaults, field_name))
+            for field_name in defaults.__dataclass_fields__
+        })
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -144,12 +170,51 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 class EndpointPayload(BaseModel):
     test_sign: str = ChangLianEndpoints.test_sign
     token: str = ChangLianEndpoints.token
+    logout: str = ChangLianEndpoints.logout
     category_tree: str = ChangLianEndpoints.category_tree
+    category_list: str = ChangLianEndpoints.category_list
+    category_list_all: str = ChangLianEndpoints.category_list_all
+    product_list_page: str = ChangLianEndpoints.product_list_page
     product_list: str = ChangLianEndpoints.product_list
+    product_detail: str = ChangLianEndpoints.product_detail
+    analysis_list_page: str = ChangLianEndpoints.analysis_list_page
     analysis_by_product: str = ChangLianEndpoints.analysis_by_product
+    analysis_list_all: str = ChangLianEndpoints.analysis_list_all
+    analysis_detail: str = ChangLianEndpoints.analysis_detail
+    compute_platform_list_page: str = ChangLianEndpoints.compute_platform_list_page
     compute_platform_list: str = ChangLianEndpoints.compute_platform_list
+    version_edit: str = ChangLianEndpoints.version_edit
     version_create: str = ChangLianEndpoints.version_create
+    version_remove: str = ChangLianEndpoints.version_remove
+    version_list_page: str = ChangLianEndpoints.version_list_page
+    version_list_by_product: str = ChangLianEndpoints.version_list_by_product
+    version_list_by_analysis: str = ChangLianEndpoints.version_list_by_analysis
+    version_list_all: str = ChangLianEndpoints.version_list_all
+    version_detail: str = ChangLianEndpoints.version_detail
+    weight_edit: str = ChangLianEndpoints.weight_edit
     weight_create: str = ChangLianEndpoints.weight_create
+    weight_remove: str = ChangLianEndpoints.weight_remove
+    weight_list_page: str = ChangLianEndpoints.weight_list_page
+    weight_list_by_version: str = ChangLianEndpoints.weight_list_by_version
+    weight_list_by_product: str = ChangLianEndpoints.weight_list_by_product
+    weight_detail: str = ChangLianEndpoints.weight_detail
+
+
+class ChangLianVersionMutationPayload(BaseModel):
+    algoVersionId: int | str | None = None
+    analysisId: int | str | None = None
+    productId: int | str | None = None
+    versionName: str = ""
+    versionNo: str = ""
+
+
+class ChangLianWeightMutationPayload(BaseModel):
+    weightId: int | str | None = None
+    algoVersionId: int | str | None = None
+    computePlatformId: int | str | None = None
+    chipCode: str = ""
+    fileName: str = ""
+    filePath: str = ""
 
 
 class ExternalPlatformConfigPayload(BaseModel):
@@ -373,6 +438,40 @@ class _ResponseAdapter:
         except ValueError as error:
             raise RuntimeError(f"外部平台返回的不是 JSON（HTTP {response.status_code}）") from error
 
+
+
+def _compact_params(values: Mapping[str, Any]) -> Dict[str, Any]:
+    return {str(key): value for key, value in values.items() if value not in (None, "")}
+
+
+def _remote_json_id(value: Any) -> Any:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    return value
+
+
+def _remote_path_ids(values: Iterable[Any]) -> str:
+    result = [str(value).strip() for value in values if str(value or "").strip()]
+    if not result:
+        raise ValueError("至少需要一个远端 ID")
+    return ",".join(result)
+
+
+def _dump_version_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    body = {key: value for key, value in dict(payload).items() if value not in (None, "")}
+    for key in ("algoVersionId", "analysisId", "productId"):
+        if key in body:
+            body[key] = _remote_json_id(body[key])
+    return body
+
+
+def _dump_weight_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    body = {key: value for key, value in dict(payload).items() if value not in (None, "")}
+    for key in ("weightId", "algoVersionId", "computePlatformId"):
+        if key in body:
+            body[key] = _remote_json_id(body[key])
+    return body
 
 class ChangLianClient:
     def __init__(
