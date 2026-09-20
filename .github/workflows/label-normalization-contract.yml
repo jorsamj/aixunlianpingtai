@@ -23,6 +23,7 @@ on:
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/api/test_label_aliases.py'
+      - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/unit/test_label_aliases.py'
@@ -47,6 +48,7 @@ on:
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
       - 'tests/api/test_label_aliases.py'
+      - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/unit/test_label_aliases.py'
@@ -95,6 +97,7 @@ jobs:
           python -m pytest -q
           tests/api/test_v19_label_mapping.py
           tests/api/test_label_aliases.py
+          tests/api/test_legacy_annotated_import_guard.py
           tests/api/test_v36_source_import_guard.py
           tests/integration/test_persistent_ai_annotation_e2e.py
           tests/unit/test_annotation_task_service.py
@@ -150,6 +153,8 @@ jobs:
                   "task.status is TaskStatus.AWAITING_CONFIRMATION",
                   "suggested = suggest_label_code(value, catalog or [])",
                   "目标标签必须来自当前有效标签库",
+                  'LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL',
+                  'def _reject_legacy_annotated_import(project_id: str)',
               ),
               'platform_core/auto_label.py': (
                   'if any(alias and label == alias for alias in values):',
@@ -218,5 +223,17 @@ jobs:
               for name, tokens in required.items()
               if any(token not in bodies[name] for token in tokens)
           }
+          if app.count('_reject_legacy_annotated_import(project_id)') != 4:
+              missing.setdefault('app.py', []).append(
+                  'exactly four legacy annotated import guards'
+              )
+          for route in (
+              '/api/projects/{project_id}/import/yolo_zip',
+              '/api/projects/{project_id}/import/labels',
+              '/api/projects/{project_id}/import/coco_zip',
+              '/api/projects/{project_id}/import/voc_zip',
+          ):
+              if route not in app:
+                  missing.setdefault('app.py', []).append(route)
           if missing:
               raise SystemExit(f'missing label-normalization contracts: {missing}')
