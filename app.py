@@ -32,6 +32,7 @@ from PIL import Image, ImageDraw
 from platform_core.annotations import annotation_summary, atomic_write_json, normalize_boxes
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.storage.import_confirmation import (
+    IMPORT_LABEL_CREATION_BLOCKED_DETAIL,
     confirm_import,
     mapping_suggestions,
     public_quality,
@@ -1746,35 +1747,33 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
         'annotation_conflicts': payload.annotation_conflicts,
     }
     annotation_confirmation = None
-    labels_to_create: List[str] = []
     try:
+        if payload.create_labels:
+            raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
         if import_format in {'yolo', 'coco', 'voc'}:
             manifest = artifacts.artifact_path(task_id, STORAGE_IMPORT_MANIFEST_REF)
             store = RescanCandidateStore(manifest)
             quality = store.quality_summary()
             if quality.get('issues') and not payload.accept_quality_report:
                 raise ValueError('请先确认并接受标注数据质量报告')
-            if any(normalize_label(code) != code for code in payload.create_labels):
-                raise ValueError('新建标签必须使用规范的平台标签编码')
             project = get_project(project_id)
             external_classes = store.external_classes()
-            resolved, create = resolve_external_label_mapping(
+            resolved, _ = resolve_external_label_mapping(
                 external_classes,
                 label_mapping=payload.label_mapping,
-                create_labels=payload.create_labels,
+                create_labels=[],
                 labels=project_label_items(project),
             )
-            labels_to_create = list(create)
             annotation_confirmation = {
                 'label_mapping': resolved,
-                'create_labels': create,
+                'create_labels': [],
                 'external_classes': [
                     {'class_id': str(row.get('class_id')), 'name': str(row.get('name') or '')}
                     for row in external_classes
                 ],
                 'accept_quality_report': payload.accept_quality_report,
             }
-        elif payload.label_mapping or payload.create_labels:
+        elif payload.label_mapping:
             raise ValueError('仅标注重新扫描允许提交外部类别映射')
         confirm_rescan(
             artifacts,
@@ -1782,10 +1781,6 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
             policy,
             annotation_confirmation=annotation_confirmation,
         )
-        # Freeze durable intent before any project-label side effect. If label
-        # creation fails, retrying the same confirmation is safe and idempotent.
-        for code in labels_to_create:
-            ensure_label(get_project(project_id), code)
         if annotation_confirmation:
             remember_project_label_aliases(
                 project_id,
@@ -1940,17 +1935,13 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
     candidate_store = ImportCandidateStore(manifest)
     load_legacy_candidates(artifacts, task_id, candidate_store)
     try:
+        if payload.create_labels:
+            raise ValueError(IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
         project = get_project(project_id)
-        if any(normalize_label(code) != code for code in payload.create_labels):
-            raise ValueError('新建标签必须使用规范的平台标签编码')
-        def create_import_label(code):
-            current = get_project(project_id)
-            ensure_label(current, code)
-            return code
         confirmation = confirm_import(candidate_store, artifacts, task_id,
             object_keys=payload.object_keys, label_mapping=payload.label_mapping,
-            create_labels=payload.create_labels, accept_quality_report=payload.accept_quality_report,
-            labels=project_label_items(project), create_label=create_import_label)
+            create_labels=[], accept_quality_report=payload.accept_quality_report,
+            labels=project_label_items(project), create_label=None)
         remember_project_label_aliases(
             project_id,
             confirmation.get('external_classes') or [],
@@ -11574,6 +11565,9 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
     if job.get("status") not in {"selecting", "failed"}:
         raise HTTPException(status_code=400, detail="当前导入任务状态不允许重新开始")
 
+    if payload.create_labels:
+        raise HTTPException(status_code=409, detail=IMPORT_LABEL_CREATION_BLOCKED_DETAIL)
+
     classes = list(job.get("external_classes") or [])
     if classes:
         project = get_project(project_id)
@@ -11582,42 +11576,40 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
             str(key): str(value)
             for key, value in dict(job.get("label_mapping") or {}).items()
         }
-        existing_create = sorted(str(code) for code in (job.get("create_labels") or []))
         if existing_digest:
             requested_mapping = {
                 str(key): str(value)
                 for key, value in dict(payload.label_mapping or {}).items()
             }
-            requested_create = sorted(str(code).strip() for code in payload.create_labels)
             if requested_mapping and requested_mapping != existing_mapping:
                 raise HTTPException(
                     status_code=409,
                     detail="该 ZIP 任务的标签映射已经确认冻结，失败重试不能更换映射",
                 )
-            if requested_create and requested_create != existing_create:
-                raise HTTPException(
-                    status_code=409,
-                    detail="该 ZIP 任务的新建标签决定已经确认冻结，失败重试不能更换",
-                )
-            resolved, create = existing_mapping, existing_create
-        else:
-            create_labels = [str(code).strip() for code in payload.create_labels]
-            if any(not code or normalize_label(code) != code for code in create_labels):
-                raise HTTPException(status_code=422, detail="新建标签必须使用规范的平台标签编码")
             try:
-                resolved, create = resolve_external_label_mapping(
+                resolved, _ = resolve_external_label_mapping(
                     classes,
-                    label_mapping=payload.label_mapping,
-                    create_labels=create_labels,
+                    label_mapping=existing_mapping,
+                    create_labels=[],
                     labels=project_label_items(project),
                 )
             except ValueError as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
-            for code in create:
-                ensure_label(project, code)
+            create = []
+        else:
+            try:
+                resolved, _ = resolve_external_label_mapping(
+                    classes,
+                    label_mapping=payload.label_mapping,
+                    create_labels=[],
+                    labels=project_label_items(project),
+                )
+                create = []
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
             confirmation = {
                 "label_mapping": resolved,
-                "create_labels": create,
+                "create_labels": [],
                 "external_classes": [
                     {"class_id": str(row.get("class_id")), "name": str(row.get("name") or "")}
                     for row in classes
@@ -11634,7 +11626,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
             })
             v19_write_job(project_id, job)
         remember_project_label_aliases(project_id, classes, resolved)
-    elif payload.label_mapping or payload.create_labels:
+    elif payload.label_mapping:
         raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
 
     selected_paths = payload.selected_paths or []
