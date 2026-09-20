@@ -926,6 +926,47 @@ class ExternalAlgorithmPublishService:
         self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=version_id, status="VERSION_READY", last_error="")
         return version_id
 
+    def _reuse_uploaded_model_asset(self, artifact: Mapping[str, Any]) -> Dict[str, Any] | None:
+        """Reuse an already verified object for the same version/content.
+
+        Remote TRAINING can upload the primary model directly to canonical model
+        storage before the ChangLian publication worker runs. Reusing that object
+        avoids storing the same model twice under "best" and "original" keys.
+        """
+        config = self.model_assets.repository.config()
+        source_id = str(config.get("storage_source_id") or "").strip()
+        digest = str(artifact.get("source_sha256") or artifact.get("sha256") or "").strip().lower()
+        if not source_id or not digest:
+            return None
+        rows = self.model_assets.repository.list(
+            project_id=str(artifact.get("project_id") or ""),
+            algorithm_id=str(artifact.get("algorithm_id") or ""),
+            version_id=str(artifact.get("version_id") or ""),
+            limit=500,
+        )
+        for row in rows:
+            if (
+                str(row.get("sha256") or "").strip().lower() != digest
+                or str(row.get("storage_source_id") or "") != source_id
+                or str(row.get("storage_status") or "").upper() != "UPLOADED"
+                or not str(row.get("object_key") or "").strip()
+            ):
+                continue
+            try:
+                provider = self.model_assets._provider(str(row.get("project_id") or ""), source_id)
+                meta = provider.stat(str(row["object_key"]))
+                if int(meta.size_bytes) != int(artifact.get("size_bytes") or 0):
+                    continue
+                if meta.sha256 and str(meta.sha256).strip().lower() != digest:
+                    continue
+            except Exception:
+                continue
+            public_url = self.model_assets.public_url(row)
+            if public_url and public_url != str(row.get("public_url") or ""):
+                row = self.model_assets.repository.patch(str(row["artifact_id"]), public_url=public_url)
+            return row
+        return None
+
     def _upload_artifact(self, artifact: Mapping[str, Any], algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> Dict[str, Any]:
         discovered = {
             "artifact_id": str(artifact["artifact_id"]),
@@ -941,7 +982,7 @@ class ExternalAlgorithmPublishService:
             "size_bytes": int(artifact["size_bytes"]),
             "metadata": {"chip_code": str(artifact.get("chip_code") or "")},
         }
-        stored = self.model_assets.ensure_uploaded(discovered)
+        stored = self._reuse_uploaded_model_asset(artifact) or self.model_assets.ensure_uploaded(discovered)
         if str(stored.get("storage_status") or "").upper() != "UPLOADED":
             raise RuntimeError(str(stored.get("storage_error") or "模型资产上传失败"))
         public_url = self.model_assets.public_url(stored)
