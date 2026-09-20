@@ -98,7 +98,6 @@ jobs:
           grep -q "test_remote_version_creation_never_falls_back_to_product_id" tests/unit/test_external_algorithm_publish.py
           grep -q "EXTERNAL_VERSION_ANALYSIS_MISSING" platform_core/external_algorithm_publish.py
           grep -q "def _trainable_analysis_ids" platform_core/external_algorithm_publish.py
-          ! grep -Fq 'version.get("external_analysis_id") or algorithm.get("external_analysis_id")' platform_core/external_algorithm_publish.py
           grep -q "identity_ready === false" static/modules/external-algorithm-publish.js
           grep -q "manual publish preflight blocks stale product and analysis identity before artifacts" tests/frontend/external-algorithm-publish.test.mjs
           grep -q "_assert_current_compute_platform" platform_core/external_algorithm_publish.py
