@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   buildAgentCommands,
@@ -54,6 +55,8 @@ test('service node card renders observed GPU/runtime/task truth without secrets'
   assert.match(html, /CUDA/);
   assert.match(html, /train-1/);
   assert.match(html, /42%/);
+  assert.match(html, /测试连通/);
+  assert.match(html, /data-node-action="test"/);
   assert.doesNotMatch(html, /agent_token|token_hash/i);
 });
 
@@ -105,4 +108,12 @@ test('service node card surfaces observed Rockchip SoC and RKNN runtime truth', 
   assert.match(html, /瑞芯微板端验证/);
   assert.match(html, /RK3568/);
   assert.match(html, /RKNNLite 2\.3\.2/);
+});
+
+
+test('service node connectivity action uses control-plane heartbeat truth', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /\/connectivity-test/);
+  assert.match(source, /最近心跳/);
+  assert.doesNotMatch(source, /fetch\([^\n]*agent_url/);
 });
