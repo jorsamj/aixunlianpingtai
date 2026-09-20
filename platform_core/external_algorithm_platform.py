@@ -2014,7 +2014,18 @@ def external_algorithm_platform_router(
         return {"ok": True, "response": service._client().version_edit(body)}
 
     @router.delete("/provider/versions/{algo_version_ids}")
-    def provider_version_remove(algo_version_ids: str):
+    def provider_version_remove(
+        algo_version_ids: str,
+        confirm: bool = Query(default=False),
+    ):
+        if not confirm:
+            raise PlatformError(
+                "EXTERNAL_REMOTE_DELETE_CONFIRMATION_REQUIRED",
+                "删除新畅联算法版本需要显式确认",
+                "新畅联会同时删除该版本下全部算法权重文件。",
+                "确认已核对远端版本后，使用 confirm=true 重新提交删除。",
+                409,
+            )
         ids = [value.strip() for value in algo_version_ids.split(",") if value.strip()]
         return {"ok": True, "response": service._client().version_remove(ids)}
 
@@ -2063,7 +2074,18 @@ def external_algorithm_platform_router(
         return {"ok": True, "response": service._client().weight_edit(body)}
 
     @router.delete("/provider/weights/{weight_ids}")
-    def provider_weight_remove(weight_ids: str):
+    def provider_weight_remove(
+        weight_ids: str,
+        confirm: bool = Query(default=False),
+    ):
+        if not confirm:
+            raise PlatformError(
+                "EXTERNAL_REMOTE_DELETE_CONFIRMATION_REQUIRED",
+                "删除新畅联算法权重需要显式确认",
+                str(weight_ids),
+                "确认已核对远端权重后，使用 confirm=true 重新提交删除。",
+                409,
+            )
         ids = [value.strip() for value in weight_ids.split(",") if value.strip()]
         return {"ok": True, "response": service._client().weight_remove(ids)}
 
