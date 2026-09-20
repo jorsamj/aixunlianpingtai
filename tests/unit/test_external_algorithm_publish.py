@@ -1031,3 +1031,28 @@ def test_auto_publish_readiness_uses_canonical_model_storage_url(tmp_path: Path)
     ))
 
     assert service.auto_publish_ready() is True
+
+
+def test_auto_publish_worker_recovers_successful_external_version_without_request_marker(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    (tmp_path / "projects.json").write_text(
+        json.dumps([{"id": "p1", "name": "项目1"}]),
+        encoding="utf-8",
+    )
+    service = _service(tmp_path, memory)
+
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    assert "external_publish_requested_at" not in algorithm["versions"][0]
+
+    result = service.run_auto_publish_once()
+
+    assert result["checked"] == 1
+    assert result["published"] == 1
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+    version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
+    assert version["external_publish_requested_at"]
+    assert version["external_publish_status"] == "published"
