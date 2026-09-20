@@ -1316,6 +1316,11 @@ class ExternalAlgorithmPlatformService:
             len(rows) for rows in analyses_by_product.values()
             if isinstance(rows, list)
         )
+        trainable_analysis_count = sum(
+            len(_visual_analysis_rows(rows))
+            for rows in analyses_by_product.values()
+            if isinstance(rows, list)
+        )
         external_rows: list[Dict[str, Any]] = []
         if algorithms_path is not None:
             try:
@@ -1328,9 +1333,18 @@ class ExternalAlgorithmPlatformService:
             except Exception:
                 external_rows = []
         active_external = [row for row in external_rows if row.get("external_active") is not False]
+        trainable_external = [
+            row for row in active_external
+            if _visual_analysis_rows(
+                [
+                    item for item in (row.get("external_analyses") or [])
+                    if isinstance(item, Mapping)
+                ]
+            )
+        ]
         current_master_digest = str(cache.get("master_data_digest") or "").strip()
         stale_external = [
-            row for row in active_external
+            row for row in trainable_external
             if not current_master_digest
             or str(row.get("external_master_data_digest") or "").strip() != current_master_digest
         ]
@@ -1393,6 +1407,13 @@ class ExternalAlgorithmPlatformService:
                 "count": analysis_count,
             },
             {
+                "key": "trainable_analyses",
+                "name": "可训练视觉分析",
+                "status": "ready" if trainable_analysis_count else "blocked",
+                "count": trainable_analysis_count,
+                "detail": "仅统计 status=1 且 analysisType=1 的分析方式",
+            },
+            {
                 "key": "compute_platforms",
                 "name": "算力环境",
                 "status": "ready" if compute_platforms else "blocked",
@@ -1403,12 +1424,16 @@ class ExternalAlgorithmPlatformService:
             checks.append({
                 "key": "project_algorithms",
                 "name": "当前项目畅联云算法",
-                "status": "ready" if active_external and not stale_external else "blocked",
-                "count": len(active_external),
+                "status": "ready" if trainable_external and not stale_external else "blocked",
+                "count": len(trainable_external),
                 "detail": (
-                    f"同步算法 {len(external_rows)} 个，当前可训练 {len(active_external)} 个"
-                    if not stale_external
-                    else f"有 {len(stale_external)} 个算法仍基于旧主数据，请重新同步当前项目"
+                    f"同步算法 {len(external_rows)} 个，当前可训练 {len(trainable_external)} 个"
+                    if trainable_external and not stale_external
+                    else (
+                        f"有 {len(stale_external)} 个可训练算法仍基于旧主数据，请重新同步当前项目"
+                        if stale_external
+                        else "当前项目没有 status=1 且 analysisType=1 的畅联云算法"
+                    )
                 ),
             })
 
