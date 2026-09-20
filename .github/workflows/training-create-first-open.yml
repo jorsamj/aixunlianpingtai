@@ -66,6 +66,8 @@ jobs:
           grep -Fq 'baseSaveAnnotation417?.(silent,options)' static/app.js
           grep -Fq "annotation_state:boxes.length?'annotated':'confirmed_empty'" static/app.js
           grep -Fq 'training create re-reads algorithm truth before opening and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
+          grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
+          grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js
           grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
           grep -Fq 'stale changlian master data disables submit and blocks network POST' tests/frontend/training-submit.test.mjs
           grep -Fq '/benchmark-reuse' static/app.js

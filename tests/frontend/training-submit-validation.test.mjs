@@ -88,14 +88,24 @@ test('annotation workbench saves locally without full reload and preserves expli
   assert.doesNotMatch(source, /await Promise\.all\(\[apiRequestAnnotation420\(id\),preload\(image\.url\)\]\)/);
 });
 
-test('dashboard training task success rate distinguishes no-data and successful status aliases', () => {
+test('dashboard training task success rate distinguishes no-data and successful status aliases in final owners', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /'succeeded','success'/);
-  assert.match(source, /训练任务成功率/);
-  assert.match(source, /successRate=\(doneJobs\.length\+failed\).*:null/);
-  assert.doesNotMatch(source, /successRate=\(doneJobs\.length\+failed\).*:0/);
-});
+  const dashboardStart = source.indexOf('function dashboardData422()');
+  const dashboardEnd = source.indexOf('// -------- Dashboard --------', dashboardStart);
+  const dashboard = source.slice(dashboardStart, dashboardEnd);
+  assert.match(dashboard, /'done','finished','completed','succeeded','success'/);
+  assert.match(dashboard, /String\(j\.status\|\|''\)\.toLowerCase\(\)/);
+  assert.match(dashboard, /successRate=\(doneJobs\.length\+failed\)\?doneJobs\.length\/\(doneJobs\.length\+failed\):null/);
+  assert.doesNotMatch(dashboard, /successRate=.*:0/);
 
+  const qualityStart = source.indexOf('window.renderQualityCenter424=async function()');
+  const qualityEnd = source.indexOf('// ---------- single data pool ----------', qualityStart);
+  const quality = source.slice(qualityStart, qualityEnd);
+  assert.match(quality, /a\.train_success_rate==null\?'—'/);
+  assert.match(quality, /暂无已结束训练可统计/);
+  assert.match(quality, /\.\.\.\(a\.train_success_rate==null\?\{\}:\{'训练成功率':a\.train_success_rate\}\)/);
+  assert.doesNotMatch(quality, /'训练成功率':a\.train_success_rate\?\?0/);
+});
 
 test('algorithm detail modal exposes summary facts without stale failure reason', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
