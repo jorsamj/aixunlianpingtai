@@ -191,7 +191,8 @@ test('platform page keeps a simple persistent save-test-sync flow', () => {
   const formBlock = source.slice(formStart, collectStart);
   assert.doesNotMatch(formBlock, /readinessHtml\(\)/);
   assert.doesNotMatch(formBlock, /训练准备|版本\/权重发布/);
-  assert.match(source, /测试连接不保存|只测试当前填写内容，不自动保存/);
+  assert.match(source, /使用当前页面填写的 API 地址和凭据临时测试，不会自动保存或覆盖已保存凭据/);
+  assert.match(source, /使用服务器已保存的 API 地址和凭据测试连接/);
   assert.match(source, /当前配置有未保存修改，请先保存配置/);
   const syncStart = source.indexOf('async function syncNow()');
   const syncEnd = source.indexOf('function bindPage()', syncStart);
