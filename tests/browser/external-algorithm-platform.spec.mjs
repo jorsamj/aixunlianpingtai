@@ -164,6 +164,12 @@ test('changlian platform page tests draft credentials before manual sync', async
           analysisStatus === 'success'
             ? {key: 'analysis', name: '产品分析方式', status: 'success', count: 1}
             : {key: 'analysis', name: '产品分析方式', status: 'skipped', detail: '当前没有可用于连接测试的算法产品'},
+          analysisStatus === 'success'
+            ? {key: 'versions', name: '算法版本', status: 'success', count: 2}
+            : {key: 'versions', name: '算法版本', status: 'skipped', detail: '当前没有可用于连接测试的算法产品'},
+          analysisStatus === 'success'
+            ? {key: 'weights', name: '算法权重', status: 'success', count: 3}
+            : {key: 'weights', name: '算法权重', status: 'skipped', detail: '当前没有可用于连接测试的算法产品'},
         ],
       }),
     });
