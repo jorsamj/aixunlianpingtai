@@ -117,6 +117,13 @@ jobs:
           grep -q "EXTERNAL_ANALYSIS_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
+          grep -q "test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces" tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'category_tree: str = "/internal/base/algorithm-category/tree"' platform_core/external_algorithm_platform.py
+          grep -Fq 'product_list: str = "/internal/algorithm/algorithm-product/listAll"' platform_core/external_algorithm_platform.py
+          grep -Fq 'analysis_by_product: str = "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"' platform_core/external_algorithm_platform.py
+          grep -Fq 'compute_platform_list: str = "/internal/base/compute-platform/listAll"' platform_core/external_algorithm_platform.py
+          grep -Fq 'version_create: str = "/internal/algorithm/algorithm-version/add"' platform_core/external_algorithm_platform.py
+          grep -Fq 'weight_create: str = "/internal/algorithm/algorithm-weight/add"' platform_core/external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_product_id_is_missing" tests/unit/test_external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_analysis_id_is_missing" tests/unit/test_external_algorithm_platform.py
           grep -q "test_sync_fails_closed_when_compute_platform_id_is_missing" tests/unit/test_external_algorithm_platform.py
@@ -147,8 +154,6 @@ jobs:
           grep -q '"auth_type": "application_credentials"' platform_core/external_algorithm_platform.py
           grep -q "test_readiness_blocks_until_saved_synced_and_project_algorithm_exists" tests/unit/test_external_algorithm_platform.py
           grep -q '"scope": "master_data_training"' platform_core/external_algorithm_platform.py
-          grep -q "主数据 / 训练准备状态" static/modules/external-algorithm-platform.js
-          grep -q "转换与版本/权重发布由版本页同步前的发布预检单独判断" static/modules/external-algorithm-platform.js
           grep -q "人员网页登录账号不参与机器接口调用" static/modules/external-algorithm-platform.js
           grep -q "def test_connection(payload: Optional\[ExternalPlatformConfigPayload\] = None)" platform_core/external_algorithm_platform.py
           grep -q "interaction-logs" platform_core/external_algorithm_platform.py
@@ -206,10 +211,8 @@ jobs:
           grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq 'data-external-stale' static/modules/external-algorithm-platform.js
-          grep -Fq 'data-changlian-readiness="ready"' tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
-          grep -Fq "主数据与训练条件已就绪" tests/browser/external-algorithm-platform.spec.mjs
-          grep -Fq "转换与版本/权重发布由版本页同步前的发布预检单独判断" tests/browser/external-algorithm-platform.spec.mjs
-          grep -Fq 'data-external-automation-settings="1"' static/modules/external-algorithm-platform.js
+          grep -Fq 'data-external-sync-settings="1"' static/modules/external-algorithm-platform.js
           grep -Fq "产品分析方式" static/modules/external-algorithm-platform.js
+          if grep -Fq 'data-external-endpoint=' static/modules/external-algorithm-platform.js; then echo "ChangLian canonical provider paths must not be user-editable" >&2; exit 1; fi
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
