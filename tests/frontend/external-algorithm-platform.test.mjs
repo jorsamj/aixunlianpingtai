@@ -52,15 +52,19 @@ test('external platform config keeps local as safe default and normalizes endpoi
   assert.equal(external.endpoints.category_tree, '/internal/base/category/tree');
 });
 
-test('external analysis options preserve all synced analysis methods', () => {
+test('external analysis options require exact status=1 and analysisType=1', () => {
   const options = externalAnalysisOptions({
+    external_analysis_ids: ['legacy-id-must-not-bypass-detail'],
     external_analyses: [
-      {analysis_id: 'a1', analysis_name: '视觉分析 A'},
-      {analysis_id: 'a2', analysis_name: '视觉分析 B'},
+      {analysis_id: 'vision-on', analysis_name: '视觉智能分析', analysis_type: '1', status: '1'},
+      {analysis_id: 'missing-status', analysis_name: '视觉智能分析', analysis_type: '1'},
+      {analysis_id: 'missing-type', analysis_name: '视觉智能分析', status: '1'},
+      {analysis_id: 'name-only', analysis_name: '视觉智能分析'},
+      {analysis_id: 'llm-on', analysis_name: '大模型智能分析', analysis_type: '3', status: '1'},
+      {analysis_id: 'vision-off', analysis_name: '停用视觉分析', analysis_type: '1', status: '0'},
     ],
   });
-  assert.deepEqual(options.map(row => row.id), ['a1', 'a2']);
-  assert.deepEqual(options.map(row => row.name), ['视觉分析 A', '视觉分析 B']);
+  assert.deepEqual(options.map(row => row.id), ['vision-on']);
 });
 
 test('external analysis options exclude LLM and disabled visual modes', () => {
@@ -85,6 +89,17 @@ test('external analysis options exclude LLM and disabled visual modes', () => {
   assert.equal(blocked.ready, false);
   assert.equal(blocked.status, 'no-visual-analysis');
   assert.equal(blocked.reason, 'external-visual-analysis-missing');
+
+  const unverified = externalAlgorithmTrainingReadiness({
+    source_type: 'EXTERNAL',
+    provider_type: 'CHANG_LIAN',
+    external_active: true,
+    external_master_data_digest: 'digest-current',
+    external_analysis_ids: ['legacy-visual'],
+    external_analyses: [],
+  }, 'digest-current');
+  assert.equal(unverified.ready, false);
+  assert.equal(unverified.reason, 'external-visual-analysis-missing');
 });
 
 test('algorithm list supports multi-category source and training-status filters', () => {
@@ -129,6 +144,9 @@ test('external training readiness mirrors backend master-data fencing', () => {
     provider_type: 'CHANG_LIAN',
     external_active: true,
     external_master_data_digest: 'digest-current',
+    external_analyses: [
+      {analysis_id: 'vision-on', analysis_type: '1', status: '1', analysis_name: '视觉智能分析'},
+    ],
   };
   assert.deepEqual(externalAlgorithmTrainingReadiness(current, 'digest-current'), {
     ready: true, status: 'current', reason: '', message: '',
@@ -166,8 +184,8 @@ test('external mapping exposes provider ids and sync state', () => {
     external_active: false,
     external_last_synced_at: '2026-09-17T06:30:00Z',
     external_analyses: [
-      {analysis_id: 'a-1', analysis_name: '视觉分析 A'},
-      {analysis_id: 'a-2', analysis_name: '视觉分析 B'},
+      {analysis_id: 'a-1', analysis_name: '视觉分析 A', analysis_type: '1', status: '1'},
+      {analysis_id: 'a-2', analysis_name: '视觉分析 B', analysis_type: '1', status: '1'},
     ],
   });
   assert.equal(mapping.source, '新畅联');
