@@ -144,7 +144,7 @@ export function normalizeExternalPlatformConfig(body = {}) {
     providerName: config.provider_name || '新畅联',
     baseUrl: config.base_url || '',
     autoSyncEnabled: Boolean(config.auto_sync_enabled),
-    autoSyncIntervalSeconds: Number(config.auto_sync_interval_seconds || 600),
+    autoSyncIntervalSeconds: Number(config.auto_sync_interval_seconds || 60),
     autoPublishEnabled: Boolean(config.auto_publish_enabled),
     authMode: config.auth_mode || 'test_sign_bridge',
     businessAuthMode: config.business_auth_mode || 'authorization_bearer',
@@ -703,11 +703,9 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="field full">
               <details data-external-sync-settings="1">
                 <summary>同步设置</summary>
-                <div style="margin-top:12px" class="form two">
-                  <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''} ${formDisabled}> 自动同步主数据</label>
-                  <div class="field"><label>主动拉取间隔</label><select id="externalAutoSyncInterval" class="select" ${formDisabled}>
-                    ${[60,120,300,600,1800,3600].map(seconds => `<option value="${seconds}" ${Number(c.autoSyncIntervalSeconds || 600) === seconds ? 'selected' : ''}>${seconds < 3600 ? `${seconds / 60} 分钟` : `${seconds / 3600} 小时`}</option>`).join('')}
-                  </select><div class="subline">当前 OpenAPI 没有 Webhook、订阅或推送接口；60 秒为准实时主动轮询。</div></div>
+                <div style="margin-top:12px" class="external-sync-policy">
+                  <div class="alert soft"><b>自动同步已启用</b><span>新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台固定每 60 秒主动拉取一次主数据。</span></div>
+                  <div class="subline" style="margin-top:8px">训练成功、转换完成后的版本与权重同步由后台自动执行，不需要人工重复点击。</div>
                 </div>
               </details>
             </div>
@@ -858,9 +856,9 @@ export function installExternalAlgorithmPlatformRuntime({
       mode,
       provider: document.getElementById('externalProvider')?.value || 'changlian',
       base_url: document.getElementById('externalBaseUrl')?.value.trim() || '',
-      auto_sync_enabled: Boolean(document.getElementById('externalAutoSync')?.checked),
-      auto_sync_interval_seconds: Number(document.getElementById('externalAutoSyncInterval')?.value || config?.autoSyncIntervalSeconds || 600),
-      auto_publish_enabled: false,
+      auto_sync_enabled: mode === 'external',
+      auto_sync_interval_seconds: 60,
+      auto_publish_enabled: mode === 'external',
       access_key: document.getElementById('externalAccessKey')?.value.trim() || null,
       access_secret: document.getElementById('externalAccessSecret')?.value || null,
       endpoints: config?.endpoints || {},
@@ -1017,7 +1015,7 @@ export function installExternalAlgorithmPlatformRuntime({
       if (saveButton) saveButton.dataset.dirty = '1';
     };
     for (const input of document.querySelectorAll(
-      'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, #externalAutoSync, [data-external-endpoint]'
+      'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, [data-external-endpoint]'
     )) {
       input.addEventListener('input', markConfigDirty);
       input.addEventListener('change', markConfigDirty);
