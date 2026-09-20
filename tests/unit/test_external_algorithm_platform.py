@@ -245,6 +245,14 @@ class FakeChangLianClient:
     def compute_platforms(self):
         return {"data": [{"computePlatformId": "cp1", "computePlatformName": "ONNX"}]}
 
+    def version_list_by_product(self, product_id):
+        assert product_id == "p1"
+        return {"data": [{"algoVersionId": "av1", "productId": "p1", "weightCount": 1}]}
+
+    def weight_list_by_version(self, algo_version_id):
+        assert algo_version_id == "av1"
+        return {"data": [{"weightId": "w1", "algoVersionId": "av1"}]}
+
 
 class NestedCategoryChangLianClient(FakeChangLianClient):
     def category_tree(self):
@@ -532,7 +540,7 @@ def test_diagnostics_reports_read_only_master_data_checks(tmp_path: Path):
     ))
     result = service.diagnose()
     assert result["ok"] is True
-    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis"]
+    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis", "versions", "weights"]
 
 
 
@@ -562,7 +570,7 @@ def test_draft_connection_test_does_not_persist_credentials_or_url(tmp_path: Pat
 
     assert result["ok"] is True
     assert result["base_url"] == "https://draft.example"
-    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis"]
+    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis", "versions", "weights"]
     assert "draft-secret" not in str(result)
     assert service.repository.config()["base_url"] == "https://saved.example"
     ref = service.repository.config()["credential_ref"]
