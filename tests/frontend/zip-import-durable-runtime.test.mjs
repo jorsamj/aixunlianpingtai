@@ -58,13 +58,16 @@ test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
   assert.doesNotMatch(appSource,/\/api\/v18\/projects/);
 });
 
-test('import confirmation UI cannot create platform labels',()=>{
+test('ZIP review allows explicit canonical label creation without implicit create_labels payload',()=>{
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   const appSource=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
   assert.doesNotMatch(source,/data-zip-create/);
   assert.doesNotMatch(source,/create_labels/);
   assert.match(source,/选择平台标签/);
-  assert.doesNotMatch(appSource,/data-create-label/);
+  assert.match(source,/openInlineLabelCreate414\?\.\('zip'/);
+  assert.match(appSource,/window\.openInlineLabelCreate414=function/);
+  assert.match(appSource,/window\.submitInlineLabelCreate414=async function/);
+  assert.match(appSource,/\/api\/projects\/\$\{pid\(\)\}\/labels/);
   assert.doesNotMatch(appSource,/body\.create_labels/);
 });
 
