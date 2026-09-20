@@ -1623,7 +1623,10 @@ def external_algorithm_publish_router(
 
     @router.post("/api/v64/model-artifacts/storage-test")
     def test_model_artifact_storage(payload: StorageTestPayload):
-        return service.model_assets.test_storage(payload.storage_source_id)
+        return service.model_assets.test_storage(
+            payload.storage_source_id,
+            payload.public_base_url,
+        )
 
     @router.get("/api/v64/model-artifacts")
     def list_model_artifacts(
