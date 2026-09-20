@@ -2483,3 +2483,17 @@ VERSION.txt 仍为 42.24.0
 - 自动成果发布 Worker 当前每 30 秒扫描一次。该扫描涉及模型发现/校验，暂不降到 5 秒；主数据同步 thread 每 5 秒仅检查 due，Provider 请求仍严格 60 秒限流。
 - `VERSION.txt` 仍必须保持 `42.24.0`；当前 CI 结论以最新 HEAD 实际 Actions 为准，queued 不等于通过。
 
+---
+
+<!-- CHANGLIAN_REMOTE_CONVERSION_COLLISION_2026_09_20 -->
+## 2026-09-20 — Agent 转换 dual-root 同 ID 冲突已加固
+
+- 真实 Agent 转换会先在 `deployment/jobs/{task_id}` 写控制面 job，durable 结果提交后再在 `deploy/jobs/{task_id}` 写包含真实输出的 committed job；两者 **task/job id 相同**。
+- Model Artifact 与 External Publish 发现器继续同时兼容两个根，但去重时必须优先读取 `deploy/jobs`。如果旧 `deployment/jobs` 先被加入 `seen`，其陈旧 `queued` / 空 outputs 会遮住 durable `done` / RKNN 输出，造成远程转换结果漏归档、漏追加畅联云权重，并可能把已完成转换误显示为仍在进行。
+- 当前已把两个发现器的 root 顺序固定为：`deploy/jobs` → `deployment/jobs`，同 ID 时 durable committed result 为权威结果，旧根只作兼容兜底。
+- 新增永久回归：
+  - `test_auto_upload_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots`
+  - `test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots`
+- `External Algorithm Publish` CI 已固定 root precedence 和两条回归测试名称，禁止后续又退回旧根优先。
+- 这次属于后端结果发现/同步修复，不改变前端字段或交互；`VERSION.txt` 仍为 `42.24.0`。
+- 当前 GitHub Actions 仍必须以最新 HEAD 的实际 completed 结果为准；queued 不等于通过，也不具备部署资格。
