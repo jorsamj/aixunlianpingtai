@@ -58,7 +58,7 @@ test('publish UI keeps manual sync primary and stale compute mappings visible', 
     'utf8',
   );
   assert.match(source, /data-external-publish-automation="1"/);
-  assert.match(source, /高级设置 · 自动发布/);
+  assert.match(source, /<summary>高级操作<\/summary>/);
   assert.match(source, /算力环境来自最近一次新畅联主数据同步/);
   assert.match(source, /同步到新畅联/);
 });
@@ -184,12 +184,12 @@ test('manual publish fetches read-only status before write request', () => {
 
 
 test('publish UI locks recovery endpoints to official OpenAPI', async () => {
-  const source = await readFile(
+  const source = readFileSync(
     new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
     'utf8',
   );
-  assert.match(source, /官方发布接口/);
-  assert.match(source, /接口路径来自新畅联官方 OpenAPI，平台固定使用，不允许手工修改/);
+  assert.match(source, /官方同步接口/);
+  assert.match(source, /创建、查询和删除均使用新畅联官方 OpenAPI 固定路径，不允许前端修改/);
   assert.doesNotMatch(source, /id="externalPublishVersionList"/);
   assert.doesNotMatch(source, /id="externalPublishWeightList"/);
   assert.match(source, /version_list_by_product: '\/internal\/algorithm\/algorithm-version\/listByProduct\/\{productId\}'/);
