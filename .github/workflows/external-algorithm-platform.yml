@@ -165,6 +165,7 @@ jobs:
           grep -Fq 'def _business_code(body: Any) -> str:' platform_core/external_algorithm_platform.py
           grep -Fq 'business_code = _business_code(body)' platform_core/external_algorithm_platform.py
           grep -Fq 'test_changlian_business_failure_is_not_hidden_by_http_200' tests/unit/test_changlian_audit_client.py
+          grep -Fq 'test_changlian_product_list_uses_official_path_and_bearer_header' tests/unit/test_changlian_audit_client.py
           grep -Fq 'def _repair_legacy_zero_code_rows(self) -> int:' platform_core/integration_audit.py
           grep -Fq 'test_interaction_audit_repairs_only_legacy_http_200_code_zero_false_failures' tests/unit/test_integration_audit.py
           grep -Fq 'CHANG_LIAN_API_DOCUMENTS' platform_core/external_algorithm_platform.py
