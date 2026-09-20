@@ -162,7 +162,7 @@ jobs:
           grep -Fq 'identity = (target, chip_code, digest)' platform_core/model_artifacts.py
           grep -Fq 'test_same_sha_rockchip_artifacts_remain_distinct_by_chip' tests/unit/test_model_artifacts.py
           grep -Fq 'test_repository_migrates_legacy_identity_index_to_chip_scope' tests/unit/test_model_artifacts.py
-          grep -q "芯片编码（转换产物优先）" static/modules/external-algorithm-publish.js
+          grep -q "芯片编码（产物优先）" static/modules/external-algorithm-publish.js
           grep -q "model_artifacts" platform_core/model_artifacts.py
           grep -q "storage-test" platform_core/external_algorithm_publish.py
           grep -q "run-auto" platform_core/external_algorithm_publish.py
