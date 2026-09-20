@@ -11,10 +11,12 @@ import hmac
 import json
 import re
 import secrets
+import socket
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from .task_runtime import WorkerInstanceService
 from .task_runtime.models import utc_now
@@ -168,6 +170,73 @@ def verify_service_node_token(node_id: str, token: str, expected_hash: str) -> b
     return hmac.compare_digest(str(expected_hash or ""), _token_hash(key, supplied))
 
 
+def probe_service_node_address(
+    agent_url: object,
+    *,
+    timeout_seconds: float = 2.0,
+    connector=None,
+) -> dict[str, Any]:
+    """Probe configured Agent address reachability without conflating it with heartbeat truth."""
+    raw = _text(agent_url, field="agent_url", limit=1000)
+    if not raw:
+        return {
+            "tested": False,
+            "reachable": None,
+            "target": "",
+            "error": "未配置 Agent 地址，无法测试网络可达性",
+        }
+    candidate = raw if "://" in raw else f"http://{raw}"
+    try:
+        parsed = urlsplit(candidate)
+        scheme = str(parsed.scheme or "").lower()
+        if scheme not in {"http", "https", "ws", "wss", "tcp"}:
+            raise ValueError("Agent 地址仅支持 http/https/ws/wss/tcp")
+        host = str(parsed.hostname or "").strip()
+        if not host:
+            raise ValueError("Agent 地址缺少主机名")
+        port = parsed.port
+        if port is None:
+            if scheme in {"https", "wss"}:
+                port = 443
+            elif scheme in {"http", "ws"}:
+                port = 80
+            else:
+                raise ValueError("tcp Agent 地址必须明确端口")
+    except ValueError as error:
+        return {
+            "tested": False,
+            "reachable": None,
+            "target": raw,
+            "error": str(error),
+        }
+
+    timeout = max(0.2, min(float(timeout_seconds or 2.0), 10.0))
+    connect = connector or socket.create_connection
+    target = f"{host}:{port}"
+    connection = None
+    try:
+        connection = connect((host, int(port)), timeout=timeout)
+    except (OSError, TimeoutError) as error:
+        return {
+            "tested": True,
+            "reachable": False,
+            "target": target,
+            "error": str(error) or error.__class__.__name__,
+        }
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+    return {
+        "tested": True,
+        "reachable": True,
+        "target": target,
+        "error": "",
+    }
+
+
 class ServiceNodeRepository:
     def __init__(self, task_repository, *, heartbeat_ttl_seconds: int = HEARTBEAT_TTL_SECONDS):
         self.task_repository = task_repository
@@ -304,26 +373,40 @@ class ServiceNodeRepository:
         )
 
     def connectivity_snapshot(self, node_id: str, *, now: datetime | None = None) -> dict[str, Any]:
-        """Return connectivity truth from the authenticated Agent heartbeat channel."""
+        """Test configured address reachability and report Agent heartbeat as separate truth."""
         node = self.get_public(node_id, now=now)
         status = str(node.get("status") or "")
-        connected = bool(node.get("enabled") and node.get("reachable") and node.get("online"))
-        if connected:
-            message = "Agent 心跳正常"
-        elif status == "DISABLED":
-            message = "服务节点已停用"
-        elif status == "NEVER_CONNECTED":
-            message = "平台尚未收到该 Agent 的心跳"
+        heartbeat_online = bool(node.get("enabled") and node.get("reachable") and node.get("online"))
+        network = probe_service_node_address(node.get("agent_url"))
+        if network.get("reachable") is True:
+            network_message = "Agent 地址网络可达"
+        elif network.get("reachable") is False:
+            network_message = "Agent 地址网络不可达"
         else:
-            message = "Agent 心跳已超时"
+            network_message = str(network.get("error") or "未配置 Agent 地址，无法测试网络可达性")
+        if heartbeat_online:
+            heartbeat_message = "Agent 心跳正常"
+        elif status == "DISABLED":
+            heartbeat_message = "服务节点已停用"
+        elif status == "NEVER_CONNECTED":
+            heartbeat_message = "平台尚未收到该 Agent 的心跳"
+        else:
+            heartbeat_message = "Agent 心跳已超时"
         return {
             "node_id": str(node.get("node_id") or ""),
-            "connected": connected,
+            "connected": network.get("reachable") is True,
+            "network_tested": bool(network.get("tested")),
+            "network_reachable": network.get("reachable"),
+            "network_target": str(network.get("target") or ""),
+            "network_error": str(network.get("error") or ""),
+            "heartbeat_online": heartbeat_online,
+            "heartbeat_status": status,
             "status": status,
             "heartbeat_age_seconds": node.get("heartbeat_age_seconds"),
             "heartbeat_ttl_seconds": node.get("heartbeat_ttl_seconds"),
             "checked_at": utc_now(),
-            "message": message,
+            "message": network_message,
+            "heartbeat_message": heartbeat_message,
         }
 
     def create(self, payload: Mapping[str, Any]) -> tuple[dict[str, Any], str]:
@@ -576,4 +659,5 @@ __all__ = [
     "ServiceNodeRepository",
     "service_node_router",
     "verify_service_node_token",
+    "probe_service_node_address",
 ]

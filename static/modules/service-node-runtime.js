@@ -160,7 +160,7 @@ export function renderNodeCard(node) {
   const memoryPercent = safePercent(memory.usage_percent) ?? (Number(memory.total_bytes) > 0 ? Number(memory.used_bytes || 0) / Number(memory.total_bytes) * 100 : null);
   const diskPercent = safePercent(disk.usage_percent) ?? (Number(disk.total_bytes) > 0 ? Number(disk.used_bytes || 0) / Number(disk.total_bytes) * 100 : null);
   return `<article class="node633-card" data-node-card="${escapeHtml(node?.node_id || '')}">
-    <header class="node633-card-head"><div><div class="node633-title"><b>${escapeHtml(node?.display_name || node?.node_id || '未命名节点')}</b><span class="pill ${status.className}">${escapeHtml(status.label)}</span></div><p>${escapeHtml(node?.node_id || '-')} · ${escapeHtml(node?.hostname || '尚未上报主机名')}</p></div><div class="node633-actions"><button class="btn small" data-node-action="test" data-node-id="${escapeHtml(node?.node_id || '')}">检查 Agent</button><button class="btn small" data-node-action="edit" data-node-id="${escapeHtml(node?.node_id || '')}">编辑</button><button class="btn small ${node?.enabled ? 'soft' : 'primary'}" data-node-action="toggle" data-node-id="${escapeHtml(node?.node_id || '')}">${node?.enabled ? '停用' : '启用'}</button><button class="btn small" data-node-action="rotate" data-node-id="${escapeHtml(node?.node_id || '')}">轮换 Token</button><button class="btn small danger" data-node-action="delete" data-node-id="${escapeHtml(node?.node_id || '')}">删除</button></div></header>
+    <header class="node633-card-head"><div><div class="node633-title"><b>${escapeHtml(node?.display_name || node?.node_id || '未命名节点')}</b><span class="pill ${status.className}">${escapeHtml(status.label)}</span></div><p>${escapeHtml(node?.node_id || '-')} · ${escapeHtml(node?.hostname || '尚未上报主机名')}</p></div><div class="node633-actions"><button class="btn small" data-node-action="test" data-node-id="${escapeHtml(node?.node_id || '')}">测试联通</button><button class="btn small" data-node-action="edit" data-node-id="${escapeHtml(node?.node_id || '')}">编辑</button><button class="btn small ${node?.enabled ? 'soft' : 'primary'}" data-node-action="toggle" data-node-id="${escapeHtml(node?.node_id || '')}">${node?.enabled ? '停用' : '启用'}</button><button class="btn small" data-node-action="rotate" data-node-id="${escapeHtml(node?.node_id || '')}">轮换 Token</button><button class="btn small danger" data-node-action="delete" data-node-id="${escapeHtml(node?.node_id || '')}">删除</button></div></header>
     <div class="node633-meta-grid"><div><span>连接方式</span><b>${node?.connection_mode === 'local' ? '本机 Agent' : '远程 Agent'}</b></div><div><span>最后心跳</span><b>${escapeHtml(timeAgo(node?.heartbeat_age_seconds))}</b></div><div><span>系统</span><b>${escapeHtml([node?.os_name, node?.architecture].filter(Boolean).join(' / ') || '-')}</b></div><div><span>Agent / Build</span><b>${escapeHtml([node?.agent_version, node?.build_id].filter(Boolean).join(' / ') || '-')}</b></div></div>
     <section class="node633-cap-section"><div><span>允许能力</span>${capabilityChips(node?.allowed_capabilities, 'allowed')}</div><div><span>已上报能力</span>${capabilityChips(node?.reported_capabilities, 'reported')}</div><div><span>当前可调度能力</span>${capabilityChips(node?.effective_capabilities, 'effective')}</div></section>
     <div class="node633-resource-grid">${meter('CPU', cpu.usage_percent, `${cpu.physical_cores ?? '-'} 物理核 / ${cpu.logical_cores ?? '-'} 逻辑核`)}${meter('内存', memoryPercent, `${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)} · 可用 ${formatBytes(memory.available_bytes)}`)}${meter('磁盘', diskPercent, `${disk.path || '-'} · ${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} · 空闲 ${formatBytes(disk.free_bytes)}`)}</div>
@@ -368,7 +368,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   async function testConnectivity(nodeId, button = null) {
     const node = findNode(nodeId);
     if (!node) return notify?.('服务节点不存在，请刷新后重试');
-    const originalText = button?.textContent || '检查 Agent';
+    const originalText = button?.textContent || '测试联通';
     if (button) {
       button.disabled = true;
       button.textContent = '测试中…';
@@ -378,18 +378,25 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       const ageText = Number.isFinite(Number(result?.heartbeat_age_seconds))
         ? ` · 最近心跳 ${timeAgo(result.heartbeat_age_seconds)}`
         : '';
-      notify?.(result?.connected
-        ? `Agent 在线（已收到有效心跳）${ageText}`
-        : `Agent 当前未在线：${result?.message || '尚未收到有效心跳'}${ageText}`);
+      const heartbeatText = result?.heartbeat_online
+        ? `Agent 心跳在线${ageText}`
+        : `${result?.heartbeat_message || '尚未收到有效 Agent 心跳'}${ageText}`;
+      const networkText = result?.network_reachable === true
+        ? `网络可达（${result?.network_target || node.agent_url || 'Agent 地址'}）`
+        : result?.network_reachable === false
+          ? `网络不可达（${result?.network_target || node.agent_url || 'Agent 地址'}）`
+          : (result?.message || '未配置 Agent 地址，无法测试网络可达性');
+      notify?.(`${networkText} · ${heartbeatText}`);
       await refresh({paint: true, silent: true});
       return result;
     } catch (error) {
       notify?.(error?.message || error);
+      return null;
+    } finally {
       if (button) {
         button.disabled = false;
         button.textContent = originalText;
       }
-      return null;
     }
   }
 
