@@ -252,7 +252,7 @@ def test_historical_algorithm_projects_latest_trainable_version_without_rewritin
     assert "current_version_id" not in algorithm
 
 
-def test_rollback_persists_pointer_and_audit_without_deleting_current_version(tmp_path: Path):
+def test_rollback_always_deletes_current_version_and_records_audit(tmp_path: Path):
     path = tmp_path / "algorithms.json"
     versions = [
         _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
@@ -265,6 +265,7 @@ def test_rollback_persists_pointer_and_audit_without_deleting_current_version(tm
         "algorithm-one",
         "v3",
         now="2026-09-15T01:02:03+00:00",
+        delete_current_version=False,
         operator="local_user",
         expected_current_version_id="v5",
     )
@@ -272,22 +273,19 @@ def test_rollback_persists_pointer_and_audit_without_deleting_current_version(tm
     stored = algorithms_module.list_algorithms(path)[0]
     assert result["previous_current_version_id"] == "v5"
     assert result["current_version_id"] == "v3"
-    assert result["deleted_version_id"] is None
+    assert result["deleted_version_id"] == "v5"
+    assert result["action"] == "rollback_and_delete"
     assert stored["current_version_id"] == "v3"
-    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
-    assert stored["version_operations"][-1] == {
-        "id": result["operation_id"],
-        "algorithm_id": "algorithm-one",
-        "from_version_id": "v5",
-        "to_version_id": "v3",
-        "deleted_version_id": None,
-        "action": "rollback",
-        "operator": "local_user",
-        "created_at": "2026-09-15T01:02:03+00:00",
-        "cleanup_status": "not_required",
-        "cleanup_targets": [],
-        "cleanup_errors": [],
-    }
+    assert {row["id"] for row in stored["versions"]} == {"v3"}
+    operation = stored["version_operations"][-1]
+    assert operation["algorithm_id"] == "algorithm-one"
+    assert operation["from_version_id"] == "v5"
+    assert operation["to_version_id"] == "v3"
+    assert operation["deleted_version_id"] == "v5"
+    assert operation["action"] == "rollback_and_delete"
+    assert operation["operator"] == "local_user"
+    assert operation["created_at"] == "2026-09-15T01:02:03+00:00"
+    assert operation["cleanup_status"] == "cleanup_pending"
 
 
 def test_rollback_and_delete_preflight_failure_is_atomic(tmp_path: Path):
