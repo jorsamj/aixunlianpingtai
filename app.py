@@ -17909,7 +17909,16 @@ def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
     if source == target:
         return {'ok': True, 'changed_images': 0, 'changed_boxes': 0, 'source_label': source, 'target_label': target}
     project = get_project(project_id)
-    target_id = get_label_id(project, target)
+    active_targets = {
+        str(item.get('code')): int(item.get('class_id'))
+        for item in active_label_options(project_label_items(project))
+    }
+    if target not in active_targets:
+        raise HTTPException(
+            status_code=409,
+            detail='目标标签必须来自当前有效标签库；如需新标签，请先在“标签管理”中显式创建',
+        )
+    target_id = active_targets[target]
     changed_images = 0
     changed_boxes = 0
     for iid in ids:
