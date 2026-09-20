@@ -217,14 +217,24 @@ export function installExternalAlgorithmPlatformRuntime({
   let readiness = null;
   let connectionTest = null;
   let configEditing = false;
-  const selectedCategoryIds = new Set();
-  let selectedSource = 'all';
-  let selectedTrainingStatus = 'all';
   let unregisterAlgorithmDecorator = null;
   let trainingAnalysisObserver = null;
 
   function currentProjectId() {
     return String(projectId?.() || '');
+  }
+
+  function algorithmFilters() {
+    return algorithmListRuntime?.filterState?.() || {
+      query: '',
+      selectedCategoryIds: [],
+      source: 'all',
+      status: 'all',
+    };
+  }
+
+  function updateAlgorithmFilters(patch, options = {}) {
+    return algorithmListRuntime?.setFilters?.(patch, options) || algorithmFilters();
   }
 
   async function loadConfig({silent = false} = {}) {
@@ -299,14 +309,19 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   function categoryMatches(categoryId) {
-    return externalCategoryMatches(categoryId, selectedCategoryIds, cacheData?.categories || []);
+    return externalCategoryMatches(
+      categoryId,
+      algorithmFilters().selectedCategoryIds,
+      cacheData?.categories || [],
+    );
   }
 
   function algorithmListFilterMatches(algorithm) {
+    const filters = algorithmFilters();
     return externalAlgorithmListFilterMatch(algorithm, {
-      source: selectedSource,
-      trainingStatus: selectedTrainingStatus,
-      selectedCategoryIds,
+      source: filters.source,
+      trainingStatus: filters.status,
+      selectedCategoryIds: filters.selectedCategoryIds,
       categories: cacheData?.categories || [],
       jobs: state().jobs || [],
       readiness: isExternalAlgorithm(algorithm)
@@ -350,7 +365,8 @@ export function installExternalAlgorithmPlatformRuntime({
     const rows = s.algorithms || [];
     const root = document.getElementById('alg412List');
     if (!root) return;
-
+    const filters = algorithmFilters();
+    const selectedCategoryIds = new Set(filters.selectedCategoryIds || []);
 
     for (const card of root.querySelectorAll('.alg428-card')) {
       const actionButton = [...card.querySelectorAll('button')].find(button =>
@@ -430,13 +446,12 @@ export function installExternalAlgorithmPlatformRuntime({
         sourceSelect.dataset.algorithmSourceFilter = '1';
         sourceSelect.innerHTML = '<option value="all">全部来源</option><option value="internal">内部算法</option><option value="external">外部算法</option>';
         sourceSelect.addEventListener('change', () => {
-          selectedSource = sourceSelect.value || 'all';
-          decorateAlgorithmCards();
+          updateAlgorithmFilters({source: sourceSelect.value || 'all'});
         });
         const industry = filterBar.querySelector('#alg412Industry');
         filterBar.insertBefore(sourceSelect, industry || null);
       }
-      if (sourceSelect.value !== selectedSource) sourceSelect.value = selectedSource;
+      if (sourceSelect.value !== filters.source) sourceSelect.value = filters.source || 'all';
 
       let statusSelect = filterBar.querySelector('[data-algorithm-training-status-filter]');
       if (!statusSelect) {
@@ -452,12 +467,11 @@ export function installExternalAlgorithmPlatformRuntime({
           '<option value="blocked">不可训练</option>',
         ].join('');
         statusSelect.addEventListener('change', () => {
-          selectedTrainingStatus = statusSelect.value || 'all';
-          decorateAlgorithmCards();
+          updateAlgorithmFilters({status: statusSelect.value || 'all'});
         });
         filterBar.appendChild(statusSelect);
       }
-      if (statusSelect.value !== selectedTrainingStatus) statusSelect.value = selectedTrainingStatus;
+      if (statusSelect.value !== filters.status) statusSelect.value = filters.status || 'all';
     }
 
     const shell = document.querySelector('.alg428-shell');
@@ -471,6 +485,10 @@ export function installExternalAlgorithmPlatformRuntime({
       const validIds = new Set(categoryRows.map(row => row.id));
       for (const id of [...selectedCategoryIds]) {
         if (!validIds.has(id)) selectedCategoryIds.delete(id);
+      }
+      const normalizedSelectedIds = [...selectedCategoryIds];
+      if (JSON.stringify([...filters.selectedCategoryIds].sort()) !== JSON.stringify([...normalizedSelectedIds].sort())) {
+        updateAlgorithmFilters({selectedCategoryIds: normalizedSelectedIds}, {render: false});
       }
       let categoryBar = shell.querySelector('[data-external-category-filter]');
       if (!categoryBar) {
@@ -500,13 +518,15 @@ export function installExternalAlgorithmPlatformRuntime({
             if (!id) selectedCategoryIds.clear();
             else if (selectedCategoryIds.has(id)) selectedCategoryIds.delete(id);
             else selectedCategoryIds.add(id);
-            decorateAlgorithmCards();
+            updateAlgorithmFilters({selectedCategoryIds: [...selectedCategoryIds]});
           });
         }
       }
     } else {
       shell?.querySelector('[data-external-category-filter]')?.remove();
-      selectedCategoryIds.clear();
+      if (selectedCategoryIds.size) {
+        updateAlgorithmFilters({selectedCategoryIds: []}, {render: false});
+      }
     }
 
     if (toolbar) {
