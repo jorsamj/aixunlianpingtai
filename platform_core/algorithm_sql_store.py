@@ -82,6 +82,9 @@ class AlgorithmSqlStore:
                     "external_category_id", "external_analysis_id", "external_active",
                     "master_data_readonly", "external_last_synced_at",
                 ))
+                if str(item.get("source_type") or "").upper() == "EXTERNAL":
+                    item.setdefault("external_analysis_id", "")
+                    item.setdefault("external_analysis_ids", [])
                 versions = conn.execute(
                     "SELECT * FROM algorithm_versions WHERE algorithm_id=? ORDER BY sort_index ASC, id ASC",
                     (row["id"],),
@@ -413,6 +416,9 @@ class AlgorithmSqlStore:
         item = self._json_object(row["payload_json"])
         item.update({"id": row["id"], "name": row["name"], "remark": row["remark"] or "", "industry": row["industry"] or "", "algorithm_type": row["algorithm_type"] or "", "current_version_id": row["current_version_id"], "created_at": row["created_at"], "updated_at": row["updated_at"]})
         self._overlay_optional(item, row, ("source_type", "provider_type", "external_product_id", "external_product_code", "external_category_id", "external_analysis_id", "external_active", "master_data_readonly", "external_last_synced_at"))
+        if str(item.get("source_type") or "").upper() == "EXTERNAL":
+            item.setdefault("external_analysis_id", "")
+            item.setdefault("external_analysis_ids", [])
         versions = conn.execute("SELECT * FROM algorithm_versions WHERE algorithm_id=? ORDER BY sort_index ASC, id ASC", (row["id"],)).fetchall()
         item["versions"] = [self._version_from_row(v) for v in versions]
         analyses = conn.execute("SELECT * FROM algorithm_external_analyses WHERE algorithm_id=? ORDER BY sort_index ASC, external_analysis_id ASC", (row["id"],)).fetchall()
