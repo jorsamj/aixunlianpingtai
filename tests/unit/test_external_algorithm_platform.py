@@ -495,7 +495,7 @@ def test_public_config_marks_test_sign_as_integration_bridge(tmp_path: Path):
     )
     public = service.public_config()
     assert public["auth_mode"] == "test_sign_bridge"
-    assert public["auto_sync_interval_seconds"] == 600
+    assert public["auto_sync_interval_seconds"] == 60
 
 def test_external_training_analysis_requires_choice_for_multiple_methods():
     import pytest
