@@ -1054,7 +1054,7 @@ class ExternalAlgorithmPublishService:
                 code,
                 "模型资产存储尚未配置",
                 str(issue.get("message") or ""),
-                "请先在“模型资产存储”配置可用存储源，再同步到新畅联。",
+                "请先到“存储配置 → 算法与转换结果存储”选择可用存储源并测试通过，再同步到新畅联。",
                 409,
             )
         if code == "ARTIFACT_STORAGE_SOURCE_NOT_FOUND":
@@ -1069,7 +1069,7 @@ class ExternalAlgorithmPublishService:
             "EXTERNAL_PUBLISH_CONFIG_INCOMPLETE",
             "模型发布配置不完整",
             str(issue.get("message") or ""),
-            "请在“平台对接 → 畅联云版本发布”填写本平台外部访问地址。",
+            "请到“存储配置 → 算法与转换结果存储”填写 OSS Bucket 域名或 CDN 长期访问域名。",
             422,
         )
 
