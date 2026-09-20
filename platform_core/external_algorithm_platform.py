@@ -924,6 +924,57 @@ def _analysis_name(row: Mapping[str, Any]) -> str:
     return str(_value_from(row, "analysisName", "analysisTypeName", "name", "analysisType") or "").strip()
 
 
+def _analysis_detail_truth(
+    client: Any,
+    summary: Mapping[str, Any],
+    *,
+    product_id: str,
+) -> Dict[str, Any]:
+    analysis_id = _analysis_id(summary)
+    rows = _validated_external_items(
+        client.analysis_info(analysis_id),
+        id_resolver=_analysis_id,
+        error_code="EXTERNAL_ANALYSIS_DETAIL_ID_MISSING",
+        entity_name=f"分析方式 {analysis_id} 详情",
+    )
+    matches = [dict(row) for row in rows if _analysis_id(row) == analysis_id]
+    if len(matches) != 1:
+        raise PlatformError(
+            "EXTERNAL_ANALYSIS_DETAIL_ID_MISMATCH",
+            "新畅联分析方式详情身份不一致",
+            f"analysisId={analysis_id}; matches={len(matches)}",
+            "请核对 getInfo/{analysisId} 返回的 analysisId；平台不会使用其他分析方式详情判断训练资格。",
+            502,
+        )
+    detail = matches[0]
+    detail_product_id = str(_value_from(detail, "productId", "product_id") or "").strip()
+    if detail_product_id and detail_product_id != str(product_id):
+        raise PlatformError(
+            "EXTERNAL_ANALYSIS_DETAIL_PRODUCT_MISMATCH",
+            "新畅联分析方式详情所属产品不一致",
+            f"analysisId={analysis_id}; expectedProductId={product_id}; actualProductId={detail_product_id}",
+            "请核对分析方式与算法产品关联关系后重新同步。",
+            502,
+        )
+    status = _value_from(detail, "status")
+    analysis_type = _value_from(detail, "analysisType", "analysis_type")
+    if status is None or analysis_type in (None, ""):
+        raise PlatformError(
+            "EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE",
+            "新畅联分析方式详情缺少训练准入字段",
+            f"analysisId={analysis_id}; status={status!r}; analysisType={analysis_type!r}",
+            "训练资格必须由 getInfo/{analysisId} 明确返回 status 和 analysisType；平台不会从名称或列表摘要猜测。",
+            502,
+        )
+    # Detail values are authoritative. Keep harmless list-only fields as fallback,
+    # but never let listByProduct override status/analysisType from getInfo.
+    merged = dict(summary)
+    merged.update(detail)
+    merged["status"] = status
+    merged["analysisType"] = analysis_type
+    return merged
+
+
 def _analysis_summary(row: Mapping[str, Any]) -> Dict[str, Any]:
     status_value = _value_from(row, "status")
     return {
@@ -1678,12 +1729,16 @@ class ExternalAlgorithmPlatformService:
             analyses_by_product: Dict[str, list[Dict[str, Any]]] = {}
             for product in products:
                 pid = _product_id(product)
-                analyses_by_product[pid] = _validated_external_items(
+                summaries = _validated_external_items(
                     client.analyses(pid),
                     id_resolver=_analysis_id,
                     error_code="EXTERNAL_ANALYSIS_ID_MISSING",
                     entity_name=f"算法产品 {pid} 的分析方式",
                 )
+                analyses_by_product[pid] = [
+                    _analysis_detail_truth(client, summary, product_id=pid)
+                    for summary in summaries
+                ]
             synced_at = utc_now()
             digest = master_data_digest(
                 categories=categories,
