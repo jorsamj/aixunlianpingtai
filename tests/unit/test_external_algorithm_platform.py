@@ -74,7 +74,7 @@ def test_changlian_default_endpoints_match_documented_core_contract():
     assert endpoints.test_sign == "/internal/auth/test-sign"
     assert endpoints.token == "/internal/auth/token"
     assert endpoints.category_tree == "/internal/base/algorithm-category/tree"
-    assert endpoints.product_list == "/internal/algorithm/algorithm-product/listAll"
+    assert endpoints.product_list == "/internal/algorithm/product-ai/listAll"
     assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
     assert endpoints.compute_platform_list == "/internal/base/compute-platform/listAll"
     assert endpoints.version_create == "/internal/algorithm/algorithm-version/add"
@@ -92,7 +92,7 @@ def test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces():
     })
 
     assert endpoints.category_tree == "/internal/base/algorithm-category/tree"
-    assert endpoints.product_list == "/internal/algorithm/algorithm-product/listAll"
+    assert endpoints.product_list == "/internal/algorithm/product-ai/listAll"
     assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
     assert endpoints.compute_platform_list == "/internal/base/compute-platform/listAll"
     assert endpoints.version_create == "/internal/algorithm/algorithm-version/add"
