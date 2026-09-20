@@ -364,3 +364,37 @@ def test_auto_upload_discovers_durable_remote_conversion_root(tmp_path: Path):
     assert durable["target"] == "rockchip"
     assert durable["chip_code"] == "rk3576"
     assert durable["storage_status"] == "UPLOADED"
+
+
+def test_storage_test_verifies_long_term_delivery_url(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return type("Response", (), {"status_code": 206})()
+
+    monkeypatch.setattr("platform_core.model_artifacts.requests.get", fake_get)
+
+    result = service.test_storage("default_local", "https://models.example.com")
+
+    assert result["ok"] is True
+    assert result["public_url_checked"] is True
+    assert result["public_url_reachable"] is True
+    assert calls
+    assert calls[0][0].startswith("https://models.example.com/model-assets-healthcheck/")
+    assert calls[0][1]["headers"]["Range"] == "bytes=0-0"
+
+
+def test_storage_test_rejects_unreadable_delivery_url(tmp_path: Path, monkeypatch):
+    service = _service(tmp_path)
+
+    monkeypatch.setattr(
+        "platform_core.model_artifacts.requests.get",
+        lambda *_args, **_kwargs: type("Response", (), {"status_code": 403})(),
+    )
+
+    with pytest.raises(PlatformError) as blocked:
+        service.test_storage("default_local", "https://private.example.com")
+
+    assert blocked.value.code == "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE"
