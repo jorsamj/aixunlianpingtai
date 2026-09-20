@@ -65,6 +65,25 @@ analysisType = 1
 
 只有同时满足两项才允许 YOLO 训练。status=0、analysisType=2/3、字段缺失/空值、按名称猜“视觉”、以及仅有旧 `external_analysis_ids` 而无明细佐证，全部 fail closed。前端、后端、SQL store 和永久测试已统一到这一规则。
 
+### Automatic model delivery and destructive rollback
+
+Current product contract:
+
+- Algorithm rollback means deleting the current version, then selecting the target historical version as current.
+- ChangLian external-version rollback/direct delete calls the official version-remove API first. Local deletion is fail-closed if remote deletion fails or cannot be uniquely confirmed.
+- If delete transport returns an unknown result, the platform immediately re-queries the product version list. Confirmed absence is treated as recovered success; an existing or ambiguous version blocks local deletion.
+- Successful training creates the local algorithm version first. The trained model is then archived automatically to canonical model storage; after OSS verification, ChangLian version/weight records are synchronized with persisted `algoVersionId / weightId / filePath`.
+- Original trained model delivery is mandatory. Later ONNX/RKNN conversion results are appended to the same external `algoVersionId` without re-creating the version or re-registering existing weights.
+- Model Artifact storage is canonical. The UI page is **存储配置**, with **素材存储** and **算法与转换结果存储** sections. Model auto-upload cannot be disabled.
+- Model Artifact DB persists stable `public_url`; storage testing validates both provider read/write and the actual long-term URL that ChangLian will receive. Private/unreachable URLs fail before external publication.
+- External mode forces ChangLian master-data polling every 60 seconds. The daemon checks due every 5 seconds; provider requests remain 60-second rate limited.
+- Remote conversion discovery must scan both `deployment/jobs` and `deploy/jobs`. Remote conversion commits persist `source_trace.algorithm_id/version_id`.
+- Remote training objects already uploaded and verified in canonical model storage are reused by publication rather than duplicated.
+- Business API authentication remains `Authorization: Bearer <accessToken>` per the current full OpenAPI compilation.
+
+Latest code HEAD before this document update: `8b6f34122f608b74f469010e34480c4ee0265820`.
+GitHub Actions snapshot: 18 workflows queued, 0 completed. **queued != passed; do not deploy or switch `/data/platform/current`.**
+
 ### Current ChangLian contract
 
 新畅联当前 canonical Provider contract：
