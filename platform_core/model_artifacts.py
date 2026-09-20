@@ -703,7 +703,7 @@ class ModelArtifactService:
             "size_bytes": expected_size,
             "metadata": artifact_metadata,
         })
-        return self.repository.patch(
+        uploaded = self.repository.patch(
             str(row["artifact_id"]),
             storage_source_id=source_id,
             object_key=key,
@@ -711,6 +711,10 @@ class ModelArtifactService:
             storage_error="",
             uploaded_at=utc_now(),
         )
+        public_url = self.public_url(uploaded)
+        if public_url:
+            uploaded = self.repository.patch(str(row["artifact_id"]), public_url=public_url)
+        return uploaded
 
     def ingest_version(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> dict[str, int]:
         summary = {"discovered": 0, "uploaded": 0, "failed": 0, "pending": 0}
