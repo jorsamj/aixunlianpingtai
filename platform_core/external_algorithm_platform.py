@@ -222,7 +222,7 @@ class ExternalPlatformConfigPayload(BaseModel):
     provider: Literal["changlian"] = "changlian"
     base_url: str = ""
     auto_sync_enabled: bool = True
-    auto_sync_interval_seconds: int = Field(default=DEFAULT_AUTO_SYNC_INTERVAL_SECONDS, ge=60, le=60)
+    auto_sync_interval_seconds: int = Field(default=DEFAULT_AUTO_SYNC_INTERVAL_SECONDS, ge=60, le=86400)
     auto_publish_enabled: bool = True
     access_key: Optional[str] = None
     access_secret: Optional[str] = None
