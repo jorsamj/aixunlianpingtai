@@ -411,14 +411,22 @@ def commit_confirmed_review(context):
     )
     mapping = dict(confirmation.get("label_mapping") or {})
     if mapping:
-        from app import remember_project_label_aliases
-        remembered = remember_project_label_aliases(
-            context.task.project_id,
-            [{"class_id": source, "name": source} for source in mapping],
-            mapping,
-        )
-        if remembered:
-            result["remembered_label_aliases"] = remembered
+        try:
+            from app import remember_project_label_aliases
+            remembered = remember_project_label_aliases(
+                context.task.project_id,
+                [{"class_id": source, "name": source} for source in mapping],
+                mapping,
+            )
+            if remembered:
+                result["remembered_label_aliases"] = remembered
+        except Exception:
+            # Alias memory is secondary metadata. Ground Truth was already
+            # committed above, so never turn a successful formal annotation
+            # commit into a false task failure because alias persistence failed.
+            result["label_alias_memory_warning"] = (
+                "正式标注已入库，但标签别名记忆未保存；不影响本次标注结果"
+            )
     context.artifacts.atomic_write_json(
         context.task.task_id, "review/result.json", result,
     )
