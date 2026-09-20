@@ -60,6 +60,7 @@ test('external analysis options require exact status=1 and analysisType=1', () =
       {analysis_id: 'missing-status', analysis_name: '视觉智能分析', analysis_type: '1'},
       {analysis_id: 'missing-type', analysis_name: '视觉智能分析', status: '1'},
       {analysis_id: 'name-only', analysis_name: '视觉智能分析'},
+      {analysis_id: 'reserved-on', analysis_name: '预留分析', analysis_type: '2', status: '1'},
       {analysis_id: 'llm-on', analysis_name: '大模型智能分析', analysis_type: '3', status: '1'},
       {analysis_id: 'vision-off', analysis_name: '停用视觉分析', analysis_type: '1', status: '0'},
     ],
