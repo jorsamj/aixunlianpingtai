@@ -61,7 +61,9 @@ test('storage UI is appended only to expanded resource configuration', () => {
   const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('v42.22 multi-source material storage UI'));
   assert.match(block, /state\.v427Advanced/);
-  assert.match(block, /素材存储配置/);
+  assert.match(block, /存储配置/);
+  assert.match(block, /素材存储/);
+  assert.match(block, /modelArtifactStorageMount/);
   assert.match(block, /storage_source_id/);
   assert.match(block, /storage-imports\/scan/);
   assert.match(block, /浏览器上传/);
