@@ -3601,6 +3601,11 @@ class AddLabelReq(BaseModel):
 def add_label(project_id: str, payload: AddLabelReq):
     project = get_project(project_id)
     normalized_code = normalize_label(payload.label)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized_code):
+        raise HTTPException(
+            status_code=422,
+            detail="标签编码只允许英文、数字、_、-，且必须以英文字母开头",
+        )
     try:
         aliases = (
             _validate_label_aliases(
