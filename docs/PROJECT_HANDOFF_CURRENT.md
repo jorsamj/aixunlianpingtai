@@ -2430,3 +2430,22 @@ VERSION.txt 仍为 42.24.0
 
 本批主要实现提交从 `ecb466a` 起，包含四入口 UI、canonical API 复用、API/前端测试、缓存版本和 Label Normalization Contract 永久守卫。最终 GitHub Actions 结论必须以最新 HEAD 的实际 run 为准；queued 不等于通过。
 
+
+
+---
+
+<!-- CHANGLIAN_AUTOMATIC_DELIVERY_2026_09_20 -->
+# 最新收口：训练成果自动交付 + 删除式回退 + 统一存储配置
+
+2026-09-20 本轮按产品需求收口以下合同：
+
+- **算法回退 = 删除当前版本并回到目标历史版本**。外部新畅联算法会先调用官方 `GET /internal/algorithm/algorithm-version/remove/{algoVersionIds}`；远端删除失败时本地不删除。直接删除历史外部版本同样先删远端，再删本地。
+- 训练成功版本先落本平台算法版本库；原始训练模型进入统一 Model Artifact 库并自动上传已配置存储。新畅联同步随后创建算法版本并登记权重，保存远端 `algoVersionId / weightId`。
+- 转换结果（当前包括 ONNX / RKNN 等）完成后进入同一 Model Artifact 库并自动上传；如果远端版本已经存在，只向同一 `algoVersionId` 追加新权重，不重复建版本，也不重复登记已存在权重。
+- Model Artifact 本地数据库新增稳定 `public_url` truth；新畅联 `filePath` 使用“存储配置 → 算法与转换结果存储”的 OSS Bucket / CDN 长期访问域名，不把会过期的临时签名 URL 写入远端数据库。
+- 原“素材存储配置”页面统一改名为 **存储配置**：保留“素材存储”，新增“算法与转换结果存储”。算法产物存储选择现有存储源并配置对象前缀与长期访问域名；训练/转换结果自动归档为平台强制规则，不能被前端关闭。
+- 新畅联当前无 Webhook / subscription 合同，因此外部模式固定 **每 60 秒主动拉取主数据**；前端不允许关闭或改成更长间隔。调度线程每 5 秒检查 due，但真正 Provider 请求仍由 60 秒条件限流。
+- 自动发布不再只依赖训练结束瞬间的 `external_publish_requested_at` 标记；后台会恢复成功且 `artifact_verified=true` 的外部训练版本，防止一次钩子失败造成永久漏单。
+- 新畅联业务接口鉴权继续遵循完整 31 项 OpenAPI 汇编：`Authorization: Bearer <accessToken>`。不要把旧 `Access-Token` Header 结论恢复回来。
+
+仍需生产/live E2E 验证：真实 OSS `filePath` 可访问性、新建版本/权重真实返回、删除版本真实副作用、以及超时后的远端反查恢复。
