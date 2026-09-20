@@ -145,6 +145,7 @@ jobs:
                   'def remember_project_label_aliases(',
                   'def _prune_canonical_label_alias_conflicts(',
                   '"aliases": normalize_label_aliases(',
+                  "*[str(alias).strip() for alias in item.get('aliases') or []]",
               ),
               'platform_core/auto_label.py': (
                   'if any(alias and label == alias for alias in values):',
