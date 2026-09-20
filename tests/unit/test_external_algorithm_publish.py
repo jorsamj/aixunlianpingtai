@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from platform_core.algorithms import list_algorithms, save_algorithms
 from platform_core.external_algorithm_platform import (
     EndpointPayload,
@@ -270,6 +272,7 @@ def _seed_external_algorithm(root: Path, *, project_id="p1", version_id="v1"):
             "artifact_verified": True,
             "stored_path": str(model),
             "model_name": model.name,
+            "external_analysis_id": "analysis-1",
         }],
         "current_version_id": version_id,
     }]
@@ -1179,3 +1182,75 @@ def test_publish_reuses_existing_verified_remote_training_object(tmp_path: Path)
     assert after[0]["artifact_id"] == existing["artifact_id"]
     assert FakePublishingClient.weight_creates == 1
     assert FakePublishingClient.weights[0]["filePath"] == existing["public_url"]
+
+
+def test_publish_blocks_when_version_has_no_persisted_analysis_identity(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["versions"][0].pop("external_analysis_id", None)
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    service = _service(tmp_path, memory)
+
+    status = service.publication_status("p1", "a1", "v1")
+
+    assert status["identity_ready"] is False
+    assert status["publish_ready"] is False
+    assert status["identity_issues"][0]["code"] == "EXTERNAL_VERSION_ANALYSIS_MISSING"
+
+    with pytest.raises(Exception) as blocked:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert getattr(blocked.value, "code", "") == "EXTERNAL_VERSION_ANALYSIS_MISSING"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+
+
+@pytest.mark.parametrize(
+    ("analysis_type", "status"),
+    [("1", "0"), ("3", "1")],
+)
+def test_publish_blocks_when_version_analysis_is_not_current_trainable_visual(
+    tmp_path: Path,
+    analysis_type: str,
+    status: str,
+):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithms[0]["external_analyses"] = [{
+        "analysis_id": "analysis-1",
+        "analysis_name": "当前分析方式",
+        "analysis_type": analysis_type,
+        "status": status,
+    }]
+    algorithms[0]["external_analysis_ids"] = (
+        ["analysis-1"] if analysis_type == "1" and status == "1" else []
+    )
+    save_algorithms(_algorithms_file(tmp_path, "p1"), algorithms)
+    service = _service(tmp_path, memory)
+
+    with pytest.raises(Exception) as blocked:
+        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert getattr(blocked.value, "code", "") == "EXTERNAL_VERSION_ANALYSIS_STALE"
+    assert FakePublishingClient.version_creates == 0
+    assert FakePublishingClient.weight_creates == 0
+
+
+def test_remote_version_creation_never_falls_back_to_product_id(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.last_version_payload["analysisId"] == "analysis-1"
+    assert "productId" not in FakePublishingClient.last_version_payload
