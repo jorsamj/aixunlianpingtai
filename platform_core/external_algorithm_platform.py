@@ -1852,7 +1852,9 @@ def external_algorithm_platform_router(
                 _auto_sync_once()
             except Exception:
                 pass
-            time.sleep(30)
+            # Check often, but auto_sync_due() still enforces the 60-second
+            # provider pull interval. This keeps scheduling jitter small.
+            time.sleep(5)
 
     threading.Thread(
         target=_auto_sync_loop,
