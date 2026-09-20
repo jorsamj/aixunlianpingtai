@@ -1161,6 +1161,51 @@ def test_durable_remote_conversion_root_is_discovered_and_appended(tmp_path: Pat
     assert remote_weight["chipCode"] == "RK3576"
 
 
+def test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert first["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.weight_creates == 1
+
+    project = _project_dir(tmp_path, "p1")
+    job_id = "remote-rknn-collision"
+    legacy_job = project / "deployment" / "jobs" / job_id
+    legacy_job.mkdir(parents=True, exist_ok=True)
+    (legacy_job / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "status": "queued",
+        "target": "rockchip",
+        "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
+        "params": {"chip": "rk3576"},
+        "outputs": [],
+    }), encoding="utf-8")
+
+    remote_job = project / "deploy" / "jobs" / job_id
+    output = remote_job / "artifacts" / "model_rk3576.rknn"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"remote-rknn-collision-result")
+    (remote_job / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "status": "done",
+        "target": "rockchip",
+        "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
+        "params": {"chip": "rk3576"},
+        "outputs": [{"path": str(output), "available": True}],
+    }), encoding="utf-8")
+
+    second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1", automatic=True)
+
+    assert second["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+    remote_weight = next(row for row in FakePublishingClient.weights if row["fileName"] == "model_rk3576.rknn")
+    assert remote_weight["chipCode"] == "RK3576"
+
 def test_publish_reuses_existing_verified_remote_training_object(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
