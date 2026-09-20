@@ -4680,14 +4680,15 @@ window.installUsability417?.();
     if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(code))return toast('英文标签格式不正确，例如 helmet、safety_helmet');
     try{
       let existing=(state.labels||[]).find(item=>String(item.code)===code);
-      if(!existing){
+      const created=!existing;
+      if(created){
         await api(`/api/projects/${pid()}/labels`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:code,display_name:display||code,color})});
         await window.refreshLabels414?.(false);
         existing=(state.labels||[]).find(item=>String(item.code)===code);
       }
       closeModal();
-      if(!selectCreatedLabel414(String(context.kind||''),String(context.key||''),code))return toast('标签已创建，请在当前确认列表中重新选择');
-      toast(existing?'平台标签已选中；仍需确认后才会正式入库':'平台标签已创建并选中；仍需确认后才会正式入库');
+      if(!selectCreatedLabel414(String(context.kind||''),String(context.key||''),code))return toast(created?'标签已创建，请在当前确认列表中重新选择':'标签已存在，请在当前确认列表中重新选择');
+      toast(created?'平台标签已创建并选中；仍需确认后才会正式入库':'已选中现有平台标签；仍需确认后才会正式入库');
     }catch(error){toast(error.message||error)}
   };
 })();
