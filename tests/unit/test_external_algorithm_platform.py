@@ -979,10 +979,31 @@ def test_legacy_v12_training_entry_enforces_external_analysis_gate():
     end = source.index('# v42.8：训练任务统一进入资源队列', start)
     block = source[start:end]
 
+    assert "_refresh_external_training_algorithm(project_id, asset_algorithm)" in block
     assert "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)" in block
     assert "resolve_external_training_analysis(" in block
+    assert block.index("_refresh_external_training_algorithm(project_id, asset_algorithm)") < block.index("assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)")
+    assert block.index("assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)") < block.index("resolve_external_training_analysis(")
     assert block.index("resolve_external_training_analysis(") < block.index("if payload.split_mode:")
     assert '"external_analysis_id": external_analysis_id' in block
+
+
+def test_all_backend_training_create_owners_recheck_external_truth_before_local_gate():
+    source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
+    refresh = "_refresh_external_training_algorithm(project_id, asset_algorithm)"
+    local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
+    owners = (
+        ("def _enqueue_explicit_training(project_id: str, payload: TrainReq)", "def _training_runtime_env"),
+        ('@app.post("/api/projects/{project_id}/train/start")', "def _safe_paddle_lr"),
+        ('@app.post("/api/v12/projects/{project_id}/train/start")', "# v42.8：训练任务统一进入资源队列"),
+    )
+    for start_marker, end_marker in owners:
+        start = source.index(start_marker)
+        end = source.index(end_marker, start)
+        block = source[start:end]
+        assert refresh in block, start_marker
+        assert local_gate in block, start_marker
+        assert block.index(refresh) < block.index(local_gate), start_marker
 
 
 class DetailOverridesSummaryClient(FakeChangLianClient):

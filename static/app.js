@@ -835,7 +835,7 @@ window.installUsability417=function(){
     if(box)box.innerHTML=boxes.map((b,i)=>{const item=labels.find(x=>Number(x.class_id)===Number(b.class_id));return `<div class="ann414-boxrow ${Number(state.activeBox)===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span><i style="background:${esc(item?.color||'#64748b')}"></i><b>${i+1}. ${esc(label417(item?.code||b.label||'unknown'))}</b></span><select class="select" onclick="event.stopPropagation()" onchange="relabelBox414(${i},this.value)">${labels.map(x=>`<option value="${Number(x.class_id)}" ${Number(x.class_id)===Number(b.class_id)?'selected':''}>${esc(label417(x.code))}</option>`).join('')}</select></div>`}).join('')||'<div class="muted">暂无框。请在顶部选择标签，然后在图片上拖拽。</div>';
   };
   const baseSaveAnnotation417=window.saveAnn;
-  window.saveAnn=async function(silent=false){const savedId=String(state.activeImage?.id||''),ok=await baseSaveAnnotation417?.(silent);if(ok&&!silent){const queue=state.annotationQueue414||[],at=queue.findIndex(id=>String(id)===savedId);if(queue.length>1&&at>=0&&at<queue.length-1)setTimeout(()=>goAnnotation417(queue[at+1]),80)}return ok};
+  window.saveAnn=async function(silent=false,options={}){const savedId=String(state.activeImage?.id||''),ok=await baseSaveAnnotation417?.(silent,options);if(ok&&!silent){const queue=state.annotationQueue414||[],at=queue.findIndex(id=>String(id)===savedId);if(queue.length>1&&at>=0&&at<queue.length-1)setTimeout(()=>goAnnotation417(queue[at+1]),80)}return ok};
 
   function syncReferenceLabels417(){
     const input=document.getElementById('ai429Labels');if(!input)return;
@@ -2977,9 +2977,26 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
 
   // Annotation save: update the exact current image immediately; no full reload.
-  window.saveAnn=async function(silent=false){
-    if(!state.activeImage||!state.ann)return;
-    try{const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes:state.ann.boxes||[]})});state.ann=r?.annotation||state.ann;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];const img=(state.images||[]).find(x=>x.id===state.activeImage.id);if(img){img.box_count=state.ann.boxes.length;img.annotated=state.ann.boxes.length>0;img.labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.activeImage=img}state.annDirty=false;const e=document.getElementById('annSaveState');if(e)e.textContent=`已保存（${state.ann.boxes.length}框）`;drawBoxes();renderAnnSide();if(!silent)toast(`标注已保存：${state.ann.boxes.length}个框`)}catch(e){toast(`保存失败：${e.message||e}`)}
+  window.saveAnn=async function(silent=false,options={}){
+    if(!state.activeImage||!state.ann)return false;
+    const boxes=Array.isArray(state.ann.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true;
+    if(!boxes.length&&!confirmEmpty){
+      const saveState=document.getElementById('annSaveState');if(saveState)saveState.textContent='待确认无目标';
+      const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=false;
+      if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');
+      return false;
+    }
+    try{
+      const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes,annotation_state:boxes.length?'annotated':'confirmed_empty'})});
+      state.ann=r?.annotation||state.ann;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
+      const img=(state.images||[]).find(x=>String(x.id)===String(state.activeImage.id));
+      if(img){img.box_count=state.ann.boxes.length;img.annotated=state.ann.boxes.length>0;img.labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];img.processing_status='processed';state.activeImage=r?.image||img}
+      state.annDirty=false;
+      const saveState=document.getElementById('annSaveState');if(saveState)saveState.textContent=state.ann.boxes.length?`已保存（${state.ann.boxes.length}框）`:'已确认无目标';
+      const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=state.ann.boxes.length>0;
+      drawBoxes();renderAnnSide();if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length}个框`:'已确认当前图片无目标');
+      return true;
+    }catch(e){if(!silent)toast(`保存失败：${e.message||e}`);return false}
   };
 
   // ---------------- Dataset gallery ----------------
@@ -3618,7 +3635,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     st.addEventListener('pointerup',finish);st.addEventListener('pointercancel',finish);
   };
   const saveAnn411=window.saveAnn;
-  window.saveAnn=async function(silent=false){await saveAnn411(silent);const img=(state.images||[]).find(x=>x.id===state.activeImage?.id);if(img&&state.ann?.boxes){img.annotation_preview=state.ann.boxes.slice(0,32).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2}));img.processing_status=state.ann.boxes.length?'processed':img.processing_status;invalidateQuality411()}};
+  window.saveAnn=async function(silent=false,options={}){const ok=await saveAnn411(silent,options);if(!ok)return false;const img=(state.images||[]).find(x=>String(x.id)===String(state.activeImage?.id));if(img&&state.ann?.boxes){img.annotation_preview=state.ann.boxes.slice(0,32).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2}));img.processing_status='processed';invalidateQuality411()}return true};
 
   // ---------- image upload with actual browser upload progress / ETA ----------
   function uploadModal411(title,fileCount,totalBytes){return `<div class="up411"><section><b>${esc(title)}</b><span>${fileCount} 个文件 · ${bytes411(totalBytes)}</span></section><div class="up411-bar"><i id="up411Bar" style="width:0%"></i></div><div class="up411-line"><span id="up411Text">准备上传</span><b id="up411Pct">0%</b></div><div class="up411-line muted"><span>已用时间 <b id="up411Elapsed">0秒</b></span><span>预计剩余 <b id="up411Eta">计算中</b></span></div><div id="up411Result"></div></div>`}

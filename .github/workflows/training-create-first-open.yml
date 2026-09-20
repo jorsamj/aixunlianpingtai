@@ -62,6 +62,9 @@ jobs:
           grep -Fq '/api/v63/external-algorithm-platform/training-preflight?project_id=${encodeURIComponent(pid())}&algorithm_id=${encodeURIComponent(algorithmId)}' static/app.js
           grep -Fq 'refreshTrainRunCenter429' static/app.js
           grep -Fq 'annPointerAbort' static/app.js
+          grep -Fq 'saveAnn411(silent,options)' static/app.js
+          grep -Fq 'baseSaveAnnotation417?.(silent,options)' static/app.js
+          grep -Fq "annotation_state:boxes.length?'annotated':'confirmed_empty'" static/app.js
           grep -Fq 'training create re-reads algorithm truth before opening and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
           grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
           grep -Fq 'stale changlian master data disables submit and blocks network POST' tests/frontend/training-submit.test.mjs

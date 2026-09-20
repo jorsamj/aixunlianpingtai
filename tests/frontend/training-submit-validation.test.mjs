@@ -68,17 +68,25 @@ test('training create re-reads algorithm truth before opening and training log r
   assert.match(source, /训练已完成/);
 });
 
-test('annotation workbench saves locally without full reload and cleans pointer listeners', () => {
+test('annotation workbench saves locally without full reload and preserves explicit empty confirmation through final owners', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420ConfirmEmpty[\s\S]*?确认无目标/);
-  assert.match(source, /confirmEmptyAnnotation420/);
-  assert.match(source, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
-  assert.match(source, /annPointerAbort/);
-  assert.doesNotMatch(source, /await Promise\.all\(\[apiRequestAnnotation420\(id\),preload\(image\.url\)\]\)/);
-  const focusedSave = source.match(/window\.saveAnn=async\(silent=false,options=\{\}\)=>\{[^\n]+/s)?.[0] || '';
+  assert.match(source, /confirmEmptyAnnotation420=\(\)=>window\.saveAnn\(false,\{confirmEmpty:true\}\)/);
+  const focusedSave = source.match(/\/\/ Annotation save: update the exact current image immediately; no full reload\.[\s\S]*?\/\/ ---------------- Dataset gallery/)?.[0] || '';
+  assert.match(focusedSave, /silent=false,options=\{\}/);
+  assert.match(focusedSave, /confirmEmpty=options\?\.confirmEmpty===true/);
+  assert.match(focusedSave, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
+  assert.match(focusedSave, /return true/);
+  assert.match(focusedSave, /return false/);
   assert.doesNotMatch(focusedSave, /await loadRelated\(\)/);
+  const save417 = source.match(/const baseSaveAnnotation417=window\.saveAnn;[\s\S]*?function syncReferenceLabels417/)?.[0] || '';
+  assert.match(save417, /baseSaveAnnotation417\?\.\(silent,options\)/);
+  const save411 = source.match(/const saveAnn411=window\.saveAnn;[\s\S]*?\/\/ ---------- image upload/)?.[0] || '';
+  assert.match(save411, /saveAnn411\(silent,options\)/);
+  assert.match(save411, /if\(!ok\)return false/);
+  assert.match(save411, /return true/);
+  assert.doesNotMatch(source, /await Promise\.all\(\[apiRequestAnnotation420\(id\),preload\(image\.url\)\]\)/);
 });
-
 
 test('dashboard training task success rate distinguishes no-data and successful status aliases', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');

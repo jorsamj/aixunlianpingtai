@@ -6350,6 +6350,7 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         if asset_algorithm is not None and payload.iteration_action
         else None
     )
+    asset_algorithm = _refresh_external_training_algorithm(project_id, asset_algorithm)
     assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = str(payload.framework or "ultralytics").strip().lower()
@@ -6563,6 +6564,7 @@ def start_train(project_id: str, payload: TrainReq):
     validate_train_request(payload)
     p = project_dir(project_id)
     asset_algorithm = next((x for x in list_algorithms_internal(project_id) if x.get("id") == (payload.algorithm_asset_id or "")), None)
+    asset_algorithm = _refresh_external_training_algorithm(project_id, asset_algorithm)
     assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(asset_algorithm, payload.external_analysis_id)
     framework = (payload.framework or "ultralytics").strip().lower()
@@ -8558,6 +8560,7 @@ def v12_start_train(project_id: str, payload: TrainReq):
     # Every training entry point must enforce the ChangLian analysis contract.
     # Only status=1 AND analysisType=1 is trainable; legacy v12 calls may not
     # bypass the durable-training preflight.
+    asset_algorithm = _refresh_external_training_algorithm(project_id, asset_algorithm)
     assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)
     external_analysis_id = resolve_external_training_analysis(
         asset_algorithm,
@@ -18339,6 +18342,7 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
 
 
 from platform_core.external_algorithm_platform import (
+    ExternalAlgorithmPlatformService,
     assert_algorithm_mutable,
     assert_external_algorithm_master_data_current,
     assert_local_algorithm_create_allowed,
@@ -18356,6 +18360,30 @@ from platform_core.remote_execution_transport import (
     RemoteExecutionTransportError,
     RemoteExecutionTransportService,
 )
+
+
+def _refresh_external_training_algorithm(project_id: str, asset_algorithm):
+    """Re-read ChangLian product/analysis truth at the final backend create boundary."""
+    if not isinstance(asset_algorithm, dict):
+        return asset_algorithm
+    if (
+        str(asset_algorithm.get("source_type") or "").upper() != "EXTERNAL"
+        or str(asset_algorithm.get("provider_type") or "").upper() != "CHANG_LIAN"
+    ):
+        return asset_algorithm
+    service = ExternalAlgorithmPlatformService(
+        data_dir=DATA_DIR,
+        secret_store_factory=_v35_secret_store,
+    )
+    result = service.training_preflight(
+        project_id=project_id,
+        algorithms_path=algorithms_file(project_id),
+        algorithm_id=str(asset_algorithm.get("id") or ""),
+    )
+    fresh = result.get("algorithm") if isinstance(result, dict) else None
+    if not isinstance(fresh, dict):
+        raise RuntimeError("external training preflight returned no algorithm truth")
+    return fresh
 
 
 def _remote_execution_transport_service():
