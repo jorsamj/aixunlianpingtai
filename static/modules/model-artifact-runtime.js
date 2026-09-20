@@ -177,7 +177,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
           <div class="field"><label>算法产物存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择存储源</option>${storageOptions(c.storageSourceId)}</select><div class="subline">建议选择上方已配置并测试通过的阿里云 OSS。</div></div>
           <div class="field"><label>对象目录前缀</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.objectPrefix)}" placeholder="model-assets"></div>
           <div class="field full"><label>OSS / CDN 长期访问域名</label><div class="row"><input id="modelArtifactPublicBaseUrl" class="input" style="flex:1" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://your-bucket.oss-cn-hangzhou.aliyuncs.com"><button type="button" class="btn" id="modelArtifactSuggestPublicUrl">从 OSS 生成</button></div><div class="subline" id="modelArtifactPublicUrlHint">用于写入畅联云权重 filePath。请使用长期可访问域名，不保存会过期的临时签名链接。</div></div>
-          <label class="field check"><input id="modelArtifactAutoUpload" type="checkbox" ${c.autoUploadEnabled ? 'checked' : ''}> 训练/转换完成后自动上传</label>
+          <div class="field"><label>归档策略</label><div class="alert soft"><b>自动归档已启用</b><span>训练模型和转换结果完成后自动上传到这里配置的存储，不需要人工触发。</span></div></div>
         </div>
         <div class="ma-actions"><button class="btn" id="modelArtifactTestStorage">测试存储</button><button class="btn" id="modelArtifactRunNow">立即扫描上传</button><button class="btn primary" id="modelArtifactSave">保存算法产物存储配置</button></div>
       </div>
