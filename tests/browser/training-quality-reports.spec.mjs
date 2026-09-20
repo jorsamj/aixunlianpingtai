@@ -301,9 +301,10 @@ test('training queue displays numeric priorities and orders each resource by pri
   await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.refresh)).toBe('function');
   await page.evaluate(async () => {
     await window.setPage?.('训练任务');
-    await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'browser-test'});
+    window.PollRegistryRuntime?.clear?.('training-jobs');
     clearInterval(state.jobPollTimer);
     state.jobPollTimer = null;
+    await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'browser-test'});
   });
 
   const rows = page.locator('.train428-table tbody tr');
