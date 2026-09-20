@@ -1057,3 +1057,29 @@ def test_auto_publish_worker_recovers_successful_external_version_without_reques
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_requested_at"]
     assert version["external_publish_status"] == "published"
+
+
+def test_rollback_remote_delete_fails_closed_when_same_name_remote_version_is_ambiguous(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    FakePublishingClient.versions = [
+        {"algoVersionId": "remote-a", "versionName": version["version_name"]},
+        {"algoVersionId": "remote-b", "versionName": version["version_name"]},
+    ]
+
+    try:
+        service.delete_version_for_rollback(
+            project_id="p1",
+            algorithm=algorithm,
+            version=version,
+        )
+        assert False, "ambiguous same-name remote versions must stop local deletion"
+    except Exception as error:
+        assert getattr(error, "code", "") == "EXTERNAL_VERSION_DELETE_AMBIGUOUS"
+
+    assert FakePublishingClient.version_removes == 0
