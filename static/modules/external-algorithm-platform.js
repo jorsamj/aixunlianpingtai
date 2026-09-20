@@ -44,13 +44,12 @@ export function externalAlgorithmTrainingReadiness(algorithm = {}, currentMaster
       message: '该算法已在新畅联下架，不能新建训练任务',
     };
   }
-  const syncedAnalyses = Array.isArray(algorithm.external_analyses) ? algorithm.external_analyses : [];
-  if (syncedAnalyses.length && externalAnalysisOptions(algorithm).length === 0) {
+  if (externalAnalysisOptions(algorithm).length === 0) {
     return {
       ready: false,
       status: 'no-visual-analysis',
       reason: 'external-visual-analysis-missing',
-      message: '当前算法没有已启用的视觉智能分析（analysisType=1），不能创建 YOLO 训练任务',
+      message: '当前算法没有同时满足 status=1 且 analysisType=1 的分析方式，不能创建 YOLO 训练任务',
     };
   }
   const expected = String(currentMasterDigest || '').trim();
@@ -75,20 +74,12 @@ export function algorithmSourceLabel(algorithm) {
 
 export function externalAnalysisOptions(algorithm = {}) {
   const rows = Array.isArray(algorithm.external_analyses) ? algorithm.external_analyses : [];
-  const normalized = rows.map(row => ({
+  return rows.map(row => ({
     id: String(row?.analysis_id || row?.analysisId || ''),
     name: String(row?.analysis_name || row?.analysisName || row?.analysis_type || row?.analysisType || ''),
-    type: String(row?.analysis_type || row?.analysisType || ''),
-    status: String(row?.status ?? ''),
-  })).filter(row => {
-    if (!row.id) return false;
-    if (['0', 'false', 'disabled'].includes(row.status.toLowerCase())) return false;
-    if (row.type) return row.type === '1';
-    const text = row.name.toLowerCase();
-    return text.includes('视觉') || text.includes('vision') || text.includes('video');
-  });
-  if (rows.length) return normalized;
-  return (algorithm.external_analysis_ids || []).map(id => ({id: String(id), name: String(id), type: '', status: ''}));
+    type: String(row?.analysis_type ?? row?.analysisType ?? '').trim(),
+    status: String(row?.status ?? '').trim(),
+  })).filter(row => row.id && row.type === '1' && row.status === '1');
 }
 
 export function externalAlgorithmMapping(algorithm = {}) {
