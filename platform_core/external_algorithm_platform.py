@@ -27,7 +27,7 @@ PROVIDER_LOCAL = "LOCAL"
 PROVIDER_CHANGLIAN = "CHANG_LIAN"
 SOURCE_LOCAL = "LOCAL"
 SOURCE_EXTERNAL = "EXTERNAL"
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 CACHE_SCHEMA_VERSION = 1
 MAX_SYNC_HISTORY = 100
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 600
@@ -44,32 +44,47 @@ def _clean_path(value: Any, fallback: str = "") -> str:
     return text
 
 
+LEGACY_CHANGLIAN_ENDPOINTS: Dict[str, str] = {
+    "/algorithm-category/tree": "/internal/base/algorithm-category/tree",
+    "/algorithm-product/listAll": "/internal/algorithm/algorithm-product/listAll",
+    "/algorithm-product-analysis/listByProduct/{productId}": "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}",
+    "/compute-platform/listAll": "/internal/base/compute-platform/listAll",
+    "/algorithm-version/add": "/internal/algorithm/algorithm-version/add",
+    "/algorithm-weight/add": "/internal/algorithm/algorithm-weight/add",
+}
+
+
+def _canonical_endpoint_path(value: Any, fallback: str) -> str:
+    path = _clean_path(value, fallback)
+    return LEGACY_CHANGLIAN_ENDPOINTS.get(path, path)
+
+
 @dataclass(frozen=True)
 class ChangLianEndpoints:
-    """Endpoint paths are configurable because deployments may mount the same API under a prefix."""
+    """Canonical 新畅联 internal API endpoint contract."""
 
     test_sign: str = "/internal/auth/test-sign"
     token: str = "/internal/auth/token"
-    category_tree: str = "/algorithm-category/tree"
-    product_list: str = "/algorithm-product/listAll"
-    analysis_by_product: str = "/algorithm-product-analysis/listByProduct/{productId}"
-    compute_platform_list: str = "/compute-platform/listAll"
-    version_create: str = "/algorithm-version/add"
-    weight_create: str = "/algorithm-weight/add"
+    category_tree: str = "/internal/base/algorithm-category/tree"
+    product_list: str = "/internal/algorithm/algorithm-product/listAll"
+    analysis_by_product: str = "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
+    compute_platform_list: str = "/internal/base/compute-platform/listAll"
+    version_create: str = "/internal/algorithm/algorithm-version/add"
+    weight_create: str = "/internal/algorithm/algorithm-weight/add"
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "ChangLianEndpoints":
         data = dict(value or {})
         defaults = cls()
         return cls(
-            test_sign=_clean_path(data.get("test_sign"), defaults.test_sign),
-            token=_clean_path(data.get("token"), defaults.token),
-            category_tree=_clean_path(data.get("category_tree"), defaults.category_tree),
-            product_list=_clean_path(data.get("product_list"), defaults.product_list),
-            analysis_by_product=_clean_path(data.get("analysis_by_product"), defaults.analysis_by_product),
-            compute_platform_list=_clean_path(data.get("compute_platform_list"), defaults.compute_platform_list),
-            version_create=_clean_path(data.get("version_create"), defaults.version_create),
-            weight_create=_clean_path(data.get("weight_create"), defaults.weight_create),
+            test_sign=_canonical_endpoint_path(data.get("test_sign"), defaults.test_sign),
+            token=_canonical_endpoint_path(data.get("token"), defaults.token),
+            category_tree=_canonical_endpoint_path(data.get("category_tree"), defaults.category_tree),
+            product_list=_canonical_endpoint_path(data.get("product_list"), defaults.product_list),
+            analysis_by_product=_canonical_endpoint_path(data.get("analysis_by_product"), defaults.analysis_by_product),
+            compute_platform_list=_canonical_endpoint_path(data.get("compute_platform_list"), defaults.compute_platform_list),
+            version_create=_canonical_endpoint_path(data.get("version_create"), defaults.version_create),
+            weight_create=_canonical_endpoint_path(data.get("weight_create"), defaults.weight_create),
         )
 
 
