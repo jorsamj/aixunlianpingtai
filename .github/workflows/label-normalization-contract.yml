@@ -127,6 +127,7 @@ jobs:
               'platform_core/labels.py': (
                   'def suggest_label_code(',
                   'def confirmed_alias_updates(',
+                  'ambiguous_sources = {',
                   'def normalize_label_aliases(',
               ),
               'platform_core/storage/import_confirmation.py': (
