@@ -357,6 +357,10 @@ class ExternalPublicationRepository:
     def upsert_artifact(self, publication_key: str, discovered: Mapping[str, Any], mapping: Mapping[str, Any]) -> Dict[str, Any]:
         artifact_id = str(discovered["artifact_id"])
         stamp = utc_now()
+        existing = self.artifact(artifact_id)
+        next_compute_platform_id = str(mapping.get("compute_platform_id") or "")
+        next_chip_code = _canonical_chip_code(discovered.get("chip_code") or mapping.get("chip_code") or "")
+        next_file_name = str(discovered["file_name"])
         with closing(self._connect()) as database:
             database.execute(
                 """
@@ -365,6 +369,7 @@ class ExternalPublicationRepository:
                  source_path, source_sha256, size_bytes, compute_platform_id, chip_code, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(artifact_id) DO UPDATE SET
+                    file_name=excluded.file_name,
                     source_path=excluded.source_path,
                     source_sha256=excluded.source_sha256,
                     size_bytes=excluded.size_bytes,
@@ -376,11 +381,22 @@ class ExternalPublicationRepository:
                     artifact_id, publication_key, str(discovered["project_id"]), str(discovered["algorithm_id"]),
                     str(discovered["version_id"]), str(discovered["target"]), str(discovered["file_name"]),
                     str(discovered["source_path"]), str(discovered["sha256"]), int(discovered["size_bytes"]),
-                    str(mapping.get("compute_platform_id") or ""), _canonical_chip_code(discovered.get("chip_code") or mapping.get("chip_code") or ""),
+                    next_compute_platform_id, next_chip_code,
                     stamp, stamp,
                 ),
             )
-        return self.artifact(artifact_id) or {}
+        current = self.artifact(artifact_id) or {}
+        if existing and str(existing.get("external_weight_id") or "") and (
+            str(existing.get("file_name") or "") != next_file_name
+            or str(existing.get("compute_platform_id") or "") != next_compute_platform_id
+            or _canonical_chip_code(existing.get("chip_code") or "") != next_chip_code
+        ):
+            current = self.patch_artifact(
+                artifact_id,
+                sync_status="PENDING",
+                last_error="",
+            )
+        return current
 
     def patch_artifact(self, artifact_id: str, **changes: Any) -> Dict[str, Any]:
         allowed = {
@@ -418,6 +434,9 @@ class PublishingChangLianClient(ChangLianClient):
 
     def create_weight(self, payload: Mapping[str, Any]) -> Any:
         return self.weight_create(payload)
+
+    def edit_weight(self, payload: Mapping[str, Any]) -> Any:
+        return self.weight_edit(payload)
 
     def list_version_weights(self, algo_version_id: Any) -> Any:
         return self.weight_list_by_version(algo_version_id)
@@ -1027,12 +1046,19 @@ class ExternalAlgorithmPublishService:
                 "请到“存储配置 → 算法与转换结果存储”填写 OSS Bucket 域名或 CDN 域名。",
                 409,
             )
-        return self.repository.patch_artifact(
-            str(artifact["artifact_id"]),
-            storage_source_id=str(stored.get("storage_source_id") or ""),
-            object_key=str(stored.get("object_key") or ""),
-            public_url=public_url, upload_status="UPLOADED", last_error="",
-        )
+        patch = {
+            "storage_source_id": str(stored.get("storage_source_id") or ""),
+            "object_key": str(stored.get("object_key") or ""),
+            "public_url": public_url,
+            "upload_status": "UPLOADED",
+            "last_error": "",
+        }
+        if (
+            str(artifact.get("external_weight_id") or "")
+            and str(artifact.get("public_url") or "") != public_url
+        ):
+            patch["sync_status"] = "PENDING"
+        return self.repository.patch_artifact(str(artifact["artifact_id"]), **patch)
 
     def _recover_weight(self, client: PublishingChangLianClient, external_version_id: str, artifact: Mapping[str, Any]) -> str:
         try:
@@ -1049,13 +1075,32 @@ class ExternalAlgorithmPublishService:
                         return str(row[key])
         return ""
 
+    @staticmethod
+    def _remote_weight_id(row: Mapping[str, Any]) -> str:
+        for key in ("weightId", "algorithmWeightId", "id"):
+            if row.get(key) not in (None, ""):
+                return str(row[key])
+        return ""
+
+    @classmethod
+    def _remote_weight_contract_matches(
+        cls,
+        row: Mapping[str, Any],
+        artifact: Mapping[str, Any],
+        *,
+        weight_id: str = "",
+    ) -> bool:
+        if weight_id and cls._remote_weight_id(row) != str(weight_id):
+            return False
+        return (
+            str(row.get("fileName") or row.get("name") or "") == str(artifact.get("file_name") or "")
+            and str(row.get("computePlatformId") or "") == str(artifact.get("compute_platform_id") or "")
+            and _canonical_chip_code(row.get("chipCode") or "") == _canonical_chip_code(artifact.get("chip_code") or "")
+            and str(row.get("filePath") or "") == str(artifact.get("public_url") or "")
+        )
+
     def _sync_weight(self, artifact: Mapping[str, Any], external_version_id: str, client: PublishingChangLianClient) -> Dict[str, Any]:
         current = self.repository.artifact(str(artifact["artifact_id"])) or dict(artifact)
-        if str(current.get("external_weight_id") or ""):
-            return current
-        recovered = self._recover_weight(client, external_version_id, current)
-        if recovered:
-            return self.repository.patch_artifact(str(current["artifact_id"]), external_weight_id=recovered, sync_status="SYNCED", last_error="")
         payload = {
             "algoVersionId": external_version_id,
             "computePlatformId": str(current.get("compute_platform_id") or ""),
@@ -1063,6 +1108,53 @@ class ExternalAlgorithmPublishService:
             "fileName": str(current.get("file_name") or ""),
             "filePath": str(current.get("public_url") or ""),
         }
+        external_weight_id = str(current.get("external_weight_id") or "")
+        if external_weight_id:
+            if str(current.get("sync_status") or "").upper() == "SYNCED":
+                return current
+            edit_payload = {"weightId": external_weight_id, **payload}
+            try:
+                client.edit_weight(edit_payload)
+            except Exception as error:
+                confirmed = False
+                try:
+                    rows = extract_items(client.list_version_weights(external_version_id))
+                    confirmed = any(
+                        self._remote_weight_contract_matches(
+                            row,
+                            current,
+                            weight_id=external_weight_id,
+                        )
+                        for row in rows
+                    )
+                except Exception:
+                    confirmed = False
+                if confirmed:
+                    return self.repository.patch_artifact(
+                        str(current["artifact_id"]),
+                        sync_status="SYNCED",
+                        last_error="",
+                    )
+                self.repository.patch_artifact(
+                    str(current["artifact_id"]),
+                    sync_status="UNKNOWN",
+                    last_error=str(error),
+                )
+                raise PlatformError(
+                    "EXTERNAL_WEIGHT_EDIT_UNKNOWN",
+                    "新畅联权重文件更新结果无法确认",
+                    str(error),
+                    "请先核对新畅联该 weightId 的 computePlatformId / chipCode / fileName / filePath；平台不会重复创建新权重。",
+                    502,
+                ) from error
+            return self.repository.patch_artifact(
+                str(current["artifact_id"]),
+                sync_status="SYNCED",
+                last_error="",
+            )
+        recovered = self._recover_weight(client, external_version_id, current)
+        if recovered:
+            return self.repository.patch_artifact(str(current["artifact_id"]), external_weight_id=recovered, sync_status="SYNCED", last_error="")
         try:
             response = client.create_weight(payload)
         except Exception as error:
@@ -1364,6 +1456,22 @@ class ExternalAlgorithmPublishService:
                 return True
             if not current or str(current.get("sync_status") or "").upper() != "SYNCED":
                 return True
+            mapping = mapping_state.get("mapping") or {}
+            expected_compute_platform_id = str(mapping.get("compute_platform_id") or "")
+            expected_chip_code = _canonical_chip_code(
+                item.get("chip_code") or mapping.get("chip_code") or ""
+            )
+            if (
+                str(current.get("file_name") or "") != str(item.get("file_name") or "")
+                or str(current.get("compute_platform_id") or "") != expected_compute_platform_id
+                or _canonical_chip_code(current.get("chip_code") or "") != expected_chip_code
+            ):
+                return True
+            model_asset = self.model_assets.repository.get(artifact_id)
+            if model_asset and str(model_asset.get("storage_status") or "").upper() == "UPLOADED":
+                expected_public_url = self.model_assets.public_url(model_asset)
+                if expected_public_url and str(current.get("public_url") or "") != expected_public_url:
+                    return True
         return False
 
     def delete_version_for_rollback(
