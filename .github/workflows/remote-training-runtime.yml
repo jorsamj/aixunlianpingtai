@@ -246,6 +246,8 @@ jobs:
           grep -Fq 'supplement_provenance=job.get("supplement_provenance")' platform_core/training_tasks.py
           grep -Fq 'training.dataset_revision_id' platform_core/remote_execution_transport.py
           grep -Fq '"training_lineage": training_lineage' platform_core/remote_execution_transport.py
+          grep -Fq '"external_analysis_id": str(payload.get("external_analysis_id") or "").strip()' platform_core/remote_execution_transport.py
+          grep -Fq 'assert version["external_analysis_id"] == "analysis-visual-1"' tests/unit/test_remote_execution_transport.py
           grep -Fq 'supplement_provenance=(' platform_core/remote_execution_transport.py
           grep -Fq '"supplement_provenance": snapshot.get("supplement_provenance")' platform_core/remote_training_tasks.py
           grep -Fq '"evaluation": evaluation' platform_core/remote_execution_transport.py
