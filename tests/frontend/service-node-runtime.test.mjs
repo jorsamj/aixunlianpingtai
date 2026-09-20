@@ -19,7 +19,9 @@ test('service node helpers keep resource values truthful', () => {
   assert.equal(capabilityLabel('material-import'), '素材导入');
   assert.equal(capabilityLabel('conversion.rknn'), '瑞芯微 RKNN 转换');
   assert.equal(capabilityLabel('deployment-test.rknn'), '瑞芯微板端验证');
-  assert.deepEqual(nodeStatusMeta('ONLINE'), {label: '在线', className: 'ok'});
+  assert.deepEqual(nodeStatusMeta('ONLINE'), {label: 'Agent 在线', className: 'ok'});
+  assert.deepEqual(nodeStatusMeta('OFFLINE'), {label: '心跳超时', className: 'err'});
+  assert.deepEqual(nodeStatusMeta('NEVER_CONNECTED'), {label: '未收到心跳', className: 'warn'});
 });
 
 test('service node card renders observed GPU/runtime/task truth without secrets', () => {

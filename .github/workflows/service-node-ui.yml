@@ -46,6 +46,8 @@ jobs:
           grep -Fq '/api/v63/service-nodes' static/modules/service-node-runtime.js
           grep -Fq '>检查 Agent</button>' static/modules/service-node-runtime.js
           grep -Fq 'Agent 在线（已收到有效心跳）' static/modules/service-node-runtime.js
+          grep -Fq "NEVER_CONNECTED: {label: '未收到心跳'" static/modules/service-node-runtime.js
+          grep -Fq "OFFLINE: {label: '心跳超时'" static/modules/service-node-runtime.js
           grep -Fq 'const hadCache = nodes.length > 0;' static/modules/service-node-runtime.js
           grep -Fq 'Agent Token 只显示这一次' static/modules/service-node-runtime.js
           grep -Fq "'deployment-test.rknn': '瑞芯微板端验证'" static/modules/service-node-runtime.js

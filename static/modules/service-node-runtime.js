@@ -74,10 +74,10 @@ export function capabilityLabel(value) {
 export function nodeStatusMeta(status) {
   const key = String(status || '').toUpperCase();
   return ({
-    ONLINE: {label: '在线', className: 'ok'},
-    OFFLINE: {label: '离线', className: 'err'},
+    ONLINE: {label: 'Agent 在线', className: 'ok'},
+    OFFLINE: {label: '心跳超时', className: 'err'},
     DISABLED: {label: '已停用', className: 'warn'},
-    NEVER_CONNECTED: {label: '未连接', className: 'warn'},
+    NEVER_CONNECTED: {label: '未收到心跳', className: 'warn'},
   })[key] || {label: key || '未知', className: 'warn'};
 }
 

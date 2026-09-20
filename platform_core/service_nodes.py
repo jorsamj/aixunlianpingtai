@@ -309,13 +309,13 @@ class ServiceNodeRepository:
         status = str(node.get("status") or "")
         connected = bool(node.get("enabled") and node.get("reachable") and node.get("online"))
         if connected:
-            message = "服务节点连通正常"
+            message = "Agent 心跳正常"
         elif status == "DISABLED":
             message = "服务节点已停用"
         elif status == "NEVER_CONNECTED":
-            message = "服务节点尚未建立过心跳连接"
+            message = "平台尚未收到该 Agent 的心跳"
         else:
-            message = "服务节点心跳已超时"
+            message = "Agent 心跳已超时"
         return {
             "node_id": str(node.get("node_id") or ""),
             "connected": connected,
