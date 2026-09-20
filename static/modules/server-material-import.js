@@ -77,14 +77,14 @@ export function buildServerImportRequest(values = {}) {
 }
 
 export function buildImportConfirmation(rows = [], acceptQualityReport = false) {
-  const label_mapping = {}, create_labels = [];
+  const label_mapping = {};
   for (const row of rows) {
     const code = String(row.code || '').trim();
     if (!code) throw new Error(`请选择外部类别 ${row.name || row.classId} 对应的平台标签`);
+    if (row.create) throw new Error('导入确认不能创建平台标签，请先到配置中心 → 标签管理创建并启用');
     label_mapping[String(row.classId)] = code;
-    if (row.create) create_labels.push(code);
   }
-  return {label_mapping, create_labels: [...new Set(create_labels)], accept_quality_report: Boolean(acceptQualityReport)};
+  return {label_mapping, accept_quality_report: Boolean(acceptQualityReport)};
 }
 
 export function serverImportView(task = {}) {
