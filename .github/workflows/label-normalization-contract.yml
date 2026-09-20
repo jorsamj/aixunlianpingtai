@@ -224,11 +224,12 @@ jobs:
                   'confirmLabels',
                   '选择平台标签',
                   "setPage('标签管理')",
+                  "openInlineLabelCreate414?.('zip'",
                   'window.doImportData=()=>',
               ),
               'static/modules/server-material-import.js': (
                   'buildImportConfirmation',
-                  '导入确认不能创建平台标签',
+                  '标签创建必须先通过显式平台标签创建操作完成',
                   'accept_quality_report',
               ),
               'static/modules/annotation-task-view.js': (
@@ -250,17 +251,24 @@ jobs:
                   'progress_percent',
                   "PollRegistryRuntime?.startTimeout",
                   '/material-batches/${taskId}',
+                  'window.openInlineLabelCreate414=function',
+                  'window.submitInlineLabelCreate414=async function',
+                  "openInlineLabelCreate414('rescan'",
+                  "openInlineLabelCreate414('storage-import'",
+                  "openInlineLabelCreate414('ai'",
+                  '平台标签已创建并选中；仍需确认后才会正式入库',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.123',
-                  '/static/main.mjs?v=42.25.112',
-                  '/static/zip-import-bootstrap.mjs?v=422532',
+                  '/static/app.js?v=42.25.124',
+                  '/static/main.mjs?v=42.25.113',
+                  '/static/zip-import-bootstrap.mjs?v=422533',
               ),
               'static/main.mjs': (
                   'annotation-task-view.js?v=422002',
+                  'server-material-import.js?v=422526',
               ),
               'static/zip-import-bootstrap.mjs': (
-                  'zip-import-runtime.js?v=422532',
+                  'zip-import-runtime.js?v=422533',
               ),
           }
           bodies = {
@@ -302,19 +310,34 @@ jobs:
 
           if 'data-zip-create' in zip_runtime or 'create_labels' in zip_runtime:
               missing.setdefault('static/modules/zip-import-runtime.js', []).append(
-                  'ZIP confirmation must map only to existing platform labels'
+                  'ZIP confirmation must not submit implicit label-creation state'
               )
           if 'data-create-label' in static_app or 'body.create_labels' in static_app:
               missing.setdefault('static/app.js', []).append(
-                  'storage import confirmation must not expose label creation'
+                  'review confirmation must keep explicit label creation separate from mapping payloads'
               )
           if 'create_labels' in server_import:
               missing.setdefault('static/modules/server-material-import.js', []).append(
-                  'server import helper must not emit create_labels'
+                  'server import helper must not emit implicit create_labels'
               )
           if 'def create_import_label' in app or 'labels_to_create' in app:
               missing.setdefault('app.py', []).append(
-                  'import confirmation must not mutate the canonical label catalog'
+                  'import confirmation must not silently mutate the canonical label catalog'
+              )
+          for token in (
+              "openInlineLabelCreate414('rescan'",
+              "openInlineLabelCreate414('storage-import'",
+              "openInlineLabelCreate414('ai'",
+              'window.openInlineLabelCreate414=function',
+              'window.submitInlineLabelCreate414=async function',
+          ):
+              if token not in static_app:
+                  missing.setdefault('static/app.js', []).append(
+                      f'explicit canonical label creation contract: {token}'
+                  )
+          if "openInlineLabelCreate414?.('zip'" not in zip_runtime:
+              missing.setdefault('static/modules/zip-import-runtime.js', []).append(
+                  'ZIP review must expose explicit canonical label creation'
               )
 
           if '/api/v18/projects/' in static_app:
