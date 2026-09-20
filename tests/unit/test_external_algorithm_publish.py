@@ -799,7 +799,7 @@ def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path:
     assert version["external_publish_status"] == "pending"
 
 
-def test_conversion_in_progress_blocks_publish(tmp_path: Path):
+def test_conversion_in_progress_does_not_block_training_version_and_original_weight(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
@@ -811,11 +811,12 @@ def test_conversion_in_progress_blocks_publish(tmp_path: Path):
     job_path.write_text(json.dumps(job), encoding="utf-8")
     service = _service(tmp_path, memory)
 
-    try:
-        service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
-        assert False, "publish should have been blocked"
-    except Exception as error:
-        assert getattr(error, "code", "") == "MODEL_CONVERSION_STILL_RUNNING"
+    result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+
+    assert result["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weights[0]["fileName"] == "best.pt"
 
 def test_publication_persists_training_analysis_binding(tmp_path: Path):
     FakePublishingClient.reset()
