@@ -160,7 +160,7 @@ export function renderNodeCard(node) {
   const memoryPercent = safePercent(memory.usage_percent) ?? (Number(memory.total_bytes) > 0 ? Number(memory.used_bytes || 0) / Number(memory.total_bytes) * 100 : null);
   const diskPercent = safePercent(disk.usage_percent) ?? (Number(disk.total_bytes) > 0 ? Number(disk.used_bytes || 0) / Number(disk.total_bytes) * 100 : null);
   return `<article class="node633-card" data-node-card="${escapeHtml(node?.node_id || '')}">
-    <header class="node633-card-head"><div><div class="node633-title"><b>${escapeHtml(node?.display_name || node?.node_id || '未命名节点')}</b><span class="pill ${status.className}">${escapeHtml(status.label)}</span></div><p>${escapeHtml(node?.node_id || '-')} · ${escapeHtml(node?.hostname || '尚未上报主机名')}</p></div><div class="node633-actions"><button class="btn small" data-node-action="edit" data-node-id="${escapeHtml(node?.node_id || '')}">编辑</button><button class="btn small ${node?.enabled ? 'soft' : 'primary'}" data-node-action="toggle" data-node-id="${escapeHtml(node?.node_id || '')}">${node?.enabled ? '停用' : '启用'}</button><button class="btn small" data-node-action="rotate" data-node-id="${escapeHtml(node?.node_id || '')}">轮换 Token</button><button class="btn small danger" data-node-action="delete" data-node-id="${escapeHtml(node?.node_id || '')}">删除</button></div></header>
+    <header class="node633-card-head"><div><div class="node633-title"><b>${escapeHtml(node?.display_name || node?.node_id || '未命名节点')}</b><span class="pill ${status.className}">${escapeHtml(status.label)}</span></div><p>${escapeHtml(node?.node_id || '-')} · ${escapeHtml(node?.hostname || '尚未上报主机名')}</p></div><div class="node633-actions"><button class="btn small" data-node-action="test" data-node-id="${escapeHtml(node?.node_id || '')}">测试连通</button><button class="btn small" data-node-action="edit" data-node-id="${escapeHtml(node?.node_id || '')}">编辑</button><button class="btn small ${node?.enabled ? 'soft' : 'primary'}" data-node-action="toggle" data-node-id="${escapeHtml(node?.node_id || '')}">${node?.enabled ? '停用' : '启用'}</button><button class="btn small" data-node-action="rotate" data-node-id="${escapeHtml(node?.node_id || '')}">轮换 Token</button><button class="btn small danger" data-node-action="delete" data-node-id="${escapeHtml(node?.node_id || '')}">删除</button></div></header>
     <div class="node633-meta-grid"><div><span>连接方式</span><b>${node?.connection_mode === 'local' ? '本机 Agent' : '远程 Agent'}</b></div><div><span>最后心跳</span><b>${escapeHtml(timeAgo(node?.heartbeat_age_seconds))}</b></div><div><span>系统</span><b>${escapeHtml([node?.os_name, node?.architecture].filter(Boolean).join(' / ') || '-')}</b></div><div><span>Agent / Build</span><b>${escapeHtml([node?.agent_version, node?.build_id].filter(Boolean).join(' / ') || '-')}</b></div></div>
     <section class="node633-cap-section"><div><span>允许能力</span>${capabilityChips(node?.allowed_capabilities, 'allowed')}</div><div><span>已上报能力</span>${capabilityChips(node?.reported_capabilities, 'reported')}</div><div><span>当前可调度能力</span>${capabilityChips(node?.effective_capabilities, 'effective')}</div></section>
     <div class="node633-resource-grid">${meter('CPU', cpu.usage_percent, `${cpu.physical_cores ?? '-'} 物理核 / ${cpu.logical_cores ?? '-'} 逻辑核`)}${meter('内存', memoryPercent, `${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)} · 可用 ${formatBytes(memory.available_bytes)}`)}${meter('磁盘', diskPercent, `${disk.path || '-'} · ${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} · 空闲 ${formatBytes(disk.free_bytes)}`)}</div>
@@ -243,6 +243,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   function invokeCardAction(button) {
     const nodeId = button.dataset.nodeId || '';
     const action = button.dataset.nodeAction || '';
+    if (action === 'test') void testConnectivity(nodeId, button);
     if (action === 'edit') openForm(findNode(nodeId));
     if (action === 'toggle') void toggleNode(nodeId);
     if (action === 'rotate') void rotateToken(nodeId);
@@ -352,6 +353,34 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     root.querySelector('[data-node-token-close]')?.addEventListener('click', () => window.closeModal?.());
   }
 
+  async function testConnectivity(nodeId, button = null) {
+    const node = findNode(nodeId);
+    if (!node) return notify?.('服务节点不存在，请刷新后重试');
+    const originalText = button?.textContent || '测试连通';
+    if (button) {
+      button.disabled = true;
+      button.textContent = '测试中…';
+    }
+    try {
+      const result = await requestJson(`${API_ROOT}/${encodeURIComponent(nodeId)}/connectivity-test`, {method: 'POST'});
+      const ageText = Number.isFinite(Number(result?.heartbeat_age_seconds))
+        ? ` · 最近心跳 ${timeAgo(result.heartbeat_age_seconds)}`
+        : '';
+      notify?.(result?.connected
+        ? `连通正常${ageText}`
+        : `${result?.message || '服务节点未连通'}${ageText}`);
+      await refresh({paint: true, silent: true});
+      return result;
+    } catch (error) {
+      notify?.(error?.message || error);
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+      return null;
+    }
+  }
+
   async function toggleNode(nodeId) {
     const node = findNode(nodeId);
     if (!node) return;
@@ -427,13 +456,14 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   decorateNavigation();
 
   const runtime = {
-    build: 'service-node-runtime-422533',
+    build: 'service-node-runtime-422535',
     page: PAGE,
     load,
     render,
     refresh,
     openForm,
     showToken,
+    testConnectivity,
     toggleNode,
     rotateToken,
     deleteNode,
