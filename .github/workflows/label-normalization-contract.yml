@@ -183,7 +183,7 @@ jobs:
                   '自动预选后仍需人工确认',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.116',
+                  '/static/app.js?v=42.25.117',
                   '/static/main.mjs?v=42.25.111',
                   '/static/zip-import-bootstrap.mjs?v=422531',
               ),
