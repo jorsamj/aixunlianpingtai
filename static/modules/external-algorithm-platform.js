@@ -105,12 +105,12 @@ export function normalizeExternalPlatformConfig(body = {}) {
     endpoints: {
       test_sign: endpoints.test_sign || '/internal/auth/test-sign',
       token: endpoints.token || '/internal/auth/token',
-      category_tree: endpoints.category_tree || '/algorithm-category/tree',
-      product_list: endpoints.product_list || '/algorithm-product/listAll',
-      analysis_by_product: endpoints.analysis_by_product || '/algorithm-product-analysis/listByProduct/{productId}',
-      compute_platform_list: endpoints.compute_platform_list || '/compute-platform/listAll',
-      version_create: endpoints.version_create || '/algorithm-version/add',
-      weight_create: endpoints.weight_create || '/algorithm-weight/add',
+      category_tree: endpoints.category_tree || '/internal/base/algorithm-category/tree',
+      product_list: endpoints.product_list || '/internal/algorithm/algorithm-product/listAll',
+      analysis_by_product: endpoints.analysis_by_product || '/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}',
+      compute_platform_list: endpoints.compute_platform_list || '/internal/base/compute-platform/listAll',
+      version_create: endpoints.version_create || '/internal/algorithm/algorithm-version/add',
+      weight_create: endpoints.weight_create || '/internal/algorithm/algorithm-weight/add',
     },
     updatedAt: config.updated_at || '',
     lastSync: config.last_sync || null,
@@ -603,25 +603,6 @@ export function installExternalAlgorithmPlatformRuntime({
       ${masterDataPreviewHtml()}
 
       <section class="panel">
-        <div class="panel-head"><div><div class="panel-title">接口路径</div><div class="subline">鉴权路径按当前新畅联文档预置；业务路径可按实际部署前缀调整。</div></div></div>
-        <div class="panel-body">
-          <details>
-            <summary>高级接口路径</summary>
-            <div class="form two" style="margin-top:16px">
-              ${endpointField('test_sign', '签名测试', c.endpoints.test_sign)}
-              ${endpointField('token', '获取 Token', c.endpoints.token)}
-              ${endpointField('category_tree', '算法品目树', c.endpoints.category_tree)}
-              ${endpointField('product_list', '算法产品列表', c.endpoints.product_list)}
-              ${endpointField('analysis_by_product', '产品分析方式', c.endpoints.analysis_by_product)}
-              ${endpointField('compute_platform_list', '算力环境列表', c.endpoints.compute_platform_list)}
-              ${endpointField('version_create', '新增算法版本', c.endpoints.version_create)}
-              ${endpointField('weight_create', '新增权重文件', c.endpoints.weight_create)}
-            </div>
-          </details>
-        </div>
-      </section>
-
-      <section class="panel">
         <div class="panel-head"><div class="panel-title">同步记录</div></div>
         <div class="panel-body">
           <table class="table">
@@ -687,10 +668,6 @@ export function installExternalAlgorithmPlatformRuntime({
     </section>`;
   }
 
-  function endpointField(key, label, value) {
-    return `<div class="field"><label>${escapeHtml(label)}</label><input class="input" data-external-endpoint="${escapeHtml(key)}" value="${escapeHtml(value || '')}"></div>`;
-  }
-
   function historyRows() {
     if (!history.length) return '<tr><td colspan="4">暂无同步记录</td></tr>';
     return history.map(item => `<tr>
@@ -703,10 +680,6 @@ export function installExternalAlgorithmPlatformRuntime({
 
   function collectForm() {
     const mode = document.querySelector('input[name="externalMode"]:checked')?.value || 'local';
-    const endpointValues = {};
-    for (const input of document.querySelectorAll('[data-external-endpoint]')) {
-      endpointValues[input.dataset.externalEndpoint] = input.value.trim();
-    }
     return {
       mode,
       provider: document.getElementById('externalProvider')?.value || 'changlian',
@@ -716,7 +689,7 @@ export function installExternalAlgorithmPlatformRuntime({
       auto_publish_enabled: false,
       access_key: document.getElementById('externalAccessKey')?.value.trim() || null,
       access_secret: document.getElementById('externalAccessSecret')?.value || null,
-      endpoints: endpointValues,
+      endpoints: config?.endpoints || {},
     };
   }
 
@@ -888,7 +861,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63004',
+    build: 'external-algorithm-platform-63005',
     page: PAGE,
     loadConfig,
     loadHistory,
