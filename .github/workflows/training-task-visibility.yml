@@ -73,7 +73,7 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq 'training-task-visibility-runtime.js?v=422524' static/index.html
+          grep -Fq 'training-task-visibility-runtime.js?v=422525' static/index.html
           grep -Fq '__trainingJobsPreserved' static/modules/training-task-visibility-runtime.js
           grep -Fq '__trainingTaskVisibilityRuntime' static/modules/training-task-visibility-runtime.js
           grep -Fq 'visibleTrainingJobs' static/modules/training-task-visibility-runtime.js
