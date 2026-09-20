@@ -41,7 +41,7 @@ export function normalizePublishConfig(body = {}) {
   return {
     storageSourceId: config.storage_source_id || '',
     publicBaseUrl: config.public_base_url || '',
-    publishOriginalModel: Boolean(config.publish_original_model),
+    publishOriginalModel: config.publish_original_model !== false,
     versionListByProduct: config.version_list_by_product || '/internal/algorithm/algorithm-version/listByProduct/{productId}',
     weightListByVersion: config.weight_list_by_version || '/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}',
     targetMappings: Object.fromEntries(TARGETS.map(([key]) => [key, {
@@ -85,29 +85,26 @@ export function publicationPreflight(status = {}) {
       message: '当前算法的畅联云主数据不是最新状态，请先到“平台对接”执行“立即同步”后再发布。',
     };
   }
-  if (status.conversion_active) {
-    return {ready: false, message: '模型转换仍在进行，请等待转换完成后再同步到新畅联。'};
-  }
   if (status.transport_ready === false) {
     const issues = Array.isArray(status.transport_issues) ? status.transport_issues : [];
     const actions = issues.map(row => {
       const code = String(row?.code || '');
       if (code === 'MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED' || code === 'ARTIFACT_STORAGE_SOURCE_NOT_FOUND') {
-        return '请到“平台对接 → 模型资产存储”选择可用存储源并执行“测试存储”';
+        return '请到“存储配置 → 算法与转换结果存储”选择可用存储源并执行“测试存储”';
       }
       if (code === 'EXTERNAL_PUBLISH_CONFIG_INCOMPLETE') {
-        return '请到“平台对接 → 畅联云版本发布”填写本平台外部访问地址';
+        return '请到“存储配置 → 算法与转换结果存储”填写 OSS / CDN 长期访问域名';
       }
       return String(row?.message || '').trim();
     }).filter(Boolean);
     return {
       ready: false,
-      message: actions.join('；') || '模型发布传输配置尚未就绪，请先配置外部访问地址和模型资产存储。',
+      message: actions.join('；') || '算法产物交付配置尚未就绪，请先配置 OSS 存储和长期访问域名。',
     };
   }
   const discovered = Array.isArray(status.discovered) ? status.discovered : [];
   if (!discovered.length) {
-    return {ready: false, message: '当前版本还没有可发布的转换产物，请先完成模型转换。'};
+    return {ready: false, message: '当前版本还没有可交付的训练模型或转换产物。'};
   }
   const blocked = Number(status.blocked_artifact_count || 0);
   if (blocked > 0) {
@@ -177,8 +174,9 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   function mappingRows() {
     return TARGETS.map(([key, label]) => {
       const row = config?.targetMappings?.[key] || {};
+      const original = key === 'original';
       return `<tr data-publish-target="${escapeHtml(key)}">
-        <td><label class="field check"><input data-publish-enabled type="checkbox" ${row.enabled !== false ? 'checked' : ''}> ${escapeHtml(label)}</label></td>
+        <td><label class="field check"><input data-publish-enabled type="checkbox" ${original || row.enabled !== false ? 'checked' : ''} ${original ? 'disabled' : ''}> ${escapeHtml(original ? '原始训练模型（必传）' : label)}</label></td>
         <td><select class="select" data-publish-platform>${computeOptions(row.compute_platform_id || '')}</select></td>
         <td><input class="input" data-publish-chip value="${escapeHtml(row.chip_code || '')}" placeholder="兜底值，如 RK3568 / RK3576"></td>
       </tr>`;
@@ -188,25 +186,21 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   function panelHtml() {
     const c = config || normalizePublishConfig({});
     return `<section class="panel" data-external-publish-panel="1">
-      <div class="panel-head"><div><div class="panel-title">畅联云版本发布</div><div class="subline">模型文件统一从“模型资产存储”读取；这里仅配置畅联云版本/权重登记和算力环境映射。</div></div></div>
+      <div class="panel-head"><div><div class="panel-title">畅联云版本与权重同步</div><div class="subline">训练成功后自动创建算法版本；原始训练模型与后续转换结果上传 OSS 后，通过官方权重接口追加到同一版本。</div></div><span class="pill ok">自动同步</span></div>
       <div class="panel-body">
-        <div class="form two">
-          <div class="field"><label>本平台外部访问地址</label><input id="externalPublishBaseUrl" class="input" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://algorithm.example.com"></div>
-          <label class="field check"><input id="externalPublishOriginal" type="checkbox" ${c.publishOriginalModel ? 'checked' : ''}> 将原始训练权重也登记为畅联云权重（文件本身始终自动归档）</label>
-        </div>
-        <div class="panel-title" style="margin:18px 0 6px">转换目标 → 新畅联算力环境映射</div>
-        <div class="subline" style="margin-bottom:10px">算力环境来自最近一次新畅联主数据同步；失效的 computePlatformId 会在保存和发布时被后端拒绝。</div>
-        <table class="table"><thead><tr><th>转换目标</th><th>算力环境</th><th>芯片编码（转换产物优先）</th></tr></thead><tbody>${mappingRows()}</tbody></table>
-        <details style="margin-top:16px"><summary>官方发布接口</summary><div class="form two" style="margin-top:12px">
+        <div class="alert soft"><b>文件存储已统一</b><span>OSS 存储源、目录和长期访问域名请到“存储配置 → 算法与转换结果存储”维护；这里不重复保存存储配置。</span></div>
+        <div class="panel-title" style="margin:18px 0 6px">模型类型 → 新畅联算力环境映射</div>
+        <div class="subline" style="margin-bottom:10px">原始训练模型必须登记；转换目标可按需要启用。算力环境来自最近一次新畅联主数据同步。</div>
+        <table class="table"><thead><tr><th>模型类型</th><th>算力环境</th><th>芯片编码（产物优先）</th></tr></thead><tbody>${mappingRows()}</tbody></table>
+        <details style="margin-top:16px"><summary>官方同步接口</summary><div class="form two" style="margin-top:12px">
           <div class="field"><label>按产品查询版本</label><code>${escapeHtml(c.versionListByProduct)}</code></div>
           <div class="field"><label>按版本查询权重</label><code>${escapeHtml(c.weightListByVersion)}</code></div>
-        </div><div class="subline" style="margin-top:8px">接口路径来自新畅联官方 OpenAPI，平台固定使用，不允许手工修改。</div></details>
-        <details data-external-publish-automation="1" style="margin-top:16px"><summary>高级设置 · 自动发布</summary><div class="row" style="margin-top:12px"><button class="btn" id="externalPublishAutoRun">执行一次待发布任务</button></div></details>
-        <div class="row end"><button class="btn primary" id="externalPublishSave">保存发布配置</button></div>
+        </div><div class="subline" style="margin-top:8px">创建、查询和删除均使用新畅联官方 OpenAPI 固定路径，不允许前端修改。</div></details>
+        <details data-external-publish-automation="1" style="margin-top:16px"><summary>高级操作</summary><div class="row" style="margin-top:12px"><button class="btn" id="externalPublishAutoRun">立即检查待同步结果</button></div></details>
+        <div class="row end"><button class="btn primary" id="externalPublishSave">保存算力环境映射</button></div>
       </div>
     </section>`;
   }
-
   function collectConfig() {
     const mappings = {};
     for (const row of document.querySelectorAll('[data-publish-target]')) {
@@ -222,8 +216,8 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       // Keep the legacy publish field empty so saving mappings/public URL cannot
       // overwrite a newer model-asset storage choice.
       storage_source_id: '',
-      public_base_url: document.getElementById('externalPublishBaseUrl')?.value.trim() || '',
-      publish_original_model: Boolean(document.getElementById('externalPublishOriginal')?.checked),
+      public_base_url: '',
+      publish_original_model: true,
       target_mappings: mappings,
       version_list_by_product: '/internal/algorithm/algorithm-version/listByProduct/{productId}',
       weight_list_by_version: '/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}',
