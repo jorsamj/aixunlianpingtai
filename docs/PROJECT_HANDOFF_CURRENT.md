@@ -13,6 +13,33 @@
 
 ---
 
+# 最新修复：新畅联 Internal API Namespace
+
+2026-09-20，平台对接真实联调发现旧业务 endpoint 缺少新畅联 internal namespace，典型现象为 HTTP 200 / 业务码 401。当前主数据与发布链已统一改为正式 internal 路径：
+
+```text
+/internal/auth/test-sign
+/internal/auth/token
+/internal/base/algorithm-category/tree
+/internal/base/compute-platform/listAll
+/internal/algorithm/algorithm-product/listAll
+/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
+/internal/algorithm/algorithm-version/add
+/internal/algorithm/algorithm-version/listByProduct/{productId}
+/internal/algorithm/algorithm-weight/add
+/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
+```
+
+兼容边界：
+- 仅把平台历史版本曾写入的已知旧裸路径自动迁移到 canonical internal path；
+- 其他自定义 endpoint 不强制覆盖；
+- 普通用户平台对接页不再暴露 endpoint 编辑，只配置 Base URL / AccessKey / AccessSecret；
+- 发布创建与 timeout/UNKNOWN 反查共用同一 canonical internal contract；
+- `Authorization: Bearer <accessToken>` 保持不变；
+- `VERSION.txt` 继续保持 `42.24.0`。
+
+---
+
 # 最新关闭：Reusable Fixed Benchmark Training v1
 
 2026-09-19，Evaluation Benchmark Scope 已正式接回下一轮 Durable TRAINING，**Reusable Fixed Benchmark Training v1 CLOSED**。
