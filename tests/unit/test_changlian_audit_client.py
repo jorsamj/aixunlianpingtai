@@ -162,6 +162,14 @@ class FullAlgorithmContractSession(FakeSession):
         if url.endswith("/internal/algorithm/algorithm-version/edit"):
             assert kwargs["json"]["algoVersionId"] == 501
             return FakeResponse({"code": 0, "msg": "操作成功", "data": 1})
+        if url.endswith("/internal/algorithm/algorithm-version/list"):
+            assert kwargs["params"] == {"pageNum": 1, "pageSize": 20, "productId": "101"}
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"algoVersionId": 501}]})
+        if url.endswith("/internal/algorithm/algorithm-version/listByAnalysis/301"):
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"algoVersionId": 501, "analysisId": 301}]})
+        if url.endswith("/internal/algorithm/algorithm-version/listAll"):
+            assert kwargs["params"] == {"productId": "101"}
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"algoVersionId": 501}]})
         if url.endswith("/internal/algorithm/algorithm-version/listByProduct/101"):
             return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"algoVersionId": 501, "productId": 101, "weightCount": 1}]})
         if url.endswith("/internal/algorithm/algorithm-version/getInfo/501"):
@@ -180,6 +188,12 @@ class FullAlgorithmContractSession(FakeSession):
         if url.endswith("/internal/algorithm/algorithm-weight/edit"):
             assert kwargs["json"]["weightId"] == 701
             return FakeResponse({"code": 0, "msg": "操作成功", "data": 1})
+        if url.endswith("/internal/algorithm/algorithm-weight/list"):
+            assert kwargs["params"] == {"pageNum": 1, "pageSize": 20, "algoVersionId": "501"}
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"weightId": 701}]})
+        if url.endswith("/internal/algorithm/algorithm-weight/listByProduct/101"):
+            assert kwargs["params"] == {"algoVersionId": "501", "computePlatformCode": "rknn"}
+            return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"weightId": 701, "productId": 101}]})
         if url.endswith("/internal/algorithm/algorithm-weight/listByVersion/501"):
             return FakeResponse({"code": 0, "msg": "操作成功", "data": [{"weightId": 701, "algoVersionId": 501}]})
         if url.endswith("/internal/algorithm/algorithm-weight/getInfo/701"):
@@ -200,7 +214,10 @@ def test_changlian_full_version_and_weight_contract_uses_bearer_and_official_pat
 
     assert client.version_create({"productId": "101", "versionName": "V1", "versionNo": "1.0.0"})["data"] == 501
     assert client.version_edit({"algoVersionId": "501", "versionName": "V1-edit"})["data"] == 1
+    assert client.version_page(page_num=1, page_size=20, productId="101")["data"][0]["algoVersionId"] == 501
     assert client.version_list_by_product("101")["data"][0]["algoVersionId"] == 501
+    assert client.version_list_by_analysis("301")["data"][0]["analysisId"] == 301
+    assert client.version_list_all(productId="101")["data"][0]["algoVersionId"] == 501
     assert client.version_info("501")["data"]["algoVersionId"] == 501
     assert client.version_remove(["501"])["data"] == 1
 
@@ -212,6 +229,8 @@ def test_changlian_full_version_and_weight_contract_uses_bearer_and_official_pat
         "filePath": "https://example/model.rknn",
     })["data"] == 701
     assert client.weight_edit({"weightId": "701", "fileName": "model-v2.rknn"})["data"] == 1
+    assert client.weight_page(page_num=1, page_size=20, algoVersionId="501")["data"][0]["weightId"] == 701
     assert client.weight_list_by_version("501")["data"][0]["weightId"] == 701
+    assert client.weight_list_by_product("101", algo_version_id="501", compute_platform_code="rknn")["data"][0]["weightId"] == 701
     assert client.weight_info("701")["data"]["weightId"] == 701
     assert client.weight_remove(["701"])["data"] == 1
