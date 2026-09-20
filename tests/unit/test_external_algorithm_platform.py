@@ -186,6 +186,7 @@ def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
         "analysis_id": "a1",
         "analysis_name": "视觉智能分析",
         "analysis_type": "",
+        "status": "",
         "compute_platform_ids": ["gpu"],
     }]
     assert external["external_category_id"] == "c1"
