@@ -130,6 +130,9 @@ jobs:
           grep -q "test_published_version_detects_and_appends_late_conversion_weight" tests/unit/test_external_algorithm_publish.py
           grep -q "test_durable_remote_conversion_root_is_discovered_and_appended" tests/unit/test_external_algorithm_publish.py
           grep -q "test_auto_upload_discovers_durable_remote_conversion_root" tests/unit/test_model_artifacts.py
+          grep -q "_is_conversion_deliverable" platform_core/model_artifacts.py
+          grep -Fq 'candidate.name.lower() == "manifest.json"' platform_core/model_artifacts.py
+          grep -Fq 'assert len(durable_rows) == 1' tests/unit/test_model_artifacts.py
           grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/external_algorithm_publish.py
           grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/model_artifacts.py
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
