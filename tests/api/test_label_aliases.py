@@ -325,3 +325,20 @@ def test_ensure_label_retires_alias_for_any_canonical_creation_path(client):
     assert helmet["aliases"] == []
     assert promoted["class_id"] == 1
     assert promoted["aliases"] == []
+
+def test_canonical_label_creation_rejects_invalid_code_on_backend(client):
+    project = client.post("/api/projects", json={
+        "name": "canonical-label-code-validation",
+        "labels": [{"code": "person", "display_name": "人员"}],
+    }).json()
+
+    invalid = client.post(
+        f"/api/projects/{project['id']}/labels",
+        json={"label": "安全头盔", "display_name": "安全头盔"},
+    )
+    assert invalid.status_code == 422
+    assert "必须以英文字母开头" in invalid.text
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    assert [row["code"] for row in labels] == ["person"]
+
