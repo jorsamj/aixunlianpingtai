@@ -11,6 +11,7 @@ on:
       - 'platform_core/labels.py'
       - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
+      - 'platform_core/auto_label.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
       - 'platform_core/task_runtime/repository.py'
@@ -34,6 +35,7 @@ on:
       - 'platform_core/labels.py'
       - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
+      - 'platform_core/auto_label.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
       - 'platform_core/task_runtime/repository.py'
@@ -76,6 +78,7 @@ jobs:
             app.py \
             platform_core/labels.py \
             platform_core/storage/import_confirmation.py \
+            platform_core/auto_label.py \
             platform_core/annotation_candidates.py \
             platform_core/annotation_task_service.py \
             platform_core/material_batches.py \
@@ -109,6 +112,7 @@ jobs:
           app = Path('app.py').read_text(encoding='utf-8')
           labels = Path('platform_core/labels.py').read_text(encoding='utf-8')
           import_confirmation = Path('platform_core/storage/import_confirmation.py').read_text(encoding='utf-8')
+          auto_label = Path('platform_core/auto_label.py').read_text(encoding='utf-8')
           candidates = Path('platform_core/annotation_candidates.py').read_text(encoding='utf-8')
           service = Path('platform_core/annotation_task_service.py').read_text(encoding='utf-8')
           repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
@@ -139,6 +143,9 @@ jobs:
                   'legacy_annotated_import_blocked',
                   'def remember_project_label_aliases(',
                   '"aliases": normalize_label_aliases(',
+              ),
+              'platform_core/auto_label.py': (
+                  'if any(alias and label == alias for alias in values):',
               ),
               'platform_core/annotation_candidates.py': (
                   'def remap_labels(',
@@ -187,6 +194,7 @@ jobs:
               'platform_core/labels.py': labels,
               'platform_core/storage/import_confirmation.py': import_confirmation,
               'app.py': app,
+              'platform_core/auto_label.py': auto_label,
               'platform_core/annotation_candidates.py': candidates,
               'platform_core/annotation_task_service.py': service,
               'platform_core/task_runtime/repository.py': repository,
