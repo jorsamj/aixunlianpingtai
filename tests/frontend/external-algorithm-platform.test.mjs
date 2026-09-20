@@ -317,10 +317,12 @@ test('algorithm list keeps search and base filters while adding source filters',
   assert.match(appSource, /product_code/);
 });
 
-test('sync settings expose quasi-realtime pull without claiming webhook support', () => {
+test('sync settings enforce 60-second automatic pull without claiming webhook support', () => {
   const source = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-  assert.match(source, /id="externalAutoSyncInterval"/);
-  assert.match(source, /60 秒为准实时主动轮询/);
+  assert.match(source, /自动同步已启用/);
+  assert.match(source, /每 60 秒主动拉取一次主数据/);
   assert.match(source, /没有 Webhook、订阅或推送接口/);
-  assert.match(source, /auto_sync_interval_seconds: Number\(document\.getElementById\('externalAutoSyncInterval'\)/);
+  assert.match(source, /auto_sync_enabled: mode === 'external'/);
+  assert.match(source, /auto_sync_interval_seconds: 60/);
+  assert.doesNotMatch(source, /id="externalAutoSyncInterval"/);
 });
