@@ -75,7 +75,7 @@ def _remote_data(body: Any) -> Any:
     code = body.get("code")
     success = body.get("success")
     if success is False or (code is not None and str(code) not in {"0", "200", "SUCCESS", "success"}):
-        raise RuntimeError(str(body.get("message") or body.get("msg") or "新畅联返回失败"))
+        raise RuntimeError(str(body.get("message") or body.get("msg") or body.get("reason") or "新畅联返回失败"))
     if "data" in body:
         return body["data"]
     if "result" in body:
