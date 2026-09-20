@@ -921,30 +921,22 @@ def _analysis_summary(row: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         "analysis_id": _analysis_id(row),
         "analysis_name": _analysis_name(row),
-        "analysis_type": str(_value_from(row, "analysisType", "analysisTypeName", "type") or "").strip(),
+        "analysis_type": str(_value_from(row, "analysisType", "analysis_type") or "").strip(),
         "status": "" if status_value is None else str(status_value).strip(),
         "compute_platform_ids": list(row.get("computePlatformIds") or row.get("compute_platform_ids") or []),
     }
 
 
 def _analysis_is_enabled(row: Mapping[str, Any]) -> bool:
-    status_value = _value_from(row, "status")
-    if status_value is None:
-        return True
-    status = str(status_value).strip().lower()
-    return status not in {"0", "false", "disabled"}
+    # Official ChangLian contract is exact: status=1 means enabled.
+    # Missing, unknown, false-like, or any other value must fail closed.
+    return str(_value_from(row, "status") or "").strip() == "1"
 
 
 def _analysis_is_visual(row: Mapping[str, Any]) -> bool:
-    explicit_type = str(_value_from(row, "analysisType", "analysis_type", "type") or "").strip()
-    if explicit_type:
-        # Official ChangLian contract: 1=视觉智能分析, 3=大模型智能分析.
-        return explicit_type == "1"
-    text = " ".join(
-        str(row.get(key) or "")
-        for key in ("analysisTypeName", "analysisName", "analysis_name", "name")
-    ).lower()
-    return "视觉" in text or "vision" in text or "video" in text
+    # Official ChangLian contract is exact: analysisType=1 means visual AI.
+    # Never infer training eligibility from names such as "视觉"/"vision".
+    return str(_value_from(row, "analysisType", "analysis_type") or "").strip() == "1"
 
 
 def _visual_analysis_rows(rows: Iterable[Mapping[str, Any]]) -> list[Dict[str, Any]]:
@@ -1113,12 +1105,10 @@ def resolve_external_training_analysis(algorithm: Mapping[str, Any] | None, requ
         for row in summaries
         if _analysis_is_visual(row) and _analysis_is_enabled(row)
     ]
-    configured_ids = [
-        str(value)
-        for value in (algorithm.get("external_analysis_ids") or [])
-        if str(value or "").strip()
-    ]
-    analysis_ids = explicit_visual_ids if summaries else configured_ids
+    # Training eligibility must be provable from the synced analysis details.
+    # external_analysis_ids alone is not sufficient because it does not prove
+    # both official conditions (status=1 AND analysisType=1).
+    analysis_ids = explicit_visual_ids
     default_id = str(algorithm.get("external_analysis_id") or "").strip()
     if default_id and analysis_ids and default_id not in analysis_ids:
         default_id = ""
@@ -1130,7 +1120,7 @@ def resolve_external_training_analysis(algorithm: Mapping[str, Any] | None, requ
             "EXTERNAL_ANALYSIS_NOT_VISUAL",
             "所选分析方式不是可训练的视觉智能分析",
             requested,
-            "YOLO 训练只能绑定新畅联中启用的视觉智能分析（analysisType=1、status!=0）。",
+            "YOLO 训练只允许绑定新畅联中 status=1 且 analysisType=1 的分析方式。",
             409,
         )
     if requested and analysis_ids and requested not in analysis_ids:
@@ -1146,7 +1136,7 @@ def resolve_external_training_analysis(algorithm: Mapping[str, Any] | None, requ
             "EXTERNAL_VISUAL_ANALYSIS_MISSING",
             "当前算法产品没有可训练的视觉智能分析方式",
             str(algorithm.get("name") or algorithm.get("id") or ""),
-            "请在新畅联启用 analysisType=1 的视觉智能分析后重新同步。",
+            "请在新畅联确认该分析方式同时满足 status=1 且 analysisType=1 后重新同步。",
             409,
         )
     if len(analysis_ids) > 1 and not requested:
