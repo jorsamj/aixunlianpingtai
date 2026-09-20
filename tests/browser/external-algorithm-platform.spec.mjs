@@ -2,10 +2,18 @@ import {test, expect} from '@playwright/test';
 
 test('changlian platform page tests draft credentials before manual sync', async ({page}) => {
   let testedPayload = null;
+  let savedPayload = null;
+  let syncWrites = 0;
   let analysisStatus = 'success';
+  let savedBaseUrl = 'https://saved.example.test';
 
   await page.route('**/api/v63/external-algorithm-platform/config', async route => {
-    if (route.request().method() !== 'GET') return route.continue();
+    if (route.request().method() === 'PUT') {
+      savedPayload = route.request().postDataJSON();
+      savedBaseUrl = savedPayload.base_url;
+    } else if (route.request().method() !== 'GET') {
+      return route.continue();
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -15,7 +23,7 @@ test('changlian platform page tests draft credentials before manual sync', async
           mode: 'external',
           provider: 'changlian',
           provider_name: '新畅联',
-          base_url: 'https://saved.example.test',
+          base_url: savedBaseUrl,
           auto_sync_enabled: false,
           auto_sync_interval_seconds: 600,
           auto_publish_enabled: false,
@@ -97,6 +105,18 @@ test('changlian platform page tests draft credentials before manual sync', async
     });
   });
 
+  await page.route('**/api/v63/external-algorithm-platform/sync?project_id=*', async route => {
+    syncWrites += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        sync: {status: 'success', counts: {categories: 2, products: 3, analyses: 4, compute_platforms: 2, added: 1, updated: 2}},
+      }),
+    });
+  });
+
   await page.route('**/api/v63/external-algorithm-platform/test', async route => {
     testedPayload = route.request().postDataJSON();
     await route.fulfill({
@@ -144,7 +164,9 @@ test('changlian platform page tests draft credentials before manual sync', async
   await page.locator('#externalAccessSecret').fill('draft-secret');
 
   await expect(page.locator('[data-external-automation-settings="1"]')).not.toHaveAttribute('open', '');
-  await expect(page.getByRole('button', {name: '↻ 立即同步'})).toBeEnabled();
+  const syncButton = page.getByRole('button', {name: '↻ 立即同步'});
+  await expect(syncButton).toBeDisabled();
+  await expect(syncButton).toHaveAttribute('title', /未保存修改/);
 
   await page.getByRole('button', {name: '测试连接'}).click();
 
@@ -161,6 +183,16 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(connectionResult.getByRole('cell', {name: '算法产品'})).toBeVisible();
   await expect(connectionResult.getByRole('cell', {name: '算力环境'})).toBeVisible();
   await expect(connectionResult.getByRole('cell', {name: '产品分析方式'})).toBeVisible();
+
+  await page.getByRole('button', {name: '保存配置'}).click();
+  await expect.poll(() => savedPayload).not.toBeNull();
+  expect(savedPayload.base_url).toBe('https://draft.example.test');
+  expect(savedPayload.access_key).toBe('draft-ak');
+  expect(savedPayload.access_secret).toBe('draft-secret');
+  await expect(syncButton).toBeEnabled();
+
+  await syncButton.click();
+  await expect.poll(() => syncWrites).toBe(1);
 
   analysisStatus = 'skipped';
   await page.getByRole('button', {name: '测试连接'}).click();
