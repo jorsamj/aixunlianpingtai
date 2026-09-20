@@ -13,6 +13,8 @@ test('post-import label remap is a durable material batch with real backend prog
   assert.match(source,/正在批量统一标签/);
   assert.match(source,/PollRegistryRuntime\?\.startTimeout/);
   assert.match(source,/import-label-remap/);
+  assert.match(source,/getElementById\('importRemapStage414'\)/);
+  assert.match(source,/marker\?\.closest\('\.modal-body'\)/);
 });
 
 test('remap UI does not claim synchronous completion after task creation',()=>{
