@@ -182,10 +182,10 @@ jobs:
                   'id="startSourceImportBtnV36"',
                   'label414Aliases',
                   '自动预选后仍需人工确认',
-                  '...(Array.isArray(label.aliases)?label.aliases:[])',
+                  'const aliases=labels.filter(label=>(Array.isArray(label.aliases)?label.aliases:[])',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.117',
+                  '/static/app.js?v=42.25.118',
                   '/static/main.mjs?v=42.25.111',
                   '/static/zip-import-bootstrap.mjs?v=422531',
               ),
