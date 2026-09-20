@@ -248,7 +248,7 @@ RK3576
 - Secret 安全存储与不回显；
 - draft 凭据测试不先保存；
 - test-sign query contract；
-- Token / Bearer 调用链；
+- Token / Access-Token 调用链；
 - 品目 / 产品 / 分析方式 / 算力环境同步；
 - external product / analysis 训练绑定；
 - Algorithm Version 创建；
