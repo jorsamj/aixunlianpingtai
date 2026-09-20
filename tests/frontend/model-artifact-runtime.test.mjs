@@ -57,6 +57,7 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /算法与转换结果存储/);
   assert.match(source, /畅联云交互日志/);
   assert.match(source, /storage-test/);
+  assert.match(source, /public_base_url: publicBaseUrl/);
   assert.match(source, /modelArtifactPublicBaseUrl/);
   assert.match(source, /suggestedOssPublicBaseUrl/);
   assert.match(source, /modelArtifactSuggestPublicUrl/);
