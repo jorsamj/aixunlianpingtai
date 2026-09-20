@@ -8,6 +8,8 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/labels.py'
+      - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
@@ -19,14 +21,18 @@ on:
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/api/test_label_aliases.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
+      - 'tests/unit/test_label_aliases.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - '.github/workflows/label-normalization-contract.yml'
   pull_request:
     paths:
       - 'app.py'
+      - 'platform_core/labels.py'
+      - 'platform_core/storage/import_confirmation.py'
       - 'platform_core/annotation_candidates.py'
       - 'platform_core/annotation_task_service.py'
       - 'platform_core/material_batches.py'
@@ -38,8 +44,10 @@ on:
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/api/test_label_aliases.py'
       - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
+      - 'tests/unit/test_label_aliases.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - '.github/workflows/label-normalization-contract.yml'
@@ -66,6 +74,8 @@ jobs:
         run: |
           python -m py_compile \
             app.py \
+            platform_core/labels.py \
+            platform_core/storage/import_confirmation.py \
             platform_core/annotation_candidates.py \
             platform_core/annotation_task_service.py \
             platform_core/material_batches.py \
@@ -81,9 +91,11 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_v19_label_mapping.py
+          tests/api/test_label_aliases.py
           tests/api/test_v36_source_import_guard.py
           tests/integration/test_persistent_ai_annotation_e2e.py
           tests/unit/test_annotation_task_service.py
+          tests/unit/test_label_aliases.py
       - name: Frontend label-normalization contracts
         run: >-
           node --test
@@ -95,6 +107,8 @@ jobs:
           from pathlib import Path
 
           app = Path('app.py').read_text(encoding='utf-8')
+          labels = Path('platform_core/labels.py').read_text(encoding='utf-8')
+          import_confirmation = Path('platform_core/storage/import_confirmation.py').read_text(encoding='utf-8')
           candidates = Path('platform_core/annotation_candidates.py').read_text(encoding='utf-8')
           service = Path('platform_core/annotation_task_service.py').read_text(encoding='utf-8')
           repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
@@ -106,6 +120,15 @@ jobs:
           zip_bootstrap = Path('static/zip-import-bootstrap.mjs').read_text(encoding='utf-8')
 
           required = {
+              'platform_core/labels.py': (
+                  'def suggest_label_code(',
+                  'def confirmed_alias_updates(',
+                  'def normalize_label_aliases(',
+              ),
+              'platform_core/storage/import_confirmation.py': (
+                  "suggest_label_code(item.get('name'), labels)",
+                  "'external_classes': [",
+              ),
               'app.py': (
                   'label_confirmation_required',
                   'resolve_external_label_mapping(',
@@ -114,6 +137,8 @@ jobs:
                   'V36_ANNOTATED_IMPORT_BLOCKED_DETAIL',
                   'def _v36_detect_annotated_formats(',
                   'legacy_annotated_import_blocked',
+                  'def remember_project_label_aliases(',
+                  '"aliases": normalize_label_aliases(',
               ),
               'platform_core/annotation_candidates.py': (
                   'def remap_labels(',
@@ -141,9 +166,11 @@ jobs:
               'static/app.js': (
                   '地址读取仅导入未标注图片',
                   'id="startSourceImportBtnV36"',
+                  'label414Aliases',
+                  '自动预选后仍需人工确认',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.115',
+                  '/static/app.js?v=42.25.116',
                   '/static/main.mjs?v=42.25.111',
                   '/static/zip-import-bootstrap.mjs?v=422531',
               ),
@@ -155,6 +182,8 @@ jobs:
               ),
           }
           bodies = {
+              'platform_core/labels.py': labels,
+              'platform_core/storage/import_confirmation.py': import_confirmation,
               'app.py': app,
               'platform_core/annotation_candidates.py': candidates,
               'platform_core/annotation_task_service.py': service,
