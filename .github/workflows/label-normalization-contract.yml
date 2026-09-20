@@ -148,6 +148,8 @@ jobs:
                   'def commit_confirmed_review(',
                   'stage="APPLYING_REVIEW"',
                   'confirmed annotation label mapping is no longer valid',
+                  'label_alias_memory_warning',
+                  '正式标注已入库，但标签别名记忆未保存',
               ),
               'platform_core/task_runtime/repository.py': (
                   'def resume_after_review_confirmation(',
