@@ -2072,3 +2072,22 @@ Technical-debt cleanup remains paused by user request. Product productionization
 - **SSE/event stream evaluation DEFERRED** — current page-scoped polling remains lifecycle-managed; no EventSource/replay/reconnect base is introduced without demonstrated need.
 - **Training Progress v2 CLOSED** — existing `training-metrics.sqlite3` persists truthful latest-epoch duration, rolling ETA, throughput, losses, trainer metrics/mAP when supplied, LR and elapsed time; Worker mirrors the compact snapshot into `job.json` without extra list requests. Product `70110f9668e593215bc77c8614dd9d6dd55b7601`, focused run `34730431744`.
 - **ZIP 10k import scalability CLOSED — hot-state/candidate split + live v19 owner**: baseline proved the final v36 visible ZIP action still delegated to synchronous `doImportData()` / `/api/v18/.../import`, and a synthetic 10,000-candidate v19 `job.json` was **1,370,177 bytes**. The product now routes final v36 ZIP upload through existing v19 background jobs and stores the full candidate manifest once in `scan-images.json`; hot `job.json`, running list polling and detail polling no longer carry the 10k candidate array. Create response is bounded to 500 candidates for the picker; selecting-job list preview is bounded to 300; running/terminal task state stays O(1) in candidate count. Selected-path validation reads the cold manifest. Product `b4875ada5ff084fd4e21d7c5f026f5b09128033b`, focused run `34731027723`, cleanup `e819a35c71f6aa20f7739281ddfc75e8502104ce`.
+
+## 2026-09-20 — 标注统一 + 显式新建平台标签（IMPLEMENTED / CI PENDING）
+
+产品规则已澄清：批量导入或 AI 候选复核时，如果平台没有合适标签，**允许用户在当前确认流程中显式创建新的正式平台标签**；但外部数据集类别名不得因为上传/确认而被系统隐式创建成 canonical label。
+
+当前合同：
+
+- YOLO / COCO / VOC 等外部类别先进入“外部类别 → 平台标签”人工确认；支持多对一，例如 `toukui1`、`toukui2` → `helmet`。
+- ZIP、Storage Import、Storage Rescan、AI Candidate Review 都提供“＋ 新建平台标签”。
+- 新建动作复用配置中心标签管理的 canonical API：`POST /api/projects/{project_id}/labels`；后端同时校验 canonical code 只能以英文字母开头，并由英文、数字、`_`、`-` 组成。
+- 新建成功只会新增标签元数据并自动选中当前映射；**不会直接写 Ground Truth**。用户仍必须点击当前导入/AI 审核确认，之后才进入正式入库。
+- 导入/审核确认 payload 继续保持 mapping-only；旧 `create_labels` 确认旁路继续 fail-closed，禁止通过外部名字静默 `ensure_label()`。
+- 映射确认成功后才学习别名；例如新建 `helmet` 并确认 `toukui1`、`toukui2` → `helmet` 后，这两个外部名称才成为 `helmet.aliases`。
+- AI 仍保持 Candidate → `AWAITING_CONFIRMATION` → Human Review → Durable Commit → AnnotationRepository；候选结果不会绕过人工确认直接写正式标注。
+- 标签转换 / 导入等长任务的进度仍以现有 Durable Task / v19 backend truth 为准，不新增浏览器自造进度 owner。
+- `VERSION.txt` 继续保持 `42.24.0`；未 merge main、未 tag、未 release。
+
+本批主要实现提交从 `ecb466a` 起，包含四入口 UI、canonical API 复用、API/前端测试、缓存版本和 Label Normalization Contract 永久守卫。最终 GitHub Actions 结论必须以最新 HEAD 的实际 run 为准；queued 不等于通过。
+
