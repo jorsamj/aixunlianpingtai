@@ -16,6 +16,34 @@ test('changlian manual publish preflight blocks stale version analysis before PO
   let statusReads = 0;
   let publishWrites = 0;
 
+  await page.route(`**/api/v12/projects/${project.id}/algorithms`, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const items = (body.items || []).map(asset => String(asset.id) === String(algorithmId) ? {
+      ...asset,
+      source_type: 'EXTERNAL',
+      provider_type: 'CHANG_LIAN',
+      source_name: '新畅联',
+      external_product_id: 'product-1',
+      external_analysis_id: 'analysis-current',
+      external_analysis_ids: ['analysis-current'],
+      external_analyses: [{analysis_id: 'analysis-current', analysis_name: '视觉智能分析'}],
+      external_active: true,
+      versions: [{
+        id: versionId,
+        version_name: '20260919233000',
+        training_status: 'SUCCEEDED',
+        artifact_verified: true,
+        trainable: true,
+        model_name: 'best.pt',
+        stored_path: '/models/best.pt',
+        external_analysis_id: 'analysis-old',
+      }],
+      current_version_id: versionId,
+    } : asset);
+    await route.fulfill({response, json: {...body, items}});
+  });
+
   await page.route('**/api/v64/external-publish/projects/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/publish')) {
@@ -63,42 +91,14 @@ test('changlian manual publish preflight blocks stale version analysis before PO
   await expect.poll(async () => page.evaluate(() => typeof window.ExternalAlgorithmPublishRuntime?.publishVersion))
     .toBe('function');
 
-  await page.evaluate(async ({algorithmId, versionId}) => {
+  await page.evaluate(async () => {
     await window.setPage?.('算法列表');
-    await window.AlgorithmListRuntime?.refresh?.({render: false});
-    const asset = (state.algorithms || []).find(row => String(row.id) === String(algorithmId));
-    if (!asset) throw new Error('algorithm missing');
-    Object.assign(asset, {
-      source_type: 'EXTERNAL',
-      provider_type: 'CHANG_LIAN',
-      source_name: '新畅联',
-      external_product_id: 'product-1',
-      external_analysis_id: 'analysis-current',
-      external_analysis_ids: ['analysis-current'],
-      external_analyses: [{analysis_id: 'analysis-current', analysis_name: '视觉智能分析'}],
-      external_active: true,
-      versions: [{
-        id: versionId,
-        version_name: '20260919233000',
-        training_status: 'SUCCEEDED',
-        artifact_verified: true,
-        trainable: true,
-        model_name: 'best.pt',
-        stored_path: '/models/best.pt',
-        external_analysis_id: 'analysis-old',
-      }],
-      current_version_id: versionId,
-    });
-    state.alg428Expanded = state.alg428Expanded || {};
-    state.alg428Expanded[algorithmId] = true;
-    state.page = '算法列表';
-    const canonicalRender = window.renderAlgorithms423?.__navigationOwnerOriginal || window.renderAlgorithms423;
-    canonicalRender?.();
-    window.AlgorithmListRuntime?.runDecorators?.();
-  }, {algorithmId, versionId});
+    await window.AlgorithmListRuntime?.refresh?.({render: true});
+  });
 
   const card = page.locator('.alg428-card', {hasText: '抽烟检测'});
   await expect(card).toBeVisible();
+  await card.locator('.alg428-main').click();
   const versionRow = card.locator('.alg428-version-row', {hasText: '20260919233000'});
   await expect(versionRow).toBeVisible();
   const publishButton = versionRow.getByRole('button', {name: '同步到新畅联'});
