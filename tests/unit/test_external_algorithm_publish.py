@@ -1198,6 +1198,12 @@ def test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_ro
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
 
+    status = service.publication_status("p1", "a1", "v1")
+    assert status["conversion_active"] is False
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert service.publication_requires_sync("p1", algorithm, algorithm["versions"][0], publication) is True
+
     second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1", automatic=True)
 
     assert second["publication"]["status"] == "PUBLISHED"
@@ -1205,6 +1211,7 @@ def test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_ro
     assert FakePublishingClient.weight_creates == 2
     remote_weight = next(row for row in FakePublishingClient.weights if row["fileName"] == "model_rk3576.rknn")
     assert remote_weight["chipCode"] == "RK3576"
+
 
 def test_publish_reuses_existing_verified_remote_training_object(tmp_path: Path):
     FakePublishingClient.reset()
