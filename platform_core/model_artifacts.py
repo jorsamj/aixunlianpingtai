@@ -10,6 +10,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import quote
 
 from filelock import FileLock
 from pydantic import BaseModel, Field
@@ -55,6 +56,7 @@ def _json_load(path: Path, default: Any) -> Any:
 class ModelArtifactConfigPayload(BaseModel):
     storage_source_id: str = ""
     object_prefix: str = "model-assets"
+    public_base_url: str = ""
     auto_upload_enabled: bool = True
 
 
@@ -63,9 +65,10 @@ class StorageTestPayload(BaseModel):
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "storage_source_id": "",
     "object_prefix": "model-assets",
+    "public_base_url": "",
     "auto_upload_enabled": True,
     "updated_at": None,
 }
@@ -170,10 +173,20 @@ class ModelArtifactRepository:
 
     def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
         prefix = str(payload.object_prefix or "model-assets").strip().strip("/") or "model-assets"
+        public_base_url = str(payload.public_base_url or "").strip().rstrip("/")
+        if public_base_url and not public_base_url.startswith(("http://", "https://")):
+            raise PlatformError(
+                "MODEL_ARTIFACT_PUBLIC_URL_INVALID",
+                "算法产物访问域名格式不正确",
+                public_base_url,
+                "请填写以 http:// 或 https:// 开头的 OSS Bucket 域名或 CDN 域名。",
+                422,
+            )
         body = {
-            "schema_version": 1,
+            "schema_version": 2,
             "storage_source_id": str(payload.storage_source_id or "").strip(),
             "object_prefix": prefix,
+            "public_base_url": public_base_url,
             "auto_upload_enabled": bool(payload.auto_upload_enabled),
             "updated_at": utc_now(),
         }
@@ -373,6 +386,23 @@ class ModelArtifactService:
             project_dir=self.project_dir(project_id),
             credentials={source.id: secret},
         ).create(source)
+
+    def public_url(self, artifact: Mapping[str, Any]) -> str:
+        """Return a stable externally reachable object URL, never an expiring signed URL."""
+        config = self.repository.config()
+        base_url = str(config.get("public_base_url") or "").strip().rstrip("/")
+        if not base_url:
+            return ""
+        source_id = str(artifact.get("storage_source_id") or config.get("storage_source_id") or "").strip()
+        source = self.storage_sources_factory().get(source_id) if source_id else None
+        object_key = str(artifact.get("object_key") or "").replace("\\", "/").lstrip("/")
+        if not object_key:
+            return ""
+        provider_prefix = ""
+        if source is not None:
+            provider_prefix = str(source.config.get("prefix") or "").replace("\\", "/").strip("/")
+        full_key = "/".join(part for part in (provider_prefix, object_key) if part)
+        return f"{base_url}/{quote(full_key, safe='/-._~')}"
 
     def test_storage(self, source_id: str) -> dict[str, Any]:
         source_id = str(source_id or "").strip()
