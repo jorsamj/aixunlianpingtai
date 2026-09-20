@@ -366,7 +366,7 @@ def _business_failed(body: Any) -> bool:
 def _business_message(body: Any) -> str:
     if not isinstance(body, dict):
         return ""
-    return str(body.get("message") or body.get("msg") or body.get("detail") or "")
+    return str(body.get("message") or body.get("msg") or body.get("reason") or body.get("detail") or "")
 
 
 class ChangLianBusinessError(RuntimeError):
@@ -738,11 +738,13 @@ class ChangLianClient:
     def product_page(self, *, page_num: int, page_size: int, **filters: Any) -> Any:
         params = {"pageNum": page_num, "pageSize": page_size, **filters}
         params.setdefault("productType", "3")
+        params.setdefault("status", "1")
         return self._request("GET", self.endpoints.product_list_page, auth=True, params=_compact_params(params))
 
     def products(self, **filters: Any) -> Any:
         params = dict(filters)
         params.setdefault("productType", "3")
+        params.setdefault("status", "1")
         return self._request("GET", self.endpoints.product_list, auth=True, params=_compact_params(params))
 
     def product_info(self, product_id: Any) -> Any:
