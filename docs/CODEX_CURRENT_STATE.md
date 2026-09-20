@@ -3,6 +3,23 @@
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 
+
+## Current fix — ChangLian internal API namespace
+
+On 2026-09-20 real integration exposed that the previously stored bare business
+paths could reach the gateway but fail with HTTP 200 / business code 401. The
+ChangLian Provider now uses canonical internal namespaces for master data and
+publication/recovery calls:
+
+- auth: `/internal/auth/*`
+- base data: `/internal/base/*`
+- algorithm management: `/internal/algorithm/*`
+
+Known legacy bare paths are migrated only on exact match; unrelated custom paths
+are preserved. The platform UI no longer exposes Provider endpoint editing.
+Bearer token semantics remain unchanged. Formal `VERSION.txt` remains
+`42.24.0`.
+
 ## Current closure — Reusable Fixed Benchmark Training v1 CLOSED
 
 Formal `VERSION.txt` remains `42.24.0`.
