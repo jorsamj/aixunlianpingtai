@@ -75,3 +75,20 @@ def test_ai_alias_resolution_is_exact_and_does_not_use_substring_matching():
             label_ids={"helmet": 0},
             label_aliases={"helmet": ["toukui1"]},
         )
+
+
+def test_confirmed_alias_updates_do_not_learn_one_name_with_two_targets():
+    labels = [
+        {"code": "helmet", "display_name": "安全头盔", "status": "active", "aliases": []},
+        {"code": "cap", "display_name": "帽子", "status": "active", "aliases": []},
+    ]
+    updates = confirmed_alias_updates(
+        [
+            {"class_id": "0", "name": "hat"},
+            {"class_id": "1", "name": "hat"},
+            {"class_id": "2", "name": "toukui1"},
+        ],
+        {"0": "helmet", "1": "cap", "2": "helmet"},
+        labels,
+    )
+    assert updates == {"helmet": ["toukui1"]}
