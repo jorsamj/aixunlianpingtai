@@ -321,7 +321,7 @@ class ExternalPublicationRepository:
                 """,
                 (
                     key, project_id, str(algorithm.get("id") or ""), str(version.get("id") or ""),
-                    str(algorithm.get("external_product_id") or ""), str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or ""),
+                    str(algorithm.get("external_product_id") or ""), str(version.get("external_analysis_id") or ""),
                     str(version.get("version_name") or version.get("id") or ""), stamp, stamp,
                 ),
             )
@@ -615,18 +615,22 @@ class ExternalAlgorithmPublishService:
                 409,
             )
         assert_external_algorithm_master_data_current(self.data_dir, algorithm)
-        version_analysis_id = str(
-            version.get("external_analysis_id")
-            or algorithm.get("external_analysis_id")
-            or ""
-        ).strip()
-        current_analysis_ids = self._algorithm_analysis_ids(algorithm)
-        if version_analysis_id and current_analysis_ids and version_analysis_id not in current_analysis_ids:
+        version_analysis_id = str(version.get("external_analysis_id") or "").strip()
+        if not version_analysis_id:
+            raise PlatformError(
+                "EXTERNAL_VERSION_ANALYSIS_MISSING",
+                "该训练版本缺少畅联云分析方式绑定，不能发布",
+                str(version.get("version_name") or version.get("id") or ""),
+                "历史版本不能使用算法当前默认分析方式补写。请仅发布训练时已明确保存 analysisId 的版本。",
+                409,
+            )
+        trainable_analysis_ids = self._trainable_analysis_ids(algorithm)
+        if version_analysis_id not in trainable_analysis_ids:
             raise PlatformError(
                 "EXTERNAL_VERSION_ANALYSIS_STALE",
-                "该训练版本绑定的畅联云分析方式已失效",
+                "该训练版本绑定的畅联云分析方式当前不可训练",
                 version_analysis_id,
-                "请先在“配置中心 → 平台对接”执行“立即同步”并核对分析方式；平台不会把该版本发布到其他分析方式。",
+                "请先执行“立即同步”并核对该分析方式仍满足 status=1 且 analysisType=1；平台不会改绑到其他分析方式。",
                 409,
             )
 
@@ -831,6 +835,20 @@ class ExternalAlgorithmPublishService:
         return self._remote_version_id(matches[0])
 
     @staticmethod
+    def _trainable_analysis_ids(algorithm: Mapping[str, Any]) -> set[str]:
+        values: set[str] = set()
+        for row in (algorithm.get("external_analyses") or []):
+            if not isinstance(row, Mapping):
+                continue
+            analysis_id = str(row.get("analysis_id") or row.get("analysisId") or "").strip()
+            analysis_type = str(row.get("analysis_type") or row.get("analysisType") or "").strip()
+            status_value = row.get("status")
+            status = "" if status_value is None else str(status_value).strip()
+            if analysis_id and analysis_type == "1" and status == "1":
+                values.add(analysis_id)
+        return values
+
+    @staticmethod
     def _algorithm_analysis_ids(algorithm: Mapping[str, Any]) -> set[str]:
         values = {
             str(value).strip()
@@ -873,8 +891,16 @@ class ExternalAlgorithmPublishService:
             return existing
         product_id = str(algorithm.get("external_product_id") or "")
         version_name = str(version.get("version_name") or version.get("id") or "")
-        analysis_id = str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or "")
-        require_analysis_identity = bool(analysis_id and len(self._algorithm_analysis_ids(algorithm)) > 1)
+        analysis_id = str(version.get("external_analysis_id") or "").strip()
+        if not analysis_id:
+            raise PlatformError(
+                "EXTERNAL_VERSION_ANALYSIS_MISSING",
+                "该训练版本缺少畅联云分析方式绑定，不能创建远端版本",
+                version_name,
+                "平台不会使用算法当前默认 analysisId 或 productId 猜测历史训练归属。",
+                409,
+            )
+        require_analysis_identity = len(self._trainable_analysis_ids(algorithm)) > 1
         recovered = self._recover_external_version(
             client,
             product_id,
@@ -885,11 +911,11 @@ class ExternalAlgorithmPublishService:
         if recovered:
             self.repository.patch_publication(str(publication["publication_key"]), external_algo_version_id=recovered, status="VERSION_READY", last_error="")
             return recovered
-        payload: Dict[str, Any] = {"versionName": version_name, "versionNo": version_name}
-        if analysis_id:
-            payload["analysisId"] = analysis_id
-        else:
-            payload["productId"] = product_id
+        payload: Dict[str, Any] = {
+            "versionName": version_name,
+            "versionNo": version_name,
+            "analysisId": analysis_id,
+        }
         try:
             response = client.create_algorithm_version(payload)
         except Exception as error:
@@ -1268,7 +1294,7 @@ class ExternalAlgorithmPublishService:
             client.set_audit_context(
                 project_id=project_id, algorithm_id=algorithm_id, version_id=version_id,
                 external_product_id=str(algorithm.get("external_product_id") or ""),
-                external_analysis_id=str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or ""),
+                external_analysis_id=str(version.get("external_analysis_id") or ""),
             )
         external_version_id = self._ensure_external_version(publication, algorithm, version, client)
         failures: list[str] = []
