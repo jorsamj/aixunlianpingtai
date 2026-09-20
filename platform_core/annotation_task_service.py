@@ -249,7 +249,14 @@ def _prepare_runtime_request(project_id: str, request: dict[str, Any]) -> dict[s
         "label_catalog": selected,
         "label_ids": label_ids,
         "label_aliases": {
-            str(item["code"]): [str(item.get("display_name_zh") or "")]
+            str(item["code"]): list(dict.fromkeys(
+                value
+                for value in [
+                    str(item.get("display_name_zh") or "").strip(),
+                    *[str(alias).strip() for alias in item.get("aliases") or []],
+                ]
+                if value
+            ))
             for item in selected
         },
         "prompt_template": str((request.get("prompt_template_snapshot") or {}).get("prompt") or ""),
@@ -402,6 +409,16 @@ def commit_confirmed_review(context):
         progress=update_progress,
         cancelled=context.cancel_requested,
     )
+    mapping = dict(confirmation.get("label_mapping") or {})
+    if mapping:
+        from app import remember_project_label_aliases
+        remembered = remember_project_label_aliases(
+            context.task.project_id,
+            [{"class_id": source, "name": source} for source in mapping],
+            mapping,
+        )
+        if remembered:
+            result["remembered_label_aliases"] = remembered
     context.artifacts.atomic_write_json(
         context.task.task_id, "review/result.json", result,
     )
