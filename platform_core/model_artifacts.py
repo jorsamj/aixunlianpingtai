@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 import sqlite3
+import requests
 import tempfile
 import uuid
 from contextlib import closing
@@ -78,6 +79,7 @@ class ModelArtifactConfigPayload(BaseModel):
 
 class StorageTestPayload(BaseModel):
     storage_source_id: str
+    public_base_url: str = ""
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -427,8 +429,9 @@ class ModelArtifactService:
         full_key = "/".join(part for part in (provider_prefix, object_key) if part)
         return f"{base_url}/{quote(full_key, safe='/-._~')}"
 
-    def test_storage(self, source_id: str) -> dict[str, Any]:
+    def test_storage(self, source_id: str, public_base_url: str = "") -> dict[str, Any]:
         source_id = str(source_id or "").strip()
+        public_base_url = str(public_base_url or "").strip().rstrip("/")
         if not source_id:
             raise PlatformError("MODEL_STORAGE_SOURCE_REQUIRED", "请选择模型资产存储源", "storage_source_id 为空", "请选择 OSS / MinIO / S3 / 本地存储源后测试。", 422)
         probe_project = "_model_artifact_probe"
@@ -440,19 +443,68 @@ class ModelArtifactService:
         with tempfile.NamedTemporaryFile("wb", delete=False) as stream:
             stream.write(b"model-artifact-storage-healthcheck")
             temporary = Path(stream.name)
+        direct_url = ""
+        direct_url_reachable = False
         try:
             meta = provider.upload(key, temporary, content_type="text/plain", metadata={"purpose": "healthcheck"})
             checked = provider.stat(key)
             if int(checked.size_bytes) != int(meta.size_bytes) or int(checked.size_bytes) <= 0:
                 raise RuntimeError("写入后对象大小校验失败")
-            provider.delete(key)
+            if public_base_url:
+                if not public_base_url.startswith(("http://", "https://")):
+                    raise PlatformError(
+                        "MODEL_ARTIFACT_PUBLIC_URL_INVALID",
+                        "算法产物长期访问域名格式不正确",
+                        public_base_url,
+                        "请填写以 http:// 或 https:// 开头的 OSS Bucket 域名或 CDN 域名。",
+                        422,
+                    )
+                source = self.storage_sources_factory().get(source_id)
+                provider_prefix = ""
+                if source is not None:
+                    provider_prefix = str(source.config.get("prefix") or "").replace("\\", "/").strip("/")
+                full_key = "/".join(part for part in (provider_prefix, key) if part)
+                direct_url = f"{public_base_url}/{quote(full_key, safe='/-._~')}"
+                try:
+                    response = requests.get(
+                        direct_url,
+                        headers={"Range": "bytes=0-0", "Cache-Control": "no-cache"},
+                        timeout=10,
+                        allow_redirects=True,
+                    )
+                except requests.RequestException as error:
+                    raise PlatformError(
+                        "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+                        "OSS 长期访问地址无法读取测试文件",
+                        str(error),
+                        "OSS 凭据读写正常，但畅联云使用的 filePath 当前不可访问。请检查公网/专网连通、Bucket 权限或 CDN 域名。",
+                        409,
+                    ) from error
+                if response.status_code not in {200, 206}:
+                    raise PlatformError(
+                        "MODEL_ARTIFACT_PUBLIC_URL_UNREACHABLE",
+                        "OSS 长期访问地址无法读取测试文件",
+                        f"HTTP {response.status_code}",
+                        "OSS 凭据读写正常，但长期链接无法直接读取。若 Bucket 为私有，请配置畅联云可访问的专用域名/CDN/网关，而不要写会过期的临时签名 URL。",
+                        409,
+                    )
+                direct_url_reachable = True
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                provider.delete(key)
+            finally:
+                temporary.unlink(missing_ok=True)
         return {
             "ok": True,
             "storage_source_id": source_id,
             "health": getattr(health, "status", None) or "AVAILABLE",
-            "message": "写入、读取元数据和删除测试通过",
+            "public_url_checked": bool(public_base_url),
+            "public_url_reachable": direct_url_reachable,
+            "message": (
+                "OSS 读写与长期访问地址测试均通过"
+                if public_base_url and direct_url_reachable
+                else "写入、读取元数据和删除测试通过；尚未测试长期访问地址"
+            ),
             "tested_at": utc_now(),
         }
 
