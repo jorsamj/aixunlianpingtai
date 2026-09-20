@@ -155,6 +155,10 @@ jobs:
           grep -Fq 'delete_current_version: bool = True' platform_core/algorithms.py
           grep -Fq 'delete_current_version = True' platform_core/algorithms.py
           grep -q 'test_rollback_always_deletes_current_version_and_records_audit' tests/unit/test_algorithms.py
+          grep -q 'test_rollback_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails' tests/unit/test_algorithms.py
+          grep -q 'test_direct_delete_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails' tests/unit/test_algorithms.py
+          grep -q 'ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE' platform_core/algorithms.py
+          grep -q 'ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE' platform_core/algorithms.py
           grep -Fq 'remote_delete=lambda algorithm, version: publish_service.delete_version_for_rollback' app.py
           grep -Fq 'delete_current_version:true' static/app.js
           ! grep -Fq 'id="rollbackDeleteCurrent"' static/app.js
