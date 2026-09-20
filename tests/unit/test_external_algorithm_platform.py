@@ -11,6 +11,7 @@ from platform_core.external_algorithm_platform import (
     PROVIDER_CHANGLIAN,
     SOURCE_EXTERNAL,
     _analysis_is_enabled,
+    _analysis_is_visual,
     _analysis_summary,
     algorithm_is_external_readonly,
     assert_external_algorithm_master_data_current,
@@ -507,6 +508,10 @@ def test_external_training_analysis_requires_choice_for_multiple_methods():
         "external_active": True,
         "external_analysis_id": "a1",
         "external_analysis_ids": ["a1", "a2"],
+        "external_analyses": [
+            {"analysis_id": "a1", "analysis_type": "1", "status": "1"},
+            {"analysis_id": "a2", "analysis_type": "1", "status": "1"},
+        ],
     }
     with pytest.raises(Exception) as missing:
         resolve_external_training_analysis(algorithm, "")
@@ -524,13 +529,35 @@ def test_external_training_analysis_requires_choice_for_multiple_methods():
         (0, False),
         ("0", False),
         (False, False),
+        (True, False),
         ("false", False),
-        (None, True),
+        (2, False),
+        ("enabled", False),
+        (None, False),
     ],
 )
-def test_analysis_enabled_preserves_zero_status(status, expected):
+def test_analysis_enabled_requires_exact_status_one(status, expected):
     row = {"status": status} if status is not None else {}
     assert _analysis_is_enabled(row) is expected
+
+
+@pytest.mark.parametrize(
+    ("analysis_type", "expected"),
+    [
+        (1, True),
+        ("1", True),
+        (2, False),
+        ("2", False),
+        (3, False),
+        ("3", False),
+        ("vision", False),
+        ("视觉智能分析", False),
+        (None, False),
+    ],
+)
+def test_analysis_visual_requires_exact_analysis_type_one(analysis_type, expected):
+    row = {"analysisType": analysis_type} if analysis_type is not None else {"analysisName": "视觉智能分析"}
+    assert _analysis_is_visual(row) is expected
 
 
 def test_analysis_summary_preserves_numeric_zero_status():
@@ -569,6 +596,31 @@ def test_external_sync_only_exposes_enabled_visual_analyses_for_training(tmp_pat
         "vision-on", "llm-on", "vision-off",
     }
 
+
+
+def test_external_sync_fails_closed_when_status_or_analysis_type_is_missing(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    save_algorithms(path, [])
+    mirror_products_to_algorithms(
+        algorithms_path=path,
+        products=[{"productId": "p1", "productName": "抽烟检测", "categoryId": "c1"}],
+        categories=[{"categoryId": "c1", "categoryName": "行为分析"}],
+        analyses_by_product={
+            "p1": [
+                {"analysisId": "missing-status", "analysisType": 1, "analysisName": "视觉智能分析"},
+                {"analysisId": "missing-type", "status": 1, "analysisName": "视觉智能分析"},
+                {"analysisId": "name-only", "analysisName": "视觉智能分析"},
+            ],
+        },
+    )
+
+    algorithm = list_algorithms(path)[0]
+    assert algorithm["external_analysis_id"] == ""
+    assert algorithm["external_analysis_ids"] == []
+
+    with pytest.raises(Exception) as missing:
+        resolve_external_training_analysis(algorithm, "")
+    assert getattr(missing.value, "code", "") == "EXTERNAL_VISUAL_ANALYSIS_MISSING"
 
 def test_external_training_rejects_non_visual_or_disabled_analysis():
     algorithm = {
