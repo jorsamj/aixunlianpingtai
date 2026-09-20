@@ -58,6 +58,8 @@ test('runtime source exposes storage test, auto upload and interaction log UI', 
   assert.match(source, /畅联云交互日志/);
   assert.match(source, /storage-test/);
   assert.match(source, /modelArtifactPublicBaseUrl/);
+  assert.match(source, /自动归档已启用/);
+  assert.doesNotMatch(source, /id="modelArtifactAutoUpload"/);
   assert.match(source, /存储配置/);
   assert.match(source, /run-auto/);
   assert.match(source, /interaction-logs/);
