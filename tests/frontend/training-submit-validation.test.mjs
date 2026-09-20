@@ -78,3 +78,12 @@ test('annotation workbench saves locally without full reload and cleans pointer 
   const focusedSave = source.match(/window\.saveAnn=async\(silent=false,options=\{\}\)=>\{[^\n]+/s)?.[0] || '';
   assert.doesNotMatch(focusedSave, /await loadRelated\(\)/);
 });
+
+
+test('dashboard training task success rate distinguishes no-data and successful status aliases', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /'succeeded','success'/);
+  assert.match(source, /训练任务成功率/);
+  assert.match(source, /successRate=\(doneJobs\.length\+failed\).*:null/);
+  assert.doesNotMatch(source, /successRate=\(doneJobs\.length\+failed\).*:0/);
+});

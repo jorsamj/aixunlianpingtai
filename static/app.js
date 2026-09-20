@@ -2259,15 +2259,15 @@ window.installUsability417=function(){
   const oldDashboard42=window.renderHomeDashboard;
   const fmtNum42=n=>Number(n||0).toLocaleString('zh-CN');
   const fmtHours42=sec=>{sec=Math.max(0,Number(sec||0));const h=sec/3600;if(h>=1000)return (h/1000).toFixed(1)+'k h';if(h>=10)return h.toFixed(1)+' h';if(h>=1)return h.toFixed(2)+' h';return Math.round(sec/60)+' min'};
-  const jobDuration42=j=>{const parse=v=>{const d=v?new Date(String(v).replace(' ','T')):null;return d&&!Number.isNaN(d.getTime())?d:null};const a=parse(j.started_at||j.created_at);if(!a)return 0;const terminal=['done','finished','completed','failed','stopped'].includes(j.status);const b=terminal?(parse(j.finished_at||j.updated_at)||new Date()):new Date();return Math.max(0,(b-a)/1000)};
+  const jobDuration42=j=>{const parse=v=>{const d=v?new Date(String(v).replace(' ','T')):null;return d&&!Number.isNaN(d.getTime())?d:null};const a=parse(j.started_at||j.created_at);if(!a)return 0;const terminal=['done','finished','completed','succeeded','success','failed','stopped'].includes(String(j.status||'').toLowerCase());const b=terminal?(parse(j.finished_at||j.updated_at)||new Date()):new Date();return Math.max(0,(b-a)/1000)};
   function dashboardData42(){
     const algs=state.algorithms||[], jobs=state.jobs||[], dss=state.datasets||[], blue=state.v42?.blueprints||[];
     const versions=algs.reduce((n,a)=>n+(a.versions||[]).length,0);
     const trained=algs.filter(a=>(a.versions||[]).length>0).length;
     const running=jobs.filter(j=>j.status==='running').length, queued=jobs.filter(j=>j.status==='queued').length;
-    const doneJobs=jobs.filter(j=>['done','finished','completed'].includes(j.status)), failed=jobs.filter(j=>j.status==='failed').length;
+    const doneJobs=jobs.filter(j=>['done','finished','completed','succeeded','success'].includes(String(j.status||'').toLowerCase())), failed=jobs.filter(j=>String(j.status||'').toLowerCase()==='failed').length;
     const totalSeconds=jobs.reduce((n,j)=>n+jobDuration42(j),0), avgSeconds=doneJobs.length?doneJobs.reduce((n,j)=>n+jobDuration42(j),0)/doneJobs.length:0;
-    const successRate=(doneJobs.length+failed)>0?doneJobs.length/(doneJobs.length+failed):0;
+    const successRate=(doneJobs.length+failed)>0?doneJobs.length/(doneJobs.length+failed):null;
     const totalImages=dss.reduce((n,d)=>n+Number(d.images||0),0), annotated=dss.reduce((n,d)=>n+Number(d.annotated_images||0),0), boxes=dss.reduce((n,d)=>n+Number(d.boxes||0),0);
     const dsKinds={全标注:0,混合:0,未标注:0,空数据集:0};
     dss.forEach(d=>{const im=Number(d.images||0),an=Number(d.annotated_images||0);if(!im)dsKinds['空数据集']++;else if(an===im)dsKinds['全标注']++;else if(an>0)dsKinds['混合']++;else dsKinds['未标注']++});
@@ -2296,7 +2296,7 @@ window.installUsability417=function(){
         <div class="dash421-kpi hot"><span>正在训练</span><b>${d.running}</b><em>排队 ${d.queued}</em></div>
         <div class="dash421-kpi"><span>数据集</span><b>${fmtNum42(d.dss.length)}</b><em>${fmtNum42(d.totalImages)} 张素材</em></div>
         <div class="dash421-kpi"><span>训练总时长</span><b>${fmtHours42(d.totalSeconds)}</b><em>累计 ${d.jobs.length} 次</em></div>
-        <div class="dash421-kpi"><span>平均训练时长</span><b>${fmtHours42(d.avgSeconds)}</b><em>成功率 ${(d.successRate*100).toFixed(1)}%</em></div>
+        <div class="dash421-kpi"><span>平均训练时长</span><b>${fmtHours42(d.avgSeconds)}</b><em>训练任务成功率 ${d.successRate==null?'—':(d.successRate*100).toFixed(1)+'%'}</em></div>
       </section>
       <section class="dash421-grid top-grid">
         <div class="dash421-card trend-card"><div class="dash421-card-head"><b>近 7 天训练趋势</b><span>${d.done} 已完成 · ${d.failed} 失败</span></div><div class="dash421-bars">${d.days.map(x=>`<div class="dash421-bar"><i style="height:${Math.max(4,x.count/maxDay*100)}%"></i><b>${x.count}</b><span>${x.label}</span></div>`).join('')}</div></div>
@@ -2421,17 +2421,17 @@ window.installUsability417=function(){
   function fmt422(v){return Number(v||0).toLocaleString('zh-CN')}
   function pct423(v){if(v==null||Number.isNaN(Number(v)))return '-';const n=Number(v);return (n>1?n:n*100).toFixed(1)+'%'}
   function dt423(v){return v?String(v).replace('T',' ').slice(0,19):'-'}
-  function status423(s){const names={queued:'排队中',running:'运行中',done:'已完成',finished:'已完成',completed:'已完成',failed:'失败',stopped:'已停止',ready:'正常',unchecked:'未检测',disabled:'已停用'};const cls=['done','finished','completed','ready'].includes(s)?'ok':s==='failed'?'err':'warn';return `<span class="pill ${cls}">${esc(names[s]||s||'-')}</span>`}
+  function status423(s){const names={queued:'排队中',running:'运行中',done:'已完成',finished:'已完成',completed:'已完成',succeeded:'已完成',success:'已完成',failed:'失败',stopped:'已停止',ready:'正常',unchecked:'未检测',disabled:'已停用'};const normalized=String(s||'').toLowerCase();const cls=['done','finished','completed','succeeded','success','ready'].includes(normalized)?'ok':normalized==='failed'?'err':'warn';return `<span class="pill ${cls}">${esc(names[s]||s||'-')}</span>`}
   async function loadBlueprints423(){const r=await safe(api(`/api/v42/projects/${pid()}/algorithm-blueprints`));state.v42.blueprints=r?.items||[];return state.v42.blueprints}
   async function loadSourcesOnly422(){const r=await safe(api(`/api/v42/projects/${pid()}/sources`));state.v42.sources=r?.items||[];return state.v42.sources}
   function versionMetric422(a,key){const v=(a.versions||[])[0]||{};const rep=v.report||{};for(const [k,val] of Object.entries(rep)){const low=String(k).toLowerCase().replace(/\s+/g,'');if(key==='precision'&&low.includes('precision')){const n=Number(val);if(Number.isFinite(n))return n}if(key==='recall'&&low.includes('recall')){const n=Number(val);if(Number.isFinite(n))return n}if(key==='map50'&&low.includes('map50')&&!low.includes('95')){const n=Number(val);if(Number.isFinite(n))return n}}return null}
-  function jobDuration422(j){const parse=v=>{const d=v?new Date(String(v).replace(' ','T')):null;return d&&!Number.isNaN(d.getTime())?d:null};const a=parse(j.started_at||j.created_at);if(!a)return 0;const terminal=['done','finished','completed','failed','stopped'].includes(j.status);const b=terminal?(parse(j.finished_at||j.updated_at)||new Date()):new Date();return Math.max(0,(b-a)/1000)}
+  function jobDuration422(j){const parse=v=>{const d=v?new Date(String(v).replace(' ','T')):null;return d&&!Number.isNaN(d.getTime())?d:null};const a=parse(j.started_at||j.created_at);if(!a)return 0;const terminal=['done','finished','completed','succeeded','success','failed','stopped'].includes(String(j.status||'').toLowerCase());const b=terminal?(parse(j.finished_at||j.updated_at)||new Date()):new Date();return Math.max(0,(b-a)/1000)}
   function fmtHours422(sec){sec=Math.max(0,Number(sec||0));const h=sec/3600;if(h>=1000)return (h/1000).toFixed(1)+'k h';if(h>=10)return h.toFixed(1)+' h';if(h>=1)return h.toFixed(2)+' h';return Math.round(sec/60)+' min'}
   function dashboardData422(){
     const algs=state.algorithms||[],jobs=state.jobs||[],dss=state.datasets||[],blue=state.v42?.blueprints||[];
     const versions=algs.reduce((n,a)=>n+(a.versions||[]).length,0),trained=algs.filter(a=>(a.versions||[]).length>0).length;
     const running=jobs.filter(j=>j.status==='running').length,queued=jobs.filter(j=>j.status==='queued').length,doneJobs=jobs.filter(j=>['done','finished','completed'].includes(j.status)),failed=jobs.filter(j=>j.status==='failed').length;
-    const totalSeconds=jobs.reduce((n,j)=>n+jobDuration422(j),0),avgSeconds=doneJobs.length?doneJobs.reduce((n,j)=>n+jobDuration422(j),0)/doneJobs.length:0,successRate=(doneJobs.length+failed)?doneJobs.length/(doneJobs.length+failed):0;
+    const totalSeconds=jobs.reduce((n,j)=>n+jobDuration422(j),0),avgSeconds=doneJobs.length?doneJobs.reduce((n,j)=>n+jobDuration422(j),0)/doneJobs.length:0,successRate=(doneJobs.length+failed)?doneJobs.length/(doneJobs.length+failed):null;
     const totalImages=dss.reduce((n,d)=>n+Number(d.images||0),0),annotated=dss.reduce((n,d)=>n+Number(d.annotated_images||0),0),boxes=dss.reduce((n,d)=>n+Number(d.boxes||0),0);
     const dsKinds={全标注:0,混合:0,未标注:0,空数据集:0};dss.forEach(d=>{const im=Number(d.images||0),an=Number(d.annotated_images||0);if(!im)dsKinds['空数据集']++;else if(an===im)dsKinds['全标注']++;else if(an>0)dsKinds['混合']++;else dsKinds['未标注']++});
     const measured=(state.v42?.quality?.algorithms||[]).map(a=>a.metrics||{}).filter(m=>m.map50!=null||m.precision!=null||m.recall!=null);const mean=k=>{const vals=measured.map(m=>Number(m[k])).filter(Number.isFinite);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null};const maps=measured.map(m=>Number(m.map50)).filter(Number.isFinite);
@@ -2453,7 +2453,7 @@ window.installUsability417=function(){
         <div class="ops422-kpi"><span>正在训练</span><b>${d.running}</b><small>${d.queued} 个排队任务</small></div>
         <div class="ops422-kpi"><span>数据集</span><b>${fmt422(d.dss.length)}</b><small>${fmt422(d.totalImages)} 张素材</small></div>
         <div class="ops422-kpi"><span>训练总时长</span><b>${fmtHours422(d.totalSeconds)}</b><small>平均 ${fmtHours422(d.avgSeconds)}</small></div>
-        <div class="ops422-kpi"><span>训练成功率</span><b>${(d.successRate*100).toFixed(1)}%</b><small>${d.done} 成功 · ${d.failed} 失败</small></div>
+        <div class="ops422-kpi"><span>训练任务成功率</span><b>${d.successRate==null?'—':(d.successRate*100).toFixed(1)+'%'}</b><small>${d.done+d.failed?d.done+' 成功 · '+d.failed+' 失败':'暂无已结束训练可统计'}</small></div>
         <div class="ops422-kpi"><span>自动标注中</span><b>${preRun}</b><small>${sourceCount} 个素材源 · ${autoSource} 个自动</small></div>
       </section>
       <section class="ops422-main-grid">
