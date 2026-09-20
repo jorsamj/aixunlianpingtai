@@ -104,3 +104,47 @@ def test_changlian_business_failure_is_not_hidden_by_http_200(tmp_path: Path):
     assert row["status"] == "FAILED"
     assert row["error_code"] == "99999"
     assert row["error_message"] == "系统内部错误，请联系管理员"
+
+
+class ProductListSuccessSession(FakeSession):
+    def request(self, method, url, **kwargs):
+        if url.endswith("/internal/algorithm/product-ai/listAll"):
+            assert method.upper() == "GET"
+            assert kwargs["headers"]["Authorization"] == "Bearer token-1"
+            assert "Access-Token" not in kwargs["headers"]
+            assert kwargs.get("params") in (None, {})
+            return FakeResponse({
+                "code": 0,
+                "msg": "操作成功",
+                "data": [{
+                    "productId": 101,
+                    "productType": 3,
+                    "productName": "抽烟检测",
+                    "productCode": "smoking",
+                }],
+                "total": 1,
+            })
+        return super().request(method, url, **kwargs)
+
+
+def test_changlian_product_list_uses_official_path_and_bearer_header(tmp_path: Path):
+    audit = IntegrationAuditRepository(tmp_path)
+    client = ChangLianClient(
+        base_url="https://changlian.example",
+        access_key="ak-sensitive",
+        access_secret="secret-sensitive",
+        endpoints=ChangLianEndpoints(),
+        session=ProductListSuccessSession(),
+        audit_callback=audit.record,
+    )
+
+    result = client.products()
+
+    assert result["code"] == 0
+    assert result["data"][0]["productId"] == 101
+    row = next(item for item in audit.list(limit=10) if item["operation"] == "product_list")
+    assert row["status"] == "SUCCESS"
+    assert row["business_code"] == "0"
+    assert row["endpoint"] == "/internal/algorithm/product-ai/listAll"
+    assert row["request"]["headers"]["Authorization"] == "***"
+    assert "Access-Token" not in row["request"]["headers"]
