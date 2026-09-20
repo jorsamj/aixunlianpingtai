@@ -42,7 +42,7 @@ class FakeSession:
             assert kwargs["headers"]["Access-Key"] == "ak"
             assert kwargs["headers"]["Timestamp"] == "100"
             return FakeResponse({"code": 200, "data": {"accessToken": "token-1", "tokenType": "Bearer", "expiresIn": 3600}})
-        if url.endswith("/algorithm-category/tree"):
+        if url.endswith("/internal/base/algorithm-category/tree"):
             assert kwargs["headers"]["Authorization"] == "Bearer token-1"
             return FakeResponse({"code": 200, "data": [{"categoryId": "c1", "categoryName": "园区安全"}]})
         raise AssertionError(url)
@@ -64,7 +64,7 @@ def test_changlian_auth_chain_uses_test_sign_then_token_then_bearer():
     assert [call[1].split("changlian.example")[-1] for call in session.calls] == [
         "/internal/auth/test-sign",
         "/internal/auth/token",
-        "/algorithm-category/tree",
+        "/internal/base/algorithm-category/tree",
     ]
 
 
@@ -72,12 +72,30 @@ def test_changlian_default_endpoints_match_documented_core_contract():
     endpoints = ChangLianEndpoints()
     assert endpoints.test_sign == "/internal/auth/test-sign"
     assert endpoints.token == "/internal/auth/token"
-    assert endpoints.category_tree == "/algorithm-category/tree"
-    assert endpoints.product_list == "/algorithm-product/listAll"
-    assert endpoints.analysis_by_product == "/algorithm-product-analysis/listByProduct/{productId}"
-    assert endpoints.compute_platform_list == "/compute-platform/listAll"
-    assert endpoints.version_create == "/algorithm-version/add"
-    assert endpoints.weight_create == "/algorithm-weight/add"
+    assert endpoints.category_tree == "/internal/base/algorithm-category/tree"
+    assert endpoints.product_list == "/internal/algorithm/algorithm-product/listAll"
+    assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
+    assert endpoints.compute_platform_list == "/internal/base/compute-platform/listAll"
+    assert endpoints.version_create == "/internal/algorithm/algorithm-version/add"
+    assert endpoints.weight_create == "/internal/algorithm/algorithm-weight/add"
+
+
+def test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces():
+    endpoints = ChangLianEndpoints.from_mapping({
+        "category_tree": "/algorithm-category/tree",
+        "product_list": "/algorithm-product/listAll",
+        "analysis_by_product": "/algorithm-product-analysis/listByProduct/{productId}",
+        "compute_platform_list": "/compute-platform/listAll",
+        "version_create": "/algorithm-version/add",
+        "weight_create": "/algorithm-weight/add",
+    })
+
+    assert endpoints.category_tree == "/internal/base/algorithm-category/tree"
+    assert endpoints.product_list == "/internal/algorithm/algorithm-product/listAll"
+    assert endpoints.analysis_by_product == "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"
+    assert endpoints.compute_platform_list == "/internal/base/compute-platform/listAll"
+    assert endpoints.version_create == "/internal/algorithm/algorithm-version/add"
+    assert endpoints.weight_create == "/internal/algorithm/algorithm-weight/add"
 
 
 def test_changlian_auth_audit_redacts_credentials_before_callback():
