@@ -43,12 +43,13 @@ class FakeSession:
             assert kwargs["headers"]["Timestamp"] == "100"
             return FakeResponse({"code": 200, "data": {"accessToken": "token-1", "tokenType": "Bearer", "expiresIn": 3600}})
         if url.endswith("/internal/base/algorithm-category/tree"):
-            assert kwargs["headers"]["Authorization"] == "Bearer token-1"
+            assert kwargs["headers"]["Access-Token"] == "token-1"
+            assert "Authorization" not in kwargs["headers"]
             return FakeResponse({"code": 200, "data": [{"categoryId": "c1", "categoryName": "园区安全"}]})
         raise AssertionError(url)
 
 
-def test_changlian_auth_chain_uses_test_sign_then_token_then_bearer():
+def test_changlian_auth_chain_uses_test_sign_then_token_then_access_token():
     session = FakeSession()
     client = ChangLianClient(
         base_url="https://changlian.example",
@@ -118,7 +119,8 @@ def test_changlian_auth_audit_redacts_credentials_before_callback():
     assert token["request"]["headers"]["Access-Key"] == "***"
     assert token["request"]["headers"]["Signature"] == "***"
     category = next(event for event in events if event.get("operation") == "category_list")
-    assert category["request"]["headers"]["Authorization"] == "***"
+    assert category["request"]["headers"]["Access-Token"] == "***"
+    assert "Authorization" not in category["request"]["headers"]
 
 
 def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
