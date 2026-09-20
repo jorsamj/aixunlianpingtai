@@ -233,7 +233,7 @@ jobs:
                   '/material-batches/${taskId}',
               ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.121',
+                  '/static/app.js?v=42.25.122',
                   '/static/main.mjs?v=42.25.111',
                   '/static/zip-import-bootstrap.mjs?v=422531',
               ),
