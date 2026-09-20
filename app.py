@@ -131,7 +131,9 @@ from platform_core.gpu_resources import GPUResourceManager, read_gpu_runtime_tru
 from platform_core.video_tasks import SamplingMode, VideoSampleRequest
 from platform_core.material_batches import (
     BatchOperation as MaterialBatchOperation,
+    BatchRequestError as MaterialBatchRequestError,
     SELECTION_REF as MATERIAL_BATCH_SELECTION_REF,
+    create_annotation_remap_batch,
     estimate_batch as estimate_material_batch,
     prepare_batch as prepare_material_batch,
     publish_prepared_batch as publish_prepared_material_batch,
@@ -17939,7 +17941,7 @@ class V52ReadyReq(BaseModel):
 @app.post('/api/v52/projects/{project_id}/labels/remap')
 def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
     get_project(project_id)
-    ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
+    ids = [str(x).strip() for x in (payload.image_ids or []) if str(x).strip()]
     source = normalize_label(payload.source_label)
     target = normalize_label(payload.target_label)
     if not ids:
@@ -17947,7 +17949,13 @@ def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
     if not source or not target:
         raise HTTPException(status_code=400, detail='原标签和新标签不能为空')
     if source == target:
-        return {'ok': True, 'changed_images': 0, 'changed_boxes': 0, 'source_label': source, 'target_label': target}
+        return {
+            'ok': True,
+            'changed_images': 0,
+            'changed_boxes': 0,
+            'source_label': source,
+            'target_label': target,
+        }
     project = get_project(project_id)
     active_targets = {
         str(item.get('code')): int(item.get('class_id'))
@@ -17958,30 +17966,24 @@ def v52_remap_import_labels(project_id: str, payload: V52LabelRemapReq):
             status_code=409,
             detail='目标标签必须来自当前有效标签库；如需新标签，请先在“标签管理”中显式创建',
         )
-    target_id = active_targets[target]
-    changed_images = 0
-    changed_boxes = 0
-    for iid in ids:
-        ann = read_annotation(project_id, iid)
-        boxes = ann.get('boxes', [])
-        changed = False
-        for b in boxes:
-            if normalize_label(b.get('label')) == source:
-                b['label'] = target
-                b['class_id'] = target_id
-                changed_boxes += 1
-                changed = True
-        if changed:
-            write_annotation(project_id, iid, boxes)
-            changed_images += 1
-    return {
-        'ok': True,
-        'changed_images': changed_images,
-        'changed_boxes': changed_boxes,
-        'source_label': source,
-        'target_label': target,
-        'labels': get_project(project_id).get('labels', []),
-    }
+    try:
+        task = create_annotation_remap_batch(
+            project_id,
+            material_store(project_id),
+            shared_task_repository(),
+            shared_task_artifacts(),
+            ids,
+            source,
+            target,
+        )
+    except MaterialBatchRequestError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+    return JSONResponse(
+        status_code=202,
+        content=public_material_batch(
+            task, shared_task_artifacts(), shared_task_repository()
+        ),
+    )
 
 @app.post('/api/v52/projects/{project_id}/images/mark-ready')
 def v52_mark_ready(project_id: str, payload: V52ReadyReq):

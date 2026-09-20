@@ -161,6 +161,204 @@ class AnnotationRepository:
                 result[image_id] = self.get(image_id)
         return result
 
+    def _content_payload(self, boxes, annotation_state=None, annotation_scope=None):
+        boxes = [dict(box) for box in (boxes or [])]
+        state = annotation_state or ('annotated' if boxes else 'confirmed_empty')
+        if state not in STATES or bool(boxes) != (state == 'annotated'):
+            raise ValueError('annotation state does not agree with boxes')
+        scope = _normalize_scope(annotation_scope)
+        if state == 'annotated' and not scope:
+            scope = _normalize_scope(
+                box.get('label') or box.get('code') for box in boxes
+            )
+        if state == 'confirmed_empty' and not scope:
+            scope = self._default_negative_scope()
+        if state == 'unannotated':
+            scope = []
+        boxes_payload = json.dumps(
+            boxes, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+            allow_nan=False,
+        )
+        scope_payload = json.dumps(
+            scope, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+        )
+        digest_payload = json.dumps(
+            {
+                'annotation_state': state,
+                'annotation_scope': scope,
+                'boxes': json.loads(boxes_payload),
+            },
+            ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+            allow_nan=False,
+        )
+        return {
+            'boxes': boxes,
+            'annotation_state': state,
+            'annotation_scope': scope,
+            'boxes_payload': boxes_payload,
+            'scope_payload': scope_payload,
+            'content_digest': hashlib.sha256(
+                digest_payload.encode('utf-8')
+            ).hexdigest(),
+        }
+
+    def record_digest(self, record) -> str:
+        prepared = self._content_payload(
+            record.get('boxes') or [],
+            record.get('annotation_state'),
+            record.get('annotation_scope'),
+        )
+        return prepared['content_digest']
+
+    def plan_label_remap(
+        self, record, *, source_label: str, target_label: str,
+        target_class_id: int,
+    ) -> dict:
+        source = str(source_label or '').strip()
+        target = str(target_label or '').strip()
+        if not source or not target:
+            raise ValueError('source and target labels are required')
+        boxes, changed = [], 0
+        for raw in record.get('boxes') or []:
+            box = dict(raw)
+            label = str(box.get('label') or box.get('code') or '').strip()
+            if label == source:
+                box['label'] = target
+                if 'code' in box:
+                    box['code'] = target
+                box['class_id'] = int(target_class_id)
+                changed += 1
+            boxes.append(box)
+        scope = [
+            target if str(value).strip() == source else str(value).strip()
+            for value in (record.get('annotation_scope') or [])
+            if str(value).strip()
+        ]
+        prepared = self._content_payload(
+            boxes,
+            record.get('annotation_state'),
+            scope,
+        )
+        return {**prepared, 'changed_boxes': changed}
+
+    def remap_labels_if_digests(
+        self, requests, *, source_label: str, target_label: str,
+        target_class_id: int, project_material: bool = True,
+    ) -> list[dict]:
+        requests = [dict(item) for item in requests or []]
+        if len(requests) > 500:
+            raise ValueError('annotation remap batch is limited to 500 image ids')
+        if not requests:
+            return []
+        ids = [self._id(item.get('image_id')) for item in requests]
+        if len(set(ids)) != len(ids):
+            raise ValueError('annotation remap image ids must be unique')
+        preloaded = {image_id: self.get(image_id) for image_id in ids}
+        results, projections = [], {}
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self._connect()) as db:
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                for request, image_id in zip(requests, ids):
+                    row = db.execute(
+                        'SELECT * FROM annotations WHERE image_id=?',
+                        (image_id,),
+                    ).fetchone()
+                    current = (
+                        self._decode_persisted_row(row)
+                        if row is not None else preloaded[image_id]
+                    )
+                    current_digest = self.record_digest(current)
+                    expected = str(request.get('expected_digest') or '')
+                    if not expected or current_digest != expected:
+                        results.append({
+                            'image_id': image_id,
+                            'status': 'stale',
+                            'current_digest': current_digest,
+                        })
+                        continue
+                    planned = self.plan_label_remap(
+                        current,
+                        source_label=source_label,
+                        target_label=target_label,
+                        target_class_id=target_class_id,
+                    )
+                    if planned['changed_boxes']:
+                        if row is not None:
+                            changed = db.execute(
+                                """UPDATE annotations SET
+                                   annotation_state=?, version=version+1,
+                                   content_digest=?, boxes_json=?, scope_json=?,
+                                   updated_at=?
+                                   WHERE image_id=? AND content_digest=?""",
+                                (
+                                    planned['annotation_state'],
+                                    planned['content_digest'],
+                                    planned['boxes_payload'],
+                                    planned['scope_payload'],
+                                    now,
+                                    image_id,
+                                    current_digest,
+                                ),
+                            ).rowcount
+                            if changed != 1:
+                                results.append({
+                                    'image_id': image_id,
+                                    'status': 'stale',
+                                    'current_digest': current_digest,
+                                })
+                                continue
+                        else:
+                            db.execute(
+                                """INSERT INTO annotations
+                                   (image_id, annotation_state, version,
+                                    content_digest, boxes_json, scope_json,
+                                    created_at, updated_at)
+                                   VALUES (?, ?, 1, ?, ?, ?, ?, ?)""",
+                                (
+                                    image_id,
+                                    planned['annotation_state'],
+                                    planned['content_digest'],
+                                    planned['boxes_payload'],
+                                    planned['scope_payload'],
+                                    now,
+                                    now,
+                                ),
+                            )
+                    projections[image_id] = {
+                        'annotation_state': planned['annotation_state'],
+                        'annotation_scope': planned['annotation_scope'],
+                        'annotation_hash': planned['content_digest'],
+                        'annotated': planned['annotation_state'] in {
+                            'annotated', 'confirmed_empty',
+                        },
+                        'box_count': len(planned['boxes']),
+                        'labels': sorted({
+                            str(box.get('label') or box.get('code') or '').strip()
+                            for box in planned['boxes']
+                            if str(box.get('label') or box.get('code') or '').strip()
+                        }),
+                    }
+                    results.append({
+                        'image_id': image_id,
+                        'status': (
+                            'applied' if planned['changed_boxes'] else 'unchanged'
+                        ),
+                        'changed_boxes': int(planned['changed_boxes']),
+                        'content_digest': planned['content_digest'],
+                    })
+                db.execute('COMMIT')
+            except Exception:
+                db.execute('ROLLBACK')
+                raise
+        if project_material and projections and (
+            (self.project_path / 'materials.sqlite3').exists()
+            or (self.project_path / 'images.json').exists()
+        ):
+            from .material_repository import MaterialRepository
+            MaterialRepository(self.project_path).patch(projections)
+        return results
+
     def summary(self):
         """Count persisted states; legacy JSON remains a per-image lazy fallback."""
         with closing(self._connect()) as db:
