@@ -75,13 +75,27 @@ data.tokenType
 data.expiresIn
 ```
 
-后续业务接口：
+后续内部业务接口按新畅联应用鉴权契约携带：
 
 ```text
-Authorization: Bearer <accessToken>
+Access-Token: <accessToken>
 ```
 
+不得改回 `Authorization: Bearer ...`。用户提供的“内部应用登出”文档明确描述为删除当前请求携带的 `Access-Token`。
+
 平台允许在“配置中心 → 平台对接”手工填写 Base URL、AccessKey、AccessSecret。测试连接使用当前页面草稿，不要求先保存；保存后的 AccessSecret 不回传浏览器明文。
+
+## 2.3 完整 Apifox 接口目录
+
+用户提供的 31 个新畅联官方 Apifox 文档条目已完整登记：
+
+```text
+docs/CHANGLIAN_APIFOX_API_CATALOG.md
+```
+
+只有已经确认并进入当前代码的接口才绑定 Method / Path；其余算法版本、权重、产品、分析方式、算力环境、品目等 CRUD / 分页 / 详情接口先登记官方文档来源，必须逐项按原文实现，**禁止按名称猜路径或参数**。
+
+“测试连接”只执行鉴权和只读查询，不会用测试动作去新增、修改或删除畅联云数据。
 
 ## 3. 主数据同步必需接口
 
@@ -309,7 +323,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /algorithm-weight/add
 ```
 
-`Authorization: Bearer <accessToken>` 语义保持不变。
+`Access-Token: <accessToken>` 语义保持不变。
 
 ### 当前真实验收门槛
 
