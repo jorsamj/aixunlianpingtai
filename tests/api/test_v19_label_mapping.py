@@ -18,8 +18,8 @@ def _yolo_zip():
         archive.writestr("data.yaml", "names:\n  0: toukui1\n  1: toukui2\n")
         archive.writestr("images/train/a.jpg", _jpg_bytes())
         archive.writestr("images/train/b.jpg", _jpg_bytes())
-        archive.writestr("labels/train/a.txt", "0 0.5 0.5 0.4 0.4\n")
-        archive.writestr("labels/train/b.txt", "1 0.5 0.5 0.4 0.4\n")
+        archive.writestr("annotations/train/a.txt", "0 0.5 0.5 0.4 0.4\n")
+        archive.writestr("annotations/train/b.txt", "1 0.5 0.5 0.4 0.4\n")
     return payload.getvalue()
 
 
@@ -80,3 +80,44 @@ def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
         assert len(boxes) == 1
         assert boxes[0]["label"] == "helmet"
         assert boxes[0]["class_id"] == 0
+
+
+def _broken_yolo_zip():
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("data.yaml", "names:\n  0: toukui1\n")
+        archive.writestr("images/train/broken.jpg", b"not-a-real-image")
+        archive.writestr("annotations/train/broken.txt", "0 0.5 0.5 0.4 0.4\n")
+    return payload.getvalue()
+
+
+def test_v19_failed_retry_cannot_change_frozen_label_mapping(client):
+    project = client.post("/api/projects", json={
+        "name": "zip-label-freeze",
+        "labels": [
+            {"code": "helmet", "display_name": "安全头盔"},
+            {"code": "person", "display_name": "人员"},
+        ],
+    }).json()
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("broken.zip", _broken_yolo_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+    assert job["label_confirmation_required"] is True
+
+    started = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={"label_mapping": {"0": "helmet"}},
+    )
+    assert started.status_code == 200, started.text
+    failed = _wait_job(client, project["id"], job["id"])
+    assert failed["status"] == "failed"
+
+    changed = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={"label_mapping": {"0": "person"}},
+    )
+    assert changed.status_code == 409
+    assert "已经确认冻结" in changed.text

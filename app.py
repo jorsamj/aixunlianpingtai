@@ -10880,8 +10880,6 @@ def v19_scan_zip(zip_path: Path) -> Dict[str, Any]:
                     continue
                 if Path(low).name in {"classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"}:
                     continue
-                if "/labels/" not in "/" + low:
-                    continue
                 try:
                     lines = zf.read(info).decode("utf-8", errors="ignore").splitlines()
                 except Exception:
@@ -11293,39 +11291,63 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
 
     classes = list(job.get("external_classes") or [])
     if classes:
-        create_labels = [str(code).strip() for code in payload.create_labels]
-        if any(not code or normalize_label(code) != code for code in create_labels):
-            raise HTTPException(status_code=422, detail="新建标签必须使用规范的平台标签编码")
         project = get_project(project_id)
-        try:
-            resolved, create = resolve_external_label_mapping(
-                classes,
-                label_mapping=payload.label_mapping,
-                create_labels=create_labels,
-                labels=project_label_items(project),
-            )
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        for code in create:
-            ensure_label(project, code)
-        confirmation = {
-            "label_mapping": resolved,
-            "create_labels": create,
-            "external_classes": [
-                {"class_id": str(row.get("class_id")), "name": str(row.get("name") or "")}
-                for row in classes
-            ],
+        existing_digest = str(job.get("label_confirmation_digest") or "")
+        existing_mapping = {
+            str(key): str(value)
+            for key, value in dict(job.get("label_mapping") or {}).items()
         }
-        job.update({
-            "label_mapping": resolved,
-            "create_labels": create,
-            "label_confirmation_required": False,
-            "label_confirmed_at": now_iso(),
-            "label_confirmation_digest": hashlib.sha256(json.dumps(
-                confirmation, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-            ).encode("utf-8")).hexdigest(),
-        })
-        v19_write_job(project_id, job)
+        existing_create = sorted(str(code) for code in (job.get("create_labels") or []))
+        if existing_digest:
+            requested_mapping = {
+                str(key): str(value)
+                for key, value in dict(payload.label_mapping or {}).items()
+            }
+            requested_create = sorted(str(code).strip() for code in payload.create_labels)
+            if requested_mapping and requested_mapping != existing_mapping:
+                raise HTTPException(
+                    status_code=409,
+                    detail="该 ZIP 任务的标签映射已经确认冻结，失败重试不能更换映射",
+                )
+            if requested_create and requested_create != existing_create:
+                raise HTTPException(
+                    status_code=409,
+                    detail="该 ZIP 任务的新建标签决定已经确认冻结，失败重试不能更换",
+                )
+            resolved, create = existing_mapping, existing_create
+        else:
+            create_labels = [str(code).strip() for code in payload.create_labels]
+            if any(not code or normalize_label(code) != code for code in create_labels):
+                raise HTTPException(status_code=422, detail="新建标签必须使用规范的平台标签编码")
+            try:
+                resolved, create = resolve_external_label_mapping(
+                    classes,
+                    label_mapping=payload.label_mapping,
+                    create_labels=create_labels,
+                    labels=project_label_items(project),
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            for code in create:
+                ensure_label(project, code)
+            confirmation = {
+                "label_mapping": resolved,
+                "create_labels": create,
+                "external_classes": [
+                    {"class_id": str(row.get("class_id")), "name": str(row.get("name") or "")}
+                    for row in classes
+                ],
+            }
+            job.update({
+                "label_mapping": resolved,
+                "create_labels": create,
+                "label_confirmation_required": False,
+                "label_confirmed_at": now_iso(),
+                "label_confirmation_digest": hashlib.sha256(json.dumps(
+                    confirmation, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8")).hexdigest(),
+            })
+            v19_write_job(project_id, job)
     elif payload.label_mapping or payload.create_labels:
         raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
 
