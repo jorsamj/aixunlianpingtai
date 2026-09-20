@@ -149,6 +149,7 @@ jobs:
                   "external_classes = mapping_suggestions(",
                   "task.status is TaskStatus.AWAITING_CONFIRMATION",
                   "suggested = suggest_label_code(value, catalog or [])",
+                  "目标标签必须来自当前有效标签库",
               ),
               'platform_core/auto_label.py': (
                   'if any(alias and label == alias for alias in values):',
