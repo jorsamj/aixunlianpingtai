@@ -2032,10 +2032,20 @@ def ensure_label(project: Dict[str, Any], label: str) -> int:
     labels = project.setdefault("labels", [])
     for i, item in enumerate(labels):
         if item == label:
+            if _prune_canonical_label_alias_conflicts(project):
+                save_project(project)
             return i
     labels.append(label)
     meta = project.setdefault("label_meta", [])
-    meta.append({"code": label, "display_name": label, "color": default_label_color(len(labels)-1), "type": "bbox", "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
+    meta.append({
+        "code": label,
+        "display_name": label,
+        "color": default_label_color(len(labels)-1),
+        "type": "bbox",
+        "hotkey": str(len(labels)) if len(labels) <= 9 else "",
+        "aliases": [],
+    })
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
     return len(labels) - 1
 
