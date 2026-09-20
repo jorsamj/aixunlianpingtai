@@ -133,8 +133,8 @@ def test_changlian_sync_adds_external_algorithm_without_removing_legacy_local(tm
         categories=[{"categoryId": "cat-fire", "categoryName": "消防安全"}],
         analyses_by_product={
             "product-100": [
-                {"analysisId": "analysis-a", "analysisName": "视觉分析 A", "analysisType": 1},
-                {"analysisId": "analysis-b", "analysisName": "视觉分析 B", "analysisType": 1},
+                {"analysisId": "analysis-a", "analysisName": "视觉分析 A", "analysisType": 1, "status": 1},
+                {"analysisId": "analysis-b", "analysisName": "视觉分析 B", "analysisType": 1, "status": 1},
             ]
         },
         synced_at="2026-09-17T09:00:00Z",
@@ -162,7 +162,7 @@ def test_changlian_sync_adds_external_algorithm_without_removing_legacy_local(tm
             "categoryId": "cat-fire",
         }],
         categories=[{"categoryId": "cat-fire", "categoryName": "消防安全"}],
-        analyses_by_product={"product-100": [{"analysisId": "analysis-a", "analysisName": "视觉分析 A"}]},
+        analyses_by_product={"product-100": [{"analysisId": "analysis-a", "analysisName": "视觉分析 A", "analysisType": 1, "status": 1}]},
         synced_at="2026-09-17T09:10:00Z",
     )
     rows = list_algorithms(json_path)
@@ -196,7 +196,7 @@ def test_external_sync_cannot_overwrite_concurrent_training_version(tmp_path: Pa
         algorithms_path=json_path,
         products=[{"productId": "product-200", "productName": "并发算法", "categoryId": "cat"}],
         categories=[{"categoryId": "cat", "categoryName": "测试"}],
-        analyses_by_product={"product-200": [{"analysisId": "analysis-1", "analysisName": "视觉"}]},
+        analyses_by_product={"product-200": [{"analysisId": "analysis-1", "analysisName": "视觉", "analysisType": 1, "status": 1}]},
         synced_at="2026-09-17T10:00:00Z",
     )
     algorithm = next(row for row in list_algorithms(json_path) if row.get("external_product_id") == "product-200")
@@ -216,7 +216,7 @@ def test_external_sync_cannot_overwrite_concurrent_training_version(tmp_path: Pa
             algorithms_path=json_path,
             products=[{"productId": "product-200", "productName": "并发算法（更新）", "categoryId": "cat"}],
             categories=[{"categoryId": "cat", "categoryName": "测试"}],
-            analyses_by_product={"product-200": [{"analysisId": "analysis-1", "analysisName": "视觉"}]},
+            analyses_by_product={"product-200": [{"analysisId": "analysis-1", "analysisName": "视觉", "analysisType": 1, "status": 1}]},
             synced_at="2026-09-17T10:01:00Z",
         )
 
@@ -376,3 +376,32 @@ def test_legacy_sql_rows_without_trainable_subset_infer_only_active_visual_ids(t
     assert {row["analysis_id"] for row in persisted["external_analyses"]} == {
         "vision-on", "llm-on", "vision-off",
     }
+
+
+def test_legacy_trainable_id_list_cannot_bypass_missing_status_or_type(tmp_path: Path):
+    project = tmp_path / "projects" / "p-analysis-fail-closed"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    save_algorithms(json_path, [{
+        "id": "external-legacy-unverified",
+        "name": "旧未验证分析",
+        "source_type": "EXTERNAL",
+        "provider_type": "CHANG_LIAN",
+        "external_product_id": "product-unverified",
+        "external_analysis_id": "legacy-visual",
+        "external_analysis_ids": ["legacy-visual", "missing-type"],
+        "external_analyses": [
+            {"analysis_id": "legacy-visual", "analysis_name": "视觉智能分析", "analysis_type": "1"},
+            {"analysis_id": "missing-type", "analysis_name": "视觉智能分析", "status": "1"},
+        ],
+        "versions": [],
+        "current_version_id": None,
+    }])
+
+    persisted = list_algorithms(json_path)[0]
+    assert persisted["external_analysis_ids"] == []
+    by_id = {row["analysis_id"]: row for row in persisted["external_analyses"]}
+    assert by_id["legacy-visual"]["active"] is False
+    assert by_id["missing-type"]["active"] is True
