@@ -144,6 +144,8 @@ jobs:
           ! grep -Fq 'id="rollbackDeleteCurrent"' static/app.js
           grep -Fq 'version rollback is destructive and external deletion is explained in the UI' tests/frontend/external-algorithm-publish.test.mjs
           grep -q "test_auto_publish_readiness_uses_canonical_model_storage_url" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_reuses_existing_verified_remote_training_object" tests/unit/test_external_algorithm_publish.py
+          grep -q "def _reuse_uploaded_model_asset" platform_core/external_algorithm_publish.py
           grep -q "test_auto_publish_worker_recovers_successful_external_version_without_request_marker" tests/unit/test_external_algorithm_publish.py
           grep -q "test_model_storage_always_keeps_auto_upload_enabled" tests/unit/test_model_artifacts.py
           grep -Fq 'result["auto_upload_enabled"] = True' platform_core/model_artifacts.py
