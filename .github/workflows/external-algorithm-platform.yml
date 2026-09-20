@@ -130,6 +130,8 @@ jobs:
           grep -Fq 'test_sync_uses_analysis_get_info_as_authoritative_training_truth' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_can_train_when_get_info_proves_enabled_visual_analysis' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_sync_fails_closed_when_analysis_get_info_omits_status' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_connection_fails_when_analysis_detail_contract_is_incomplete' tests/unit/test_external_algorithm_platform.py
+          grep -Fq '"analysis_detail"' platform_core/external_algorithm_platform.py
           grep -Fq 'def _analysis_detail_truth' platform_core/external_algorithm_platform.py
           grep -Fq 'client.analysis_info(analysis_id)' platform_core/external_algorithm_platform.py
           grep -Fq 'EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE' platform_core/external_algorithm_platform.py
