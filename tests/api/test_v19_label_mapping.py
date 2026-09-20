@@ -135,7 +135,7 @@ def test_v19_failed_retry_cannot_change_frozen_label_mapping(client):
     assert changed.status_code == 409
     assert "已经确认冻结" in changed.text
 
-def test_v19_confirmation_cannot_create_platform_label(client):
+def test_v19_confirmation_cannot_implicitly_create_platform_label(client):
     project = client.post("/api/projects", json={
         "name": "zip-canonical-label-only",
         "labels": [{"code": "helmet", "display_name": "安全头盔"}],
@@ -155,8 +155,50 @@ def test_v19_confirmation_cannot_create_platform_label(client):
         },
     )
     assert blocked.status_code == 409
-    assert "导入确认不能创建平台标签" in blocked.text
+    assert "不能根据外部标签名隐式创建平台标签" in blocked.text
 
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
     assert [row["code"] for row in labels] == ["helmet"]
+
+
+def test_v19_explicit_canonical_label_creation_then_mapping_is_supported(client):
+    project = client.post("/api/projects", json={
+        "name": "zip-explicit-new-canonical-label",
+        "labels": [{"code": "person", "display_name": "人员"}],
+    }).json()
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("labels.zip", _yolo_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+
+    label_created = client.post(
+        f"/api/projects/{project['id']}/labels",
+        json={
+            "label": "helmet_new",
+            "display_name": "安全头盔",
+            "color": "#ef4444",
+        },
+    )
+    assert label_created.status_code == 200, label_created.text
+
+    started = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={
+            "label_mapping": {"0": "helmet_new", "1": "helmet_new"},
+            "create_labels": [],
+        },
+    )
+    assert started.status_code == 200, started.text
+    final = _wait_job(client, project["id"], job["id"])
+    assert final["status"] == "done", json.dumps(final, ensure_ascii=False)
+    assert final["report"]["label_mapping"] == {"0": "helmet_new", "1": "helmet_new"}
+    assert final["report"]["label_box_counts"] == {"helmet_new": 2}
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    by_code = {row["code"]: row for row in labels}
+    assert set(by_code) == {"person", "helmet_new"}
+    assert by_code["helmet_new"]["display_name"] == "安全头盔"
+    assert by_code["helmet_new"]["aliases"] == ["toukui1", "toukui2"]
 
