@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {installAlgorithmListRuntime} from '../../static/modules/algorithm-list-runtime.js';
+import {algorithmListSearchMatch, installAlgorithmListRuntime} from '../../static/modules/algorithm-list-runtime.js';
 
 function response(body) {
   return {
@@ -234,5 +234,55 @@ test('registered decorators run after canonical card render without replacing re
   assert.ok(decorated >= 1);
   runtime.destroy();
   delete globalThis.MutationObserver;
+  cleanup();
+});
+
+
+test('algorithm runtime owns unified list filters and searches provider identifiers', () => {
+  const state = {
+    page: '算法列表',
+    project: {id: 'p1'},
+    algorithms: [],
+    jobs: [],
+    alg428Expanded: {},
+  };
+  globalThis.window = {
+    fetch: async () => response({items: []}),
+    renderAlg412: () => {},
+  };
+  const runtime = installAlgorithmListRuntime({
+    getState: () => state,
+    projectId: () => state.project.id,
+  });
+
+  assert.deepEqual(runtime.filterState(), {
+    query: '',
+    selectedCategoryIds: [],
+    source: 'all',
+    status: 'all',
+  });
+
+  const next = runtime.setFilters({
+    query: ' PROD-42 ',
+    selectedCategoryIds: ['root-a', 'root-a', '', 'child-a'],
+    source: 'external',
+    status: 'trainable',
+  }, {render: false});
+  assert.deepEqual(next, {
+    query: 'PROD-42',
+    selectedCategoryIds: ['root-a', 'child-a'],
+    source: 'external',
+    status: 'trainable',
+  });
+
+  assert.equal(runtime.matchesSearch({
+    name: '抽烟检测',
+    external_product_id: 'prod-42',
+  }), true);
+  assert.equal(algorithmListSearchMatch({algorithm_code: 'helmet-v2'}, 'HELMET'), true);
+  assert.equal(algorithmListSearchMatch({productCode: 'safe-prod'}, 'SAFE-PROD'), true);
+  assert.equal(algorithmListSearchMatch({name: '烟火检测'}, 'helmet'), false);
+
+  runtime.destroy();
   cleanup();
 });
