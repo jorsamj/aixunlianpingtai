@@ -298,15 +298,13 @@ test('training queue displays numeric priorities and orders each resource by pri
   }, project.id);
   await page.goto('/');
   await expect(page.locator('.nav-project-v')).toHaveText(project.name);
-  await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.patch)).toBe('function');
-  await page.evaluate(jobs => {
-    state.jobs = jobs;
-    state.page = '训练任务';
-    render();
-    window.TrainingTaskRuntime?.patch?.();
+  await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.refresh)).toBe('function');
+  await page.evaluate(async () => {
+    await window.setPage?.('训练任务');
+    await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'browser-test'});
     clearInterval(state.jobPollTimer);
     state.jobPollTimer = null;
-  }, queuedJobs);
+  });
 
   const rows = page.locator('.train428-table tbody tr');
   await expect(rows).toHaveCount(3);
