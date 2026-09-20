@@ -384,6 +384,7 @@ def test_storage_test_verifies_long_term_delivery_url(tmp_path: Path, monkeypatc
     assert calls
     assert calls[0][0].startswith("https://models.example.com/model-assets-healthcheck/")
     assert calls[0][1]["headers"]["Range"] == "bytes=0-0"
+    assert calls[0][1]["allow_redirects"] is False
 
 
 def test_storage_test_rejects_unreadable_delivery_url(tmp_path: Path, monkeypatch):
