@@ -372,6 +372,13 @@ class MaterialBatchHandler:
     def _run(self, context, manifest):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
         operation, selection, options = parse_request(payload)
+        if operation is BatchOperation.AI_ANNOTATE:
+            confirmation = context.artifacts.read_json(
+                context.task.task_id, "review/confirmation.json", default=None,
+            )
+            if isinstance(confirmation, dict) and confirmation.get("accepted") is True:
+                from .annotation_task_service import commit_confirmed_review
+                return commit_confirmed_review(context)
         project = str(context.task.project_id or '').strip()
         if (
             not project

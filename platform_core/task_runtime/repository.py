@@ -907,6 +907,60 @@ class TaskRepository:
             database.rollback()
             raise ValueError("task cannot resume after confirmation")
 
+    def resume_after_review_confirmation(
+        self,
+        task_id: str,
+        *,
+        required_capabilities: tuple[str, ...] | None = None,
+    ) -> TaskRecord:
+        now = utc_now()
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            if current.kind not in {TaskKind.AI_ANNOTATION, TaskKind.MATERIAL_BATCH}:
+                database.rollback()
+                raise ValueError("only AI annotation review tasks can resume after confirmation")
+            if current.accepted is False:
+                database.rollback()
+                raise ValueError("task cannot resume after rejected review")
+            capabilities = tuple(required_capabilities or current.required_capabilities)
+            capabilities_json = json.dumps(
+                list(capabilities), ensure_ascii=False, separators=(",", ":"),
+            )
+            if current.status is TaskStatus.AWAITING_CONFIRMATION:
+                database.execute(
+                    """
+                    UPDATE tasks SET status='QUEUED', stage='review_queued', progress=70,
+                        current_item=NULL, error=NULL, accepted=1, finished_at=NULL,
+                        required_capabilities=?, updated_at=?, worker_id=NULL,
+                        lease_token=NULL, lease_expires_at=NULL
+                     WHERE task_id=? AND status='AWAITING_CONFIRMATION'
+                    """,
+                    (capabilities_json, now, str(task_id)),
+                )
+                row = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?",
+                    (str(task_id),),
+                ).fetchone()
+                database.commit()
+                return _from_row(row)
+            if current.accepted is True and (
+                (current.status is TaskStatus.QUEUED and current.stage == "review_queued")
+                or (current.status is TaskStatus.RUNNING and current.stage == "APPLYING_REVIEW")
+                or current.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}
+            ):
+                database.commit()
+                return current
+            database.rollback()
+            raise ValueError("task cannot resume after review confirmation")
+
     def retry(self, task_id: str) -> TaskRecord:
         now = utc_now()
         terminal_values = tuple(status.value for status in TERMINAL_STATUSES)

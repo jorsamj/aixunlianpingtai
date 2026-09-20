@@ -236,6 +236,62 @@ class CandidateStore:
             db.execute("UPDATE candidates SET accepted=? WHERE status IN ('success','empty') "
                        "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted),))
 
+    def remap_labels(self, mapping: dict[str, str], label_ids: dict[str, int]) -> None:
+        normalized = {
+            str(source): str(target)
+            for source, target in dict(mapping or {}).items()
+            if str(source) and str(target)
+        }
+        unknown_targets = sorted(set(normalized.values()) - set(label_ids))
+        if unknown_targets:
+            raise ValueError("annotation label mapping targets are unavailable: " + ", ".join(unknown_targets))
+        if not normalized:
+            return
+        self._ready()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                rows = db.execute(
+                    "SELECT * FROM candidates WHERE status IN ('success','empty') ORDER BY ordinal"
+                ).fetchall()
+                for row in rows:
+                    item = self._decode(row)
+                    changed = False
+                    boxes = []
+                    for box in item.get("boxes") or []:
+                        current = dict(box)
+                        source = str(current.get("label") or "")
+                        target = normalized.get(source)
+                        if target:
+                            current["label"] = target
+                            current["class_id"] = int(label_ids[target])
+                            changed = True
+                        boxes.append(current)
+                    if changed:
+                        item["boxes"] = boxes
+                        self._put(db, item, normalize=False)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    def label_summary(self) -> list[dict[str, Any]]:
+        summary: dict[str, dict[str, Any]] = {}
+        for item in self.iter_items():
+            if item.get("status") not in {"success", "empty"}:
+                continue
+            seen = set()
+            for box in item.get("boxes") or []:
+                label = str(box.get("label") or "").strip()
+                if not label:
+                    continue
+                row = summary.setdefault(label, {"label": label, "boxes": 0, "images": 0})
+                row["boxes"] += 1
+                if label not in seen:
+                    row["images"] += 1
+                    seen.add(label)
+        return sorted(summary.values(), key=lambda row: (-int(row["boxes"]), str(row["label"])))
+
     def summary(self) -> dict[str, int]:
         self._ready()
         summary = {key: 0 for key in ("total", "success", "empty", "failed", "accepted", "rejected", "unreviewed", "boxes")}

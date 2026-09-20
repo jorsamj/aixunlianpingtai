@@ -84,13 +84,22 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
             "decisions": [{"image_id": image["id"], "accepted": True}],
             "reject_unmentioned": True,
             "commit": True,
+            "label_mapping": {"fire": "smoke"},
         },
     )
     assert accepted.status_code == 200, accepted.text
-    assert accepted.json()["task"]["status"] == "SUCCEEDED"
+    assert accepted.json()["queued_for_commit"] is True
+    assert accepted.json()["task"]["status"] == "QUEUED"
+    assert accepted.json()["task"]["stage"] == "review_queued"
+    assert client.get(f"/api/projects/{project_id}/annotations/{image['id']}").json()["boxes"] == []
+    assert scheduler.run_once() is True
+    finished = client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}").json()
+    assert finished["status"] == "SUCCEEDED"
     assert candidates[0]["request_id"] == "persistent-e2e"
     formal = client.get(f"/api/projects/{project_id}/annotations/{image['id']}").json()["boxes"]
     assert len(formal) == 1
     assert formal[0]["source"] == "ai_candidate_confirmed"
     assert formal[0]["source_task_id"] == task_id
+    assert formal[0]["label"] == "smoke"
+    assert formal[0]["class_id"] == 1
     assert not source_path.exists()

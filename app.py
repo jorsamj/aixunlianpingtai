@@ -16424,6 +16424,7 @@ class AnnotationDecisionReq(BaseModel):
     reject_unmentioned: bool = True
     accept_unmentioned: bool = False
     commit: bool = True
+    label_mapping: Dict[str, str] = Field(default_factory=dict)
 
 
 def _v47_parse_label_text(text: str) -> List[str]:
@@ -16870,14 +16871,18 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
     task = _require_annotation_review_task(project_id, task_id)
     if not task.result_ref:
         raise HTTPException(status_code=409, detail="任务尚未生成候选结果")
+    store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
     try:
-        page = CandidateStore(shared_task_artifacts(), task_id=task.task_id).read_page(
+        page = store.read_page(
             cursor=cursor,
             limit=max(1, min(100, int(limit))),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
+    response = {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
+    if cursor in {None, "", "0"}:
+        response["label_summary"] = store.label_summary()
+    return response
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions")
@@ -16902,35 +16907,82 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         raise HTTPException(status_code=400, detail="审核范围包含不存在或生成失败的素材")
     if payload.reject_unmentioned and payload.accept_unmentioned:
         raise HTTPException(status_code=400, detail="未明确选择的素材不能同时接受和拒绝")
+
+    mapping = {
+        str(source).strip(): str(target).strip()
+        for source, target in dict(payload.label_mapping or {}).items()
+        if str(source).strip() or str(target).strip()
+    }
+    if any(not source or not target for source, target in mapping.items()):
+        raise HTTPException(status_code=400, detail="标签统一映射不能包含空标签")
+    catalog = _v47_label_catalog(get_project(project_id))
+    label_ids = {str(item["code"]): int(item["class_id"]) for item in catalog}
+    source_labels = {str(item["label"]) for item in store.label_summary()}
+    unknown_sources = sorted(set(mapping) - source_labels)
+    unknown_targets = sorted(set(mapping.values()) - set(label_ids))
+    if unknown_sources:
+        raise HTTPException(status_code=400, detail="标签统一映射包含不存在的候选标签：" + "、".join(unknown_sources))
+    if unknown_targets:
+        raise HTTPException(status_code=400, detail="标签统一映射目标不在当前有效标签库：" + "、".join(unknown_targets))
+
     store.apply_decisions(decisions)
+    try:
+        store.remap_labels(mapping, label_ids)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if payload.accept_unmentioned:
         store.decide_unmentioned(True, exclude=decided_ids)
     elif payload.reject_unmentioned:
         store.decide_unmentioned(False, exclude=decided_ids)
     summary = store.summary()
     if summary["unreviewed"] or not payload.commit:
-        return {"ok": True, "task": public_annotation_task(task, summary=summary), "review": summary}
-    if payload.commit:
-        request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
-        if task.kind is TaskKind.MATERIAL_BATCH:
-            request = request.get("options") or {}
-        result = commit_candidate_decisions(
-            project_id,
+        return {
+            "ok": True,
+            "task": public_annotation_task(task, summary=summary),
+            "review": summary,
+            "label_summary": store.label_summary(),
+        }
+
+    if not summary.get("accepted"):
+        result = {
+            "applied_images": 0,
+            "applied_image_ids": [],
+            "boxes_added": 0,
+            "review": summary,
+            "completed_image_ids": [],
+            "image_summaries": [],
+            "image_summaries_truncated": False,
+        }
+        shared_task_artifacts().atomic_write_json(task.task_id, "review/result.json", result)
+        final_status = TaskStatus.PARTIAL_SUCCESS if summary.get("failed") else TaskStatus.SUCCEEDED
+        updated = shared_task_repository().complete_review(
             task.task_id,
-            store,
-            overwrite=bool((request or {}).get("overwrite")),
+            final_status,
+            "review/result.json",
+            accepted=False,
         )
-    else:
-        result = {"review": summary}
-    shared_task_artifacts().atomic_write_json(task.task_id, "review/result.json", result)
-    final_status = TaskStatus.PARTIAL_SUCCESS if summary.get("failed") else TaskStatus.SUCCEEDED
-    updated = shared_task_repository().complete_review(
-        task.task_id,
-        final_status,
-        "review/result.json",
-        accepted=bool(summary.get("accepted")),
+        return {"ok": True, "task": public_annotation_task(updated, summary=summary), **result}
+
+    confirmation = {
+        "accepted": True,
+        "confirmed_at": now_iso(),
+        "label_mapping": mapping,
+        "review": summary,
+    }
+    shared_task_artifacts().atomic_write_json(
+        task.task_id, "review/confirmation.json", confirmation,
     )
-    return {"ok": True, "task": public_annotation_task(updated, summary=summary), **result}
+    try:
+        updated = shared_task_repository().resume_after_review_confirmation(task.task_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {
+        "ok": True,
+        "queued_for_commit": True,
+        "task": public_annotation_task(updated, summary=summary),
+        "review": summary,
+        "label_summary": store.label_summary(),
+    }
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/cancel")

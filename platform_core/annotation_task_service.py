@@ -295,14 +295,20 @@ def commit_candidate_decisions(
     store: CandidateStore,
     *,
     overwrite: bool,
+    progress: Callable[[int, int, str], Any] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     journal_ref = "commit/result.json"
     store._ready()
     applied_images, image_summaries = [], []
     applied_count = boxes_added = 0
+    accepted_total = max(0, int(store.summary().get("accepted") or 0))
+    processed = 0
     for item in store.iter_items():
         if item.get("accepted") is not True or item.get("status") not in {"success", "empty"}:
             continue
+        if cancelled is not None and cancelled():
+            raise InterruptedError("AI annotation review commit cancelled")
         image_id = str(item["image_id"])
         applied_count += 1
         if len(applied_images) < 100:
@@ -336,6 +342,9 @@ def commit_candidate_decisions(
             db.execute("INSERT OR REPLACE INTO commits VALUES (?,?)", (image_id, json.dumps(summary, ensure_ascii=False)))
         if len(image_summaries) < 100:
             image_summaries.append(summary)
+        processed += 1
+        if progress is not None:
+            progress(processed, accepted_total, image_id)
     result = {"applied_images": applied_count, "applied_image_ids": applied_images,
               "boxes_added": boxes_added, "review": store.summary(),
               "completed_image_ids": applied_images, "image_summaries": image_summaries,
@@ -345,8 +354,52 @@ def commit_candidate_decisions(
     return result
 
 
+def commit_confirmed_review(context):
+    confirmation = context.artifacts.read_json(
+        context.task.task_id, "review/confirmation.json", default=None,
+    )
+    if not isinstance(confirmation, dict) or confirmation.get("accepted") is not True:
+        return None
+    request = context.artifacts.read_json(
+        context.task.task_id, context.task.payload_ref, default={},
+    )
+    if context.task.kind is TaskKind.MATERIAL_BATCH:
+        request = (request or {}).get("options") or {}
+    store = CandidateStore(context.artifacts, task_id=context.task.task_id)
+
+    def update_progress(done: int, total: int, image_id: str) -> None:
+        percent = 70.0 + 29.0 * done / max(1, total)
+        context.heartbeat(
+            progress=min(99.0, percent),
+            stage="APPLYING_REVIEW",
+            current_item=f"正在统一标签并写入正式标注 {done}/{max(1, total)} · {image_id}",
+        )
+
+    context.heartbeat(
+        progress=70.0,
+        stage="APPLYING_REVIEW",
+        current_item="正在准备标注入库",
+    )
+    result = commit_candidate_decisions(
+        context.task.project_id,
+        context.task.task_id,
+        store,
+        overwrite=bool((request or {}).get("overwrite")),
+        progress=update_progress,
+        cancelled=context.cancel_requested,
+    )
+    context.artifacts.atomic_write_json(
+        context.task.task_id, "review/result.json", result,
+    )
+    status = TaskStatus.PARTIAL_SUCCESS if result["review"].get("failed") else TaskStatus.SUCCEEDED
+    return status, "review/result.json"
+
+
 class AnnotationHandler:
     def run(self, context):
+        review = commit_confirmed_review(context)
+        if review is not None:
+            return review
         outcome = run_ai_annotation(context)
         return outcome.status, outcome.result_ref
 
