@@ -33,10 +33,10 @@ MAX_SYNC_HISTORY = 100
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 600
 
 CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
-    {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"POST","path":"/login","auth":"bearer"},
-    {"key":"auth_token","group":"应用鉴权","title":"内部应用鉴权获取Token","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307570e0.md","status":"wired","method":"POST","path":"/internal/auth/token","auth":"application"},
-    {"key":"auth_test_sign","group":"应用鉴权","title":"内部应用签名测试","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307571e0.md","status":"wired","method":"POST","path":"/internal/auth/test-sign","auth":"application"},
-    {"key":"auth_logout","group":"应用鉴权","title":"内部应用登出","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307572e0.md","status":"wired","method":"POST","path":"/internal/auth/logout","auth":"application"},
+    {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"POST","path":"/login","auth":"human_login"},
+    {"key":"auth_token","group":"应用鉴权","title":"内部应用鉴权获取Token","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307570e0.md","status":"wired","method":"POST","path":"/internal/auth/token","auth":"application_signature"},
+    {"key":"auth_test_sign","group":"应用鉴权","title":"内部应用签名测试","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307571e0.md","status":"wired","method":"POST","path":"/internal/auth/test-sign","auth":"application_signature"},
+    {"key":"auth_logout","group":"应用鉴权","title":"内部应用登出","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307572e0.md","status":"wired","method":"POST","path":"/internal/auth/logout","auth":"bearer"},
     {"key":"weight_edit","group":"算法权重文件管理","title":"修改算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837707e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-weight/edit","auth":"bearer"},
     {"key":"weight_add","group":"算法权重文件管理","title":"新增算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837708e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-weight/add","auth":"bearer"},
     {"key":"weight_remove","group":"算法权重文件管理","title":"删除算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837709e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/remove/{weightIds}","auth":"bearer"},
