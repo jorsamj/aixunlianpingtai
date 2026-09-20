@@ -90,6 +90,9 @@ def _remote_id(body: Any, keys: Iterable[str]) -> str:
             current = value.get(key)
             if current not in (None, ""):
                 return str(current)
+        return ""
+    if value not in (None, "") and isinstance(value, (str, int)):
+        return str(value)
     return ""
 
 
@@ -267,14 +270,8 @@ class ExternalPublicationRepository:
         body["schema_version"] = PUBLICATION_SCHEMA_VERSION
         body["public_base_url"] = str(body.get("public_base_url") or "").strip().rstrip("/")
         body["storage_source_id"] = str(body.get("storage_source_id") or "").strip()
-        body["version_list_by_product"] = _canonical_publish_endpoint(
-            body.get("version_list_by_product"),
-            DEFAULT_PUBLISH_CONFIG["version_list_by_product"],
-        )
-        body["weight_list_by_version"] = _canonical_publish_endpoint(
-            body.get("weight_list_by_version"),
-            DEFAULT_PUBLISH_CONFIG["weight_list_by_version"],
-        )
+        body["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
+        body["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
         body["updated_at"] = utc_now()
         with self.lock:
             temp = self.config_path.with_suffix(".tmp")
@@ -397,17 +394,19 @@ class ExternalPublicationRepository:
 
 
 class PublishingChangLianClient(ChangLianClient):
-    def create_algorithm_version(self, path: str, payload: Mapping[str, Any]) -> Any:
-        return self._request("POST", path, auth=True, json=dict(payload))
+    """Publishing facade pinned to the official ChangLian version/weight contracts."""
 
-    def list_product_versions(self, path: str) -> Any:
-        return self._request("GET", path, auth=True)
+    def create_algorithm_version(self, payload: Mapping[str, Any]) -> Any:
+        return self.version_create(payload)
 
-    def create_weight(self, path: str, payload: Mapping[str, Any]) -> Any:
-        return self._request("POST", path, auth=True, json=dict(payload))
+    def list_product_versions(self, product_id: Any) -> Any:
+        return self.version_list_by_product(product_id)
 
-    def list_version_weights(self, path: str) -> Any:
-        return self._request("GET", path, auth=True)
+    def create_weight(self, payload: Mapping[str, Any]) -> Any:
+        return self.weight_create(payload)
+
+    def list_version_weights(self, algo_version_id: Any) -> Any:
+        return self.weight_list_by_version(algo_version_id)
 
 
 class ExternalAlgorithmPublishService:
@@ -829,12 +828,9 @@ class ExternalAlgorithmPublishService:
         analysis_id: str = "",
         require_analysis_identity: bool = False,
     ) -> str:
-        path = str(self.repository.config().get("version_list_by_product") or "").replace("{productId}", product_id)
-        if not path:
-            return ""
         try:
             return self._remote_version_match(
-                extract_items(client.list_product_versions(path)),
+                extract_items(client.list_product_versions(product_id)),
                 version_name,
                 analysis_id=analysis_id,
                 require_analysis_identity=require_analysis_identity,
@@ -865,10 +861,8 @@ class ExternalAlgorithmPublishService:
             payload["analysisId"] = analysis_id
         else:
             payload["productId"] = product_id
-        external_config = self.external_repository.config()
-        path = str((external_config.get("endpoints") or {}).get("version_create") or ChangLianEndpoints.version_create)
         try:
-            response = client.create_algorithm_version(path, payload)
+            response = client.create_algorithm_version(payload)
         except Exception as error:
             recovered = self._recover_external_version(
                 client,
@@ -936,11 +930,8 @@ class ExternalAlgorithmPublishService:
         )
 
     def _recover_weight(self, client: PublishingChangLianClient, external_version_id: str, artifact: Mapping[str, Any]) -> str:
-        path = str(self.repository.config().get("weight_list_by_version") or "").replace("{algoVersionId}", external_version_id)
-        if not path:
-            return ""
         try:
-            rows = extract_items(client.list_version_weights(path))
+            rows = extract_items(client.list_version_weights(external_version_id))
         except Exception:
             return ""
         for row in rows:
@@ -967,10 +958,8 @@ class ExternalAlgorithmPublishService:
             "fileName": str(current.get("file_name") or ""),
             "filePath": str(current.get("public_url") or ""),
         }
-        external_config = self.external_repository.config()
-        path = str((external_config.get("endpoints") or {}).get("weight_create") or ChangLianEndpoints.weight_create)
         try:
-            response = client.create_weight(path, payload)
+            response = client.create_weight(payload)
         except Exception as error:
             recovered = self._recover_weight(client, external_version_id, current)
             if recovered:
