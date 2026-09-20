@@ -692,8 +692,11 @@ export function installExternalAlgorithmPlatformRuntime({
             <div class="field full">
               <details data-external-sync-settings="1">
                 <summary>同步设置</summary>
-                <div style="margin-top:12px">
+                <div style="margin-top:12px" class="form two">
                   <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''} ${formDisabled}> 自动同步主数据</label>
+                  <div class="field"><label>主动拉取间隔</label><select id="externalAutoSyncInterval" class="select" ${formDisabled}>
+                    ${[60,120,300,600,1800,3600].map(seconds => `<option value="${seconds}" ${Number(c.autoSyncIntervalSeconds || 600) === seconds ? 'selected' : ''}>${seconds < 3600 ? `${seconds / 60} 分钟` : `${seconds / 3600} 小时`}</option>`).join('')}
+                  </select><div class="subline">当前 OpenAPI 没有 Webhook、订阅或推送接口；60 秒为准实时主动轮询。</div></div>
                 </div>
               </details>
             </div>
@@ -845,7 +848,7 @@ export function installExternalAlgorithmPlatformRuntime({
       provider: document.getElementById('externalProvider')?.value || 'changlian',
       base_url: document.getElementById('externalBaseUrl')?.value.trim() || '',
       auto_sync_enabled: Boolean(document.getElementById('externalAutoSync')?.checked),
-      auto_sync_interval_seconds: config?.autoSyncIntervalSeconds || 600,
+      auto_sync_interval_seconds: Number(document.getElementById('externalAutoSyncInterval')?.value || config?.autoSyncIntervalSeconds || 600),
       auto_publish_enabled: false,
       access_key: document.getElementById('externalAccessKey')?.value.trim() || null,
       access_secret: document.getElementById('externalAccessSecret')?.value || null,
@@ -942,8 +945,15 @@ export function installExternalAlgorithmPlatformRuntime({
       return notify?.('请先保存 API 地址、AccessKey 和 AccessSecret，再执行同步');
     }
 
-    const button = document.getElementById('externalPlatformSync');
-    if (button) { button.disabled = true; button.textContent = '正在同步…'; }
+    const buttons = [
+      document.getElementById('externalPlatformSync'),
+      ...document.querySelectorAll('[data-external-list-sync]'),
+    ].filter(Boolean);
+    for (const button of buttons) {
+      button.disabled = true;
+      button.dataset.originalText = button.textContent || '';
+      button.textContent = '正在同步…';
+    }
     try {
       const body = await requestJson(`${API_ROOT}/sync?project_id=${encodeURIComponent(pid)}`, {method: 'POST'});
       const counts = body?.sync?.counts || {};
@@ -953,7 +963,11 @@ export function installExternalAlgorithmPlatformRuntime({
       if (String(state().page || '') === PAGE) await render({reload: false});
       return body;
     } finally {
-      if (button) { button.disabled = false; button.textContent = '↻ 立即同步'; }
+      for (const button of buttons) {
+        button.disabled = false;
+        button.textContent = button.dataset.originalText || (button.id === 'externalPlatformSync' ? '↻ 立即同步' : '↻ 同步畅联云');
+        delete button.dataset.originalText;
+      }
     }
   }
 
@@ -1046,7 +1060,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63011',
+    build: 'external-algorithm-platform-63012',
     page: PAGE,
     loadConfig,
     loadHistory,
