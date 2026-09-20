@@ -1,4 +1,4 @@
-import {trainingTaskRow} from './training-task-runtime.js?v=422522';
+import {trainingTaskRow, visibleTrainingJobs} from './training-task-runtime.js?v=422524';
 
 const TRAINING_PAGE = '训练任务';
 const ACTIVE_STATUSES = new Set([
@@ -26,53 +26,11 @@ const TERMINAL_STATUSES = new Set([
   'blocked_by_hardware',
 ]);
 
-function statusOf(job) {
-  return String(job?.status || '').trim().toLowerCase();
-}
-
-function priorityValue(job) {
-  const raw = Number(job?.queue_priority ?? 50);
-  if (job?.priority_scheme === 'lower_number_first') {
-    return Math.max(1, Math.min(999, Number.isFinite(raw) ? raw : 50));
-  }
-  const legacy = {100: 1, 80: 20, 50: 50};
-  return legacy[raw] ?? Math.max(1, Math.min(999, 101 - (Number.isFinite(raw) ? raw : 50)));
-}
-
-function activeRank(status) {
-  if (['running', 'starting', 'resuming'].includes(status)) return 0;
-  if (['pausing', 'paused', 'stopping', 'cancel_requested'].includes(status)) return 1;
-  if (status === 'queued') return 2;
-  return 3;
-}
-
-function visibleJobs(jobs, tab) {
-  const rows = Array.isArray(jobs) ? jobs : [];
-  const filtered = tab === 'history'
-    ? rows.filter(job => !ACTIVE_STATUSES.has(statusOf(job)))
-    : rows.filter(job => ACTIVE_STATUSES.has(statusOf(job)));
-  return [...filtered].sort((a, b) => {
-    const aStatus = statusOf(a);
-    const bStatus = statusOf(b);
-    const aRank = activeRank(aStatus);
-    const bRank = activeRank(bStatus);
-    if (aRank !== bRank) return aRank - bRank;
-    if (aRank === 2) return priorityValue(a) - priorityValue(b);
-    return String(b?.started_at || b?.created_at || '').localeCompare(
-      String(a?.started_at || a?.created_at || ''),
-    );
-  });
-}
-
 function counts(jobs) {
-  const rows = Array.isArray(jobs) ? jobs : [];
-  let active = 0;
-  let history = 0;
-  for (const job of rows) {
-    if (ACTIVE_STATUSES.has(statusOf(job))) active += 1;
-    else history += 1;
-  }
-  return {active, history};
+  return {
+    active: visibleTrainingJobs(jobs, 'active').length,
+    history: visibleTrainingJobs(jobs, 'history').length,
+  };
 }
 
 export function installTrainingTaskVisibilityRuntime({
@@ -150,7 +108,7 @@ export function installTrainingTaskVisibilityRuntime({
     activeButton?.classList?.toggle?.('on', tab !== 'history');
     historyButton?.classList?.toggle?.('on', tab === 'history');
 
-    const visible = visibleJobs(jobs, tab);
+    const visible = visibleTrainingJobs(jobs, tab);
     body.innerHTML = visible.map(trainingTaskRow).join('')
       || '<tr><td colspan="8" class="empty-row">暂无记录</td></tr>';
     return true;
@@ -236,7 +194,7 @@ export function installTrainingTaskVisibilityRuntime({
   }
 
   const visibilityRuntime = {
-    build: 'training-task-visibility-422523',
+    build: 'training-task-visibility-422524',
     activeStatuses: Object.freeze([...ACTIVE_STATUSES]),
     terminalStatuses: Object.freeze([...TERMINAL_STATUSES]),
     render: renderOwned,

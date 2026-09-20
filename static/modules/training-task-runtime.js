@@ -1,7 +1,10 @@
 import {canonicalTaskPhase, canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js';
 
 const TRAINING_PAGE = '训练任务';
-const ACTIVE_STATUSES = new Set(['queued', 'running', 'waiting', 'pending', 'paused']);
+const ACTIVE_STATUSES = new Set([
+  'queued', 'waiting', 'pending', 'starting', 'running',
+  'pausing', 'paused', 'resuming', 'stopping', 'cancel_requested',
+]);
 const DONE_STATUSES = new Set(['done', 'finished', 'completed', 'failed', 'stopped', 'cancelled', 'canceled']);
 const REFRESH_DEDUP_WINDOW_MS = 120;
 

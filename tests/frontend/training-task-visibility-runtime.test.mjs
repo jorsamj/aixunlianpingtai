@@ -187,3 +187,23 @@ test('newer canonical refresh remains final render truth', async () => {
   visibility.destroy();
   cleanup();
 });
+
+
+test('visibility renderer reuses canonical durable queue order', () => {
+  const fixture = installFixture({jobs: [
+    {id: 'fifo-new', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 3, resource_queue_position_exact: true, queued_at: '2026-08-30T10:02:00Z'},
+    {id: 'highest', status: 'queued', resource_key: 'local:cpu', queue_priority: 1, priority_scheme: 'lower_number_first', resource_queue_position: 1, resource_queue_position_exact: true, queued_at: '2026-08-30T10:03:00Z'},
+    {id: 'fifo-old', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 2, resource_queue_position_exact: true, queued_at: '2026-08-30T10:01:00Z'},
+  ]});
+  const visibility = installTrainingTaskVisibilityRuntime({
+    getState: () => fixture.state,
+    trainingTaskRuntime: fixture.runtime,
+    pollRegistry: window.PollRegistryRuntime,
+  });
+  visibility.render();
+  const html = fixture.dom.body.innerHTML;
+  assert.ok(html.indexOf('highest') < html.indexOf('fifo-old'));
+  assert.ok(html.indexOf('fifo-old') < html.indexOf('fifo-new'));
+  visibility.destroy();
+  cleanup();
+});

@@ -15,7 +15,7 @@ import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422500';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422523';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422524';
 import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
