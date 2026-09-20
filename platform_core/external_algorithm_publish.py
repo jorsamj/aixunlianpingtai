@@ -1283,6 +1283,87 @@ class ExternalAlgorithmPublishService:
                 return True
         return False
 
+    def delete_version_for_rollback(
+        self,
+        *,
+        project_id: str,
+        algorithm: Mapping[str, Any],
+        version: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        if (
+            str(algorithm.get("source_type") or "").upper() != SOURCE_EXTERNAL
+            or str(algorithm.get("provider_type") or "").upper() != PROVIDER_CHANGLIAN
+        ):
+            return {"required": False, "status": "local_only", "external_algo_version_id": ""}
+
+        algorithm_id = str(algorithm.get("id") or "")
+        version_id = str(version.get("id") or "")
+        publication = self.repository.publication(project_id, algorithm_id, version_id)
+        external_version_id = str(
+            version.get("external_algo_version_id")
+            or (publication or {}).get("external_algo_version_id")
+            or ""
+        ).strip()
+        client = self._external_client()
+        if hasattr(client, "set_audit_context"):
+            client.set_audit_context(
+                project_id=project_id,
+                algorithm_id=algorithm_id,
+                version_id=version_id,
+                external_product_id=str(algorithm.get("external_product_id") or ""),
+                external_analysis_id=str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or ""),
+                external_algo_version_id=external_version_id,
+            )
+
+        if not external_version_id:
+            product_id = str(algorithm.get("external_product_id") or "")
+            version_name = str(version.get("version_name") or version_id)
+            analysis_id = str(version.get("external_analysis_id") or algorithm.get("external_analysis_id") or "")
+            try:
+                rows = extract_items(client.list_product_versions(product_id))
+            except Exception as error:
+                raise PlatformError(
+                    "EXTERNAL_VERSION_DELETE_LOOKUP_FAILED",
+                    "回退前无法确认新畅联版本状态",
+                    str(error),
+                    "远端版本状态无法确认时不会删除本地版本；请检查新畅联连接后重试。",
+                    502,
+                ) from error
+            external_version_id = self._remote_version_match(
+                rows,
+                version_name,
+                analysis_id=analysis_id,
+                require_analysis_identity=bool(analysis_id and len(self._algorithm_analysis_ids(algorithm)) > 1),
+            )
+            if not external_version_id:
+                return {"required": True, "status": "not_present", "external_algo_version_id": ""}
+
+        try:
+            client.version_remove([external_version_id])
+        except Exception as error:
+            raise PlatformError(
+                "EXTERNAL_VERSION_DELETE_FAILED",
+                "新畅联算法版本删除失败，已停止回退",
+                str(error),
+                "平台不会只删除本地版本。请检查新畅联删除接口和版本状态后重试。",
+                502,
+            ) from error
+
+        if publication:
+            try:
+                self.repository.patch_publication(
+                    str(publication["publication_key"]),
+                    status="DELETED",
+                    last_error="",
+                )
+            except Exception:
+                pass
+        return {
+            "required": True,
+            "status": "deleted",
+            "external_algo_version_id": external_version_id,
+        }
+
     def auto_publish_ready(self) -> bool:
         external = self.external_repository.config()
         publish = self.repository.config()
