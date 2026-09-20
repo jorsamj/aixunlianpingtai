@@ -955,3 +955,15 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
     assert project["status"] == "blocked"
     assert project["count"] == 0
     assert readiness["ready"] is False
+
+
+def test_legacy_v12_training_entry_enforces_external_analysis_gate():
+    source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
+    start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
+    end = source.index('# v42.8：训练任务统一进入资源队列', start)
+    block = source[start:end]
+
+    assert "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)" in block
+    assert "resolve_external_training_analysis(" in block
+    assert block.index("resolve_external_training_analysis(") < block.index("if payload.split_mode:")
+    assert '"external_analysis_id": external_analysis_id' in block
