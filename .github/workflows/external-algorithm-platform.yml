@@ -125,6 +125,15 @@ jobs:
           grep -Fq 'externalAutoSyncInterval' static/modules/external-algorithm-platform.js
           grep -Fq '60 秒为准实时主动轮询' static/modules/external-algorithm-platform.js
           grep -Fq 'algorithm list supports multi-category source and training-status filters' tests/frontend/external-algorithm-platform.test.mjs
+          grep -Fq 'algorithmListSearchMatch' static/modules/algorithm-list-runtime.js
+          grep -Fq 'selectedCategoryIds: []' static/modules/algorithm-list-runtime.js
+          grep -Fq 'algorithmListRuntime?.filterState?.()' static/modules/external-algorithm-platform.js
+          grep -Fq 'algorithmListRuntime?.setFilters?.(patch, options)' static/modules/external-algorithm-platform.js
+          ! grep -Fq "let selectedSource = 'all'" static/modules/external-algorithm-platform.js
+          ! grep -Fq "let selectedTrainingStatus = 'all'" static/modules/external-algorithm-platform.js
+          ! grep -Fq 'const selectedCategoryIds = new Set();' static/modules/external-algorithm-platform.js
+          grep -Fq 'external_product_id' static/app.js
+          grep -Fq 'algorithm runtime owns unified list filters and searches provider identifiers' tests/frontend/algorithm-list-runtime.test.mjs
           grep -Fq "v42 dashboard renderer only calls helpers from its own scope" tests/frontend/startup-render-owner.test.mjs
           grep -Fq 'database.execute("PRAGMA busy_timeout=5000")' platform_core/storage/source_repository.py
           grep -Fq 'if current_mode != "wal":' platform_core/storage/source_repository.py
