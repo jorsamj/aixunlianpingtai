@@ -505,10 +505,11 @@ def test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs(tmp_pat
     algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
     version = algorithm["versions"][0]
     discovered = service.discover_artifacts("p1", algorithm, version)
-    assert len(discovered) == 1
-    assert discovered[0]["file_name"] == "model_rk3568_fp.rknn"
-    assert discovered[0]["target"] == "rockchip"
-    assert discovered[0]["chip_code"] == "RK3568"
+    assert {row["target"] for row in discovered} == {"original", "rockchip"}
+    rockchip = [row for row in discovered if row["target"] == "rockchip"]
+    assert len(rockchip) == 1
+    assert rockchip[0]["file_name"] == "model_rk3568_fp.rknn"
+    assert rockchip[0]["chip_code"] == "RK3568"
 
     result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
     assert result["publication"]["status"] == "PUBLISHED"
