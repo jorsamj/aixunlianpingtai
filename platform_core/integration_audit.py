@@ -93,6 +93,41 @@ class IntegrationAuditRepository:
         self.db_path = self.root / "interactions.sqlite3"
         with closing(self._connect()) as database:
             database.executescript(_SCHEMA)
+        self._repair_legacy_zero_code_rows()
+
+    def _repair_legacy_zero_code_rows(self) -> int:
+        """Repair only the historical code=0/falsy audit bug; never rewrite real failures."""
+        repaired: list[str] = []
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT log_id, response_json
+                FROM external_interaction_logs
+                WHERE status='FAILED'
+                  AND http_status BETWEEN 200 AND 299
+                  AND business_code=''
+                """
+            ).fetchall()
+            for row in rows:
+                try:
+                    body = json.loads(row["response_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(body, dict) or body.get("code") != 0:
+                    continue
+                database.execute(
+                    """
+                    UPDATE external_interaction_logs
+                    SET status='SUCCESS',
+                        business_code='0',
+                        error_code='',
+                        error_message=''
+                    WHERE log_id=?
+                    """,
+                    (str(row["log_id"]),),
+                )
+                repaired.append(str(row["log_id"]))
+        return len(repaired)
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.db_path, timeout=5, isolation_level=None)
