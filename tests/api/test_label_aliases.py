@@ -262,3 +262,16 @@ def test_pending_storage_import_refreshes_alias_suggestions(
     task.accepted = True
     frozen = app_module._public_storage_import_task(task)
     assert frozen["result"]["external_classes"][0]["target_label_code"] is None
+
+
+def test_project_creation_rejects_overlong_alias_with_400(client):
+    response = client.post("/api/projects", json={
+        "name": "invalid-label-alias",
+        "labels": [{
+            "code": "helmet",
+            "display_name": "安全头盔",
+            "aliases": ["x" * 129],
+        }],
+    })
+    assert response.status_code == 400
+    assert "标签别名无效" in response.text
