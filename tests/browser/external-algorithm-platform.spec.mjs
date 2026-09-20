@@ -32,7 +32,7 @@ test('changlian platform page tests draft credentials before manual sync', async
           auto_sync_interval_seconds: 600,
           auto_publish_enabled: false,
           auth_mode: 'test_sign_bridge',
-          business_auth_header: 'Access-Token',
+          business_auth_mode: 'endpoint_contract',
           api_document_summary: {total: 31, wired: 10, documented: 20, reference: 1},
           api_documents: [
             {
@@ -66,7 +66,7 @@ test('changlian platform page tests draft credentials before manual sync', async
             test_sign: '/internal/auth/test-sign',
             token: '/internal/auth/token',
             category_tree: '/internal/base/algorithm-category/tree',
-            product_list: '/internal/algorithm/algorithm-product/listAll',
+            product_list: '/internal/algorithm/product-ai/listAll',
             analysis_by_product: '/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}',
             compute_platform_list: '/internal/base/compute-platform/listAll',
             version_create: '/internal/algorithm/algorithm-version/add',
