@@ -1403,6 +1403,7 @@ class TrainingHandler:
                 "artifact_verified": True,
                 "trainable": True,
                 "framework": "ultralytics",
+                "external_analysis_id": str(payload.get("external_analysis_id") or "").strip(),
                 "snapshot_id": snapshot_id,
                 "dataset_revision_id": dataset_revision_id,
                 "training_lineage": training_lineage,
