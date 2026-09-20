@@ -10,6 +10,7 @@ from platform_core.external_algorithm_platform import (
     resolve_external_training_analysis,
 )
 from platform_core.external_algorithm_publish import (
+    _remote_id,
     ExternalAlgorithmPublishService,
     ExternalPublicationRepository,
     ExternalPublishConfigPayload,
@@ -20,6 +21,13 @@ from platform_core.model_artifacts import ModelArtifactConfigPayload
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
 from platform_core.storage.source_repository import StorageSourceRepository
 
+
+
+
+
+def test_remote_id_accepts_official_scalar_data_ids():
+    assert _remote_id({"code": 0, "data": 501}, ("algoVersionId",)) == "501"
+    assert _remote_id({"code": 0, "data": 701}, ("weightId",)) == "701"
 
 def test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_namespace(tmp_path: Path):
     payload = ExternalPublishConfigPayload()
@@ -64,12 +72,12 @@ class FakePublishingClient:
         cls.last_weight_list_path = None
         cls.last_weight_create_path = None
 
-    def list_product_versions(self, path):
-        type(self).last_version_list_path = path
+    def list_product_versions(self, product_id):
+        type(self).last_version_list_path = f"/internal/algorithm/algorithm-version/listByProduct/{product_id}"
         return {"code": 200, "data": list(self.versions)}
 
-    def create_algorithm_version(self, path, payload):
-        type(self).last_version_create_path = path
+    def create_algorithm_version(self, payload):
+        type(self).last_version_create_path = "/internal/algorithm/algorithm-version/add"
         type(self).version_creates += 1
         type(self).last_version_payload = dict(payload)
         row = {
@@ -82,12 +90,12 @@ class FakePublishingClient:
         type(self).versions.append(row)
         return {"code": 200, "data": {"algoVersionId": row["algoVersionId"]}}
 
-    def list_version_weights(self, path):
-        type(self).last_weight_list_path = path
+    def list_version_weights(self, algo_version_id):
+        type(self).last_weight_list_path = f"/internal/algorithm/algorithm-weight/listByVersion/{algo_version_id}"
         return {"code": 200, "data": list(self.weights)}
 
-    def create_weight(self, path, payload):
-        type(self).last_weight_create_path = path
+    def create_weight(self, payload):
+        type(self).last_weight_create_path = "/internal/algorithm/algorithm-weight/add"
         type(self).weight_creates += 1
         type(self).last_weight_payload = dict(payload)
         row = {"weightId": f"w-{type(self).weight_creates}", **dict(payload)}
@@ -143,7 +151,7 @@ class FakeChangLianSyncClient:
 
 
 class RecoveringPublishingClient(FakePublishingClient):
-    def create_algorithm_version(self, _path, payload):
+    def create_algorithm_version(self, payload):
         type(self).version_creates += 1
         row = {
             "algoVersionId": "recovered-version",
@@ -155,7 +163,7 @@ class RecoveringPublishingClient(FakePublishingClient):
         type(self).versions.append(row)
         raise RuntimeError("connection reset after server commit")
 
-    def create_weight(self, _path, payload):
+    def create_weight(self, payload):
         type(self).weight_creates += 1
         row = {"weightId": "recovered-weight", **dict(payload)}
         type(self).weights.append(row)
@@ -163,7 +171,7 @@ class RecoveringPublishingClient(FakePublishingClient):
 
 
 class AmbiguousAnalysisRecoveringClient(FakePublishingClient):
-    def create_algorithm_version(self, _path, payload):
+    def create_algorithm_version(self, payload):
         type(self).version_creates += 1
         type(self).versions.append({
             "algoVersionId": "ambiguous-version",
