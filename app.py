@@ -3589,6 +3589,7 @@ def add_label(project_id: str, payload: AddLabelReq):
             _set_project_label_aliases(
                 project, project["labels"][idx], aliases, replace=True,
             )
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
     return {"ok": True, "class_id": idx, "labels": project["labels"], "label_meta": project.get("label_meta", [])}
 
@@ -7469,6 +7470,20 @@ def _set_project_label_aliases(
     return meta[target_idx]["aliases"]
 
 
+def _prune_canonical_label_alias_conflicts(project: Dict[str, Any]) -> bool:
+    canonical = set()
+    for item in project_label_items(project):
+        canonical.update(label_identity_values(item))
+    changed = False
+    for row in _ensure_project_label_meta(project):
+        aliases = normalize_label_aliases(row.get("aliases") or [])
+        filtered = [alias for alias in aliases if alias not in canonical]
+        if filtered != aliases:
+            row["aliases"] = filtered
+            changed = True
+    return changed
+
+
 def remember_project_label_aliases(
     project_id: str,
     external_classes,
@@ -7676,6 +7691,7 @@ def v12_update_label(project_id: str, class_id: int, payload: LabelUpdateReq):
         _set_project_label_aliases(
             project, labels[class_id], validated_aliases, replace=True,
         )
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
     return {"ok": True, "items": project_label_items(project)}
 
