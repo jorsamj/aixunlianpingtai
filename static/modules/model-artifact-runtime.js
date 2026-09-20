@@ -250,8 +250,9 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     const button = document.getElementById('modelArtifactTestStorage');
     if (button) { button.disabled = true; button.textContent = '正在测试…'; }
     try {
-      const body = await requestJson(`${MODEL_API}/storage-test`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({storage_source_id: storageSourceId})});
-      notify?.(body.message || '模型资产存储读写测试通过');
+      const publicBaseUrl = document.getElementById('modelArtifactPublicBaseUrl')?.value.trim() || '';
+      const body = await requestJson(`${MODEL_API}/storage-test`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({storage_source_id: storageSourceId, public_base_url: publicBaseUrl})});
+      notify?.(body.message || '算法产物存储与长期访问地址测试通过');
     } finally {
       if (button) { button.disabled = false; button.textContent = '测试存储'; }
     }
