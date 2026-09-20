@@ -119,6 +119,11 @@ jobs:
           grep -q "def _validated_external_items" platform_core/external_algorithm_platform.py
           grep -q "EXTERNAL_PRODUCT_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "EXTERNAL_ANALYSIS_ID_MISSING" platform_core/external_algorithm_platform.py
+          grep -Fq 'return explicit_type == "1"' platform_core/external_algorithm_platform.py
+          grep -Fq 'EXTERNAL_ANALYSIS_NOT_VISUAL' platform_core/external_algorithm_platform.py
+          grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_MISSING' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_external_sync_only_exposes_enabled_visual_analyses_for_training' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_external_training_rejects_non_visual_or_disabled_analysis' tests/unit/test_external_algorithm_platform.py
           grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
           grep -q "test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces" tests/unit/test_external_algorithm_platform.py
