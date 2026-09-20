@@ -321,6 +321,7 @@ def rollback_algorithm_version(
     operator: str = "local_user",
     expected_current_version_id: str | None = None,
     dependency_check: Callable[[Mapping[str, Any], Mapping[str, Any]], Sequence[Mapping[str, Any]]] | None = None,
+    remote_delete: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
     cleanup: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict:
     operation_id = uuid.uuid4().hex[:12]
@@ -342,11 +343,14 @@ def rollback_algorithm_version(
     target_framework = str(target.get("framework") or "ultralytics")
     choose_iteration_base([target], "", target_framework, strict_latest=True, artifact_validator=lambda candidate: candidate.is_file() and candidate.stat().st_size > 0)
     current = next(row for row in versions if str(row.get("id") or "") == current_id)
+    remote_result: Mapping[str, Any] = {}
     if delete_current_version:
         dependencies = list((dependency_check or (lambda _algorithm, _version: []))(algorithm, current) or [])
         if dependencies:
             reasons = [str(item.get("reason") or item.get("id") or "存在活动引用") for item in dependencies]
             raise PlatformError("ALGORITHM_VERSION_IN_USE", "当前版本仍被活动业务引用，不能删除", "；".join(reasons), "请先结束相关任务或停止对应业务，再重新执行回退并删除。", 409)
+        if remote_delete is not None:
+            remote_result = dict(remote_delete(dict(algorithm), dict(current)) or {})
     operation = {
         "id": operation_id,
         "algorithm_id": str(algorithm_id),
@@ -386,6 +390,7 @@ def rollback_algorithm_version(
         "cleanup_status": cleanup_status,
         "cleanup_targets": [str(item) for item in cleanup_result.get("targets") or []],
         "cleanup_errors": [str(item) for item in cleanup_result.get("errors") or []],
+        "remote_delete": dict(remote_result),
     }
 
 
