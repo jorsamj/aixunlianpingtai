@@ -112,6 +112,7 @@ jobs:
                   'zipNeedsLabelConfirmation',
                   '标注入库确认',
                   'confirmLabels',
+                  'window.doImportData=()=>',
               ),
               'static/modules/annotation-task-view.js': (
                   '等待标注入库',

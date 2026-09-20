@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {
   ACTIVE_ZIP_STATUSES,
   LEGACY_START_GRACE_MS,
@@ -44,4 +45,12 @@ test('annotated ZIP blocks auto-start until label mapping is explicitly confirme
   const view=zipView(job,[job]);
   assert.equal(view.stage,'等待确认标注');
   assert.match(view.message,/2 个外部标签/);
+});
+
+test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/window\.doUploadZip426=input=>upload\(input\)/);
+  assert.match(source,/window\.doImportData=\(\)=>/);
+  assert.match(source,/检测到外部标签后，必须先统一到平台标签再正式入库/);
+  assert.doesNotMatch(source,/\/api\/v18\/projects/);
 });

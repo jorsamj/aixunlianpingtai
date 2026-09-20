@@ -286,5 +286,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   const originalReload=window.reloadMaterialPage61;
   if(typeof originalReload==='function'&&!originalReload.__zipImportDurableWrapped){const wrapped=async function(...args){const out=await originalReload.apply(this,args);reconcile('material-page').catch(()=>{});return out};wrapped.__zipImportDurableWrapped=true;window.reloadMaterialPage61=wrapped}
   const runtime={upload,reconcile,open,confirmLabels,snapshot:()=>({jobs:[...jobs],current}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
-  window.ZipImportRuntime=runtime;window.doUploadZip426=input=>upload(input).catch(()=>{});reconcile('bootstrap').then(value=>{if(!value&&!pid())setTimeout(()=>reconcile('bootstrap-retry').catch(()=>{}),500)}).catch(()=>{});return runtime;
+  window.ZipImportRuntime=runtime;
+  window.doUploadZip426=input=>upload(input).catch(()=>{});
+  window.importData=()=>window.modal?.('导入已标注数据',`<div class="form"><div class="import-box"><div class="item-title">上传并检查标注</div><div class="item-sub">支持 YOLO、COCO、Pascal VOC。检测到外部标签后，必须先统一到平台标签再正式入库。</div></div><div class="field"><label>选择压缩包</label><input id="importFile" type="file" class="file" accept=".zip"></div><div class="row end"><button class="btn soft" onclick="closeModal()">取消</button><button class="btn primary" onclick="doImportData()">上传并检查标注</button></div></div>`,true);
+  window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return upload(input).catch(()=>null)};
+  reconcile('bootstrap').then(value=>{if(!value&&!pid())setTimeout(()=>reconcile('bootstrap-retry').catch(()=>{}),500)}).catch(()=>{});return runtime;
 }
