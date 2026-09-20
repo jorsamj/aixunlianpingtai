@@ -91,14 +91,22 @@ test('manual publish preflight blocks stale product and analysis identity before
   assert.match(inactive.message, /已在新畅联下架/);
 });
 
-test('manual publish preflight blocks incomplete artifact preparation', () => {
-  assert.deepEqual(
-    publicationPreflight({conversion_active: true}),
-    {ready: false, message: '模型转换仍在进行，请等待转换完成后再同步到新畅联。'},
-  );
+test('manual publish preflight allows original model delivery while conversions are still running', () => {
+  const trainingReady = publicationPreflight({
+    conversion_active: true,
+    transport_ready: true,
+    identity_ready: true,
+    discovered: [{target: 'original', publish_mapping_status: 'mapped'}],
+    mapped_artifact_count: 1,
+    blocked_artifact_count: 0,
+    ignored_artifact_count: 0,
+    publish_ready: true,
+  });
+  assert.equal(trainingReady.ready, true);
+
   assert.deepEqual(
     publicationPreflight({conversion_active: false, discovered: []}),
-    {ready: false, message: '当前版本还没有可发布的转换产物，请先完成模型转换。'},
+    {ready: false, message: '当前版本还没有可交付的训练模型或转换产物。'},
   );
 
   const blocked = publicationPreflight({
@@ -133,8 +141,8 @@ test('manual publish preflight blocks missing model delivery configuration', () 
   });
 
   assert.equal(result.ready, false);
-  assert.match(result.message, /平台对接 → 畅联云版本发布/);
-  assert.match(result.message, /平台对接 → 模型资产存储/);
+  assert.match(result.message, /存储配置 → 算法与转换结果存储/);
+  assert.match(result.message, /OSS \/ CDN/);
   assert.match(result.message, /测试存储/);
 });
 
