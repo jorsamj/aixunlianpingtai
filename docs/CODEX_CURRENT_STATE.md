@@ -39,10 +39,10 @@ GPU 正式服务器当前仍运行上午部署：
 ```text
 POST /internal/auth/test-sign
 POST /internal/auth/token
-GET  /internal/base/algorithm-category/tree
+GET  /internal/base/category/tree
 GET  /internal/base/compute-platform/listAll
 GET  /internal/algorithm/product-ai/listAll
-GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
+GET  /internal/algorithm/algorithm-analysis/listByProduct/{productId}
 POST /internal/algorithm/algorithm-version/add
 GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
 POST /internal/algorithm/algorithm-weight/add
@@ -57,7 +57,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /algorithm-weight/add
 ```
 
-业务接口鉴权 Header 必须逐接口遵循对应官方 OpenAPI。已确认算法产品 `GET /internal/algorithm/product-ai/listAll` 使用 `Authorization: Bearer <accessToken>`；不得再把登出接口的 `Access-Token` 规则推广到全部业务接口。
+完整 31 项 OpenAPI 汇编已经确认：品目、产品、分析方式、算力环境、算法版本、算法权重等内部业务接口均声明 `Authorization: Bearer <accessToken>`。旧 `Access-Token` Header 实现不得恢复。
 
 ### Current execution priority
 
@@ -100,12 +100,26 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 2026-09-20 live integration corrected three contract defects:
 
 - Numeric `code=0` must remain `"0"` and audit as SUCCESS; the old `body.get("code") or ""` path incorrectly converted 0 to empty string and marked successful token calls FAILED.
-- Authentication is endpoint-specific. Official OpenAPI 515837723e0 requires `GET /internal/algorithm/product-ai/listAll` with `Authorization: Bearer <accessToken>`. The earlier global `Access-Token` rule was an overgeneralization from the logout document and is superseded.
+- The complete 31-endpoint OpenAPI compilation supersedes earlier partial assumptions. Internal business APIs use `Authorization: Bearer <accessToken>`; versions expose full edit/add/remove/list/by-product/by-analysis/listAll/detail and weights expose edit/add/remove/list/by-version/by-product/detail.
 - HTTP 2xx with a non-success business code (for example `99999`) now raises at the HTTP-client boundary while preserving the remote business code and message.
 - The 31 user-supplied official Apifox documents are registered in `docs/CHANGLIAN_APIFOX_API_CATALOG.md` and surfaced in the platform UI. Only verified Method/Path bindings are marked wired; remaining CRUD/page/detail documents must not be guessed.
 - Connection tests remain non-destructive: auth + read-only master-data queries only.
 
 Permanent guards: `tests/unit/test_changlian_audit_client.py`, `tests/frontend/external-algorithm-platform.test.mjs`, `tests/browser/external-algorithm-platform.spec.mjs`, `.github/workflows/external-algorithm-platform.yml`.
+
+## Complete algorithm provider contract — 2026-09-20
+
+The user supplied a consolidated OpenAPI file covering all 31 interfaces. Current code now treats it as the source of truth:
+
+- `/internal/base/category/*` for algorithm categories.
+- `/internal/algorithm/product-ai/*` for algorithm products.
+- `/internal/algorithm/algorithm-analysis/*` for analysis modes.
+- full algorithm-version and algorithm-weight CRUD/query contracts.
+- read-only connection diagnostics cover versions and weights.
+- destructive edit/remove calls are explicit provider management APIs only.
+- publishing pins official paths and parses scalar `data` IDs returned by add-version/add-weight.
+
+Do not reintroduce editable Provider paths in the publish UI.
 
 ## Current fix — ChangLian internal API namespace
 
@@ -120,7 +134,7 @@ publication/recovery calls:
 
 Known legacy bare paths are migrated only on exact match; unrelated custom paths
 are preserved. The platform UI no longer exposes Provider endpoint editing.
-Business calls follow each endpoint's official OpenAPI auth contract; the product list uses `Authorization: Bearer <accessToken>`. Formal `VERSION.txt` remains
+Business calls use the complete official `Authorization: Bearer <accessToken>` contract. Formal `VERSION.txt` remains
 `42.24.0`.
 
 ## Current closure — Reusable Fixed Benchmark Training v1 CLOSED
