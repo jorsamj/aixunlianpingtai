@@ -28,6 +28,7 @@ on:
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/unit/test_label_aliases.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
+      - 'tests/frontend/ai-annotation-owner.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - '.github/workflows/label-normalization-contract.yml'
   pull_request:
@@ -53,6 +54,7 @@ on:
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/unit/test_label_aliases.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
+      - 'tests/frontend/ai-annotation-owner.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
       - '.github/workflows/label-normalization-contract.yml'
 
@@ -106,6 +108,7 @@ jobs:
         run: >-
           node --test
           tests/frontend/annotation-task-view.test.mjs
+          tests/frontend/ai-annotation-owner.test.mjs
           tests/frontend/zip-import-durable-runtime.test.mjs
       - name: Permanent source guards
         shell: python
@@ -192,6 +195,9 @@ jobs:
                   'label414Aliases',
                   '自动预选后仍需人工确认',
                   'const aliases=labels.filter(label=>(Array.isArray(label.aliases)?label.aliases:[])',
+                  'window.submitAiLabel429=async function(ids=[])',
+                  'const task=await api(taskApi(),',
+                  '候选结果不会自动写入正式标注',
               ),
               'static/index.html': (
                   '/static/app.js?v=42.25.118',
