@@ -87,7 +87,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /algorithm-weight/add
 ```
 
-`Authorization: Bearer <accessToken>` 语义保持不变。
+`Access-Token: <accessToken>` 语义保持不变。
 
 ## 当前唯一优先动作
 
@@ -113,6 +113,37 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 真实畅联云生产/联调 E2E 在完成前继续保持 **OPEN / NOT CLOSED**。
 
+
+---
+
+<!-- CHANGLIAN_CODE_ZERO_ACCESS_TOKEN_2026_09_20 -->
+# 最新修复：新畅联 code=0 / Access-Token / 完整 API 文档目录
+
+2026-09-20 真实联调确认并修复：
+
+- 畅联返回 `HTTP 200 + code=0 + msg=操作成功` 时，旧代码使用 `body.get("code") or ""`，把数值 `0` 错误变成空字符串，导致交互审计误记为 FAILED。现在 `code=0` 会保留为 `business_code="0"` 并记录 SUCCESS。
+- 新畅联内部业务接口当前使用请求头 `Access-Token: <accessToken>`；不再使用 `Authorization: Bearer ...`。用户提供的“内部应用登出”官方文档明确描述为删除当前请求携带的 Access-Token。
+- `HTTP 200` 但业务码非成功（例如 `99999`）现在会在 HTTP client 边界直接失败，保留真实 business code 与远端 msg，不能继续被上层当成正常数据。
+- 用户提供的 **31 个** Apifox 文档条目已完整登记在 `docs/CHANGLIAN_APIFOX_API_CATALOG.md`，平台页面也展示“新畅联接口契约”目录。
+- 当前只有已经核实 Method / Path 的 10 个生产主链接口标记“已接入”；其余版本/权重/产品/分析方式/算力环境/品目 CRUD、分页、详情接口先登记官方文档，不猜 Method / Path。
+- “测试连接”只执行鉴权和只读查询，不自动调用新增、修改、删除等有副作用接口。
+
+当前已绑定主链：
+
+```text
+POST /internal/auth/test-sign
+POST /internal/auth/token
+GET  /internal/base/algorithm-category/tree
+GET  /internal/base/compute-platform/listAll
+GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
+POST /internal/algorithm/algorithm-version/add
+GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
+POST /internal/algorithm/algorithm-weight/add
+GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
+```
+
+如果 `GET /internal/algorithm/algorithm-product/listAll` 在改用 `Access-Token` 后仍返回 `HTTP 200 / code=99999`，应保留真实响应继续查新畅联服务端/应用权限/接口实现；**不得把 99999 改判成功，也不得退回 Bearer Header。**
 
 ---
 
@@ -156,7 +187,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 - 其他自定义 endpoint 不强制覆盖；
 - 普通用户平台对接页不再暴露 endpoint 编辑，只配置 Base URL / AccessKey / AccessSecret；
 - 发布创建与 timeout/UNKNOWN 反查共用同一 canonical internal contract；
-- `Authorization: Bearer <accessToken>` 保持不变；
+- `Access-Token: <accessToken>` 保持不变；
 - `VERSION.txt` 继续保持 `42.24.0`。
 
 ---
@@ -1874,7 +1905,7 @@ external_active = false
 ```text
 /internal/auth/test-sign
 → /internal/auth/token
-→ Bearer Token
+→ Access-Token
 ```
 
 UI/API 明确暴露：
