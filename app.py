@@ -16102,7 +16102,6 @@ def _v44_dataset_quality(project_id: str, req: Optional[V44QualityReq]=None) -> 
     quality["split_counts"]={key:int(quality.get("split_counts",{}).get(key,0)) for key in ("unassigned","train","val","test")}
     return quality
 
-@app.get('/api/v44/projects/{project_id}/quality-center')
 def _training_success_rate_stats(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     success_statuses = {"done", "finished", "completed", "succeeded", "success"}
     ended_statuses = success_statuses | {"failed", "stopped", "cancelled", "canceled"}
@@ -16118,6 +16117,7 @@ def _training_success_rate_stats(jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+@app.get('/api/v44/projects/{project_id}/quality-center')
 def v44_quality_center(project_id: str):
     dq=_v44_dataset_quality(project_id)
     algs=list_algorithms_internal(project_id);alg_rows=[]
