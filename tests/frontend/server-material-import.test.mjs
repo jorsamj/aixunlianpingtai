@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildImportConfirmation,
   buildServerImportRequest,
   serverImportView,
 } from '../../static/modules/server-material-import.js';
@@ -143,3 +144,17 @@ test('server import canonical task status wins and candidate queue rank is not p
   assert.match(waiting.text, /STORAGE_WORKER_BUSY/);
   assert.doesNotMatch(waiting.text, /队列第 9 位/);
 });
+
+test('server import confirmation emits mappings only for existing labels', () => {
+  assert.deepEqual(buildImportConfirmation([
+    {classId: '0', code: 'helmet'},
+    {classId: '1', code: 'person'},
+  ], true), {
+    label_mapping: {'0': 'helmet', '1': 'person'},
+    accept_quality_report: true,
+  });
+  assert.throws(() => buildImportConfirmation([
+    {classId: '0', code: 'helmet_new', create: true},
+  ]), /不能创建平台标签/);
+});
+
