@@ -366,6 +366,45 @@ def test_auto_upload_discovers_durable_remote_conversion_root(tmp_path: Path):
     assert durable["storage_status"] == "UPLOADED"
 
 
+def test_auto_upload_prefers_durable_remote_conversion_when_job_id_exists_in_both_roots(tmp_path: Path):
+    _seed(tmp_path)
+    service = _service(tmp_path)
+    project = _project_dir(tmp_path, "p1")
+    job_id = "remote-collision-1"
+
+    legacy_job = project / "deployment" / "jobs" / job_id
+    legacy_job.mkdir(parents=True, exist_ok=True)
+    (legacy_job / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "status": "queued",
+        "target": "rockchip",
+        "source_trace": {"algorithm_id": "local-a1", "version_id": "v1"},
+        "params": {"chip": "rk3576"},
+        "outputs": [],
+    }), encoding="utf-8")
+
+    remote_job = project / "deploy" / "jobs" / job_id
+    output = remote_job / "artifacts" / "model_rk3576.rknn"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"durable-remote-rknn-collision")
+    (remote_job / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "status": "done",
+        "target": "rockchip",
+        "source_trace": {"algorithm_id": "local-a1", "version_id": "v1"},
+        "params": {"chip": "rk3576"},
+        "outputs": [{"path": str(output), "available": True}],
+    }), encoding="utf-8")
+
+    result = service.run_auto_upload_once()
+
+    assert result["failed"] == 0
+    rows = service.repository.list(project_id="p1", algorithm_id="local-a1", version_id="v1")
+    durable_rows = [row for row in rows if row["conversion_job_id"] == job_id]
+    assert len(durable_rows) == 1
+    assert durable_rows[0]["file_name"] == "model_rk3576.rknn"
+    assert durable_rows[0]["storage_status"] == "UPLOADED"
+
 def test_storage_test_verifies_long_term_delivery_url(tmp_path: Path, monkeypatch):
     service = _service(tmp_path)
     calls = []
