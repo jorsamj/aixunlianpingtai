@@ -1,3 +1,6 @@
+import pytest
+
+from platform_core.auto_label import parse_candidate_response
 from platform_core.labels import (
     confirmed_alias_updates,
     normalize_label_aliases,
@@ -51,3 +54,24 @@ def test_confirmed_alias_updates_only_learn_non_identity_names():
     assert normalize_label_aliases(["toukui1", "toukui1", " 安全帽 "]) == [
         "toukui1", "安全帽",
     ]
+
+
+def test_ai_alias_resolution_is_exact_and_does_not_use_substring_matching():
+    exact = parse_candidate_response(
+        '{"boxes":[{"label":"toukui1","confidence":0.9,"x1":0.1,"y1":0.1,"x2":0.5,"y2":0.5}]}',
+        width=100,
+        height=100,
+        label_ids={"helmet": 0},
+        label_aliases={"helmet": ["toukui1"]},
+    )
+    assert exact[0]["label"] == "helmet"
+    assert exact[0]["class_id"] == 0
+
+    with pytest.raises(ValueError, match="标签库之外"):
+        parse_candidate_response(
+            '{"boxes":[{"label":"toukui1_extra","confidence":0.9,"x1":0.1,"y1":0.1,"x2":0.5,"y2":0.5}]}',
+            width=100,
+            height=100,
+            label_ids={"helmet": 0},
+            label_aliases={"helmet": ["toukui1"]},
+        )
