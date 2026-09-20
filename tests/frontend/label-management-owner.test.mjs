@@ -21,4 +21,8 @@ test('label management has one canonical browser owner', () => {
   );
   assert.ok(app.includes('id="label414Aliases"'));
   assert.ok(app.includes('自动预选后仍需人工确认才会正式入库'));
+  assert.match(app, /window\.openInlineLabelCreate414=function/);
+  assert.match(app, /window\.submitInlineLabelCreate414=async function/);
+  assert.match(app, /平台标签已创建并选中；仍需确认后才会正式入库/);
+  assert.match(app, /\/api\/projects\/\$\{pid\(\)\}\/labels/);
 });
