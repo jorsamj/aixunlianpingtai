@@ -4722,6 +4722,14 @@ window.installUsability417?.();
 
 /* Activate the storage UI after every legacy compatibility layer has loaded. */
 (()=>{
+  try{
+    const saved=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}');
+    if(saved.page==='素材存储配置'){
+      saved.page='存储配置';
+      localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(saved));
+      state.page='存储配置';
+    }
+  }catch(_){}
   const storageApi=()=>window.PlatformCore?.storage;
   const finalNav=renderNav;
   renderNav=function(){
