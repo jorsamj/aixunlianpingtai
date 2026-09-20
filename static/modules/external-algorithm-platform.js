@@ -421,47 +421,113 @@ export function installExternalAlgorithmPlatformRuntime({
     }
 
     const toolbar = document.querySelector('.alg428-toolbar');
-    if (toolbar && externalMode() && Array.isArray(cacheData.categories) && cacheData.categories.length) {
-      let select = toolbar.querySelector('[data-external-category-filter]');
-      if (!select) {
-        select = document.createElement('select');
-        select.className = 'select';
-        select.dataset.externalCategoryFilter = '1';
-        select.title = '按新畅联算法品目筛选';
-        select.addEventListener('change', () => {
-          selectedCategoryId = select.value;
+    const filterBar = toolbar?.querySelector('.filter423');
+    if (filterBar) {
+      let sourceSelect = filterBar.querySelector('[data-algorithm-source-filter]');
+      if (!sourceSelect) {
+        sourceSelect = document.createElement('select');
+        sourceSelect.className = 'select';
+        sourceSelect.dataset.algorithmSourceFilter = '1';
+        sourceSelect.innerHTML = '<option value="all">全部来源</option><option value="internal">内部算法</option><option value="external">外部算法</option>';
+        sourceSelect.addEventListener('change', () => {
+          selectedSource = sourceSelect.value || 'all';
           decorateAlgorithmCards();
         });
-        toolbar.prepend(select);
+        const industry = filterBar.querySelector('#alg412Industry');
+        filterBar.insertBefore(sourceSelect, industry || null);
       }
-      const optionRows = (cacheData.categories || []).map(row => ({
-        id: String(row.categoryId || row.id || ''),
-        name: String(row.categoryName || row.name || row.categoryId || row.id || ''),
-      }));
-      const optionSignature = JSON.stringify(optionRows);
-      if (select.dataset.externalCategorySignature !== optionSignature) {
-        select.innerHTML = [
-          '<option value="">全部品目</option>',
-          ...optionRows.map(row => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.name || row.id)}</option>`),
+      if (sourceSelect.value !== selectedSource) sourceSelect.value = selectedSource;
+
+      let statusSelect = filterBar.querySelector('[data-algorithm-training-status-filter]');
+      if (!statusSelect) {
+        statusSelect = document.createElement('select');
+        statusSelect.className = 'select';
+        statusSelect.dataset.algorithmTrainingStatusFilter = '1';
+        statusSelect.innerHTML = [
+          '<option value="all">全部训练状态</option>',
+          '<option value="trainable">可训练</option>',
+          '<option value="training">训练中</option>',
+          '<option value="trained">已有版本</option>',
+          '<option value="untrained">尚未训练</option>',
+          '<option value="blocked">不可训练</option>',
         ].join('');
-        select.dataset.externalCategorySignature = optionSignature;
+        statusSelect.addEventListener('change', () => {
+          selectedTrainingStatus = statusSelect.value || 'all';
+          decorateAlgorithmCards();
+        });
+        filterBar.appendChild(statusSelect);
       }
-      if (select.value !== selectedCategoryId) select.value = selectedCategoryId;
-    }
-    if (toolbar && !externalMode()) {
-      toolbar.querySelector('[data-external-category-filter]')?.remove();
-      selectedCategoryId = '';
+      if (statusSelect.value !== selectedTrainingStatus) statusSelect.value = selectedTrainingStatus;
     }
 
-    const create = document.querySelector('.alg428-toolbar [data-action="algorithm.create"]');
-    if (create && externalMode()) {
-      create.removeAttribute('data-action');
-      if (create.textContent !== '↻ 同步新畅联') create.textContent = '↻ 同步新畅联';
-      create.onclick = event => {
-        event.preventDefault();
-        void syncNow();
-      };
-      create.title = '当前算法主数据由新畅联管理';
+    const shell = document.querySelector('.alg428-shell');
+    const categoryRows = (cacheData?.categories || [])
+      .map(row => ({
+        id: String(row.categoryId || row.id || ''),
+        name: String(row.categoryName || row.name || row.categoryId || row.id || ''),
+      }))
+      .filter(row => row.id);
+    if (shell && categoryRows.length) {
+      const validIds = new Set(categoryRows.map(row => row.id));
+      for (const id of [...selectedCategoryIds]) {
+        if (!validIds.has(id)) selectedCategoryIds.delete(id);
+      }
+      let categoryBar = shell.querySelector('[data-external-category-filter]');
+      if (!categoryBar) {
+        categoryBar = document.createElement('div');
+        categoryBar.dataset.externalCategoryFilter = '1';
+        categoryBar.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0 14px;';
+        const list = document.getElementById('alg412List');
+        shell.insertBefore(categoryBar, list || null);
+      }
+      const optionSignature = JSON.stringify(categoryRows);
+      const selectedSignature = JSON.stringify([...selectedCategoryIds].sort());
+      if (categoryBar.dataset.externalCategorySignature !== optionSignature
+          || categoryBar.dataset.externalCategorySelected !== selectedSignature) {
+        categoryBar.innerHTML = [
+          '<span class="muted">品目</span>',
+          `<button type="button" class="btn mini ${selectedCategoryIds.size ? '' : 'primary'}" data-category-id="">全部</button>`,
+          ...categoryRows.map(row => {
+            const selected = selectedCategoryIds.has(row.id);
+            return `<button type="button" class="btn mini ${selected ? 'primary' : ''}" aria-pressed="${selected ? 'true' : 'false'}" data-category-id="${escapeHtml(row.id)}">${escapeHtml(row.name || row.id)}</button>`;
+          }),
+        ].join('');
+        categoryBar.dataset.externalCategorySignature = optionSignature;
+        categoryBar.dataset.externalCategorySelected = selectedSignature;
+        for (const button of categoryBar.querySelectorAll('[data-category-id]')) {
+          button.addEventListener('click', () => {
+            const id = String(button.dataset.categoryId || '');
+            if (!id) selectedCategoryIds.clear();
+            else if (selectedCategoryIds.has(id)) selectedCategoryIds.delete(id);
+            else selectedCategoryIds.add(id);
+            decorateAlgorithmCards();
+          });
+        }
+      }
+    } else {
+      shell?.querySelector('[data-external-category-filter]')?.remove();
+      selectedCategoryIds.clear();
+    }
+
+    if (toolbar) {
+      let syncButton = toolbar.querySelector('[data-external-list-sync]');
+      if (externalMode()) {
+        if (!syncButton) {
+          syncButton = document.createElement('button');
+          syncButton.type = 'button';
+          syncButton.className = 'btn';
+          syncButton.dataset.externalListSync = '1';
+          syncButton.textContent = '↻ 同步畅联云';
+          syncButton.title = '从畅联云拉取最新品目、算法产品、分析方式和算力环境';
+          syncButton.addEventListener('click', event => {
+            event.preventDefault();
+            void syncNow();
+          });
+          toolbar.appendChild(syncButton);
+        }
+      } else {
+        syncButton?.remove();
+      }
     }
   }
 
