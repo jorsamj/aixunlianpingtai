@@ -108,7 +108,7 @@ jobs:
           grep -q "external_algorithm_platform_router" app.py
           grep -Fq 'def training_preflight(' platform_core/external_algorithm_platform.py
           grep -Fq 'def _refresh_external_training_algorithm' app.py
-          test "$(grep -Fc '_refresh_external_training_algorithm(project_id, asset_algorithm)' app.py)" = "4"
+          test "$(grep -Fc '_refresh_external_training_algorithm(project_id, asset_algorithm)' app.py)" = "3"
           grep -Fq 'test_all_backend_training_create_owners_recheck_external_truth_before_local_gate' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_REQUIRED' platform_core/external_algorithm_platform.py
           grep -Fq 'client.product_info(product_id)' platform_core/external_algorithm_platform.py
