@@ -10,6 +10,8 @@ from platform_core.external_algorithm_platform import (
     EndpointPayload,
     PROVIDER_CHANGLIAN,
     SOURCE_EXTERNAL,
+    _analysis_is_enabled,
+    _analysis_summary,
     algorithm_is_external_readonly,
     assert_external_algorithm_master_data_current,
     mirror_products_to_algorithms,
@@ -512,6 +514,36 @@ def test_external_training_analysis_requires_choice_for_multiple_methods():
     assert resolve_external_training_analysis(algorithm, "a2") == "a2"
 
 
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (1, True),
+        ("1", True),
+        (0, False),
+        ("0", False),
+        (False, False),
+        ("false", False),
+        (None, True),
+    ],
+)
+def test_analysis_enabled_preserves_zero_status(status, expected):
+    row = {"status": status} if status is not None else {}
+    assert _analysis_is_enabled(row) is expected
+
+
+def test_analysis_summary_preserves_numeric_zero_status():
+    row = {
+        "analysisId": "vision-off",
+        "analysisType": 1,
+        "status": 0,
+        "analysisName": "停用视觉分析",
+    }
+
+    summary = _analysis_summary(row)
+
+    assert summary["status"] == "0"
 
 
 def test_external_sync_only_exposes_enabled_visual_analyses_for_training(tmp_path: Path):
