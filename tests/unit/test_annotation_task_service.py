@@ -92,7 +92,7 @@ def test_worker_enters_review_with_partial_generation_summary(tmp_path, monkeypa
     assert context.load_checkpoint()["next_index"] == 2
     assert context.load_checkpoint()["source"] == "candidate_store"
     assert CandidateStore(context.artifacts, task_id="ai-1").summary()["failed"] == 1
-    assert context.repository.heartbeats[-1][2] == 100
+    assert context.repository.heartbeats[-1][2] == 70
 
 
 def test_worker_stops_at_cancel_boundary_without_processing_more_images(tmp_path, monkeypatch):

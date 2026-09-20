@@ -159,7 +159,7 @@ def run_ai_annotation(
         })
     if start:
         context.heartbeat(
-            progress=int(start / max(1, len(images)) * 100),
+            progress=int(start / max(1, len(images)) * 70),
             stage="AI_ANNOTATION",
             current_item=str(images[start - 1].get("id") or ""),
         )
@@ -212,7 +212,7 @@ def run_ai_annotation(
             "source": "candidate_store",
         })
         context.heartbeat(
-            progress=int((index + 1) / max(1, len(images)) * 100),
+            progress=int((index + 1) / max(1, len(images)) * 70),
             stage="AI_ANNOTATION",
             current_item=str(image.get("id") or ""),
         )

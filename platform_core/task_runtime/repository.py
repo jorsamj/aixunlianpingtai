@@ -733,6 +733,10 @@ class TaskRepository:
                 """
                 UPDATE tasks SET status=?, result_ref=?, error=?, accepted=?, stage=?,
                     progress=CASE
+                        WHEN ?='AWAITING_CONFIRMATION' AND (
+                            kind='AI_ANNOTATION'
+                            OR (kind='MATERIAL_BATCH' AND stage='AI_ANNOTATION')
+                        ) THEN MAX(progress, 70.0)
                         WHEN ?='AWAITING_CONFIRMATION' AND kind='MATERIAL_IMPORT'
                             THEN MAX(progress, 50.0)
                         ELSE COALESCE(?, progress)
@@ -748,6 +752,7 @@ class TaskRepository:
                     error,
                     None if accepted is None else int(accepted),
                     stage,
+                    status.value,
                     status.value,
                     progress,
                     finished_at,

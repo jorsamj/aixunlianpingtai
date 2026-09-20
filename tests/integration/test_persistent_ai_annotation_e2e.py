@@ -71,7 +71,7 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     assert scheduler.run_once() is True
     waiting = client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}").json()
     assert waiting["status"] == "AWAITING_CONFIRMATION"
-    assert waiting["progress"] == 100
+    assert waiting["progress"] == 70
     assert waiting["summary"]["boxes"] == 1
     assert client.get(f"/api/projects/{project_id}/annotations/{image['id']}").json()["boxes"] == []
 
