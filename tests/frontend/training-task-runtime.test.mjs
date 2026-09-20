@@ -392,3 +392,18 @@ test('training list and row use canonical task_status over stale legacy status',
   assert.match(html, /12%/);
   assert.doesNotMatch(html, /队列第 4 位/);
 });
+
+
+test('visible training jobs match durable priority rank and FIFO order', async () => {
+  const {visibleTrainingJobs} = await import('../../static/modules/training-task-runtime.js');
+  const jobs = [
+    {id: 'fifo-new', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 0, queued_at: '2026-08-30T10:02:00Z'},
+    {id: 'promoted', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 2, queued_at: '2026-08-30T10:03:00Z'},
+    {id: 'highest', status: 'queued', queue_priority: 1, priority_scheme: 'lower_number_first', queue_rank: 0, queued_at: '2026-08-30T10:04:00Z'},
+    {id: 'fifo-old', status: 'queued', queue_priority: 7, priority_scheme: 'lower_number_first', queue_rank: 0, queued_at: '2026-08-30T10:01:00Z'},
+  ];
+  assert.deepEqual(
+    visibleTrainingJobs(jobs, 'active').map(job => job.id),
+    ['highest', 'promoted', 'fifo-old', 'fifo-new'],
+  );
+});

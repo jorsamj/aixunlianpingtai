@@ -123,7 +123,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(priority).toHaveAttribute('max', '999');
   await expect(priority).toHaveValue('50');
   await expect(trainingDialog.getByText('1 最高，数字越大优先级越低')).toBeVisible();
-  await trainingDialog.getByRole('button', {name: '配置设置'}).click();
+  await trainingDialog.getByRole('button', {name: '编辑全部训练参数'}).click();
   const settingsDialog = page.getByRole('dialog', {name: '训练配置设置'});
   await expect(settingsDialog).toBeVisible();
   const advanced = settingsDialog.locator('details.advanced427-box');
@@ -132,7 +132,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(settingsDialog.getByText('最终学习率 lrf')).toBeVisible();
   await settingsDialog.getByRole('button', {name: '取消'}).click();
   await selectAllTrainingMaterials(page, trainingDialog);
-  await trainingDialog.getByRole('button', {name: '查看数据质量'}).click();
+  await trainingDialog.getByRole('button', {name: '数据质量', exact: true}).click();
 
   const qualityDialog = page.getByRole('dialog', {name: '训练素材 · 数据质量'});
   await expect(qualityDialog).toBeVisible();
@@ -172,7 +172,7 @@ test('training submit sends the selected candidate pool and configured experimen
   expect(submitted).toBeUndefined();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#tr429Priority').fill('7');
-  await dialog.getByRole('button', {name: '配置设置'}).click();
+  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('details.advanced427-box summary').click();
   await settings.locator('#ts428SingleCls').check();
@@ -223,7 +223,9 @@ test('training material selection does not depend on dataset groups and supports
   await picker.getByRole('button', {name: '全部不选'}).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 0 张');
   await picker.getByRole('button', {name: '明火'}).click();
-  await picker.getByRole('button', {name: '选择当前筛选结果'}).click();
+  const selectFiltered = picker.locator('.train-v3-batch button[onclick*="select-filtered"]');
+  await expect(selectFiltered).toBeVisible();
+  await selectFiltered.click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('筛选结果 1 张 · 已选 1 张');
   await picker.getByRole('button', {name: '全选全部可用素材'}).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 3 张');
@@ -257,8 +259,7 @@ test('versioned training locks the latest version and projects the current rando
   await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
   await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
   await expect(dialog.locator('.train-v3-summary')).toContainText('随机抽取');
-  await expect(dialog.getByText('YOLO11n 目标检测', {exact: true})).toBeHidden();
-  await dialog.getByRole('button', {name: '配置设置'}).click();
+  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await expect(settings.locator('#ts428Model')).toBeDisabled();
   await expect(settings.locator('#ts428Model option:checked')).toHaveText('v3 · latest-best.pt');

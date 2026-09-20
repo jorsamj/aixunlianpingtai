@@ -311,7 +311,21 @@ export function visibleTrainingJobs(jobs, tab = 'active') {
     const aStatus = trainingDisplayStatus(a), bStatus = trainingDisplayStatus(b);
     const ar = rank(aStatus), br = rank(bStatus);
     if (ar !== br) return ar - br;
-    if (['queued', 'waiting'].includes(aStatus)) return priorityValue(a) - priorityValue(b);
+    if (['queued', 'waiting'].includes(aStatus)) {
+      const priority = priorityValue(a) - priorityValue(b);
+      if (priority) return priority;
+      const aRank = Number(a?.queue_rank), bRank = Number(b?.queue_rank);
+      const hasDurableRank = Number.isFinite(aRank) && Number.isFinite(bRank) && (aRank !== 0 || bRank !== 0);
+      if (hasDurableRank && aRank !== bRank) return bRank - aRank;
+      const aLegacy = Number(a?.priority_tiebreaker), bLegacy = Number(b?.priority_tiebreaker);
+      const hasLegacyTie = Number.isFinite(aLegacy) && Number.isFinite(bLegacy) && (aLegacy !== 0 || bLegacy !== 0);
+      if (hasLegacyTie && aLegacy !== bLegacy) return aLegacy - bLegacy;
+      const aTime = Date.parse(a?.queued_at || a?.created_at || '');
+      const bTime = Date.parse(b?.queued_at || b?.created_at || '');
+      if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime;
+      return String(a?.queued_at || a?.created_at || '').localeCompare(String(b?.queued_at || b?.created_at || ''))
+        || String(a?.id || '').localeCompare(String(b?.id || ''));
+    }
     return String(b.started_at || b.created_at || '').localeCompare(String(a.started_at || a.created_at || ''));
   });
 }
