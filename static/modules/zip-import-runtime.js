@@ -83,7 +83,6 @@ export async function startZipJob(projectId,jobId,{fetchImpl=globalThis.fetch,co
   const body={
     selected_paths:[],
     label_mapping:{...(confirmation?.label_mapping||{})},
-    create_labels:[...(confirmation?.create_labels||[])],
   };
   return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/jobs/${encodeURIComponent(String(jobId))}/start`,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
 }
@@ -188,14 +187,15 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   function labelCodes(){
     const state=getState()||{},rows=Array.isArray(state.labels)?state.labels:[];
     const fromRows=rows.map(row=>typeof row==='string'?row:row?.code).filter(Boolean);
-    const fromProject=Array.isArray(state.project?.labels)?state.project.labels:[];
+    const fromProject=(Array.isArray(state.project?.labels)?state.project.labels:[])
+      .map(row=>typeof row==='string'?row:row?.code).filter(Boolean);
     return [...new Set([...fromRows,...fromProject].map(String))];
   }
   function labelMappingMarkup(job){
     if(!zipNeedsLabelConfirmation(job))return '';
     const codes=labelCodes(),classes=job.external_classes||[];
-    const options=codes.map(code=>`<option value="${esc(code)}"></option>`).join('');
-    return `<div class="storage61-import-mapping zip-label-confirm"><div class="row between"><div><b>标注入库确认</b><div class="item-sub">先统一外部标注名，再正式写入素材库。</div></div><span class="pill warn">${classes.length} 个外部标签</span></div>${classes.map(row=>`<div class="storage61-mapping-row" data-zip-class="${esc(row.class_id)}"><span><b>${esc(row.name)}</b><small>${Number(row.image_count||0)} 张 · ${Number(row.box_count||0)} 框</small></span><input class="input" data-zip-target value="${esc(row.target_label_code||'')}" placeholder="选择或输入平台标签编码" list="zipLabelCodes"><label><input type="checkbox" data-zip-create> 新建标签</label></div>`).join('')}<datalist id="zipLabelCodes">${options}</datalist><div class="row end"><button class="btn primary" onclick="window.ZipImportRuntime?.confirmLabels('${esc(job.id)}')">确认标签并开始导入</button></div></div>`;
+    const options=(selected='')=>`<option value="">选择平台标签</option>${codes.map(code=>`<option value="${esc(code)}" ${String(code)===String(selected)?'selected':''}>${esc(code)}</option>`).join('')}`;
+    return `<div class="storage61-import-mapping zip-label-confirm"><div class="row between"><div><b>标注入库确认</b><div class="item-sub">先统一外部标注名，再正式写入素材库。</div></div><span class="pill warn">${classes.length} 个外部标签</span></div>${classes.map(row=>`<div class="storage61-mapping-row" data-zip-class="${esc(row.class_id)}"><span><b>${esc(row.name)}</b><small>${Number(row.image_count||0)} 张 · ${Number(row.box_count||0)} 框</small></span><select class="select" data-zip-target>${options(row.target_label_code||'')}</select></div>`).join('')}<div class="row end"><button class="btn" onclick="setPage('标签管理')">管理标签</button><button class="btn primary" onclick="window.ZipImportRuntime?.confirmLabels('${esc(job.id)}')">确认标签并开始导入</button></div></div>`;
   }
 
   function dock(){let n=document.getElementById('zipImportDurableDock');if(!n){n=document.createElement('button');n.id='zipImportDurableDock';n.type='button';n.className='import411-dock hidden';n.onclick=()=>open();document.body.appendChild(n)}return n}
@@ -237,16 +237,15 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const project=pid(),id=String(jobId||''),job=jobs.find(row=>String(row?.id||'')===id)||knownJobs.get(id);
     if(!project||!job||!zipNeedsLabelConfirmation(job))return null;
     const rows=[...document.querySelectorAll('.zip-label-confirm [data-zip-class]')];
-    const label_mapping={},create_labels=[];
+    const label_mapping={};
     for(const row of rows){
       const source=String(row.getAttribute('data-zip-class')||''),code=String(row.querySelector('[data-zip-target]')?.value||'').trim();
       if(!source||!code)throw new Error('请为每个外部标签选择平台标签');
       label_mapping[source]=code;
-      if(row.querySelector('[data-zip-create]')?.checked)create_labels.push(code);
     }
     started.add(id);writeIntent(project,id,'submitting');
     try{
-      const response=await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping,create_labels:[...new Set(create_labels)]}});
+      const response=await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping}});
       knownJobs.set(id,{...job,...response});writeIntent(project,id,'submitted');
       await reconcile('label-confirmation');open();return response;
     }catch(error){
