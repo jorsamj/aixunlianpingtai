@@ -1375,12 +1375,12 @@ class ExternalAlgorithmPublishService:
 
     def auto_publish_ready(self) -> bool:
         external = self.external_repository.config()
-        publish = self.repository.config()
+        model_storage = self.model_assets.repository.config()
         return bool(
             str(external.get("mode") or "local") == "external"
             and bool(external.get("auto_publish_enabled"))
-            and self.model_assets.repository.config().get("storage_source_id")
-            and publish.get("public_base_url")
+            and str(model_storage.get("storage_source_id") or "").strip()
+            and str(model_storage.get("public_base_url") or "").strip()
         )
 
     def run_auto_publish_once(self) -> Dict[str, int]:
