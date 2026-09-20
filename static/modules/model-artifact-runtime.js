@@ -218,7 +218,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
       storage_source_id: document.getElementById('modelArtifactStorageSource')?.value || '',
       object_prefix: document.getElementById('modelArtifactPrefix')?.value.trim() || 'model-assets',
       public_base_url: document.getElementById('modelArtifactPublicBaseUrl')?.value.trim() || '',
-      auto_upload_enabled: Boolean(document.getElementById('modelArtifactAutoUpload')?.checked),
+      auto_upload_enabled: true,
     };
     await requestJson(`${MODEL_API}/config`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
     notify?.('算法与转换结果存储配置已保存');
