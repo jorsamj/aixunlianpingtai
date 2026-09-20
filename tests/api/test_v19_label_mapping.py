@@ -134,3 +134,29 @@ def test_v19_failed_retry_cannot_change_frozen_label_mapping(client):
     )
     assert changed.status_code == 409
     assert "已经确认冻结" in changed.text
+
+def test_v19_confirmation_cannot_create_platform_label(client):
+    project = client.post("/api/projects", json={
+        "name": "zip-canonical-label-only",
+        "labels": [{"code": "helmet", "display_name": "安全头盔"}],
+    }).json()
+    created = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("labels.zip", _yolo_zip(), "application/zip")},
+    )
+    assert created.status_code == 200, created.text
+    job = created.json()
+
+    blocked = client.post(
+        f"/api/v19/projects/{project['id']}/import/jobs/{job['id']}/start",
+        json={
+            "label_mapping": {"0": "helmet_new", "1": "helmet"},
+            "create_labels": ["helmet_new"],
+        },
+    )
+    assert blocked.status_code == 409
+    assert "导入确认不能创建平台标签" in blocked.text
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    assert [row["code"] for row in labels] == ["helmet"]
+
