@@ -175,6 +175,8 @@ jobs:
           grep -Fq '@router.post("/provider/weights")' platform_core/external_algorithm_platform.py
           grep -Fq '@router.put("/provider/weights/{weight_id}")' platform_core/external_algorithm_platform.py
           grep -Fq '@router.delete("/provider/weights/{weight_ids}")' platform_core/external_algorithm_platform.py
+          grep -Fq 'EXTERNAL_REMOTE_DELETE_CONFIRMATION_REQUIRED' platform_core/external_algorithm_platform.py
+          grep -Fq 'confirm=true' platform_core/external_algorithm_platform.py
           grep -Fq 'def _business_code(body: Any) -> str:' platform_core/external_algorithm_platform.py
           grep -Fq 'business_code = _business_code(body)' platform_core/external_algorithm_platform.py
           grep -Fq 'test_changlian_business_failure_is_not_hidden_by_http_200' tests/unit/test_changlian_audit_client.py
