@@ -174,6 +174,8 @@ class ModelArtifactRepository:
         result = dict(DEFAULT_CONFIG)
         if isinstance(stored, dict):
             result.update(stored)
+        # Model delivery is a platform invariant once a storage source is configured.
+        result["auto_upload_enabled"] = True
         return result
 
     def save_config(self, payload: ModelArtifactConfigPayload) -> dict[str, Any]:
@@ -192,7 +194,7 @@ class ModelArtifactRepository:
             "storage_source_id": str(payload.storage_source_id or "").strip(),
             "object_prefix": prefix,
             "public_base_url": public_base_url,
-            "auto_upload_enabled": bool(payload.auto_upload_enabled),
+            "auto_upload_enabled": True,
             "updated_at": utc_now(),
         }
         with self.lock:
