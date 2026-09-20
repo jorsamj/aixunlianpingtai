@@ -21,6 +21,27 @@ function listFrom(value) {
   return Array.isArray(value?.items) ? value.items : [];
 }
 
+export function algorithmListSearchMatch(algorithm = {}, query = '') {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return true;
+  const values = [
+    algorithm?.name,
+    algorithm?.code,
+    algorithm?.algorithm_code,
+    algorithm?.algorithmCode,
+    algorithm?.product_id,
+    algorithm?.productId,
+    algorithm?.product_code,
+    algorithm?.productCode,
+    algorithm?.external_product_id,
+    algorithm?.external_product_code,
+    algorithm?.remark,
+    algorithm?.industry,
+    algorithm?.algorithm_type,
+  ];
+  return values.some(value => String(value ?? '').toLowerCase().includes(needle));
+}
+
 export function installAlgorithmListRuntime({getState, projectId, notify} = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__algorithmListRuntimeInstalled) return window.AlgorithmListRuntime;
@@ -32,6 +53,12 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let lastRefreshAt = 0;
   let decoratorQueued = false;
   const decorators = new Map();
+  const filters = {
+    query: '',
+    selectedCategoryIds: [],
+    source: 'all',
+    status: 'all',
+  };
   const originalToggle412 = window.toggleAlgorithm412;
   const originalToggle428 = window.toggleAlgorithm428;
 
@@ -63,6 +90,44 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       decoratorQueued = false;
       runDecorators();
     });
+  }
+
+  function filterState() {
+    return {
+      query: filters.query,
+      selectedCategoryIds: [...filters.selectedCategoryIds],
+      source: filters.source,
+      status: filters.status,
+    };
+  }
+
+  function setFilters(patch = {}, {render = true} = {}) {
+    const next = patch && typeof patch === 'object' ? patch : {};
+    if (Object.prototype.hasOwnProperty.call(next, 'query')) {
+      filters.query = String(next.query || '').trim();
+    }
+    if (Object.prototype.hasOwnProperty.call(next, 'selectedCategoryIds')) {
+      filters.selectedCategoryIds = [...new Set(
+        Array.from(next.selectedCategoryIds || [], value => String(value || '').trim()).filter(Boolean),
+      )];
+    }
+    if (Object.prototype.hasOwnProperty.call(next, 'source')) {
+      const source = String(next.source || 'all');
+      filters.source = ['all', 'internal', 'external'].includes(source) ? source : 'all';
+    }
+    if (Object.prototype.hasOwnProperty.call(next, 'status')) {
+      const status = String(next.status || 'all');
+      filters.status = ['all', 'trainable', 'training', 'trained', 'untrained', 'blocked'].includes(status)
+        ? status
+        : 'all';
+    }
+    if (render && String(state().page || '') === ALGORITHM_PAGE) renderCards();
+    else scheduleDecorators();
+    return filterState();
+  }
+
+  function matchesSearch(algorithm, query = filters.query) {
+    return algorithmListSearchMatch(algorithm, query);
   }
 
   function registerDecorator(name, callback) {
@@ -173,6 +238,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     renderCards,
     registerDecorator,
     runDecorators,
+    filterState,
+    setFilters,
+    matchesSearch,
     state() {
       return {inflight: Boolean(inflight), lastRefreshAt, decorators: [...decorators.keys()]};
     },
