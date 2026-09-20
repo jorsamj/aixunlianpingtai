@@ -1037,6 +1037,7 @@ def _remote_training_fixture(bundle_bytes=b"portable-bundle", *, model=None):
     payload = {
         "target": "remote",
         "algorithm_asset_id": "algorithm-one",
+        "external_analysis_id": "analysis-visual-1",
         "remote_execution": {
             "version": 1,
             "task_kind": "TRAINING",
@@ -1302,6 +1303,7 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
     version = attached[0][1]
     assert version["snapshot_id"] == "snapshot-remote-one"
     assert version["training_status"] == "SUCCEEDED"
+    assert version["external_analysis_id"] == "analysis-visual-1"
     assert version["evaluation"]["benchmark_scope"]["binding_level"] == "bundle_verified"
     assert len(version["evaluation"]["benchmark_scope"]["evaluation_input_digest"]) == 64
     assert version["evaluation"]["benchmark_scope"]["training_input_policy"] == "ultralytics_jpeg_repair_v1"
