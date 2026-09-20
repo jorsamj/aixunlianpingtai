@@ -13043,16 +13043,113 @@ def _v36_import_single_image(project_id: str, src: Path, dataset_id: str, report
         report["detected_format"] = "普通图片"
 
 
+V36_ANNOTATED_IMPORT_BLOCKED_DETAIL = (
+    "地址读取只允许导入未标注图片；检测到 YOLO/COCO/VOC 标注时，"
+    "请改用“上传并检查标注”统一入口，先确认标签映射再正式入库"
+)
+
+
+def _v36_detect_annotated_formats(root: Path) -> List[str]:
+    """Detect annotation-bearing sources without mutating platform labels or annotations."""
+    import xml.etree.ElementTree as ET
+
+    found = set()
+    if not root.exists():
+        return []
+    files = [root] if root.is_file() else root.rglob("*")
+    ignored_txt = {"classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"}
+    for file_path in files:
+        if not file_path.is_file():
+            continue
+        name = file_path.name.lower()
+        suffix = file_path.suffix.lower()
+
+        if name in {"data.yaml", "data.yml"}:
+            try:
+                parsed = yaml.safe_load(file_path.read_text(encoding="utf-8", errors="ignore")) or {}
+                if isinstance(parsed, dict) and parsed.get("names"):
+                    found.add("YOLO")
+            except Exception:
+                pass
+
+        elif suffix == ".txt" and name not in ignored_txt:
+            try:
+                for raw in file_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    parts = raw.strip().split()
+                    if len(parts) < 5:
+                        continue
+                    try:
+                        int(float(parts[0]))
+                        [float(value) for value in parts[1:5]]
+                    except Exception:
+                        continue
+                    found.add("YOLO")
+                    break
+            except Exception:
+                pass
+
+        elif suffix == ".json":
+            try:
+                data = json.loads(file_path.read_text(encoding="utf-8", errors="ignore"))
+                if (
+                    isinstance(data, dict)
+                    and isinstance(data.get("images"), list)
+                    and isinstance(data.get("annotations"), list)
+                    and isinstance(data.get("categories"), list)
+                ):
+                    found.add("COCO")
+            except Exception:
+                pass
+
+        elif suffix == ".xml":
+            try:
+                xml_root = ET.parse(file_path).getroot()
+                if any(obj.find("bndbox") is not None for obj in xml_root.findall("object")):
+                    found.add("VOC")
+            except Exception:
+                pass
+
+        if len(found) == 3:
+            break
+    return [name for name in ("COCO", "VOC", "YOLO") if name in found]
+
+
+def _v36_detect_source_annotation_formats(root: Path) -> List[str]:
+    if root.is_file() and root.suffix.lower() == ".zip":
+        scan = v19_scan_zip(root)
+        classes = list(scan.get("external_classes") or [])
+        if classes or int(scan.get("annotation_box_count") or 0) > 0:
+            detected = str(scan.get("detected_format") or "")
+            if detected == "Pascal VOC":
+                return ["VOC"]
+            if detected in {"COCO", "YOLO"}:
+                return [detected]
+            return ["ANNOTATED"]
+        return []
+    return _v36_detect_annotated_formats(root)
+
+
 def _v36_import_from_root(project_id: str, root: Path, dataset_id: str, report: Dict[str, Any]) -> bool:
-    imported = False
-    imported = _v18_import_coco(project_id, root, dataset_id, report)
-    if not imported:
-        imported = _v18_import_voc(project_id, root, dataset_id, report)
-    if not imported:
-        imported = _v18_import_yolo(project_id, root, dataset_id, report)
-    if imported:
-        report["unannotated_images"] = max(0, int(report.get("imported_images", 0)) - int(report.get("annotated_images", 0)))
-    return imported
+    formats = _v36_detect_annotated_formats(root)
+    if formats:
+        raise RuntimeError(
+            f"{V36_ANNOTATED_IMPORT_BLOCKED_DETAIL}（检测到：{' / '.join(formats)}）"
+        )
+
+    image_files = (
+        [root]
+        if root.is_file() and root.suffix.lower() in IMAGE_EXTS
+        else [
+            file_path
+            for file_path in root.rglob("*")
+            if file_path.is_file() and file_path.suffix.lower() in IMAGE_EXTS
+        ]
+        if root.is_dir()
+        else []
+    )
+    for src in sorted(image_files, key=lambda value: str(value).lower()):
+        _v36_import_single_image(project_id, src, dataset_id, report)
+    return bool(image_files)
 
 
 def _v36_apply_split_policy(project_id: str, imported_ids: List[str], policy: str, train_ratio: float, val_ratio: float, test_ratio: float) -> Dict[str, int]:
@@ -13175,8 +13272,27 @@ def v36_scan_source_import(project_id: str, dataset_id: str, payload: V36SourceI
     if not source:
         raise HTTPException(status_code=400, detail="请填写本机路径或服务器 URL")
     if _v36_is_url(source):
-        return {"ok": True, **_v36_scan_url(source)}
-    return {"ok": True, **_v36_scan_local_root(Path(source).expanduser())}
+        scan = _v36_scan_url(source)
+        return {
+            "ok": True,
+            **scan,
+            "label_confirmation_required": False,
+            "legacy_annotated_import_blocked": False,
+            "annotation_check": "worker_preflight",
+        }
+
+    root = Path(source).expanduser()
+    scan = _v36_scan_local_root(root)
+    formats = _v36_detect_source_annotation_formats(root)
+    blocked = bool(formats)
+    return {
+        "ok": True,
+        **scan,
+        "detected_annotation_formats": formats,
+        "label_confirmation_required": blocked,
+        "legacy_annotated_import_blocked": blocked,
+        "import_block_reason": V36_ANNOTATED_IMPORT_BLOCKED_DETAIL if blocked else "",
+    }
 
 
 @app.get("/api/v36/projects/{project_id}/datasets/{dataset_id}/source-import/jobs")
@@ -13192,6 +13308,16 @@ def v36_start_source_import_job(project_id: str, dataset_id: str, payload: V36So
     source = _v36_normalize_source(payload.source)
     if not source:
         raise HTTPException(status_code=400, detail="请填写本机路径或服务器 URL")
+    if not _v36_is_url(source):
+        root = Path(source).expanduser()
+        if not root.exists():
+            raise HTTPException(status_code=400, detail=f"路径不存在：{root}")
+        formats = _v36_detect_source_annotation_formats(root)
+        if formats:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{V36_ANNOTATED_IMPORT_BLOCKED_DETAIL}（检测到：{' / '.join(formats)}）",
+            )
     job_id = uuid.uuid4().hex[:12]
     task = {
         "id": job_id,

@@ -1738,7 +1738,7 @@ window.installUsability417=function(){
 })();
 
 // ============================================================
-// v36: source path / server URL import for images + annotated datasets
+// v36: source path / server URL import for unannotated images only
 // ============================================================
 (function(){
   state.sourceImportTasks = state.sourceImportTasks || [];
@@ -1764,9 +1764,10 @@ window.installUsability417=function(){
       </div>
       <div id="sourceImportPane" class="hidden">
         <div class="field"><label>本机路径或服务器URL</label><input id="sourcePathV36" class="input" placeholder="本机目录、共享目录或 https://server/dataset.zip"></div>
-        <div class="grid2-mini"><div class="field"><label>来源类型</label><select id="sourceTypeV36" class="select"><option value="auto">自动识别</option><option value="local_path">本机/共享目录</option><option value="url">服务器URL</option></select></div><div class="field"><label>数据格式</label><select id="datasetKindV36" class="select"><option value="auto">自动识别</option><option value="images">普通图片</option><option value="yolo">YOLO</option><option value="coco">COCO</option><option value="voc">VOC</option></select></div></div>
+        <div class="grid2-mini"><div class="field"><label>来源类型</label><select id="sourceTypeV36" class="select"><option value="auto">自动识别</option><option value="local_path">本机/共享目录</option><option value="url">服务器URL</option></select></div><div class="field"><label>数据格式</label><select id="datasetKindV36" class="select"><option value="auto">自动识别</option><option value="images">普通图片</option></select></div></div>
+        <div class="alert">地址读取仅导入未标注图片。带 YOLO、COCO、VOC 标注的数据请使用“上传压缩包”，确认标签映射后再入库。</div>
         <div class="grid2-mini"><div class="field"><label>划分方式</label><select id="splitPolicyV36" class="select"><option value="annotated_train_unannotated_test">已标注进训练/评测，未标注进试验</option><option value="source">按原目录 train/val/test</option><option value="ratio">按比例划分全部图片</option></select></div><div class="field"><label>训练/评测比例</label><input id="splitRatioV36" class="input" value="0.8,0.2,0"></div></div>
-        <div class="row"><button class="btn" onclick="scanSourceImportV36()">扫描</button><button class="btn primary" onclick="startSourceImportV36()">创建读取任务</button></div>
+        <div class="row"><button class="btn" onclick="scanSourceImportV36()">扫描</button><button class="btn primary" id="startSourceImportBtnV36" onclick="startSourceImportV36()">创建读取任务</button></div>
         <div id="sourceScanResultV36"></div>
         <div class="divider"></div><div class="row between"><b>读取任务</b><button class="btn mini" onclick="refreshSourceImportTasksV36()">刷新</button></div><div id="sourceTaskListV36"></div>
       </div>
@@ -1793,7 +1794,9 @@ window.installUsability417=function(){
       if(out)out.innerHTML='<div class="loading">正在扫描来源...</div>';
       const r=await api(`/api/v36/projects/${pid()}/datasets/${state.datasetId}/source-import/scan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sourcePayloadV36())});
       const samples=(r.samples||[]).slice(0,8).map(x=>`<div class="muted-line">${esc(x.split||'-')} · ${esc(x.name||x.path||'')}</div>`).join('');
-      if(out)out.innerHTML=`<div class="import-result"><div class="stat"><div class="k">格式</div><div class="v">${esc((r.format_hints||[]).join(' / ')||'-')}</div></div><div class="stat"><div class="k">图片</div><div class="v">${r.image_count||0}</div></div><div class="stat"><div class="k">已标注估计</div><div class="v">${r.annotated_guess||0}</div></div><div class="stat"><div class="k">未标注估计</div><div class="v">${r.unannotated_guess||0}</div></div></div>${samples?`<div class="source-samples">${samples}</div>`:''}`;
+      const blocked=Boolean(r.legacy_annotated_import_blocked);
+      const startBtn=$('#startSourceImportBtnV36'); if(startBtn)startBtn.disabled=blocked;
+      if(out)out.innerHTML=`<div class="import-result"><div class="stat"><div class="k">格式</div><div class="v">${esc((r.format_hints||[]).join(' / ')||'-')}</div></div><div class="stat"><div class="k">图片</div><div class="v">${r.image_count||0}</div></div><div class="stat"><div class="k">已标注估计</div><div class="v">${r.annotated_guess||0}</div></div><div class="stat"><div class="k">未标注估计</div><div class="v">${r.unannotated_guess||0}</div></div></div>${blocked?`<div class="alert err">${esc(r.import_block_reason||'带标注数据必须先完成标签映射确认')}</div>`:''}${samples?`<div class="source-samples">${samples}</div>`:''}`;
     }catch(e){ if(out)out.innerHTML=`<div class="alert err">${esc(e.message||e)}</div>`; toast(e.message||'扫描失败') }
   };
 

@@ -19,6 +19,7 @@ on:
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
@@ -37,6 +38,7 @@ on:
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
       - 'tests/api/test_v19_label_mapping.py'
+      - 'tests/api/test_v36_source_import_guard.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
       - 'tests/frontend/zip-import-durable-runtime.test.mjs'
@@ -79,6 +81,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_v19_label_mapping.py
+          tests/api/test_v36_source_import_guard.py
           tests/integration/test_persistent_ai_annotation_e2e.py
           tests/unit/test_annotation_task_service.py
       - name: Frontend label-normalization contracts
@@ -97,6 +100,7 @@ jobs:
           repository = Path('platform_core/task_runtime/repository.py').read_text(encoding='utf-8')
           zip_runtime = Path('static/modules/zip-import-runtime.js').read_text(encoding='utf-8')
           annotation_view = Path('static/modules/annotation-task-view.js').read_text(encoding='utf-8')
+          static_app = Path('static/app.js').read_text(encoding='utf-8')
           index_html = Path('static/index.html').read_text(encoding='utf-8')
           main_mjs = Path('static/main.mjs').read_text(encoding='utf-8')
           zip_bootstrap = Path('static/zip-import-bootstrap.mjs').read_text(encoding='utf-8')
@@ -107,6 +111,9 @@ jobs:
                   'resolve_external_label_mapping(',
                   'label_mapping: Dict[str, str] = Field(default_factory=dict)',
                   'resume_after_review_confirmation',
+                  'V36_ANNOTATED_IMPORT_BLOCKED_DETAIL',
+                  'def _v36_detect_annotated_formats(',
+                  'legacy_annotated_import_blocked',
               ),
               'platform_core/annotation_candidates.py': (
                   'def remap_labels(',
@@ -131,8 +138,12 @@ jobs:
                   '等待标注入库',
                   '统一标签并入库',
               ),
+              'static/app.js': (
+                  '地址读取仅导入未标注图片',
+                  'id="startSourceImportBtnV36"',
+              ),
               'static/index.html': (
-                  '/static/app.js?v=42.25.114',
+                  '/static/app.js?v=42.25.115',
                   '/static/main.mjs?v=42.25.111',
                   '/static/zip-import-bootstrap.mjs?v=422531',
               ),
@@ -150,6 +161,7 @@ jobs:
               'platform_core/task_runtime/repository.py': repository,
               'static/modules/zip-import-runtime.js': zip_runtime,
               'static/modules/annotation-task-view.js': annotation_view,
+              'static/app.js': static_app,
               'static/index.html': index_html,
               'static/main.mjs': main_mjs,
               'static/zip-import-bootstrap.mjs': zip_bootstrap,
