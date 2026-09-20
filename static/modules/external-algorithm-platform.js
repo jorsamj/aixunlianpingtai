@@ -1003,14 +1003,9 @@ export function installExternalAlgorithmPlatformRuntime({
 
     const markConfigDirty = () => {
       if (externalMode() && config?.baseUrl && config?.credentials?.configured === true && !configEditing) return;
-      const savedExternalReady = externalMode()
-        && Boolean(config?.baseUrl)
-        && config?.credentials?.configured === true;
       if (syncButton) {
         syncButton.disabled = true;
-        syncButton.title = savedExternalReady
-          ? '当前配置有未保存修改，请先保存配置'
-          : '请先保存 API 地址与应用凭据';
+        syncButton.title = '当前配置有未保存修改，请先保存配置';
       }
       if (saveButton) saveButton.dataset.dirty = '1';
     };

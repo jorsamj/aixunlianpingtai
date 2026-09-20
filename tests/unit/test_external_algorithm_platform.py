@@ -988,7 +988,7 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
 def test_legacy_v12_training_entry_enforces_external_analysis_gate():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
     start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
-    end = source.index('# v42.8：训练任务统一进入资源队列', start)
+    end = source.index("def _v48_resource_key", start)
     block = source[start:end]
 
     assert "_refresh_external_training_algorithm(project_id, asset_algorithm)" in block
@@ -1005,9 +1005,9 @@ def test_all_backend_training_create_owners_recheck_external_truth_before_local_
     refresh = "_refresh_external_training_algorithm(project_id, asset_algorithm)"
     local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
     owners = (
-        ("def _enqueue_explicit_training(project_id: str, payload: TrainReq)", "def _training_runtime_env"),
+        ("def _enqueue_explicit_training(project_id: str, payload: TrainReq)", "def check_ultralytics_train_runtime"),
         ('@app.post("/api/projects/{project_id}/train/start")', "def resolve_server"),
-        ('@app.post("/api/v12/projects/{project_id}/train/start")', "# v42.8：训练任务统一进入资源队列"),
+        ('@app.post("/api/v12/projects/{project_id}/train/start")', "def _v48_resource_key"),
     )
     for start_marker, end_marker in owners:
         start = source.index(start_marker)

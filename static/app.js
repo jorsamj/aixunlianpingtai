@@ -3164,8 +3164,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    ============================================================ */
 (()=>{
   const V428='42.24.0';
-  const DONE428=new Set(['done','finished','completed','failed','stopped']);
-  const ACTIVE428=new Set(['queued','running','paused','waiting','pending']);
+  const DONE428=new Set(['done','finished','completed','succeeded','success','failed','stopped','cancelled','canceled']);
+  const ACTIVE428=new Set(['queued','waiting','pending','starting','running','pausing','paused','resuming','stopping','cancel_requested']);
   const TARGET_NAMES428={ascend:'华为 Atlas / Ascend OM',rockchip:'瑞芯微 RKNN',sophon:'算能 Sophon / BModel',onnx:'ONNX',tensorrt:'NVIDIA TensorRT',paddle_inference:'Paddle Inference'};
   state.train428Tab=state.train428Tab||'active';
   state.alg428Expanded=state.alg428Expanded||{};
@@ -3177,8 +3177,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(!Number.isInteger(priority)||priority<1||priority>999){toast('任务优先级必须是 1~999 的整数，1 为最高优先级');return null}
     return priority;
   };
-  const statusText428=s=>({queued:'排队中',running:'训练中',paused:'已暂停',done:'已完成',finished:'已完成',completed:'已完成',failed:'失败',stopped:'已停止',waiting:'等待中',pending:'等待中'})[s]||s||'-';
-  const statusPill428=s=>`<span class="pill ${['done','finished','completed'].includes(s)?'ok':s==='failed'?'err':s==='paused'?'blue':'warn'}">${esc(statusText428(s))}</span>`;
+  const statusText428=s=>({queued:'排队中',waiting:'等待资源',pending:'等待中',starting:'启动中',running:'训练中',pausing:'暂停中',paused:'已暂停',resuming:'恢复中',stopping:'停止中',cancel_requested:'取消中',done:'已完成',finished:'已完成',completed:'已完成',succeeded:'已完成',success:'已完成',failed:'失败',stopped:'已停止',cancelled:'已取消',canceled:'已取消'})[String(s||'').toLowerCase()]||s||'-';
+  const statusPill428=s=>{const value=String(s||'').toLowerCase();return `<span class="pill ${['done','finished','completed','succeeded','success'].includes(value)?'ok':['failed','stopped','cancelled','canceled'].includes(value)?'err':value==='paused'?'blue':'warn'}">${esc(statusText428(value))}</span>`};
   function metricVersion428(v){
     const direct=Number(v?.accuracy);if(Number.isFinite(direct))return direct;
     const rep=v?.report||{};
@@ -3273,7 +3273,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       const algorithm=j.asset_algorithm_name||j.algorithm_name||j.asset_algorithm_id||j.algorithm_asset_id||'-';
       const task=j.task_name||j.run_name||j.auto_version_name||j.id;
       const framework=j.framework==='paddle'?'PaddleDetection':'Ultralytics / YOLO';
-      const stage=j.current_item||j.phase||j.task_stage||j.stage||status429(j.status);
+      const stage=j.current_item||j.phase||j.task_stage||j.stage||statusText428(j.status);
       return `<tr><td><div class="train428-taskname"><b>${esc(algorithm)}</b><span>${esc(j.asset_algorithm_id||j.algorithm_asset_id||'')}</span></div></td><td><div class="train428-taskname"><b>${esc(task)}</b><span>${esc(j.id)}</span></div></td><td>${statusPill428(j.status)}</td><td><b>${priorityValue428(j)}</b>${queuePosition428(j)?`<small class="queuepos428">${queuePosition428(j)}</small>`:''}</td><td><div class="train428-resource"><b>${esc(framework)}</b><span>${esc(resourceName428(j))}</span></div></td><td><div class="progress424"><i style="width:${Math.max(0,Math.min(100,Number(j.progress_percent||0)))}%"></i></div><span class="train428-progress-txt">${j.current_epoch||0}/${j.total_epochs||j.epochs||'-'} · ${Number(j.progress_percent||0).toFixed(0)}%</span></td><td>${fmtTime424(j.elapsed_seconds)}</td><td>${fmtTime424(j.eta_seconds)}</td><td><span class="train428-stage-text">${esc(stage)}</span></td><td>${dt428(j.started_at||j.created_at)}</td><td><div class="row wrap">${trainActions428(j)}</div></td></tr>`;
     }).join('')||'<tr><td colspan="11" class="empty-row">暂无记录</td></tr>'
   }

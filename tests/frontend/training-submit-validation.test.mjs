@@ -70,6 +70,16 @@ test('external ChangLian training re-reads algorithm truth before opening and tr
   assert.match(source, /训练已完成/);
 });
 
+test('legacy training shell uses same-scope status helper before final visibility runtime takes ownership', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function trainRows428(rows){');
+  const end = source.indexOf('window.renderTraining425=window.renderTraining424=window.renderTraining423', start);
+  assert.ok(start >= 0 && end > start);
+  const block = source.slice(start, end);
+  assert.match(block, /statusText428\(j\.status\)/);
+  assert.doesNotMatch(block, /status429\(/);
+});
+
 test('annotation workbench saves locally without full reload and preserves explicit empty confirmation through final owners', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420ConfirmEmpty[\s\S]*?确认无目标/);
