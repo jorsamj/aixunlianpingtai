@@ -1345,7 +1345,33 @@ class ExternalAlgorithmPublishService:
                 require_analysis_identity=bool(analysis_id and len(self._algorithm_analysis_ids(algorithm)) > 1),
             )
             if not external_version_id:
-                return {"required": True, "status": "not_present", "external_algo_version_id": ""}
+                name_matches = [
+                    dict(row)
+                    for row in rows
+                    if str(row.get("versionName") or row.get("versionNo") or row.get("name") or "") == version_name
+                ]
+                if not name_matches:
+                    return {"required": True, "status": "not_present", "external_algo_version_id": ""}
+                identified = [
+                    row for row in name_matches
+                    if self._remote_version_analysis_id(row)
+                ]
+                # Only treat as absent when every same-name remote record has an
+                # explicit, different analysis identity. Otherwise deletion is
+                # ambiguous and local state must remain unchanged.
+                if (
+                    analysis_id
+                    and len(identified) == len(name_matches)
+                    and all(self._remote_version_analysis_id(row) != analysis_id for row in identified)
+                ):
+                    return {"required": True, "status": "not_present", "external_algo_version_id": ""}
+                raise PlatformError(
+                    "EXTERNAL_VERSION_DELETE_AMBIGUOUS",
+                    "无法唯一确认要删除的新畅联算法版本，已停止本地删除",
+                    f"version_name={version_name}; matches={len(name_matches)}",
+                    "请先在新畅联核对同名版本及 analysisId；平台不会在远端身份不确定时只删除本地记录。",
+                    409,
+                )
 
         try:
             client.version_remove([external_version_id])
