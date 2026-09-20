@@ -25,6 +25,22 @@ SUCCESSFUL_CONVERSION_STATUSES = {
     "done", "finished", "completed", "success", "succeeded", "partial_success", "blocked_by_hardware",
 }
 
+_DELIVERABLE_SUFFIXES: dict[str, frozenset[str]] = {
+    "onnx": frozenset({".onnx"}),
+    "rockchip": frozenset({".rknn"}),
+    "tensorrt": frozenset({".engine"}),
+    "sophon": frozenset({".bmodel"}),
+    "ascend": frozenset({".om"}),
+}
+
+
+def _is_conversion_deliverable(target: str, path: Path) -> bool:
+    candidate = Path(path)
+    if candidate.name.lower() == "manifest.json":
+        return False
+    suffixes = _DELIVERABLE_SUFFIXES.get(str(target or "").strip().lower())
+    return True if suffixes is None else candidate.suffix.lower() in suffixes
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -483,7 +499,9 @@ class ModelArtifactService:
                     continue
                 raw = str(output.get("path") or "").strip()
                 if raw:
-                    candidates.append(("conversion", target, Path(raw).expanduser(), str(job.get("id") or ""), {"chip_code": chip}))
+                    output_path = Path(raw).expanduser()
+                    if _is_conversion_deliverable(target, output_path):
+                        candidates.append(("conversion", target, output_path, str(job.get("id") or ""), {"chip_code": chip}))
         seen: set[tuple[str, str, str]] = set()
         result: list[dict[str, Any]] = []
         for kind, target, path, job_id, metadata in candidates:
