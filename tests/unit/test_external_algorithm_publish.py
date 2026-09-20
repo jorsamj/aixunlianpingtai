@@ -49,6 +49,8 @@ class FakePublishingClient:
     weights = []
     version_creates = 0
     weight_creates = 0
+    version_removes = 0
+    removed_version_ids = []
     last_version_payload = None
     last_weight_payload = None
     last_version_list_path = None
@@ -65,6 +67,8 @@ class FakePublishingClient:
         cls.weights = []
         cls.version_creates = 0
         cls.weight_creates = 0
+        cls.version_removes = 0
+        cls.removed_version_ids = []
         cls.last_version_payload = None
         cls.last_weight_payload = None
         cls.last_version_list_path = None
@@ -93,6 +97,13 @@ class FakePublishingClient:
     def list_version_weights(self, algo_version_id):
         type(self).last_weight_list_path = f"/internal/algorithm/algorithm-weight/listByVersion/{algo_version_id}"
         return {"code": 200, "data": list(self.weights)}
+
+    def version_remove(self, algo_version_ids):
+        ids = [str(value) for value in algo_version_ids]
+        type(self).version_removes += 1
+        type(self).removed_version_ids.extend(ids)
+        type(self).versions = [row for row in self.versions if str(row.get("algoVersionId") or "") not in set(ids)]
+        return {"code": 200, "data": True}
 
     def create_weight(self, payload):
         type(self).last_weight_create_path = "/internal/algorithm/algorithm-weight/add"
@@ -296,6 +307,7 @@ def _service(root: Path, memory: MemorySecretStore, client_factory=FakePublishin
         storage_source_id="default_local",
         public_base_url="https://platform.example",
         target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk", chip_code=""),
             "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
         },
     ))
@@ -381,7 +393,7 @@ def test_synced_changlian_identity_survives_training_choice_conversion_and_publi
     assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3576"
     assert FakePublishingClient.last_weight_payload["fileName"] == "model.rknn"
     assert FakePublishingClient.last_weight_payload["filePath"].startswith(
-        "https://platform.example/api/v64/model-artifacts/"
+        "https://platform.example/model-assets/"
     )
 
 
@@ -430,7 +442,7 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     assert result["publication"]["status"] == "PUBLISHED"
     assert result["external_algo_version_id"] == "av-1"
     assert FakePublishingClient.version_creates == 1
-    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weight_creates == 2
     assert FakePublishingClient.last_version_list_path == "/internal/algorithm/algorithm-version/listByProduct/product-1"
     assert FakePublishingClient.last_version_create_path == "/internal/algorithm/algorithm-version/add"
     assert FakePublishingClient.last_weight_list_path == "/internal/algorithm/algorithm-weight/listByVersion/av-1"
@@ -445,14 +457,14 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3568"
     assert FakePublishingClient.last_weight_payload["fileName"] == "model.rknn"
     assert FakePublishingClient.last_weight_payload["filePath"].startswith(
-        "https://platform.example/api/v64/model-artifacts/"
+        "https://platform.example/model-assets/"
     )
-    artifact = result["artifacts"][0]
+    artifact = next(row for row in result["artifacts"] if row["target"] == "rockchip")
     assert artifact["upload_status"] == "UPLOADED"
     assert artifact["sync_status"] == "SYNCED"
     assert artifact["compute_platform_id"] == "cp-rk"
     assert artifact["chip_code"] == "RK3568"
-    assert artifact["public_url"].startswith("https://platform.example/api/v64/model-artifacts/")
+    assert artifact["public_url"].startswith("https://platform.example/model-assets/")
     uploaded = _project_dir(tmp_path, "p1") / artifact["object_key"]
     assert uploaded.read_bytes() == b"converted-rknn"
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
@@ -500,7 +512,7 @@ def test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs(tmp_pat
 
     result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
     assert result["publication"]["status"] == "PUBLISHED"
-    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weight_creates == 2
     assert FakePublishingClient.last_weight_payload["fileName"] == "model_rk3568_fp.rknn"
     assert FakePublishingClient.last_weight_payload["chipCode"] == "RK3568"
 
@@ -518,10 +530,10 @@ def test_multiple_rockchip_artifacts_keep_each_conversion_chip_identity(tmp_path
     result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
 
     assert result["publication"]["status"] == "PUBLISHED"
-    assert FakePublishingClient.weight_creates == 2
-    assert {row["chipCode"] for row in FakePublishingClient.weights} == {"RK3568", "RK3576"}
+    assert FakePublishingClient.weight_creates == 3
+    assert {row["chipCode"] for row in FakePublishingClient.weights if str(row["fileName"]).endswith(".rknn")} == {"RK3568", "RK3576"}
     assert {row["computePlatformId"] for row in FakePublishingClient.weights} == {"cp-rk"}
-    artifacts = result["artifacts"]
+    artifacts = [row for row in result["artifacts"] if row["target"] == "rockchip"]
     assert {row["chip_code"] for row in artifacts} == {"RK3568", "RK3576"}
     assert len({row["artifact_id"] for row in artifacts}) == 2
     assert len({row["source_sha256"] for row in artifacts}) == 1
@@ -593,10 +605,17 @@ def test_publish_blocks_before_remote_version_when_public_base_url_missing(tmp_p
     _seed_external_algorithm(tmp_path)
     _seed_conversion(tmp_path)
     service = _service(tmp_path, memory)
-    service.repository.save_config(ExternalPublishConfigPayload(
+    service.model_assets.save_config(ModelArtifactConfigPayload(
         storage_source_id="default_local",
+        object_prefix="model-assets",
+        public_base_url="",
+        auto_upload_enabled=True,
+    ))
+    service.repository.save_config(ExternalPublishConfigPayload(
+        storage_source_id="",
         public_base_url="",
         target_mappings={
+            "original": TargetMapping(compute_platform_id="cp-rk"),
             "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_code="RK3568"),
         },
     ))
@@ -725,8 +744,8 @@ def test_publish_allows_explicitly_disabled_conversion_target_to_be_ignored(tmp_
 
     result = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
     assert result["publication"]["status"] == "PUBLISHED"
-    assert FakePublishingClient.weight_creates == 1
-    assert FakePublishingClient.weights[0]["chipCode"] == "RK3568"
+    assert FakePublishingClient.weight_creates == 2
+    assert next(row for row in FakePublishingClient.weights if str(row["fileName"]).endswith(".rknn"))["chipCode"] == "RK3568"
 
 
 def test_republish_is_idempotent(tmp_path: Path):
@@ -741,7 +760,7 @@ def test_republish_is_idempotent(tmp_path: Path):
     service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
 
     assert FakePublishingClient.version_creates == 1
-    assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.weight_creates == 2
 
 
 def test_timeout_after_remote_commit_recovers_ids_without_duplicate(tmp_path: Path):
@@ -758,7 +777,7 @@ def test_timeout_after_remote_commit_recovers_ids_without_duplicate(tmp_path: Pa
     assert result["external_algo_version_id"] == "recovered-version"
     assert result["artifacts"][0]["external_weight_id"] == "recovered-weight"
     assert RecoveringPublishingClient.version_creates == 1
-    assert RecoveringPublishingClient.weight_creates == 1
+    assert RecoveringPublishingClient.weight_creates == 2
 
 
 def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path: Path):
@@ -935,3 +954,54 @@ def test_publish_fails_closed_if_compute_platform_mapping_becomes_stale_after_sa
 
     assert FakePublishingClient.version_creates == 0
     assert FakePublishingClient.weight_creates == 0
+
+
+def test_rollback_remote_delete_uses_official_version_remove(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+    algorithms = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    algorithm = algorithms[0]
+    version = algorithm["versions"][0]
+    version["external_algo_version_id"] = "remote-version-1"
+
+    result = service.delete_version_for_rollback(
+        project_id="p1",
+        algorithm=algorithm,
+        version=version,
+    )
+
+    assert result["status"] == "deleted"
+    assert result["external_algo_version_id"] == "remote-version-1"
+    assert FakePublishingClient.version_removes == 1
+    assert FakePublishingClient.removed_version_ids == ["remote-version-1"]
+
+
+def test_published_version_detects_and_appends_late_conversion_weight(tmp_path: Path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    service = _service(tmp_path, memory)
+
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert first["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 1
+
+    _seed_conversion(tmp_path, job_id="convert-late", target="rockchip", chip="rk3568")
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    publication = service.repository.publication("p1", "a1", "v1")
+    assert service.publication_requires_sync("p1", algorithm, version, publication) is True
+
+    second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1", automatic=True)
+    assert second["publication"]["status"] == "PUBLISHED"
+    assert FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.weight_creates == 2
+
+    publication = service.repository.publication("p1", "a1", "v1")
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    assert service.publication_requires_sync("p1", algorithm, algorithm["versions"][0], publication) is False
