@@ -105,6 +105,45 @@ export function externalAlgorithmMapping(algorithm = {}) {
   };
 }
 
+export function externalCategoryMatches(categoryId, selectedCategoryIds = [], categories = []) {
+  const selected = new Set([...selectedCategoryIds].map(value => String(value || '')).filter(Boolean));
+  if (!selected.size) return true;
+  const parentById = new Map((categories || []).map(row => [
+    String(row?.categoryId || row?.id || ''),
+    String(row?.parentId || ''),
+  ]));
+  let current = String(categoryId || '');
+  const seen = new Set();
+  while (current && !seen.has(current)) {
+    if (selected.has(current)) return true;
+    seen.add(current);
+    current = parentById.get(current) || '';
+  }
+  return false;
+}
+
+export function externalAlgorithmListFilterMatch(
+  algorithm = {},
+  {source = 'all', trainingStatus = 'all', selectedCategoryIds = [], categories = [], jobs = [], readiness = {ready: true}} = {},
+) {
+  const external = isExternalAlgorithm(algorithm);
+  if (source === 'internal' && external) return false;
+  if (source === 'external' && !external) return false;
+  if (!externalCategoryMatches(algorithm.external_category_id, selectedCategoryIds, categories)) return false;
+  const versions = Array.isArray(algorithm.versions) ? algorithm.versions : [];
+  const activeStatuses = new Set(['queued', 'running', 'starting', 'preparing', 'paused']);
+  const training = (jobs || []).some(job => {
+    const algorithmId = job?.asset_algorithm_id || job?.algorithm_asset_id || job?.algorithm_id || '';
+    return String(algorithmId) === String(algorithm.id || '') && activeStatuses.has(String(job?.status || '').toLowerCase());
+  });
+  if (trainingStatus === 'training') return training;
+  if (trainingStatus === 'trained') return versions.length > 0;
+  if (trainingStatus === 'untrained') return versions.length === 0;
+  if (trainingStatus === 'blocked') return external && readiness?.ready === false;
+  if (trainingStatus === 'trainable') return !external || readiness?.ready !== false;
+  return true;
+}
+
 export function normalizeExternalPlatformConfig(body = {}) {
   const config = body?.config || body || {};
   const endpoints = config.endpoints || {};
@@ -178,7 +217,9 @@ export function installExternalAlgorithmPlatformRuntime({
   let readiness = null;
   let connectionTest = null;
   let configEditing = false;
-  let selectedCategoryId = '';
+  const selectedCategoryIds = new Set();
+  let selectedSource = 'all';
+  let selectedTrainingStatus = 'all';
   let unregisterAlgorithmDecorator = null;
   let trainingAnalysisObserver = null;
 
@@ -258,17 +299,20 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   function categoryMatches(categoryId) {
-    if (!selectedCategoryId) return true;
-    let current = String(categoryId || '');
-    const parentById = new Map((cacheData.categories || []).map(row => [
-      String(row.categoryId || row.id || ''),
-      String(row.parentId || ''),
-    ]));
-    while (current) {
-      if (current === selectedCategoryId) return true;
-      current = parentById.get(current) || '';
-    }
-    return false;
+    return externalCategoryMatches(categoryId, selectedCategoryIds, cacheData?.categories || []);
+  }
+
+  function algorithmListFilterMatches(algorithm) {
+    return externalAlgorithmListFilterMatch(algorithm, {
+      source: selectedSource,
+      trainingStatus: selectedTrainingStatus,
+      selectedCategoryIds,
+      categories: cacheData?.categories || [],
+      jobs: state().jobs || [],
+      readiness: isExternalAlgorithm(algorithm)
+        ? externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest())
+        : {ready: true},
+    });
   }
 
   function decorateAlgorithmDetail(algorithm) {
@@ -307,19 +351,6 @@ export function installExternalAlgorithmPlatformRuntime({
     const root = document.getElementById('alg412List');
     if (!root) return;
 
-    const legacyIndustry = document.getElementById('alg412Industry');
-    if (legacyIndustry) {
-      if (externalMode()) {
-        if (legacyIndustry.value !== 'all') {
-          legacyIndustry.value = 'all';
-          algorithmListRuntime?.renderCards?.();
-          return;
-        }
-        legacyIndustry.hidden = true;
-      } else {
-        legacyIndustry.hidden = false;
-      }
-    }
 
     for (const card of root.querySelectorAll('.alg428-card')) {
       const actionButton = [...card.querySelectorAll('button')].find(button =>
@@ -329,7 +360,8 @@ export function installExternalAlgorithmPlatformRuntime({
       const algorithm = rows.find(row => String(row.id) === String(match?.[1] || ''));
       if (!algorithm) continue;
       card.dataset.externalCategoryId = String(algorithm.external_category_id || '');
-      card.hidden = !categoryMatches(algorithm.external_category_id);
+      card.dataset.algorithmSource = isExternalAlgorithm(algorithm) ? 'external' : 'internal';
+      card.hidden = !algorithmListFilterMatches(algorithm);
       const title = card.querySelector('.alg428-title');
       if (title && !title.querySelector('[data-algorithm-source]')) {
         const source = document.createElement('em');
