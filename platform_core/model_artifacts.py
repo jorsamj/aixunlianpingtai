@@ -492,8 +492,10 @@ class ModelArtifactService:
         finally:
             try:
                 provider.delete(key)
-            finally:
-                temporary.unlink(missing_ok=True)
+            except Exception:
+                # A failed cleanup must not hide the actual connectivity result.
+                pass
+            temporary.unlink(missing_ok=True)
         return {
             "ok": True,
             "storage_source_id": source_id,
