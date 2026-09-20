@@ -91,3 +91,25 @@ def test_new_canonical_label_retires_matching_alias_from_other_label(client):
     canonical = next(row for row in labels if row["code"] == "toukui1")
     assert helmet["aliases"] == []
     assert canonical["code"] == "toukui1"
+
+
+def test_project_initialization_preserves_aliases_and_prunes_canonical_conflicts(client):
+    project = client.post("/api/projects", json={
+        "name": "label-alias-project-init",
+        "labels": [
+            {
+                "code": "helmet",
+                "display_name": "安全头盔",
+                "aliases": ["toukui1", "person"],
+            },
+            {
+                "code": "person",
+                "display_name": "人员",
+                "aliases": [],
+            },
+        ],
+    }).json()
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    helmet = next(row for row in labels if row["code"] == "helmet")
+    assert helmet["aliases"] == ["toukui1"]
