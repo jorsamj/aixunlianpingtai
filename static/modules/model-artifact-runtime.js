@@ -116,6 +116,7 @@ function ensureStyles() {
     .ma-code{white-space:pre-wrap;word-break:break-word;border:1px solid var(--border,#263241);background:rgba(0,0,0,.16);border-radius:10px;padding:12px;font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;max-height:260px;overflow:auto}
     .ma-section-title{font-size:13px;font-weight:700;margin:18px 0 8px}.ma-actions{display:flex;gap:9px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
     @media(max-width:980px){.ma-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:640px){.ma-grid{grid-template-columns:1fr}.ma-actions{justify-content:stretch}.ma-actions .btn{flex:1 1 100%}}
   `;
   document.head.appendChild(style);
 }
@@ -135,10 +136,18 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
   ensureStyles();
 
   function storageOptions(selected = '') {
-    return (config?.storageSources || []).filter(row => row.enabled !== false).map(row => {
+    const rows = (config?.storageSources || []).filter(row => row.enabled !== false);
+    const ossRows = rows.filter(row => String(row.type || '').toLowerCase() === 'oss');
+    const visible = ossRows.some(row => String(row.id || '') === String(selected || ''))
+      ? ossRows
+      : [
+          ...ossRows,
+          ...rows.filter(row => String(row.id || '') === String(selected || '') && String(row.type || '').toLowerCase() !== 'oss'),
+        ];
+    return visible.map(row => {
       const id = String(row.id || '');
-      const suffix = row.is_default ? ' · 默认' : '';
-      return `<option value="${escapeHtml(id)}" ${id === selected ? 'selected' : ''}>${escapeHtml(row.name || id)} · ${escapeHtml(row.type || '')}${suffix}</option>`;
+      const legacy = String(row.type || '').toLowerCase() !== 'oss' ? ' · 开发兼容' : '';
+      return `<option value="${escapeHtml(id)}" ${id === selected ? 'selected' : ''}>${escapeHtml(row.name || id)} · ${escapeHtml(row.type || '')}${legacy}</option>`;
     }).join('');
   }
 
@@ -174,7 +183,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
           <div class="ma-stat"><span>上传失败</span><strong>${Number(summary.failed || 0)}</strong></div>
         </div>
         <div class="form two">
-          <div class="field"><label>算法产物存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择存储源</option>${storageOptions(c.storageSourceId)}</select><div class="subline">建议选择上方已配置并测试通过的阿里云 OSS。</div></div>
+          <div class="field"><label>算法产物存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择阿里云 OSS</option>${storageOptions(c.storageSourceId)}</select><div class="subline">正式环境仅展示已启用的阿里云 OSS；旧开发环境若已保存本地存储，会保留“开发兼容”项便于迁移。</div></div>
           <div class="field"><label>对象目录前缀</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.objectPrefix)}" placeholder="model-assets"></div>
           <div class="field full"><label>OSS / CDN 长期访问域名</label><div class="row"><input id="modelArtifactPublicBaseUrl" class="input" style="flex:1" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://your-bucket.oss-cn-hangzhou.aliyuncs.com"><button type="button" class="btn" id="modelArtifactSuggestPublicUrl">从 OSS 生成</button></div><div class="subline" id="modelArtifactPublicUrlHint">用于写入畅联云权重 filePath。请使用长期可访问域名，不保存会过期的临时签名链接。</div></div>
           <div class="field"><label>归档策略</label><div class="alert soft"><b>自动归档已启用</b><span>训练模型和转换结果完成后自动上传到这里配置的存储，不需要人工触发。</span></div></div>
