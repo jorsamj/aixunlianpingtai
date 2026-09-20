@@ -75,13 +75,13 @@ data.tokenType
 data.expiresIn
 ```
 
-后续内部业务接口按新畅联应用鉴权契约携带：
+后续业务接口的鉴权 Header **不能再统一假设**，必须逐接口按对应官方 OpenAPI 绑定。
 
-```text
-Access-Token: <accessToken>
-```
+已确认：
+- `GET /internal/algorithm/product-ai/listAll`（Apifox 515837723e0）使用 `Authorization: Bearer <accessToken>`。
+- “内部应用登出”文档提到 `Access-Token`，只代表该接口自己的合同，不能推广到全部算法业务接口。
 
-不得改回 `Authorization: Bearer ...`。用户提供的“内部应用登出”文档明确描述为删除当前请求携带的 `Access-Token`。
+因此当前客户端采用 endpoint-specific auth contract；未知接口在读取其官方 OpenAPI 前不得猜测 Header。
 
 平台允许在“配置中心 → 平台对接”手工填写 Base URL、AccessKey、AccessSecret。测试连接使用当前页面草稿，不要求先保存；保存后的 AccessSecret 不回传浏览器明文。
 
@@ -102,7 +102,7 @@ docs/CHANGLIAN_APIFOX_API_CATALOG.md
 | 能力 | Method | Path | 本平台用途 |
 |---|---|---|---|
 | 算法品目树 | GET | `/internal/base/algorithm-category/tree` | 品目同步、算法筛选 |
-| 算法产品列表 | GET | `/internal/algorithm/algorithm-product/listAll` | 算法主数据同步 |
+| 算法产品列表 | GET | `/internal/algorithm/product-ai/listAll` | 算法主数据同步 |
 | 产品分析方式 | GET | `/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}` | 冻结训练对应 analysisId |
 | 算力环境列表 | GET | `/internal/base/compute-platform/listAll` | 转换产物发布映射 |
 
@@ -248,7 +248,7 @@ RK3576
 - Secret 安全存储与不回显；
 - draft 凭据测试不先保存；
 - test-sign query contract；
-- Token / Access-Token 调用链；
+- Token + endpoint-specific auth Header 调用链；
 - 品目 / 产品 / 分析方式 / 算力环境同步；
 - external product / analysis 训练绑定；
 - Algorithm Version 创建；
@@ -307,7 +307,7 @@ POST /internal/auth/test-sign
 POST /internal/auth/token
 GET  /internal/base/algorithm-category/tree
 GET  /internal/base/compute-platform/listAll
-GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/product-ai/listAll
 GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
 POST /internal/algorithm/algorithm-version/add
 GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
@@ -323,7 +323,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /algorithm-weight/add
 ```
 
-`Access-Token: <accessToken>` 语义保持不变。
+业务接口鉴权 Header 以各自官方 OpenAPI 为准；算法产品 `listAll` 已确认使用 `Authorization: Bearer <accessToken>`。
 
 ### 当前真实验收门槛
 
