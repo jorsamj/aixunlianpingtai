@@ -2451,6 +2451,7 @@ VERSION.txt 仍为 42.24.0
 仍需生产/live E2E 验证：真实 OSS `filePath` 可访问性、新建版本/权重真实返回、删除版本真实副作用、以及超时后的远端反查恢复。
 
 - 训练准入已做 API 级 fail-closed：新畅联算法必须从完整 `external_analyses` 详情中证明 `status=1 AND analysisType=1`；缺字段、停用视觉、预留分析、大模型分析均不可训练。Durable Training、旧 `/api/projects/.../train/start` 与旧 `/api/v12/.../train/start` 都必须走同一后端 gate，不能依赖前端禁用按钮。
+- 分析方式训练资格的**权威真值来自** `GET /internal/algorithm/algorithm-analysis/getInfo/{analysisId}`。同步流程先用 `listByProduct/{productId}` 获取 analysisId，再逐条读取 getInfo；详情中的 `status / analysisType` 覆盖列表摘要。详情缺少这两个字段、analysisId 不一致或 productId 冲突时本轮同步 fail-closed，保留上一轮成功缓存。测试连接/诊断也只读抽查 getInfo，避免“连接测试成功但正式同步失败”。
 
 - 远程 MODEL_CONVERSION 结果当前可能落在 `deploy/jobs`，历史/本地转换主要落在 `deployment/jobs`。Model Artifact 与 ChangLian 发布发现器必须同时扫描两者并按 job id 去重；远程提交必须持久化 `source_trace.algorithm_id/version_id`，否则 RKNN/ONNX 虽已完成也会漏掉自动归档和远端权重追加。
 - 远程 TRAINING 已上传并校验到当前统一模型存储的同 SHA 主模型，在畅联云发布时直接复用已有对象与 `public_url`，禁止为了 `original` 语义重复占一份 OSS 对象。
