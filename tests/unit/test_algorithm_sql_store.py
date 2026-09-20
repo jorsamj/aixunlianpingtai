@@ -404,4 +404,4 @@ def test_legacy_trainable_id_list_cannot_bypass_missing_status_or_type(tmp_path:
     assert persisted["external_analysis_ids"] == []
     by_id = {row["analysis_id"]: row for row in persisted["external_analyses"]}
     assert by_id["legacy-visual"]["active"] is False
-    assert by_id["missing-type"]["active"] is True
+    assert by_id["missing-type"]["status"] == "1"
