@@ -142,6 +142,10 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /\/internal\/algorithm\/algorithm-product-analysis\/listByProduct\/\{productId\}/);
   assert.match(source, /\/internal\/algorithm\/algorithm-version\/add/);
   assert.match(source, /\/internal\/algorithm\/algorithm-weight\/add/);
+  assert.match(source, /businessAuthHeader: config\.business_auth_header \|\| 'Access-Token'/);
+  assert.match(source, /data-changlian-api-contract="1"/);
+  assert.match(source, /连接测试只调用鉴权和只读查询接口，不会自动执行新增、修改或删除/);
+  assert.match(source, /禁止按命名习惯猜接口/);
   assert.doesNotMatch(source, /data-external-endpoint=/);
   assert.doesNotMatch(source, /高级接口路径/);
   assert.match(source, /已保存并锁定，后续将持续使用此配置/);
