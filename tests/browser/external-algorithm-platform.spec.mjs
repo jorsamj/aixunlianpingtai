@@ -5,12 +5,16 @@ test('changlian platform page tests draft credentials before manual sync', async
   let savedPayload = null;
   let syncWrites = 0;
   let analysisStatus = 'success';
-  let savedBaseUrl = 'https://saved.example.test';
+  let configSaved = false;
+  let saveWrites = 0;
+  let savedBaseUrl = '';
 
   await page.route('**/api/v63/external-algorithm-platform/config', async route => {
     if (route.request().method() === 'PUT') {
       savedPayload = route.request().postDataJSON();
       savedBaseUrl = savedPayload.base_url;
+      configSaved = true;
+      saveWrites += 1;
     } else if (route.request().method() !== 'GET') {
       return route.continue();
     }
@@ -23,18 +27,19 @@ test('changlian platform page tests draft credentials before manual sync', async
           mode: 'external',
           provider: 'changlian',
           provider_name: '新畅联',
-          base_url: savedBaseUrl,
+          base_url: configSaved ? savedBaseUrl : '',
           auto_sync_enabled: false,
           auto_sync_interval_seconds: 600,
           auto_publish_enabled: false,
           auth_mode: 'test_sign_bridge',
           credentials: {
-            configured: true,
-            masked: 'AK-****1234',
+            configured: configSaved,
+            masked: configSaved ? 'AK-****1234' : '',
             available: true,
             backend: 'encrypted_file',
             writable: true,
           },
+          updated_at: configSaved ? '2026-09-20T06:55:00Z' : null,
           endpoints: {
             test_sign: '/internal/auth/test-sign',
             token: '/internal/auth/token',
@@ -183,7 +188,49 @@ test('changlian platform page tests draft credentials before manual sync', async
   expect(savedPayload.base_url).toBe('https://draft.example.test');
   expect(savedPayload.access_key).toBe('draft-ak');
   expect(savedPayload.access_secret).toBe('draft-secret');
+  await expect.poll(() => saveWrites).toBe(1);
+
+  // Saved configuration is locked until the user explicitly enters edit mode.
+  await expect(page.getByRole('button', {name: '编辑配置'})).toBeVisible();
+  await expect(page.getByRole('button', {name: '保存配置'})).toHaveCount(0);
+  await expect(page.locator('#externalBaseUrl')).toBeDisabled();
+  await expect(page.locator('#externalAccessKey')).toBeDisabled();
+  await expect(page.locator('#externalAccessSecret')).toBeDisabled();
+  await expect(page.locator('#externalBaseUrl')).toHaveValue('https://draft.example.test');
   await expect(syncButton).toBeEnabled();
+
+  // Locked connection tests submit no new credential values; backend reuses secure saved credentials.
+  testedPayload = null;
+  await page.getByRole('button', {name: '测试连接'}).click();
+  await expect.poll(() => testedPayload).not.toBeNull();
+  expect(testedPayload.base_url).toBe('https://draft.example.test');
+  expect(testedPayload.access_key).toBeNull();
+  expect(testedPayload.access_secret).toBeNull();
+
+  // Edit can be cancelled without mutating the persisted platform.
+  await page.getByRole('button', {name: '编辑配置'}).click();
+  await expect(page.locator('#externalBaseUrl')).toBeEnabled();
+  await expect(page.getByRole('button', {name: '取消编辑'})).toBeVisible();
+  await page.locator('#externalBaseUrl').fill('https://cancelled.example.test');
+  await expect(syncButton).toBeDisabled();
+  await page.getByRole('button', {name: '取消编辑'}).click();
+  await expect(page.locator('#externalBaseUrl')).toBeDisabled();
+  await expect(page.locator('#externalBaseUrl')).toHaveValue('https://draft.example.test');
+  expect(saveWrites).toBe(1);
+
+  // The persisted platform changes only after Edit -> Save, then locks again.
+  await page.getByRole('button', {name: '编辑配置'}).click();
+  await page.locator('#externalBaseUrl').fill('https://edited.example.test');
+  savedPayload = null;
+  await page.getByRole('button', {name: '保存配置'}).click();
+  await expect.poll(() => saveWrites).toBe(2);
+  await expect.poll(() => savedPayload).not.toBeNull();
+  expect(savedPayload.base_url).toBe('https://edited.example.test');
+  expect(savedPayload.access_key).toBeNull();
+  expect(savedPayload.access_secret).toBeNull();
+  await expect(page.getByRole('button', {name: '编辑配置'})).toBeVisible();
+  await expect(page.locator('#externalBaseUrl')).toBeDisabled();
+  await expect(page.locator('#externalBaseUrl')).toHaveValue('https://edited.example.test');
 
   await syncButton.click();
   await expect.poll(() => syncWrites).toBe(1);

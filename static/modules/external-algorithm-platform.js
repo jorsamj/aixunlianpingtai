@@ -158,6 +158,7 @@ export function installExternalAlgorithmPlatformRuntime({
   let diagnostics = null;
   let readiness = null;
   let connectionTest = null;
+  let configEditing = false;
   let selectedCategoryId = '';
   let unregisterAlgorithmDecorator = null;
   let trainingAnalysisObserver = null;
@@ -510,6 +511,15 @@ export function installExternalAlgorithmPlatformRuntime({
         ? `当前凭据由 ${escapeHtml(credential.environment_name || '环境变量')} 管理，只读；页面不会覆盖。`
         : 'AccessSecret 仅提交给后端安全存储，页面不会读取已保存的明文 Secret。';
     const savedConnectionReady = external && Boolean(c.baseUrl) && credential.configured === true;
+    const configLocked = savedConnectionReady && !configEditing;
+    const formDisabled = configLocked ? 'disabled' : '';
+    const credentialDisabled = (credentialManaged || configLocked) ? 'disabled' : '';
+    const configActionsHtml = configLocked
+      ? '<button class="btn primary" id="externalPlatformEdit">编辑配置</button>'
+      : `<button class="btn primary" id="externalPlatformSave">保存配置</button>${savedConnectionReady ? '<button class="btn" id="externalPlatformCancelEdit">取消编辑</button>' : ''}`;
+    const connectionHelpText = configLocked
+      ? '使用服务器已保存的 API 地址和凭据测试连接；已保存的 Secret 不会回显到浏览器。'
+      : '使用当前页面填写的 API 地址和凭据临时测试，不会自动保存或覆盖已保存凭据。';
     const syncSucceeded = last?.status === 'success';
     const configSaved = Boolean(c.updatedAt);
     const sourceStatus = external ? '新畅联管理' : '本平台管理';
@@ -524,11 +534,11 @@ export function installExternalAlgorithmPlatformRuntime({
           <div>
             <div class="external-platform-eyebrow">算法主数据对接</div>
             <h2>平台对接</h2>
-            <p>配置并保存后，平台会持续使用这套连接信息；需要切换地址或凭据时再修改并保存。</p>
+            <p>配置保存成功后会自动锁定并持续使用；需要更换地址或凭据时，必须先点击“编辑配置”。</p>
           </div>
           <div class="external-platform-actions">
             <button class="btn" id="externalPlatformTest">测试连接</button>
-            <button class="btn primary" id="externalPlatformSave">保存配置</button>
+            ${configActionsHtml}
             <button class="btn green" id="externalPlatformSync" ${savedConnectionReady ? '' : 'disabled'} title="${savedConnectionReady ? '使用已保存配置同步新畅联主数据' : '请先保存 API 地址与应用凭据'}">↻ 立即同步</button>
           </div>
         </div>
@@ -547,26 +557,26 @@ export function installExternalAlgorithmPlatformRuntime({
       </div>
 
       <section class="panel external-platform-config">
-        <div class="panel-head"><div><div class="panel-title">算法主数据来源</div><div class="subline">先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境。</div></div></div>
+        <div class="panel-head"><div><div class="panel-title">算法主数据来源</div><div class="subline">${configLocked ? '当前配置已锁定；点击“编辑配置”后才能修改。' : '先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境。'}</div></div></div>
         <div class="panel-body">
           <div class="form two">
             <div class="field full">
               <label>算法数据来源</label>
               <div class="row">
-                <label class="field check"><input type="radio" name="externalMode" value="local" ${external ? '' : 'checked'}> 本平台管理</label>
-                <label class="field check"><input type="radio" name="externalMode" value="external" ${external ? 'checked' : ''}> 外部平台</label>
+                <label class="field check"><input type="radio" name="externalMode" value="local" ${external ? '' : 'checked'} ${formDisabled}> 本平台管理</label>
+                <label class="field check"><input type="radio" name="externalMode" value="external" ${external ? 'checked' : ''} ${formDisabled}> 外部平台</label>
               </div>
             </div>
-            <div class="field"><label>外部平台</label><select id="externalProvider" class="select"><option value="changlian">新畅联</option></select></div>
-            <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com"></div>
-            <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialManaged ? 'disabled' : ''} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
-            <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" ${credentialManaged ? 'disabled' : ''} placeholder="${credentialManaged ? '由环境变量管理' : (credential.configured ? '已配置，留空表示继续使用原 Secret' : '请输入 AccessSecret')}"><button type="button" class="btn" id="externalSecretToggle" ${credentialManaged ? 'disabled' : ''}>显示</button></div></div>
+            <div class="field"><label>外部平台</label><select id="externalProvider" class="select" ${formDisabled}><option value="changlian">新畅联</option></select></div>
+            <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com" ${formDisabled}></div>
+            <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialDisabled} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
+            <div class="field"><label>AccessSecret</label><div class="row"><input id="externalAccessSecret" type="password" class="input" autocomplete="new-password" spellcheck="false" ${credentialDisabled} placeholder="${credentialManaged ? '由环境变量管理' : (credential.configured ? '已配置，编辑时留空表示继续使用原 Secret' : '请输入 AccessSecret')}"><button type="button" class="btn" id="externalSecretToggle" ${credentialDisabled}>显示</button></div></div>
             <div class="field full"><div class="subline">凭据状态：${credentialStatusText} · 存储后端：${escapeHtml(credentialBackendText)}。${credentialHelpText}</div>${credential.available === false ? '<div class="alert warn" style="margin-top:10px">当前只能查看公开配置，保存 AccessKey / AccessSecret 会失败关闭（fail-closed），不会降级成明文 JSON。</div>' : ''}</div>
             <div class="field full">
               <details data-external-sync-settings="1">
                 <summary>同步设置</summary>
                 <div style="margin-top:12px">
-                  <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''}> 自动同步主数据</label>
+                  <label class="field check"><input id="externalAutoSync" type="checkbox" ${c.autoSyncEnabled ? 'checked' : ''} ${formDisabled}> 自动同步主数据</label>
                 </div>
               </details>
             </div>
@@ -576,7 +586,7 @@ export function installExternalAlgorithmPlatformRuntime({
 
       <section class="panel">
         <div class="panel-head">
-          <div><div class="panel-title">连接测试</div><div class="subline">使用当前页面填写的 API 地址和凭据临时测试，不会自动保存或覆盖已保存凭据。</div></div>
+          <div><div class="panel-title">连接测试</div><div class="subline">${connectionHelpText}</div></div>
           <details class="external-platform-tools"><summary>高级联调</summary><button class="btn small" id="externalPlatformDiagnostics">运行联调诊断</button></details>
         </div>
         <div class="panel-body" id="externalConnectionResult">${connectionTestHtml()}</div>
@@ -694,6 +704,9 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   async function save({quiet = false} = {}) {
+    if (externalMode() && config?.baseUrl && config?.credentials?.configured === true && !configEditing) {
+      throw new Error('配置已锁定，请先点击“编辑配置”再修改');
+    }
     const payload = collectForm();
     const body = await requestJson(`${API_ROOT}/config`, {
       method: 'PUT',
@@ -702,8 +715,24 @@ export function installExternalAlgorithmPlatformRuntime({
     });
     config = normalizeExternalPlatformConfig(body);
     state().externalAlgorithmPlatformConfig = config;
-    if (!quiet) notify?.('平台对接配置已保存，后续将持续使用此配置');
+    configEditing = false;
+    if (!quiet) notify?.('平台对接配置已保存并锁定，后续将持续使用此配置');
     return config;
+  }
+
+  async function beginConfigEdit() {
+    if (!(externalMode() && config?.baseUrl && config?.credentials?.configured === true)) return false;
+    configEditing = true;
+    connectionTest = null;
+    await render({reload: false});
+    return true;
+  }
+
+  async function cancelConfigEdit() {
+    configEditing = false;
+    connectionTest = null;
+    await render({reload: false});
+    return true;
   }
 
   async function testConnection() {
@@ -780,12 +809,16 @@ export function installExternalAlgorithmPlatformRuntime({
 
   function bindPage() {
     const saveButton = document.getElementById('externalPlatformSave');
+    const editButton = document.getElementById('externalPlatformEdit');
+    const cancelEditButton = document.getElementById('externalPlatformCancelEdit');
     const testButton = document.getElementById('externalPlatformTest');
     const diagnosticsButton = document.getElementById('externalPlatformDiagnostics');
     const syncButton = document.getElementById('externalPlatformSync');
     const secretToggle = document.getElementById('externalSecretToggle');
     const secretInput = document.getElementById('externalAccessSecret');
     if (saveButton) saveButton.onclick = () => void save().then(() => render({reload: false})).catch(error => notify?.(error?.message || error));
+    if (editButton) editButton.onclick = () => void beginConfigEdit().catch(error => notify?.(error?.message || error));
+    if (cancelEditButton) cancelEditButton.onclick = () => void cancelConfigEdit().catch(error => notify?.(error?.message || error));
     if (testButton) testButton.onclick = () => void testConnection().catch(error => notify?.(error?.message || error));
     if (diagnosticsButton) diagnosticsButton.onclick = () => void runDiagnostics().catch(error => notify?.(error?.message || error));
     if (syncButton) syncButton.onclick = () => void syncNow().catch(error => notify?.(error?.message || error));
@@ -796,6 +829,7 @@ export function installExternalAlgorithmPlatformRuntime({
     };
 
     const markConfigDirty = () => {
+      if (externalMode() && config?.baseUrl && config?.credentials?.configured === true && !configEditing) return;
       const savedExternalReady = externalMode()
         && Boolean(config?.baseUrl)
         && config?.credentials?.configured === true;
@@ -835,6 +869,7 @@ export function installExternalAlgorithmPlatformRuntime({
         readiness = nextReadiness;
       }
       if (String(state().page || '') !== PAGE) return false;
+      if (reload) configEditing = false;
       view.innerHTML = configFormHtml(config);
       bindPage();
       return true;
@@ -861,7 +896,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63005',
+    build: 'external-algorithm-platform-63006',
     page: PAGE,
     loadConfig,
     loadHistory,
@@ -869,6 +904,9 @@ export function installExternalAlgorithmPlatformRuntime({
     loadReadiness,
     render,
     save,
+    beginConfigEdit,
+    cancelConfigEdit,
+    isConfigEditing: () => configEditing,
     testConnection,
     runDiagnostics,
     syncNow,

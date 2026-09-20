@@ -144,7 +144,13 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.match(source, /\/internal\/algorithm\/algorithm-weight\/add/);
   assert.doesNotMatch(source, /data-external-endpoint=/);
   assert.doesNotMatch(source, /高级接口路径/);
-  assert.match(source, /后续将持续使用此配置/);
+  assert.match(source, /已保存并锁定，后续将持续使用此配置/);
+  assert.match(source, /配置保存成功后会自动锁定并持续使用/);
+  assert.match(source, /id="externalPlatformEdit"/);
+  assert.match(source, /id="externalPlatformCancelEdit"/);
+  assert.match(source, /const configLocked = savedConnectionReady && !configEditing/);
+  assert.match(source, /配置已锁定，请先点击“编辑配置”再修改/);
+  assert.match(source, /if \(reload\) configEditing = false/);
   assert.match(source, /先配置并测试连接，再手动同步算法品目、算法产品、分析方式和算力环境/);
   assert.doesNotMatch(source, /联调准备状态 · 主数据 \/ 训练准备状态/);
   assert.match(source, /人员网页登录账号不参与机器接口调用/);

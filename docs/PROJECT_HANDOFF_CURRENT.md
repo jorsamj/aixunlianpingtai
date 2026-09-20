@@ -116,6 +116,24 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 ---
 
+<!-- PLATFORM_CONFIG_EDIT_LOCK_2026_09_20 -->
+# 最新产品规则：平台对接保存后锁定
+
+2026-09-20，平台对接配置交互改为显式 **Save → Locked → Edit → Save**：
+
+- 首次未配置时，URL / AccessKey / AccessSecret 可直接填写并“保存配置”。
+- 保存成功后，当前外部平台配置立即进入只读锁定态；URL、平台来源、AccessKey、AccessSecret、同步设置不能直接修改。
+- 锁定态只显示“编辑配置”；用户必须先点击“编辑配置”才进入可修改状态。
+- 编辑态提供“保存配置”和“取消编辑”；取消编辑会丢弃页面草稿并恢复服务器已保存配置。
+- 再次保存成功后立即重新锁定。
+- 锁定态“测试连接”继续使用已保存配置；AccessSecret 不回显，后端沿用安全存储中的已保存凭据。
+- “立即同步”始终使用服务器已保存配置；未保存编辑草稿不会改变当前平台。
+- 当前平台只有在 **编辑 → 保存成功** 后才真正发生变化。
+
+对应永久前端/Real Chrome guard：`tests/frontend/external-algorithm-platform.test.mjs`、`tests/browser/external-algorithm-platform.spec.mjs`。
+
+---
+
 # 最新修复：新畅联 Internal API Namespace
 
 2026-09-20，平台对接真实联调发现旧业务 endpoint 缺少新畅联 internal namespace，典型现象为 HTTP 200 / 业务码 401。当前主数据与发布链已统一改为正式 internal 路径：
