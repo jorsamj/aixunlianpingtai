@@ -167,6 +167,23 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 ---
 
+<!-- CHANGLIAN_ZERO_STATUS_FIX_2026_09_20 -->
+# 部署阻断修复：新畅联 analysis status=0 不得被 falsy 吞掉
+
+`d71ec0b03b44b1056cbb8d6b50b5425167d78dbf` 仍不可部署。服务器预检确认上游 `_analysis_is_enabled()` / `_analysis_summary()` 使用 `_value_from(..., "status") or ""`，导致数值 `0` 被转换成空字符串。
+
+当前修复：
+
+- `_analysis_is_enabled()` 显式区分 `None` 与 `0`；
+- `1 / "1"` 为启用，`0 / "0" / False / "false"` 为停用，缺失 status 保持旧数据兼容默认启用；
+- `_analysis_summary()` 对 `status=0` 持久化为字符串 `"0"`，不再变成空字符串；
+- 新增参数化永久测试和 numeric-zero summary 测试；
+- CI 永久禁止重新出现 `str(_value_from(row, "status") or "")`；
+- 既有 SQLite round-trip 测试继续要求 `external_analysis_ids=["vision-on"]` 且 `vision-off.active=false`。
+
+部署仍需等待新 HEAD 的 focused compile/unit tests 为 0 failed 后再继续。
+
+---
 <!-- CHANGLIAN_SQL_ANALYSIS_SUBSET_FIX_2026_09_20 -->
 # 部署阻断修复：ChangLian 可训练分析 ID SQL round-trip
 
