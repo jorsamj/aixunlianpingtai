@@ -1499,6 +1499,7 @@ class ExternalAlgorithmPlatformService:
         if not product_rows:
             for key, name in (
                 ("analysis", "产品分析方式"),
+                ("analysis_detail", "分析方式详情"),
                 ("versions", "算法版本"),
                 ("weights", "算法权重"),
             ):
@@ -1506,7 +1507,7 @@ class ExternalAlgorithmPlatformService:
             return
 
         product_id = _product_id(product_rows[0])
-        record(
+        analysis_rows = record(
             "analysis",
             "产品分析方式",
             lambda: _validated_external_items(
@@ -1517,6 +1518,24 @@ class ExternalAlgorithmPlatformService:
             ),
             count_items=True,
         )
+        analysis_rows = analysis_rows if isinstance(analysis_rows, list) else []
+        if analysis_rows:
+            record(
+                "analysis_detail",
+                "分析方式详情",
+                lambda: _analysis_detail_truth(
+                    client,
+                    analysis_rows[0],
+                    product_id=product_id,
+                ),
+            )
+        else:
+            steps.append({
+                "key": "analysis_detail",
+                "name": "分析方式详情",
+                "status": "skipped",
+                "detail": "当前抽查算法产品下没有可验证的分析方式",
+            })
         versions = record(
             "versions",
             "算法版本",
