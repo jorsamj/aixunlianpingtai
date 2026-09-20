@@ -124,6 +124,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 - 畅联返回 `HTTP 200 + code=0 + msg=操作成功` 时，旧代码使用 `body.get("code") or ""`，把数值 `0` 错误变成空字符串，导致交互审计误记为 FAILED。现在 `code=0` 会保留为 `business_code="0"` 并记录 SUCCESS。
 - 新畅联内部业务接口当前使用请求头 `Access-Token: <accessToken>`；不再使用 `Authorization: Bearer ...`。用户提供的“内部应用登出”官方文档明确描述为删除当前请求携带的 Access-Token。
 - `HTTP 200` 但业务码非成功（例如 `99999`）现在会在 HTTP client 边界直接失败，保留真实 business code 与远端 msg，不能继续被上层当成正常数据。
+- 历史上已经落库的 code=0 误判记录会在 IntegrationAuditRepository 初始化时做幂等修复：仅修复 HTTP 2xx + 空 business_code + response.code 精确为 0 的旧 FAILED；`99999` 等真实失败绝不改写。
 - 用户提供的 **31 个** Apifox 文档条目已完整登记在 `docs/CHANGLIAN_APIFOX_API_CATALOG.md`，平台页面也展示“新畅联接口契约”目录。
 - 当前只有已经核实 Method / Path 的 10 个生产主链接口标记“已接入”；其余版本/权重/产品/分析方式/算力环境/品目 CRUD、分页、详情接口先登记官方文档，不猜 Method / Path。
 - “测试连接”只执行鉴权和只读查询，不自动调用新增、修改、删除等有副作用接口。
