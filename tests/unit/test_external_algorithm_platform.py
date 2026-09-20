@@ -19,6 +19,7 @@ from platform_core.external_algorithm_platform import (
     resolve_external_training_analysis,
 )
 from platform_core.algorithms import list_algorithms, save_algorithms
+from platform_core.errors import PlatformError
 from platform_core.secrets import MemorySecretStore
 
 
