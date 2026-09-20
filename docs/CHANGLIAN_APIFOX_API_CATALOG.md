@@ -177,3 +177,35 @@ test-sign
 ```
 
 没有产品/版本时对应步骤标记 skipped，而不是制造假数据进行测试。
+
+
+## 9. 视觉训练与删除安全边界
+
+新畅联分析方式合同定义：
+
+```text
+analysisType=1  视觉智能分析
+analysisType=3  大模型智能分析
+status=1        启用
+status=0        禁用
+```
+
+本平台 YOLO 训练只暴露启用的视觉分析；大模型分析和停用视觉分析仍保留在远端主数据详情中，但不能绑定训练/发布版本。
+
+算法产品同步默认请求：
+
+```text
+productType=3
+status=1
+```
+
+即仅同步“算法产品 + 上架中”，远端下架后本地历史版本保留并转为不可新训练状态。
+
+远端删除安全边界：
+
+```text
+DELETE /api/v63/external-algorithm-platform/provider/versions/{ids}?confirm=true
+DELETE /api/v63/external-algorithm-platform/provider/weights/{ids}?confirm=true
+```
+
+未显式提供 `confirm=true` 时本平台拒绝远端删除。尤其算法版本删除会由新畅联同时级联删除其下全部权重文件。
