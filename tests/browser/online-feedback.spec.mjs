@@ -276,8 +276,14 @@ test('pending reviewed feedback can be dismissed without promotion or training',
   await page.goto('/');
   await page.evaluate(()=>window.setPage('测试发布'));
   await page.locator('#predFile').setInputFiles({name:'dismiss.bmp',mimeType:'image/bmp',buffer:bmp()});
-  await page.getByRole('button',{name:'开始测试'}).click();
-  await page.getByRole('button',{name:'提交抽检反馈'}).click();
+  const runButton=page.getByRole('button',{name:'开始测试'});
+  await expect(runButton).toBeEnabled();
+  await runButton.click();
+  await expect.poll(async()=>page.evaluate(()=>state.lastOnlinePrediction63?.prediction_id||''))
+    .toBe('prediction-dismiss-1');
+  const feedbackButton=page.getByRole('button',{name:'提交抽检反馈'});
+  await expect(feedbackButton).toBeVisible();
+  await feedbackButton.click();
   const create=page.getByRole('dialog',{name:'提交线上抽检反馈'});
   await create.locator('#feedbackType63').selectOption('needs_correction');
   await create.getByRole('button',{name:'提交到待复核'}).click();
