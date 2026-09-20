@@ -147,6 +147,7 @@ jobs:
                   '"aliases": normalize_label_aliases(',
                   "*[str(alias).strip() for alias in item.get('aliases') or []]",
                   "external_classes = mapping_suggestions(",
+                  "task.status is TaskStatus.AWAITING_CONFIRMATION",
                   "suggested = suggest_label_code(value, catalog or [])",
               ),
               'platform_core/auto_label.py': (
