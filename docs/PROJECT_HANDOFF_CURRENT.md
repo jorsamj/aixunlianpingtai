@@ -2203,7 +2203,7 @@ setInterval(switchProject, 1500)
 
 ## P2 — 外部平台 auto-sync 在 Web 进程 daemon thread
 
-单进程能工作，FileLock 能避免同目录同时 sync；但多 API worker / 多机后应迁到现有 Scheduler/Worker。
+当前实现：daemon thread **每 5 秒只检查一次 due**，真正的新畅联 Provider 主数据拉取由服务端固定 **60 秒间隔**限流；FileLock 避免同共享数据目录并发执行同一轮同步。单进程/当前部署可用，但多 API worker / 多机后应迁到现有 Scheduler/Worker。
 
 不要因此新造第二套 scheduler。
 
@@ -2449,3 +2449,5 @@ VERSION.txt 仍为 42.24.0
 - 新畅联业务接口鉴权继续遵循完整 31 项 OpenAPI 汇编：`Authorization: Bearer <accessToken>`。不要把旧 `Access-Token` Header 结论恢复回来。
 
 仍需生产/live E2E 验证：真实 OSS `filePath` 可访问性、新建版本/权重真实返回、删除版本真实副作用、以及超时后的远端反查恢复。
+
+- 远程 MODEL_CONVERSION 结果当前可能落在 `deploy/jobs`，历史/本地转换主要落在 `deployment/jobs`。Model Artifact 与 ChangLian 发布发现器必须同时扫描两者并按 job id 去重；远程提交必须持久化 `source_trace.algorithm_id/version_id`，否则 RKNN/ONNX 虽已完成也会漏掉自动归档和远端权重追加。
