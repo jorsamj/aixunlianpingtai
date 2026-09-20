@@ -4019,16 +4019,20 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       const review=await api(`/api/v52/projects/${pid()}/import/jobs/${jobId}/review`);
       state.import412.label_box_counts=review.label_box_counts||{};
     }
-    const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0);
-    closeModal();
-    if(jobId)modal('本次导入素材',importReview414Html(),true);
+    const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0),progressVisible=!!document.getElementById('importRemapStage414');
+    if(progressVisible){
+      closeModal();
+      if(jobId)modal('本次导入素材',importReview414Html(),true);
+    }else if(state.page==='数据集'){
+      renderDatasets424();
+    }
     toast(failed?`标签统一完成：${changed} 个框已更新，${failed} 张需复核`:`标签统一完成：${changed} 个框 · ${source} → ${target}`);
   }
   window.pollImportRemap414=async function(taskId,source,target){
     try{
       const task=await api(`/api/v62/projects/${pid()}/material-batches/${taskId}`);
       state.import412RemapTask=task;
-      const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);
+      const marker=document.getElementById('importRemapStage414'),body=marker?.closest('.modal-body');
       if(body)window.ModalContentRuntime.replace(body,importRemapProgress414(task,source,target));
       const status=String(task.status||'').toUpperCase();
       if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status)){
