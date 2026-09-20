@@ -32,6 +32,44 @@ CACHE_SCHEMA_VERSION = 1
 MAX_SYNC_HISTORY = 100
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 600
 
+CHANG_LIAN_API_DOCUMENTS: tuple[dict[str, str], ...] = (
+    {"key":"login_method","group":"登录验证","title":"登录方法","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/439653047e0.md","status":"reference","method":"","path":""},
+    {"key":"auth_token","group":"应用鉴权","title":"内部应用鉴权获取Token","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307570e0.md","status":"wired","method":"POST","path":"/internal/auth/token"},
+    {"key":"auth_test_sign","group":"应用鉴权","title":"内部应用签名测试","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307571e0.md","status":"wired","method":"POST","path":"/internal/auth/test-sign"},
+    {"key":"auth_logout","group":"应用鉴权","title":"内部应用登出","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515307572e0.md","status":"documented","method":"","path":""},
+    {"key":"weight_update","group":"算法权重文件管理","title":"修改算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837707e0.md","status":"documented","method":"","path":""},
+    {"key":"weight_add","group":"算法权重文件管理","title":"新增算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837708e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-weight/add"},
+    {"key":"weight_delete","group":"算法权重文件管理","title":"删除算法权重文件","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837709e0.md","status":"documented","method":"","path":""},
+    {"key":"weight_page","group":"算法权重文件管理","title":"查询算法权重文件列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837710e0.md","status":"documented","method":"","path":""},
+    {"key":"weight_list_by_version","group":"算法权重文件管理","title":"查询某算法版本下全部算法权重文件(含算力环境名称/编号)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837711e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"},
+    {"key":"weight_list_by_product","group":"算法权重文件管理","title":"按算法产品查询算法权重文件(算法调度用)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837712e0.md","status":"documented","method":"","path":""},
+    {"key":"weight_detail","group":"算法权重文件管理","title":"查询算法权重文件详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837713e0.md","status":"documented","method":"","path":""},
+    {"key":"version_update","group":"算法版本管理","title":"修改算法版本","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837714e0.md","status":"documented","method":"","path":""},
+    {"key":"version_add","group":"算法版本管理","title":"新增算法版本(analysisId 与 productId 二选一；传 productId 时自动定位该算法产品下的视觉智能分析方式)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837715e0.md","status":"wired","method":"POST","path":"/internal/algorithm/algorithm-version/add"},
+    {"key":"version_delete","group":"算法版本管理","title":"删除算法版本(同时删除其下全部算法权重文件)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837716e0.md","status":"documented","method":"","path":""},
+    {"key":"version_page","group":"算法版本管理","title":"查询算法版本列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837717e0.md","status":"documented","method":"","path":""},
+    {"key":"version_list_by_product","group":"算法版本管理","title":"查询某算法产品下全部算法版本(含权重文件数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837718e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-version/listByProduct/{productId}"},
+    {"key":"version_list_by_analysis","group":"算法版本管理","title":"查询某分析方式下全部算法版本(含权重文件数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837719e0.md","status":"documented","method":"","path":""},
+    {"key":"version_list_all","group":"算法版本管理","title":"查询算法版本列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837720e0.md","status":"documented","method":"","path":""},
+    {"key":"version_detail","group":"算法版本管理","title":"查询算法版本详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837721e0.md","status":"documented","method":"","path":""},
+    {"key":"product_page","group":"算法产品管理","title":"查询算法产品列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837722e0.md","status":"documented","method":"","path":""},
+    {"key":"product_list_all","group":"算法产品管理","title":"查询算法产品列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837723e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-product/listAll"},
+    {"key":"product_detail","group":"算法产品管理","title":"查询算法产品详细信息","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837724e0.md","status":"documented","method":"","path":""},
+    {"key":"analysis_page","group":"算法产品分析方式管理","title":"查询分析方式列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837725e0.md","status":"documented","method":"","path":""},
+    {"key":"analysis_list_by_product","group":"算法产品分析方式管理","title":"查询某算法产品下全部分析方式(含关联明细)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837726e0.md","status":"wired","method":"GET","path":"/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"},
+    {"key":"analysis_list_all","group":"算法产品分析方式管理","title":"查询分析方式列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837727e0.md","status":"documented","method":"","path":""},
+    {"key":"analysis_detail","group":"算法产品分析方式管理","title":"查询分析方式详细信息(含关联明细)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837728e0.md","status":"documented","method":"","path":""},
+    {"key":"compute_page","group":"算力环境管理","title":"查询算力环境列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837729e0.md","status":"documented","method":"","path":""},
+    {"key":"compute_list_all","group":"算力环境管理","title":"查询算力环境列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837730e0.md","status":"wired","method":"GET","path":"/internal/base/compute-platform/listAll"},
+    {"key":"category_tree","group":"算法品目管理","title":"查询算法品目树(父节点含所有子节点数量)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837731e0.md","status":"wired","method":"GET","path":"/internal/base/algorithm-category/tree"},
+    {"key":"category_page","group":"算法品目管理","title":"查询算法品目列表(分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837732e0.md","status":"documented","method":"","path":""},
+    {"key":"category_list_all","group":"算法品目管理","title":"查询算法品目列表(不分页)","doc_url":"https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837733e0.md","status":"documented","method":"","path":""},
+)
+
+
+def changlian_api_documents() -> list[Dict[str, str]]:
+    return [dict(item) for item in CHANG_LIAN_API_DOCUMENTS]
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -242,14 +280,45 @@ def _value_from(body: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
+SUCCESS_BUSINESS_CODES = {"0", "200", "SUCCESS", "success"}
+
+
+def _business_code(body: Any) -> str:
+    if not isinstance(body, dict) or "code" not in body or body.get("code") is None:
+        return ""
+    return str(body.get("code"))
+
+
+def _business_failed(body: Any) -> bool:
+    if not isinstance(body, dict):
+        return False
+    if body.get("success") is False:
+        return True
+    return body.get("code") is not None and _business_code(body) not in SUCCESS_BUSINESS_CODES
+
+
+def _business_message(body: Any) -> str:
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("message") or body.get("msg") or body.get("detail") or "")
+
+
+class ChangLianBusinessError(RuntimeError):
+    def __init__(self, *, code: str, message: str, endpoint: str = "", http_status: int | None = None):
+        self.business_code = str(code or "")
+        self.endpoint = str(endpoint or "")
+        self.http_status = http_status
+        self.remote_message = str(message or "新畅联返回失败")
+        code_text = self.business_code or "-"
+        self.detail = f"新畅联业务码 {code_text}：{self.remote_message}"
+        super().__init__(self.detail)
+
+
 def _unwrap(body: Any) -> Any:
     if not isinstance(body, dict):
         return body
-    code = body.get("code")
-    success = body.get("success")
-    if success is False or (code is not None and str(code) not in {"0", "200", "SUCCESS", "success"}):
-        message = body.get("message") or body.get("msg") or "外部平台返回失败"
-        raise RuntimeError(str(message))
+    if _business_failed(body):
+        raise ChangLianBusinessError(code=_business_code(body), message=_business_message(body) or "新畅联返回失败")
     for key in ("data", "result"):
         if key in body:
             return body[key]
@@ -377,8 +446,8 @@ class ChangLianClient:
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Accept", "application/json")
         if auth:
-            token_type, token = self.token()
-            headers["Authorization"] = f"{token_type} {token}".strip()
+            _, token = self.token()
+            headers["Access-Token"] = token
         started = time.perf_counter()
         correlation_id = hashlib.sha256(f"{time.time_ns()}:{method}:{path}".encode()).hexdigest()[:24]
         request_snapshot = {
@@ -411,15 +480,10 @@ class ChangLianClient:
             response_headers.get("X-Request-Id") or response_headers.get("X-Request-ID")
             or response_headers.get("X-Correlation-Id") or response_headers.get("Trace-Id") or ""
         )
-        business_code = str(body.get("code") or "") if isinstance(body, dict) else ""
-        business_failed = bool(
-            isinstance(body, dict)
-            and (body.get("success") is False or (body.get("code") is not None and business_code not in {"0", "200", "SUCCESS", "success"}))
-        )
+        business_code = _business_code(body)
+        business_failed = _business_failed(body)
         http_ok = 200 <= response.status_code < 300
-        message = ""
-        if isinstance(body, dict):
-            message = str(body.get("message") or body.get("msg") or body.get("detail") or "")
+        message = _business_message(body)
         self._emit_audit({
             "operation": self._operation_for_path(path),
             "status": "SUCCESS" if http_ok and not business_failed else "FAILED",
@@ -433,6 +497,8 @@ class ChangLianClient:
         if not http_ok:
             suffix = f"：{message}" if message else ""
             raise RuntimeError(f"外部平台请求失败 HTTP {response.status_code}{suffix}")
+        if business_failed:
+            raise ChangLianBusinessError(code=business_code, message=message or "新畅联返回失败", endpoint=str(path), http_status=response.status_code)
         return body
 
     def _signature(self) -> Dict[str, str]:
@@ -811,7 +877,15 @@ class ExternalAlgorithmPlatformService:
             "auto_sync_interval_seconds": int(config.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
             "auto_publish_enabled": bool(config.get("auto_publish_enabled")),
             "auth_mode": "test_sign_bridge",
+            "business_auth_header": "Access-Token",
             "credentials": state,
+            "api_documents": changlian_api_documents(),
+            "api_document_summary": {
+                "total": len(CHANG_LIAN_API_DOCUMENTS),
+                "wired": sum(1 for item in CHANG_LIAN_API_DOCUMENTS if item.get("status") == "wired"),
+                "documented": sum(1 for item in CHANG_LIAN_API_DOCUMENTS if item.get("status") == "documented"),
+                "reference": sum(1 for item in CHANG_LIAN_API_DOCUMENTS if item.get("status") == "reference"),
+            },
             "endpoints": config.get("endpoints") or asdict(ChangLianEndpoints()),
             "updated_at": config.get("updated_at"),
             "last_sync": last,
