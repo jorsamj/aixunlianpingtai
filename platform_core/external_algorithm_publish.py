@@ -1257,6 +1257,32 @@ class ExternalAlgorithmPublishService:
             "artifacts": self.repository.artifacts(str(publication["publication_key"])),
         }
 
+    def publication_requires_sync(
+        self,
+        project_id: str,
+        algorithm: Mapping[str, Any],
+        version: Mapping[str, Any],
+        publication: Mapping[str, Any] | None,
+    ) -> bool:
+        if not publication or str(publication.get("status") or "").upper() != "PUBLISHED":
+            return True
+        publication_key = str(publication.get("publication_key") or "")
+        stored = {
+            str(row.get("artifact_id") or ""): row
+            for row in self.repository.artifacts(publication_key)
+        }
+        for item in self.discover_artifacts(project_id, algorithm, version):
+            mapping_state = self._mapping_state(str(item.get("target") or ""))
+            if mapping_state.get("status") == "ignored":
+                continue
+            artifact_id = str(item.get("artifact_id") or "")
+            current = stored.get(artifact_id)
+            if mapping_state.get("status") == "blocked":
+                return True
+            if not current or str(current.get("sync_status") or "").upper() != "SYNCED":
+                return True
+        return False
+
     def auto_publish_ready(self) -> bool:
         external = self.external_repository.config()
         publish = self.repository.config()
@@ -1286,10 +1312,7 @@ class ExternalAlgorithmPublishService:
                         continue
                     summary["checked"] += 1
                     publication = self.repository.publication(project_id, str(algorithm.get("id") or ""), str(version.get("id") or ""))
-                    if publication and str(publication.get("status") or "").upper() == "PUBLISHED":
-                        summary["skipped"] += 1
-                        continue
-                    if self.conversion_active(project_id, str(algorithm.get("id") or ""), str(version.get("id") or "")):
+                    if not self.publication_requires_sync(project_id, algorithm, version, publication):
                         summary["skipped"] += 1
                         continue
                     try:
