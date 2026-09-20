@@ -35,7 +35,7 @@ from .secrets import SecretCredentialStore
 from .storage import StorageProviderFactory, StorageSourceRepository
 
 
-PUBLICATION_SCHEMA_VERSION = 1
+PUBLICATION_SCHEMA_VERSION = 2
 DEFAULT_AUTO_PUBLISH_RETRY_SECONDS = 300
 SUCCESSFUL_VERSION_STATUSES = {"SUCCEEDED", "PARTIAL_SUCCESS", "DONE", "FINISHED", "COMPLETED"}
 ACTIVE_CONVERSION_STATUSES = {"queued", "running", "waiting", "pending", "cancel_requested"}
@@ -141,13 +141,26 @@ class TargetMapping(BaseModel):
     enabled: bool = True
 
 
+LEGACY_PUBLISH_ENDPOINTS = {
+    "/algorithm-version/listByProduct/{productId}": "/internal/algorithm/algorithm-version/listByProduct/{productId}",
+    "/algorithm-weight/listByVersion/{algoVersionId}": "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}",
+}
+
+
+def _canonical_publish_endpoint(value: Any, fallback: str) -> str:
+    path = str(value or fallback).strip()
+    if path and not path.startswith("/"):
+        path = "/" + path
+    return LEGACY_PUBLISH_ENDPOINTS.get(path, path)
+
+
 class ExternalPublishConfigPayload(BaseModel):
     storage_source_id: str = ""
     public_base_url: str = ""
     publish_original_model: bool = False
     target_mappings: Dict[str, TargetMapping] = Field(default_factory=dict)
-    version_list_by_product: str = "/algorithm-version/listByProduct/{productId}"
-    weight_list_by_version: str = "/algorithm-weight/listByVersion/{algoVersionId}"
+    version_list_by_product: str = "/internal/algorithm/algorithm-version/listByProduct/{productId}"
+    weight_list_by_version: str = "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
 
 
 DEFAULT_PUBLISH_CONFIG: Dict[str, Any] = {
@@ -156,8 +169,8 @@ DEFAULT_PUBLISH_CONFIG: Dict[str, Any] = {
     "public_base_url": "",
     "publish_original_model": False,
     "target_mappings": {key: {"compute_platform_id": "", "chip_code": "", "enabled": True} for key in TARGET_KEYS},
-    "version_list_by_product": "/algorithm-version/listByProduct/{productId}",
-    "weight_list_by_version": "/algorithm-weight/listByVersion/{algoVersionId}",
+    "version_list_by_product": "/internal/algorithm/algorithm-version/listByProduct/{productId}",
+    "weight_list_by_version": "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}",
     "updated_at": None,
 }
 
@@ -235,6 +248,14 @@ class ExternalPublicationRepository:
         result = json.loads(json.dumps(DEFAULT_PUBLISH_CONFIG))
         if isinstance(stored, dict):
             result.update({key: value for key, value in stored.items() if key != "target_mappings"})
+            result["version_list_by_product"] = _canonical_publish_endpoint(
+                result.get("version_list_by_product"),
+                DEFAULT_PUBLISH_CONFIG["version_list_by_product"],
+            )
+            result["weight_list_by_version"] = _canonical_publish_endpoint(
+                result.get("weight_list_by_version"),
+                DEFAULT_PUBLISH_CONFIG["weight_list_by_version"],
+            )
             mappings = result["target_mappings"]
             for key, value in (stored.get("target_mappings") or {}).items():
                 if isinstance(value, dict):
@@ -246,6 +267,14 @@ class ExternalPublicationRepository:
         body["schema_version"] = PUBLICATION_SCHEMA_VERSION
         body["public_base_url"] = str(body.get("public_base_url") or "").strip().rstrip("/")
         body["storage_source_id"] = str(body.get("storage_source_id") or "").strip()
+        body["version_list_by_product"] = _canonical_publish_endpoint(
+            body.get("version_list_by_product"),
+            DEFAULT_PUBLISH_CONFIG["version_list_by_product"],
+        )
+        body["weight_list_by_version"] = _canonical_publish_endpoint(
+            body.get("weight_list_by_version"),
+            DEFAULT_PUBLISH_CONFIG["weight_list_by_version"],
+        )
         body["updated_at"] = utc_now()
         with self.lock:
             temp = self.config_path.with_suffix(".tmp")
