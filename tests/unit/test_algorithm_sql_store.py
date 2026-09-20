@@ -133,8 +133,8 @@ def test_changlian_sync_adds_external_algorithm_without_removing_legacy_local(tm
         categories=[{"categoryId": "cat-fire", "categoryName": "消防安全"}],
         analyses_by_product={
             "product-100": [
-                {"analysisId": "analysis-a", "analysisName": "视觉分析 A", "analysisType": "vision"},
-                {"analysisId": "analysis-b", "analysisName": "视觉分析 B", "analysisType": "vision"},
+                {"analysisId": "analysis-a", "analysisName": "视觉分析 A", "analysisType": 1},
+                {"analysisId": "analysis-b", "analysisName": "视觉分析 B", "analysisType": 1},
             ]
         },
         synced_at="2026-09-17T09:00:00Z",
@@ -294,3 +294,53 @@ def test_algorithm_version_training_lineage_survives_sql_round_trip(tmp_path: Pa
     assert persisted["evaluation"] == evaluation
     assert persisted["iteration_decision"] == iteration_decision
     assert persisted["feedback_adoption_outcome"] == feedback_adoption_outcome
+
+
+
+def test_changlian_trainable_analysis_subset_survives_sql_round_trip(tmp_path: Path):
+    project = tmp_path / "projects" / "p-analysis-subset"
+    project.mkdir(parents=True)
+    json_path = project / "algorithms.json"
+    json_path.write_text("[]", encoding="utf-8")
+
+    result = mirror_products_to_algorithms(
+        algorithms_path=json_path,
+        products=[{
+            "productId": "product-visual",
+            "productName": "视觉训练产品",
+            "productCode": "VISION-001",
+            "categoryId": "cat-visual",
+        }],
+        categories=[{"categoryId": "cat-visual", "categoryName": "视觉算法"}],
+        analyses_by_product={
+            "product-visual": [
+                {"analysisId": "vision-on", "analysisName": "视觉智能分析", "analysisType": 1, "status": 1},
+                {"analysisId": "llm-on", "analysisName": "大模型智能分析", "analysisType": 3, "status": 1},
+                {"analysisId": "vision-off", "analysisName": "停用视觉分析", "analysisType": 1, "status": 0},
+            ],
+        },
+        synced_at="2026-09-20T08:00:00Z",
+    )
+
+    assert result["added"] == 1
+    persisted = next(row for row in list_algorithms(json_path) if row.get("external_product_id") == "product-visual")
+    assert persisted["external_analysis_id"] == "vision-on"
+    assert persisted["external_analysis_ids"] == ["vision-on"]
+    assert [row["analysis_id"] for row in persisted["external_analyses"]] == [
+        "vision-on", "llm-on", "vision-off",
+    ]
+    by_id = {row["analysis_id"]: row for row in persisted["external_analyses"]}
+    assert by_id["vision-on"]["status"] == "1"
+    assert by_id["llm-on"]["status"] == "1"
+    assert by_id["vision-off"]["status"] == "0"
+    assert by_id["vision-off"]["active"] is False
+
+    # Exercise replace_all/save_algorithms as well as incremental external sync.
+    save_algorithms(json_path, list_algorithms(json_path))
+    round_tripped = next(row for row in list_algorithms(json_path) if row.get("external_product_id") == "product-visual")
+    assert round_tripped["external_analysis_id"] == "vision-on"
+    assert round_tripped["external_analysis_ids"] == ["vision-on"]
+    assert [row["analysis_id"] for row in round_tripped["external_analyses"]] == [
+        "vision-on", "llm-on", "vision-off",
+    ]
+    assert next(row for row in round_tripped["external_analyses"] if row["analysis_id"] == "vision-off")["active"] is False
