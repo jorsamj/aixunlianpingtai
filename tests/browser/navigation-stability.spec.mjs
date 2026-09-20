@@ -227,8 +227,8 @@ test('storage configuration route is rendered by the final storage owner', async
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
-  await page.evaluate(() => window.setPage('素材存储配置'));
-  await expect(page.locator('#title')).toContainText('素材存储配置');
+  await page.evaluate(() => window.setPage('存储配置'));
+  await expect(page.locator('#title')).toContainText('存储配置');
   await expect(page.locator('.storage61-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#storage61Rows')).toBeVisible();
 
@@ -251,7 +251,7 @@ test('formal version marker stays stable across final render owners and delayed 
   await page.waitForTimeout(1_800);
   await expectFormalVersion();
 
-  for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '部署资源', '素材存储配置']) {
+  for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '部署资源', '存储配置']) {
     await page.evaluate(next => window.setPage(next), route);
     await expect(page.locator('#title')).toContainText(route);
     await expectFormalVersion();

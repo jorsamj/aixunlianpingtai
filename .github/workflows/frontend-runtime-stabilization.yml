@@ -259,7 +259,7 @@ jobs:
               if required not in navigation:
                   raise SystemExit(f'final navigation named owner is missing: {required}')
           main = Path('static/main.mjs').read_text(encoding='utf-8')
-          if 'if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;' not in main:
+          if 'if (!state.uiReady && window.__v53InitPromise) await window.__v53InitPromise;' not in main:
               raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')
           if 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' not in main:
               raise SystemExit('mobile sidebar close semantic wiring is missing from final navigation runtime')
