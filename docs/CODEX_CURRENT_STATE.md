@@ -53,6 +53,18 @@ ExternalAlgorithmPlatform
 
 并已补齐搜索真实字段：算法名称、算法编码、Product ID / productCode、描述、行业、算法类型。永久测试和 `external-algorithm-platform.yml` guard 已增加；当前 Actions 仍 queued，不能部署。
 
+### Exact analysis training gate
+
+新畅联分析方式训练资格按官方字段精确判断：
+
+```text
+status = 1
+AND
+analysisType = 1
+```
+
+只有同时满足两项才允许 YOLO 训练。status=0、analysisType=2/3、字段缺失/空值、按名称猜“视觉”、以及仅有旧 `external_analysis_ids` 而无明细佐证，全部 fail closed。前端、后端、SQL store 和永久测试已统一到这一规则。
+
 ### Current ChangLian contract
 
 新畅联当前 canonical Provider contract：
