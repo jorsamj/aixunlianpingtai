@@ -275,3 +275,24 @@ def test_project_creation_rejects_overlong_alias_with_400(client):
     })
     assert response.status_code == 400
     assert "标签别名无效" in response.text
+
+
+def test_legacy_batch_remap_cannot_create_implicit_target_label(client):
+    project = client.post("/api/projects", json={
+        "name": "legacy-remap-canonical-only",
+        "labels": [{"code": "helmet", "display_name": "安全头盔"}],
+    }).json()
+
+    response = client.post(
+        f"/api/v52/projects/{project['id']}/labels/remap",
+        json={
+            "image_ids": ["not-needed-for-target-validation"],
+            "source_label": "toukui1",
+            "target_label": "toukui_new",
+        },
+    )
+    assert response.status_code == 409
+    assert "目标标签必须来自当前有效标签库" in response.text
+
+    labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
+    assert [row["code"] for row in labels] == ["helmet"]
