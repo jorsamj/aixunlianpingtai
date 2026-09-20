@@ -1,6 +1,7 @@
 const MODEL_API = '/api/v64/model-artifacts';
 const PLATFORM_API = '/api/v63/external-algorithm-platform';
 const PLATFORM_PAGE = '平台对接';
+const STORAGE_PAGE = '存储配置';
 
 function rawFetch() {
   const scoped = window.fetch;
@@ -36,6 +37,7 @@ export function normalizeModelArtifactConfig(body = {}) {
   return {
     storageSourceId: String(config.storage_source_id || ''),
     objectPrefix: String(config.object_prefix || 'model-assets'),
+    publicBaseUrl: String(config.public_base_url || ''),
     autoUploadEnabled: config.auto_upload_enabled !== false,
     updatedAt: config.updated_at || null,
     storageSources: Array.isArray(body.storage_sources) ? body.storage_sources : [],
@@ -142,24 +144,24 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
   function storagePanel() {
     const c = config || normalizeModelArtifactConfig({});
     return `<section class="panel" data-model-artifact-panel="1">
-      <div class="panel-head"><div><div class="panel-title">模型资产存储</div><div class="subline">训练权重与转换产物统一自动归档；存储失败不回滚已经成功的训练或转换，可在资产记录中重试。</div></div></div>
+      <div class="panel-head"><div><div class="panel-title">算法与转换结果存储</div><div class="subline">训练成功模型与 ONNX / RKNN 等转换产物统一自动归档到所选存储；新畅联版本和权重接口使用这里生成的长期访问地址。</div></div><span class="ma-pill ok">自动归档</span></div>
       <div class="panel-body">
         <div class="ma-grid">
-          <div class="ma-stat"><span>模型资产</span><strong>${Number(summary.total || 0)}</strong></div>
+          <div class="ma-stat"><span>算法产物</span><strong>${Number(summary.total || 0)}</strong></div>
           <div class="ma-stat"><span>已上传</span><strong>${Number(summary.uploaded || 0)}</strong></div>
           <div class="ma-stat"><span>待处理</span><strong>${Number(summary.pending || 0)}</strong></div>
           <div class="ma-stat"><span>上传失败</span><strong>${Number(summary.failed || 0)}</strong></div>
         </div>
         <div class="form two">
-          <div class="field"><label>模型资产存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择存储源</option>${storageOptions(c.storageSourceId)}</select></div>
+          <div class="field"><label>算法产物存储源</label><select id="modelArtifactStorageSource" class="select"><option value="">请选择存储源</option>${storageOptions(c.storageSourceId)}</select><div class="subline">建议选择上方已配置并测试通过的阿里云 OSS。</div></div>
           <div class="field"><label>对象目录前缀</label><input id="modelArtifactPrefix" class="input" value="${escapeHtml(c.objectPrefix)}" placeholder="model-assets"></div>
+          <div class="field full"><label>OSS / CDN 长期访问域名</label><input id="modelArtifactPublicBaseUrl" class="input" value="${escapeHtml(c.publicBaseUrl)}" placeholder="https://your-bucket.oss-cn-hangzhou.aliyuncs.com"><div class="subline">用于写入畅联云权重 filePath。请填写长期可访问域名，不保存会过期的临时签名链接。</div></div>
           <label class="field check"><input id="modelArtifactAutoUpload" type="checkbox" ${c.autoUploadEnabled ? 'checked' : ''}> 训练/转换完成后自动上传</label>
         </div>
-        <div class="ma-actions"><button class="btn" id="modelArtifactTestStorage">测试存储</button><button class="btn" id="modelArtifactRunNow">立即扫描上传</button><button class="btn primary" id="modelArtifactSave">保存模型存储配置</button></div>
+        <div class="ma-actions"><button class="btn" id="modelArtifactTestStorage">测试存储</button><button class="btn" id="modelArtifactRunNow">立即扫描上传</button><button class="btn primary" id="modelArtifactSave">保存算法产物存储配置</button></div>
       </div>
     </section>`;
   }
-
   function auditPanel() {
     return `<section class="panel" data-changlian-audit-panel="1">
       <div class="panel-head"><div><div class="panel-title">畅联云交互日志</div><div class="subline">记录鉴权、主数据同步、版本和权重接口的结果、耗时与失败原因；敏感凭据自动脱敏。</div></div></div>
@@ -214,10 +216,11 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
     const payload = {
       storage_source_id: document.getElementById('modelArtifactStorageSource')?.value || '',
       object_prefix: document.getElementById('modelArtifactPrefix')?.value.trim() || 'model-assets',
+      public_base_url: document.getElementById('modelArtifactPublicBaseUrl')?.value.trim() || '',
       auto_upload_enabled: Boolean(document.getElementById('modelArtifactAutoUpload')?.checked),
     };
     await requestJson(`${MODEL_API}/config`, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-    notify?.('模型资产存储配置已保存');
+    notify?.('算法与转换结果存储配置已保存');
     await refresh({rerender: true});
   }
 
@@ -296,37 +299,49 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
   }
 
   async function renderPanels() {
-    if (String(state().page || '') !== PLATFORM_PAGE) return;
+    const page = String(state().page || '');
+    if (page === STORAGE_PAGE) {
+      if (!config && !loading) {
+        loading = true;
+        try { await loadModelConfig(); } finally { loading = false; }
+      }
+      if (!config || String(state().page || '') !== STORAGE_PAGE) return;
+      const mount = document.getElementById('modelArtifactStorageMount');
+      if (mount && !mount.querySelector('[data-model-artifact-panel="1"]')) {
+        mount.innerHTML = storagePanel();
+        bindPanels();
+      }
+      return;
+    }
+    if (page !== PLATFORM_PAGE) return;
     const shell = document.querySelector('[data-external-platform-page="1"]');
     if (!shell) return;
-    if (!config && !loading) {
+    if (!logs.length && !loading) {
       loading = true;
-      try { await Promise.all([loadModelConfig(), loadLogs()]); } finally { loading = false; }
+      try { await loadLogs(); } finally { loading = false; }
     }
-    if (!config || String(state().page || '') !== PLATFORM_PAGE) return;
-    const existingStorage = shell.querySelector('[data-model-artifact-panel="1"]');
+    if (String(state().page || '') !== PLATFORM_PAGE) return;
     const existingAudit = shell.querySelector('[data-changlian-audit-panel="1"]');
-    if (!existingStorage || !existingAudit) {
+    if (!existingAudit) {
       const history = [...shell.querySelectorAll('.panel')].find(panel => panel.textContent.includes('同步记录'));
-      const anchor = history || null;
-      if (!existingStorage) anchor ? anchor.insertAdjacentHTML('beforebegin', storagePanel()) : shell.insertAdjacentHTML('beforeend', storagePanel());
-      const historyAgain = [...shell.querySelectorAll('.panel')].find(panel => panel.textContent.includes('同步记录'));
-      if (!existingAudit) historyAgain ? historyAgain.insertAdjacentHTML('beforebegin', auditPanel()) : shell.insertAdjacentHTML('beforeend', auditPanel());
+      history ? history.insertAdjacentHTML('beforebegin', auditPanel()) : shell.insertAdjacentHTML('beforeend', auditPanel());
       bindPanels();
     }
   }
-
   async function refresh({rerender = false} = {}) {
-    await Promise.all([loadModelConfig(), loadLogs()]);
-    if (rerender) {
-      document.querySelector('[data-model-artifact-panel="1"]')?.remove();
-      document.querySelector('[data-changlian-audit-panel="1"]')?.remove();
+    const page = String(state().page || '');
+    if (page === STORAGE_PAGE) {
+      await loadModelConfig();
+      if (rerender) document.querySelector('[data-model-artifact-panel="1"]')?.remove();
       await renderPanels();
-    } else {
-      await refreshLogsOnly();
+      return;
+    }
+    if (page === PLATFORM_PAGE) {
+      await loadLogs();
+      if (rerender) document.querySelector('[data-changlian-audit-panel="1"]')?.remove();
+      await renderPanels();
     }
   }
-
   function schedule() {
     if (mutationQueued) return;
     mutationQueued = true;
