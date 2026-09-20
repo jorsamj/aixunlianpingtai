@@ -7484,19 +7484,22 @@ def remember_project_label_aliases(
     for target, aliases in updates.items():
         target_idx = project.get("labels", []).index(target)
         target_item = project_label_items(project)[target_idx]
-        try:
-            safe_aliases = _validate_label_aliases(
-                project,
-                aliases,
-                target_class_id=target_idx,
-                target_code=target,
-                target_display_name=str(target_item.get("display_name") or target),
-            )
-        except ValueError:
-            # A canonical label identity always wins over reusable aliases.
-            # The current confirmed mapping remains valid for this task, but
-            # conflicting names are not learned globally.
-            continue
+        safe_aliases: List[str] = []
+        for alias in aliases:
+            try:
+                validated = _validate_label_aliases(
+                    project,
+                    [alias],
+                    target_class_id=target_idx,
+                    target_code=target,
+                    target_display_name=str(target_item.get("display_name") or target),
+                )
+            except ValueError:
+                # A canonical label identity always wins over reusable aliases.
+                # Skip only the conflicting source name; other confirmed aliases
+                # in the same batch remain safe to learn.
+                continue
+            safe_aliases.extend(validated)
         if not safe_aliases:
             continue
         remembered[target] = _set_project_label_aliases(
