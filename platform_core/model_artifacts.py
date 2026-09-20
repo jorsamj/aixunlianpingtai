@@ -512,7 +512,9 @@ class ModelArtifactService:
 
     def _conversion_jobs(self, project_id: str, algorithm_id: str, version_id: str) -> list[dict[str, Any]]:
         project = self.project_dir(project_id)
-        roots = (project / "deployment" / "jobs", project / "deploy" / "jobs")
+        # The Agent commit root is authoritative when the same durable task ID
+        # also exists in the legacy/control-plane deployment root.
+        roots = (project / "deploy" / "jobs", project / "deployment" / "jobs")
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
         for root in roots:
