@@ -7,17 +7,17 @@
 
 > **Codex resume point.** This section overrides older “NEXT”, “Current priority”, acceptance-HEAD and implementation-baseline text below when those historical notes conflict with current GitHub reality. Always re-read the remote branch first because this documentation commit will advance HEAD.
 
-本次 Live Handoff 记录的代码 HEAD（文档提交前）：`02645ecd48e1e2200da70dabb36c3ce79c3ebdb8`
+本次 Live Handoff 记录的代码 HEAD（文档提交前）：`9d4fdeb7c1417dec61a26b6a0f4603306580da90`
 
 当前正式版本：`VERSION.txt = 42.24.0`
 
-上述代码 HEAD 的 Actions 快照（2026-09-20 14:41 +08:00 核对）：
+上述代码 HEAD 的 Actions 快照（2026-09-20 本轮重新核对）：
 - total: 18
 - queued: 18
 - in_progress: 0
 - completed success: 0
 - completed non-success: 0
-- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”。**
+- **queued != passed；在当前 HEAD 的永久 workflow 实际完成前，不得写“全绿”，不得部署或切换 `/data/platform/current`。**
 
 GPU 正式服务器当前仍运行上午部署：
 - full SHA：`ea1b6f198f81556c05d963f4c3f70d2865f316ff`
@@ -32,6 +32,26 @@ GPU 正式服务器当前仍运行上午部署：
 - encrypted credential store：`/data/platform-data/secure/secrets.enc.json`
 
 **重要：GPU 正式服务器尚未部署上述代码 HEAD；接手时仍必须先重读远端 HEAD，因为后续文档提交也会推进分支。**
+
+### Algorithm list filter owner closure
+
+本轮已完成算法列表筛选 owner 收口：
+
+```text
+AlgorithmListRuntime
+  query
+  selectedCategoryIds[]
+  source
+  status
+
+ExternalAlgorithmPlatform
+  category metadata
+  external metadata
+  training readiness
+  decorator only
+```
+
+并已补齐搜索真实字段：算法名称、算法编码、Product ID / productCode、描述、行业、算法类型。永久测试和 `external-algorithm-platform.yml` guard 已增加；当前 Actions 仍 queued，不能部署。
 
 ### Current ChangLian contract
 
