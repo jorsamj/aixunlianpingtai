@@ -470,7 +470,7 @@ class ModelArtifactService:
                         direct_url,
                         headers={"Range": "bytes=0-0", "Cache-Control": "no-cache"},
                         timeout=10,
-                        allow_redirects=True,
+                        allow_redirects=False,
                     )
                 except requests.RequestException as error:
                     raise PlatformError(
