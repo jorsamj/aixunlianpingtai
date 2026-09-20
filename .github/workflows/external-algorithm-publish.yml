@@ -73,7 +73,7 @@ jobs:
             tests/frontend/model-artifact-runtime.test.mjs
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/model_artifacts.py platform_core/integration_audit.py
+          python -m py_compile app.py platform_core/external_algorithm_publish.py platform_core/algorithms.py platform_core/model_artifacts.py platform_core/integration_audit.py
           node --check static/modules/external-algorithm-publish.js
           node --check static/modules/model-artifact-runtime.js
           node --check static/modules/algorithm-list-runtime.js
