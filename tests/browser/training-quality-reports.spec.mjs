@@ -92,6 +92,19 @@ async function routeReadyTrainingRuntime(page) {
 }
 
 
+async function openTrainingSettings(page, trainingDialog) {
+  const advanced = trainingDialog.locator('details.train-ui-advanced');
+  if (!(await advanced.getAttribute('open'))) {
+    await advanced.locator('summary').click();
+  }
+  const button = advanced.locator('.train-ui-edit-config');
+  await expect(button).toBeVisible();
+  await button.click();
+  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  await expect(settings).toBeVisible();
+  return settings;
+}
+
 async function selectAllTrainingMaterials(page, trainingDialog) {
   await trainingDialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -123,9 +136,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
   await expect(priority).toHaveAttribute('max', '999');
   await expect(priority).toHaveValue('50');
   await expect(trainingDialog.getByText('1 最高，数字越大优先级越低')).toBeVisible();
-  await trainingDialog.getByRole('button', {name: '编辑全部训练参数'}).click();
-  const settingsDialog = page.getByRole('dialog', {name: '训练配置设置'});
-  await expect(settingsDialog).toBeVisible();
+  const settingsDialog = await openTrainingSettings(page, trainingDialog);
   const advanced = settingsDialog.locator('details.advanced427-box');
   await expect(advanced).not.toHaveAttribute('open', '');
   await advanced.locator('summary').click();
@@ -172,8 +183,7 @@ test('training submit sends the selected candidate pool and configured experimen
   expect(submitted).toBeUndefined();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#tr429Priority').fill('7');
-  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
-  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  const settings = await openTrainingSettings(page, dialog);
   await settings.locator('details.advanced427-box summary').click();
   await settings.locator('#ts428SingleCls').check();
   await settings.getByRole('button', {name: '应用配置'}).click();
@@ -259,8 +269,7 @@ test('versioned training locks the latest version and projects the current rando
   await expect(dialog.getByText('Ultralytics Detect', {exact: true})).toBeVisible();
   await expect(dialog.locator('#tr429Model')).toHaveText('v3 · latest-best.pt');
   await expect(dialog.locator('.train-v3-summary')).toContainText('随机抽取');
-  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
-  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  const settings = await openTrainingSettings(page, dialog);
   await expect(settings.locator('#ts428Model')).toBeDisabled();
   await expect(settings.locator('#ts428Model option:checked')).toHaveText('v3 · latest-best.pt');
 });
@@ -293,6 +302,7 @@ test('training queue displays numeric priorities and orders each resource by pri
     state.jobs = jobs;
     state.page = '训练任务';
     render();
+    window.TrainingTaskRuntime?.patch?.();
     clearInterval(state.jobPollTimer);
     state.jobPollTimer = null;
   }, queuedJobs);
