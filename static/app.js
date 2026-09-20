@@ -4484,14 +4484,16 @@ window.installUsability417?.();
 
   function normalizedLabelText(value){
     const parts=String(value||'').split(/[、,，;；\n\t]+/).map(item=>item.trim()).filter(Boolean);
+    const labels=state.labels||[];
     return [...new Set(parts.map(value=>{
-      const match=(state.labels||[]).find(label=>[
-        label.code,
-        label.display_name,
-        label.display_name_zh,
-        ...(Array.isArray(label.aliases)?label.aliases:[]),
+      const direct=labels.filter(label=>[
+        label.code,label.display_name,label.display_name_zh,
       ].some(item=>String(item||'').trim()===value));
-      return match?.code||value;
+      if(direct.length===1)return direct[0].code;
+      if(direct.length>1)return value;
+      const aliases=labels.filter(label=>(Array.isArray(label.aliases)?label.aliases:[])
+        .some(item=>String(item||'').trim()===value));
+      return aliases.length===1?aliases[0].code:value;
     }))].join('、');
   }
   window.submitAiLabel429=async function(ids=[]){
