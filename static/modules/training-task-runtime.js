@@ -5,7 +5,7 @@ const ACTIVE_STATUSES = new Set([
   'queued', 'waiting', 'pending', 'starting', 'running',
   'pausing', 'paused', 'resuming', 'stopping', 'cancel_requested',
 ]);
-const DONE_STATUSES = new Set(['done', 'finished', 'completed', 'failed', 'stopped', 'cancelled', 'canceled']);
+const DONE_STATUSES = new Set(['done', 'finished', 'completed', 'succeeded', 'success', 'failed', 'stopped', 'cancelled', 'canceled']);
 const REFRESH_DEDUP_WINDOW_MS = 120;
 
 const STAGE_LABELS = Object.freeze({
@@ -120,16 +120,18 @@ function dateText(value) {
 
 function statusText(status) {
   return ({
-    queued: '排队中', running: '训练中', waiting: '等待资源', pending: '等待中', paused: '已暂停',
-    done: '已完成', finished: '已完成', completed: '已完成', failed: '失败', stopped: '已停止',
-    cancelled: '已取消', canceled: '已取消',
+    queued: '排队中', waiting: '等待资源', pending: '等待中', starting: '启动中',
+    running: '训练中', pausing: '暂停中', paused: '已暂停', resuming: '恢复中',
+    stopping: '停止中', cancel_requested: '取消中',
+    done: '已完成', finished: '已完成', completed: '已完成', succeeded: '已完成', success: '已完成',
+    failed: '失败', stopped: '已停止', cancelled: '已取消', canceled: '已取消',
   })[status] || status || '-';
 }
 
 function statusClass(status) {
-  if (['done', 'finished', 'completed'].includes(status)) return 'ok';
+  if (['done', 'finished', 'completed', 'succeeded', 'success'].includes(status)) return 'ok';
   if (['failed', 'stopped', 'cancelled', 'canceled'].includes(status)) return 'err';
-  if (['running', 'queued', 'waiting', 'pending', 'paused'].includes(status)) return 'warn';
+  if (['running', 'queued', 'waiting', 'pending', 'starting', 'pausing', 'paused', 'resuming', 'stopping', 'cancel_requested'].includes(status)) return 'warn';
   return '';
 }
 
@@ -208,7 +210,7 @@ export function trainingStageView(job = {}) {
 }
 
 function completionRuntimeMeta(job, progress) {
-  if (!['done', 'finished', 'completed'].includes(String(job?.status || ''))) return '';
+  if (!['done', 'finished', 'completed', 'succeeded', 'success'].includes(String(job?.status || '').toLowerCase())) return '';
   const completed = finiteNumber(progress?.epoch);
   const requested = finiteNumber(progress?.totalEpochs);
   if (!(completed > 0 && requested > 0 && completed < requested)) return '';
@@ -228,7 +230,7 @@ function completionRuntimeMeta(job, progress) {
 
 function terminalRuntimeMeta(job, stage) {
   const status = trainingDisplayStatus(job);
-  if (['done', 'finished', 'completed'].includes(status)) return '';
+  if (['done', 'finished', 'completed', 'succeeded', 'success'].includes(status)) return '';
   if (!DONE_STATUSES.has(status)) return '';
 
   const taskStatus = canonicalTaskStatus(job);
@@ -250,10 +252,12 @@ function actions(job) {
   const id = esc(job.id);
   const status = trainingDisplayStatus(job);
   const detail = `<button class="btn mini" onclick="openTrainingRecoveryDetail('${id}')">详情</button>`;
-  if (status === 'queued' || status === 'waiting') return `${detail}<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  if (status === 'running') return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button><button class="btn mini" onclick="pauseTrain428('${id}')">暂停</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  if (status === 'paused') return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button><button class="btn mini primary" onclick="resumeTrain428('${id}')">继续</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
-  return `${detail}<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button>${job.auto_version_id ? `<button class="btn mini primary" onclick="trainingReport425('${id}')">训练报告</button>` : ''}<button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
+  const log = `<button class="btn mini" onclick="showTrainLog423('${id}')">日志</button>`;
+  if (['starting', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status)) return `${detail}${log}<span class="train428-action-lock">状态切换中</span>`;
+  if (status === 'queued' || status === 'waiting' || status === 'pending') return `${detail}${log}<button class="btn mini" onclick="promoteTrain428('${id}')">插队</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
+  if (status === 'running') return `${detail}${log}<button class="btn mini" onclick="pauseTrain428('${id}')">暂停</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
+  if (status === 'paused') return `${detail}${log}<button class="btn mini primary" onclick="resumeTrain428('${id}')">继续</button><button class="btn mini danger" onclick="stopTrain428('${id}')">停止</button><button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
+  return `${detail}${log}${job.auto_version_id ? `<button class="btn mini primary" onclick="trainingReport425('${id}')">训练报告</button>` : ''}<button class="btn mini danger" onclick="deleteTrain428('${id}')">删除</button>`;
 }
 
 export function trainingTaskRow(job) {
@@ -266,7 +270,7 @@ export function trainingTaskRow(job) {
   const completionMeta = completionRuntimeMeta(job, progress);
   const stage = trainingStageView(job);
   const done = DONE_STATUSES.has(status);
-  const successful = ['done', 'finished', 'completed'].includes(status);
+  const successful = ['done', 'finished', 'completed', 'succeeded', 'success'].includes(status);
   const terminalMeta = terminalRuntimeMeta(job, stage);
   const epochStarted = Number(progress.epoch || 0) > 0;
   const recoveryMeta = job?.recovery?.available === true ? '可恢复 · Checkpoint 已保留' : '';
@@ -298,7 +302,12 @@ export function trainingTaskRow(job) {
     if (stage.detail) progressParts.push(stage.detail);
   }
 
-  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(job.asset_algorithm_name || job.algorithm_name || job.id)}</b><span>${esc(job.id)}</span>${job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span><small class="queuepriority428">优先级 ${priorityValue(job)}</small>${recoveryMeta ? `<small>${esc(recoveryMeta)}</small>` : ''}${queueMeta ? `<small>${esc(queueMeta)}</small>` : ''}</td><td><div class="train428-resource"><b>${esc(resourceName(job))}</b><span>${esc(job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO')}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${esc(progressParts.join(' · '))}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td>${esc(duration(progress.elapsedSeconds))}</td><td>${esc(duration(progress.etaSeconds))}</td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap">${actions(job)}</div></td></tr>`;
+  const algorithmName = job.asset_algorithm_name || job.algorithm_name || job.asset_algorithm_id || job.algorithm_asset_id || '-';
+  const taskName = job.task_name || job.run_name || job.auto_version_name || job.id;
+  const framework = job.framework === 'paddle' ? 'PaddleDetection' : 'Ultralytics / YOLO';
+  const priorityMeta = [`优先级 ${priorityValue(job)}`, queueMeta, recoveryMeta].filter(Boolean).join(' · ');
+  const stageMeta = [stage.label, stage.detail].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join(' · ');
+  return `<tr data-job-id="${esc(job.id)}"><td><div class="train428-taskname"><b>${esc(algorithmName)}</b><span>${esc(job.asset_algorithm_id || job.algorithm_asset_id || '')}</span></div></td><td><div class="train428-taskname"><b>${esc(taskName)}</b><span>${esc(job.id)}</span>${job.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="pill ${statusClass(status)}">${esc(statusText(status))}</span></td><td><div class="train428-priority"><b>${priorityValue(job)}</b><small>${esc(priorityMeta)}</small></div></td><td><div class="train428-resource"><b>${esc(framework)}</b><span>${esc(resourceName(job))}</span>${workerMeta ? `<span>${esc(workerMeta)}</span>` : ''}</div></td><td><div class="progress424"><i style="width:${percent}%"></i></div><span class="train428-progress-txt">${esc(progressParts.join(' · '))}</span>${progress.metricLine ? `<small class="train428-metrics">${esc(progress.metricLine)}</small>` : ''}</td><td>${esc(duration(progress.elapsedSeconds))}</td><td>${esc(duration(progress.etaSeconds))}</td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageMeta && stageMeta !== stage.label ? `<small>${esc(stageMeta)}</small>` : ''}${terminalMeta && !successful ? `<small class="err">${esc(terminalMeta)}</small>` : ''}</div></td><td>${esc(dateText(job.started_at || job.created_at))}</td><td><div class="row wrap train428-actions-cell">${actions(job)}</div></td></tr>`;
 }
 
 export function visibleTrainingJobs(jobs, tab = 'active') {
@@ -412,7 +421,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     if (activeCount) activeCount.textContent = String(active.length);
     if (historyCount) historyCount.textContent = String(history.length);
     const visible = visibleTrainingJobs(jobs, state().train428Tab || 'active');
-    body.innerHTML = visible.map(trainingTaskRow).join('') || '<tr><td colspan="8" class="empty-row">暂无记录</td></tr>';
+    body.innerHTML = visible.map(trainingTaskRow).join('') || '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
     return true;
   }
 
@@ -511,7 +520,7 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
     {successMessage: '训练已继续'},
   );
   window.stopTrain428 = async id => {
-    if (typeof window.confirm === 'function' && !window.confirm('确认停止这个训练任务？已经开始过的任务会按当前训练结束时间自动形成一个算法版本。')) return false;
+    if (typeof window.confirm === 'function' && !window.confirm('确认停止这个训练任务？排队任务会直接取消；已开始任务仅在存在可校验训练成果时归档算法版本。')) return false;
     return mutate(
       `stop:${id}`,
       `/api/v48/projects/${encodeURIComponent(projectId?.() || '')}/jobs/${encodeURIComponent(id)}/stop`,

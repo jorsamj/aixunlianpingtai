@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {installTrainingTaskRuntime} from '../../static/modules/training-task-runtime.js';
+import {installTrainingTaskRuntime, trainingTaskRow} from '../../static/modules/training-task-runtime.js';
 
 function response(body) {
   return {
@@ -417,4 +417,52 @@ test('visible training jobs prefer backend-proven queue positions within one res
     {id: 'middle', status: 'queued', resource_key: 'local:cpu', queue_priority: 7, priority_scheme: 'lower_number_first', resource_queue_position: 2, resource_queue_position_exact: true, queued_at: '2026-08-30T10:02:00Z'},
   ];
   assert.deepEqual(visibleTrainingJobs(jobs, 'active').map(job => job.id), ['highest', 'middle', 'later-array']);
+});
+
+
+test('active training row exposes the 11 requested task fields', () => {
+  const html = trainingTaskRow({
+    id: 'train-11',
+    status: 'running',
+    asset_algorithm_id: 'alg-11',
+    asset_algorithm_name: '安全帽检测',
+    task_name: '第 3 次迭代',
+    queue_priority: 3,
+    framework: 'ultralytics',
+    resource_pool_label: 'GPU 0',
+    progress_percent: 42,
+    current_epoch: 12,
+    total_epochs: 30,
+    elapsed_seconds: 90,
+    eta_seconds: 135,
+    phase: 'training',
+    current_item: 'Epoch 12/30',
+    started_at: '2026-09-20T10:00:00Z',
+  });
+  assert.equal((html.match(/<td/g) || []).length, 11);
+  assert.match(html, /安全帽检测/);
+  assert.match(html, /第 3 次迭代/);
+  assert.match(html, /Ultralytics \/ YOLO/);
+  assert.match(html, /42%/);
+  assert.match(html, /详情/);
+  assert.match(html, /日志/);
+  assert.match(html, /暂停/);
+  assert.match(html, /停止/);
+  assert.match(html, /删除/);
+});
+
+test('transitioning training task disables conflicting controls until backend truth settles', () => {
+  const html = trainingTaskRow({
+    id: 'train-pausing',
+    status: 'pausing',
+    task_status: 'PAUSING',
+    asset_algorithm_name: '烟火检测',
+    framework: 'ultralytics',
+    progress_percent: 36,
+  });
+  assert.match(html, /暂停中/);
+  assert.match(html, /状态切换中/);
+  assert.match(html, /日志/);
+  assert.doesNotMatch(html, /pauseTrain428/);
+  assert.doesNotMatch(html, /stopTrain428/);
 });

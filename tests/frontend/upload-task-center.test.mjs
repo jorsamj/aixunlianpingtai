@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  clearCompletedUploadTasks,
   isUploadTaskActive,
   mergeUploadTask,
   normalizeDurableUploadTask,
@@ -47,4 +48,18 @@ test('durable task can leave resume wait once backend advances beyond upload pha
 
   assert.equal(next.status, 'SELECTING');
   assert.equal(next.progress, 38);
+});
+
+
+test('clear completed import history never removes active tasks', () => {
+  const rows = [
+    {id:'running', status:'RUNNING'},
+    {id:'done', status:'SUCCEEDED'},
+    {id:'failed', status:'FAILED'},
+    {id:'waiting', status:'WAITING_RESOURCE'},
+  ];
+  assert.deepEqual(
+    clearCompletedUploadTasks(rows).map(row => row.id),
+    ['running', 'waiting'],
+  );
 });

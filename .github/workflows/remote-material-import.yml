@@ -12,8 +12,10 @@ on:
       - 'static/index.html'
       - 'static/modules/server-material-import.js'
       - 'static/modules/storage-import-progress.js'
+      - 'static/modules/upload-task-center.js'
       - 'tests/frontend/server-material-import.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
+      - 'tests/frontend/upload-task-center.test.mjs'
       - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
@@ -51,8 +53,10 @@ on:
       - 'static/index.html'
       - 'static/modules/server-material-import.js'
       - 'static/modules/storage-import-progress.js'
+      - 'static/modules/upload-task-center.js'
       - 'tests/frontend/server-material-import.test.mjs'
       - 'tests/frontend/storage-import-progress.test.mjs'
+      - 'tests/frontend/upload-task-center.test.mjs'
       - 'tests/browser/storage-source.spec.mjs'
       - 'node_agent.py'
       - 'platform_core/agent_execution.py'
@@ -144,12 +148,16 @@ jobs:
         with:
           node-version: '24'
       - name: Classic app syntax guard
-        run: node --check static/app.js
+        run: >-
+          node --check static/app.js &&
+          node --check static/modules/upload-task-center.js &&
+          node --check tests/frontend/upload-task-center.test.mjs
       - name: Storage import frontend contracts
         run: >-
           node --test
           tests/frontend/server-material-import.test.mjs
           tests/frontend/storage-import-progress.test.mjs
+          tests/frontend/upload-task-center.test.mjs
 
   api:
     runs-on: ubuntu-24.04
@@ -184,6 +192,8 @@ jobs:
         shell: bash
         run: |
           grep -Fq 'execution_mode: Literal["local", "agent"] = "local"' app.py
+          grep -Fq 'clearCompletedUploadTasks' static/modules/upload-task-center.js
+          grep -Fq '清空已完成' static/modules/upload-task-center.js
           grep -Fq 'stage_material_import(' app.py
           grep -Fq 'stage_material_storage_scan(' app.py
           grep -Fq 'storage_rescan_preflight' app.py

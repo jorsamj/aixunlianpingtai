@@ -49,7 +49,7 @@ export function externalAlgorithmTrainingReadiness(algorithm = {}, currentMaster
       ready: false,
       status: 'no-visual-analysis',
       reason: 'external-visual-analysis-missing',
-      message: '当前算法没有同时满足 status=1 且 analysisType=1 的分析方式，不能创建 YOLO 训练任务',
+      message: '该算法当前没有可训练的视觉分析配置（需 status=1 且 analysisType=1），无法创建训练任务',
     };
   }
   const expected = String(currentMasterDigest || '').trim();

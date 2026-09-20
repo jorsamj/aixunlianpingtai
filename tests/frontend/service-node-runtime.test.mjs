@@ -55,7 +55,7 @@ test('service node card renders observed GPU/runtime/task truth without secrets'
   assert.match(html, /CUDA/);
   assert.match(html, /train-1/);
   assert.match(html, /42%/);
-  assert.match(html, /测试连通/);
+  assert.match(html, /检查 Agent/);
   assert.match(html, /data-node-action="test"/);
   assert.doesNotMatch(html, /agent_token|token_hash/i);
 });
@@ -115,5 +115,7 @@ test('service node connectivity action uses control-plane heartbeat truth', () =
   const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
   assert.match(source, /\/connectivity-test/);
   assert.match(source, /最近心跳/);
+  assert.match(source, /Agent 在线（已收到有效心跳）/);
+  assert.match(source, /hadCache/);
   assert.doesNotMatch(source, /fetch\([^\n]*agent_url/);
 });

@@ -79,6 +79,10 @@ jobs:
           grep -Fq "'cancel_requested'" static/modules/poll-registry.js
           grep -Fq 'id="tr429TaskId"' static/app.js
           grep -Fq '<label>算法名称</label>' static/app.js
+          grep -Fq '<th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>执行框架</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th>' static/app.js
+          grep -Fq '状态切换中' static/modules/training-task-runtime.js
+          grep -Fq 'train_success_rate=(round(len(done)/terminal_training_count*100,1) if terminal_training_count else None)' app.py
+          grep -Fq '暂无已结束训练可统计' static/app.js
           grep -Fq 'payload.task_id = plannedTaskId' static/modules/training-submit.js
           grep -Fq 'task_id: Optional[str] = None' app.py
           grep -Fq 'dataset_revision_id' app.py

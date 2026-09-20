@@ -15,6 +15,7 @@ on:
       - 'tests/frontend/training-create-hydration.test.mjs'
       - 'tests/frontend/training-modal-device-probe.test.mjs'
       - 'tests/frontend/training-submit.test.mjs'
+      - 'tests/frontend/training-submit-validation.test.mjs'
       - 'tests/browser/training-create-first-open.spec.mjs'
       - 'tests/browser/training-quality-reports.spec.mjs'
       - '.github/workflows/training-create-first-open.yml'
@@ -39,6 +40,7 @@ jobs:
           node --check static/modules/training-submit.js &&
           node --check static/main.mjs &&
           node --check tests/frontend/training-create-hydration.test.mjs &&
+          node --check tests/frontend/training-submit-validation.test.mjs &&
           node --check tests/browser/training-create-first-open.spec.mjs
       - name: First-open training contracts
         run: >-
@@ -46,6 +48,7 @@ jobs:
           tests/frontend/training-create-hydration.test.mjs
           tests/frontend/training-modal-device-probe.test.mjs
           tests/frontend/training-submit.test.mjs
+          tests/frontend/training-submit-validation.test.mjs
       - name: Permanent first-open guards
         shell: bash
         run: |
@@ -56,6 +59,10 @@ jobs:
           grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
+          grep -Fq '/api/v12/projects/${pid()}/algorithms/${encodeURIComponent(algorithmId)}' static/app.js
+          grep -Fq 'refreshTrainRunCenter429' static/app.js
+          grep -Fq 'annPointerAbort' static/app.js
+          grep -Fq 'training create re-reads algorithm truth before opening and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
           grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
           grep -Fq 'stale changlian master data disables submit and blocks network POST' tests/frontend/training-submit.test.mjs
           grep -Fq '/benchmark-reuse' static/app.js

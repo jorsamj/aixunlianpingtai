@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 
 import {
   buildTrainingEngineParameters,
@@ -54,4 +55,26 @@ test('backend 422 validation detail exposes the exact failing field', () => {
 
   assert.match(detail, /batch：Input should be a valid integer/);
   assert.match(detail, /workers：Input should be a valid integer/);
+});
+
+
+test('training create re-reads algorithm truth before opening and training log refresh stays modal-local', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /\/api\/v12\/projects\/\$\{pid\(\)\}\/algorithms\/\$\{encodeURIComponent\(algorithmId\)\}/);
+  assert.match(source, /ExternalAlgorithmPlatformRuntime\?\.trainingReadiness\?\.\(algorithmId\)/);
+  assert.match(source, /训练算法不存在或已被删除/);
+  assert.match(source, /refreshTrainRunCenter429/);
+  assert.match(source, /data-train-run-center/);
+  assert.match(source, /训练已完成/);
+});
+
+test('annotation workbench saves locally without full reload and cleans pointer listeners', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(source, /ann420ConfirmEmpty/);
+  assert.match(source, /confirmEmptyAnnotation420/);
+  assert.match(source, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
+  assert.match(source, /annPointerAbort/);
+  assert.doesNotMatch(source, /await Promise\.all\(\[apiRequestAnnotation420\(id\),preload\(image\.url\)\]\)/);
+  const focusedSave = source.match(/window\.saveAnn=async\(silent=false,options=\{\}\)=>\{[^\n]+/s)?.[0] || '';
+  assert.doesNotMatch(focusedSave, /await loadRelated\(\)/);
 });

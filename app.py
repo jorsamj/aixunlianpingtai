@@ -4228,6 +4228,7 @@ def get_annotation(project_id: str, image_id: str):
 
 class AnnotationSave(BaseModel):
     boxes: List[Dict[str, Any]]
+    annotation_state: Optional[Literal["annotated", "confirmed_empty"]] = None
 
 
 @app.post("/api/projects/{project_id}/annotations/{image_id}")
@@ -4265,7 +4266,16 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             solution="请检查标注框是否位于图片内部且宽高大于零。",
             status_code=422,
         ) from error
-    write_annotation(project_id, image_id, clean_boxes)
+    if not clean_boxes and payload.annotation_state != "confirmed_empty":
+        raise PlatformError(
+            code="ANNOTATION_EMPTY_CONFIRMATION_REQUIRED",
+            message="请确认无目标",
+            detail="删除最后一个标注框后，需要明确确认当前图片没有目标。",
+            solution="点击“确认无目标”后保存；如果误删，请先撤销或重新绘制标注框。",
+            status_code=409,
+        )
+    annotation_state = "annotated" if clean_boxes else "confirmed_empty"
+    write_annotation(project_id, image_id, clean_boxes, annotation_state)
     fresh = next((x for x in load_images(project_id) if str(x.get("id")) == str(image_id)), img)
     return {"ok": True, "image": fresh, "annotation": read_annotation(project_id, image_id), "saved_boxes": len(clean_boxes)}
 
@@ -9152,6 +9162,18 @@ def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
     get_project(project_id)
     assert_local_algorithm_create_allowed(DATA_DIR)
     item = create_algorithm_asset(algorithms_file(project_id), payload.model_dump(), now_iso())
+    return {"ok": True, "algorithm": item}
+
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")
+def v12_get_algorithm(project_id: str, algorithm_id: str):
+    get_project(project_id)
+    item = next(
+        (row for row in list_algorithms_internal(project_id) if str(row.get("id") or "") == str(algorithm_id)),
+        None,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="训练算法不存在或已被删除")
     return {"ok": True, "algorithm": item}
 
 
@@ -16037,7 +16059,11 @@ def v44_quality_center(project_id: str):
         vals=[x*100 if x is not None and x<=1 else x for x in [p,r,m] if x is not None]
         score=round(sum(vals)/len(vals),1) if vals else None
         alg_rows.append({"id":a.get("id"),"name":a.get("name"),"version":v.get("version_name") or "", "precision":p,"recall":r,"map50":m,"score":score})
-    jobs=list_jobs(project_id);done=[j for j in jobs if j.get('status') in {'done','finished','completed'}];failed=[j for j in jobs if j.get('status')=='failed']
+    jobs=list_jobs(project_id)
+    done=[j for j in jobs if str(j.get('status') or '').lower() in {'done','finished','completed','succeeded','success'}]
+    failed=[j for j in jobs if str(j.get('status') or '').lower()=='failed']
+    terminal_training_count=len(done)+len(failed)
+    train_success_rate=(round(len(done)/terminal_training_count*100,1) if terminal_training_count else None)
     trained_count=sum(1 for x in alg_rows if x['score'] is not None)
     def avg_metric(k):
         vals=[]
@@ -16046,7 +16072,7 @@ def v44_quality_center(project_id: str):
             if v is not None: vals.append(v*100 if v<=1 else v)
         return round(sum(vals)/max(1,len(vals)),1)
     version_coverage=round(sum(1 for a in algs if a.get('versions'))/max(1,len(algs))*100,1)
-    alg_quality={"algorithms":alg_rows,"trained_count":trained_count,"avg_score":round(sum(x['score'] for x in alg_rows if x['score'] is not None)/max(1,trained_count),1),"avg_precision":avg_metric('precision'),"avg_recall":avg_metric('recall'),"avg_map50":avg_metric('map50'),"train_success_rate":round(len(done)/max(1,len(done)+len(failed))*100,1),"version_coverage":version_coverage}
+    alg_quality={"algorithms":alg_rows,"trained_count":trained_count,"avg_score":round(sum(x['score'] for x in alg_rows if x['score'] is not None)/max(1,trained_count),1),"avg_precision":avg_metric('precision'),"avg_recall":avg_metric('recall'),"avg_map50":avg_metric('map50'),"train_success_rate":train_success_rate,"train_success_count":len(done),"train_failure_count":len(failed),"train_completed_count":terminal_training_count,"version_coverage":version_coverage}
     return {"ok":True,"dataset":dq,"algorithm":alg_quality,"time":now_iso()}
 
 @app.post('/api/v44/projects/{project_id}/data-quality')

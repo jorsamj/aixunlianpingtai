@@ -28,6 +28,10 @@ export function isUploadTaskActive(task = {}) {
   return ACTIVE_STATUSES.has(upper(task.status));
 }
 
+export function clearCompletedUploadTasks(tasks = []) {
+  return (Array.isArray(tasks) ? tasks : []).filter(task => !TERMINAL_STATUSES.has(upper(task?.status)));
+}
+
 export function mergeUploadTask(previous = {}, next = {}) {
   const status = upper(next.status || previous.status || 'UPLOADING');
   const progress = status === 'SUCCEEDED' || status === 'DONE' || status === 'COMPLETED' || status === 'FINISHED'
@@ -97,15 +101,15 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const style = document.createElement('style');
     style.id = 'uploadTaskCenterStyles';
     style.textContent = `
-      .utc-root{position:fixed;right:20px;bottom:18px;z-index:10025;width:min(390px,calc(100vw - 28px));font-size:13px;color:var(--text,#e5edf5)}
-      .utc-shell{border:1px solid rgba(130,149,170,.24);border-radius:14px;background:rgba(15,23,34,.96);box-shadow:0 18px 55px rgba(0,0,0,.32);backdrop-filter:blur(16px);overflow:hidden}
-      .utc-head{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;border:0;background:transparent;color:inherit;padding:13px 15px;cursor:pointer;text-align:left}
-      .utc-head strong{font-size:14px}.utc-head span{display:block;opacity:.62;font-size:12px;margin-top:2px}.utc-count{min-width:26px;height:26px;border-radius:999px;display:grid;place-items:center;background:rgba(59,130,246,.15);color:#9bc2ff;font-weight:700}
-      .utc-body{border-top:1px solid rgba(130,149,170,.15);max-height:390px;overflow:auto}.utc-row{padding:12px 14px;border-bottom:1px solid rgba(130,149,170,.12)}.utc-row:last-child{border-bottom:0}
-      .utc-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.utc-name{min-width:0}.utc-name b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-name small{display:block;opacity:.62;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .utc-pill{flex:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700}.utc-pill.ok{background:rgba(34,197,94,.13);color:#7ae5a2}.utc-pill.bad{background:rgba(239,68,68,.13);color:#ff9a9a}.utc-pill.warn{background:rgba(245,158,11,.13);color:#ffd080}.utc-pill.run{background:rgba(59,130,246,.13);color:#9bc2ff}.utc-pill.muted{background:rgba(148,163,184,.12);color:#b8c4d1}
-      .utc-progress{height:6px;border-radius:999px;background:rgba(148,163,184,.12);overflow:hidden;margin:9px 0 7px}.utc-progress i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:inherit;transition:width .22s ease}
-      .utc-meta{display:flex;justify-content:space-between;gap:10px;opacity:.7;font-size:11px}.utc-detail{margin-top:5px;opacity:.72;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;opacity:.55}
+      .utc-root{position:fixed;right:20px;bottom:18px;z-index:10025;width:min(430px,calc(100vw - 28px));font-size:13px;color:var(--text,#18212f)}
+      .utc-shell{border:1px solid #dfe5ee;border-radius:16px;background:rgba(255,255,255,.98);box-shadow:0 18px 50px rgba(15,23,42,.14);backdrop-filter:blur(16px);overflow:hidden}
+      .utc-head{width:100%;display:flex;align-items:center;gap:10px;border:0;background:linear-gradient(180deg,#fff,#f8fafc);color:inherit;padding:10px 12px;text-align:left}.utc-toggle{min-width:0;flex:1;display:flex;align-items:center;justify-content:space-between;gap:12px;border:0;background:transparent;color:inherit;padding:3px;cursor:pointer;text-align:left}.utc-head-actions{display:flex;align-items:center;gap:7px}.utc-clear{border:1px solid #d8e0ea;border-radius:8px;background:#fff;color:#536174;padding:6px 8px;font-size:11px;cursor:pointer}.utc-clear:hover{background:#f3f6fa}.utc-clear:disabled{opacity:.45;cursor:not-allowed}
+      .utc-head strong{font-size:14px}.utc-head span{display:block;color:#728096;font-size:12px;margin-top:2px}.utc-count{min-width:26px;height:26px;border-radius:999px;display:grid;place-items:center;background:#eaf2ff;color:#2563eb;font-weight:800}
+      .utc-body{border-top:1px solid #e7ebf1;max-height:390px;overflow:auto;background:#fff}.utc-row{padding:12px 14px;border-bottom:1px solid #edf0f4}.utc-row:last-child{border-bottom:0}
+      .utc-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.utc-name{min-width:0}.utc-name b{display:block;color:#192231;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-name small{display:block;color:#748197;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .utc-pill{flex:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800}.utc-pill.ok{background:#ecfdf3;color:#15803d}.utc-pill.bad{background:#fff1f2;color:#be123c}.utc-pill.warn{background:#fff7ed;color:#c2410c}.utc-pill.run{background:#eff6ff;color:#2563eb}.utc-pill.muted{background:#f1f5f9;color:#64748b}
+      .utc-progress{height:6px;border-radius:999px;background:#edf1f5;overflow:hidden;margin:9px 0 7px}.utc-progress i{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:inherit;transition:width .22s ease}
+      .utc-meta{display:flex;justify-content:space-between;gap:10px;color:#738197;font-size:11px}.utc-detail{margin-top:5px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;color:#8995a7}
       @media(max-width:720px){.utc-root{right:10px;bottom:10px;width:calc(100vw - 20px)}}
     `;
     document.head.appendChild(style);
@@ -164,14 +168,24 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       return;
     }
     root.style.display = '';
+    const terminalCount = rows.filter(row => TERMINAL_STATUSES.has(upper(row.status))).length;
     root.innerHTML = `<div class="utc-shell">
-      <button class="utc-head" type="button" data-utc-toggle><div><strong>上传任务</strong><span>${active.length ? `${active.length} 个任务进行中` : `最近任务 · ${latest ? formatTime(latest.updatedAt) : ''}`}</span></div><div class="utc-count">${active.length || rows.length}</div></button>
+      <div class="utc-head"><button class="utc-toggle" type="button" data-utc-toggle><div><strong>数据导入 / 上传</strong><span>${active.length ? `${active.length} 个任务进行中` : `最近任务 · ${latest ? formatTime(latest.updatedAt) : ''}`}</span></div></button><div class="utc-head-actions"><button class="utc-clear" type="button" data-utc-clear ${terminalCount ? '' : 'disabled'}>清空已完成</button><div class="utc-count">${active.length || rows.length}</div></div></div>
       ${expanded ? `<div class="utc-body">${visible.length ? visible.map(row => {
         const presentation = statusPresentation(row.status);
         return `<div class="utc-row" data-utc-id="${esc(row.id)}"><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i style="width:${clamp(row.progress)}%"></i></div><div class="utc-meta"><span>${clamp(row.progress).toFixed(clamp(row.progress)%1 ? 1 : 0)}%</span><span>${esc(formatTime(row.updatedAt))}</span></div>${row.detail ? `<div class="utc-detail" title="${esc(row.detail)}">${esc(row.detail)}</div>` : ''}</div>`;
       }).join('') : '<div class="utc-empty">暂无上传任务</div>'}</div>` : ''}
     </div>`;
     root.querySelector('[data-utc-toggle]')?.addEventListener('click', () => { expanded = !expanded; render(); });
+    root.querySelector('[data-utc-clear]')?.addEventListener('click', event => { event.stopPropagation(); clearCompleted(); });
+  }
+
+  function clearCompleted() {
+    rows = clearCompletedUploadTasks(rows);
+    persist();
+    render();
+    arm();
+    return rows;
   }
 
   function upsert(task) {
@@ -245,6 +259,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     build:'upload-task-center-1',
     upsert,
     remove,
+    clearCompleted,
     list:() => rows.map(row => ({...row})),
     refresh:() => poll(),
     switchProject,

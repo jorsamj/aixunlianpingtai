@@ -28,6 +28,8 @@ on:
       - 'tests/api/test_durable_label_remap.py'
       - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
+      - 'tests/api/test_annotation_flow.py'
+      - 'tests/api/test_algorithm_flow.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/unit/test_label_aliases.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
@@ -60,6 +62,8 @@ on:
       - 'tests/api/test_durable_label_remap.py'
       - 'tests/api/test_legacy_annotated_import_guard.py'
       - 'tests/api/test_v36_source_import_guard.py'
+      - 'tests/api/test_annotation_flow.py'
+      - 'tests/api/test_algorithm_flow.py'
       - 'tests/integration/test_persistent_ai_annotation_e2e.py'
       - 'tests/unit/test_label_aliases.py'
       - 'tests/frontend/annotation-task-view.test.mjs'
@@ -116,6 +120,8 @@ jobs:
           tests/api/test_durable_label_remap.py
           tests/api/test_legacy_annotated_import_guard.py
           tests/api/test_v36_source_import_guard.py
+          tests/api/test_annotation_flow.py
+          tests/api/test_algorithm_flow.py
           tests/integration/test_persistent_ai_annotation_e2e.py
           tests/unit/test_annotation_task_service.py
           tests/unit/test_label_aliases.py
@@ -362,5 +368,16 @@ jobs:
           ):
               if route not in app:
                   missing.setdefault('app.py', []).append(route)
+          for token in (
+              'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED',
+              'annotation_state: Optional[Literal["annotated", "confirmed_empty"]]',
+              '@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")',
+              'train_completed_count',
+          ):
+              if token not in app:
+                  missing.setdefault('app.py', []).append(token)
+          for token in ('ann420ConfirmEmpty', 'confirmEmptyAnnotation420', '暂无已结束训练可统计'):
+              if token not in static_app:
+                  missing.setdefault('static/app.js', []).append(token)
           if missing:
               raise SystemExit(f'missing label-normalization contracts: {missing}')
