@@ -508,8 +508,20 @@ def test_public_config_marks_test_sign_as_integration_bridge(tmp_path: Path):
         secret_store_factory=lambda: memory,
         client_factory=FakeChangLianClient,
     )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external",
+        provider="changlian",
+        base_url="https://changlian.example",
+        auto_sync_enabled=False,
+        auto_sync_interval_seconds=600,
+        auto_publish_enabled=False,
+        access_key="ak",
+        access_secret="secret",
+        endpoints=EndpointPayload(),
+    ))
     public = service.public_config()
     assert public["auth_mode"] == "test_sign_bridge"
+    assert public["mode"] == "external"
     assert public["auto_sync_enabled"] is True
     assert public["auto_publish_enabled"] is True
     assert public["auto_sync_interval_seconds"] == 60
@@ -994,7 +1006,7 @@ def test_all_backend_training_create_owners_recheck_external_truth_before_local_
     local_gate = "assert_external_algorithm_master_data_current(DATA_DIR, asset_algorithm)"
     owners = (
         ("def _enqueue_explicit_training(project_id: str, payload: TrainReq)", "def _training_runtime_env"),
-        ('@app.post("/api/projects/{project_id}/train/start")', "def _safe_paddle_lr"),
+        ('@app.post("/api/projects/{project_id}/train/start")', "def resolve_server"),
         ('@app.post("/api/v12/projects/{project_id}/train/start")', "# v42.8：训练任务统一进入资源队列"),
     )
     for start_marker, end_marker in owners:
