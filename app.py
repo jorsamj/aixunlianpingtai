@@ -1427,6 +1427,18 @@ def _public_storage_import_task(task: TaskRecord) -> Dict[str, Any]:
         task.task_id, "checkpoints/worker.json", default=None,
     )
     metrics = _public_storage_import_mapping(checkpoint) or {}
+    if (
+        isinstance(result, dict)
+        and task.status is TaskStatus.AWAITING_CONFIRMATION
+        and task.accepted is not True
+    ):
+        import_format = str(request.get("import_format") or result.get("import_format") or "images")
+        external_classes = list(result.get("external_classes") or [])
+        if import_format in {"yolo", "coco", "voc"} and external_classes:
+            result["external_classes"] = mapping_suggestions(
+                external_classes,
+                project_label_items(get_project(task.project_id)),
+            )
     if isinstance(checkpoint, dict):
         zip_import = checkpoint.get("zip_import")
         if isinstance(zip_import, dict):
