@@ -36,8 +36,8 @@ def test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_name
 
     repository = ExternalPublicationRepository(tmp_path)
     repository.config_path.write_text(json.dumps({
-        "version_list_by_product": "/algorithm-version/listByProduct/{productId}",
-        "weight_list_by_version": "/algorithm-weight/listByVersion/{algoVersionId}",
+        "version_list_by_product": "/custom/wrong-version-path/{productId}",
+        "weight_list_by_version": "/custom/wrong-weight-path/{algoVersionId}",
     }), encoding="utf-8")
     config = repository.config()
     assert config["version_list_by_product"] == "/internal/algorithm/algorithm-version/listByProduct/{productId}"
