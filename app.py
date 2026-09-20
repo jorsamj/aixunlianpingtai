@@ -1735,8 +1735,9 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
             if any(normalize_label(code) != code for code in payload.create_labels):
                 raise ValueError('新建标签必须使用规范的平台标签编码')
             project = get_project(project_id)
+            external_classes = store.external_classes()
             resolved, create = resolve_external_label_mapping(
-                store.external_classes(),
+                external_classes,
                 label_mapping=payload.label_mapping,
                 create_labels=payload.create_labels,
                 labels=project_label_items(project),
@@ -1745,6 +1746,10 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
             annotation_confirmation = {
                 'label_mapping': resolved,
                 'create_labels': create,
+                'external_classes': [
+                    {'class_id': str(row.get('class_id')), 'name': str(row.get('name') or '')}
+                    for row in external_classes
+                ],
                 'accept_quality_report': payload.accept_quality_report,
             }
         elif payload.label_mapping or payload.create_labels:
@@ -1759,6 +1764,12 @@ def confirm_storage_rescan(project_id: str, task_id: str, payload: StorageRescan
         # creation fails, retrying the same confirmation is safe and idempotent.
         for code in labels_to_create:
             ensure_label(get_project(project_id), code)
+        if annotation_confirmation:
+            remember_project_label_aliases(
+                project_id,
+                annotation_confirmation.get('external_classes') or [],
+                annotation_confirmation.get('label_mapping') or {},
+            )
         task = shared_task_repository().resume_after_confirmation(
             task_id,
             required_capabilities=('storage.rescan',),
@@ -1914,10 +1925,15 @@ def confirm_storage_import(project_id: str, task_id: str, payload: StorageImport
             current = get_project(project_id)
             ensure_label(current, code)
             return code
-        confirm_import(candidate_store, artifacts, task_id,
+        confirmation = confirm_import(candidate_store, artifacts, task_id,
             object_keys=payload.object_keys, label_mapping=payload.label_mapping,
             create_labels=payload.create_labels, accept_quality_report=payload.accept_quality_report,
             labels=project_label_items(project), create_label=create_import_label)
+        remember_project_label_aliases(
+            project_id,
+            confirmation.get('external_classes') or [],
+            confirmation.get('label_mapping') or {},
+        )
         updated = shared_task_repository().resume_after_confirmation(
             task_id,
             required_capabilities=("storage.import",),
@@ -11517,6 +11533,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
                 ).encode("utf-8")).hexdigest(),
             })
             v19_write_job(project_id, job)
+        remember_project_label_aliases(project_id, classes, resolved)
     elif payload.label_mapping or payload.create_labels:
         raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
 
