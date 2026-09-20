@@ -984,7 +984,7 @@ class ExternalAlgorithmPublishService:
         }
         stored = self._reuse_uploaded_model_asset(artifact) or self.model_assets.ensure_uploaded(discovered)
         if str(stored.get("storage_status") or "").upper() != "UPLOADED":
-            raise RuntimeError(str(stored.get("storage_error") or "模型资产上传失败"))
+            raise RuntimeError(str(stored.get("storage_error") or "算法产物上传失败"))
         public_url = self.model_assets.public_url(stored)
         if not public_url:
             # Backward-compatible delivery gateway for existing installations.
@@ -1075,12 +1075,12 @@ class ExternalAlgorithmPublishService:
         if not storage_source_id:
             issues.append({
                 "code": "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED",
-                "message": "尚未配置模型资产存储源",
+                "message": "尚未配置算法与转换结果存储源",
             })
         elif self.storage_sources_factory().get(storage_source_id) is None:
             issues.append({
                 "code": "ARTIFACT_STORAGE_SOURCE_NOT_FOUND",
-                "message": f"模型资产存储源不存在：{storage_source_id}",
+                "message": f"算法与转换结果存储源不存在：{storage_source_id}",
             })
         return {
             "ready": not issues,
@@ -1098,7 +1098,7 @@ class ExternalAlgorithmPublishService:
         if code == "MODEL_ARTIFACT_STORAGE_NOT_CONFIGURED":
             raise PlatformError(
                 code,
-                "模型资产存储尚未配置",
+                "算法与转换结果存储尚未配置",
                 str(issue.get("message") or ""),
                 "请先到“存储配置 → 算法与转换结果存储”选择可用存储源并测试通过，再同步到新畅联。",
                 409,
@@ -1106,9 +1106,9 @@ class ExternalAlgorithmPublishService:
         if code == "ARTIFACT_STORAGE_SOURCE_NOT_FOUND":
             raise PlatformError(
                 code,
-                "模型资产存储源不存在",
+                "算法与转换结果存储源不存在",
                 str(issue.get("message") or ""),
-                "请重新选择可用的模型资产存储源。",
+                "请到“存储配置 → 算法与转换结果存储”重新选择可用存储源。",
                 404,
             )
         raise PlatformError(
@@ -1222,14 +1222,14 @@ class ExternalAlgorithmPublishService:
                 "MODEL_ARTIFACT_MAPPING_INCOMPLETE",
                 "部分转换产物尚未配置畅联云算力环境",
                 detail[:2000],
-                "请在“平台对接 → 畅联云版本发布”补齐所有已启用转换目标的算力环境；不需要发布的目标请明确关闭。",
+                "请在“平台对接 → 畅联云版本与权重同步”补齐所有已启用转换目标的算力环境；不需要发布的目标请明确关闭。",
                 409,
             )
         if not selected:
             self.repository.patch_publication(str(publication["publication_key"]), status="FAILED", last_error="没有可发布且已映射算力环境的转换产物")
             raise PlatformError(
                 "NO_MAPPED_MODEL_ARTIFACT", "没有可发布的模型转换产物", "转换结果尚未生成，或转换目标未映射到新畅联算力环境。",
-                "请先完成模型转换，并在“平台对接 → 训练成果发布”配置目标算力环境和芯片编码。", 409,
+                "请在“平台对接 → 畅联云版本与权重同步”配置需要交付的算力环境和芯片编码。", 409,
             )
         for item, mapping in selected:
             self.repository.upsert_artifact(str(publication["publication_key"]), item, mapping)
@@ -1257,9 +1257,9 @@ class ExternalAlgorithmPublishService:
                 )
                 raise PlatformError(
                     "MODEL_ARTIFACT_UPLOAD_FAILED",
-                    "模型资产上传失败",
+                    "算法产物上传失败",
                     str(error),
-                    "请检查模型资产存储连接和凭据；修复后重新同步。畅联云版本尚未创建。",
+                    "请检查“存储配置 → 算法与转换结果存储”的 OSS 连接、凭据和长期访问地址；修复后重新同步。畅联云版本尚未创建。",
                     502,
                 ) from error
 
