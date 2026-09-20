@@ -293,6 +293,6 @@ jobs:
           grep -Fq 'data-external-stale' static/modules/external-algorithm-platform.js
           grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq 'data-external-sync-settings="1"' static/modules/external-algorithm-platform.js
-          grep -Fq "产品分析方式" static/modules/external-algorithm-platform.js
+          grep -Fq "本次训练分析方式" static/modules/external-algorithm-platform.js
           if grep -Fq 'data-external-endpoint=' static/modules/external-algorithm-platform.js; then echo "ChangLian canonical provider paths must not be user-editable" >&2; exit 1; fi
           test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
