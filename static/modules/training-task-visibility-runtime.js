@@ -18,6 +18,7 @@ const TERMINAL_STATUSES = new Set([
   'finished',
   'completed',
   'succeeded',
+  'success',
   'failed',
   'stopped',
   'cancelled',
@@ -110,7 +111,7 @@ export function installTrainingTaskVisibilityRuntime({
 
     const visible = visibleTrainingJobs(jobs, tab);
     body.innerHTML = visible.map(trainingTaskRow).join('')
-      || '<tr><td colspan="8" class="empty-row">暂无记录</td></tr>';
+      || '<tr><td colspan="11" class="empty-row">暂无记录</td></tr>';
     return true;
   }
 

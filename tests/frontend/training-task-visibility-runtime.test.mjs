@@ -139,6 +139,24 @@ test('visibility renderer keeps transitional non-terminal training states in act
   cleanup();
 });
 
+
+test('empty state spans all eleven columns and success alias is terminal metadata', () => {
+  const fixture = installFixture({jobs: []});
+  const visibility = installTrainingTaskVisibilityRuntime({
+    getState: () => fixture.state,
+    trainingTaskRuntime: fixture.runtime,
+    pollRegistry: window.PollRegistryRuntime,
+  });
+
+  visibility.render();
+
+  assert.match(fixture.dom.body.innerHTML, /colspan="11"/);
+  assert.equal(visibility.terminalStatuses.includes('success'), true);
+
+  visibility.destroy();
+  cleanup();
+});
+
 test('legacy training render can no longer replace the final task rows', () => {
   const fixture = installFixture();
   let legacyRenders = 0;

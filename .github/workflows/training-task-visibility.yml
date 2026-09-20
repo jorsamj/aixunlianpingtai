@@ -77,6 +77,8 @@ jobs:
           grep -Fq '__trainingJobsPreserved' static/modules/training-task-visibility-runtime.js
           grep -Fq '__trainingTaskVisibilityRuntime' static/modules/training-task-visibility-runtime.js
           grep -Fq 'visibleTrainingJobs' static/modules/training-task-visibility-runtime.js
+          grep -Fq 'colspan="11" class="empty-row"' static/modules/training-task-visibility-runtime.js
+          grep -Fq "  'success'," static/modules/training-task-visibility-runtime.js
           if grep -Fq 'function visibleJobs(' static/modules/training-task-visibility-runtime.js; then
             echo 'visibility runtime must reuse canonical training queue ordering' >&2
             exit 1
