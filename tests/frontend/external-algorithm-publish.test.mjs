@@ -195,3 +195,12 @@ test('publish UI locks recovery endpoints to official OpenAPI', async () => {
   assert.match(source, /version_list_by_product: '\/internal\/algorithm\/algorithm-version\/listByProduct\/\{productId\}'/);
   assert.match(source, /weight_list_by_version: '\/internal\/algorithm\/algorithm-weight\/listByVersion\/\{algoVersionId\}'/);
 });
+
+
+test('version rollback is destructive and external deletion is explained in the UI', () => {
+  const appSource = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(appSource, /删除当前版本并回退/);
+  assert.match(appSource, /delete_current_version:true/);
+  assert.match(appSource, /先删除新畅联对应算法版本及其权重/);
+  assert.doesNotMatch(appSource, /id="rollbackDeleteCurrent"/);
+});
