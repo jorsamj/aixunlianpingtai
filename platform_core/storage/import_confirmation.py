@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from platform_core.labels import suggest_label_code
+
 
 def _digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
@@ -11,13 +13,10 @@ def _digest(value):
 
 
 def mapping_suggestions(classes, labels):
-    active = [label for label in labels if label.get('status', 'active') == 'active']
-    result = []
-    for item in classes:
-        matches = {str(label['code']) for label in active
-                   if item['name'] in {label.get('code'), label.get('display_name')}}
-        result.append({**item, 'target_label_code': next(iter(matches)) if len(matches) == 1 else None})
-    return result
+    return [
+        {**item, 'target_label_code': suggest_label_code(item.get('name'), labels)}
+        for item in classes
+    ]
 
 
 def resolve_external_label_mapping(classes, *, label_mapping=None, create_labels=None, labels):
@@ -78,6 +77,10 @@ def confirm_import(store, artifacts, task_id, *, object_keys=None, label_mapping
     # JSON publication can retry label creation and publish the same decision.
     details = {'request_digest': request_digest, 'content_digest': facts['content_digest'],
                'label_mapping': resolved, 'create_labels': create,
+               'external_classes': [
+                   {'class_id': str(row.get('class_id')), 'name': str(row.get('name') or '')}
+                   for row in facts['classes']
+               ],
                'accept_quality_report': bool(accept_quality_report)}
     keys = object_keys if object_keys is not None else (r['object_key'] for r in store.iter_status('IMPORTABLE'))
     selection = store.confirm(keys, details=details)
