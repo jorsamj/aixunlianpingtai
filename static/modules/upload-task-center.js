@@ -32,6 +32,12 @@ export function clearCompletedUploadTasks(tasks = []) {
   return (Array.isArray(tasks) ? tasks : []).filter(task => !TERMINAL_STATUSES.has(upper(task?.status)));
 }
 
+export function hasTerminalZipUploadTasks(tasks = []) {
+  return (Array.isArray(tasks) ? tasks : []).some(
+    task => String(task?.kind || '') === 'zip' && TERMINAL_STATUSES.has(upper(task?.status)),
+  );
+}
+
 export function mergeUploadTask(previous = {}, next = {}) {
   const status = upper(next.status || previous.status || 'UPLOADING');
   const progress = status === 'SUCCEEDED' || status === 'DONE' || status === 'COMPLETED' || status === 'FINISHED'
@@ -177,14 +183,30 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       }).join('') : '<div class="utc-empty">暂无上传任务</div>'}</div>` : ''}
     </div>`;
     root.querySelector('[data-utc-toggle]')?.addEventListener('click', () => { expanded = !expanded; render(); });
-    root.querySelector('[data-utc-clear]')?.addEventListener('click', event => { event.stopPropagation(); clearCompleted(); });
+    root.querySelector('[data-utc-clear]')?.addEventListener('click', event => { event.stopPropagation(); void clearCompleted(); });
   }
 
-  function clearCompleted() {
+  async function clearCompleted() {
+    const before = rows.length;
+    const project = pid();
+    if (project && hasTerminalZipUploadTasks(rows)) {
+      try {
+        await responseJson(await fetchImpl(
+          `/api/v19/projects/${encodeURIComponent(project)}/import/jobs`,
+          {method:'DELETE', credentials:'same-origin'},
+        ));
+        window.ZipImportRuntime?.forgetTerminal?.();
+      } catch (error) {
+        notify?.(`清空导入记录失败：${error?.message || error}`);
+        return rows;
+      }
+    }
     rows = clearCompletedUploadTasks(rows);
     persist();
     render();
     arm();
+    const cleared = Math.max(0, before - rows.length);
+    if (cleared) notify?.(`已清空 ${cleared} 条已完成任务`);
     return rows;
   }
 
