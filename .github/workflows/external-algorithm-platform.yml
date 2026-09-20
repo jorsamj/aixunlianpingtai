@@ -28,6 +28,8 @@ on:
       - tests/frontend/startup-render-owner.test.mjs
       - docs/PROJECT_HANDOFF_CURRENT.md
       - docs/BUG_AUDIT_2026-09-17.md
+      - docs/CHANGLIAN_CORE_INTEGRATION.md
+      - docs/CHANGLIAN_APIFOX_API_CATALOG.md
       - .github/workflows/external-algorithm-platform.yml
   push:
     branches:
@@ -59,6 +61,8 @@ on:
       - tests/frontend/startup-render-owner.test.mjs
       - docs/PROJECT_HANDOFF_CURRENT.md
       - docs/BUG_AUDIT_2026-09-17.md
+      - docs/CHANGLIAN_CORE_INTEGRATION.md
+      - docs/CHANGLIAN_APIFOX_API_CATALOG.md
       - .github/workflows/external-algorithm-platform.yml
 
 jobs:
@@ -152,6 +156,14 @@ jobs:
           grep -q '@router.get("/readiness")' platform_core/external_algorithm_platform.py
           grep -q '"human_login_required": False' platform_core/external_algorithm_platform.py
           grep -q '"auth_type": "application_credentials"' platform_core/external_algorithm_platform.py
+          grep -Fq 'headers["Access-Token"] = token' platform_core/external_algorithm_platform.py
+          if grep -Fq 'headers["Authorization"]' platform_core/external_algorithm_platform.py; then echo "ChangLian business APIs must use Access-Token, not Authorization" >&2; exit 1; fi
+          grep -Fq 'def _business_code(body: Any) -> str:' platform_core/external_algorithm_platform.py
+          grep -Fq 'business_code = _business_code(body)' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_changlian_business_failure_is_not_hidden_by_http_200' tests/unit/test_changlian_audit_client.py
+          grep -Fq 'CHANG_LIAN_API_DOCUMENTS' platform_core/external_algorithm_platform.py
+          grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
+          grep -Fq '31 个官方 Apifox 文档条目' docs/CHANGLIAN_APIFOX_API_CATALOG.md
           grep -q "test_readiness_blocks_until_saved_synced_and_project_algorithm_exists" tests/unit/test_external_algorithm_platform.py
           grep -q '"scope": "master_data_training"' platform_core/external_algorithm_platform.py
           grep -q "人员网页登录账号不参与机器接口调用" static/modules/external-algorithm-platform.js
@@ -209,6 +221,8 @@ jobs:
       - name: Browser permanent guards
         run: |
           grep -Fq "changlian platform page tests draft credentials before manual sync" tests/browser/external-algorithm-platform.spec.mjs
+          grep -Fq 'data-changlian-api-contract="1"' static/modules/external-algorithm-platform.js
+          grep -Fq '已纳入 31 个官方 Apifox 文档条目' tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq "stale changlian algorithm is visibly blocked before training submit" tests/browser/external-algorithm-platform.spec.mjs
           grep -Fq 'data-external-stale' static/modules/external-algorithm-platform.js
           grep -Fq "人员登录账号" tests/browser/external-algorithm-platform.spec.mjs
