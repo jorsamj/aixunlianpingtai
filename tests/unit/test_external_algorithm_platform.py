@@ -711,7 +711,7 @@ def test_diagnostics_reports_read_only_master_data_checks(tmp_path: Path):
     ))
     result = service.diagnose()
     assert result["ok"] is True
-    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis", "versions", "weights"]
+    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis", "analysis_detail", "versions", "weights"]
 
 
 
@@ -741,7 +741,7 @@ def test_draft_connection_test_does_not_persist_credentials_or_url(tmp_path: Pat
 
     assert result["ok"] is True
     assert result["base_url"] == "https://draft.example"
-    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis", "versions", "weights"]
+    assert [row["key"] for row in result["steps"]] == ["auth", "categories", "products", "compute_platforms", "analysis", "analysis_detail", "versions", "weights"]
     assert "draft-secret" not in str(result)
     assert service.repository.config()["base_url"] == "https://saved.example"
     ref = service.repository.config()["credential_ref"]
@@ -1054,3 +1054,14 @@ def test_sync_fails_closed_when_analysis_get_info_omits_status(tmp_path: Path):
         service.sync(project_id="p-detail-incomplete", algorithms_path=algorithms_path)
 
     assert error.value.code == "EXTERNAL_ANALYSIS_DETAIL_INCOMPLETE"
+
+
+def test_connection_fails_when_analysis_detail_contract_is_incomplete(tmp_path: Path):
+    service = _configured_external_service(tmp_path, IncompleteAnalysisDetailClient)
+
+    result = service.test_connection()
+
+    assert result["ok"] is False
+    detail = next(row for row in result["steps"] if row["key"] == "analysis_detail")
+    assert detail["status"] == "failed"
+    assert "status" in detail["detail"]
