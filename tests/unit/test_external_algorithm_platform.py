@@ -173,7 +173,7 @@ def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
         algorithms_path=path,
         products=[{"productId": "p1", "productName": "抽烟检测", "categoryId": "c1"}],
         categories=[{"categoryId": "c1", "categoryName": "行为分析"}],
-        analyses_by_product={"p1": [{"analysisId": "a1", "analysisName": "视觉智能分析", "computePlatformIds": ["gpu"]}]},
+        analyses_by_product={"p1": [{"analysisId": "a1", "analysisName": "视觉智能分析", "analysisType": 1, "status": 1, "computePlatformIds": ["gpu"]}]},
         synced_at="2026-09-17T00:00:00Z",
     )
 
@@ -188,8 +188,8 @@ def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
     assert external["external_analyses"] == [{
         "analysis_id": "a1",
         "analysis_name": "视觉智能分析",
-        "analysis_type": "",
-        "status": "",
+        "analysis_type": "1",
+        "status": "1",
         "compute_platform_ids": ["gpu"],
     }]
     assert external["external_category_id"] == "c1"
@@ -244,7 +244,7 @@ class FakeChangLianClient:
 
     def analyses(self, product_id):
         assert product_id == "p1"
-        return {"data": [{"analysisId": "a1", "analysisName": "视觉智能分析"}]}
+        return {"data": [{"analysisId": "a1", "analysisName": "视觉智能分析", "analysisType": 1, "status": 1}]}
 
     def compute_platforms(self):
         return {"data": [{"computePlatformId": "cp1", "computePlatformName": "ONNX"}]}
@@ -937,7 +937,7 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
         "synced_at": "2026-09-19T12:00:00Z",
         "categories": [{"categoryId": "c1"}],
         "products": [{"productId": "p1"}],
-        "analyses_by_product": {"p1": [{"analysisId": "a1"}]},
+        "analyses_by_product": {"p1": [{"analysisId": "a1", "analysisType": 1, "status": 1}]},
         "compute_platforms": [{"computePlatformId": "cp1"}],
     })
     service.repository.append_history({
