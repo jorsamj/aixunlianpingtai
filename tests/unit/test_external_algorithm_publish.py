@@ -11,6 +11,7 @@ from platform_core.external_algorithm_platform import (
 )
 from platform_core.external_algorithm_publish import (
     ExternalAlgorithmPublishService,
+    ExternalPublicationRepository,
     ExternalPublishConfigPayload,
     TargetMapping,
     request_external_auto_publish_if_enabled,
@@ -18,6 +19,21 @@ from platform_core.external_algorithm_publish import (
 from platform_core.model_artifacts import ModelArtifactConfigPayload
 from platform_core.secrets import MemorySecretStore, SecretCredentialStore
 from platform_core.storage.source_repository import StorageSourceRepository
+
+
+def test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_namespace(tmp_path: Path):
+    payload = ExternalPublishConfigPayload()
+    assert payload.version_list_by_product == "/internal/algorithm/algorithm-version/listByProduct/{productId}"
+    assert payload.weight_list_by_version == "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
+
+    repository = ExternalPublicationRepository(tmp_path)
+    repository.config_path.write_text(json.dumps({
+        "version_list_by_product": "/algorithm-version/listByProduct/{productId}",
+        "weight_list_by_version": "/algorithm-weight/listByVersion/{algoVersionId}",
+    }), encoding="utf-8")
+    config = repository.config()
+    assert config["version_list_by_product"] == "/internal/algorithm/algorithm-version/listByProduct/{productId}"
+    assert config["weight_list_by_version"] == "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
 
 
 class FakePublishingClient:
