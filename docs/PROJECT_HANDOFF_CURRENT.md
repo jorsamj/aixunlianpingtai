@@ -71,7 +71,7 @@ POST /internal/auth/test-sign
 POST /internal/auth/token
 GET  /internal/base/algorithm-category/tree
 GET  /internal/base/compute-platform/listAll
-GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/product-ai/listAll
 GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
 POST /internal/algorithm/algorithm-version/add
 GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
@@ -87,7 +87,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /algorithm-weight/add
 ```
 
-`Access-Token: <accessToken>` 语义保持不变。
+业务接口鉴权 Header 必须按各自官方 OpenAPI 逐项绑定；算法产品 `listAll` 已确认使用 `Authorization: Bearer <accessToken>`。
 
 ## 当前唯一优先动作
 
@@ -117,12 +117,12 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 ---
 
 <!-- CHANGLIAN_CODE_ZERO_ACCESS_TOKEN_2026_09_20 -->
-# 最新修复：新畅联 code=0 / Access-Token / 完整 API 文档目录
+# 最新修复：新畅联 code=0 / 产品 OpenAPI / 完整 API 文档目录
 
 2026-09-20 真实联调确认并修复：
 
 - 畅联返回 `HTTP 200 + code=0 + msg=操作成功` 时，旧代码使用 `body.get("code") or ""`，把数值 `0` 错误变成空字符串，导致交互审计误记为 FAILED。现在 `code=0` 会保留为 `business_code="0"` 并记录 SUCCESS。
-- 新畅联内部业务接口当前使用请求头 `Access-Token: <accessToken>`；不再使用 `Authorization: Bearer ...`。用户提供的“内部应用登出”官方文档明确描述为删除当前请求携带的 Access-Token。
+- 之前把“内部应用登出”文档中的 `Access-Token` 推广成全部业务接口统一 Header 是错误推断。用户随后提供的算法产品不分页 OpenAPI（515837723e0）明确：`GET /internal/algorithm/product-ai/listAll`，Header 为 `Authorization: Bearer {{access_token}}`。当前客户端已改为逐接口鉴权合同；未知接口不得从其他页面类推 Header。
 - `HTTP 200` 但业务码非成功（例如 `99999`）现在会在 HTTP client 边界直接失败，保留真实 business code 与远端 msg，不能继续被上层当成正常数据。
 - 历史上已经落库的 code=0 误判记录会在 IntegrationAuditRepository 初始化时做幂等修复：仅修复 HTTP 2xx + 空 business_code + response.code 精确为 0 的旧 FAILED；`99999` 等真实失败绝不改写。
 - 用户提供的 **31 个** Apifox 文档条目已完整登记在 `docs/CHANGLIAN_APIFOX_API_CATALOG.md`，平台页面也展示“新畅联接口契约”目录。
@@ -136,7 +136,7 @@ POST /internal/auth/test-sign
 POST /internal/auth/token
 GET  /internal/base/algorithm-category/tree
 GET  /internal/base/compute-platform/listAll
-GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/product-ai/listAll
 GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
 POST /internal/algorithm/algorithm-version/add
 GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
@@ -144,7 +144,7 @@ POST /internal/algorithm/algorithm-weight/add
 GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 ```
 
-如果 `GET /internal/algorithm/algorithm-product/listAll` 在改用 `Access-Token` 后仍返回 `HTTP 200 / code=99999`，应保留真实响应继续查新畅联服务端/应用权限/接口实现；**不得把 99999 改判成功，也不得退回 Bearer Header。**
+此前对 `GET /internal/algorithm/algorithm-product/listAll + Access-Token` 的真实测试返回 `HTTP 200 / code=99999`。官方 OpenAPI 已证明该请求合同本身错误；当前应使用 `GET /internal/algorithm/product-ai/listAll + Authorization: Bearer <accessToken>` 重新验收。`99999` 仍不得改判成功。
 
 ---
 
@@ -175,7 +175,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 /internal/auth/token
 /internal/base/algorithm-category/tree
 /internal/base/compute-platform/listAll
-/internal/algorithm/algorithm-product/listAll
+/internal/algorithm/product-ai/listAll
 /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
 /internal/algorithm/algorithm-version/add
 /internal/algorithm/algorithm-version/listByProduct/{productId}
@@ -188,7 +188,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 - 其他自定义 endpoint 不强制覆盖；
 - 普通用户平台对接页不再暴露 endpoint 编辑，只配置 Base URL / AccessKey / AccessSecret；
 - 发布创建与 timeout/UNKNOWN 反查共用同一 canonical internal contract；
-- `Access-Token: <accessToken>` 保持不变；
+- 业务接口鉴权改为 endpoint-specific contract；算法产品 `listAll` 使用 `Authorization: Bearer <accessToken>`；
 - `VERSION.txt` 继续保持 `42.24.0`。
 
 ---
@@ -1906,7 +1906,15 @@ external_active = false
 ```text
 /internal/auth/test-sign
 → /internal/auth/token
-→ Access-Token
+→ data.accessToken
+→ 各业务接口按各自官方 OpenAPI 选择鉴权 Header
+```
+
+已确认的算法产品不分页接口：
+
+```text
+GET /internal/algorithm/product-ai/listAll
+Authorization: Bearer <accessToken>
 ```
 
 UI/API 明确暴露：
