@@ -38,12 +38,12 @@ test('changlian platform page tests draft credentials before manual sync', async
           endpoints: {
             test_sign: '/internal/auth/test-sign',
             token: '/internal/auth/token',
-            category_tree: '/algorithm-category/tree',
-            product_list: '/algorithm-product/listAll',
-            analysis_by_product: '/algorithm-product-analysis/listByProduct/{productId}',
-            compute_platform_list: '/compute-platform/listAll',
-            version_create: '/algorithm-version/add',
-            weight_create: '/algorithm-weight/add',
+            category_tree: '/internal/base/algorithm-category/tree',
+            product_list: '/internal/algorithm/algorithm-product/listAll',
+            analysis_by_product: '/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}',
+            compute_platform_list: '/internal/base/compute-platform/listAll',
+            version_create: '/internal/algorithm/algorithm-version/add',
+            weight_create: '/internal/algorithm/algorithm-weight/add',
           },
           cache: {
             category_count: 2,
@@ -151,19 +151,13 @@ test('changlian platform page tests draft credentials before manual sync', async
   await page.evaluate(() => window.setPage('平台对接'));
   await expect(page.getByRole('heading', {name: '平台对接', level: 2})).toBeVisible({timeout: 10_000});
 
-  const readiness = page.locator('[data-changlian-readiness="ready"]');
-  await expect(readiness.getByText('主数据与训练条件已就绪')).toBeVisible();
-  await expect(readiness).toContainText('转换与版本/权重发布由版本页同步前的发布预检单独判断');
-  await expect(readiness.getByRole('cell', {name: '人员登录账号'})).toBeVisible();
-  await expect(readiness.getByText('无需', {exact: true})).toBeVisible();
-  await expect(readiness).toContainText('AccessKey / AccessSecret');
-  await expect(readiness.getByRole('cell', {name: '当前项目畅联云算法'})).toBeVisible();
+  await expect(page.locator('[data-changlian-readiness]')).toHaveCount(0);
 
   await page.locator('#externalBaseUrl').fill('https://draft.example.test');
   await page.locator('#externalAccessKey').fill('draft-ak');
   await page.locator('#externalAccessSecret').fill('draft-secret');
 
-  await expect(page.locator('[data-external-automation-settings="1"]')).not.toHaveAttribute('open', '');
+  await expect(page.locator('[data-external-sync-settings="1"]')).not.toHaveAttribute('open', '');
   const syncButton = page.getByRole('button', {name: '↻ 立即同步'});
   await expect(syncButton).toBeDisabled();
   await expect(syncButton).toHaveAttribute('title', /未保存修改/);
