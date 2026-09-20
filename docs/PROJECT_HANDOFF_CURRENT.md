@@ -189,7 +189,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 - 新增训练状态筛选：可训练 / 训练中 / 已有版本 / 尚未训练 / 不可训练；
 - 新畅联品目改为列表上方全部展示的可多选标签，父品目选择可匹配子品目；
 - “新建算法”与“同步畅联云”并存，不再由外部模式用同步按钮覆盖新建按钮；
-- 外部算法主数据仍只读，启用的视觉分析算法可训练；训练版本及已完成转换产物继续通过版本/权重发布链同步回新畅联。
+- 外部算法主数据仍只读；只有分析明细同时满足 `status=1` 且 `analysisType=1` 才可训练，其他情况全部禁止；训练版本及已完成转换产物继续通过版本/权重发布链同步回新畅联。
 
 完整 31 项 OpenAPI 没有 Webhook、回调、订阅、SSE/WebSocket 等服务端推送能力，因此主数据同步当前只能主动拉取。平台允许配置 60 秒最小轮询间隔，定义为“准实时同步”，不能描述成真正推送式实时同步。
 
@@ -223,7 +223,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 
 - `external_analyses` 继续保存新畅联全部分析方式；
 - `external_analysis_ids` 作为 canonical 可训练子集写入 `payload_json`，不再被 `_algorithm_payload()` / `_replace_all()` 丢弃；
-- `read_all()` / `_read_one_conn()` 优先恢复 payload 中的可训练 ID；仅旧数据缺字段时才按 SQL `active + analysis_type` 兼容推导；
+- `read_all()` / `_read_one_conn()` 只恢复能够由持久化分析明细证明 `status=1 AND analysis_type=1` 的可训练 ID；旧 ID 列表本身不能绕过明细校验；
 - `status=0` 会写成 `algorithm_external_analyses.active=0`；
 - 新增永久 round-trip 测试覆盖 `vision-on / llm-on / vision-off`，并覆盖 `mirror → SQLite write → read → replace_all → read`；
 - SQL workflow 和 External Algorithm Platform workflow 都加入永久 guard。
@@ -234,7 +234,7 @@ GET  /internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}
 <!-- CHANGLIAN_VISUAL_ANALYSIS_FENCE_2026_09_20 -->
 # 最新收口：仅启用视觉分析可进入 YOLO 训练
 
-完整 OpenAPI 定义 `analysisType=1` 为视觉智能分析、`3` 为大模型智能分析，并提供 `status` 启用状态。当前同步会保留全部分析方式详情，但训练候选只包含 `analysisType=1` 且未停用的分析方式。前端与后端一致过滤；若产品没有可训练视觉分析，训练直接阻断。
+完整 OpenAPI 定义 `analysisType=1` 为视觉智能分析、`2` 为预留、`3` 为大模型智能分析，且 `status=1` 才表示启用。当前同步会保留全部分析方式详情，但训练候选必须同时满足 `analysisType=1 AND status=1`。字段缺失或仅有旧分析 ID 都不能作为训练依据；前端、后端和 SQL 持久化层统一 fail closed。
 
 ---
 
