@@ -197,6 +197,9 @@ test('changlian platform page tests draft credentials before manual sync', async
   await page.locator('#externalAccessSecret').fill('draft-secret');
 
   await expect(page.locator('[data-external-sync-settings="1"]')).not.toHaveAttribute('open', '');
+  await page.locator('[data-external-sync-settings="1"] summary').click();
+  await expect(page.locator('#externalAutoSyncInterval')).toBeVisible();
+  await page.locator('#externalAutoSyncInterval').selectOption('60');
   const syncButton = page.getByRole('button', {name: '↻ 立即同步'});
   await expect(syncButton).toBeDisabled();
   await expect(syncButton).toHaveAttribute('title', /未保存修改/);
@@ -208,6 +211,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   expect(testedPayload.access_key).toBe('draft-ak');
   expect(testedPayload.access_secret).toBe('draft-secret');
   expect(testedPayload.mode).toBe('external');
+  expect(testedPayload.auto_sync_interval_seconds).toBe(60);
 
   const connectionResult = page.locator('#externalConnectionResult');
   await expect(connectionResult.getByText('连接成功')).toBeVisible();
@@ -222,6 +226,7 @@ test('changlian platform page tests draft credentials before manual sync', async
   expect(savedPayload.base_url).toBe('https://draft.example.test');
   expect(savedPayload.access_key).toBe('draft-ak');
   expect(savedPayload.access_secret).toBe('draft-secret');
+  expect(savedPayload.auto_sync_interval_seconds).toBe(60);
   await expect.poll(() => saveWrites).toBe(1);
 
   // Saved configuration is locked until the user explicitly enters edit mode.
@@ -366,7 +371,24 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
     window.AlgorithmListRuntime?.runDecorators?.();
   }, {algorithmId});
 
+  const sourceFilter = page.locator('[data-algorithm-source-filter]');
+  const trainingStatusFilter = page.locator('[data-algorithm-training-status-filter]');
+  const categoryBar = page.locator('[data-external-category-filter]');
+  await expect(sourceFilter).toBeVisible();
+  await expect(trainingStatusFilter).toBeVisible();
+  await expect(categoryBar.getByRole('button', {name: '行为分析'})).toBeVisible();
+  await expect(page.getByRole('button', {name: /新建算法/})).toBeVisible();
+  await expect(page.getByRole('button', {name: '↻ 同步畅联云'})).toBeVisible();
+
   const card = page.locator('.alg428-card', {hasText: '待同步抽烟检测'});
+  await expect(card).toBeVisible();
+  await sourceFilter.selectOption('internal');
+  await expect(card).toBeHidden();
+  await sourceFilter.selectOption('external');
+  await expect(card).toBeVisible();
+  await categoryBar.getByRole('button', {name: '行为分析'}).click();
+  await expect(card).toBeVisible();
+  await trainingStatusFilter.selectOption('blocked');
   await expect(card).toBeVisible();
   await expect(card.locator('[data-external-stale]')).toHaveText('待同步');
   const trainButton = card.getByRole('button', {name: '训练'});
