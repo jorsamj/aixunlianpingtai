@@ -35,7 +35,7 @@
 | 18 | 算法版本管理 | 查询算法版本列表(不分页) | [515837720e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837720e0.md) | — | 文档已纳入 |
 | 19 | 算法版本管理 | 查询算法版本详细信息 | [515837721e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837721e0.md) | — | 文档已纳入 |
 | 20 | 算法产品管理 | 查询算法产品列表(分页) | [515837722e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837722e0.md) | — | 文档已纳入 |
-| 21 | 算法产品管理 | 查询算法产品列表(不分页) | [515837723e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837723e0.md) | `GET /internal/algorithm/algorithm-product/listAll` | 已绑定 |
+| 21 | 算法产品管理 | 查询算法产品列表(不分页) | [515837723e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837723e0.md) | `GET /internal/algorithm/product-ai/listAll` | 已绑定 |
 | 22 | 算法产品管理 | 查询算法产品详细信息 | [515837724e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837724e0.md) | — | 文档已纳入 |
 | 23 | 算法产品分析方式管理 | 查询分析方式列表(分页) | [515837725e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837725e0.md) | — | 文档已纳入 |
 | 24 | 算法产品分析方式管理 | 查询某算法产品下全部分析方式(含关联明细) | [515837726e0](https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837726e0.md) | `GET /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}` | 已绑定 |
@@ -53,14 +53,17 @@
 POST /internal/auth/test-sign
 → POST /internal/auth/token
 → data.accessToken
-→ 后续内部业务请求 Header: Access-Token: <accessToken>
+→ 后续业务接口的 Header 必须逐接口遵循各自官方 OpenAPI
 ```
 
-当前真实联调已证明：
+当前真实联调与官方文档已证明：
 
 - `HTTP 200 + code=0 + msg=操作成功` 是成功，不得把数值 `0` 因 falsy 规则转换为空值。
 - `HTTP 200` 不等于业务成功；例如 `code=99999` 必须作为业务失败，并保留远端 `msg`。
-- 用户提供的“内部应用登出”文档说明删除当前请求携带的 `Access-Token`，因此当前内部业务调用统一使用 `Access-Token`，不得改回 `Authorization: Bearer ...`。
+- **不得再把某一个接口的鉴权 Header 推广成全部内部接口的统一规则。**
+- 官方文档 `515837723e0`（查询算法产品列表，不分页）明确路径为 `GET /internal/algorithm/product-ai/listAll`，并声明请求头 `Authorization`，示例值 `Bearer {{access_token}}`。
+- 该产品列表接口的 Query 参数（如 `productType`、`productName`、`categoryId` 等）在 OpenAPI 中均为非必填；因此“空 Query”本身不是本次 `99999` 的合同错误。
+- “内部应用登出”页面提到 `Access-Token`，只能说明该登出接口的合同，不能据此推断所有算法业务接口都使用 `Access-Token`。
 
 ## 当前已绑定的生产主链
 
@@ -69,7 +72,7 @@ POST /internal/auth/test-sign
 POST /internal/auth/token
 GET  /internal/base/algorithm-category/tree
 GET  /internal/base/compute-platform/listAll
-GET  /internal/algorithm/algorithm-product/listAll
+GET  /internal/algorithm/product-ai/listAll
 GET  /internal/algorithm/algorithm-product-analysis/listByProduct/{productId}
 POST /internal/algorithm/algorithm-version/add
 GET  /internal/algorithm/algorithm-version/listByProduct/{productId}
