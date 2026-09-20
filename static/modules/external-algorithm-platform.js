@@ -101,7 +101,10 @@ export function normalizeExternalPlatformConfig(body = {}) {
     autoSyncIntervalSeconds: Number(config.auto_sync_interval_seconds || 600),
     autoPublishEnabled: Boolean(config.auto_publish_enabled),
     authMode: config.auth_mode || 'test_sign_bridge',
+    businessAuthHeader: config.business_auth_header || 'Access-Token',
     credentials: config.credentials || {configured: false, masked: ''},
+    apiDocuments: Array.isArray(config.api_documents) ? config.api_documents : [],
+    apiDocumentSummary: config.api_document_summary || {},
     endpoints: {
       test_sign: endpoints.test_sign || '/internal/auth/test-sign',
       token: endpoints.token || '/internal/auth/token',
@@ -610,6 +613,8 @@ export function installExternalAlgorithmPlatformRuntime({
 
       ${diagnosticsHtml()}
 
+      ${apiContractHtml()}
+
       ${masterDataPreviewHtml()}
 
       <section class="panel">
@@ -649,6 +654,37 @@ export function installExternalAlgorithmPlatformRuntime({
     const rows = Array.isArray(diagnostics.steps) ? diagnostics.steps : [];
     const body = rows.map(row => `<tr><td>${escapeHtml(row.name || row.key || '-')}</td><td><span class="pill ${row.status === 'success' ? 'ok' : row.status === 'skipped' ? 'warn' : 'err'}">${row.status === 'success' ? '成功' : row.status === 'skipped' ? '跳过' : '失败'}</span></td><td>${escapeHtml(row.count ?? row.detail ?? '-')}</td></tr>`).join('');
     return `<section class="panel"><div class="panel-head"><div><div class="panel-title">联调诊断</div><div class="subline">只读检查鉴权、品目、算法产品、分析方式和算力环境，不创建或修改新畅联数据。</div></div></div><div class="panel-body"><table class="table"><thead><tr><th>检查项</th><th>结果</th><th>详情/数量</th></tr></thead><tbody>${body || '<tr><td colspan="3">暂无诊断结果</td></tr>'}</tbody></table></div></section>`;
+  }
+
+
+  function apiContractHtml() {
+    const documents = Array.isArray(config?.apiDocuments) ? config.apiDocuments : [];
+    if (!documents.length) return '';
+    const rows = documents.map(item => {
+      const wired = item.status === 'wired';
+      const reference = item.status === 'reference';
+      const stateText = wired ? '已接入' : reference ? '参考文档' : '文档已纳入';
+      const pill = wired ? 'ok' : reference ? 'warn' : '';
+      const methodPath = item.method && item.path
+        ? `<code>${escapeHtml(item.method)} ${escapeHtml(item.path)}</code>`
+        : '<span class="subline">未绑定，禁止猜测 Method / Path</span>';
+      return `<tr>
+        <td>${escapeHtml(item.group || '其他')}</td>
+        <td><a href="${escapeHtml(item.doc_url || '#')}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title || item.key || '-')}</a></td>
+        <td>${methodPath}</td>
+        <td><span class="pill ${pill}">${stateText}</span></td>
+      </tr>`;
+    }).join('');
+    const summary = config?.apiDocumentSummary || {};
+    return `<section class="panel" data-changlian-api-contract="1">
+      <div class="panel-head">
+        <div><div class="panel-title">新畅联接口契约</div><div class="subline">已纳入 ${Number(summary.total || documents.length)} 个官方 Apifox 文档条目。连接测试只调用鉴权和只读查询接口，不会自动执行新增、修改或删除。</div></div>
+      </div>
+      <div class="panel-body">
+        <div class="alert warn" style="margin-bottom:12px">只有“已接入”条目具备当前代码中的 Method / Path 绑定；其余接口只登记官方文档来源，必须逐项读取原文后才能绑定，禁止按命名习惯猜接口。</div>
+        <table class="table"><thead><tr><th>分类</th><th>官方接口文档</th><th>当前绑定</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>
+    </section>`;
   }
 
   function masterDataPreviewHtml() {
@@ -896,7 +932,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63006',
+    build: 'external-algorithm-platform-63007',
     page: PAGE,
     loadConfig,
     loadHistory,
