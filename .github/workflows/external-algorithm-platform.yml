@@ -126,6 +126,8 @@ jobs:
           grep -Fq '每 60 秒主动拉取一次主数据' static/modules/external-algorithm-platform.js
           grep -Fq 'auto_sync_interval_seconds: 60' static/modules/external-algorithm-platform.js
           grep -Fq 'DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 60' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_legacy_v12_training_entry_enforces_external_analysis_gate' tests/unit/test_external_algorithm_platform.py
+          grep -Fq '"external_analysis_id": external_analysis_id' app.py
           grep -Fq 'time.sleep(5)' platform_core/external_algorithm_platform.py
           ! grep -Fq 'externalAutoSyncInterval' static/modules/external-algorithm-platform.js
           grep -Fq 'algorithm list supports multi-category source and training-status filters' tests/frontend/external-algorithm-platform.test.mjs
