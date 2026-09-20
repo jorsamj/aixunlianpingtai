@@ -241,7 +241,11 @@ class FakeChangLianClient:
         return {"data": [{"categoryId": "c1", "categoryName": "园区", "children": []}]}
 
     def products(self):
-        return {"data": [{"productId": "p1", "productName": "抽烟检测", "categoryId": "c1"}]}
+        return {"data": [{"productId": "p1", "productName": "抽烟检测", "categoryId": "c1", "status": 1, "productType": 3}]}
+
+    def product_info(self, product_id):
+        assert product_id == "p1"
+        return {"data": {"productId": "p1", "productName": "抽烟检测", "categoryId": "c1", "status": 1, "productType": 3}}
 
     def analyses(self, product_id):
         assert product_id == "p1"
@@ -1128,3 +1132,153 @@ def test_readiness_blocks_training_when_all_synced_analyses_are_non_trainable(tm
     assert project["count"] == 0
     assert "trainable_analyses" in readiness["blocking_keys"]
     assert readiness["ready"] is False
+
+
+
+def test_training_preflight_rechecks_changlian_and_blocks_non_visual_change(tmp_path: Path):
+    state = {"analysis_id": "a1", "analysis_type": 1, "analysis_status": 1, "product_status": 1}
+
+    class MutableTrainingPreflightClient(FakeChangLianClient):
+        def products(self):
+            return {"data": [{
+                "productId": "p1", "productName": "抽烟检测", "categoryId": "c1",
+                "status": state["product_status"], "productType": 3,
+            }]}
+
+        def product_info(self, product_id):
+            assert product_id == "p1"
+            return {"data": {
+                "productId": "p1", "productName": "抽烟检测", "categoryId": "c1",
+                "status": state["product_status"], "productType": 3,
+            }}
+
+        def analyses(self, product_id):
+            assert product_id == "p1"
+            return {"data": [{
+                "analysisId": state["analysis_id"],
+                "analysisName": "当前分析方式",
+                "analysisType": state["analysis_type"],
+                "status": state["analysis_status"],
+            }]}
+
+        def analysis_info(self, analysis_id):
+            assert analysis_id == state["analysis_id"]
+            return {"data": {
+                "analysisId": state["analysis_id"],
+                "productId": "p1",
+                "analysisName": "当前分析方式",
+                "analysisType": state["analysis_type"],
+                "status": state["analysis_status"],
+            }}
+
+    service = _configured_external_service(tmp_path, MutableTrainingPreflightClient)
+    algorithms_path = tmp_path / "preflight-nonvisual" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="preflight-nonvisual", algorithms_path=algorithms_path)
+    algorithm = list_algorithms(algorithms_path)[0]
+
+    state["analysis_type"] = 2
+
+    with pytest.raises(PlatformError) as blocked:
+        service.training_preflight(
+            project_id="preflight-nonvisual",
+            algorithms_path=algorithms_path,
+            algorithm_id=algorithm["id"],
+        )
+
+    assert blocked.value.code == "EXTERNAL_VISUAL_ANALYSIS_REQUIRED"
+    assert blocked.value.status_code == 409
+    assert "status=1" in blocked.value.solution
+    assert "analysisType=1" in blocked.value.solution
+
+
+def test_training_preflight_refreshes_drifted_visual_analysis_through_canonical_sync(tmp_path: Path):
+    state = {"analysis_id": "a1"}
+
+    class MutableVisualTrainingPreflightClient(FakeChangLianClient):
+        def product_info(self, product_id):
+            assert product_id == "p1"
+            return {"data": {
+                "productId": "p1", "productName": "抽烟检测", "categoryId": "c1",
+                "status": 1, "productType": 3,
+            }}
+
+        def analyses(self, product_id):
+            assert product_id == "p1"
+            return {"data": [{
+                "analysisId": state["analysis_id"],
+                "analysisName": f"视觉方式-{state['analysis_id']}",
+                "analysisType": 1,
+                "status": 1,
+            }]}
+
+        def analysis_info(self, analysis_id):
+            assert analysis_id == state["analysis_id"]
+            return {"data": {
+                "analysisId": state["analysis_id"],
+                "productId": "p1",
+                "analysisName": f"视觉方式-{state['analysis_id']}",
+                "analysisType": 1,
+                "status": 1,
+            }}
+
+    service = _configured_external_service(tmp_path, MutableVisualTrainingPreflightClient)
+    algorithms_path = tmp_path / "preflight-drift" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="preflight-drift", algorithms_path=algorithms_path)
+    before = list_algorithms(algorithms_path)[0]
+    assert before["external_analysis_ids"] == ["a1"]
+
+    state["analysis_id"] = "a2"
+    result = service.training_preflight(
+        project_id="preflight-drift",
+        algorithms_path=algorithms_path,
+        algorithm_id=before["id"],
+    )
+
+    assert result["ready"] is True
+    assert result["source"] == "changlian"
+    assert result["refreshed"] is True
+    assert result["trainable_analysis_ids"] == ["a2"]
+    current = list_algorithms(algorithms_path)[0]
+    assert current["id"] == before["id"]
+    assert current["external_analysis_ids"] == ["a2"]
+    assert current["external_analysis_id"] == "a2"
+
+
+def test_training_preflight_blocks_remote_product_that_was_disabled_after_sync(tmp_path: Path):
+    state = {"product_status": 1}
+
+    class DisabledAfterSyncClient(FakeChangLianClient):
+        def products(self):
+            return {"data": [{
+                "productId": "p1", "productName": "抽烟检测", "categoryId": "c1",
+                "status": state["product_status"], "productType": 3,
+            }]}
+
+        def product_info(self, product_id):
+            assert product_id == "p1"
+            return {"data": {
+                "productId": "p1", "productName": "抽烟检测", "categoryId": "c1",
+                "status": state["product_status"], "productType": 3,
+            }}
+
+    service = _configured_external_service(tmp_path, DisabledAfterSyncClient)
+    algorithms_path = tmp_path / "preflight-disabled" / "algorithms.json"
+    algorithms_path.parent.mkdir(parents=True)
+    save_algorithms(algorithms_path, [])
+    service.sync(project_id="preflight-disabled", algorithms_path=algorithms_path)
+    algorithm = list_algorithms(algorithms_path)[0]
+
+    state["product_status"] = 0
+    with pytest.raises(PlatformError) as blocked:
+        service.training_preflight(
+            project_id="preflight-disabled",
+            algorithms_path=algorithms_path,
+            algorithm_id=algorithm["id"],
+        )
+
+    assert blocked.value.code == "EXTERNAL_ALGORITHM_INACTIVE"
+    assert blocked.value.status_code == 409

@@ -1719,6 +1719,172 @@ class ExternalAlgorithmPlatformService:
             "category_sample_available": bool(categories) if isinstance(categories, list) else False,
         }
 
+    def training_preflight(
+        self,
+        *,
+        project_id: str,
+        algorithms_path: Path,
+        algorithm_id: str,
+    ) -> Dict[str, Any]:
+        algorithms_path = Path(algorithms_path)
+        algorithm = next(
+            (row for row in list_algorithms(algorithms_path) if str(row.get("id") or "") == str(algorithm_id)),
+            None,
+        )
+        if algorithm is None:
+            raise PlatformError(
+                "ALGORITHM_NOT_FOUND",
+                "训练算法不存在或已被删除",
+                str(algorithm_id),
+                "请刷新算法列表后重新选择。",
+                404,
+            )
+        if (
+            str(algorithm.get("source_type") or "").upper() != SOURCE_EXTERNAL
+            or str(algorithm.get("provider_type") or "").upper() != PROVIDER_CHANGLIAN
+        ):
+            return {
+                "ok": True,
+                "ready": True,
+                "source": "local",
+                "checked_at": utc_now(),
+                "algorithm": algorithm,
+                "refreshed": False,
+            }
+        if str(self.repository.config().get("mode") or "local") != "external":
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_NOT_ACTIVE",
+                "当前外部算法平台未启用",
+                str(algorithm.get("name") or algorithm_id),
+                "请先在“平台对接”启用新畅联并确认连接正常。",
+                409,
+            )
+        product_id = str(algorithm.get("external_product_id") or "").strip()
+        if not product_id:
+            raise PlatformError(
+                "EXTERNAL_PRODUCT_ID_MISSING",
+                "外部算法缺少产品 ID，无法训练",
+                str(algorithm.get("name") or algorithm_id),
+                "请先重新同步新畅联算法主数据。",
+                409,
+            )
+        client = self._client()
+        try:
+            product_rows = _validated_external_items(
+                client.product_info(product_id),
+                id_resolver=_product_id,
+                error_code="EXTERNAL_PRODUCT_DETAIL_ID_MISSING",
+                entity_name=f"算法产品 {product_id} 详情",
+            )
+            matches = [dict(row) for row in product_rows if _product_id(row) == product_id]
+            if len(matches) != 1:
+                raise PlatformError(
+                    "EXTERNAL_PRODUCT_DETAIL_ID_MISMATCH",
+                    "新畅联算法产品详情身份不一致",
+                    f"productId={product_id}; matches={len(matches)}",
+                    "请核对产品详情接口返回的 productId 后重试。",
+                    502,
+                )
+            product = matches[0]
+            product_status = _value_from(product, "status")
+            if product_status is not None and str(product_status).strip() != "1":
+                raise PlatformError(
+                    "EXTERNAL_ALGORITHM_INACTIVE",
+                    "该算法已下架或停用，不能创建训练任务",
+                    f"productId={product_id}; status={product_status}",
+                    "请先在新畅联恢复算法产品，再重新创建训练任务。",
+                    409,
+                )
+            summaries = _validated_external_items(
+                client.analyses(product_id),
+                id_resolver=_analysis_id,
+                error_code="EXTERNAL_ANALYSIS_ID_MISSING",
+                entity_name=f"算法产品 {product_id} 的分析方式",
+            )
+            details = [
+                _analysis_detail_truth(client, summary, product_id=product_id)
+                for summary in summaries
+            ]
+        except PlatformError:
+            raise
+        except Exception as error:
+            raise PlatformError(
+                "EXTERNAL_ALGORITHM_REFRESH_FAILED",
+                "无法读取该算法的最新新畅联详情",
+                str(getattr(error, "detail", error)),
+                "该算法可能已被删除，或新畅联当前不可访问。请确认平台连接和算法状态后重试。",
+                409,
+            ) from error
+
+        visual = _visual_analysis_rows(details)
+        if not visual:
+            raise PlatformError(
+                "EXTERNAL_VISUAL_ANALYSIS_REQUIRED",
+                "该算法当前无法进行视觉训练",
+                f"productId={product_id}; activeVisualAnalyses=0",
+                "该算法当前可能已改为大模型/非视觉分析，或未配置可用视觉分析。只有 status=1 且 analysisType=1 的视觉分析方式可以训练。",
+                409,
+            )
+
+        remote_summaries = [_analysis_summary(row) for row in details if _analysis_id(row)]
+        local_summaries = [
+            dict(row) for row in (algorithm.get("external_analyses") or [])
+            if isinstance(row, Mapping)
+        ]
+
+        def analysis_contract(rows: Iterable[Mapping[str, Any]]) -> list[tuple[str, str, str, tuple[str, ...]]]:
+            values: list[tuple[str, str, str, tuple[str, ...]]] = []
+            for row in rows:
+                summary = _analysis_summary(row)
+                values.append((
+                    str(summary.get("analysis_id") or ""),
+                    str(summary.get("analysis_type") or ""),
+                    str(summary.get("status") or ""),
+                    tuple(sorted(str(value) for value in (summary.get("compute_platform_ids") or []))),
+                ))
+            return sorted(values)
+
+        remote_name = str(_value_from(product, "productName", "name", "algorithmName") or "").strip()
+        remote_code = str(_value_from(product, "productCode", "code") or "").strip()
+        remote_category_id = _category_id(product)
+        drifted = (
+            analysis_contract(local_summaries) != analysis_contract(remote_summaries)
+            or (remote_name and remote_name != str(algorithm.get("name") or "").strip())
+            or remote_code != str(algorithm.get("external_product_code") or "").strip()
+            or remote_category_id != str(algorithm.get("external_category_id") or "").strip()
+        )
+        if drifted:
+            self.sync(
+                project_id=project_id,
+                algorithms_path=algorithms_path,
+                sync_type="auto",
+            )
+            algorithm = next(
+                (row for row in list_algorithms(algorithms_path) if str(row.get("id") or "") == str(algorithm_id)),
+                None,
+            )
+            if algorithm is None or algorithm.get("external_active") is False:
+                raise PlatformError(
+                    "EXTERNAL_ALGORITHM_INACTIVE",
+                    "该算法已被删除或下架，不能创建训练任务",
+                    product_id,
+                    "请刷新算法列表后重新选择。",
+                    409,
+                )
+
+        return {
+            "ok": True,
+            "ready": True,
+            "source": "changlian",
+            "checked_at": utc_now(),
+            "product_id": product_id,
+            "trainable_analysis_ids": [_analysis_id(row) for row in visual],
+            "analyses": remote_summaries,
+            "algorithm": algorithm,
+            "refreshed": drifted,
+        }
+
+
     def sync(
         self,
         *,
@@ -2196,6 +2362,18 @@ def external_algorithm_platform_router(
     @router.get("/provider/weights/{weight_id}")
     def provider_weight_info(weight_id: str):
         return {"ok": True, "response": service._client().weight_info(weight_id)}
+
+    @router.get("/training-preflight")
+    def training_preflight(
+        project_id: str = Query(..., min_length=1),
+        algorithm_id: str = Query(..., min_length=1),
+    ):
+        get_project(project_id)
+        return service.training_preflight(
+            project_id=project_id,
+            algorithms_path=algorithms_file(project_id),
+            algorithm_id=algorithm_id,
+        )
 
     @router.get("/readiness")
     def readiness(project_id: str = Query(..., min_length=1)):

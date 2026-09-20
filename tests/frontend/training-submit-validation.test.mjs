@@ -60,8 +60,8 @@ test('backend 422 validation detail exposes the exact failing field', () => {
 
 test('training create re-reads algorithm truth before opening and training log refresh stays modal-local', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /\/api\/v12\/projects\/\$\{pid\(\)\}\/algorithms\/\$\{encodeURIComponent\(algorithmId\)\}/);
-  assert.match(source, /ExternalAlgorithmPlatformRuntime\?\.trainingReadiness\?\.\(algorithmId\)/);
+  assert.match(source, /\/api\/v63\/external-algorithm-platform\/training-preflight\?project_id=/);
+  assert.match(source, /algorithm_id=\$\{encodeURIComponent\(algorithmId\)\}/);
   assert.match(source, /训练算法不存在或已被删除/);
   assert.match(source, /refreshTrainRunCenter429/);
   assert.match(source, /data-train-run-center/);
@@ -70,7 +70,7 @@ test('training create re-reads algorithm truth before opening and training log r
 
 test('annotation workbench saves locally without full reload and cleans pointer listeners', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /ann420ConfirmEmpty/);
+  assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420ConfirmEmpty[\s\S]*?确认无目标/);
   assert.match(source, /confirmEmptyAnnotation420/);
   assert.match(source, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
   assert.match(source, /annPointerAbort/);
@@ -86,4 +86,15 @@ test('dashboard training task success rate distinguishes no-data and successful 
   assert.match(source, /训练任务成功率/);
   assert.match(source, /successRate=\(doneJobs\.length\+failed\).*:null/);
   assert.doesNotMatch(source, /successRate=\(doneJobs\.length\+failed\).*:0/);
+});
+
+
+test('algorithm detail modal exposes summary facts without stale failure reason', () => {
+  const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const detail = source.match(/window\.viewAlgorithm429=function\(id\)\{[^\n]+/s)?.[0] || '';
+  assert.match(detail, /alg429-detail-stats/);
+  assert.match(detail, /成功训练/);
+  assert.match(detail, /当前版本/);
+  assert.match(detail, /当前 mAP50/);
+  assert.doesNotMatch(detail, /失败原因/);
 });

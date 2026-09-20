@@ -59,7 +59,7 @@ jobs:
           grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
-          grep -Fq '/api/v12/projects/${pid()}/algorithms/${encodeURIComponent(algorithmId)}' static/app.js
+          grep -Fq '/api/v63/external-algorithm-platform/training-preflight?project_id=${encodeURIComponent(pid())}&algorithm_id=${encodeURIComponent(algorithmId)}' static/app.js
           grep -Fq 'refreshTrainRunCenter429' static/app.js
           grep -Fq 'annPointerAbort' static/app.js
           grep -Fq 'training create re-reads algorithm truth before opening and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs

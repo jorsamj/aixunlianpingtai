@@ -86,7 +86,7 @@ jobs:
           grep -Fq 'payload.task_id = plannedTaskId' static/modules/training-submit.js
           grep -Fq 'task_id: Optional[str] = None' app.py
           grep -Fq 'dataset_revision_id' app.py
-          grep -Fq "const rows=[['数据版本',job.dataset_revision_id" static/app.js
+          grep -Fq "const rows=[['所属算法',job.asset_algorithm_name||job.algorithm_name||job.asset_algorithm_id||'-'],['训练任务',job.id],['数据版本',job.dataset_revision_id" static/app.js
           grep -Fq "['训练快照',job.snapshot_id" static/app.js
           grep -Fq 'train_[0-9a-f]{16,32}' app.py
           if grep -Fq 'setInterval(' static/modules/training-task-visibility-runtime.js; then
