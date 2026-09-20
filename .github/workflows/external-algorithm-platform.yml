@@ -7,6 +7,7 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/algorithm_sql_store.py
       - platform_core/integration_audit.py
       - platform_core/storage/source_repository.py
       - static/main.mjs
@@ -18,6 +19,7 @@ on:
       - static/modules/training-submit.js
       - tests/unit/test_secrets.py
       - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_algorithm_sql_store.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
       - tests/unit/storage/test_source_repository.py
@@ -40,6 +42,7 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/algorithm_sql_store.py
       - platform_core/integration_audit.py
       - platform_core/storage/source_repository.py
       - static/main.mjs
@@ -51,6 +54,7 @@ on:
       - static/modules/training-submit.js
       - tests/unit/test_secrets.py
       - tests/unit/test_external_algorithm_platform.py
+      - tests/unit/test_algorithm_sql_store.py
       - tests/unit/test_integration_audit.py
       - tests/unit/test_changlian_audit_client.py
       - tests/unit/storage/test_source_repository.py
@@ -83,6 +87,7 @@ jobs:
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
             tests/unit/test_secrets.py \
             tests/unit/test_external_algorithm_platform.py \
+            tests/unit/test_algorithm_sql_store.py \
             tests/unit/test_integration_audit.py \
             tests/unit/test_changlian_audit_client.py \
             tests/unit/storage/test_source_repository.py
@@ -124,6 +129,8 @@ jobs:
           grep -Fq 'EXTERNAL_VISUAL_ANALYSIS_MISSING' platform_core/external_algorithm_platform.py
           grep -Fq 'test_external_sync_only_exposes_enabled_visual_analyses_for_training' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_external_training_rejects_non_visual_or_disabled_analysis' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)' platform_core/algorithm_sql_store.py
+          grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
           grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
           grep -q "test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces" tests/unit/test_external_algorithm_platform.py
