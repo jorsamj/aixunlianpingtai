@@ -9138,15 +9138,37 @@ def v48_stop_job(project_id: str, job_id: str):
 @app.delete("/api/v12/projects/{project_id}/jobs/{job_id}")
 def v12_delete_job(project_id: str, job_id: str):
     get_project(project_id)
-    # 先尝试停止
-    proc = PROCESS_REGISTRY.get(job_id)
-    if proc and proc.poll() is None:
-        try: proc.terminate()
-        except Exception: pass
-        PROCESS_REGISTRY.pop(job_id, None)
-    shutil.rmtree(project_dir(project_id) / "jobs" / job_id, ignore_errors=True)
-    try: _v48_dispatch_training_queues(project_id)
-    except Exception: pass
+    job_dir = project_dir(project_id) / "jobs" / job_id
+    job = read_json(job_dir / "job.json", {})
+    durable = _durable_training_task(project_id, job_id)
+
+    # DELETE is a safety boundary, not merely a UI cleanup. A caller may bypass
+    # the frontend's Stop -> Delete sequence, so durable work must be cancelled
+    # here as well before its visible job record disappears.
+    durable_active = durable is not None and durable.status in {
+        TaskStatus.QUEUED,
+        TaskStatus.RUNNING,
+        TaskStatus.CANCEL_REQUESTED,
+    }
+    legacy_active = str(job.get("status") or "").lower() in {
+        "queued", "waiting", "pending", "running", "paused",
+    }
+    if durable_active or legacy_active:
+        v48_stop_job(project_id, job_id)
+    else:
+        proc = PROCESS_REGISTRY.get(job_id)
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            PROCESS_REGISTRY.pop(job_id, None)
+
+    shutil.rmtree(job_dir, ignore_errors=True)
+    try:
+        _v48_dispatch_training_queues(project_id)
+    except Exception:
+        pass
     sync_jobs_index(project_id)
     return {"ok": True}
 

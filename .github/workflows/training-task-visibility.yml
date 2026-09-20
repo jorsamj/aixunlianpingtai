@@ -21,6 +21,7 @@ on:
       - tests/frontend/training-task-visibility-runtime.test.mjs
       - tests/frontend/poll-registry.test.mjs
       - tests/api/test_training_unified_task_overlay.py
+      - tests/api/test_durable_training_controls.py
       - tests/browser/training-task-performance.spec.mjs
       - .github/workflows/training-task-visibility.yml
   workflow_dispatch:
@@ -56,6 +57,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_training_unified_task_overlay.py
+          tests/api/test_durable_training_controls.py
       - name: Training visibility and identity focused tests
         run: >-
           node --test
@@ -84,6 +86,9 @@ jobs:
           grep -Fq 'train_success_rate=(round(len(done)/terminal_training_count*100,1) if terminal_training_count else None)' app.py
           grep -Fq '暂无已结束训练可统计' static/app.js
           grep -Fq 'payload.task_id = plannedTaskId' static/modules/training-submit.js
+          grep -Fq 'durable_active = durable is not None and durable.status in {' app.py
+          grep -Fq 'v48_stop_job(project_id, job_id)' app.py
+          grep -Fq 'test_direct_delete_cancels_durable_training_before_hiding_job' tests/api/test_durable_training_controls.py
           grep -Fq 'task_id: Optional[str] = None' app.py
           grep -Fq 'dataset_revision_id' app.py
           grep -Fq "const rows=[['所属算法',job.asset_algorithm_name||job.algorithm_name||job.asset_algorithm_id||'-'],['训练任务',job.id],['数据版本',job.dataset_revision_id" static/app.js
