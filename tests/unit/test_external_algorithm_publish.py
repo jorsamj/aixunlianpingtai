@@ -43,6 +43,10 @@ class FakePublishingClient:
     weight_creates = 0
     last_version_payload = None
     last_weight_payload = None
+    last_version_list_path = None
+    last_version_create_path = None
+    last_weight_list_path = None
+    last_weight_create_path = None
 
     def __init__(self, **_kwargs):
         pass
@@ -55,11 +59,17 @@ class FakePublishingClient:
         cls.weight_creates = 0
         cls.last_version_payload = None
         cls.last_weight_payload = None
+        cls.last_version_list_path = None
+        cls.last_version_create_path = None
+        cls.last_weight_list_path = None
+        cls.last_weight_create_path = None
 
-    def list_product_versions(self, _path):
+    def list_product_versions(self, path):
+        type(self).last_version_list_path = path
         return {"code": 200, "data": list(self.versions)}
 
-    def create_algorithm_version(self, _path, payload):
+    def create_algorithm_version(self, path, payload):
+        type(self).last_version_create_path = path
         type(self).version_creates += 1
         type(self).last_version_payload = dict(payload)
         row = {
@@ -72,10 +82,12 @@ class FakePublishingClient:
         type(self).versions.append(row)
         return {"code": 200, "data": {"algoVersionId": row["algoVersionId"]}}
 
-    def list_version_weights(self, _path):
+    def list_version_weights(self, path):
+        type(self).last_weight_list_path = path
         return {"code": 200, "data": list(self.weights)}
 
-    def create_weight(self, _path, payload):
+    def create_weight(self, path, payload):
+        type(self).last_weight_create_path = path
         type(self).weight_creates += 1
         type(self).last_weight_payload = dict(payload)
         row = {"weightId": f"w-{type(self).weight_creates}", **dict(payload)}
@@ -411,6 +423,10 @@ def test_publish_uploads_artifact_and_registers_version_and_weight(tmp_path: Pat
     assert result["external_algo_version_id"] == "av-1"
     assert FakePublishingClient.version_creates == 1
     assert FakePublishingClient.weight_creates == 1
+    assert FakePublishingClient.last_version_list_path == "/internal/algorithm/algorithm-version/listByProduct/product-1"
+    assert FakePublishingClient.last_version_create_path == "/internal/algorithm/algorithm-version/add"
+    assert FakePublishingClient.last_weight_list_path == "/internal/algorithm/algorithm-weight/listByVersion/av-1"
+    assert FakePublishingClient.last_weight_create_path == "/internal/algorithm/algorithm-weight/add"
     assert FakePublishingClient.last_version_payload == {
         "versionName": "20260917120000",
         "versionNo": "20260917120000",
