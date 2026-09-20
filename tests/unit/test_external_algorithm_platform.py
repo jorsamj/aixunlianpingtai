@@ -470,7 +470,7 @@ def test_auto_sync_due_respects_switch_and_interval(tmp_path: Path):
         mode="external",
         provider="changlian",
         base_url="https://changlian.example",
-        auto_sync_enabled=True,
+        auto_sync_enabled=False,
         auto_sync_interval_seconds=600,
         access_key="ak",
         access_secret="secret",
@@ -495,6 +495,8 @@ def test_public_config_marks_test_sign_as_integration_bridge(tmp_path: Path):
     )
     public = service.public_config()
     assert public["auth_mode"] == "test_sign_bridge"
+    assert public["auto_sync_enabled"] is True
+    assert public["auto_publish_enabled"] is True
     assert public["auto_sync_interval_seconds"] == 60
 
 def test_external_training_analysis_requires_choice_for_multiple_methods():
