@@ -143,6 +143,8 @@ jobs:
         shell: bash
         run: |
           grep -Fq '"source_trace": dict(conversion.get("source_trace") or {})' platform_core/remote_execution_transport.py
+          grep -Fq 'REMOTE_CONVERSION_SOURCE_TRACE_MISSING' platform_core/remote_execution_transport.py
+          grep -Fq 'test_model_conversion_rejects_missing_source_lineage' tests/unit/test_remote_execution_transport.py
           grep -Fq 'assert job["source_trace"]["algorithm_id"] == "a1"' tests/unit/test_remote_execution_transport.py
           grep -Fq 'assert job["source_trace"]["version_id"] == "v1"' tests/unit/test_remote_execution_transport.py
           grep -Fq 'class AgentConversionRunner' platform_core/node_agent_conversion_runtime.py
