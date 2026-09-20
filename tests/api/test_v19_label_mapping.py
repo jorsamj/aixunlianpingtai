@@ -73,6 +73,19 @@ def test_v19_yolo_requires_explicit_label_mapping_before_formal_import(client):
     assert final["report"]["label_box_counts"] == {"helmet": 2}
     labels = client.get(f"/api/v12/projects/{project['id']}/labels").json()["items"]
     assert [row["code"] for row in labels] == ["helmet"]
+    assert labels[0]["aliases"] == ["toukui1", "toukui2"]
+
+    remembered = client.post(
+        f"/api/v19/projects/{project['id']}/datasets/default/import/jobs",
+        files={"file": ("labels-again.zip", _yolo_zip(), "application/zip")},
+    )
+    assert remembered.status_code == 200, remembered.text
+    remembered_job = remembered.json()
+    assert remembered_job["label_confirmation_required"] is True
+    assert [row["target_label_code"] for row in remembered_job["external_classes"]] == [
+        "helmet", "helmet",
+    ]
+
     review = client.get(f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review").json()
     assert len(review["image_ids"]) == 2
     for image_id in review["image_ids"]:
