@@ -620,6 +620,7 @@ class MaterialBatchHandler:
                 )
 
         annotations = AnnotationRepository(project_path)
+        materials = MaterialRepository(project_path)
         total = max(0, int(manifest.summary().get("total") or 0))
         append_task_log(
             context, "processing",
@@ -659,12 +660,25 @@ class MaterialBatchHandler:
             batch = list(batch[:REMAP_BATCH_SIZE])
             ids = [str(row["image_id"]) for row in batch]
             manifest.transition(ids, "running")
-            snapshots = annotations.get_many(ids)
             current_target_id = target_class_id()
+            existing = {str(item["id"]) for item in materials.get_many(ids)}
+            missing_ids = [image_id for image_id in ids if image_id not in existing]
+            if missing_ids:
+                manifest.transition(missing_ids, "failed", "MATERIAL_NOT_FOUND")
+                for image_id in missing_ids:
+                    append_task_log(
+                        context, "remap_missing_material",
+                        f"image_id={image_id}",
+                    )
+            active_rows = [
+                row for row in batch if str(row["image_id"]) in existing
+            ]
+            active_ids = [str(row["image_id"]) for row in active_rows]
+            snapshots = annotations.get_many(active_ids) if active_ids else {}
             executable = []
             plans = {}
             failed = []
-            for row in batch:
+            for row in active_rows:
                 image_id = str(row["image_id"])
                 current = snapshots[image_id]
                 current_digest = annotations.record_digest(current)
