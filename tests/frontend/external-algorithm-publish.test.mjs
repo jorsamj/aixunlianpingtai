@@ -26,8 +26,8 @@ test('publish config normalizes storage, compute mappings and recovery paths', (
   assert.equal(config.publishOriginalModel, true);
   assert.equal(config.targetMappings.rockchip.compute_platform_id, 'cp-rk');
   assert.equal(config.targetMappings.rockchip.chip_code, 'RK3568');
-  assert.equal(config.versionListByProduct, '/algorithm-version/listByProduct/{productId}');
-  assert.equal(config.weightListByVersion, '/algorithm-weight/listByVersion/{algoVersionId}');
+  assert.equal(config.versionListByProduct, '/internal/algorithm/algorithm-version/listByProduct/{productId}');
+  assert.equal(config.weightListByVersion, '/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}');
   assert.equal(config.storageSources.length, 1);
   assert.equal(config.computePlatforms.length, 1);
 });
@@ -172,4 +172,18 @@ test('manual publish fetches read-only status before write request', () => {
   assert.ok(statusRead >= 0);
   assert.ok(preflight > statusRead);
   assert.ok(publishWrite > preflight);
+});
+
+
+test('publish UI locks recovery endpoints to official OpenAPI', async () => {
+  const source = await readFile(
+    new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /官方发布接口/);
+  assert.match(source, /接口路径来自新畅联官方 OpenAPI，平台固定使用，不允许手工修改/);
+  assert.doesNotMatch(source, /id="externalPublishVersionList"/);
+  assert.doesNotMatch(source, /id="externalPublishWeightList"/);
+  assert.match(source, /version_list_by_product: '\/internal\/algorithm\/algorithm-version\/listByProduct\/\{productId\}'/);
+  assert.match(source, /weight_list_by_version: '\/internal\/algorithm\/algorithm-weight\/listByVersion\/\{algoVersionId\}'/);
 });
