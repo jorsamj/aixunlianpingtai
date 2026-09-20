@@ -523,7 +523,7 @@ window.__resourceDiscoveryDependencies={
       qualityBox.innerHTML=`<p><b>标注数据质量</b> · 有效框 ${Number(quality.boxes||0)} · 异常 ${issueCount}</p>${Object.keys(issues).length?`<p>${Object.entries(issues).map(([code,count])=>`${esc(code)}：${Number(count||0)}`).join(' · ')}</p><label><input id="sr61AcceptQuality" type="checkbox"> 已确认标注质量报告</label>`:''}`;
       const labels=(state.project?.labels||state.currentProject?.labels||[]);
       const classes=Array.isArray(task.external_classes)?task.external_classes:[];
-      mappingBox.innerHTML=classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签</b>${classes.map(row=>`<div class="storage61-mapping-row" data-rescan-class="${esc(row.class_id)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><input class="input" data-label-code value="${esc(row.target_label_code||'')}" placeholder="平台标签编码" aria-label="${esc(row.name)}的平台标签" list="sr61LabelCodes"><label><input type="checkbox" data-create-label> 新建标签</label></div>`).join('')}<datalist id="sr61LabelCodes">${labels.map(code=>`<option value="${esc(code)}"></option>`).join('')}</datalist></div>`:'';
+      mappingBox.innerHTML=classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签</b>${classes.map(row=>`<div class="storage61-mapping-row" data-rescan-class="${esc(row.class_id)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(code=>`<option value="${esc(code)}" ${String(code)===String(row.target_label_code||'')?'selected':''}>${esc(code)}</option>`).join('')}</select></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
     }
     async function loadPreflight(){
       try{
@@ -584,10 +584,9 @@ window.__resourceDiscoveryDependencies={
       try{
         const body={new:document.getElementById('sr61New').checked?'import':'ignore',missing:document.getElementById('sr61Missing').checked?'mark_unavailable':'ignore',changed:document.getElementById('sr61Changed').checked?'update':'ignore',annotation_changed:document.getElementById('sr61AnnotationChanged').checked?'update':'ignore',annotation_removed:document.getElementById('sr61AnnotationRemoved').checked?'clear':'keep',annotation_conflicts:document.getElementById('sr61AnnotationConflicts').checked?'overwrite':'keep'};
         if(['yolo','coco','voc'].includes(lastTask?.import_format)){
-          const rows=[...document.querySelectorAll('[data-rescan-class]')].map(row=>({classId:row.dataset.rescanClass,code:String(row.querySelector('[data-label-code]')?.value||'').trim(),create:!!row.querySelector('[data-create-label]')?.checked}));
+          const rows=[...document.querySelectorAll('[data-rescan-class]')].map(row=>({classId:row.dataset.rescanClass,code:String(row.querySelector('[data-label-code]')?.value||'').trim()}));
           if(rows.some(row=>!row.code))throw new Error('请完成所有外部类别的平台标签映射');
           body.label_mapping=Object.fromEntries(rows.map(row=>[row.classId,row.code]));
-          body.create_labels=rows.filter(row=>row.create).map(row=>row.code);
           body.accept_quality_report=!!document.getElementById('sr61AcceptQuality')?.checked;
           if(Object.keys(lastTask.quality?.issues||{}).length&&!body.accept_quality_report)throw new Error('请先确认标注数据质量报告');
         }
@@ -645,13 +644,13 @@ window.__resourceDiscoveryDependencies={
       const summary=(view.canConfirm||view.terminal)?`<div class="storage61-import-summary"><span>已扫描 <b>${scanned}</b></span><span>可导入 <b>${importable}</b></span><span>重复 <b>${duplicates}</b></span><span>失败 <b>${failed}</b></span></div>`:'';
       const quality=result.quality,classes=result.external_classes||[];
       const qualityHtml=quality?`<div class="storage61-import-quality"><b>标注数据质量</b><p>有效框 ${safeCount(quality.boxes)} · 已标注 ${safeCount(quality.annotation_status?.annotated)} · 确认空标注 ${safeCount(quality.annotation_status?.confirmed_empty)} · 缺失标注 ${safeCount(quality.annotation_status?.unannotated)} · 无效标注 ${safeCount(quality.annotation_status?.invalid)}</p><p>${Object.entries(quality.issues||{}).map(([code,n])=>`${esc(code)}：${safeCount(n)}`).join(' · ')||'未发现质量问题'}</p>${(quality.examples||[]).length?`<details><summary>查看问题示例</summary>${quality.examples.map(row=>`<p>${esc(row.object_key)} · 第 ${safeCount(row.line_number)} 行 · ${esc(row.code)}</p>`).join('')}</details>`:''}</div>`:'';
-      const labels=(state.project?.labels||state.currentProject?.labels||[]),mappingHtml=view.canConfirm&&classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签编码</b><p>填写现有启用标签编码，或勾选明确新建。</p>${classes.map((row,index)=>`<div class="storage61-mapping-row" data-import-class="${esc(row.class_id)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><input class="input" data-label-code value="${esc(row.target_label_code||'')}" placeholder="平台标签编码" aria-label="${esc(row.name)}的平台标签" list="si61LabelCodes"><label><input type="checkbox" data-create-label> 新建标签</label></div>`).join('')}<datalist id="si61LabelCodes">${labels.map(code=>`<option value="${esc(code)}"></option>`).join('')}</datalist></div>`:'';
+      const labels=(state.project?.labels||state.currentProject?.labels||[]),mappingHtml=view.canConfirm&&classes.length?`<div class="storage61-import-mapping"><b>外部类别 → 平台标签编码</b>${classes.map(row=>`<div class="storage61-mapping-row" data-import-class="${esc(row.class_id)}"><span>${esc(row.class_id)} · ${esc(row.name)}</span><select class="select" data-label-code aria-label="${esc(row.name)}的平台标签"><option value="">选择平台标签</option>${labels.map(code=>`<option value="${esc(code)}" ${String(code)===String(row.target_label_code||'')?'selected':''}>${esc(code)}</option>`).join('')}</select></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标签</button></div></div>`:'';
       const acceptance=view.canConfirm&&quality?'<label class="field check"><input id="si61AcceptQuality" type="checkbox"> 已查看并接受质量报告（无效标注行将跳过）</label>':'';
       const confirm=view.canConfirm?`<button id="si61Confirm" class="btn mini primary" onclick="confirmStorageImport61('${taskId}')">确认建立索引</button>`:'';
       const error=(view.status==='FAILED'||view.status==='CANCELLED'||view.status==='BLOCKED_BY_ENVIRONMENT')?`<div class="alert err">${esc(task?.error||result?.error?.message||view.text||'导入失败')}</div>`:'';
       status.innerHTML=`<div class="storage61-task-head"><b>${esc(view.text||task?.status||'处理中')}</b><small>${esc(task?.status||'')} ${task?.stage?`· ${esc(task.stage)}`:''}</small></div>${summary}${qualityHtml}${mappingHtml}${acceptance}${error}${confirm?`<div class="row end">${confirm}</div>`:''}`;
       const updateConfirm=()=>{const button=document.getElementById('si61Confirm');if(button)button.disabled=[...status.querySelectorAll('[data-label-code]')].some(input=>!input.value.trim())||(Object.keys(quality?.issues||{}).length>0&&!document.getElementById('si61AcceptQuality')?.checked)};
-      status.querySelectorAll('input').forEach(input=>input.addEventListener('input',updateConfirm));updateConfirm();
+      status.querySelectorAll('input,select').forEach(input=>input.addEventListener('input',updateConfirm));updateConfirm();
     }
 
     window.renderStorageImportTask61=renderImportTask;
@@ -762,10 +761,10 @@ window.__resourceDiscoveryDependencies={
     window.confirmStorageImport61=async function(taskId){
       const button=document.getElementById('si61Confirm');if(button)button.disabled=true;
       try{
-        const rows=[...document.querySelectorAll('[data-import-class]')].map(row=>({classId:row.dataset.importClass,code:row.querySelector('[data-label-code]')?.value,create:row.querySelector('[data-create-label]')?.checked}));
+        const rows=[...document.querySelectorAll('[data-import-class]')].map(row=>({classId:row.dataset.importClass,code:row.querySelector('[data-label-code]')?.value}));
         const body=serverApi().buildImportConfirmation(rows,document.getElementById('si61AcceptQuality')?.checked);
         const task=await importRequest(`${taskUrl(taskId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});saveTask(taskId);const completed=await pollTask(taskId,task);
-        if(completed?.status==='SUCCEEDED'){if(rows.some(row=>row.create))await window.refreshLabels414?.(false);if(state.page==='数据集')await window.reloadMaterialPage61?.();toast(`素材索引已建立：${safeCount(completed.result?.imported)} 条`)}
+        if(completed?.status==='SUCCEEDED'){if(state.page==='数据集')await window.reloadMaterialPage61?.();toast(`素材索引已建立：${safeCount(completed.result?.imported)} 条`)}
       }catch(error){if(!isAbort(error)){const status=document.getElementById('si61Status');if(status){status.querySelector('.storage61-confirm-error')?.remove();status.insertAdjacentHTML('beforeend',`<div class="alert err storage61-confirm-error">${esc(error?.message||error||'确认导入失败')}</div>`)}}}
       finally{if(button?.isConnected)button.disabled=false}
     };
