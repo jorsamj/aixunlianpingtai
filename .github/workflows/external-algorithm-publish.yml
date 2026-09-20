@@ -147,6 +147,9 @@ jobs:
           grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/external_algorithm_publish.py
           grep -Fq 'project / "deployment" / "jobs", project / "deploy" / "jobs"' platform_core/model_artifacts.py
           grep -q "test_rollback_remote_delete_uses_official_version_remove" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_remote_delete_recovers_when_timeout_happens_after_remote_commit" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_remote_delete_timeout_fails_closed_when_version_still_exists" tests/unit/test_external_algorithm_publish.py
+          grep -q "EXTERNAL_VERSION_DELETE_FAILED" platform_core/external_algorithm_publish.py
           grep -q "test_rollback_remote_delete_failure_keeps_local_versions_unchanged" tests/unit/test_algorithms.py
           grep -q "test_historical_version_remote_delete_failure_keeps_local_version" tests/unit/test_algorithms.py
           grep -q "delete_version_for_rollback" platform_core/external_algorithm_publish.py
