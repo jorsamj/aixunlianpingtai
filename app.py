@@ -3562,12 +3562,15 @@ def add_label(project_id: str, payload: AddLabelReq):
     project = get_project(project_id)
     normalized_code = normalize_label(payload.label)
     try:
-        aliases = _validate_label_aliases(
-            project,
-            payload.aliases or [],
-            target_class_id=None,
-            target_code=normalized_code,
-            target_display_name=payload.display_name or normalized_code,
+        aliases = (
+            _validate_label_aliases(
+                project,
+                payload.aliases,
+                target_class_id=None,
+                target_code=normalized_code,
+                target_display_name=payload.display_name or normalized_code,
+            )
+            if payload.aliases is not None else None
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -3582,9 +3585,10 @@ def add_label(project_id: str, payload: AddLabelReq):
             meta[idx]["display_name"] = payload.display_name
         if payload.color:
             meta[idx]["color"] = payload.color
-        _set_project_label_aliases(
-            project, project["labels"][idx], aliases, replace=True,
-        )
+        if aliases is not None:
+            _set_project_label_aliases(
+                project, project["labels"][idx], aliases, replace=True,
+            )
     save_project(project)
     return {"ok": True, "class_id": idx, "labels": project["labels"], "label_meta": project.get("label_meta", [])}
 
