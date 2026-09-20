@@ -4002,7 +4002,64 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   window.toggleImport414=(id,on)=>{on?state.import412Selected.add(String(id)):state.import412Selected.delete(String(id));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
   window.selectImportAll414=()=>{(state.import412?.image_ids||[]).forEach(id=>state.import412Selected.add(String(id)));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
   window.invertImport414=()=>{(state.import412?.image_ids||[]).forEach(id=>state.import412Selected.has(String(id))?state.import412Selected.delete(String(id)):state.import412Selected.add(String(id)));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
-  window.remapImport414=async function(source,selectId){const target=document.getElementById(selectId)?.value||'';if(!target)return toast('请选择标签库中的标准标签');const ids=[...state.import412Selected];if(!ids.length)return toast('请选择本次导入素材');try{const rr=await api(`/api/v52/projects/${pid()}/labels/remap`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids,source_label:source,target_label:target})});await Promise.all([window.loadCore412(),refreshLabels414(false)]);const review=await api(`/api/v52/projects/${pid()}/import/jobs/${state.import412.job_id}/review`);state.import412.label_box_counts=review.label_box_counts||{};const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html());toast(`已同步 ${rr.changed_boxes||0} 个框：${source} → ${target}`)}catch(e){toast(e.message||e)}};
+  function importRemapProgress414(task,source,target){
+    const total=Math.max(0,Number(task?.total||0)),processed=Math.max(0,Number(task?.processed||0)),raw=Number(task?.progress_percent),pct=Number.isFinite(raw)?Math.max(0,Math.min(100,raw)):(total?processed/total*100:0),status=String(task?.status||'').toUpperCase(),active=['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(status),stage=String(task?.stage||task?.phase||'')==='REMAPPING_ANNOTATION_LABELS'?'正在批量统一标签':(task?.stage||task?.phase||'等待任务调度'),detail=task?.current_item||`${processed}/${total||'-'} · ${source} → ${target}`;
+    return `<div class="zip411"><div class="zip411-main"><div class="zip411-progress"><div><span id="importRemapStage414">${esc(stage)}</span><b id="importRemapPct414">${Math.round(pct)}%</b></div><i><em id="importRemapBar414" style="width:${pct}%"></em></i><p id="importRemapMsg414">${esc(detail)}</p></div><div class="report429-kpis"><div><span>待处理</span><b>${Math.max(0,total-processed)}</b></div><div><span>已处理</span><b>${processed}</b></div><div><span>成功</span><b>${Number(task?.succeeded||0)}</b></div><div><span>失败</span><b>${Number(task?.failed||0)}</b></div></div>${active?'<div class="row end"><button class="btn danger" onclick="cancelImportRemap414()">取消任务</button><button class="btn" onclick="closeModal()">后台运行</button></div>':'<div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>'}</div></div>`;
+  }
+  function armImportRemap414(taskId,source,target){
+    const key='import-label-remap';
+    const run=()=>pollImportRemap414(taskId,source,target);
+    if(window.PollRegistryRuntime?.startTimeout)return window.PollRegistryRuntime.startTimeout(key,['数据集'],run,850);
+    return setTimeout(()=>{if(state.page==='数据集')run()},850);
+  }
+  async function refreshImportReviewAfterRemap414(task,source,target){
+    await Promise.all([window.loadCore412(),refreshLabels414(false)]);
+    const jobId=state.import412?.job_id;
+    if(jobId){
+      const review=await api(`/api/v52/projects/${pid()}/import/jobs/${jobId}/review`);
+      state.import412.label_box_counts=review.label_box_counts||{};
+    }
+    const changed=Number(task?.changed_boxes??task?.result?.changed_boxes??0),failed=Number(task?.failed||0);
+    closeModal();
+    if(jobId)modal('本次导入素材',importReview414Html(),true);
+    toast(failed?`标签统一完成：${changed} 个框已更新，${failed} 张需复核`:`标签统一完成：${changed} 个框 · ${source} → ${target}`);
+  }
+  window.pollImportRemap414=async function(taskId,source,target){
+    try{
+      const task=await api(`/api/v62/projects/${pid()}/material-batches/${taskId}`);
+      state.import412RemapTask=task;
+      const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);
+      if(body)window.ModalContentRuntime.replace(body,importRemapProgress414(task,source,target));
+      const status=String(task.status||'').toUpperCase();
+      if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status)){
+        window.PollRegistryRuntime?.clear?.('import-label-remap');
+        return refreshImportReviewAfterRemap414(task,source,target);
+      }
+      if(['FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status)){
+        window.PollRegistryRuntime?.clear?.('import-label-remap');
+        return toast(task?.error_examples?.[0]?.error||'标签统一任务未完成，请查看任务状态');
+      }
+      armImportRemap414(taskId,source,target);
+    }catch(e){
+      toast(e.message||e);
+      armImportRemap414(taskId,source,target);
+    }
+  };
+  window.cancelImportRemap414=async function(){
+    const task=state.import412RemapTask,id=task?.task_id||task?.id;if(!id)return;
+    try{await api(`/api/v62/projects/${pid()}/material-batches/${id}/cancel`,{method:'POST'});await pollImportRemap414(id,task?.result?.source_label||'',task?.result?.target_label||'')}catch(e){toast(e.message||e)}
+  };
+  window.remapImport414=async function(source,selectId){
+    const target=document.getElementById(selectId)?.value||'';if(!target)return toast('请选择标签库中的标准标签');
+    const ids=[...state.import412Selected];if(!ids.length)return toast('请选择本次导入素材');
+    try{
+      const task=await api(`/api/v52/projects/${pid()}/labels/remap`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:ids,source_label:source,target_label:target})});
+      if(!task?.task_id){toast(`无需变更：${source} → ${target}`);return}
+      state.import412RemapTask=task;
+      modal('批量统一标签',importRemapProgress414(task,source,target),false);
+      await pollImportRemap414(task.task_id,source,target);
+    }catch(e){toast(e.message||e)}
+  };
   window.importNoClean414=async()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择素材');await markReady412(ids);closeModal();state.data412Tab='processed';if(state.page==='数据集')renderDatasets424()};
   window.importClean414=()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择素材');closeModal();createClean427({image_ids:ids})};
 })();
