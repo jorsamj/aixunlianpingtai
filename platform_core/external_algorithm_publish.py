@@ -266,7 +266,16 @@ class ExternalPublicationRepository:
         return result
 
     def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
+        previous = self.config()
         body = payload.model_dump()
+        merged_mappings = {
+            str(key): dict(value)
+            for key, value in (previous.get("target_mappings") or {}).items()
+            if isinstance(value, dict)
+        }
+        for key, value in (body.get("target_mappings") or {}).items():
+            merged_mappings[str(key)] = dict(value or {})
+        body["target_mappings"] = merged_mappings
         body["schema_version"] = PUBLICATION_SCHEMA_VERSION
         body["public_base_url"] = str(body.get("public_base_url") or "").strip().rstrip("/")
         body["storage_source_id"] = str(body.get("storage_source_id") or "").strip()
