@@ -11293,7 +11293,7 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
 
     classes = list(job.get("external_classes") or [])
     if classes:
-        create_labels = [normalize_label(code) for code in payload.create_labels]
+        create_labels = [str(code).strip() for code in payload.create_labels]
         if any(not code or normalize_label(code) != code for code in create_labels):
             raise HTTPException(status_code=422, detail="新建标签必须使用规范的平台标签编码")
         project = get_project(project_id)
@@ -17220,6 +17220,14 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         raise HTTPException(status_code=400, detail="标签统一映射包含不存在的候选标签：" + "、".join(unknown_sources))
     if unknown_targets:
         raise HTTPException(status_code=400, detail="标签统一映射目标不在当前有效标签库：" + "、".join(unknown_targets))
+    for decision in decisions:
+        for box in decision.boxes or []:
+            source = str(box.get("label") or "").strip()
+            if not source or (source not in label_ids and source not in mapping):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"候选框标签不在当前有效标签库：{source or '(empty)'}",
+                )
 
     store.apply_decisions(decisions)
     try:

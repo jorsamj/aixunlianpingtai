@@ -260,11 +260,22 @@ class CandidateStore:
                     boxes = []
                     for box in item.get("boxes") or []:
                         current = dict(box)
-                        source = str(current.get("label") or "")
-                        target = normalized.get(source)
-                        if target:
+                        source = str(current.get("label") or "").strip()
+                        if not source:
+                            raise ValueError("annotation candidate label is required")
+                        if source not in normalized and source not in label_ids:
+                            raise ValueError(
+                                f"annotation candidate label is unavailable: {source}"
+                            )
+                        target = normalized.get(source, source)
+                        target_id = int(label_ids[target])
+                        try:
+                            current_id = int(current.get("class_id"))
+                        except (TypeError, ValueError, OverflowError):
+                            current_id = None
+                        if source != target or current_id != target_id:
                             current["label"] = target
-                            current["class_id"] = int(label_ids[target])
+                            current["class_id"] = target_id
                             changed = True
                         boxes.append(current)
                     if changed:
