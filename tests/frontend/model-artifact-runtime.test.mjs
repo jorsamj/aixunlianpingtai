@@ -54,9 +54,11 @@ test('diagnostic copy contains local and remote correlation ids for AI troublesh
 
 test('runtime source exposes storage test, auto upload and interaction log UI', () => {
   const source = fs.readFileSync(new URL('../../static/modules/model-artifact-runtime.js', import.meta.url), 'utf8');
-  assert.match(source, /模型资产存储/);
+  assert.match(source, /算法与转换结果存储/);
   assert.match(source, /畅联云交互日志/);
   assert.match(source, /storage-test/);
+  assert.match(source, /modelArtifactPublicBaseUrl/);
+  assert.match(source, /存储配置/);
   assert.match(source, /run-auto/);
   assert.match(source, /interaction-logs/);
   assert.match(source, /复制诊断信息/);
