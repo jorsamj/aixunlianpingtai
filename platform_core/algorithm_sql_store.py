@@ -93,7 +93,7 @@ class AlgorithmSqlStore:
                 ).fetchall()
                 if analyses:
                     item["external_analyses"] = [self._analysis_from_row(a) for a in analyses]
-                    item["external_analysis_ids"] = [str(a["external_analysis_id"]) for a in analyses]
+                    item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)
                 item.setdefault("version_operations", [])
                 result.append(item)
             return result
@@ -418,7 +418,7 @@ class AlgorithmSqlStore:
         analyses = conn.execute("SELECT * FROM algorithm_external_analyses WHERE algorithm_id=? ORDER BY sort_index ASC, external_analysis_id ASC", (row["id"],)).fetchall()
         if analyses:
             item["external_analyses"] = [self._analysis_from_row(a) for a in analyses]
-            item["external_analysis_ids"] = [str(a["external_analysis_id"]) for a in analyses]
+            item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)
         item.setdefault("version_operations", [])
         return item
 
@@ -426,7 +426,6 @@ class AlgorithmSqlStore:
         payload = dict(item)
         payload.pop("versions", None)
         payload.pop("external_analyses", None)
-        payload.pop("external_analysis_ids", None)
         for key in ("id", "name", "remark", "industry", "algorithm_type", "current_version_id", "source_type", "provider_type", "external_product_id", "external_product_code", "external_category_id", "external_analysis_id", "external_active", "master_data_readonly", "external_last_synced_at", "created_at", "updated_at"):
             payload.pop(key, None)
         return payload
@@ -468,7 +467,7 @@ class AlgorithmSqlStore:
             compute_platform_ids = analysis.get("compute_platform_ids") or analysis.get("computePlatformIds") or []
             conn.execute(
                 """INSERT INTO algorithm_external_analyses (algorithm_id,external_analysis_id,analysis_name,analysis_type,is_default,active,compute_platform_ids_json,sort_index,payload_json) VALUES (?,?,?,?,?,?,?,?,?)""",
-                (algorithm_id, analysis_id, self._nullable_text(analysis.get("analysis_name") or analysis.get("analysisName")), self._nullable_text(analysis.get("analysis_type") or analysis.get("analysisType")), 1 if analysis_id == default_analysis_id else 0, 0 if analysis.get("active") is False else 1, self._dumps(list(compute_platform_ids) if isinstance(compute_platform_ids, (list, tuple, set)) else []), index, self._dumps(analysis)),
+                (algorithm_id, analysis_id, self._nullable_text(analysis.get("analysis_name") or analysis.get("analysisName")), self._nullable_text(analysis.get("analysis_type") or analysis.get("analysisType")), 1 if analysis_id == default_analysis_id else 0, 1 if self._analysis_is_active(analysis) else 0, self._dumps(list(compute_platform_ids) if isinstance(compute_platform_ids, (list, tuple, set)) else []), index, self._dumps(analysis)),
             )
 
     def migration_status(self) -> dict[str, Any]:
@@ -600,7 +599,6 @@ class AlgorithmSqlStore:
             payload = dict(item)
             payload.pop("versions", None)
             payload.pop("external_analyses", None)
-            payload.pop("external_analysis_ids", None)
 
             conn.execute(
                 """INSERT INTO algorithms (
@@ -703,7 +701,7 @@ class AlgorithmSqlStore:
                         self._nullable_text(analysis.get("analysis_name") or analysis.get("analysisName")),
                         self._nullable_text(analysis.get("analysis_type") or analysis.get("analysisType")),
                         1 if analysis_id == default_analysis_id else 0,
-                        0 if analysis.get("active") is False else 1,
+                        1 if self._analysis_is_active(analysis) else 0,
                         self._dumps(list(compute_platform_ids) if isinstance(compute_platform_ids, (list, tuple, set)) else []),
                         analysis_index,
                         self._dumps(analysis),
@@ -721,6 +719,46 @@ class AlgorithmSqlStore:
         if row["training_job_id"] and not value.get("task_id") and not value.get("job_id"):
             value["task_id"] = row["training_job_id"]
         return value
+
+    @staticmethod
+    def _analysis_is_active(analysis: Mapping[str, Any]) -> bool:
+        status = analysis.get("status")
+        if status not in (None, ""):
+            return str(status).strip().lower() not in {"0", "false", "disabled"}
+        return analysis.get("active") is not False
+
+    @staticmethod
+    def _trainable_analysis_ids(item: Mapping[str, Any], analyses: Sequence[sqlite3.Row]) -> list[str]:
+        # external_analysis_ids is the canonical trainable subset. Preserve it
+        # exactly when payload_json contains it, including an intentional [].
+        if "external_analysis_ids" in item:
+            values = item.get("external_analysis_ids")
+            if not isinstance(values, (list, tuple, set)):
+                return []
+            result: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                analysis_id = str(value or "").strip()
+                if analysis_id and analysis_id not in seen:
+                    seen.add(analysis_id)
+                    result.append(analysis_id)
+            return result
+
+        # Legacy rows predate the canonical subset in payload_json. Infer only
+        # for compatibility; new writes must always preserve the explicit list.
+        result: list[str] = []
+        seen: set[str] = set()
+        for row in analyses:
+            if not bool(row["active"]):
+                continue
+            analysis_type = str(row["analysis_type"] or "").strip().lower()
+            if analysis_type and analysis_type not in {"1", "vision", "visual", "video", "视觉"}:
+                continue
+            analysis_id = str(row["external_analysis_id"] or "").strip()
+            if analysis_id and analysis_id not in seen:
+                seen.add(analysis_id)
+                result.append(analysis_id)
+        return result
 
     def _analysis_from_row(self, row: sqlite3.Row) -> dict:
         value = self._json_object(row["payload_json"])
