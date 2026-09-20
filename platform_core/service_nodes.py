@@ -389,12 +389,12 @@ class ServiceNodeRepository:
         elif status == "DISABLED":
             heartbeat_message = "服务节点已停用"
         elif status == "NEVER_CONNECTED":
-            heartbeat_message = "平台尚未收到该 Agent 的心跳"
+            heartbeat_message = "尚未建立过心跳连接"
         else:
             heartbeat_message = "Agent 心跳已超时"
         return {
             "node_id": str(node.get("node_id") or ""),
-            "connected": network.get("reachable") is True,
+            "connected": heartbeat_online,
             "network_tested": bool(network.get("tested")),
             "network_reachable": network.get("reachable"),
             "network_target": str(network.get("target") or ""),
@@ -405,7 +405,7 @@ class ServiceNodeRepository:
             "heartbeat_age_seconds": node.get("heartbeat_age_seconds"),
             "heartbeat_ttl_seconds": node.get("heartbeat_ttl_seconds"),
             "checked_at": utc_now(),
-            "message": network_message,
+            "message": heartbeat_message,
             "heartbeat_message": heartbeat_message,
         }
 
