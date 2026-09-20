@@ -122,9 +122,9 @@ jobs:
           grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
           grep -q "test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces" tests/unit/test_external_algorithm_platform.py
-          grep -Fq 'category_tree: str = "/internal/base/algorithm-category/tree"' platform_core/external_algorithm_platform.py
+          grep -Fq 'category_tree: str = "/internal/base/category/tree"' platform_core/external_algorithm_platform.py
           grep -Fq 'product_list: str = "/internal/algorithm/product-ai/listAll"' platform_core/external_algorithm_platform.py
-          grep -Fq 'analysis_by_product: str = "/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}"' platform_core/external_algorithm_platform.py
+          grep -Fq 'analysis_by_product: str = "/internal/algorithm/algorithm-analysis/listByProduct/{productId}"' platform_core/external_algorithm_platform.py
           grep -Fq 'compute_platform_list: str = "/internal/base/compute-platform/listAll"' platform_core/external_algorithm_platform.py
           grep -Fq 'version_create: str = "/internal/algorithm/algorithm-version/add"' platform_core/external_algorithm_platform.py
           grep -Fq 'weight_create: str = "/internal/algorithm/algorithm-weight/add"' platform_core/external_algorithm_platform.py
@@ -156,16 +156,27 @@ jobs:
           grep -q '@router.get("/readiness")' platform_core/external_algorithm_platform.py
           grep -q '"human_login_required": False' platform_core/external_algorithm_platform.py
           grep -q '"auth_type": "application_credentials"' platform_core/external_algorithm_platform.py
-          grep -Fq 'headers["Access-Token"] = token' platform_core/external_algorithm_platform.py
           grep -Fq 'headers["Authorization"] = f"{token_type} {token}".strip()' platform_core/external_algorithm_platform.py
-          grep -Fq 'auth_header="authorization-bearer"' platform_core/external_algorithm_platform.py
+          if grep -Fq 'headers["Access-Token"] = token' platform_core/external_algorithm_platform.py; then echo "ChangLian business APIs must use official Authorization Bearer contract" >&2; exit 1; fi
+          grep -Fq '"/internal/base/algorithm-category/tree": "/internal/base/category/tree"' platform_core/external_algorithm_platform.py
+          grep -Fq '"/internal/algorithm/algorithm-product-analysis/listByProduct/{productId}": "/internal/algorithm/algorithm-analysis/listByProduct/{productId}"' platform_core/external_algorithm_platform.py
           grep -Fq '"/internal/algorithm/algorithm-product/listAll": "/internal/algorithm/product-ai/listAll"' platform_core/external_algorithm_platform.py
           grep -Fq 'assert kwargs["headers"]["Authorization"] == "Bearer token-1"' tests/unit/test_changlian_audit_client.py
           grep -Fq 'assert "Access-Token" not in kwargs["headers"]' tests/unit/test_changlian_audit_client.py
+          grep -Fq 'test_changlian_full_version_and_weight_contract_uses_bearer_and_official_paths' tests/unit/test_changlian_audit_client.py
+          grep -Fq '@router.post("/provider/versions")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.put("/provider/versions/{algo_version_id}")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.delete("/provider/versions/{algo_version_ids}")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.post("/provider/weights")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.put("/provider/weights/{weight_id}")' platform_core/external_algorithm_platform.py
+          grep -Fq '@router.delete("/provider/weights/{weight_ids}")' platform_core/external_algorithm_platform.py
           grep -Fq 'def _business_code(body: Any) -> str:' platform_core/external_algorithm_platform.py
           grep -Fq 'business_code = _business_code(body)' platform_core/external_algorithm_platform.py
           grep -Fq 'test_changlian_business_failure_is_not_hidden_by_http_200' tests/unit/test_changlian_audit_client.py
           grep -Fq 'test_changlian_product_list_uses_official_path_and_bearer_header' tests/unit/test_changlian_audit_client.py
+          grep -Fq '"versions", "算法版本"' platform_core/external_algorithm_platform.py
+          grep -Fq '"weights", "算法权重"' platform_core/external_algorithm_platform.py
+          grep -Fq 'business_auth_mode": "authorization_bearer"' platform_core/external_algorithm_platform.py
           grep -Fq 'def _repair_legacy_zero_code_rows(self) -> int:' platform_core/integration_audit.py
           grep -Fq 'test_interaction_audit_repairs_only_legacy_http_200_code_zero_false_failures' tests/unit/test_integration_audit.py
           grep -Fq 'CHANG_LIAN_API_DOCUMENTS' platform_core/external_algorithm_platform.py
