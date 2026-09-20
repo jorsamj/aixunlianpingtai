@@ -6,8 +6,8 @@ async function openStoragePage(page) {
     setPageReady: typeof window.setPage === 'function',
     uiReady: typeof state !== 'undefined' ? !!state.uiReady : false,
   })), {timeout: 20_000}).toEqual({setPageReady: true, uiReady: true});
-  await page.evaluate(() => window.setPage('素材存储配置'));
-  await expect(page.getByRole('heading', {name: '素材存储配置', level: 2})).toBeVisible({timeout: 10_000});
+  await page.evaluate(() => window.setPage('存储配置'));
+  await expect(page.getByRole('heading', {name: '存储配置', level: 2})).toBeVisible({timeout: 10_000});
 }
 
 
