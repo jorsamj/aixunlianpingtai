@@ -919,20 +919,40 @@ def _analysis_summary(row: Mapping[str, Any]) -> Dict[str, Any]:
         "analysis_id": _analysis_id(row),
         "analysis_name": _analysis_name(row),
         "analysis_type": str(_value_from(row, "analysisType", "analysisTypeName", "type") or "").strip(),
+        "status": str(_value_from(row, "status") or "").strip(),
         "compute_platform_ids": list(row.get("computePlatformIds") or row.get("compute_platform_ids") or []),
     }
 
 
+def _analysis_is_enabled(row: Mapping[str, Any]) -> bool:
+    status = str(_value_from(row, "status") or "").strip().lower()
+    return status not in {"0", "false", "disabled"}
+
+
+def _analysis_is_visual(row: Mapping[str, Any]) -> bool:
+    explicit_type = str(_value_from(row, "analysisType", "analysis_type", "type") or "").strip()
+    if explicit_type:
+        # Official ChangLian contract: 1=视觉智能分析, 3=大模型智能分析.
+        return explicit_type == "1"
+    text = " ".join(
+        str(row.get(key) or "")
+        for key in ("analysisTypeName", "analysisName", "analysis_name", "name")
+    ).lower()
+    return "视觉" in text or "vision" in text or "video" in text
+
+
+def _visual_analysis_rows(rows: Iterable[Mapping[str, Any]]) -> list[Dict[str, Any]]:
+    return [
+        dict(row)
+        for row in rows
+        if _analysis_id(row) and _analysis_is_visual(row) and _analysis_is_enabled(row)
+    ]
+
+
 def _choose_analysis(rows: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     values = [dict(row) for row in rows]
-    for row in values:
-        text = " ".join(
-            str(row.get(key) or "")
-            for key in ("analysisType", "analysisTypeName", "analysisName", "name")
-        ).lower()
-        if "视觉" in text or "vision" in text or "video" in text:
-            return row
-    return values[0] if values else {}
+    visual = _visual_analysis_rows(values)
+    return visual[0] if visual else {}
 
 
 def _stable_external_id(provider: str, product_id: str) -> str:
@@ -1007,6 +1027,7 @@ def mirror_products_to_algorithms(
         if not pid:
             continue
         analyses = [dict(item) for item in analyses_by_product.get(pid, [])]
+        visual_analyses = _visual_analysis_rows(analyses)
         selected_analysis = _choose_analysis(analyses)
         cid = _category_id(product)
         name = str(_value_from(product, "productName", "name", "algorithmName") or pid).strip()
@@ -1023,7 +1044,7 @@ def mirror_products_to_algorithms(
             "external_product_id": pid,
             "external_product_code": str(_value_from(product, "productCode", "code") or ""),
             "external_analysis_id": _analysis_id(selected_analysis),
-            "external_analysis_ids": [_analysis_id(row) for row in analyses if _analysis_id(row)],
+            "external_analysis_ids": [_analysis_id(row) for row in visual_analyses],
             "external_analyses": [_analysis_summary(row) for row in analyses if _analysis_id(row)],
             "external_category_id": cid,
             "external_compute_platform_ids": list(
@@ -1077,32 +1098,60 @@ def resolve_external_training_analysis(algorithm: Mapping[str, Any] | None, requ
             "历史训练和版本仍可查看；如需继续训练，请先在新畅联恢复该算法产品并重新同步。",
             409,
         )
-    analysis_ids = [str(value) for value in (algorithm.get("external_analysis_ids") or []) if str(value or "").strip()]
-    if not analysis_ids:
-        analysis_ids = [
-            str(row.get("analysis_id") or "")
-            for row in (algorithm.get("external_analyses") or [])
-            if isinstance(row, dict) and str(row.get("analysis_id") or "").strip()
-        ]
+    summaries = [
+        row for row in (algorithm.get("external_analyses") or [])
+        if isinstance(row, dict) and str(row.get("analysis_id") or "").strip()
+    ]
+    explicit_visual_ids = [
+        str(row.get("analysis_id") or "")
+        for row in summaries
+        if _analysis_is_visual(row) and _analysis_is_enabled(row)
+    ]
+    configured_ids = [
+        str(value)
+        for value in (algorithm.get("external_analysis_ids") or [])
+        if str(value or "").strip()
+    ]
+    analysis_ids = explicit_visual_ids if summaries else configured_ids
     default_id = str(algorithm.get("external_analysis_id") or "").strip()
+    if default_id and analysis_ids and default_id not in analysis_ids:
+        default_id = ""
     requested = str(requested_analysis_id or "").strip()
+
+    all_analysis_ids = {str(row.get("analysis_id") or "") for row in summaries}
+    if requested and requested in all_analysis_ids and requested not in analysis_ids:
+        raise PlatformError(
+            "EXTERNAL_ANALYSIS_NOT_VISUAL",
+            "所选分析方式不是可训练的视觉智能分析",
+            requested,
+            "YOLO 训练只能绑定新畅联中启用的视觉智能分析（analysisType=1、status!=0）。",
+            409,
+        )
     if requested and analysis_ids and requested not in analysis_ids:
         raise PlatformError(
             "EXTERNAL_ANALYSIS_INVALID",
-            "所选分析方式不属于当前算法产品",
+            "所选分析方式不属于当前算法产品的可训练视觉分析",
             requested,
             "请刷新新畅联主数据后重新选择分析方式。",
+            409,
+        )
+    if not analysis_ids:
+        raise PlatformError(
+            "EXTERNAL_VISUAL_ANALYSIS_MISSING",
+            "当前算法产品没有可训练的视觉智能分析方式",
+            str(algorithm.get("name") or algorithm.get("id") or ""),
+            "请在新畅联启用 analysisType=1 的视觉智能分析后重新同步。",
             409,
         )
     if len(analysis_ids) > 1 and not requested:
         raise PlatformError(
             "EXTERNAL_ANALYSIS_REQUIRED",
-            "当前算法存在多个分析方式，请选择本次训练绑定的分析方式",
+            "当前算法存在多个可训练视觉分析方式，请选择本次训练绑定的分析方式",
             str(algorithm.get("name") or algorithm.get("id") or ""),
-            "请在创建训练任务时选择具体分析方式。",
+            "请在创建训练任务时选择具体视觉分析方式。",
             409,
         )
-    return requested or default_id or (analysis_ids[0] if analysis_ids else "")
+    return requested or default_id or analysis_ids[0]
 
 
 def assert_external_algorithm_master_data_current(data_dir: Path, algorithm: Mapping[str, Any] | None) -> None:
