@@ -147,6 +147,7 @@ jobs:
                   '"aliases": normalize_label_aliases(',
                   "*[str(alias).strip() for alias in item.get('aliases') or []]",
                   "external_classes = mapping_suggestions(",
+                  "suggested = suggest_label_code(value, catalog or [])",
               ),
               'platform_core/auto_label.py': (
                   'if any(alias and label == alias for alias in values):',
@@ -181,6 +182,7 @@ jobs:
                   'id="startSourceImportBtnV36"',
                   'label414Aliases',
                   '自动预选后仍需人工确认',
+                  '...(Array.isArray(label.aliases)?label.aliases:[])',
               ),
               'static/index.html': (
                   '/static/app.js?v=42.25.117',
