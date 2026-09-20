@@ -3499,20 +3499,30 @@ def create_project(payload: ProjectCreate):
     for idx, x in enumerate(payload.labels or []):
         display_name = ""
         color = ""
+        aliases: List[str] = []
         if isinstance(x, dict):
             code = normalize_label(x.get("code") or x.get("name") or x.get("label") or "")
             display_name = str(x.get("display_name") or x.get("zh") or x.get("name") or code)
             color = str(x.get("color") or "")
+            aliases = normalize_label_aliases(x.get("aliases") or [])
         else:
             code = normalize_label(x)
             if idx < len(raw_label_meta) and isinstance(raw_label_meta[idx], dict):
                 display_name = str(raw_label_meta[idx].get("display_name") or raw_label_meta[idx].get("name") or code)
                 color = str(raw_label_meta[idx].get("color") or "")
+                aliases = normalize_label_aliases(raw_label_meta[idx].get("aliases") or [])
             else:
                 display_name = code
         if code and code not in labels:
             labels.append(code)
-            label_meta.append({"code": code, "display_name": display_name or code, "color": color or default_label_color(len(labels)-1), "type": "bbox", "hotkey": str(len(labels)) if len(labels) <= 9 else ""})
+            label_meta.append({
+                "code": code,
+                "display_name": display_name or code,
+                "color": color or default_label_color(len(labels)-1),
+                "type": "bbox",
+                "hotkey": str(len(labels)) if len(labels) <= 9 else "",
+                "aliases": aliases,
+            })
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="项目名称不能为空")
     # 项目创建不再强制填写标签；标签在数据集/标注环节维护。
@@ -3527,6 +3537,7 @@ def create_project(payload: ProjectCreate):
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
+    _prune_canonical_label_alias_conflicts(project)
     save_project(project)
     material_store(pid).mutate(lambda rows: rows.clear())
     return project
