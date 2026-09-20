@@ -83,6 +83,9 @@ jobs:
           grep -q "EXTERNAL_VERSION_ANALYSIS_STALE" platform_core/external_algorithm_publish.py
           grep -q '"identity_ready": bool(identity\["ready"\])' platform_core/external_algorithm_publish.py
           grep -q "test_publication_status_blocks_stale_changlian_master_data" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_publish_endpoint_defaults_and_legacy_config_use_internal_algorithm_namespace" tests/unit/test_external_algorithm_publish.py
+          grep -Fq '"/internal/algorithm/algorithm-version/listByProduct/{productId}"' platform_core/external_algorithm_publish.py
+          grep -Fq '"/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"' platform_core/external_algorithm_publish.py
           grep -q "test_publish_blocks_when_historical_version_analysis_is_no_longer_current" tests/unit/test_external_algorithm_publish.py
           grep -q "identity_ready === false" static/modules/external-algorithm-publish.js
           grep -q "manual publish preflight blocks stale product and analysis identity before artifacts" tests/frontend/external-algorithm-publish.test.mjs
