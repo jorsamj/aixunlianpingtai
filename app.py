@@ -11779,6 +11779,24 @@ def v19_get_import_job(project_id: str, job_id: str, include_images: bool = Fals
     return v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
 
 
+@app.delete("/api/v19/projects/{project_id}/import/jobs")
+def v19_clear_terminal_import_jobs(project_id: str):
+    get_project(project_id)
+    terminal = {"done", "failed", "cancelled", "canceled"}
+    deleted = []
+    kept = []
+    for job_file in v19_import_jobs_dir(project_id).glob("*/job.json"):
+        job = read_json(job_file, {})
+        job_id = str(job.get("id") or job_file.parent.name)
+        status = str(job.get("status") or "").strip().lower()
+        if status in terminal:
+            shutil.rmtree(job_file.parent, ignore_errors=True)
+            deleted.append(job_id)
+        else:
+            kept.append({"id": job_id, "status": status})
+    return {"ok": True, "deleted": len(deleted), "deleted_ids": deleted, "kept": kept}
+
+
 @app.delete("/api/v19/projects/{project_id}/import/jobs/{job_id}")
 def v19_delete_import_job(project_id: str, job_id: str):
     v19_read_job(project_id, job_id)
