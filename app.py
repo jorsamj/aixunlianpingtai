@@ -11014,6 +11014,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     parse_root = selected_root
                 v19_update_job(project_id, job_id, stage="正在识别标注格式", progress=38, processed=0)
                 imported = False
+                frozen_mapping = dict(job.get("label_mapping") or {}) or None
                 last_import_emit = 0.0
                 def import_progress(done,total,msg):
                     nonlocal last_import_emit
@@ -11024,9 +11025,16 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                     frac=done/max(1,total); prog=45+frac*50
                     elapsed=max(0.01,time.time()-processing_started)
                     eta=max(0.0,elapsed/max(0.01,prog)*max(0.0,100-prog))
-                    v19_update_job(project_id, job_id, stage=msg, progress=round(prog,1), processed=done, total_selected=total, message=msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
-                v19_update_job(project_id, job_id, stage="正在解析 COCO / VOC / YOLO 标注", progress=44, processed=0)
-                frozen_mapping = dict(job.get("label_mapping") or {}) or None
+                    visible_msg = (
+                        f"正在统一标签并写入标注 · {msg}"
+                        if frozen_mapping else msg
+                    )
+                    v19_update_job(project_id, job_id, stage=visible_msg, progress=round(prog,1), processed=done, total_selected=total, message=visible_msg, processing_seconds=round(elapsed,1), eta_seconds=round(eta,1))
+                v19_update_job(
+                    project_id, job_id,
+                    stage=("正在统一标签并写入标注" if frozen_mapping else "正在解析 COCO / VOC / YOLO 标注"),
+                    progress=44, processed=0,
+                )
                 imported = _v18_import_coco(
                     project_id, parse_root, dataset_id, report, import_progress,
                     label_mapping=frozen_mapping,

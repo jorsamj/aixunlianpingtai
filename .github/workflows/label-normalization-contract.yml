@@ -72,6 +72,7 @@ jobs:
           python -m pytest -q
           tests/api/test_v19_label_mapping.py
           tests/integration/test_persistent_ai_annotation_e2e.py
+          tests/unit/test_annotation_task_service.py
       - name: Frontend label-normalization contracts
         run: >-
           node --test
@@ -103,6 +104,7 @@ jobs:
               'platform_core/annotation_task_service.py': (
                   'def commit_confirmed_review(',
                   'stage="APPLYING_REVIEW"',
+                  'confirmed annotation label mapping is no longer valid',
               ),
               'platform_core/task_runtime/repository.py': (
                   'def resume_after_review_confirmation(',

@@ -245,8 +245,10 @@ class CandidateStore:
         unknown_targets = sorted(set(normalized.values()) - set(label_ids))
         if unknown_targets:
             raise ValueError("annotation label mapping targets are unavailable: " + ", ".join(unknown_targets))
-        if not normalized:
-            return
+        # Even an identity/no-op mapping must revalidate candidate labels against
+        # the current active project catalog. A label may have been disabled or
+        # its class_id may have changed after human confirmation but before the
+        # durable review commit is claimed by a Worker.
         self._ready()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")

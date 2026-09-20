@@ -366,6 +366,20 @@ def commit_confirmed_review(context):
     if context.task.kind is TaskKind.MATERIAL_BATCH:
         request = (request or {}).get("options") or {}
     store = CandidateStore(context.artifacts, task_id=context.task.task_id)
+    # Human confirmation freezes intent, not stale class indexes. Revalidate
+    # every candidate against the current active platform label catalog before
+    # writing Ground Truth, and repair class_id if the catalog order changed.
+    from app import _v47_label_catalog, get_project
+    label_ids = {
+        str(item["code"]): int(item["class_id"])
+        for item in _v47_label_catalog(get_project(context.task.project_id))
+    }
+    try:
+        store.remap_labels(dict(confirmation.get("label_mapping") or {}), label_ids)
+    except ValueError as error:
+        raise RuntimeError(
+            "confirmed annotation label mapping is no longer valid: " + str(error)
+        ) from error
 
     def update_progress(done: int, total: int, image_id: str) -> None:
         percent = 70.0 + 29.0 * done / max(1, total)

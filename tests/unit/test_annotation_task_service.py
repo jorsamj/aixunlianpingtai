@@ -214,6 +214,28 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     assert written[0]["source_task_id"] == "commit-1"
 
 
+def test_candidate_label_revalidation_is_fail_closed_even_without_explicit_mapping(tmp_path):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="catalog-revalidate", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "image-1",
+        "status": "success",
+        "boxes": [{"id": "box-1", "class_id": 0, "label": "fire",
+                   "x1": 1, "y1": 1, "x2": 20, "y2": 20}],
+    }])
+
+    # An unchanged label name may receive a different project class_id after
+    # catalog maintenance. Review commit must repair the canonical identity.
+    store.remap_labels({}, {"fire": 4})
+    assert store.get("image-1")["boxes"][0]["class_id"] == 4
+
+    # If the previously confirmed label is no longer active, do not silently
+    # write stale candidate truth into AnnotationRepository.
+    with pytest.raises(ValueError, match="candidate label is unavailable"):
+        store.remap_labels({}, {"smoke": 1})
+
+
 def test_public_worker_error_redacts_common_secret_shapes():
     error = RuntimeError("Authorization: Bearer secret-token api_key=very-secret sk-12345678901234567890")
     public = _public_error(error)
