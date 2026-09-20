@@ -56,7 +56,8 @@ export function operationLabel(value) {
   const map = {
     auth_signature: '签名', auth_token: '鉴权', category_list: '算法品目', product_list: '算法产品',
     analysis_list: '分析方式', compute_platform_list: '算力环境', version_create: '创建算法版本',
-    version_list: '查询算法版本', weight_create: '创建权重记录', weight_list: '查询权重记录',
+    version_remove: '删除算法版本', version_list: '查询算法版本',
+    weight_create: '创建权重记录', weight_remove: '删除权重记录', weight_list: '查询权重记录',
   };
   return map[String(value || '')] || String(value || '接口调用');
 }
@@ -174,7 +175,7 @@ export function installModelArtifactRuntime({getState, notify} = {}) {
         </div>
         <div class="ma-toolbar">
           <select class="select" id="changlianAuditStatus"><option value="">全部结果</option><option value="SUCCESS">成功</option><option value="FAILED">失败</option><option value="UNKNOWN">状态未知</option></select>
-          <select class="select" id="changlianAuditOperation"><option value="">全部操作</option><option value="auth_token">鉴权</option><option value="category_list">算法品目</option><option value="product_list">算法产品</option><option value="analysis_list">分析方式</option><option value="compute_platform_list">算力环境</option><option value="version_create">创建算法版本</option><option value="weight_create">创建权重记录</option></select>
+          <select class="select" id="changlianAuditOperation"><option value="">全部操作</option><option value="auth_token">鉴权</option><option value="category_list">算法品目</option><option value="product_list">算法产品</option><option value="analysis_list">分析方式</option><option value="compute_platform_list">算力环境</option><option value="version_create">创建算法版本</option><option value="version_remove">删除算法版本</option><option value="weight_create">创建权重记录</option><option value="weight_remove">删除权重记录</option></select>
           <button class="btn" id="changlianAuditRefresh">刷新</button>
         </div>
         <div class="ma-table-wrap"><table class="ma-table"><thead><tr><th>时间</th><th>结果</th><th>操作</th><th>接口</th><th>耗时</th><th>Request ID</th><th></th></tr></thead><tbody id="changlianAuditRows">${auditRowsHtml()}</tbody></table></div>
