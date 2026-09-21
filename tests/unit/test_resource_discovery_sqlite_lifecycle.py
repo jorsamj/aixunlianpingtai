@@ -1,14 +1,14 @@
 import multiprocessing as mp
 import os
+import queue as queue_module
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
 
 import platform_core.resource_discovery.cache as cache_module
-import platform_core.resource_discovery.tasks as tasks_module
 from platform_core.resource_discovery.cache import DiscoveryCache
-from platform_core.resource_discovery.tasks import _ModelManifest
 
 
 class TrackingConnection:
@@ -74,15 +74,30 @@ def _tracking_connect(real_connect, counters, statements):
     return connect
 
 
-def _concurrent_cache_worker(path, start, queue):
+def _write_worker_stage(stage_dir, worker_id, stage):
+    try:
+        Path(stage_dir, f"worker-{worker_id}.stage").write_text(str(stage), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _concurrent_cache_worker(path, start, result_queue, stage_dir, worker_id):
+    _write_worker_stage(stage_dir, worker_id, "entered")
     try:
         if not start.wait(15):
             raise RuntimeError("start gate timeout")
+        _write_worker_stage(stage_dir, worker_id, "gate_open")
         cache = DiscoveryCache(path)
+        _write_worker_stage(stage_dir, worker_id, "cache_ready")
         generation = cache.next_generation("environment")
-        queue.put(("ok", generation, cache.journal_mode()))
+        _write_worker_stage(stage_dir, worker_id, f"generation_allocated:{generation}")
+        mode = cache.journal_mode()
+        _write_worker_stage(stage_dir, worker_id, f"journal_mode:{mode}")
+        result_queue.put(("ok", worker_id, generation, mode))
+        _write_worker_stage(stage_dir, worker_id, "reported")
     except BaseException as error:
-        queue.put(("error", type(error).__name__, str(error)))
+        _write_worker_stage(stage_dir, worker_id, f"error:{type(error).__name__}:{error}")
+        result_queue.put(("error", worker_id, type(error).__name__, str(error)))
 
 
 def _count_sqlite_fds(path):
@@ -127,6 +142,9 @@ def test_reopening_cache_does_not_reassert_wal_or_schema(tmp_path, monkeypatch):
 
 
 def test_model_manifest_explicitly_closes_every_sqlite_connection(tmp_path, monkeypatch):
+    import platform_core.resource_discovery.tasks as tasks_module
+    from platform_core.resource_discovery.tasks import _ModelManifest
+
     real_connect = sqlite3.connect
     counters = {"opened": 0, "closed": 0, "scripts": 0}
     statements = []
@@ -149,24 +167,66 @@ def test_model_manifest_explicitly_closes_every_sqlite_connection(tmp_path, monk
 
 def test_concurrent_cache_initialization_and_generation_allocation_is_lock_safe(tmp_path):
     path = str(tmp_path / "resource-discovery.sqlite3")
+    stage_dir = tmp_path / "spawn-stages"
+    stage_dir.mkdir()
     ctx = mp.get_context("spawn")
     start = ctx.Event()
-    queue = ctx.Queue()
-    processes = [ctx.Process(target=_concurrent_cache_worker, args=(path, start, queue)) for _ in range(8)]
+    result_queue = ctx.Queue()
+    processes = [
+        ctx.Process(
+            target=_concurrent_cache_worker,
+            args=(path, start, result_queue, str(stage_dir), index),
+        )
+        for index in range(8)
+    ]
     for process in processes:
         process.start()
     start.set()
 
-    results = [queue.get(timeout=40) for _ in processes]
-    for process in processes:
+    results = []
+    deadline = time.monotonic() + 40
+    try:
+        for _ in processes:
+            remaining = max(0.0, deadline - time.monotonic())
+            results.append(result_queue.get(timeout=remaining))
+    except queue_module.Empty:
+        diagnostics = []
+        for index, process in enumerate(processes):
+            stage_path = stage_dir / f"worker-{index}.stage"
+            try:
+                stage = stage_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                stage = "not_entered"
+            diagnostics.append(
+                f"worker={index} pid={process.pid} alive={process.is_alive()} "
+                f"exitcode={process.exitcode} stage={stage}"
+            )
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(timeout=5)
+        pytest.fail(
+            "concurrent discovery cache workers did not all report within 40s; "
+            + "; ".join(diagnostics)
+        )
+
+    for index, process in enumerate(processes):
         process.join(timeout=10)
-        assert process.exitcode == 0
+        stage_path = stage_dir / f"worker-{index}.stage"
+        try:
+            stage = stage_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            stage = "missing"
+        assert process.exitcode == 0, (
+            f"worker={index} pid={process.pid} exitcode={process.exitcode} stage={stage}"
+        )
 
     errors = [row for row in results if row[0] != "ok"]
     assert errors == []
-    generations = sorted(row[1] for row in results)
+    generations = sorted(row[2] for row in results)
     assert generations == list(range(1, len(processes) + 1))
-    assert {row[2] for row in results} == {"wal"}
+    assert {row[3] for row in results} == {"wal"}
 
 
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="Linux /proc FD accounting required")
