@@ -13,7 +13,7 @@ from filelock import FileLock
 from .errors import PlatformError
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_FILENAME = "algorithms.sqlite3"
 BACKUP_FILENAME = "algorithms.json.pre-sql-migration-backup"
 _INIT_LOCK_TIMEOUT = 30
@@ -677,12 +677,18 @@ class AlgorithmSqlStore:
             );
 
             CREATE INDEX IF NOT EXISTS idx_algorithms_project ON algorithms(project_id);
+            CREATE INDEX IF NOT EXISTS idx_algorithms_project_sort
+                ON algorithms(project_id, sort_index, created_at, id);
             CREATE INDEX IF NOT EXISTS idx_algorithms_source ON algorithms(project_id, source_type);
             CREATE INDEX IF NOT EXISTS idx_algorithms_external_product ON algorithms(provider_type, external_product_id);
             CREATE INDEX IF NOT EXISTS idx_algorithms_external_category ON algorithms(external_category_id);
             CREATE INDEX IF NOT EXISTS idx_versions_algorithm ON algorithm_versions(algorithm_id, sort_index);
             CREATE INDEX IF NOT EXISTS idx_versions_training_job ON algorithm_versions(training_job_id);
             CREATE INDEX IF NOT EXISTS idx_versions_external_id ON algorithm_versions(external_algo_version_id);
+            CREATE INDEX IF NOT EXISTS idx_analyses_algorithm_sort
+                ON algorithm_external_analyses(
+                    algorithm_id, sort_index, external_analysis_id
+                );
             """
         )
         self._set_meta(conn, "schema_version", str(SCHEMA_VERSION))
