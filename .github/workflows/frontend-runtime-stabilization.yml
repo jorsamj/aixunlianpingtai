@@ -38,6 +38,7 @@ jobs:
           node --check static/modules/training-draft-controls.js &&
           node --check static/modules/training-submit.js &&
           node --check static/modules/auto-label-poll-runtime.js &&
+          node --check static/modules/upload-task-center.js &&
           node --check static/modules/ui-state.js &&
           node --check static/main.mjs
       - name: Retired training mirror guard

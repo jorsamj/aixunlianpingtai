@@ -8,6 +8,8 @@ import {
   isUploadTaskActive,
   mergeUploadTask,
   normalizeDurableUploadTask,
+  patchUploadTaskCenterRows,
+  renderUploadTaskCenterRow,
 } from '../../static/modules/upload-task-center.js';
 
 test('mergeUploadTask keeps truthful progress and terminal success becomes 100%', () => {
@@ -102,4 +104,30 @@ test('project switching is navigation-owned and has no permanent interval', () =
   assert.doesNotMatch(runtime, /setInterval\(switchProject,\s*1500\)/);
   assert.doesNotMatch(runtime, /__uploadTaskCenterProjectTimer/);
   assert.match(main, /uploadTaskCenterRuntime\.switchProject\?\.\(\)/);
+});
+
+
+test('task center row uses transform progress and patch fallback preserves canonical content', () => {
+  const row = mergeUploadTask({}, {
+    id:'upload-perf-1', title:'素材上传', status:'UPLOADING', progress:42.5,
+    stage:'服务器处理中', detail:'425 / 1000',
+    updatedAt:'2026-09-22T00:00:00Z',
+  });
+  const html = renderUploadTaskCenterRow(row);
+  assert.match(html, /data-utc-id="upload-perf-1"/);
+  assert.match(html, /scaleX\(0\.4250\)/);
+  assert.doesNotMatch(html, /style="width:/);
+
+  const body = {innerHTML:''};
+  assert.equal(patchUploadTaskCenterRows(body, [row]), true);
+  assert.match(body.innerHTML, /素材上传/);
+  assert.match(body.innerHTML, /42\.5%/);
+});
+
+test('task center source keeps a stable shell and keyed row patch owner', () => {
+  const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
+  assert.match(runtime, /function ensureShell\(root\)/);
+  assert.match(runtime, /patchUploadTaskCenterRows\(body, visible\)/);
+  assert.match(runtime, /data-progress=/);
+  assert.match(runtime, /build:'upload-task-center-2'/);
 });

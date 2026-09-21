@@ -82,6 +82,119 @@ export function normalizeDurableUploadTask(task, row) {
   });
 }
 
+export function renderUploadTaskCenterRow(row = {}) {
+  const presentation = statusPresentation(row.status);
+  const progress = clamp(row.progress);
+  const scale = progress / 100;
+  const detail = row.detail
+    ? `<div class="utc-detail" title="${esc(row.detail)}">${esc(row.detail)}</div>`
+    : '';
+  return `<div class="utc-row" data-utc-id="${esc(row.id)}"><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)})"></i></div><div class="utc-meta"><span>${progress.toFixed(progress % 1 ? 1 : 0)}%</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}</div>`;
+}
+
+function createUploadTaskCenterRow(body, html) {
+  const doc = body?.ownerDocument || globalThis.document;
+  if (!doc?.createElement) return null;
+  const holder = doc.createElement('div');
+  holder.innerHTML = String(html || '').trim();
+  return holder.firstElementChild || null;
+}
+
+function patchUploadTaskCenterRow(currentRow, nextRow) {
+  const currentName = currentRow?.querySelector?.('.utc-name b');
+  const nextName = nextRow?.querySelector?.('.utc-name b');
+  const currentStage = currentRow?.querySelector?.('.utc-name small');
+  const nextStage = nextRow?.querySelector?.('.utc-name small');
+  const currentPill = currentRow?.querySelector?.('.utc-pill');
+  const nextPill = nextRow?.querySelector?.('.utc-pill');
+  const currentBar = currentRow?.querySelector?.('.utc-progress i');
+  const nextBar = nextRow?.querySelector?.('.utc-progress i');
+  const currentMeta = currentRow?.querySelectorAll?.('.utc-meta span') || [];
+  const nextMeta = nextRow?.querySelectorAll?.('.utc-meta span') || [];
+
+  if (!currentName || !nextName || !currentStage || !nextStage || !currentPill || !nextPill || !currentBar || !nextBar) {
+    return nextRow;
+  }
+
+  currentName.textContent = nextName.textContent;
+  currentStage.textContent = nextStage.textContent;
+  currentPill.className = nextPill.className;
+  currentPill.textContent = nextPill.textContent;
+  currentBar.dataset.progress = nextBar.dataset.progress || '';
+  currentBar.style.transform = nextBar.style.transform;
+  if (currentMeta[0] && nextMeta[0]) currentMeta[0].textContent = nextMeta[0].textContent;
+  if (currentMeta[1] && nextMeta[1]) currentMeta[1].textContent = nextMeta[1].textContent;
+
+  const currentDetail = currentRow.querySelector?.('.utc-detail');
+  const nextDetail = nextRow.querySelector?.('.utc-detail');
+  if (currentDetail && nextDetail) {
+    currentDetail.textContent = nextDetail.textContent;
+    currentDetail.title = nextDetail.title;
+  } else if (currentDetail && !nextDetail) {
+    currentDetail.remove();
+  } else if (!currentDetail && nextDetail) {
+    currentRow.appendChild(nextDetail.cloneNode(true));
+  }
+  return currentRow;
+}
+
+export function patchUploadTaskCenterRows(body, visibleRows = []) {
+  if (!body) return false;
+  const list = Array.isArray(visibleRows) ? visibleRows : [];
+  const doc = body?.ownerDocument || globalThis.document;
+  const canPatch = Boolean(
+    doc?.createElement
+    && typeof body.querySelectorAll === 'function'
+    && typeof body.insertBefore === 'function'
+    && body.children,
+  );
+
+  if (!canPatch) {
+    body.innerHTML = list.length
+      ? list.map(renderUploadTaskCenterRow).join('')
+      : '<div class="utc-empty">暂无上传任务</div>';
+    return true;
+  }
+
+  if (!list.length) {
+    if (!body.querySelector?.('.utc-empty')) body.innerHTML = '<div class="utc-empty">暂无上传任务</div>';
+    return true;
+  }
+
+  body.querySelector?.('.utc-empty')?.remove?.();
+  const existing = new Map(
+    [...body.querySelectorAll('.utc-row[data-utc-id]')]
+      .map(row => [String(row.dataset?.utcId || ''), row]),
+  );
+  const wanted = new Set();
+
+  list.forEach((row, index) => {
+    const id = String(row?.id || '');
+    const nextRow = createUploadTaskCenterRow(body, renderUploadTaskCenterRow(row));
+    if (!id || !nextRow) return;
+    wanted.add(id);
+
+    let currentRow = existing.get(id) || null;
+    if (!currentRow) {
+      currentRow = nextRow;
+    } else {
+      const patched = patchUploadTaskCenterRow(currentRow, nextRow);
+      if (patched !== currentRow) {
+        currentRow.replaceWith?.(patched);
+        currentRow = patched;
+      }
+    }
+
+    const reference = body.children[index] || null;
+    if (reference !== currentRow) body.insertBefore(currentRow, reference);
+  });
+
+  for (const [id, row] of existing) {
+    if (!wanted.has(id)) row.remove?.();
+  }
+  return true;
+}
+
 async function responseJson(response) {
   if (response.ok) return response.json();
   const text = await response.text();
@@ -92,7 +205,7 @@ async function responseJson(response) {
 
 export function installUploadTaskCenter({getState, projectId, notify, fetchImpl = globalThis.fetch} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-  if (window.UploadTaskCenterRuntime?.build === 'upload-task-center-1') return window.UploadTaskCenterRuntime;
+  if (window.UploadTaskCenterRuntime?.build === 'upload-task-center-2') return window.UploadTaskCenterRuntime;
 
   let rows = [];
   let expanded = false;
@@ -114,8 +227,9 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       .utc-body{border-top:1px solid #e7ebf1;max-height:390px;overflow:auto;background:#fff}.utc-row{padding:12px 14px;border-bottom:1px solid #edf0f4}.utc-row:last-child{border-bottom:0}
       .utc-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.utc-name{min-width:0}.utc-name b{display:block;color:#192231;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-name small{display:block;color:#748197;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .utc-pill{flex:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800}.utc-pill.ok{background:#ecfdf3;color:#15803d}.utc-pill.bad{background:#fff1f2;color:#be123c}.utc-pill.warn{background:#fff7ed;color:#c2410c}.utc-pill.run{background:#eff6ff;color:#2563eb}.utc-pill.muted{background:#f1f5f9;color:#64748b}
-      .utc-progress{height:6px;border-radius:999px;background:#edf1f5;overflow:hidden;margin:9px 0 7px}.utc-progress i{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:inherit;transition:width .22s ease}
+      .utc-progress{height:6px;border-radius:999px;background:#edf1f5;overflow:hidden;margin:9px 0 7px}.utc-progress i{display:block;width:100%;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:inherit;transform-origin:left center;transition:transform .22s cubic-bezier(.22,1,.36,1);will-change:transform}
       .utc-meta{display:flex;justify-content:space-between;gap:10px;color:#738197;font-size:11px}.utc-detail{margin-top:5px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;color:#8995a7}
+      @media (prefers-reduced-motion: reduce){.utc-progress i{transition:none!important}}
       @media(max-width:720px){.utc-root{right:10px;bottom:10px;width:calc(100vw - 20px)}}
     `;
     document.head.appendChild(style);
@@ -164,27 +278,55 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     });
   }
 
+  function ensureShell(root) {
+    let shell = root.querySelector?.('.utc-shell');
+    if (shell) return shell;
+
+    root.innerHTML = `<div class="utc-shell">
+      <div class="utc-head"><button class="utc-toggle" type="button" data-utc-toggle aria-expanded="false"><div><strong>数据导入 / 上传</strong><span data-utc-summary></span></div></button><div class="utc-head-actions"><button class="utc-clear" type="button" data-utc-clear disabled>清空已结束</button><div class="utc-count" data-utc-count>0</div></div></div>
+      <div class="utc-body" data-utc-body style="display:none"></div>
+    </div>`;
+    shell = root.querySelector?.('.utc-shell');
+    root.querySelector?.('[data-utc-toggle]')?.addEventListener('click', () => {
+      expanded = !expanded;
+      render();
+    });
+    root.querySelector?.('[data-utc-clear]')?.addEventListener('click', event => {
+      event.stopPropagation();
+      void clearCompleted();
+    });
+    return shell;
+  }
+
   function render() {
     const root = ensureRoot();
-    const active = rows.filter(isUploadTaskActive);
-    const visible = rows.slice(0, expanded ? 10 : 0);
-    const latest = active[0] || rows[0];
     if (!rows.length) {
-      root.innerHTML = '';
       root.style.display = 'none';
       return;
     }
+
     root.style.display = '';
+    ensureShell(root);
+    const active = rows.filter(isUploadTaskActive);
+    const visible = expanded ? rows.slice(0, 10) : [];
+    const latest = active[0] || rows[0];
     const terminalCount = rows.filter(row => TERMINAL_STATUSES.has(upper(row.status))).length;
-    root.innerHTML = `<div class="utc-shell">
-      <div class="utc-head"><button class="utc-toggle" type="button" data-utc-toggle><div><strong>数据导入 / 上传</strong><span>${active.length ? `${active.length} 个任务进行中` : `最近任务 · ${latest ? formatTime(latest.updatedAt) : ''}`}</span></div></button><div class="utc-head-actions"><button class="utc-clear" type="button" data-utc-clear ${terminalCount ? '' : 'disabled'}>清空已结束</button><div class="utc-count">${active.length || rows.length}</div></div></div>
-      ${expanded ? `<div class="utc-body">${visible.length ? visible.map(row => {
-        const presentation = statusPresentation(row.status);
-        return `<div class="utc-row" data-utc-id="${esc(row.id)}"><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i style="width:${clamp(row.progress)}%"></i></div><div class="utc-meta"><span>${clamp(row.progress).toFixed(clamp(row.progress)%1 ? 1 : 0)}%</span><span>${esc(formatTime(row.updatedAt))}</span></div>${row.detail ? `<div class="utc-detail" title="${esc(row.detail)}">${esc(row.detail)}</div>` : ''}</div>`;
-      }).join('') : '<div class="utc-empty">暂无上传任务</div>'}</div>` : ''}
-    </div>`;
-    root.querySelector('[data-utc-toggle]')?.addEventListener('click', () => { expanded = !expanded; render(); });
-    root.querySelector('[data-utc-clear]')?.addEventListener('click', event => { event.stopPropagation(); void clearCompleted(); });
+    const summary = root.querySelector?.('[data-utc-summary]');
+    const count = root.querySelector?.('[data-utc-count]');
+    const clear = root.querySelector?.('[data-utc-clear]');
+    const toggle = root.querySelector?.('[data-utc-toggle]');
+    const body = root.querySelector?.('[data-utc-body]');
+
+    if (summary) summary.textContent = active.length
+      ? `${active.length} 个任务进行中`
+      : `最近任务 · ${latest ? formatTime(latest.updatedAt) : ''}`;
+    if (count) count.textContent = String(active.length || rows.length);
+    if (clear) clear.disabled = terminalCount <= 0;
+    if (toggle) toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    if (body) {
+      body.style.display = expanded ? '' : 'none';
+      if (expanded) patchUploadTaskCenterRows(body, visible);
+    }
   }
 
   async function clearCompleted() {
@@ -279,7 +421,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   const runtime = Object.freeze({
-    build:'upload-task-center-1',
+    build:'upload-task-center-2',
     upsert,
     remove,
     clearCompleted,
