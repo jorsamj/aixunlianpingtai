@@ -18342,13 +18342,18 @@ def v53_bootstrap_status():return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 
 @app.get("/api/v53/bootstrap/snapshot")
 def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=False):
-    projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; requested=str(preferred_project_id or ""); counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else _v53_choose_project(projects,""); chosen_id=str(chosen.get("id")) if chosen else ""
+    global _V53_BOOTSTRAP_SNAPSHOT
+    projects=read_json(PROJECTS_FILE,[]); projects=projects if isinstance(projects,list) else []; requested=str(preferred_project_id or ""); cached_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""); project_ids={str(project.get("id") or "") for project in projects}
+    if not refresh and _V53_BOOTSTRAP_STATUS.get("status")=="ready" and cached_id in project_ids and (not requested or requested==cached_id):
+        return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
+    counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else choose_project(projects,"",counts); chosen_id=str(chosen.get("id")) if chosen else ""
+    projects_with_counts=[{**project,"bootstrap_counts":counts.get(str(project.get("id") or ""),{"images":0,"algorithms":0,"versions":0,"jobs":0})} for project in projects]
     if _V53_BOOTSTRAP_STATUS.get("status")!="ready":
         if requested and chosen_id==requested:
-            snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
+            snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
         raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
     if chosen_id and (refresh or chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")):
-        snap=_v53_build_snapshot(chosen_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
+        snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
     return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**_V53_BOOTSTRAP_SNAPSHOT})
 
 
@@ -18359,35 +18364,7 @@ def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=F
 def v54_label_schema(project_id: str):
     project = get_project(project_id)
     items = active_label_options(project_label_items(project))
-    usage = {str(x.get('code')): {'images': 0, 'boxes': 0} for x in items}
-    summary_patches = {}
-    for img in load_images(project_id):
-        counts = img.get('label_counts')
-        if not isinstance(counts, dict):
-            preview = img.get('annotation_preview') if isinstance(img.get('annotation_preview'), list) else []
-            box_count = int(img.get('box_count') or 0)
-            if 'box_count' in img and box_count <= len(preview):
-                counts = {}
-                for box in preview:
-                    label = str(box.get('label') or '').strip()
-                    if label:
-                        counts[label] = int(counts.get(label, 0)) + 1
-            else:
-                boxes = read_annotation(project_id, str(img.get('id'))).get('boxes', [])
-                counts = annotation_summary(boxes).get('label_counts', {})
-            summary_patches[str(img.get('id'))] = {'label_counts': counts}
-        seen = set()
-        for raw_label, raw_count in counts.items():
-            label = str(raw_label or '').strip()
-            count = max(0, int(raw_count or 0))
-            if not label or count <= 0:
-                continue
-            usage.setdefault(label, {'images': 0, 'boxes': 0})['boxes'] += count
-            seen.add(label)
-        for label in seen:
-            usage.setdefault(label, {'images': 0, 'boxes': 0})['images'] += 1
-    if summary_patches:
-        material_store(project_id).patch(summary_patches)
+    usage = material_store(project_id).label_usage()
     for x in items:
         x['usage_images'] = usage.get(str(x.get('code')), {}).get('images', 0)
         x['usage_boxes'] = usage.get(str(x.get('code')), {}).get('boxes', 0)

@@ -616,6 +616,27 @@ class MaterialRepository:
         page = self.list_page(**kwargs)
         return MaterialIdPage([str(row["id"]) for row in page.items], page.next_cursor, page.total)
 
+    def label_usage(self) -> dict[str, dict[str, int]]:
+        """Aggregate persisted annotation summaries without reopening annotation files."""
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT CAST(labels.key AS TEXT) AS label,
+                       COUNT(DISTINCT materials.id) AS images,
+                       SUM(CAST(labels.value AS INTEGER)) AS boxes
+                  FROM materials
+                  JOIN json_each(materials.payload_json, '$.label_counts') AS labels
+                 WHERE labels.key IS NOT NULL
+                   AND CAST(labels.value AS INTEGER) > 0
+                 GROUP BY labels.key
+                 ORDER BY labels.key
+                """
+            ).fetchall()
+        return {
+            str(row["label"]): {"images": int(row["images"] or 0), "boxes": int(row["boxes"] or 0)}
+            for row in rows
+        }
+
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         image_id = str(record.get("id") or "")
         with closing(self._connect()) as database:
