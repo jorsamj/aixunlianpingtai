@@ -8,8 +8,12 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from filelock import FileLock
+
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
+_SCHEMA_VERSION = 1
+_INIT_LOCK_TIMEOUT = 30
 
 
 def _normalize_scope(values) -> list[str]:
@@ -54,46 +58,83 @@ class AnnotationRepository:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "annotations.sqlite3"
-        with closing(self._connect()) as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS annotations (
-                    image_id TEXT PRIMARY KEY,
-                    annotation_state TEXT NOT NULL CHECK(annotation_state IN
-                        ('unannotated','annotated','confirmed_empty')),
-                    version INTEGER NOT NULL, content_digest TEXT NOT NULL,
-                    boxes_json TEXT NOT NULL,
-                    scope_json TEXT NOT NULL DEFAULT '[]',
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS ix_annotations_state ON annotations(annotation_state, image_id);
-                CREATE INDEX IF NOT EXISTS ix_annotations_updated ON annotations(updated_at);
-                CREATE TABLE IF NOT EXISTS annotation_delete_backup (
-                    token TEXT NOT NULL, image_id TEXT NOT NULL,
-                    annotation_state TEXT NOT NULL, version INTEGER NOT NULL,
-                    content_digest TEXT NOT NULL, boxes_json TEXT NOT NULL,
-                    scope_json TEXT NOT NULL, created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY(token, image_id)
-                );
-                CREATE INDEX IF NOT EXISTS ix_annotation_delete_backup_token
-                    ON annotation_delete_backup(token, image_id);
-            """)
-            columns = {
-                str(row[1])
-                for row in db.execute("PRAGMA table_info(annotations)").fetchall()
-            }
-            if "scope_json" not in columns:
-                db.execute(
-                    "ALTER TABLE annotations "
-                    "ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'"
-                )
-                db.commit()
+        self._initialize()
 
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=30000")
         return db
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as db:
+                db.execute("PRAGMA busy_timeout=250")
+                return int(db.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as db:
+                version = int(db.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"annotation repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(db.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"annotation repository requires WAL mode, got {mode}"
+                    )
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS annotations (
+                        image_id TEXT PRIMARY KEY,
+                        annotation_state TEXT NOT NULL CHECK(annotation_state IN
+                            ('unannotated','annotated','confirmed_empty')),
+                        version INTEGER NOT NULL, content_digest TEXT NOT NULL,
+                        boxes_json TEXT NOT NULL,
+                        scope_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_annotations_state ON annotations(annotation_state, image_id);
+                    CREATE INDEX IF NOT EXISTS ix_annotations_updated ON annotations(updated_at);
+                    CREATE TABLE IF NOT EXISTS annotation_delete_backup (
+                        token TEXT NOT NULL, image_id TEXT NOT NULL,
+                        annotation_state TEXT NOT NULL, version INTEGER NOT NULL,
+                        content_digest TEXT NOT NULL, boxes_json TEXT NOT NULL,
+                        scope_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(token, image_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_annotation_delete_backup_token
+                        ON annotation_delete_backup(token, image_id);
+                """)
+                columns = {
+                    str(row[1])
+                    for row in db.execute("PRAGMA table_info(annotations)").fetchall()
+                }
+                if "scope_json" not in columns:
+                    db.execute(
+                        "ALTER TABLE annotations "
+                        "ADD COLUMN scope_json TEXT NOT NULL DEFAULT '[]'"
+                    )
+                db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+                db.commit()
 
     @staticmethod
     def _id(image_id):
