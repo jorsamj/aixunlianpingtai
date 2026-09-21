@@ -79,3 +79,15 @@ test('ZIP review allows explicit canonical label creation without implicit creat
   assert.doesNotMatch(appSource,/body\.create_labels/);
 });
 
+
+
+test('ZIP progress bars use transform updates instead of layout-driving width updates',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  const styles=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8');
+  assert.match(source,/function setZipProgressBar\(node,value\)/);
+  assert.match(source,/node\.style\.transform=/);
+  assert.match(source,/data-progress=/);
+  assert.doesNotMatch(source,/bar\.style\.width=/);
+  assert.doesNotMatch(source,/zipDurableBar" style="width:/);
+  assert.match(styles,/\.up411-bar>i,\.zip411-progress>i>em\{width:100%;transform-origin:left center/);
+});
