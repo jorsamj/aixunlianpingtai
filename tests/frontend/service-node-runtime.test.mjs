@@ -123,3 +123,11 @@ test('service node connectivity action keeps network reachability separate from 
   assert.match(source, /hadCache/);
   assert.doesNotMatch(source, /fetch\([^\n]*agent_url/);
 });
+
+test('service node page is registered with NavigationStability and never routed by title mutation', () => {
+  const source = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /registerPageOwner\?\.\(PAGE/);
+  assert.match(source, /data-service-node-skeleton/);
+  assert.doesNotMatch(source, /titleObserver/);
+  assert.doesNotMatch(source, /getElementById\('title'\)/);
+});

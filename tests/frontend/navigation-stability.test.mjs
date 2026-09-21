@@ -149,6 +149,47 @@ test('named performNavigation installs global setPage without a classic predeces
   cleanup();
 });
 
+test('registered page owner is the only renderer for its page', () => {
+  const state = {page: '算法列表'};
+  const calls = [];
+  globalThis.document = {getElementById() { return {dataset: {}}; }};
+  globalThis.window = {};
+  let runtime;
+  runtime = installNavigationStability({
+    getState: () => state,
+    performNavigation(page) {
+      state.page = page;
+      calls.push(`commit:${page}`);
+      if (runtime.hasPageOwner(page)) return runtime.renderPage(page, {source: 'navigation'});
+      calls.push(`classic:${page}`);
+      return undefined;
+    },
+  });
+  runtime.registerPageOwner('服务节点', ({source}) => calls.push(`service:${source}`));
+
+  globalThis.window.setPage('服务节点');
+
+  assert.equal(state.page, '服务节点');
+  assert.deepEqual(calls, ['commit:服务节点', 'service:navigation']);
+  runtime.destroy();
+  cleanup();
+});
+
+test('unknown pages are not treated as known business pages', () => {
+  const state = {page: '算法列表'};
+  globalThis.document = {getElementById() { return {dataset: {}}; }};
+  globalThis.window = {};
+  const runtime = installNavigationStability({getState: () => state, performNavigation(page) { state.page = page; }});
+
+  assert.equal(runtime.isKnownPage('算法列表'), true);
+  assert.equal(runtime.isKnownPage('完全未知页面'), false);
+  runtime.registerPageOwner('服务节点', () => true);
+  assert.equal(runtime.isKnownPage('服务节点'), true);
+
+  runtime.destroy();
+  cleanup();
+});
+
 test('readiness gate runs before UI cleanup and predecessor page mutation', async () => {
   const state = {page: '算法列表'};
   const calls = [];

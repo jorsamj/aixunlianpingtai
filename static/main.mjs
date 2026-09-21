@@ -246,7 +246,20 @@ const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRe
 window.PlatformCore.runtime.storageImportProgressRuntime = storageImportProgressRuntime;
 installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
 
-installNavigationStability({
+function renderNavigationChrome() {
+  window.renderNav?.();
+  window.renderTop?.();
+}
+
+function renderUnknownPage(page) {
+  renderNavigationChrome();
+  const summary = document.getElementById('summary');
+  const view = document.getElementById('view');
+  if (summary) summary.innerHTML = '';
+  if (view) view.innerHTML = `<section class="empty" data-unknown-page="${String(page || '').replace(/[&<>"']/g, '')}">当前页面模块尚未就绪</section>`;
+}
+
+const navigationStabilityRuntime = installNavigationStability({
   getState: () => state,
   notify,
   requestScope: pageRequestScope,
@@ -263,9 +276,17 @@ installNavigationStability({
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;
     uploadTaskCenterRuntime.switchProject?.();
-    render();
+    if (navigationStabilityRuntime.hasPageOwner(page)) {
+      renderNavigationChrome();
+      navigationStabilityRuntime.renderPage(page, {source: 'navigation'});
+    } else if (navigationStabilityRuntime.isKnownPage(page)) {
+      render();
+    } else {
+      renderUnknownPage(page);
+    }
     window.MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation);
   },
 });
+window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
 
 document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;

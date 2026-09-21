@@ -243,6 +243,47 @@ test('final navigation persists the selected page and restores it after reload',
   expect(pageErrors).toEqual([]);
 });
 
+test('service node owner commits its own shell without flashing another business page', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+  await page.route('**/api/v63/service-nodes', async route => {
+    await new Promise(resolve => setTimeout(resolve, 350));
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: [], supported_capabilities: []})});
+  });
+
+  await page.goto('/');
+  await expect.poll(async () => page.evaluate(() => window.ServiceNodeRuntime?.build || null)).toBe('service-node-runtime-422535');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
+
+  const openService = async () => page.evaluate(async () => {
+    window.setPage('服务节点');
+    await Promise.resolve();
+    await Promise.resolve();
+    const view = document.getElementById('view');
+    return {
+      page: state.page,
+      title: document.getElementById('title')?.textContent,
+      serviceShell: Boolean(view?.querySelector('[data-service-node-page]')),
+      wrongBusinessPage: Boolean(view?.querySelector('.alg428-card,.train428-page,.data426-page,.storage61-shell')),
+    };
+  });
+
+  await expect(openService()).resolves.toEqual({
+    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+  });
+  await expect(page.locator('[data-service-node-page]')).toBeVisible();
+
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('#title')).toHaveText('训练任务');
+  await page.evaluate(() => window.setPage('数据集'));
+  await expect(page.locator('#title')).toHaveText('数据集');
+
+  await expect(openService()).resolves.toEqual({
+    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+  });
+  expect(pageErrors).toEqual([]);
+});
+
 test('legacy auto-label route alias resolves to 自动标注及清洗 through final navigation', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));

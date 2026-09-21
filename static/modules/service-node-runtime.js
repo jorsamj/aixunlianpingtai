@@ -196,11 +196,10 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   let capabilities = Object.keys(CAPABILITY_LABELS);
   let loading = false;
   let destroyed = false;
-  let renderQueued = false;
   let navObserver = null;
-  let titleObserver = null;
+  let unregisterPageOwner = null;
 
-  const currentPage = () => String(document.getElementById('title')?.textContent || '').trim();
+  const currentPage = () => String(window.NavigationStability?.currentPage?.() || '').trim();
   const findNode = nodeId => nodes.find(node => String(node.node_id) === String(nodeId));
 
   function clearPoll() { window.PollRegistryRuntime?.clear?.(POLL_KEY); }
@@ -261,9 +260,17 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
   }
 
   async function render({reload = true, silent = false} = {}) {
-    if (destroyed || loading || currentPage() !== PAGE) return false;
+    if (destroyed || currentPage() !== PAGE) return false;
     const view = document.getElementById('view');
     if (!view) return false;
+    if (loading) {
+      paintSummary();
+      view.innerHTML = nodes.length
+        ? pageHtml()
+        : '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
+      if (nodes.length) bindPage();
+      return false;
+    }
     loading = true;
     const hadCache = nodes.length > 0;
     const before = hadCache ? JSON.stringify(nodes) : '';
@@ -273,7 +280,8 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       bindPage();
       armPoll();
     } else if (reload) {
-      view.innerHTML = '<div class="empty">正在读取服务节点…</div>';
+      paintSummary();
+      view.innerHTML = '<section class="node633-shell" data-service-node-page="1" data-service-node-skeleton="1"><div class="empty">正在读取服务节点…</div></section>';
     }
     try {
       if (reload) await load({silent});
@@ -430,15 +438,6 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     } catch (error) { notify?.(error?.message || error); }
   }
 
-  function scheduleRender() {
-    if (renderQueued || destroyed) return;
-    renderQueued = true;
-    queueMicrotask(() => {
-      renderQueued = false;
-      if (!destroyed && currentPage() === PAGE) void render();
-    });
-  }
-
   function decorateNavigation() {
     if (destroyed) return;
     const nav = document.getElementById('nav');
@@ -456,7 +455,6 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       owner.appendChild(button);
     }
     button.classList.toggle('active', currentPage() === PAGE);
-    if (currentPage() === PAGE) scheduleRender();
   }
 
   const nav = document.getElementById('nav');
@@ -464,14 +462,10 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
     navObserver = new MutationObserver(decorateNavigation);
     navObserver.observe(nav, {childList: true, subtree: true});
   }
-  const title = document.getElementById('title');
-  if (title) {
-    titleObserver = new MutationObserver(() => {
-      decorateNavigation();
-      if (currentPage() === PAGE) scheduleRender(); else clearPoll();
-    });
-    titleObserver.observe(title, {childList: true, characterData: true, subtree: true});
-  }
+  unregisterPageOwner = window.NavigationStability?.registerPageOwner?.(PAGE, () => {
+    decorateNavigation();
+    return render();
+  }) || null;
   decorateNavigation();
 
   const runtime = {
@@ -492,7 +486,7 @@ export function installServiceNodeRuntime({notify = message => window.toast?.(me
       destroyed = true;
       clearPoll();
       navObserver?.disconnect();
-      titleObserver?.disconnect();
+      unregisterPageOwner?.();
       document.querySelector('[data-service-node-nav="1"]')?.remove();
       if (window.ServiceNodeRuntime === runtime) window.ServiceNodeRuntime = null;
       window.__serviceNodeRuntimeInstalled = false;

@@ -52,6 +52,11 @@ const PAGE_RENDERERS = {
   '部署转换': ['renderDeployTasks', 'renderDeploymentTasks'],
 };
 
+const KNOWN_PAGE_NAMES = new Set([
+  ...Object.keys(PAGE_RENDERERS),
+  '测试发布', '检测台', '标签管理', '存储配置',
+]);
+
 function ownersFor(page) {
   if (page === '自动标注及清洗') return ['自动标注', '自动标注及清洗'];
   if (page === '训练任务') return ['训练任务', '检测台'];
@@ -75,6 +80,7 @@ export function installNavigationStability({
   const state = getState?.();
   const guard = new NavigationEpochGuard(normalizeNavigationPage(state?.page || ''));
   const pending = new Map();
+  const pageOwners = new Map();
   const rebindTimers = [];
   let tokenSeq = 0;
   let destroyed = false;
@@ -244,6 +250,28 @@ export function installNavigationStability({
   const api = {
     guard,
     pending,
+    registerPageOwner(page, renderer) {
+      const normalized = normalizeNavigationPage(page);
+      if (!normalized || typeof renderer !== 'function') throw new Error('page owner requires a page and renderer');
+      pageOwners.set(normalized, renderer);
+      return () => {
+        if (pageOwners.get(normalized) === renderer) pageOwners.delete(normalized);
+      };
+    },
+    hasPageOwner(page) {
+      return pageOwners.has(normalizeNavigationPage(page));
+    },
+    renderPage(page, context) {
+      const renderer = pageOwners.get(normalizeNavigationPage(page));
+      return renderer ? renderer(context) : false;
+    },
+    isKnownPage(page) {
+      const normalized = normalizeNavigationPage(page);
+      return KNOWN_PAGE_NAMES.has(normalized) || pageOwners.has(normalized);
+    },
+    currentPage() {
+      return normalizeNavigationPage(currentState().page || '');
+    },
     normalizePage: normalizeNavigationPage,
     isCurrent(token) {
       return guard.isCurrent(token, normalizeNavigationPage(currentState().page));
@@ -276,6 +304,7 @@ export function installNavigationStability({
       for (const timer of rebindTimers) clearTimeout(timer);
       rebindTimers.length = 0;
       pending.clear();
+      pageOwners.clear();
       if (typeof window !== 'undefined') {
         window.__navigationStabilityInstalled = false;
         if (window.NavigationStability === api) window.NavigationStability = null;
