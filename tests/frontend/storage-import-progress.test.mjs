@@ -170,3 +170,74 @@ test('storage import canonical task_status wins and inexact queue rank is never 
   assert.match(text, /STORAGE_WORKER_BUSY/);
   assert.doesNotMatch(text, /队列第 7 位/);
 });
+
+
+test('active storage import progress stays lightweight and full detail renderer runs only at terminal state', async () => {
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousFetch = globalThis.fetch;
+  try {
+    const status = {textContent: '', dataset: {}};
+    globalThis.document = {getElementById: id => id === 'si61Status' ? status : null};
+
+    const scheduled = [];
+    const pollRegistry = {
+      startTimeout(key, owners, callback, delay) {
+        scheduled.push({key, owners, callback, delay});
+        return scheduled.length;
+      },
+      clear() { return true; },
+    };
+
+    const rendered = [];
+    globalThis.window = {
+      renderStorageImportTask61: task => rendered.push(task),
+      UploadTaskCenterRuntime: {upsert() {}},
+    };
+
+    let response = {
+      task_id:'scan-light-1',
+      status:'RUNNING',
+      phase:'SCANNING',
+      progress_percent:35,
+      current_item:'35 / 100',
+    };
+    globalThis.fetch = async () => ({
+      ok:true,
+      json:async () => response,
+    });
+
+    const runtime = installStorageImportProgressRuntime({
+      pollRegistry,
+      getState: () => ({page:'素材存储配置', project:{id:'p1'}}),
+    });
+    runtime.track('scan-light-1', {
+      task_id:'scan-light-1',
+      status:'QUEUED',
+      progress_percent:0,
+    });
+
+    assert.equal(rendered.length, 0);
+    assert.equal(status.dataset.storageImportLive, '1');
+
+    await scheduled[0].callback();
+    assert.equal(rendered.length, 0);
+    assert.match(status.textContent, /35%/);
+
+    response = {
+      task_id:'scan-light-1',
+      status:'AWAITING_CONFIRMATION',
+      phase:'REVIEWING',
+      progress_percent:100,
+      result:{scanned_files:100, importable_images:90},
+    };
+    await scheduled[1].callback();
+    assert.equal(rendered.length, 1);
+    assert.equal(rendered[0].status, 'AWAITING_CONFIRMATION');
+    assert.equal(status.dataset.storageImportLive, '0');
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
+    if (previousFetch === undefined) delete globalThis.fetch; else globalThis.fetch = previousFetch;
+  }
+});

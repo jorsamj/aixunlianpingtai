@@ -60,7 +60,7 @@ async function responseJson(response) {
 
 export function installStorageImportProgressRuntime({pollRegistry, getState} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-  if (window.StorageImportProgressRuntime?.build === 'storage-import-progress-422523') {
+  if (window.StorageImportProgressRuntime?.build === 'storage-import-progress-422524') {
     return window.StorageImportProgressRuntime;
   }
 
@@ -107,9 +107,12 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
     }
     if (!currentTask) return;
     const status = statusElement();
-    if (status) status.textContent = storageImportProgressText(currentTask);
+    if (status) {
+      status.textContent = storageImportProgressText(currentTask);
+      status.dataset.storageImportLive = isTaskActive(currentTask) ? '1' : '0';
+    }
     publishTaskCenter(currentTask);
-    if (typeof window.renderStorageImportTask61 === 'function') {
+    if (!isTaskActive(currentTask) && typeof window.renderStorageImportTask61 === 'function') {
       window.renderStorageImportTask61(currentTask);
     }
   }
@@ -183,7 +186,7 @@ export function installStorageImportProgressRuntime({pollRegistry, getState} = {
   }
 
   const runtime = Object.freeze({
-    build: 'storage-import-progress-422523',
+    build: 'storage-import-progress-422524',
     track,
     stop,
     current: () => currentTask,
