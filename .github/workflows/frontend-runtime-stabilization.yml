@@ -191,6 +191,13 @@ jobs:
             fi
           done
           grep -Fq 'replaceSourceTimer();' "$file"
+          grep -Fq "SOURCE_IMPORT_POLL_KEY_V36='source-import-v36'" static/app.js
+          grep -Fq 'window.PollRegistryRuntime?.startTimeout?.(' static/app.js
+          grep -Fq 'v36 source import polling is page-scoped through PollRegistry and never owns a raw timer' tests/frontend/import-refresh-owner.test.mjs
+          if grep -Fq '__sourceImportTimerV36' static/app.js; then
+            echo 'v36 source-import polling must stay PollRegistry-owned' >&2
+            exit 1
+          fi
       - name: Training PollRegistry direct owner guard
         run: |
           for file in static/app.js static/modules/poll-registry.js static/modules/navigation-stability.js; do

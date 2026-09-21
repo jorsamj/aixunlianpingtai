@@ -1810,17 +1810,35 @@ window.installUsability417=function(){
     }catch(e){ if(out)out.innerHTML=`<div class="alert err">${esc(e.message||e)}</div>`; toast(e.message||'创建失败') }
   };
 
+  const SOURCE_IMPORT_POLL_KEY_V36='source-import-v36';
+  function scheduleSourceImportRefreshV36(){
+    window.PollRegistryRuntime?.clear?.(SOURCE_IMPORT_POLL_KEY_V36);
+    if(state.page!=='数据集')return;
+    window.PollRegistryRuntime?.startTimeout?.(
+      SOURCE_IMPORT_POLL_KEY_V36,
+      '数据集',
+      ()=>window.refreshSourceImportTasksV36?.(),
+      1800,
+    );
+  }
+
   window.refreshSourceImportTasksV36=async function(){
-    if(!state.project || !state.datasetId)return;
+    if(!state.project || !state.datasetId){
+      window.PollRegistryRuntime?.clear?.(SOURCE_IMPORT_POLL_KEY_V36);
+      return;
+    }
+    const box=$('#sourceTaskListV36');
+    if(!box){
+      window.PollRegistryRuntime?.clear?.(SOURCE_IMPORT_POLL_KEY_V36);
+      return;
+    }
     const data=await safe(api(`/api/v36/projects/${pid()}/datasets/${state.datasetId}/source-import/jobs`));
     state.sourceImportTasks=data?.items||[];
-    const box=$('#sourceTaskListV36');
-    if(!box)return;
     box.innerHTML=`<table class="table"><thead><tr><th>来源</th><th>状态</th><th>进度</th><th>结果</th></tr></thead><tbody>${state.sourceImportTasks.map(t=>`<tr><td><b>${esc(t.name||t.id)}</b><div class="muted-line" title="${esc(t.source||'')}">${esc((t.source||'').slice(0,60))}</div></td><td><span class="pill ${t.status==='done'?'ok':t.status==='failed'?'err':'warn'}">${esc(t.status_text||t.status)}</span><div class="muted-line">${esc(t.stage||'')}</div></td><td>${t.progress||0}%</td><td>${t.status==='failed'?esc(t.error||'失败'):`${t.imported_images||t.report?.imported_images||0}图 / ${t.boxes||t.report?.boxes||0}框`}<div class="muted-line">${t.split_counts?`训练${t.split_counts.train||0} / 评测${t.split_counts.val||0} / 试验${t.split_counts.test||0}`:''}</div></td></tr>`).join('')||'<tr><td colspan="4">暂无地址读取任务</td></tr>'}</tbody></table>`;
-    if(state.sourceImportTasks.some(t=>['queued','running'].includes(t.status))){
-      clearTimeout(window.__sourceImportTimerV36);
-      window.__sourceImportTimerV36=setTimeout(refreshSourceImportTasksV36,1800);
+    if(state.sourceImportTasks.some(t=>['queued','running'].includes(String(t.status||'').toLowerCase()))){
+      scheduleSourceImportRefreshV36();
     }else{
+      window.PollRegistryRuntime?.clear?.(SOURCE_IMPORT_POLL_KEY_V36);
       await window.refreshLabels414?.(false);
       if(state.page==='数据集')await window.reloadMaterialPage61?.();
     }
