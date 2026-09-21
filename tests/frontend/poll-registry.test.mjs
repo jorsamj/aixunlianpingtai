@@ -405,3 +405,90 @@ test('source polling is a direct PollRegistry-managed interval and stops on leav
   globalThis.clearInterval = originalClearInterval;
   delete globalThis.window;
 });
+
+
+test('returning to a visible training tab immediately resyncs canonical truth and re-arms polling', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const timeouts = new Map();
+  let nextTimer = 700;
+  globalThis.setTimeout = (callback, delay) => {
+    const id = ++nextTimer;
+    timeouts.set(id, {callback, delay});
+    return id;
+  };
+  globalThis.clearTimeout = id => timeouts.delete(id);
+
+  const listeners = new Map();
+  globalThis.document = {
+    visibilityState: 'hidden',
+    addEventListener(type, handler) { listeners.set(type, handler); },
+    removeEventListener(type, handler) {
+      if (listeners.get(type) === handler) listeners.delete(type);
+    },
+  };
+  const state = {
+    page: '训练任务',
+    project: {id: 'p1'},
+    jobs: [{id: 'j1', status: 'running', progress_percent: 10}],
+  };
+  const refreshCalls = [];
+  globalThis.window = {
+    TrainingTaskRuntime: {
+      async refresh(options) {
+        refreshCalls.push(options);
+        state.jobs = [{id: 'j1', status: 'running', progress_percent: 42}];
+      },
+    },
+  };
+
+  let runtime;
+  try {
+    runtime = installPollRegistry({getState: () => state});
+    runtime.clear('training-jobs');
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), false);
+
+    globalThis.document.visibilityState = 'visible';
+    listeners.get('visibilitychange')?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(refreshCalls.length, 1);
+    assert.deepEqual(refreshCalls[0], {render: true, force: true, source: 'visibility'});
+    assert.equal(state.jobs[0].progress_percent, 42);
+    assert.equal(runtime.snapshot().some(row => row.key === 'training-jobs'), true);
+  } finally {
+    runtime?.destroy();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});
+
+test('visibility resync skips hidden documents instead of spending background requests', async () => {
+  globalThis.document = {
+    visibilityState: 'hidden',
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const state = {
+    page: '训练任务',
+    project: {id: 'p1'},
+    jobs: [],
+  };
+  let refreshes = 0;
+  globalThis.window = {
+    TrainingTaskRuntime: {async refresh() { refreshes += 1; }},
+  };
+
+  const runtime = installPollRegistry({getState: () => state});
+  try {
+    assert.equal(await runtime.resyncVisiblePage(), false);
+    assert.equal(refreshes, 0);
+  } finally {
+    runtime.destroy();
+    delete globalThis.window;
+    delete globalThis.document;
+  }
+});

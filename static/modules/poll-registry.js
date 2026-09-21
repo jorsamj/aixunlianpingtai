@@ -94,6 +94,8 @@ export function installPollRegistry({getState} = {}) {
   const videoOwner = '视频切帧';
   const sourceOwner = '素材接入';
   const cleanOwner = '自动标注及清洗';
+  const doc = typeof document !== 'undefined' ? document : null;
+  let visibilityRefresh = null;
 
   function state() { return getState?.() || {}; }
 
@@ -221,6 +223,67 @@ export function installPollRegistry({getState} = {}) {
     );
   }
 
+  async function resyncVisiblePage() {
+    const s = state();
+    if (doc?.visibilityState && doc.visibilityState !== 'visible') return false;
+    if (!s.project?.id) return false;
+    const page = String(s.page || '');
+
+    if (page === trainingOwner) {
+      registry.clear('training-jobs');
+      try {
+        if (typeof window.TrainingTaskRuntime?.refresh === 'function') {
+          await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'visibility'});
+        } else if (typeof window.refreshJobsOnly === 'function') {
+          await window.refreshJobsOnly();
+        }
+      } finally {
+        replaceTrainingJobTimer();
+      }
+      return true;
+    }
+
+    if (page === videoOwner) {
+      registry.clear('video-frames');
+      try {
+        if (typeof window.refreshVideo424Delta === 'function') await window.refreshVideo424Delta();
+      } finally {
+        replaceVideo424Timer();
+      }
+      return true;
+    }
+
+    if (page === cleanOwner && String(s.v427OpsTab || 'label') === 'clean') {
+      registry.clear('clean-tasks-v47');
+      try {
+        if (typeof window.refreshCleanOps427Delta === 'function') await window.refreshCleanOps427Delta();
+      } finally {
+        replaceCleanTaskTimer();
+      }
+      return true;
+    }
+
+    if (page === sourceOwner) {
+      registry.clear('sources');
+      try {
+        if (typeof window.refreshSources422 === 'function') await window.refreshSources422();
+      } finally {
+        replaceSourceTimer();
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  const onVisibilityChange = () => {
+    if (doc?.visibilityState !== 'visible' || visibilityRefresh) return;
+    visibilityRefresh = Promise.resolve(resyncVisiblePage()).finally(() => {
+      visibilityRefresh = null;
+    });
+  };
+  doc?.addEventListener?.('visibilitychange', onVisibilityChange);
+
   const runtime = {
     registry,
     startInterval(key, ownerPages, callback, delay, options) {
@@ -230,6 +293,7 @@ export function installPollRegistry({getState} = {}) {
       return registry.startTimeout(key, ownerPages, callback, delay, options);
     },
     clear(key) { return registry.clear(key); },
+    resyncVisiblePage,
     replaceTrainingJobTimer,
     replaceVideo424Timer,
     replaceCleanTaskTimer,
@@ -245,6 +309,8 @@ export function installPollRegistry({getState} = {}) {
     snapshot() { return registry.snapshot(); },
     destroy() {
       registry.clearAll();
+      doc?.removeEventListener?.('visibilitychange', onVisibilityChange);
+      visibilityRefresh = null;
       const s = state();
       s.video424Timer = null;
       if (window.PollRegistryRuntime === runtime) window.PollRegistryRuntime = null;
