@@ -206,7 +206,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     render();
     arm();
     const cleared = Math.max(0, before - rows.length);
-    if (cleared) notify?.(`已清空 ${cleared} 条已完成任务`);
+    if (cleared) notify?.(`已清空 ${cleared} 条已结束任务`);
     return rows;
   }
 
