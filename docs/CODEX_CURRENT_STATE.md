@@ -1,5 +1,26 @@
 # Codex Current State
 
+
+<!-- CURRENT_HANDOFF_2026_09_21 -->
+> ## CURRENT RESUME POINT — 2026-09-21
+>
+> **Canonical current handoff: docs/CODEX_HANDOFF_2026-09-21.md**
+>
+> Read that document before using any older NEXT/current-priority text below. It records the current code/test baseline, SQLite lifecycle fixes, ResourceDiscovery spawn root cause, material/annotation batching contracts, Training V3 Dataset Revision truth, ChangLian integration rules, exact remaining integration validation, and deployment gate.
+>
+> Last code/test HEAD before the handoff-document commits: bc88fcdfd7a5097499a67596741b8f13018f7645.
+> Handoff document commit: 8ab473efbca7cb2c95b032de0858bb7070d8b0af.
+>
+> Current immediate priority is **verification, not more production-code expansion**:
+>
+> 1. re-read live remote HEAD / VERSION / recent commits / Actions;
+> 2. run the two focused integration tests fixed after the 0fc6acd candidate run;
+> 3. run full tests/integration and require 0 failed;
+> 4. only then run task_worker.py --check and deployment preflight.
+>
+> The 2026-09-20 LIVE CURRENT STATE below is retained as historical context and no longer overrides the 2026-09-21 handoff.
+
+
 > First-entry handoff for `jorsamj/aixunlianpingtai`. Verify live branch/HEAD before editing. `docs/TECH_DEBT_CLOSURE_V42_25.md` is the authoritative debt ledger.
 
 <!-- CODEX_LIVE_HANDOFF_2026_09_20 -->
