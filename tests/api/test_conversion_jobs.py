@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
     ("target", "params", "error_code", "forbidden_suffix"),
     [
         ("ascend", {"soc_version": "Ascend310P3", "precision": "fp16"}, "ATC_NOT_FOUND", ".om"),
-        ("rockchip", {"chip": "rk3588", "precision": "fp16"}, "RKNN_TOOLKIT_NOT_FOUND", ".rknn"),
+        ("rockchip", {"chip": "rk3568", "precision": "fp16"}, "RKNN_TOOLKIT_NOT_FOUND", ".rknn"),
         (
             "tensorrt",
             {"precision": "fp16", "target_environment": "test-gpu/cuda/tensorrt"},
